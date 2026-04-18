@@ -91,10 +91,12 @@ if ! command -v node &>/dev/null; then
   warn "未安裝，透過 nvm 安裝 LTS..."
   export NVM_DIR="$HOME/.nvm"
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-  # 在目前 shell 載入 nvm（不依賴 .bashrc）
+  # nvm 內部使用未定義變數，需暫時關閉 -u
+  set +u
   [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
   nvm install --lts --no-progress
   nvm use --lts
+  set -u
 fi
 ok "Node.js $(node --version)"
 
