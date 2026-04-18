@@ -8,6 +8,15 @@ function Step { Write-Host "`n==> $args" -ForegroundColor Cyan }
 function Ok   { Write-Host "  v $args" -ForegroundColor Green }
 function Warn { Write-Host "  ! $args" -ForegroundColor Yellow }
 
+# ── 自動提升管理員權限 ────────────────────────────────────────────────
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "  ! 需要管理員權限，正在重新啟動..." -ForegroundColor Yellow
+    $cmd = "-NoExit -ExecutionPolicy Bypass -Command `"irm https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.ps1 | iex`""
+    Start-Process PowerShell -Verb RunAs -ArgumentList $cmd
+    exit
+}
+
 function Finish {
     Write-Host "`n按 Enter 關閉視窗..." -NoNewline
     $null = Read-Host
