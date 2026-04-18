@@ -25,10 +25,14 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 
 ## Quick Start
 
-**One-liner install** (macOS / Linux):
+**One-liner install**:
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.ps1 | iex
 ```
 
 Automatically installs git, Python 3, Node.js, pnpm, and uv if missing. After install:

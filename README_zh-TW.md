@@ -25,10 +25,14 @@
 
 ## 快速開始
 
-**一行指令安裝**（macOS / Linux）：
+**一行指令安裝**：
 
 ```bash
+# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.sh | bash
+
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.ps1 | iex
 ```
 
 自動安裝所有缺少的依賴（git、Python 3、Node.js、pnpm、uv）。安裝完成後：
