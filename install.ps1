@@ -36,7 +36,8 @@ try {
     # ── Git ────────────────────────────────────────────────────────────
     Step "Git"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $release = Invoke-RestMethod "https://api.github.com/repos/git-for-windows/git/releases/latest"
+        $headers = @{ "User-Agent" = "CodefyUI-Installer" }
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -Headers $headers
         $asset   = $release.assets | Where-Object { $_.name -match "64-bit\.exe$" -and $_.name -notmatch "Portable" } | Select-Object -First 1
         $gitExe  = "$TOOLS\git.exe"
         Download $asset.browser_download_url $gitExe
