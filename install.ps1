@@ -23,19 +23,31 @@ function Finish {
 }
 
 # ── 套件管理器：winget 優先，fallback 到 Chocolatey ──────────────────
+function Ensure-ChocoInPath {
+    $chocoBin = "$env:ProgramData\chocolatey\bin"
+    if ((Test-Path $chocoBin) -and ($env:PATH -notlike "*$chocoBin*")) {
+        $env:PATH += ";$chocoBin"
+    }
+}
+
 function Get-PackageManager {
     if (Get-Command winget -ErrorAction SilentlyContinue) { return "winget" }
+    Ensure-ChocoInPath
     if (Get-Command choco  -ErrorAction SilentlyContinue) { return "choco"  }
     return $null
 }
 
 function Install-Choco {
     Warn "winget 不可用，改安裝 Chocolatey..."
+    Ensure-ChocoInPath
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        Ok "Chocolatey 已安裝（$(choco --version)）"
+        return
+    }
     Set-ExecutionPolicy Bypass -Scope Process -Force
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
     iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    # 載入 choco 到目前 session
-    $env:PATH += ";$env:ProgramData\chocolatey\bin"
+    Ensure-ChocoInPath
 }
 
 function Pkg-Install {
