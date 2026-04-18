@@ -7,58 +7,57 @@ $INSTALL = if ($env:CODEFYUI_DIR) { $env:CODEFYUI_DIR } else { "$HOME\CodefyUI" 
 function Step { Write-Host "`n==> $args" -ForegroundColor Cyan }
 function Ok   { Write-Host "  v $args" -ForegroundColor Green }
 function Warn { Write-Host "  ! $args" -ForegroundColor Yellow }
-
-# ── 自動提升管理員權限 ────────────────────────────────────────────────
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "  ! 需要管理員權限，正在重新啟動..." -ForegroundColor Yellow
-    $cmd = "-NoExit -ExecutionPolicy Bypass -Command `"irm https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.ps1 | iex`""
-    Start-Process PowerShell -Verb RunAs -ArgumentList $cmd
-    exit
-}
-
 function Finish {
     Write-Host "`n按 Enter 關閉視窗..." -NoNewline
     $null = Read-Host
 }
 
-# ── 套件管理器：winget 優先，fallback 到 Chocolatey ──────────────────
-function Ensure-ChocoInPath {
-    $chocoBin = "$env:ProgramData\chocolatey\bin"
-    if ((Test-Path $chocoBin) -and ($env:PATH -notlike "*$chocoBin*")) {
-        $env:PATH += ";$chocoBin"
+# ── 套件管理器偵測（winget > Scoop > Chocolatey）────────────────────────
+
+function Add-ToPath ([string]$dir) {
+    if ((Test-Path $dir) -and $env:PATH -notlike "*$dir*") {
+        $env:PATH = "$dir;$env:PATH"
     }
 }
 
 function Get-PackageManager {
     if (Get-Command winget -ErrorAction SilentlyContinue) { return "winget" }
-    Ensure-ChocoInPath
-    if (Get-Command choco  -ErrorAction SilentlyContinue) { return "choco"  }
+
+    # Scoop（user-level，不需要 admin）
+    Add-ToPath "$HOME\scoop\shims"
+    if (Get-Command scoop -ErrorAction SilentlyContinue) { return "scoop" }
+
+    # Chocolatey — 直接檢查 exe 而非依賴 PATH
+    $chocoExe = "$env:ProgramData\chocolatey\bin\choco.exe"
+    if (Test-Path $chocoExe) {
+        Add-ToPath "$env:ProgramData\chocolatey\bin"
+        return "choco"
+    }
+
     return $null
 }
 
-function Install-Choco {
-    Warn "winget 不可用，改安裝 Chocolatey..."
-    Ensure-ChocoInPath
-    if (Get-Command choco -ErrorAction SilentlyContinue) {
-        Ok "Chocolatey 已安裝（$(choco --version)）"
-        return
-    }
-    Set-ExecutionPolicy Bypass -Scope Process -Force
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-    iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    Ensure-ChocoInPath
+function Install-Scoop {
+    Warn "安裝 Scoop（不需要管理員）..."
+    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+    iwr -useb get.scoop.sh | iex
+    Add-ToPath "$HOME\scoop\shims"
 }
 
-function Pkg-Install {
-    param([string]$wingetId, [string]$chocoId)
+function Pkg-Install ([string]$wingetId, [string]$scoopId, [string]$chocoId) {
     $pm = Get-PackageManager
-    if (-not $pm) { Install-Choco; $pm = "choco" }
+    if (-not $pm) {
+        Install-Scoop
+        $pm = "scoop"
+    }
     switch ($pm) {
         "winget" { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements }
-        "choco"  { choco install $chocoId -y }
+        "scoop"  { scoop install $scoopId }
+        "choco"  { & "$env:ProgramData\chocolatey\bin\choco.exe" install $chocoId -y }
     }
 }
+
+# ─────────────────────────────────────────────────────────────────────
 
 try {
     Write-Host ""
@@ -71,8 +70,9 @@ try {
     Step "git"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "Git.Git" "git"
-        $env:PATH += ";C:\Program Files\Git\cmd"
+        Pkg-Install "Git.Git" "git" "git"
+        Add-ToPath "C:\Program Files\Git\cmd"
+        Add-ToPath "$HOME\scoop\apps\git\current\cmd"
     }
     Ok "$(git --version)"
 
@@ -87,9 +87,10 @@ try {
     }
     if (-not $PYTHON) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "Python.Python.3.11" "python311"
-        $env:PATH += ";$HOME\AppData\Local\Programs\Python\Python311"
-        $env:PATH += ";$HOME\AppData\Local\Programs\Python\Python311\Scripts"
+        Pkg-Install "Python.Python.3.11" "python" "python311"
+        Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311"
+        Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311\Scripts"
+        Add-ToPath "$HOME\scoop\apps\python\current"
         $PYTHON = "python"
     }
     Ok "$(& $PYTHON --version)"
@@ -98,8 +99,9 @@ try {
     Step "Node.js"
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "OpenJS.NodeJS.LTS" "nodejs-lts"
-        $env:PATH += ";C:\Program Files\nodejs"
+        Pkg-Install "OpenJS.NodeJS.LTS" "nodejs-lts" "nodejs-lts"
+        Add-ToPath "C:\Program Files\nodejs"
+        Add-ToPath "$HOME\scoop\apps\nodejs-lts\current"
     }
     Ok "Node.js $(node --version)"
 
