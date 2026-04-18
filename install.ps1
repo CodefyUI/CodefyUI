@@ -1,9 +1,14 @@
 # CodefyUI Windows 安裝腳本
 # 用法：irm https://raw.githubusercontent.com/latteine1217/CodefyUI/main/install.ps1 | iex
 
-$REPO    = "https://github.com/latteine1217/CodefyUI.git"
-$INSTALL = if ($env:CODEFYUI_DIR) { $env:CODEFYUI_DIR } else { "$HOME\CodefyUI" }
-$TOOLS   = "$HOME\.codefyui"
+$INSTALL  = if ($env:CODEFYUI_DIR) { $env:CODEFYUI_DIR } else { "$HOME\CodefyUI" }
+$TOOLS    = "$HOME\.codefyui"
+$REPO_ZIP = "https://github.com/latteine1217/CodefyUI/archive/refs/heads/main.zip"
+$PY_URL   = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+$NODE_VER = "v22.16.0"
+$NODE_URL = "https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-win-x64.zip"
+
+$ProgressPreference = "SilentlyContinue"
 
 function Step { Write-Host "`n==> $args" -ForegroundColor Cyan }
 function Ok   { Write-Host "  v $args" -ForegroundColor Green }
@@ -18,10 +23,8 @@ function Add-ToPath ([string]$dir) {
     }
 }
 function Download ([string]$url, [string]$dest) {
-    Warn "下載 $([System.IO.Path]::GetFileName($dest))..."
-    $ProgressPreference = "SilentlyContinue"
-    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-    $ProgressPreference = "Continue"
+    Warn "下載中..."
+    (New-Object Net.WebClient).DownloadFile($url, $dest)
 }
 
 New-Item -ItemType Directory -Force -Path $TOOLS | Out-Null
@@ -33,21 +36,6 @@ try {
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor White
     Write-Host "  安裝目錄：$INSTALL"
 
-    # ── Git ────────────────────────────────────────────────────────────
-    Step "Git"
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        $headers = @{ "User-Agent" = "CodefyUI-Installer" }
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/git-for-windows/git/releases/latest" -Headers $headers
-        $asset   = $release.assets | Where-Object { $_.name -match "64-bit\.exe$" -and $_.name -notmatch "Portable" } | Select-Object -First 1
-        $gitExe  = "$TOOLS\git.exe"
-        Download $asset.browser_download_url $gitExe
-        Warn "安裝 Git..."
-        Start-Process $gitExe -ArgumentList "/VERYSILENT /NORESTART /NOCANCEL /SP-" -Wait
-        Add-ToPath "C:\Program Files\Git\cmd"
-        Remove-Item $gitExe -Force
-    }
-    Ok "$(git --version)"
-
     # ── Python 3 ───────────────────────────────────────────────────────
     Step "Python 3"
     $PYTHON = $null
@@ -58,35 +46,30 @@ try {
         }
     }
     if (-not $PYTHON) {
-        $pyUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
         $pyExe = "$TOOLS\python.exe"
-        Download $pyUrl $pyExe
+        Download $PY_URL $pyExe
         Warn "安裝 Python 3.11..."
         Start-Process $pyExe -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_doc=0" -Wait
+        Remove-Item $pyExe -Force
         Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311"
         Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311\Scripts"
-        Remove-Item $pyExe -Force
         $PYTHON = "python"
     }
     Ok "$(& $PYTHON --version)"
 
-    # ── Node.js (portable zip) ─────────────────────────────────────────
+    # ── Node.js (portable) ─────────────────────────────────────────────
     Step "Node.js"
+    $nodeDir = "$TOOLS\node"
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        $v      = (Invoke-RestMethod https://nodejs.org/dist/index.json | Where-Object { $_.lts } | Select-Object -First 1).version
-        $zipUrl = "https://nodejs.org/dist/$v/node-$v-win-x64.zip"
-        $zip    = "$TOOLS\node.zip"
-        $nodeDir = "$TOOLS\node"
-
-        Download $zipUrl $zip
-        Warn "解壓 Node.js $v..."
+        $zip = "$TOOLS\node.zip"
+        Download $NODE_URL $zip
+        Warn "解壓 Node.js $NODE_VER..."
         if (Test-Path $nodeDir) { Remove-Item $nodeDir -Recurse -Force }
-        $ProgressPreference = "SilentlyContinue"
         Expand-Archive $zip $TOOLS -Force
-        $ProgressPreference = "Continue"
-        Rename-Item "$TOOLS\node-$v-win-x64" $nodeDir
+        Rename-Item "$TOOLS\node-$NODE_VER-win-x64" $nodeDir
         Remove-Item $zip -Force
-
+        Add-ToPath $nodeDir
+    } else {
         Add-ToPath $nodeDir
     }
     Ok "Node.js $(node --version)"
@@ -94,22 +77,22 @@ try {
     # ── pnpm ───────────────────────────────────────────────────────────
     Step "pnpm"
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-        Warn "透過 npm 安裝 pnpm..."
-        npm install -g pnpm
+        Warn "安裝 pnpm..."
+        npm install -g pnpm --silent
         Add-ToPath "$HOME\AppData\Roaming\npm"
     }
     Ok "pnpm $(pnpm --version)"
 
-    # ── Clone / Update ─────────────────────────────────────────────────
+    # ── 下載 CodefyUI ──────────────────────────────────────────────────
     Step "下載 CodefyUI"
-    if (Test-Path "$INSTALL\.git") {
-        Warn "目錄已存在，執行更新..."
-        git -C $INSTALL pull --ff-only
-        Ok "已更新至最新版本"
-    } else {
-        git clone --depth 1 $REPO $INSTALL
-        Ok "Clone 完成"
-    }
+    $zip = "$TOOLS\codefyui.zip"
+    Download $REPO_ZIP $zip
+    Warn "解壓..."
+    if (Test-Path $INSTALL) { Remove-Item $INSTALL -Recurse -Force }
+    Expand-Archive $zip $TOOLS -Force
+    Move-Item "$TOOLS\CodefyUI-main" $INSTALL
+    Remove-Item $zip -Force
+    Ok "下載完成"
 
     # ── 安裝依賴 ───────────────────────────────────────────────────────
     Step "安裝專案依賴"
