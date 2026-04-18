@@ -12,49 +12,55 @@ function Finish {
     $null = Read-Host
 }
 
-# ── 套件管理器偵測（winget > Scoop > Chocolatey）────────────────────────
-
 function Add-ToPath ([string]$dir) {
     if ((Test-Path $dir) -and $env:PATH -notlike "*$dir*") {
         $env:PATH = "$dir;$env:PATH"
     }
 }
 
-function Get-PackageManager {
-    if (Get-Command winget -ErrorAction SilentlyContinue) { return "winget" }
-
-    # Scoop（user-level，不需要 admin）
+# ── Scoop ─────────────────────────────────────────────────────────────
+function Ensure-Scoop {
     Add-ToPath "$HOME\scoop\shims"
-    if (Get-Command scoop -ErrorAction SilentlyContinue) { return "scoop" }
-
-    # Chocolatey — 直接檢查 exe 而非依賴 PATH
-    $chocoExe = "$env:ProgramData\chocolatey\bin\choco.exe"
-    if (Test-Path $chocoExe) {
-        Add-ToPath "$env:ProgramData\chocolatey\bin"
-        return "choco"
+    if (Get-Command scoop -ErrorAction SilentlyContinue) { return $true }
+    Warn "安裝 Scoop..."
+    try {
+        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+        iwr -useb get.scoop.sh | iex
+        Add-ToPath "$HOME\scoop\shims"
+        return [bool](Get-Command scoop -ErrorAction SilentlyContinue)
+    } catch {
+        return $false
     }
-
-    return $null
 }
 
-function Install-Scoop {
-    Warn "安裝 Scoop（不需要管理員）..."
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-    iwr -useb get.scoop.sh | iex
-    Add-ToPath "$HOME\scoop\shims"
-}
+# ── 安裝單一工具 ──────────────────────────────────────────────────────
+function Install-Tool {
+    param(
+        [string]$name,
+        [string]$wingetId,
+        [string]$scoopId,
+        [string]$manualUrl
+    )
 
-function Pkg-Install ([string]$wingetId, [string]$scoopId, [string]$chocoId) {
-    $pm = Get-PackageManager
-    if (-not $pm) {
-        Install-Scoop
-        $pm = "scoop"
+    # winget
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id $wingetId -e --source winget `
+            --accept-package-agreements --accept-source-agreements
+        return
     }
-    switch ($pm) {
-        "winget" { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements }
-        "scoop"  { scoop install $scoopId }
-        "choco"  { & "$env:ProgramData\chocolatey\bin\choco.exe" install $chocoId -y }
+
+    # Scoop
+    if (Ensure-Scoop) {
+        scoop install $scoopId
+        return
     }
+
+    # 手動安裝提示
+    Write-Host ""
+    Write-Host "  無法自動安裝 $name，請手動下載：" -ForegroundColor Red
+    Write-Host "  $manualUrl" -ForegroundColor Cyan
+    Finish
+    exit 1
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -70,9 +76,10 @@ try {
     Step "git"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "Git.Git" "git" "git"
+        Install-Tool "Git" "Git.Git" "git" "https://git-scm.com/download/win"
         Add-ToPath "C:\Program Files\Git\cmd"
         Add-ToPath "$HOME\scoop\apps\git\current\cmd"
+        Add-ToPath "$HOME\scoop\shims"
     }
     Ok "$(git --version)"
 
@@ -87,10 +94,10 @@ try {
     }
     if (-not $PYTHON) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "Python.Python.3.11" "python" "python311"
+        Install-Tool "Python 3.11" "Python.Python.3.11" "python" "https://www.python.org/downloads/"
         Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311"
         Add-ToPath "$HOME\AppData\Local\Programs\Python\Python311\Scripts"
-        Add-ToPath "$HOME\scoop\apps\python\current"
+        Add-ToPath "$HOME\scoop\shims"
         $PYTHON = "python"
     }
     Ok "$(& $PYTHON --version)"
@@ -99,9 +106,9 @@ try {
     Step "Node.js"
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         Warn "未安裝，正在安裝..."
-        Pkg-Install "OpenJS.NodeJS.LTS" "nodejs-lts" "nodejs-lts"
+        Install-Tool "Node.js LTS" "OpenJS.NodeJS.LTS" "nodejs-lts" "https://nodejs.org/en/download"
         Add-ToPath "C:\Program Files\nodejs"
-        Add-ToPath "$HOME\scoop\apps\nodejs-lts\current"
+        Add-ToPath "$HOME\scoop\shims"
     }
     Ok "Node.js $(node --version)"
 
@@ -110,6 +117,7 @@ try {
     if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
         Warn "未安裝，透過 npm 安裝..."
         npm install -g pnpm
+        Add-ToPath "$HOME\AppData\Roaming\npm"
     }
     Ok "pnpm $(pnpm --version)"
 
