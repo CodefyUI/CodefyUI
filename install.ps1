@@ -8,12 +8,35 @@ function Step { Write-Host "`n==> $args" -ForegroundColor Cyan }
 function Ok   { Write-Host "  v $args" -ForegroundColor Green }
 function Warn { Write-Host "  ! $args" -ForegroundColor Yellow }
 
-function Pause-And-Exit {
-    param([string]$msg, [int]$code = 1)
-    Write-Host "`nx 錯誤：$msg" -ForegroundColor Red
+function Finish {
     Write-Host "`n按 Enter 關閉視窗..." -NoNewline
     $null = Read-Host
-    exit $code
+}
+
+# ── 套件管理器：winget 優先，fallback 到 Chocolatey ──────────────────
+function Get-PackageManager {
+    if (Get-Command winget -ErrorAction SilentlyContinue) { return "winget" }
+    if (Get-Command choco  -ErrorAction SilentlyContinue) { return "choco"  }
+    return $null
+}
+
+function Install-Choco {
+    Warn "winget 不可用，改安裝 Chocolatey..."
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
+    iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    # 載入 choco 到目前 session
+    $env:PATH += ";$env:ProgramData\chocolatey\bin"
+}
+
+function Pkg-Install {
+    param([string]$wingetId, [string]$chocoId)
+    $pm = Get-PackageManager
+    if (-not $pm) { Install-Choco; $pm = "choco" }
+    switch ($pm) {
+        "winget" { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements }
+        "choco"  { choco install $chocoId -y }
+    }
 }
 
 try {
@@ -23,15 +46,11 @@ try {
     Write-Host "╚══════════════════════════════════════╝" -ForegroundColor White
     Write-Host "  安裝目錄：$INSTALL"
 
-    # ── winget 可用性 ──────────────────────────────────────────────────
-    $hasWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
-
     # ── git ────────────────────────────────────────────────────────────
     Step "git"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Warn "未安裝，透過 winget 安裝..."
-        if (-not $hasWinget) { Pause-And-Exit "找不到 winget，請先從 Microsoft Store 安裝『應用程式安裝程式』" }
-        winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+        Warn "未安裝，正在安裝..."
+        Pkg-Install "Git.Git" "git"
         $env:PATH += ";C:\Program Files\Git\cmd"
     }
     Ok "$(git --version)"
@@ -46,9 +65,8 @@ try {
         }
     }
     if (-not $PYTHON) {
-        Warn "未安裝，透過 winget 安裝..."
-        if (-not $hasWinget) { Pause-And-Exit "找不到 winget，請先從 Microsoft Store 安裝『應用程式安裝程式』" }
-        winget install --id Python.Python.3.11 -e --source winget --accept-package-agreements --accept-source-agreements
+        Warn "未安裝，正在安裝..."
+        Pkg-Install "Python.Python.3.11" "python311"
         $env:PATH += ";$HOME\AppData\Local\Programs\Python\Python311"
         $env:PATH += ";$HOME\AppData\Local\Programs\Python\Python311\Scripts"
         $PYTHON = "python"
@@ -58,9 +76,8 @@ try {
     # ── Node.js ────────────────────────────────────────────────────────
     Step "Node.js"
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        Warn "未安裝，透過 winget 安裝..."
-        if (-not $hasWinget) { Pause-And-Exit "找不到 winget，請先從 Microsoft Store 安裝『應用程式安裝程式』" }
-        winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
+        Warn "未安裝，正在安裝..."
+        Pkg-Install "OpenJS.NodeJS.LTS" "nodejs-lts"
         $env:PATH += ";C:\Program Files\nodejs"
     }
     Ok "Node.js $(node --version)"
@@ -98,17 +115,11 @@ try {
     Write-Host "  啟動開發伺服器："
     Write-Host "    cd $INSTALL" -ForegroundColor White
     Write-Host "    python dev.py dev" -ForegroundColor White
-    Write-Host ""
 
 } catch {
     Write-Host ""
     Write-Host "x 安裝失敗：$($_.Exception.Message)" -ForegroundColor Red
     Write-Host "  行數：$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "按 Enter 關閉視窗..." -NoNewline
-    $null = Read-Host
-    exit 1
 }
 
-Write-Host "按 Enter 關閉視窗..." -NoNewline
-$null = Read-Host
+Finish
