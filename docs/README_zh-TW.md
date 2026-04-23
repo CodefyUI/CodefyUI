@@ -4,7 +4,7 @@
 
 視覺化、節點式的深度學習管線建構工具。透過拖曳節點到畫布上，連接成 DAG，直接在瀏覽器中設計 CNN、RNN、Transformer 和 RL 架構並執行管線。
 
-![CodefyUI 截圖](Assets/UI-zh-TW.png)
+![CodefyUI 截圖](../Assets/UI-zh-TW.png)
 
 ## 功能特色
 
