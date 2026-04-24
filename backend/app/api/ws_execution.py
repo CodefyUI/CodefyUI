@@ -135,7 +135,7 @@ async def websocket_execution(ws: WebSocket):
                         msg["error"] = result.get("error", "")
                     if result and status == "progress":
                         msg["progress"] = result
-                    if result and status == "completed":
+                    if result and status in ("completed", "cached"):
                         # Forward log output (from Print node etc.)
                         if "__log__" in result:
                             msg["log"] = str(result["__log__"])
@@ -146,7 +146,10 @@ async def websocket_execution(ws: WebSocket):
                             if isinstance(val, str) and len(val) > 200 and val[:20].isalnum():
                                 msg["image"] = val
                                 break
-                        # Generate output summaries for edge inspection
+                        # Generate output summaries for edge inspection.
+                        # Forwarded on both "completed" and "cached" so the
+                        # frontend edge tooltip + Inspector still populate
+                        # when nodes are served from ExecutionCache.
                         msg["output_summary"] = _summarize_outputs(result)
                     await ws.send_text(json.dumps(msg))
 

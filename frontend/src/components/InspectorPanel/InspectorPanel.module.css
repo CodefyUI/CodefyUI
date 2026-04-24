@@ -309,3 +309,33 @@
   border: 1px solid #262626;
   border-radius: 4px;
 }
+
+/* ── Segment mode: stacked inputs then outputs ── */
+
+.segmentSide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.segmentSideTitle {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #888;
+  text-transform: uppercase;
+}
+
+.segmentDivider {
+  text-align: center;
+  color: #ff9500;
+  font-size: 1.2rem;
+  padding: 2px 0;
+  line-height: 1;
+  user-select: none;
+}
+
+.portName {
+  color: #ddd;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}

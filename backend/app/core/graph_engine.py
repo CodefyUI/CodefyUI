@@ -579,6 +579,15 @@ async def execute_graph(
                 cached = cache.get(cache_key)
                 if cached is not None:
                     outputs[node_id] = cached
+                    # Even on cache hit, capture outputs so the Teaching
+                    # Inspector can fetch them. Without this the first run
+                    # with Rec OFF primes the cache and a subsequent run
+                    # with Rec ON finds nothing to fetch.
+                    if record_outputs and output_store is not None and run_id:
+                        for port, value in cached.items():
+                            if port.startswith("__"):
+                                continue
+                            await output_store.put(run_id, node_id, port, value)
                     await _emit_preset_aware(node_id, "cached", cached)
                     return
 

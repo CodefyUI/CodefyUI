@@ -235,7 +235,8 @@ const en = {
   // Teaching Inspector — Compare Segment
   'toolbar.compareSegment': 'Compare',
   'toolbar.clearSegment': 'Clear Segment',
-  'toolbar.compareSegment.title': 'Select two nodes, then click to compare head-input with tail-output',
+  'toolbar.clearActiveSegment': 'Clear Active',
+  'toolbar.compareSegment.title': 'Select two nodes, then click to compare head-input with tail-output. Multiple segments can coexist; the × on each bubble removes just that one.',
   'toolbar.compareSegment.needTwo': 'Select exactly two nodes first',
   'segment.noPath': 'Segment: no path from head to tail',
 
@@ -247,6 +248,9 @@ const en = {
   'inspector.empty.notRunHint': 'Make sure Rec is ON, then click ▶ Run',
   'inspector.empty.noSelection': 'Select a node or segment to inspect',
   'inspector.empty.noSelectionHint': 'Click any node, or shift-select two and press Compare',
+  'inspector.segment.inputs': 'Segment inputs ({count})',
+  'inspector.segment.outputs': 'Segment outputs ({count})',
+  'segment.removeThis': 'Remove this segment',
 } as const;
 
 export type TranslationKey = keyof typeof en;

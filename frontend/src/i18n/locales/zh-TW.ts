@@ -237,7 +237,8 @@ const zhTW: Record<TranslationKey, string> = {
   // Teaching Inspector — Compare Segment
   'toolbar.compareSegment': '段落比較',
   'toolbar.clearSegment': '取消段落',
-  'toolbar.compareSegment.title': '選取兩個節點後按下，比較頭節點的輸入與尾節點的輸出',
+  'toolbar.clearActiveSegment': '取消此段落',
+  'toolbar.compareSegment.title': '選取兩個節點後按下，建立新段落；多個段落可同時存在，按泡泡右上角的 × 只會清除該段落',
   'toolbar.compareSegment.needTwo': '請先選取恰好兩個節點',
   'segment.noPath': '段落：頭節點與尾節點之間沒有資料連線',
 
@@ -249,6 +250,9 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.empty.notRunHint': '確認「錄製」已開啟，然後按下「執行」',
   'inspector.empty.noSelection': '選取節點或段落以檢視',
   'inspector.empty.noSelectionHint': '點擊任一節點，或 Shift 選兩個後按「段落比較」',
+  'inspector.segment.inputs': '段落輸入（{count}）',
+  'inspector.segment.outputs': '段落輸出（{count}）',
+  'segment.removeThis': '移除此段落',
 };
 
 export default zhTW;

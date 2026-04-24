@@ -6,8 +6,10 @@ import {
   RunDataExpiredError,
   PayloadTooLargeError,
 } from '../../api/executionOutputs';
-import type { OutputData } from '../../types';
+import type { OutputData, TensorOutput } from '../../types';
+import { TensorGridView } from './TensorGridView';
 import { ValueDiff } from './ValueDiff';
+import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
 
 interface PortFetchState {
@@ -17,6 +19,13 @@ interface PortFetchState {
 }
 
 type FetchMap = Record<string, PortFetchState>;
+
+interface PortTarget {
+  nodeId: string;
+  port: string;
+  /** Optional extra label shown above the tensor view (e.g. `→ NodeX.tensor`) */
+  displayName?: string;
+}
 
 function keyOf(nodeId: string, port: string): string {
   return `${nodeId}::${port}`;
@@ -57,25 +66,57 @@ export function InspectorPanel() {
       const head = nodes.find((n) => n.id === activeSegment.headNodeId);
       const tail = nodes.find((n) => n.id === activeSegment.tailNodeId);
       if (!head || !tail) return { mode: 'none' as const };
-      const headInputs = resolveInputSources(head.id, edges);
-      const tailOutputs: { nodeId: string; port: string }[] = (tail.data.definition?.outputs ?? []).map(
-        (o) => ({ nodeId: tail.id, port: o.name }),
-      );
+
+      // Gather every node that lies on a head→tail path. Treat the segment
+      // as a logical block: any data edge whose source is OUTSIDE this set
+      // and whose target is INSIDE is a segment-level input, regardless of
+      // which internal node it feeds. This surfaces all entry lines, not
+      // just the head's direct inputs.
+      const segmentSet = computeSegmentNodes(head.id, tail.id, nodes, edges);
+
+      const inputs: PortTarget[] = [];
+      const seenInputKey = new Set<string>();
+      for (const e of edges) {
+        const isTrigger =
+          (e as { type?: string }).type === 'triggerEdge' ||
+          (e.data as { type?: string } | undefined)?.type === 'trigger';
+        if (isTrigger) continue;
+        if (!segmentSet.has(e.target) || segmentSet.has(e.source)) continue;
+        if (!e.sourceHandle) continue;
+        const key = `${e.source}::${e.sourceHandle}->${e.target}::${e.targetHandle ?? ''}`;
+        if (seenInputKey.has(key)) continue;
+        seenInputKey.add(key);
+        const targetNode = nodes.find((n) => n.id === e.target);
+        const targetLabel = targetNode?.data.label ?? e.target.slice(0, 6);
+        inputs.push({
+          nodeId: e.source,
+          port: e.sourceHandle,
+          displayName: `→ ${targetLabel}.${e.targetHandle ?? ''}`,
+        });
+      }
+
+      const outputs: PortTarget[] = (tail.data.definition?.outputs ?? []).map((o) => ({
+        nodeId: tail.id,
+        port: o.name,
+        displayName: `${o.name}`,
+      }));
+
       return {
         mode: 'segment' as const,
         headName: head.data.label,
         tailName: tail.data.label,
-        inputs: headInputs,
-        outputs: tailOutputs,
+        inputs,
+        outputs,
       };
     }
     if (selectedNodeId) {
       const node = nodes.find((n) => n.id === selectedNodeId);
       if (!node) return { mode: 'none' as const };
       const inputs = resolveInputSources(node.id, edges);
-      const outputs: { nodeId: string; port: string }[] = (node.data.definition?.outputs ?? []).map(
-        (o) => ({ nodeId: node.id, port: o.name }),
-      );
+      const outputs: PortTarget[] = (node.data.definition?.outputs ?? []).map((o) => ({
+        nodeId: node.id,
+        port: o.name,
+      }));
       return {
         mode: 'single' as const,
         nodeName: node.data.label,
@@ -180,9 +221,6 @@ export function InspectorPanel() {
   }
 
   if (targets.mode === 'segment') {
-    // In segment mode: pair up head-inputs with tail-outputs when counts match,
-    // otherwise show them stacked.
-    const rows = pairLists(targets.inputs, targets.outputs);
     return (
       <div className={styles.panel}>
         {collapseButton}
@@ -193,27 +231,19 @@ export function InspectorPanel() {
           </span>
         </div>
         <div className={styles.panelContent}>
-          {rows.map((row, i) => {
-            const inKey = row.input ? keyOf(row.input.nodeId, row.input.port) : null;
-            const outKey = row.output ? keyOf(row.output.nodeId, row.output.port) : null;
-            const inState = inKey ? fetches[inKey] : null;
-            const outState = outKey ? fetches[outKey] : null;
-            return (
-              <div key={i} className={styles.portBlock}>
-                <div className={styles.portHeader}>
-                  {row.input ? `HEAD ⟵ ${row.input.port}` : 'HEAD'} &nbsp; · &nbsp;{' '}
-                  {row.output ? `TAIL ⟶ ${row.output.port}` : 'TAIL'}
-                </div>
-                {renderErrors(inState, outState)}
-                <ValueDiff
-                  input={inState?.data ?? null}
-                  output={outState?.data ?? null}
-                  inputLabel="HEAD input"
-                  outputLabel="TAIL output"
-                />
-              </div>
-            );
-          })}
+          <SegmentSide
+            kind="input"
+            title={t('inspector.segment.inputs', { count: targets.inputs.length })}
+            ports={targets.inputs}
+            fetches={fetches}
+          />
+          <div className={styles.segmentDivider}>↓</div>
+          <SegmentSide
+            kind="output"
+            title={t('inspector.segment.outputs', { count: targets.outputs.length })}
+            ports={targets.outputs}
+            fetches={fetches}
+          />
         </div>
       </div>
     );
@@ -255,6 +285,62 @@ export function InspectorPanel() {
   );
 }
 
+function SegmentSide({
+  kind,
+  title,
+  ports,
+  fetches,
+}: {
+  kind: 'input' | 'output';
+  title: string;
+  ports: PortTarget[];
+  fetches: FetchMap;
+}) {
+  if (ports.length === 0) {
+    return (
+      <div className={styles.segmentSide}>
+        <div className={styles.segmentSideTitle}>{title}</div>
+        <div className={styles.diffMissing}>—</div>
+      </div>
+    );
+  }
+  return (
+    <div className={styles.segmentSide}>
+      <div className={styles.segmentSideTitle}>{title}</div>
+      {ports.map((p) => {
+        const key = keyOf(p.nodeId, p.port);
+        const state = fetches[key];
+        return (
+          <div key={key} className={styles.portBlock}>
+            <div className={styles.portHeader}>
+              {kind === 'input' ? '⟵ ' : '⟶ '}
+              <span className={styles.portName}>
+                {p.displayName ?? p.port}
+              </span>
+            </div>
+            {state?.error && <div className={styles.portError}>{state.error}</div>}
+            {state?.data && state.data.type === 'tensor' && (
+              <TensorGridView tensor={state.data as TensorOutput} />
+            )}
+            {state?.data && state.data.type !== 'tensor' && (
+              <div className={styles.tensorScalar}>
+                {state.data.type === 'scalar' && String((state.data as { value?: unknown }).value)}
+                {state.data.type === 'string' && (state.data as { value?: string }).value}
+                {state.data.type === 'model' && (
+                  `${(state.data as { class?: string }).class ?? 'Module'} · params ${(state.data as { params?: number }).params ?? '?'}`
+                )}
+              </div>
+            )}
+            {!state?.data && !state?.error && (
+              <div className={styles.diffMissing}>…</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function pairLists<T>(a: T[], b: T[]): { input: T | null; output: T | null }[] {
   const n = Math.max(a.length, b.length);
   return Array.from({ length: n }, (_, i) => ({
@@ -281,13 +367,17 @@ function resolveInputSources(
     target: string;
     sourceHandle?: string | null;
     targetHandle?: string | null;
+    type?: string;
+    data?: unknown;
   }[],
-): { nodeId: string; port: string }[] {
-  const result: { nodeId: string; port: string }[] = [];
+): PortTarget[] {
+  const result: PortTarget[] = [];
   for (const e of edges) {
     if (e.target !== nodeId) continue;
     // Skip trigger edges
-    if ((e as any).type === 'triggerEdge' || (e as any).data?.type === 'trigger') continue;
+    const isTrigger =
+      e.type === 'triggerEdge' || (e.data as { type?: string } | undefined)?.type === 'trigger';
+    if (isTrigger) continue;
     if (!e.sourceHandle) continue;
     result.push({ nodeId: e.source, port: e.sourceHandle });
   }

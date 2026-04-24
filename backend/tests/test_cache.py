@@ -128,3 +128,41 @@ async def test_cache_invalidation_on_param_change():
     await execute_graph(nodes_v2, edges, on_progress=track, cache=cache)
     # Should NOT be cached since param changed
     assert statuses.get("1") == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_still_populates_output_store():
+    """Regression: if the first run primes the cache without record_outputs,
+    a second run with record_outputs=True should still capture cached
+    outputs into the store. Otherwise the Teaching Inspector sees nothing
+    for nodes that were served from cache."""
+    from app.core.run_output_store import RunOutputStore
+
+    cache = ExecutionCache()
+    store = RunOutputStore()
+
+    nodes = [_start_node(), {"id": "1", "type": "_CacheTest", "data": {"params": {"val": "hello"}}}]
+    edges = [_trigger("et", "start", "1")]
+
+    # Run 1: populate cache, record_outputs=False (store stays empty)
+    await execute_graph(
+        nodes, edges,
+        cache=cache, output_store=store,
+        record_outputs=False, run_id="run-1",
+    )
+    assert await store.has_run("run-1") is False
+
+    # Run 2: cache hits, record_outputs=True — store should now have the
+    # cached value even though _CacheTestNode.execute never ran this time.
+    statuses: dict[str, str] = {}
+
+    async def track(node_id, status, data):
+        statuses[node_id] = status
+
+    await execute_graph(
+        nodes, edges,
+        on_progress=track, cache=cache, output_store=store,
+        record_outputs=True, run_id="run-2",
+    )
+    assert statuses.get("1") == "cached"
+    assert await store.get("run-2", "1", "out") == "hello"
