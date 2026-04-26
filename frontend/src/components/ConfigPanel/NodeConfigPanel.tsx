@@ -2,6 +2,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { ParamField } from '../shared/ParamField';
+import { MathText } from '../shared/MathText';
 import { CATEGORY_COLORS } from '../../styles/theme';
 import styles from './NodeConfigPanel.module.css';
 
@@ -53,9 +54,11 @@ export function NodeConfigPanel() {
           {category}
         </div>
         {def?.description && (
-          <div className={styles.headerDescription}>
-            {tn(nodeName, 'description', def.description)}
-          </div>
+          <MathText
+            as="div"
+            className={styles.headerDescription}
+            text={tn(nodeName, 'description', def.description)}
+          />
         )}
       </div>
 

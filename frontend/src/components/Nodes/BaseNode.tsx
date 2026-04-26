@@ -9,6 +9,7 @@ import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
+import { MathText } from '../shared/MathText';
 import styles from './BaseNode.module.css';
 
 function BaseNode({ id, data, selected }: NodeProps<AppNode>) {
@@ -106,7 +107,7 @@ function BaseNode({ id, data, selected }: NodeProps<AppNode>) {
       {tooltipsEnabled && hovered && description && (
         <div className={styles.tooltip}>
           <div className={styles.tooltipTitle}>{data.label}</div>
-          <div className={styles.tooltipDesc}>{description}</div>
+          <MathText as="div" className={styles.tooltipDesc} text={description} />
         </div>
       )}
 

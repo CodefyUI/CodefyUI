@@ -3,7 +3,7 @@ import type { NodeTranslations } from './types';
 const zhTW: NodeTranslations = {
   // ── CNN ──
   Conv2d: {
-    description: '對輸入張量套用 2D 卷積（封裝 nn.Conv2d）',
+    description: '對輸入張量套用 2D 卷積（封裝 nn.Conv2d）。$y[i,j]=\\sum_{k,l} x[i+k,j+l]\\cdot w[k,l] + b$',
     params: {
       in_channels: '輸入通道數',
       out_channels: '輸出通道數',
@@ -20,7 +20,7 @@ const zhTW: NodeTranslations = {
     },
   },
   BatchNorm2d: {
-    description: '對輸入張量套用 2D 批次正規化（封裝 nn.BatchNorm2d）',
+    description: '對輸入張量套用 2D 批次正規化（封裝 nn.BatchNorm2d）。每通道：$y = \\frac{x - \\mu_C}{\\sqrt{\\sigma_C^2 + \\epsilon}} \\gamma + \\beta$',
     params: {
       num_features: '要正規化的特徵（通道）數量',
     },
@@ -76,7 +76,7 @@ const zhTW: NodeTranslations = {
 
   // ── Normalization ──
   LayerNorm: {
-    description: '套用層正規化（封裝 nn.LayerNorm）。Transformer 架構的必備組件。',
+    description: '套用層正規化（封裝 nn.LayerNorm）。$y = \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} \\gamma + \\beta$',
     params: {
       normalized_shape: '要正規化的維度形狀（逗號分隔整數）',
       eps: '數值穩定性的 Epsilon',
@@ -127,7 +127,7 @@ const zhTW: NodeTranslations = {
 
   // ── Transformer ──
   MultiHeadAttention: {
-    description: '套用多頭注意力機制（封裝 nn.MultiheadAttention）',
+    description: '套用多頭注意力機制（封裝 nn.MultiheadAttention）。核心：$\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$',
     params: {
       embed_dim: '模型的總維度',
       num_heads: '平行注意力頭的數量',
@@ -388,7 +388,7 @@ const zhTW: NodeTranslations = {
     },
   },
   Softmax: {
-    description: '沿指定維度套用 Softmax 函數',
+    description: '沿指定維度套用 Softmax：$\\text{softmax}(x_i) = \\frac{e^{x_i}}{\\sum_j e^{x_j}}$。為數值穩定，先減去 $\\max(x)$ 再取指數。',
     params: {
       dim: '要套用 Softmax 的維度',
     },
@@ -450,7 +450,7 @@ const zhTW: NodeTranslations = {
     },
   },
   Linear: {
-    description: '全連接（密集）層：nn.Linear(in_features, out_features)',
+    description: '全連接（密集）層：$y = xW^T + b$。封裝 nn.Linear(in_features, out_features)。',
     params: {
       in_features: '輸入特徵大小',
       out_features: '輸出特徵大小',
@@ -463,7 +463,7 @@ const zhTW: NodeTranslations = {
     },
   },
   Embedding: {
-    description: '為整數索引查找嵌入向量（封裝 nn.Embedding）。用於 NLP 和序列模型。',
+    description: '為整數索引查找嵌入向量（封裝 nn.Embedding）。$E[i] = W[i, :]$ — 取出可學習表的第 $i$ 列。',
     params: {
       num_embeddings: '詞彙表大小',
       embedding_dim: '每個嵌入向量的維度',

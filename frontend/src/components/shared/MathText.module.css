@@ -1,0 +1,25 @@
+/* MathText fallback: monospace literal so the user can still read what
+   was meant to be rendered when KaTeX rejects a formula. */
+.fallback {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.08);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+
+/* KaTeX inherits parent text color rather than its hardcoded black so
+   the formulas blend into the dark theme. */
+:global(.katex) {
+  color: inherit;
+}
+
+/* Block math should scroll horizontally inside the narrow Inspector /
+   ConfigPanel without forcing the parent panel to grow. */
+:global(.katex-display) {
+  margin: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 4px;
+}
