@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { TabBar } from './components/TabBar/TabBar';
@@ -11,8 +12,19 @@ import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorM
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { useTabStore } from './store/tabStore';
+import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import styles from './App.module.css';
+
+// Map user font-size choice to the documentElement. Setting an empty string
+// removes the inline style, letting App.css's responsive `clamp(...)` take over
+// (capped at 18px). Large jumps clearly above the clamp ceiling so the change
+// is actually visible.
+const FONT_SIZE_PX: Record<string, string> = {
+  small: '12px',
+  default: '',
+  large: '20px',
+};
 
 function RightColumn() {
   const selectedNodeId = useTabStore(
@@ -62,6 +74,11 @@ function TabContent({ tabId }: { tabId: string }) {
 function App() {
   useKeyboardShortcuts();
   const tabs = useTabStore((s) => s.tabs);
+  const fontSize = useUIStore((s) => s.fontSize);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = FONT_SIZE_PX[fontSize] ?? '';
+  }, [fontSize]);
 
   return (
     <div className={styles.root}>

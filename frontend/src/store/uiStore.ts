@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 
+export type FontSize = 'small' | 'default' | 'large';
+
 interface UIState {
   tooltipsEnabled: boolean;
   toggleTooltips: () => void;
@@ -15,17 +17,26 @@ interface UIState {
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
+  fontSize: FontSize;
+  setFontSize: (size: FontSize) => void;
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
 const GRIDSNAP_KEY = 'codefyui-gridsnap';
 const BEGINNER_KEY = 'codefyui-beginner-mode';
 const LAYOUT_MODE_KEY = 'codefyui-last-layout-mode';
+const FONT_SIZE_KEY = 'codefyui-font-size';
 
 const loadLayoutMode = (): 'experiments' | 'all' | 'selected' => {
   const saved = localStorage.getItem(LAYOUT_MODE_KEY);
   if (saved === 'experiments' || saved === 'all' || saved === 'selected') return saved;
   return 'experiments';
+};
+
+const loadFontSize = (): FontSize => {
+  const saved = localStorage.getItem(FONT_SIZE_KEY);
+  if (saved === 'small' || saved === 'default' || saved === 'large') return saved;
+  return 'default';
 };
 
 export const useUIStore = create<UIState>((set) => ({
@@ -60,5 +71,10 @@ export const useUIStore = create<UIState>((set) => ({
   setLastLayoutMode: (mode) => {
     localStorage.setItem(LAYOUT_MODE_KEY, mode);
     set({ lastLayoutMode: mode });
+  },
+  fontSize: loadFontSize(),
+  setFontSize: (size) => {
+    localStorage.setItem(FONT_SIZE_KEY, size);
+    set({ fontSize: size });
   },
 }));

@@ -289,6 +289,48 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.backward.health.vanishing': '梯度消失',
   'inspector.backward.health.exploding': '梯度爆炸',
   'inspector.backward.health.healthy': '健康',
+
+  // 設定面板（把 Rec / Verbose / Persist / Backward 等 toggle 收進來）
+  'toolbar.settings': '設定',
+  'toolbar.settings.title': '開啟設定',
+  'toolbar.settings.search': '搜尋設定…',
+  'toolbar.settings.section.recording': '錄製與檢視',
+  'toolbar.settings.section.training': '訓練行為',
+  'toolbar.settings.section.editor': '編輯器',
+
+  // 字級選單
+  'toolbar.fontSize.title': '字級',
+  'toolbar.fontSize.small': '小',
+  'toolbar.fontSize.default': '預設',
+  'toolbar.fontSize.large': '大',
+
+  // 設定面板各項
+  'settings.record.name': '錄製節點輸出',
+  'settings.record.desc': '每次執行都把每個節點的輸出存下來，檢視器才能顯示 input → output 的差異。',
+  'settings.verbose.name': '顯示內部步驟',
+  'settings.verbose.desc': '檢視器額外顯示 Q / K / V / attention scores 等演算法中間步驟（教學模式）。',
+  'settings.compare.name': '段落比較',
+  'settings.compare.desc': '在畫布上選兩個節點，按下這裡會把它們之間的中段壓成「頭輸入 → 尾輸出」一對比較。',
+  'settings.compare.actionCreate': '建立段落',
+  'settings.compare.actionClear': '取消當前段落',
+  'settings.compare.actionDisabled': '請先選兩個節點',
+  'settings.persist.name': '在多次執行間保留權重',
+  'settings.persist.desc': '關閉時，每次執行 Conv2d / Linear / Attention 都會重新初始化 — 模型不會學習。',
+  'settings.resetWeights.name': '立即重置所有權重',
+  'settings.resetWeights.desc': '清空所有已保存的權重，下次執行從頭開始。',
+  'settings.resetWeights.action': '重置',
+  'settings.gradients.name': '擷取梯度',
+  'settings.gradients.desc': '在前向之後追加 .backward()，把每層的梯度存下來給檢視器。',
+  'settings.autoLoss.name': '自動合成損失',
+  'settings.autoLoss.desc': '當圖中沒有 Loss / BackwardOnce 節點時，自動合成一個讓 .backward() 能跑起來。',
+  'settings.gridSnap.name': '對齊格線',
+  'settings.gridSnap.desc': '拖曳節點時自動對齊畫布格線。',
+  'settings.tooltips.name': '顯示節點說明',
+  'settings.tooltips.desc': '滑鼠懸在節點上時顯示描述卡片。',
+  'settings.nodeMode.name': '節點分類模式',
+  'settings.nodeMode.desc': 'Basic 只在側欄顯示新手會用到的基礎類別；All 則顯示全部類別。',
+  'settings.nodeMode.basic': '入門',
+  'settings.nodeMode.all': '全部',
 };
 
 export default zhTW;

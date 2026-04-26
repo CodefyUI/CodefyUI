@@ -7,25 +7,20 @@ import { saveGraph, loadGraph, listGraphs, createPreset, exportGraph } from '../
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
-import { SURFACE, TEXT, BRAND, STATUS_COLORS } from '../../styles/theme';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
-import { RecordToggle } from './RecordToggle';
-import { VerboseToggle } from './VerboseToggle';
-import { PersistWeightsToggle } from './PersistWeightsToggle';
-import { BackwardToggle } from './BackwardToggle';
-import { CompareSegmentButton } from './CompareSegmentButton';
+import { SettingsPopover } from './SettingsPopover';
+import { FontSizeMenu } from './FontSizeMenu';
 import styles from './Toolbar.module.css';
 
-/* ── Shared dropdown menu component ─────────────────────────────── */
+/* ── Shared dropdown menu ───────────────────────────────────────── */
 
 interface MenuItem {
   label: string;
   title?: string;
   onClick: () => void;
   dividerAfter?: boolean;
-  color?: string;
 }
 
 function MenuDropdown({
@@ -56,11 +51,10 @@ function MenuDropdown({
     <div ref={ref} className={styles.menuWrapper}>
       <button
         onClick={onToggle}
-        className={`${styles.menuTrigger} ${open ? styles.menuTriggerOpen : ''}`}
+        className={`${styles.ghost} ${open ? styles.open : ''}`}
       >
         {label}
       </button>
-
       {open && (
         <div className={styles.menuPanel}>
           {items.map((item, i) => (
@@ -69,7 +63,6 @@ function MenuDropdown({
                 onClick={() => { item.onClick(); onClose(); }}
                 className={styles.menuItem}
                 title={item.title}
-                style={item.color ? { color: item.color } : undefined}
               >
                 {item.label}
               </button>
@@ -82,7 +75,7 @@ function MenuDropdown({
   );
 }
 
-/* ── Nested load sub-menu (shows saved graphs) ──────────────────── */
+/* ── Load sub-menu (lists saved graphs) ─────────────────────────── */
 
 function LoadSubMenu({
   open,
@@ -129,11 +122,10 @@ function LoadSubMenu({
     <div ref={ref} className={styles.menuWrapper}>
       <button
         onClick={onToggle}
-        className={`${styles.menuTrigger} ${open ? styles.menuTriggerOpen : ''}`}
+        className={`${styles.ghost} ${open ? styles.open : ''}`}
       >
         {t('toolbar.load')}
       </button>
-
       {open && (
         <div className={styles.menuPanel}>
           {loading ? (
@@ -155,7 +147,7 @@ function LoadSubMenu({
           <button
             onClick={() => { onImport(); onClose(); }}
             className={styles.menuItem}
-            style={{ color: BRAND.primary }}
+            style={{ color: '#06b6d4' }}
           >
             {t('toolbar.import')}
           </button>
@@ -165,76 +157,7 @@ function LoadSubMenu({
   );
 }
 
-/* ── Tooltip toggle button ───────────────────────────────────── */
-
-function TooltipToggle() {
-  const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
-  const toggle = useUIStore((s) => s.toggleTooltips);
-  const { t } = useI18n();
-
-  return (
-    <button
-      onClick={toggle}
-      className={styles.tooltipToggle}
-      title={t('toolbar.tooltips.title')}
-      style={{
-        color: tooltipsEnabled ? BRAND.primary : TEXT.muted,
-        borderColor: tooltipsEnabled ? BRAND.primary : SURFACE.borderMedium,
-        background: tooltipsEnabled ? 'rgba(33,150,243,0.1)' : 'transparent',
-      }}
-    >
-      {t(tooltipsEnabled ? 'toolbar.tooltips.on' : 'toolbar.tooltips.off')}
-    </button>
-  );
-}
-
-/* ── Grid snap toggle button ─────────────────────────────────── */
-
-function GridSnapToggle() {
-  const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
-  const toggle = useUIStore((s) => s.toggleGridSnap);
-  const { t } = useI18n();
-
-  return (
-    <button
-      onClick={toggle}
-      className={styles.tooltipToggle}
-      title={t('toolbar.gridSnap.title')}
-      style={{
-        color: gridSnapEnabled ? BRAND.primary : TEXT.muted,
-        borderColor: gridSnapEnabled ? BRAND.primary : SURFACE.borderMedium,
-        background: gridSnapEnabled ? 'rgba(33,150,243,0.1)' : 'transparent',
-      }}
-    >
-      {t(gridSnapEnabled ? 'toolbar.gridSnap.on' : 'toolbar.gridSnap.off')}
-    </button>
-  );
-}
-
-/* ── Beginner mode toggle button ─────────────────────────────── */
-
-function BeginnerModeToggle() {
-  const beginnerMode = useUIStore((s) => s.beginnerMode);
-  const toggle = useUIStore((s) => s.toggleBeginnerMode);
-  const { t } = useI18n();
-
-  return (
-    <button
-      onClick={toggle}
-      className={styles.tooltipToggle}
-      title={t('toolbar.beginnerMode.title')}
-      style={{
-        color: beginnerMode ? '#4CAF50' : TEXT.muted,
-        borderColor: beginnerMode ? '#4CAF50' : SURFACE.borderMedium,
-        background: beginnerMode ? 'rgba(76,175,80,0.1)' : 'transparent',
-      }}
-    >
-      {t(beginnerMode ? 'toolbar.beginnerMode.on' : 'toolbar.beginnerMode.off')}
-    </button>
-  );
-}
-
-/* ── Main Toolbar ──────────────────────────────────────────────── */
+/* ── Main Toolbar ───────────────────────────────────────────────── */
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
@@ -249,7 +172,13 @@ export function Toolbar() {
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
   const [customNodeManagerOpen, setCustomNodeManagerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [fontSizeMenuOpen, setFontSizeMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  const fontSizeTriggerRef = useRef<HTMLButtonElement>(null);
+  const langTriggerRef = useRef<HTMLDivElement>(null);
+  const layoutTriggerRef = useRef<HTMLDivElement>(null);
 
   const lastLayoutMode = useUIStore((s) => s.lastLayoutMode);
   const setLastLayoutMode = useUIStore((s) => s.setLastLayoutMode);
@@ -267,6 +196,18 @@ export function Toolbar() {
     },
     [applyLayout, setLastLayoutMode],
   );
+
+  // Close layout dropdown on outside click
+  useEffect(() => {
+    if (!layoutMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (layoutTriggerRef.current && !layoutTriggerRef.current.contains(e.target as Node)) {
+        setLayoutMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [layoutMenuOpen]);
 
   const isRunning = status === 'running';
 
@@ -290,7 +231,7 @@ export function Toolbar() {
     } catch (e) {
       addToast(t('toolbar.save.fail', { error: (e as Error).message }), 'error');
     }
-  }, [getSerializedGraph, t]);
+  }, [getSerializedGraph, t, addToast]);
 
   const handleClear = useCallback(() => {
     if (window.confirm(t('toolbar.clear.confirm'))) clear();
@@ -321,7 +262,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [setNodes, setEdges, t],
+    [setNodes, setEdges, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -359,7 +300,7 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [setNodes, setEdges, t],
+    [setNodes, setEdges, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {
@@ -377,7 +318,7 @@ export function Toolbar() {
     a.download = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [getSerializedGraph, activeTab.name, t]);
+  }, [getSerializedGraph, activeTab.name, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
     const { nodes, edges } = getSerializedGraph();
@@ -394,7 +335,7 @@ export function Toolbar() {
     } catch (e) {
       addToast(t('toolbar.export.fail', { error: (e as Error).message }), 'error');
     }
-  }, [getSerializedGraph, fetchDefinitions, t]);
+  }, [getSerializedGraph, fetchDefinitions, t, addToast]);
 
   const handleExportPython = useCallback(async () => {
     const { nodes, edges } = getSerializedGraph();
@@ -415,12 +356,12 @@ export function Toolbar() {
     } catch (e) {
       addToast(t('toolbar.exportPython.fail', { error: (e as Error).message }), 'error');
     }
-  }, [getSerializedGraph, activeTab.name, t]);
+  }, [getSerializedGraph, activeTab.name, t, addToast]);
 
   const handleReloadNodes = useCallback(async () => {
     try { await reload(); }
     catch (e) { addToast(t('toolbar.reload.fail', { error: (e as Error).message }), 'error'); }
-  }, [reload, t]);
+  }, [reload, t, addToast]);
 
   /* ── Menu definitions ─────────────────────────────────────────── */
 
@@ -431,16 +372,25 @@ export function Toolbar() {
 
   const exportMenuItems: MenuItem[] = [
     { label: t('toolbar.exportJson'), title: t('toolbar.exportJson.title'), onClick: handleExportJson },
-    { label: t('toolbar.export'), title: t('toolbar.export.title'), onClick: handleExportSubgraph, color: BRAND.preset },
+    { label: t('toolbar.export'), title: t('toolbar.export.title'), onClick: handleExportSubgraph },
     { label: t('toolbar.exportPython'), title: t('toolbar.exportPython.title'), onClick: handleExportPython },
   ];
 
-  /* ── Status ───────────────────────────────────────────────────── */
+  /* ── Status visuals ───────────────────────────────────────────── */
 
   const statusKey = `status.${status}` as const;
-  const statusDotColor = STATUS_COLORS[status] ?? SURFACE.borderMedium;
-  const statusTextColor = STATUS_COLORS[status] ?? TEXT.dim;
-  const statusGlow = status === 'running' ? `0 0 6px ${STATUS_COLORS.running}` : 'none';
+  const statusDotColors: Record<string, string> = {
+    idle: '#475569',
+    running: '#06b6d4',
+    completed: '#22c55e',
+    error: '#ef4444',
+    cached: '#06b6d4',
+    skipped: '#64748b',
+  };
+  const statusDotColor = statusDotColors[status] ?? '#475569';
+  const statusGlow = status === 'running'
+    ? '0 0 0.375rem rgba(6, 182, 212, 0.6)'
+    : 'none';
 
   return (
     <div className={styles.root}>
@@ -450,16 +400,13 @@ export function Toolbar() {
         <span className={styles.logoSuffix}>UI</span>
       </div>
 
-      <div className={styles.divider} />
-
       {/* Run / Stop */}
-      <div className={styles.actionGroup}>
+      <div className={styles.cluster}>
         <button
           onClick={handleRun}
           disabled={isRunning}
           title={t('toolbar.run.title')}
-          className={`${styles.actionButton} ${styles.runButton}`}
-          style={{ opacity: isRunning ? 0.4 : 1 }}
+          className={styles.runButton}
         >
           {isRunning ? t('toolbar.running') : t('toolbar.run')}
         </button>
@@ -467,8 +414,7 @@ export function Toolbar() {
           onClick={handleStop}
           disabled={!isRunning}
           title={t('toolbar.stop.title')}
-          className={`${styles.actionButton} ${styles.stopButton}`}
-          style={{ opacity: !isRunning ? 0.4 : 1 }}
+          className={styles.stopButton}
         >
           {t('toolbar.stop')}
         </button>
@@ -476,98 +422,57 @@ export function Toolbar() {
 
       <div className={styles.divider} />
 
-      {/* File menu: Save + Clear */}
-      <MenuDropdown
-        label={t('toolbar.menu.file')}
-        items={fileMenuItems}
-        open={openMenu === 'file'}
-        onToggle={() => toggleMenu('file')}
-        onClose={closeMenus}
-      />
-
-      {/* Load menu: saved graphs + import JSON */}
-      <LoadSubMenu
-        open={openMenu === 'load'}
-        onToggle={() => toggleMenu('load')}
-        onClose={closeMenus}
-        onLoadGraph={handleLoadGraph}
-        onImport={() => fileInputRef.current?.click()}
-        t={t}
-      />
-
-      {/* Export menu: JSON / Subgraph / Python */}
-      <MenuDropdown
-        label={t('toolbar.menu.export')}
-        items={exportMenuItems}
-        open={openMenu === 'export'}
-        onToggle={() => toggleMenu('export')}
-        onClose={closeMenus}
-      />
+      {/* File ops */}
+      <div className={styles.cluster}>
+        <MenuDropdown
+          label={t('toolbar.menu.file')}
+          items={fileMenuItems}
+          open={openMenu === 'file'}
+          onToggle={() => toggleMenu('file')}
+          onClose={closeMenus}
+        />
+        <LoadSubMenu
+          open={openMenu === 'load'}
+          onToggle={() => toggleMenu('load')}
+          onClose={closeMenus}
+          onLoadGraph={handleLoadGraph}
+          onImport={() => fileInputRef.current?.click()}
+          t={t}
+        />
+        <MenuDropdown
+          label={t('toolbar.menu.export')}
+          items={exportMenuItems}
+          open={openMenu === 'export'}
+          onToggle={() => toggleMenu('export')}
+          onClose={closeMenus}
+        />
+      </div>
 
       <div className={styles.divider} />
 
-      {/* Reload nodes */}
-      <button
-        onClick={handleReloadNodes}
-        title={t('toolbar.reloadNodes.title')}
-        className={styles.menuTrigger}
-        style={{ color: TEXT.muted }}
-      >
-        {t('toolbar.reloadNodes')}
-      </button>
-
-      {/* Custom Node Manager */}
-      <button
-        onClick={() => setCustomNodeManagerOpen(true)}
-        title={t('toolbar.customNodes.title')}
-        className={styles.menuTrigger}
-        style={{ color: TEXT.muted }}
-      >
-        {t('toolbar.customNodes')}
-      </button>
-
-      {/* Hidden file input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".json"
-        className={styles.fileInput}
-        onChange={handleImportFile}
-      />
-
-      {/* Right side: toggles + status + language */}
-      <div className={styles.rightCluster}>
-        {/* Teaching Inspector group */}
-        <RecordToggle />
-        <VerboseToggle />
-        <PersistWeightsToggle />
-        <BackwardToggle />
-        <CompareSegmentButton />
-        <div className={styles.divider} />
-        <GridSnapToggle />
-        <TooltipToggle />
-        <BeginnerModeToggle />
+      {/* Node management */}
+      <div className={styles.cluster}>
         <button
-          onClick={() => useUIStore.getState().toggleShortcutsModal()}
-          className={styles.toggleButton}
-          title={t('shortcuts.title')}
-          style={{ fontWeight: 700, fontSize: '0.875rem' }}
+          onClick={handleReloadNodes}
+          title={t('toolbar.reloadNodes.title')}
+          className={`${styles.ghost} ${styles.ghostMuted}`}
         >
-          ?
+          {t('toolbar.reloadNodes')}
         </button>
+        <button
+          onClick={() => setCustomNodeManagerOpen(true)}
+          title={t('toolbar.customNodes.title')}
+          className={`${styles.ghost} ${styles.ghostMuted}`}
+        >
+          {t('toolbar.customNodes')}
+        </button>
+      </div>
 
-        <div className={styles.statusGroup}>
-          <span
-            className={styles.statusDot}
-            style={{ background: statusDotColor, boxShadow: statusGlow }}
-          />
-          <span className={styles.statusLabel} style={{ color: statusTextColor }}>
-            {t(statusKey)}
-          </span>
-        </div>
+      <div className={styles.divider} />
 
-        {/* Auto Layout split button */}
-        <div className={styles.splitButton} style={{ position: 'relative' }}>
+      {/* Auto Layout + Status */}
+      <div className={styles.cluster}>
+        <div ref={layoutTriggerRef} className={styles.splitButton}>
           <button
             className={styles.splitButtonMain}
             onClick={() => runLayout(lastLayoutMode)}
@@ -608,31 +513,86 @@ export function Toolbar() {
           )}
         </div>
 
-        {/* Language selector */}
-        <div style={{ position: 'relative' }}>
+        <div className={styles.status}>
+          <span
+            className={styles.statusDot}
+            style={{ background: statusDotColor, boxShadow: statusGlow }}
+          />
+          <span style={{ color: status === 'running' ? '#06b6d4' : undefined }}>
+            {t(statusKey)}
+          </span>
+        </div>
+      </div>
+
+      {/* RIGHT cluster: Settings, Help, FontSize, Language */}
+      <div className={`${styles.cluster} ${styles.right}`}>
+        {/* Settings ⚙ */}
+        <div className={styles.menuWrapper}>
+          <button
+            ref={settingsTriggerRef}
+            onClick={() => setSettingsOpen((v) => !v)}
+            title={t('toolbar.settings.title')}
+            className={`${styles.iconBtn} ${settingsOpen ? styles.active : ''}`}
+            aria-label={t('toolbar.settings')}
+            aria-expanded={settingsOpen}
+          >
+            ⚙
+          </button>
+          <SettingsPopover
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            triggerRef={settingsTriggerRef}
+          />
+        </div>
+
+        {/* Help ? — opens shortcuts modal */}
+        <button
+          onClick={() => useUIStore.getState().toggleShortcutsModal()}
+          className={styles.iconBtn}
+          title={t('shortcuts.title')}
+          aria-label={t('shortcuts.title')}
+        >
+          ?
+        </button>
+
+        {/* Font size Aa */}
+        <div className={styles.menuWrapper}>
+          <button
+            ref={fontSizeTriggerRef}
+            onClick={() => setFontSizeMenuOpen((v) => !v)}
+            className={`${styles.dropdown} ${styles.dropdownNoCaret} ${fontSizeMenuOpen ? styles.open : ''}`}
+            title={t('toolbar.fontSize.title')}
+            aria-label={t('toolbar.fontSize.title')}
+            aria-expanded={fontSizeMenuOpen}
+          >
+            Aa
+          </button>
+          <FontSizeMenu
+            open={fontSizeMenuOpen}
+            onClose={() => setFontSizeMenuOpen(false)}
+            triggerRef={fontSizeTriggerRef}
+          />
+        </div>
+
+        {/* Language */}
+        <div ref={langTriggerRef} className={styles.menuWrapper}>
           <button
             onClick={() => setLangMenuOpen((v) => !v)}
-            className={styles.langButton}
-            style={{ background: langMenuOpen ? SURFACE.borderLight : SURFACE.input }}
+            className={`${styles.dropdown} ${langMenuOpen ? styles.open : ''}`}
+            aria-label="Language"
+            aria-expanded={langMenuOpen}
           >
             {SUPPORTED_LOCALES.find((l) => l.code === locale)?.label ?? locale}
           </button>
-
           {langMenuOpen && (
             <>
               <div className={styles.overlay} onClick={() => setLangMenuOpen(false)} />
-              <div className={styles.langDropdown}>
+              <div className={`${styles.menuPanel} ${styles.menuPanelRight}`}>
                 {SUPPORTED_LOCALES.map((l) => (
                   <button
                     key={l.code}
                     onClick={() => { setLocale(l.code); setLangMenuOpen(false); }}
-                    className={styles.langOption}
-                    style={{
-                      color: l.code === locale ? BRAND.primary : TEXT.secondary,
-                      fontWeight: l.code === locale ? 600 : 400,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = SURFACE.hover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    className={`${styles.langOption} ${l.code === locale ? styles.activeOption : ''}`}
                   >
                     <span>{l.nativeName}</span>
                     {l.code === locale && <span className={styles.langOptionCheck}>✓</span>}
@@ -643,6 +603,15 @@ export function Toolbar() {
           )}
         </div>
       </div>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json"
+        className={styles.fileInput}
+        onChange={handleImportFile}
+      />
 
       <CustomNodeManager
         open={customNodeManagerOpen}

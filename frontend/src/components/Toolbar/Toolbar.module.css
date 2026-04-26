@@ -1,333 +1,422 @@
 /* =========================================================
-   Toolbar.module.css — VS Code-style menu bar
+   Toolbar.module.css — "Crafted dark" toolbar
+   Design system: dark IDE base + single teal accent.
    ========================================================= */
 
 /* ----- Root container ----- */
 .root {
-  height: 48px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
+  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
+  border-bottom: 1px solid #1a2230;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  padding: 0.625rem 1rem;
   display: flex;
   align-items: center;
-  padding: 0 16px;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 0.625rem;
+  row-gap: 0.5rem;
   flex-shrink: 0;
   position: relative;
   z-index: 100;
+  font-size: 0.875rem;
+  color: #e5e7eb;
+}
+
+/* Left/right cluster grouping — wrap moves the whole cluster together */
+.cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.cluster.right {
+  margin-left: auto;
 }
 
 /* ----- Logo ----- */
 .logo {
-  font-size: 1.125rem;
-  font-weight: 800;
-  color: #eee;
-  margin-right: 12px;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #f3f4f6;
+  padding-right: 0.25rem;
+  font-size: 1rem;
   flex-shrink: 0;
 }
 
 .logoBrand {
-  color: #2196F3;
+  color: #f3f4f6;
 }
 
 .logoSuffix {
-  color: #888;
+  color: #06b6d4;
 }
 
-/* ----- Divider ----- */
+/* ----- Vertical separator ----- */
 .divider {
   width: 1px;
-  height: 20px;
-  background: #333;
+  height: 1.25rem;
+  background: #1f2937;
   flex-shrink: 0;
-  margin: 0 4px;
+  margin: 0 0.125rem;
 }
 
-/* ----- Run / Stop group ----- */
-.actionGroup {
-  display: flex;
+/* ----- Run button (filled accent + reflection) ----- */
+.runButton {
+  background: #06b6d4;
+  color: #021821;
+  font-weight: 700;
+  border-radius: 0.375rem;
+  border: 0;
+  padding: 0.375rem 0.875rem;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-}
-
-/* ----- Run / Stop action buttons ----- */
-.actionButton {
-  padding: 6px 14px;
-  border-radius: 4px;
-  border: 1px solid;
+  gap: 0.4375rem;
   cursor: pointer;
+  font-family: inherit;
   font-size: 0.8125rem;
-  font-weight: 600;
-  transition: all 0.15s;
   white-space: nowrap;
   line-height: 1;
-  font-family: inherit;
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 6px 14px -6px rgba(6, 182, 212, 0.5);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
 }
 
-.actionButton:disabled {
-  cursor: not-allowed;
-}
-
-.runButton {
-  background: #1b5e20;
-  border-color: #4CAF50;
-  color: #4CAF50;
+.runButton::before {
+  content: '▶';
+  font-size: 0.6em;
 }
 
 .runButton:hover:not(:disabled) {
-  background: #2e7d32;
+  background: #22d3ee;
 }
 
+.runButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* ----- Stop button (ghost) ----- */
 .stopButton {
   background: transparent;
-  border-color: #F44336;
-  color: #F44336;
+  color: #94a3b8;
+  border: 1px solid #334155;
+  border-radius: 0.375rem;
+  padding: 0.3125rem 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: all 0.12s ease;
+}
+
+.stopButton::before {
+  content: '■';
+  font-size: 0.6em;
 }
 
 .stopButton:hover:not(:disabled) {
-  background: #3d1a1a;
+  background: #1f2937;
+  color: #cbd5e1;
 }
 
-/* ----- Menu trigger (File / Load / Export / Reload) ----- */
-.menuWrapper {
+.stopButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* ----- Ghost text button (File / Load / Export / Reload / Custom) ----- */
+.ghost {
+  color: #cbd5e1;
+  background: transparent;
+  border: 0;
+  padding: 0.3125rem 0.5625rem;
+  border-radius: 0.3125rem;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.4;
+  transition: background 0.1s ease, color 0.1s ease;
+  flex-shrink: 0;
+}
+
+.ghost:hover {
+  background: #1f2937;
+  color: #f3f4f6;
+}
+
+.ghostMuted {
+  color: #94a3b8;
+}
+
+.ghostMuted:hover {
+  color: #e5e7eb;
+}
+
+.ghost.open {
+  background: #1f2937;
+  color: #f3f4f6;
+}
+
+/* ----- Icon button (⚙ Settings, ? Help) ----- */
+.iconBtn {
+  width: 1.875rem;
+  height: 1.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid #334155;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.875rem;
+  font-family: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.12s ease;
+}
+
+.iconBtn:hover {
+  background: #1f2937;
+  color: #e5e7eb;
+}
+
+.iconBtn.active {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: #0e7490;
+  color: #67e8f9;
+}
+
+/* ----- Dropdown trigger (Aa, EN, Auto Layout) ----- */
+.dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.3125rem 0.625rem;
+  border: 1px solid #334155;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.12s ease;
+}
+
+.dropdown::after {
+  content: '⌄';
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+
+.dropdown:hover {
+  background: #1f2937;
+  color: #f3f4f6;
+}
+
+.dropdown.open {
+  background: rgba(6, 182, 212, 0.1);
+  border-color: #0e7490;
+  color: #67e8f9;
+}
+
+.dropdownNoCaret::after {
+  content: none;
+}
+
+/* ----- Auto Layout split (main click + caret for variants) ----- */
+.splitButton {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid #334155;
+  border-radius: 0.375rem;
+  overflow: hidden;
+  flex-shrink: 0;
   position: relative;
 }
 
-.menuTrigger {
-  padding: 6px 12px;
+.splitButtonMain,
+.splitButtonCaret {
   background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: #ccc;
-  font-size: 0.875rem;
+  color: #cbd5e1;
+  border: 0;
+  padding: 0.3125rem 0.625rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.8125rem;
   font-weight: 500;
-  cursor: pointer;
-  font-family: inherit;
-  white-space: nowrap;
-  line-height: 1.4;
-  transition: background 0.1s;
-}
-
-.menuTrigger:hover {
-  background: #2a2a2a;
-  color: #eee;
-}
-
-.menuTriggerOpen {
-  background: #2a2a2a;
-  color: #eee;
-}
-
-/* ----- Dropdown panel ----- */
-.menuPanel {
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  min-width: 200px;
-  background: #1e1e1e;
-  border: 1px solid #444;
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  overflow: hidden;
-  z-index: 200;
-  padding: 4px 0;
-}
-
-/* ----- Menu item ----- */
-.menuItem {
-  display: block;
-  width: 100%;
-  padding: 7px 14px;
-  text-align: left;
-  background: transparent;
-  border: none;
-  color: #ccc;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  font-family: inherit;
-  white-space: nowrap;
-  transition: background 0.1s;
-}
-
-.menuItem:hover {
-  background: #2a2a2a;
-  color: #eee;
-}
-
-/* ----- Menu divider ----- */
-.menuDivider {
-  height: 1px;
-  background: #333;
-  margin: 4px 0;
-}
-
-/* ----- Menu messages (loading / empty) ----- */
-.menuMessage {
-  padding: 8px 14px;
-  font-size: 0.8125rem;
-  color: #666;
-}
-
-.menuMessageDim {
-  padding: 8px 14px;
-  font-size: 0.8125rem;
-  color: #555;
-}
-
-/* ----- Right-side cluster (status + language) ----- */
-.rightCluster {
-  margin-left: auto;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: 0.3125rem;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.splitButtonMain:hover,
+.splitButtonCaret:hover {
+  background: #1f2937;
+  color: #f3f4f6;
+}
+
+.splitButtonCaret {
+  border-left: 1px solid #1f2937;
+  padding: 0.3125rem 0.4375rem;
+  font-size: 0.7em;
 }
 
 /* ----- Status indicator ----- */
-.statusGroup {
-  display: flex;
+.status {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.3125rem;
+  color: #64748b;
+  font-size: 0.75rem;
+  padding: 0 0.25rem;
+  flex-shrink: 0;
 }
 
 .statusDot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 0.375rem;
+  height: 0.375rem;
   border-radius: 50%;
+  background: #475569;
   flex-shrink: 0;
 }
 
-.statusLabel {
-  font-size: 0.75rem;
+/* ----- Generic dropdown panels (File / Load / Export / Layout / Lang) ----- */
+.menuWrapper {
+  position: relative;
+  display: inline-flex;
 }
 
-/* ----- Tooltip toggle ----- */
-.tooltipToggle {
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: 1px solid;
-  font-size: 0.75rem;
-  font-weight: 600;
+.menuPanel {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  left: 0;
+  min-width: 12.5rem;
+  background: #0a0f17;
+  border: 1px solid #1f2937;
+  border-radius: 0.5rem;
+  box-shadow: 0 1rem 2.5rem -0.75rem rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+  z-index: 200;
+  padding: 0.25rem;
+}
+
+.menuPanelRight {
+  left: auto;
+  right: 0;
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 0.4375rem 0.625rem;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0.3125rem;
+  color: #cbd5e1;
+  font-size: 0.8125rem;
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
-  transition: all 0.15s;
+  transition: background 0.1s ease, color 0.1s ease;
 }
 
-/* ----- Language selector ----- */
-.langButton {
-  padding: 3px 8px;
-  border-radius: 4px;
-  border: 1px solid #444;
-  color: #aaa;
-  font-size: 0.75rem;
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 32px;
-  text-align: center;
-  font-family: inherit;
+.menuItem:hover {
+  background: #1f2937;
+  color: #f3f4f6;
 }
 
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 199;
+.menuDivider {
+  height: 1px;
+  background: #1f2937;
+  margin: 0.25rem 0;
 }
 
-.langDropdown {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 6px;
-  min-width: 140px;
-  padding: 4px 0;
-  background: #1e1e1e;
-  border: 1px solid #444;
-  border-radius: 6px;
-  z-index: 200;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  overflow: hidden;
+.menuMessage {
+  padding: 0.5rem 0.625rem;
+  font-size: 0.8125rem;
+  color: #94a3b8;
 }
 
+.menuMessageDim {
+  padding: 0.5rem 0.625rem;
+  font-size: 0.8125rem;
+  color: #64748b;
+}
+
+/* ----- Language dropdown specifics ----- */
 .langOption {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 7px 12px;
+  padding: 0.4375rem 0.625rem;
   background: transparent;
-  border: none;
+  border: 0;
+  border-radius: 0.3125rem;
   font-size: 0.8125rem;
   cursor: pointer;
   font-family: inherit;
+  color: #cbd5e1;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.langOption:hover {
+  background: #1f2937;
+}
+
+.langOption.activeOption {
+  color: #67e8f9;
+  font-weight: 600;
 }
 
 .langOptionCheck {
+  color: #06b6d4;
   font-size: 0.6875rem;
 }
 
-/* ----- Hidden file input ----- */
-.fileInput {
-  display: none;
-}
-
-/* ----- Auto Layout split button ----- */
-.splitButton {
-  display: inline-flex;
-  border: 1px solid #444;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-left: 8px;
-}
-
-.splitButtonMain,
-.splitButtonCaret {
-  background: #2a2a2a;
-  color: #e0e0e0;
-  border: none;
-  padding: 6px 10px;
-  cursor: pointer;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.splitButtonMain:hover,
-.splitButtonCaret:hover {
-  background: #3a3a3a;
-}
-
-.splitButtonCaret {
-  border-left: 1px solid #444;
-  padding: 6px 6px;
-}
-
+/* ----- Auto Layout dropdown specifics ----- */
 .layoutDropdown {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 0.375rem);
   right: 0;
-  background: #1f1f1f;
-  border: 1px solid #444;
-  border-radius: 4px;
-  margin-top: 4px;
-  min-width: 200px;
-  z-index: 100;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  background: #0a0f17;
+  border: 1px solid #1f2937;
+  border-radius: 0.5rem;
+  min-width: 12.5rem;
+  z-index: 200;
+  padding: 0.25rem;
+  box-shadow: 0 1rem 2.5rem -0.75rem rgba(0, 0, 0, 0.7);
 }
 
 .layoutDropdownItem {
-  padding: 8px 14px;
+  padding: 0.4375rem 0.625rem;
   cursor: pointer;
-  color: #e0e0e0;
-  font-size: 13px;
+  color: #cbd5e1;
+  font-size: 0.8125rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  border-radius: 0.3125rem;
+  transition: background 0.1s ease, color 0.1s ease;
 }
 
 .layoutDropdownItem:hover {
-  background: #2a2a2a;
+  background: #1f2937;
+  color: #f3f4f6;
 }
 
 .layoutDropdownItemDisabled {
@@ -336,6 +425,19 @@
 }
 
 .layoutDropdownItemActive::after {
-  content: "✓";
-  color: #22c55e;
+  content: '✓';
+  color: #06b6d4;
+  margin-left: 0.5rem;
+}
+
+/* ----- Hidden file input ----- */
+.fileInput {
+  display: none;
+}
+
+/* ----- Click overlay used by language picker ----- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
 }

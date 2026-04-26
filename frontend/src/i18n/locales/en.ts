@@ -287,6 +287,48 @@ const en = {
   'inspector.backward.health.vanishing': 'vanishing',
   'inspector.backward.health.exploding': 'exploding',
   'inspector.backward.health.healthy': 'healthy',
+
+  // Settings popover (consolidates Rec / Verbose / Persist / Backward / etc. into one panel)
+  'toolbar.settings': 'Settings',
+  'toolbar.settings.title': 'Open settings',
+  'toolbar.settings.search': 'Search settings…',
+  'toolbar.settings.section.recording': 'Recording & Inspection',
+  'toolbar.settings.section.training': 'Training Behavior',
+  'toolbar.settings.section.editor': 'Editor',
+
+  // Font-size menu
+  'toolbar.fontSize.title': 'Font size',
+  'toolbar.fontSize.small': 'Small',
+  'toolbar.fontSize.default': 'Default',
+  'toolbar.fontSize.large': 'Large',
+
+  // Settings rows
+  'settings.record.name': 'Record node outputs',
+  'settings.record.desc': "Capture every node's output on each run so the Inspector can show input → output diffs.",
+  'settings.verbose.name': 'Verbose internals',
+  'settings.verbose.desc': 'Inspector also shows Q / K / V / attention scores and other algorithm internals (teaching mode).',
+  'settings.compare.name': 'Compare segment',
+  'settings.compare.desc': 'Select two nodes on the canvas, then click to compare the head-input with the tail-output.',
+  'settings.compare.actionCreate': 'Create segment',
+  'settings.compare.actionClear': 'Clear active',
+  'settings.compare.actionDisabled': 'Select two nodes',
+  'settings.persist.name': 'Persist weights between runs',
+  'settings.persist.desc': 'When off, every run re-initialises Conv2d / Linear / Attention weights — the model never learns.',
+  'settings.resetWeights.name': 'Reset all weights now',
+  'settings.resetWeights.desc': 'Drop every cached weight; the next Run starts from fresh initialisation.',
+  'settings.resetWeights.action': 'Reset',
+  'settings.gradients.name': 'Capture gradients',
+  'settings.gradients.desc': 'Run forward + .backward() and store each layer\'s gradient for the Inspector.',
+  'settings.autoLoss.name': 'Auto-synthesize loss',
+  'settings.autoLoss.desc': 'When the graph has no Loss / BackwardOnce node, synthesize one so .backward() can run.',
+  'settings.gridSnap.name': 'Grid snap',
+  'settings.gridSnap.desc': 'Snap dragged nodes to the canvas grid.',
+  'settings.tooltips.name': 'Show node tooltips',
+  'settings.tooltips.desc': 'Reveal the description card when hovering nodes on the canvas.',
+  'settings.nodeMode.name': 'Node category mode',
+  'settings.nodeMode.desc': 'Basic shows only the essential categories in the sidebar; All shows every category.',
+  'settings.nodeMode.basic': 'Basic',
+  'settings.nodeMode.all': 'All',
 } as const;
 
 export type TranslationKey = keyof typeof en;

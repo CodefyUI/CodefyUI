@@ -52,9 +52,30 @@ export const TEXT = {
 } as const;
 
 export const BRAND = {
-  primary: '#2196F3',
+  primary: '#06b6d4',
+  primaryHover: '#22d3ee',
+  primaryDim: '#0e7490',
+  primaryGlow: 'rgba(6, 182, 212, 0.5)',
+  primaryBg: 'rgba(6, 182, 212, 0.09)',
   preset: '#D4A017',
   success: '#4CAF50',
   error: '#F44336',
   warning: '#FFC107',
+} as const;
+
+/**
+ * Crafted toolbar tokens — surface gradients and micro-shadows used by the
+ * Toolbar and Settings popover. Keep these synchronised with the design memory.
+ */
+export const TOOLBAR = {
+  bgGradient: 'linear-gradient(180deg, #0e1520 0%, #0a0f17 100%)',
+  border: '#1a2230',
+  innerHighlight: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+  separator: '#1f2937',
+  ctrlBorder: '#334155',
+  popoverBg: '#0a0f17',
+  popoverBorder: '#1f2937',
+  popoverShadow: '0 24px 60px -12px rgba(0,0,0,0.8), 0 0 0 1px rgba(6,182,212,0.05)',
+  // Run button accent reflection
+  runShadow: 'inset 0 1px 0 rgba(255,255,255,0.22), 0 6px 14px -6px rgba(6,182,212,0.5)',
 } as const;
