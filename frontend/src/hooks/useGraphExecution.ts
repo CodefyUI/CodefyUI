@@ -176,6 +176,14 @@ export function useGraphExecution() {
       presets: graph.presets,
       run_id: runId,
       record_outputs: tab.recordOutputs,
+      // A1: verbose step-trace mode
+      verbose_mode: tab.verboseMode,
+      // A2: weight persistence — backend NodeStateStore keys modules by graph_id
+      graph_id: tab.graphId,
+      weights_persistent: tab.weightsPersistent,
+      // A3: gradient capture
+      backward_mode: tab.backwardMode,
+      auto_backward: tab.autoBackward,
       ...(changedNodes.length > 0 ? { changed_nodes: changedNodes } : {}),
     });
   }, [getActiveTab, getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);

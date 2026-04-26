@@ -12,6 +12,9 @@ import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
 import { RecordToggle } from './RecordToggle';
+import { VerboseToggle } from './VerboseToggle';
+import { PersistWeightsToggle } from './PersistWeightsToggle';
+import { BackwardToggle } from './BackwardToggle';
 import { CompareSegmentButton } from './CompareSegmentButton';
 import styles from './Toolbar.module.css';
 
@@ -536,6 +539,9 @@ export function Toolbar() {
       <div className={styles.rightCluster}>
         {/* Teaching Inspector group */}
         <RecordToggle />
+        <VerboseToggle />
+        <PersistWeightsToggle />
+        <BackwardToggle />
         <CompareSegmentButton />
         <div className={styles.divider} />
         <GridSnapToggle />

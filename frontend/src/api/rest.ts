@@ -56,6 +56,23 @@ export async function exportGraph(nodes: any[], edges: any[]) {
   return res.json();
 }
 
+/** A2: clear persisted layer weights kept by the backend NodeStateStore.
+ * Pass `node_ids` to scope the reset to specific nodes, omit to reset
+ * the entire graph. Returns `{ graph_id, scope, evicted }`.
+ */
+export async function resetWeights(graphId: string, nodeIds?: string[]) {
+  const res = await fetch(`${BASE_URL}/execution/state/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      graph_id: graphId,
+      ...(nodeIds && nodeIds.length > 0 ? { node_ids: nodeIds } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`Reset weights failed: ${res.statusText}`);
+  return res.json() as Promise<{ graph_id: string; scope: string; evicted: number }>;
+}
+
 export async function createPreset(data: {
   name: string;
   description?: string;

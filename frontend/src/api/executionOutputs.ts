@@ -68,3 +68,50 @@ export async function deleteRun(runId: string): Promise<void> {
   if (res.status === 404) throw new RunDataExpiredError(runId);
   if (!res.ok) throw new Error(`deleteRun failed: ${await readDetail(res)}`);
 }
+
+/** Metadata about one algorithmic step recorded by an instrumented node. */
+export interface StepIndexEntry {
+  index: number;
+  name: string;
+  description: string;
+  scalars: Record<string, number>;
+  tensor_keys: string[];
+}
+
+export async function fetchStepIndex(
+  runId: string,
+  nodeId: string,
+): Promise<StepIndexEntry[]> {
+  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/__steps_index`;
+  const res = await fetch(url);
+  if (res.status === 404) {
+    // No steps recorded for this node — treat as empty list rather than error.
+    return [];
+  }
+  if (!res.ok) throw new Error(`fetchStepIndex failed: ${await readDetail(res)}`);
+  return res.json();
+}
+
+/** A single gradient entry returned by ``__grad_index``. */
+export interface GradIndexEntry {
+  port: string;
+  kind: 'port' | 'weight';
+  has_grad: boolean;
+  health: {
+    status: 'healthy' | 'vanishing' | 'exploding';
+    norm: number;
+    mean: number;
+    max: number;
+  } | null;
+}
+
+export async function fetchGradIndex(
+  runId: string,
+  nodeId: string,
+): Promise<GradIndexEntry[]> {
+  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/__grad_index`;
+  const res = await fetch(url);
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`fetchGradIndex failed: ${await readDetail(res)}`);
+  return res.json();
+}

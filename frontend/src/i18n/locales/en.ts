@@ -251,6 +251,42 @@ const en = {
   'inspector.segment.inputs': 'Segment inputs ({count})',
   'inspector.segment.outputs': 'Segment outputs ({count})',
   'segment.removeThis': 'Remove this segment',
+
+  // A1 — Verbose / step-trace mode
+  'toolbar.verbose.on': 'Verbose',
+  'toolbar.verbose.off': 'Quiet',
+  'toolbar.verbose.title': 'Show step-by-step algorithm internals (Q, K, V, scores, …) in the Inspector',
+  'inspector.tabs.forward': 'Forward',
+  'inspector.tabs.steps': 'Steps',
+  'inspector.tabs.backward': 'Backward',
+  'inspector.steps.empty': 'This node does not record steps',
+  'inspector.steps.requireVerbose': 'Enable Verbose mode and re-run to see steps',
+
+  // A2 — Per-node weight persistence
+  'toolbar.weights.on': 'Persist',
+  'toolbar.weights.off': 'Fresh',
+  'toolbar.weights.title': 'Keep layer weights between runs (so a Conv2d / Linear / Attention learns instead of resetting)',
+  'toolbar.weights.resetAll': 'Reset All Weights',
+  'toolbar.weights.resetAllConfirm': 'Reset all persisted weights for this graph?',
+  'toolbar.weights.resetAllOk': 'Persisted weights cleared',
+  'contextMenu.resetWeights': 'Reset Weights',
+  'node.weightsPersistedBadge': 'Weights persisted',
+
+  // A3 — Backward / gradient inspector
+  'toolbar.backward.on': '∂ Grad ON',
+  'toolbar.backward.off': '∂ Grad OFF',
+  'toolbar.backward.title': 'Capture gradients on the next run (forward pass + .backward())',
+  'toolbar.autoBackward.on': 'Auto Loss',
+  'toolbar.autoBackward.off': 'Manual',
+  'toolbar.autoBackward.title': 'Auto-synthesise a loss when no Loss / BackwardOnce node exists',
+  'toolbar.backward.trainingLoopHint': 'TrainingLoop already runs backward. Insert a BackwardOnce node for ad-hoc inspection.',
+  'inspector.backward.empty': 'No gradients captured',
+  'inspector.backward.disabled': 'Enable Backward and re-run to inspect gradients',
+  'inspector.backward.weightSection': 'Weight gradients',
+  'inspector.backward.portSection': 'Output gradients',
+  'inspector.backward.health.vanishing': 'vanishing',
+  'inspector.backward.health.exploding': 'exploding',
+  'inspector.backward.health.healthy': 'healthy',
 } as const;
 
 export type TranslationKey = keyof typeof en;

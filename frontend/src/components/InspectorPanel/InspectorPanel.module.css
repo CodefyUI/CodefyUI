@@ -339,3 +339,149 @@
   color: #ddd;
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
+
+/* ── Inspector tab strip (Forward / Steps / Backward) ── */
+
+.tabStrip {
+  display: flex;
+  align-items: stretch;
+  background: #161616;
+  border-bottom: 1px solid #262626;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
+.tabBtn {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #777;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tabBtn:hover:not(.tabDisabled) {
+  color: #bbb;
+}
+
+.tabActive {
+  color: #ddd;
+  border-bottom-color: #ff9500;
+}
+
+.tabDisabled {
+  color: #444;
+  cursor: not-allowed;
+}
+
+.tabBadge {
+  font-size: 0.62rem;
+  background: #222;
+  border: 1px solid #3a3a3a;
+  border-radius: 9px;
+  padding: 0 5px;
+  color: #888;
+  font-weight: 500;
+}
+
+/* ── StepTraceView ── */
+
+.stepList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stepCard {
+  background: #181818;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.stepHeader {
+  width: 100%;
+  background: #1d1d1d;
+  border: none;
+  border-bottom: 1px solid #262626;
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  color: #ddd;
+}
+
+.stepHeader:hover {
+  background: #232323;
+}
+
+.stepIndex {
+  color: #ff9500;
+  font-weight: 700;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.stepName {
+  font-weight: 600;
+  font-size: 0.82rem;
+  flex: 1;
+}
+
+.stepCaret {
+  color: #888;
+  font-size: 0.7rem;
+}
+
+.stepBody {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stepDescription {
+  font-size: 0.78rem;
+  color: #bbb;
+  line-height: 1.5;
+}
+
+.stepScalars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.stepScalarChip {
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  background: rgba(92, 200, 255, 0.08);
+  border: 1px solid rgba(92, 200, 255, 0.25);
+  color: #5cc8ff;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.stepTensor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stepTensorLabel {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #aaa;
+  letter-spacing: 0.04em;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}

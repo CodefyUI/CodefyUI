@@ -9,8 +9,12 @@ import {
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import { ValueDiff } from './ValueDiff';
+import { StepTraceView } from './StepTraceView';
+import { BackwardView } from './BackwardView';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
+
+type InspectorTab = 'forward' | 'steps' | 'backward';
 
 interface PortFetchState {
   loading: boolean;
@@ -58,6 +62,12 @@ export function InspectorPanel() {
 
   const [fetches, setFetches] = useState<FetchMap>({});
   const [collapsed, setCollapsed] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('forward');
+
+  // Reset tab when selection changes so Steps don't linger between nodes.
+  useEffect(() => {
+    setInspectorTab('forward');
+  }, [selectedNodeId, lastRunId]);
 
   // Determine what to fetch based on mode
   const targets = useMemo(() => {
@@ -259,27 +269,63 @@ export function InspectorPanel() {
         <span className={styles.panelTitle}>{t('inspector.title')}</span>
         <span className={styles.panelSubtitle}>{targets.nodeName}</span>
       </div>
+      <div className={styles.tabStrip} role="tablist">
+        <button
+          role="tab"
+          aria-selected={inspectorTab === 'forward'}
+          className={`${styles.tabBtn} ${inspectorTab === 'forward' ? styles.tabActive : ''}`}
+          onClick={() => setInspectorTab('forward')}
+        >
+          {t('inspector.tabs.forward')}
+        </button>
+        <button
+          role="tab"
+          aria-selected={inspectorTab === 'steps'}
+          className={`${styles.tabBtn} ${inspectorTab === 'steps' ? styles.tabActive : ''}`}
+          onClick={() => setInspectorTab('steps')}
+        >
+          {t('inspector.tabs.steps')}
+        </button>
+        <button
+          role="tab"
+          aria-selected={inspectorTab === 'backward'}
+          className={`${styles.tabBtn} ${inspectorTab === 'backward' ? styles.tabActive : ''}`}
+          onClick={() => setInspectorTab('backward')}
+        >
+          {t('inspector.tabs.backward')}
+        </button>
+      </div>
       <div className={styles.panelContent}>
-        {inputs.length === 0 && outputs.length === 0 && (
-          <div className={styles.emptyState}>This node has no ports.</div>
+        {inspectorTab === 'forward' && (
+          <>
+            {inputs.length === 0 && outputs.length === 0 && (
+              <div className={styles.emptyState}>This node has no ports.</div>
+            )}
+            {/* Pair input[i] with output[i] when possible */}
+            {pairLists(inputs, outputs).map((row, i) => {
+              const inKey = row.input ? keyOf(row.input.nodeId, row.input.port) : null;
+              const outKey = row.output ? keyOf(row.output.nodeId, row.output.port) : null;
+              const inState = inKey ? fetches[inKey] : null;
+              const outState = outKey ? fetches[outKey] : null;
+              return (
+                <div key={i} className={styles.portBlock}>
+                  <div className={styles.portHeader}>
+                    {row.input ? `in: ${row.input.port}` : 'in: —'} &nbsp;&nbsp;·&nbsp;&nbsp;{' '}
+                    {row.output ? `out: ${row.output.port}` : 'out: —'}
+                  </div>
+                  {renderErrors(inState, outState)}
+                  <ValueDiff input={inState?.data ?? null} output={outState?.data ?? null} />
+                </div>
+              );
+            })}
+          </>
         )}
-        {/* Pair input[i] with output[i] when possible */}
-        {pairLists(inputs, outputs).map((row, i) => {
-          const inKey = row.input ? keyOf(row.input.nodeId, row.input.port) : null;
-          const outKey = row.output ? keyOf(row.output.nodeId, row.output.port) : null;
-          const inState = inKey ? fetches[inKey] : null;
-          const outState = outKey ? fetches[outKey] : null;
-          return (
-            <div key={i} className={styles.portBlock}>
-              <div className={styles.portHeader}>
-                {row.input ? `in: ${row.input.port}` : 'in: —'} &nbsp;&nbsp;·&nbsp;&nbsp;{' '}
-                {row.output ? `out: ${row.output.port}` : 'out: —'}
-              </div>
-              {renderErrors(inState, outState)}
-              <ValueDiff input={inState?.data ?? null} output={outState?.data ?? null} />
-            </div>
-          );
-        })}
+        {inspectorTab === 'steps' && lastRunId && selectedNodeId && (
+          <StepTraceView runId={lastRunId} nodeId={selectedNodeId} />
+        )}
+        {inspectorTab === 'backward' && lastRunId && selectedNodeId && (
+          <BackwardView runId={lastRunId} nodeId={selectedNodeId} />
+        )}
       </div>
     </div>
   );

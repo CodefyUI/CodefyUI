@@ -49,6 +49,16 @@ export interface TabState {
   lastRunId: string | null;
   activeSegment: SegmentGroup | null;
   segmentGroups: SegmentGroup[];
+  // A1: verbose / step-trace mode
+  verboseMode: boolean;
+  // A2: per-node weight persistence — graphId is a stable per-tab UUID
+  // sent to the backend so NodeStateStore can key persistent layer weights
+  // even if the tab is renamed or the user closes/reopens the workspace.
+  graphId: string;
+  weightsPersistent: boolean;
+  // A3: gradient capture
+  backwardMode: boolean;
+  autoBackward: boolean;
 }
 
 function createTabState(id: string, name: string): TabState {
@@ -71,6 +81,14 @@ function createTabState(id: string, name: string): TabState {
     lastRunId: null,
     activeSegment: null,
     segmentGroups: [],
+    verboseMode: false,
+    graphId:
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `graph-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    weightsPersistent: true,
+    backwardMode: false,
+    autoBackward: false,
   };
 }
 
@@ -161,6 +179,11 @@ interface TabStoreState {
   setActiveSegment: (segment: SegmentGroup | null) => void;
   addSegmentGroup: (segment: SegmentGroup) => void;
   removeSegmentGroup: (id: string) => void;
+  // A1/A2/A3 toggles
+  toggleVerbose: () => void;
+  togglePersistWeights: () => void;
+  toggleBackward: () => void;
+  toggleAutoBackward: () => void;
 }
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
@@ -178,6 +201,11 @@ interface PersistedTab {
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
   recordOutputs?: boolean;
+  verboseMode?: boolean;
+  graphId?: string;
+  weightsPersistent?: boolean;
+  backwardMode?: boolean;
+  autoBackward?: boolean;
 }
 
 function saveTabs(tabs: TabState[], activeTabId: string) {
@@ -191,6 +219,11 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         edges: t.edges,
         segmentGroups: t.segmentGroups,
         recordOutputs: t.recordOutputs,
+        verboseMode: t.verboseMode,
+        graphId: t.graphId,
+        weightsPersistent: t.weightsPersistent,
+        backwardMode: t.backwardMode,
+        autoBackward: t.autoBackward,
       })),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -205,13 +238,24 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
     if (raw) {
       const data = JSON.parse(raw);
       if (Array.isArray(data.tabs) && data.tabs.length > 0) {
-        const tabs: TabState[] = data.tabs.map((t: PersistedTab) => ({
-          ...createTabState(t.id, t.name),
-          nodes: t.nodes ?? [],
-          edges: t.edges ?? [],
-          segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
-          recordOutputs: t.recordOutputs ?? true,
-        }));
+        const tabs: TabState[] = data.tabs.map((t: PersistedTab) => {
+          const base = createTabState(t.id, t.name);
+          return {
+            ...base,
+            nodes: t.nodes ?? [],
+            edges: t.edges ?? [],
+            segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
+            recordOutputs: t.recordOutputs ?? true,
+            verboseMode: t.verboseMode ?? false,
+            // Preserve persisted graphId — required so backend NodeStateStore
+            // keeps weights linked to this tab across sessions. Falls back to
+            // the freshly generated UUID for legacy tabs.
+            graphId: t.graphId ?? base.graphId,
+            weightsPersistent: t.weightsPersistent ?? true,
+            backwardMode: t.backwardMode ?? false,
+            autoBackward: t.autoBackward ?? false,
+          };
+        });
         const activeTabId = tabs.some((t) => t.id === data.activeTabId)
           ? data.activeTabId
           : tabs[0].id;
@@ -1051,6 +1095,36 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         segmentGroups: tab.segmentGroups.filter((s) => s.id !== id),
         activeSegment: tab.activeSegment?.id === id ? null : tab.activeSegment,
+      })),
+    }),
+
+  // ── Educational toggles (A1/A2/A3) ──
+
+  toggleVerbose: () =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        verboseMode: !tab.verboseMode,
+      })),
+    }),
+
+  togglePersistWeights: () =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        weightsPersistent: !tab.weightsPersistent,
+      })),
+    }),
+
+  toggleBackward: () =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        backwardMode: !tab.backwardMode,
+      })),
+    }),
+
+  toggleAutoBackward: () =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        autoBackward: !tab.autoBackward,
       })),
     }),
 }));

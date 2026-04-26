@@ -253,6 +253,42 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.segment.inputs': '段落輸入（{count}）',
   'inspector.segment.outputs': '段落輸出（{count}）',
   'segment.removeThis': '移除此段落',
+
+  // A1 — 詳細／步驟追蹤模式
+  'toolbar.verbose.on': '詳細',
+  'toolbar.verbose.off': '簡潔',
+  'toolbar.verbose.title': '在檢視器中顯示演算法逐步細節（Q、K、V、scores 等）',
+  'inspector.tabs.forward': '前向',
+  'inspector.tabs.steps': '步驟',
+  'inspector.tabs.backward': '反向',
+  'inspector.steps.empty': '此節點不記錄步驟',
+  'inspector.steps.requireVerbose': '啟用詳細模式並重新執行以查看步驟',
+
+  // A2 — 節點權重持久化
+  'toolbar.weights.on': '保留',
+  'toolbar.weights.off': '重置',
+  'toolbar.weights.title': '在多次執行間保留層的權重（讓 Conv2d / Linear / Attention 真的能學習而不是每次重置）',
+  'toolbar.weights.resetAll': '重置所有權重',
+  'toolbar.weights.resetAllConfirm': '確定要清除此圖所有已保存的權重嗎？',
+  'toolbar.weights.resetAllOk': '已清除保存的權重',
+  'contextMenu.resetWeights': '重置權重',
+  'node.weightsPersistedBadge': '權重已保存',
+
+  // A3 — 反向傳播 / 梯度檢視器
+  'toolbar.backward.on': '∂ 梯度 ON',
+  'toolbar.backward.off': '∂ 梯度 OFF',
+  'toolbar.backward.title': '在下次執行時擷取梯度（前向 + .backward()）',
+  'toolbar.autoBackward.on': '自動損失',
+  'toolbar.autoBackward.off': '手動',
+  'toolbar.autoBackward.title': '未提供 Loss / BackwardOnce 節點時自動合成損失',
+  'toolbar.backward.trainingLoopHint': 'TrainingLoop 已自帶反向；如需獨立檢視，請插入 BackwardOnce 節點',
+  'inspector.backward.empty': '未擷取到梯度',
+  'inspector.backward.disabled': '啟用反向模式並重新執行以查看梯度',
+  'inspector.backward.weightSection': '權重梯度',
+  'inspector.backward.portSection': '輸出梯度',
+  'inspector.backward.health.vanishing': '梯度消失',
+  'inspector.backward.health.exploding': '梯度爆炸',
+  'inspector.backward.health.healthy': '健康',
 };
 
 export default zhTW;
