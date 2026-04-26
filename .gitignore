@@ -73,3 +73,6 @@ backend/data/cifar-10-python.tar.gz
 
 # Worktrees
 .worktrees/
+
+# Superpowers brainstorming visual companion
+.superpowers/
