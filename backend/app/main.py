@@ -8,6 +8,7 @@ from .api import (
     routes_custom_nodes,
     routes_examples,
     routes_execution_outputs,
+    routes_execution_state,
     routes_graph,
     routes_images,
     routes_models,
@@ -18,6 +19,7 @@ from .api import (
 from .config import settings
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
+from .core.node_state_store import NodeStateStore
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 
@@ -52,6 +54,10 @@ async def lifespan(app: FastAPI):
     # In-memory store for captured per-run node outputs (Teaching Inspector)
     app.state.run_output_store = RunOutputStore(max_runs=20)
 
+    # Persistent ``nn.Module`` instances per (graph, node, structure-hash).
+    # Lifetime: server process. Survives Run clicks; lost on restart.
+    app.state.node_state_store = NodeStateStore(max_modules=200)
+
     yield
 
 
@@ -73,6 +79,7 @@ app.include_router(routes_custom_nodes.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
+app.include_router(routes_execution_state.router)
 app.include_router(ws_execution.router)
 
 

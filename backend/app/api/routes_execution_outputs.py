@@ -190,6 +190,90 @@ async def delete_run_outputs(run_id: str, request: Request):
     return {"run_id": run_id, "deleted": True}
 
 
+@router.get("/{run_id}/{node_id}/__steps_index")
+async def get_steps_index(run_id: str, node_id: str, request: Request):
+    """List all algorithmic steps recorded for a node in a run.
+
+    Returns a list of ``{index, name, description, scalars, tensor_keys}``
+    entries ordered by step index. The frontend uses this to render the
+    Steps tab without making N round-trips for individual ``__step__N__meta``
+    entries.
+    """
+    store = _get_store(request)
+    if not await store.has_run(run_id):
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+    ports = await store.list_ports(run_id)
+    if ports is None:
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+    metas: dict[int, dict[str, Any]] = {}
+    for nid, port in ports:
+        if nid != node_id or not port.startswith("__step__"):
+            continue
+        if not port.endswith("__meta"):
+            continue
+        # port format: __step__{i}__meta
+        try:
+            idx = int(port[len("__step__"):-len("__meta")])
+        except ValueError:
+            continue
+        meta = await store.get(run_id, node_id, port)
+        if isinstance(meta, dict):
+            metas[idx] = meta
+    return [
+        {"index": idx, **metas[idx]}
+        for idx in sorted(metas.keys())
+    ]
+
+
+@router.get("/{run_id}/{node_id}/__grad_index")
+async def get_grad_index(run_id: str, node_id: str, request: Request):
+    """List captured gradients for a node in a run.
+
+    Returns ``[{port, kind, has_grad, health}]`` where:
+      - ``kind`` is ``"port"`` (forward output gradient) or ``"weight"``
+        (parameter gradient).
+      - ``port`` for kind=port is the original forward port name,
+        for kind=weight is the parameter name (e.g. ``"weight"``, ``"bias"``).
+      - ``health`` is the dict produced by ``backward_pass.grad_health``
+        (status/norm/mean/max), or ``None`` if not available.
+    """
+    store = _get_store(request)
+    if not await store.has_run(run_id):
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+    ports = await store.list_ports(run_id)
+    if ports is None:
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for nid, port in ports:
+        if nid != node_id:
+            continue
+        if port.endswith("__grad__meta") or port.startswith("__weight_grad__") and port.endswith("__meta"):
+            continue
+        if port.endswith("__grad"):
+            forward_port = port[:-len("__grad")]
+            health = await store.get(run_id, node_id, port + "__meta")
+            entries.append({
+                "port": forward_port,
+                "kind": "port",
+                "has_grad": True,
+                "health": health if isinstance(health, dict) else None,
+            })
+            seen.add(port)
+        elif port.startswith("__weight_grad__"):
+            param_name = port[len("__weight_grad__"):]
+            health = await store.get(run_id, node_id, port + "__meta")
+            entries.append({
+                "port": param_name,
+                "kind": "weight",
+                "has_grad": True,
+                "health": health if isinstance(health, dict) else None,
+            })
+            seen.add(port)
+    return entries
+
+
 @router.get("/{run_id}/{node_id}/{port}")
 async def get_output(
     run_id: str,

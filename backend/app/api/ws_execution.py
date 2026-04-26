@@ -123,7 +123,23 @@ async def websocket_execution(ws: WebSocket):
                 record_outputs = bool(data.get("record_outputs", False))
                 output_store = getattr(ws.app.state, "run_output_store", None)
 
-                current_context = ExecutionContext()
+                # Educational feature flags. Default values keep behaviour
+                # unchanged for clients that don't send them.
+                verbose_mode = bool(data.get("verbose_mode", False))
+                graph_id = str(data.get("graph_id", "") or "")
+                weights_persistent = bool(data.get("weights_persistent", True))
+                backward_mode = bool(data.get("backward_mode", False))
+                auto_backward = bool(data.get("auto_backward", False))
+                node_state_store = getattr(ws.app.state, "node_state_store", None)
+
+                current_context = ExecutionContext(
+                    verbose=verbose_mode,
+                    graph_id=graph_id,
+                    weights_persistent=weights_persistent,
+                    node_state_store=node_state_store,
+                    backward_mode=backward_mode,
+                    auto_backward=auto_backward,
+                )
 
                 async def on_progress(node_id: str, status: str, result: dict[str, Any] | None) -> None:
                     msg: dict[str, Any] = {

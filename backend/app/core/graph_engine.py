@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import logging
 import traceback
@@ -8,8 +9,17 @@ from collections import defaultdict, deque
 from typing import Any, Callable
 
 from ..config import settings
+from .backward_pass import (
+    attach_retain_grad,
+    capture_grads,
+    grad_health,
+    run_backward,
+    select_backward_target,
+    zero_module_grads,
+)
 from .node_base import BaseNode
 from .node_registry import registry
+from .step_trace import Step
 from .type_system import is_compatible
 
 logger = logging.getLogger(__name__)
@@ -477,6 +487,14 @@ async def execute_graph(
     node_cache_keys: dict[str, str] = {}  # node_id -> cache key
     force_rerun: set[str] = set(changed_nodes) if changed_nodes else set()
 
+    # When verbose step-trace or backward gradient capture is on, the cache
+    # is incompatible (verbose adds __steps__; backward needs grad-tracked
+    # tensors). Force re-run everything so the run actually produces the
+    # requested data instead of returning a cached stale result.
+    if context is not None and (context.verbose or context.backward_mode):
+        for n in expanded_nodes:
+            force_rerun.add(n["id"])
+
     # Preset aggregation: emit "running" once at start, "completed" only when all internal nodes finish.
     # preset_total[preset_id] = number of internal nodes belonging to that preset
     # preset_done[preset_id] = number of internal nodes that have completed/cached/skipped
@@ -567,8 +585,11 @@ async def execute_graph(
             await _emit_preset_aware(node_id, "skipped", None)
             return
 
-        # Check cache (skip for force-rerun nodes from partial re-execution)
-        if cache is not None:
+        # Check cache (skip for force-rerun nodes from partial re-execution).
+        # Stateful nodes opt out via cacheable=False because their internal
+        # weights drift across runs.
+        node_cacheable = getattr(node_cls, "cacheable", True)
+        if cache is not None and node_cacheable:
             upstream_keys = []
             for src_id, _, _ in incoming.get(node_id, []):
                 if src_id in node_cache_keys:
@@ -616,24 +637,55 @@ async def execute_graph(
                             except Exception:
                                 pass
 
-                    # Only pass progress_callback if the node accepts it
+                    # Tell stateful nodes which node-id they belong to.
+                    if context is not None:
+                        context.current_node_id = node_id
+
+                    # Build the kwargs dict matching the node's execute() signature.
                     sig = inspect.signature(instance.execute)
+                    call_kwargs: dict[str, Any] = {}
                     if 'progress_callback' in sig.parameters:
-                        result = await loop.run_in_executor(
-                            None, instance.execute, inputs, params, _progress_bridge
-                        )
-                    else:
-                        result = await loop.run_in_executor(
-                            None, instance.execute, inputs, params
-                        )
+                        call_kwargs['progress_callback'] = _progress_bridge
+                    if 'context' in sig.parameters:
+                        call_kwargs['context'] = context
+                    fn = functools.partial(instance.execute, inputs, params, **call_kwargs)
+                    result = await loop.run_in_executor(None, fn)
                 outputs[node_id] = result
-                if cache is not None and node_id in node_cache_keys:
+                # A3: capture floating tensors for the upcoming backward pass.
+                if context is not None and getattr(context, "backward_mode", False):
+                    attach_retain_grad(result, context.grad_targets, node_id, "")
+                    # The empty initial port name yields keys like
+                    # ``(node_id, "tensor")`` for ``result["tensor"]`` —
+                    # see attach_retain_grad's recursion through dict keys.
+                if cache is not None and node_cacheable and node_id in node_cache_keys:
                     cache.put(node_cache_keys[node_id], result)
                 if record_outputs and output_store is not None and run_id:
                     for port, value in result.items():
                         if port.startswith("__"):
                             continue
                         await output_store.put(run_id, node_id, port, value)
+                    # Expand __steps__ from instrumented nodes into individual
+                    # entries so the Teaching Inspector can fetch them via the
+                    # standard /api/execution/outputs/{run_id}/{node_id}/{port}
+                    # endpoint, with metadata accessible via __steps_index.
+                    raw_steps = result.get("__steps__")
+                    if raw_steps:
+                        for i, step in enumerate(raw_steps):
+                            if not isinstance(step, Step):
+                                continue
+                            for tname, tensor in step.tensors.items():
+                                await output_store.put(
+                                    run_id, node_id, f"__step__{i}__{tname}", tensor
+                                )
+                            await output_store.put(
+                                run_id, node_id, f"__step__{i}__meta",
+                                {
+                                    "name": step.name,
+                                    "description": step.description,
+                                    "scalars": step.scalars,
+                                    "tensor_keys": list(step.tensors.keys()),
+                                },
+                            )
                 await _emit_preset_aware(node_id, "completed", result)
                 return
             except Exception as e:
@@ -653,6 +705,11 @@ async def execute_graph(
             # continue or retry-exhausted
             node_errors[node_id] = str(last_error)
             await _emit_preset_aware(node_id, "error", error_detail)
+
+    # Before the forward pass: zero any accumulated gradients on persisted
+    # modules so backward_mode doesn't keep summing across runs.
+    if context is not None and getattr(context, "backward_mode", False):
+        zero_module_grads(context.node_state_store, context.graph_id)
 
     # Execute level by level
     for level in levels:
@@ -674,6 +731,32 @@ async def execute_graph(
                         for t in tasks:
                             t.cancel()
                         raise result
+
+    # A3: post-forward backward pass + gradient capture.
+    if (
+        context is not None
+        and getattr(context, "backward_mode", False)
+        and run_id
+        and output_store is not None
+    ):
+        target = select_backward_target(
+            expanded_nodes,
+            outputs,
+            auto_backward=getattr(context, "auto_backward", False),
+        )
+        if target is not None:
+            loss, _label = target
+            try:
+                run_backward(loss)
+                await capture_grads(
+                    context.grad_targets,
+                    context.node_state_store,
+                    context.graph_id,
+                    run_id,
+                    output_store,
+                )
+            except Exception as exc:  # backward errors shouldn't kill the run
+                logger.warning("backward pass failed: %s", exc)
 
     return outputs
 

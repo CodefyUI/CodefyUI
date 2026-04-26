@@ -3,7 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from .execution_context import ExecutionContext
 
 
 class DataType(str, Enum):
@@ -56,6 +59,12 @@ class BaseNode(ABC):
     CATEGORY: str = ""
     DESCRIPTION: str = ""
 
+    # If False, graph_engine bypasses ExecutionCache for this node type.
+    # StatefulModuleMixin overrides to False because internal weights
+    # drift between runs and break the "same params + same upstream =>
+    # same output" invariant the cache relies on.
+    cacheable: ClassVar[bool] = True
+
     @classmethod
     @abstractmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -76,5 +85,7 @@ class BaseNode(ABC):
         inputs: dict[str, Any],
         params: dict[str, Any],
         progress_callback: Any | None = None,
+        *,
+        context: "ExecutionContext | None" = None,
     ) -> dict[str, Any]:
         ...
