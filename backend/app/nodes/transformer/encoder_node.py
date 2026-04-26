@@ -1,12 +1,15 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class TransformerEncoderNode(BaseNode):
+class TransformerEncoderNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "TransformerEncoder"
     CATEGORY = "Transformer"
     DESCRIPTION = "Apply Transformer encoder stack to input tensor"
+
+    structural_params = ("d_model", "nhead", "num_layers", "dim_feedforward")
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -29,21 +32,17 @@ class TransformerEncoderNode(BaseNode):
             ParamDefinition(name="dim_feedforward", param_type=ParamType.INT, default=2048, description="Dimension of feedforward network"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        d_model = params.get("d_model", 512)
-        nhead = params.get("nhead", 8)
-        num_layers = params.get("num_layers", 6)
-        dim_feedforward = params.get("dim_feedforward", 2048)
-
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
+            d_model=params.get("d_model", 512),
+            nhead=params.get("nhead", 8),
+            dim_feedforward=params.get("dim_feedforward", 2048),
             batch_first=False,
         )
-        encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        output = encoder(tensor)
-        return {"tensor": output}
+        return nn.TransformerEncoder(encoder_layer, num_layers=params.get("num_layers", 6))
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        encoder = self.get_or_build_module(context, params)
+        return {"tensor": encoder(tensor)}

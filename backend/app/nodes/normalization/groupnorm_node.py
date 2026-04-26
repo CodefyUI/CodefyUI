@@ -1,12 +1,15 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class GroupNormNode(BaseNode):
+class GroupNormNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "GroupNorm"
     CATEGORY = "Normalization"
     DESCRIPTION = "Apply group normalization (wraps nn.GroupNorm). Used in modern CNN architectures."
+
+    structural_params = ("num_groups", "num_channels")
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -27,12 +30,14 @@ class GroupNormNode(BaseNode):
             ParamDefinition(name="num_channels", param_type=ParamType.INT, default=256, description="Number of channels (must be divisible by num_groups)"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        gn = nn.GroupNorm(
+        return nn.GroupNorm(
             num_groups=params.get("num_groups", 32),
             num_channels=params.get("num_channels", 256),
         )
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        gn = self.get_or_build_module(context, params)
         return {"tensor": gn(tensor)}

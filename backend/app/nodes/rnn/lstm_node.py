@@ -1,12 +1,17 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class LSTMNode(BaseNode):
+class LSTMNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "LSTM"
     CATEGORY = "RNN"
-    DESCRIPTION = "Apply LSTM recurrent layer to input sequence (wraps nn.LSTM)"
+    DESCRIPTION = "Apply LSTM recurrent layer to input sequence (wraps nn.LSTM). Gates: input, forget, cell, output."
+
+    structural_params = (
+        "input_size", "hidden_size", "num_layers", "batch_first", "bidirectional",
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -31,22 +36,18 @@ class LSTMNode(BaseNode):
             ParamDefinition(name="bidirectional", param_type=ParamType.BOOL, default=False, description="If True, becomes a bidirectional LSTM"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        input_size = params.get("input_size", 128)
-        hidden_size = params.get("hidden_size", 256)
-        num_layers = params.get("num_layers", 1)
-        batch_first = params.get("batch_first", True)
-        bidirectional = params.get("bidirectional", False)
-
-        lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=batch_first,
-            bidirectional=bidirectional,
+        return nn.LSTM(
+            input_size=params.get("input_size", 128),
+            hidden_size=params.get("hidden_size", 256),
+            num_layers=params.get("num_layers", 1),
+            batch_first=params.get("batch_first", True),
+            bidirectional=params.get("bidirectional", False),
         )
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        lstm = self.get_or_build_module(context, params)
         output, (h_n, _c_n) = lstm(tensor)
         return {"output": output, "hidden": h_n}

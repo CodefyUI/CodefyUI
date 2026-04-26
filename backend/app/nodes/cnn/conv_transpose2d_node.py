@@ -1,12 +1,17 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class ConvTranspose2dNode(BaseNode):
+class ConvTranspose2dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "ConvTranspose2d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 2D transposed convolution (deconvolution) to input tensor (wraps nn.ConvTranspose2d)"
+    DESCRIPTION = "Apply 2D transposed convolution (deconvolution) to input tensor (wraps nn.ConvTranspose2d). Used to upsample feature maps."
+
+    structural_params = (
+        "in_channels", "out_channels", "kernel_size", "stride", "padding", "output_padding",
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -31,11 +36,9 @@ class ConvTranspose2dNode(BaseNode):
             ParamDefinition(name="output_padding", param_type=ParamType.INT, default=0, description="Additional size added to output shape"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        conv_t = nn.ConvTranspose2d(
+        return nn.ConvTranspose2d(
             in_channels=params.get("in_channels", 64),
             out_channels=params.get("out_channels", 32),
             kernel_size=params.get("kernel_size", 2),
@@ -43,4 +46,8 @@ class ConvTranspose2dNode(BaseNode):
             padding=params.get("padding", 0),
             output_padding=params.get("output_padding", 0),
         )
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        conv_t = self.get_or_build_module(context, params)
         return {"tensor": conv_t(tensor)}

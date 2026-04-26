@@ -1,12 +1,17 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class GRUNode(BaseNode):
+class GRUNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "GRU"
     CATEGORY = "RNN"
-    DESCRIPTION = "Apply GRU recurrent layer to input sequence (wraps nn.GRU)"
+    DESCRIPTION = "Apply GRU recurrent layer to input sequence (wraps nn.GRU). Gates: reset, update."
+
+    structural_params = (
+        "input_size", "hidden_size", "num_layers", "batch_first", "bidirectional",
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -31,22 +36,18 @@ class GRUNode(BaseNode):
             ParamDefinition(name="bidirectional", param_type=ParamType.BOOL, default=False, description="If True, becomes a bidirectional GRU"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        input_size = params.get("input_size", 128)
-        hidden_size = params.get("hidden_size", 256)
-        num_layers = params.get("num_layers", 1)
-        batch_first = params.get("batch_first", True)
-        bidirectional = params.get("bidirectional", False)
-
-        gru = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=batch_first,
-            bidirectional=bidirectional,
+        return nn.GRU(
+            input_size=params.get("input_size", 128),
+            hidden_size=params.get("hidden_size", 256),
+            num_layers=params.get("num_layers", 1),
+            batch_first=params.get("batch_first", True),
+            bidirectional=params.get("bidirectional", False),
         )
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        gru = self.get_or_build_module(context, params)
         output, h_n = gru(tensor)
         return {"output": output, "hidden": h_n}

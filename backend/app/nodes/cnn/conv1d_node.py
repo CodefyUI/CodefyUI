@@ -1,12 +1,17 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 
-class Conv1dNode(BaseNode):
+class Conv1dNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Conv1d"
     CATEGORY = "CNN"
-    DESCRIPTION = "Apply 1D convolution to input tensor (wraps nn.Conv1d)"
+    DESCRIPTION = "Apply 1D convolution to input tensor (wraps nn.Conv1d). $y[i]=\\sum_k x[i+k]\\cdot w[k]+b$"
+
+    structural_params = (
+        "in_channels", "out_channels", "kernel_size", "stride", "padding",
+    )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -30,15 +35,17 @@ class Conv1dNode(BaseNode):
             ParamDefinition(name="padding", param_type=ParamType.INT, default=1, description="Zero-padding added to both sides"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> Any:
         import torch.nn as nn
-
-        tensor = inputs["tensor"]
-        conv = nn.Conv1d(
+        return nn.Conv1d(
             in_channels=params.get("in_channels", 1),
             out_channels=params.get("out_channels", 32),
             kernel_size=params.get("kernel_size", 3),
             stride=params.get("stride", 1),
             padding=params.get("padding", 1),
         )
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
+        tensor = inputs["tensor"]
+        conv = self.get_or_build_module(context, params)
         return {"tensor": conv(tensor)}

@@ -55,7 +55,13 @@ class TensorInputNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
         import torch
 
         shape_str = params.get("shape", "1,4,4")
@@ -109,6 +115,16 @@ class TensorInputNode(BaseNode):
             tensor = torch.arange(numel, dtype=dtype).reshape(shape)
         else:
             raise ValueError(f"Unsupported value_mode: {mode}")
+
+        # When the graph runs in backward mode, opt floating tensors into
+        # autograd so .grad becomes available after the post-forward
+        # backward pass executed by graph_engine.
+        if (
+            context is not None
+            and getattr(context, "backward_mode", False)
+            and tensor.is_floating_point()
+        ):
+            tensor.requires_grad_(True)
 
         return {"tensor": tensor}
 
