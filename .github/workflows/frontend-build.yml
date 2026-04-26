@@ -1,0 +1,74 @@
+name: Frontend Build Check
+
+# Verify the frontend builds + types + tests cleanly on every PR touching it
+# and on every push to main. Catches regressions before they hit a release tag,
+# so `release-build.yml` is never the first place to discover a broken build.
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-build.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-build.yml'
+  workflow_dispatch:
+
+# Cancel in-flight runs for the same ref when a new commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: pnpm build + tsc + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install (frozen lockfile)
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        working-directory: frontend
+        run: pnpm exec tsc -b
+
+      - name: Build
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Verify dist contents
+        working-directory: frontend
+        run: |
+          test -f dist/index.html
+          test -d dist/assets
+          ls -la dist/assets
+
+      - name: Test
+        working-directory: frontend
+        run: pnpm test
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Frontend build summary"
+            echo ""
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Ref:    \`${{ github.ref }}\`"
+            echo "- Event:  \`${{ github.event_name }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

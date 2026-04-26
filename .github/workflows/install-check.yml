@@ -1,7 +1,8 @@
 name: Install Check
 
 # Smoke-test the install flow on every GitHub Release (stable & pre-release).
-# Also runnable manually via "Run workflow".
+# Pulls the release-built frontend dist (no Node toolchain on the runner) so
+# we exercise the same code path as a real end user.
 on:
   release:
     # `published` fires for both stable releases and pre-releases, so a
@@ -9,6 +10,11 @@ on:
     # a redundant second run for pre-releases.)
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to test (defaults to latest published)'
+        required: false
+        default: 'latest'
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
@@ -25,16 +31,38 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run install.sh (fresh-machine simulation — no pre-installed uv/Python)
+      - name: Resolve release tag
+        id: tag
         shell: bash
         run: |
-          export CODEFYUI_DIR="$RUNNER_TEMP/CodefyUI"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run install.sh (fresh-machine simulation, prefers prebuilt dist)
+        shell: bash
+        env:
+          CODEFYUI_DIR: ${{ runner.temp }}/CodefyUI
+          CODEFYUI_RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
           # install.sh installs uv, asks uv to provide Python, clones the repo,
-          # and runs `python scripts/dev.py install`.
+          # downloads the prebuilt frontend dist, and runs `dev.py install`.
+          # If the release asset is missing it falls back to local build via
+          # nvm + pnpm — which would surface a CI failure here.
           bash ./install.sh
           echo "INSTALL_DIR=$CODEFYUI_DIR" >> "$GITHUB_ENV"
 
-      - name: Start backend & health check
+      - name: Verify frontend/dist was provisioned (no-Node path)
+        shell: bash
+        run: |
+          test -f "$INSTALL_DIR/frontend/dist/index.html" \
+            || { echo "::error::frontend/dist/index.html missing — install never produced a usable bundle"; exit 1; }
+          echo "✓ frontend/dist/index.html exists"
+          ls "$INSTALL_DIR/frontend/dist"
+
+      - name: Start backend & verify endpoints
         shell: bash
         run: |
           cd "$INSTALL_DIR/backend"
@@ -43,35 +71,33 @@ jobs:
             > "$RUNNER_TEMP/backend.log" 2>&1 &
           echo "BACKEND_PID=$!" >> "$GITHUB_ENV"
 
+          # Wait for /api/health
+          health_ok=false
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/api/health > "$RUNNER_TEMP/health.json"; then
               echo "Backend is up:"
               cat "$RUNNER_TEMP/health.json"
-              python -c "import json,sys; d=json.load(open('$RUNNER_TEMP/health.json')); assert d['status']=='ok' and d['nodes_loaded']>0, d"
-              exit 0
+              python3 -c "import json,sys; d=json.load(open('$RUNNER_TEMP/health.json')); assert d['status']=='ok' and d['nodes_loaded']>0, d"
+              health_ok=true
+              break
             fi
             sleep 2
           done
 
-          echo "::error::Backend failed to respond after 60s"
-          echo "--- backend.log ---"
-          cat "$RUNNER_TEMP/backend.log"
-          exit 1
-
-      - name: Build frontend
-        shell: bash
-        run: |
-          # install.sh may have installed Node/pnpm via nvm; that path isn't
-          # on the next step's default PATH because GH CI runs non-interactive
-          # bash (no .bashrc sourcing). Source nvm.sh manually.
-          export NVM_DIR="$HOME/.nvm"
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            # shellcheck disable=SC1091
-            . "$NVM_DIR/nvm.sh"
-            nvm use 24 2>/dev/null || true
+          if [[ "$health_ok" != "true" ]]; then
+            echo "::error::Backend failed to respond after 60s"
+            echo "--- backend.log ---"
+            cat "$RUNNER_TEMP/backend.log"
+            exit 1
           fi
-          cd "$INSTALL_DIR/frontend"
-          pnpm build
+
+          # SPA mount: GET / should return the React index.html, not 404.
+          # Status check + sniff for `<div id="root"></div>` so we know it's the
+          # built bundle and not a stray fallback page.
+          root_body="$(curl -fsS http://127.0.0.1:8000/)"
+          echo "$root_body" | grep -q 'id="root"' \
+            || { echo "::error::GET / did not return the SPA index.html"; echo "$root_body" | head; exit 1; }
+          echo "✓ GET / returned SPA index.html"
 
       - name: Stop backend
         if: always() && env.BACKEND_PID != ''
@@ -95,14 +121,37 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run install.ps1 (fresh-machine simulation — no pre-installed uv/Python)
+      - name: Resolve release tag
+        id: tag
         shell: pwsh
         run: |
-          $env:CODEFYUI_DIR = Join-Path $env:RUNNER_TEMP 'CodefyUI'
+          if ('${{ github.event_name }}' -eq 'release') {
+            "tag=${{ github.event.release.tag_name }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+          } else {
+            "tag=${{ inputs.release_tag }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+          }
+
+      - name: Run install.ps1 (fresh-machine simulation, prefers prebuilt dist)
+        shell: pwsh
+        env:
+          CODEFYUI_DIR: ${{ runner.temp }}\CodefyUI
+          CODEFYUI_RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
           .\install.ps1
           "INSTALL_DIR=$env:CODEFYUI_DIR" | Out-File -Append -FilePath $env:GITHUB_ENV
 
-      - name: Start backend & health check
+      - name: Verify frontend/dist was provisioned (no-Node path)
+        shell: pwsh
+        run: |
+          $indexPath = Join-Path $env:INSTALL_DIR 'frontend\dist\index.html'
+          if (-not (Test-Path $indexPath)) {
+            Write-Host "::error::frontend/dist/index.html missing — install never produced a usable bundle"
+            exit 1
+          }
+          Write-Host "✓ $indexPath exists"
+          Get-ChildItem (Join-Path $env:INSTALL_DIR 'frontend\dist')
+
+      - name: Start backend & verify endpoints
         shell: pwsh
         run: |
           Set-Location (Join-Path $env:INSTALL_DIR 'backend')
@@ -114,45 +163,37 @@ jobs:
             -NoNewWindow -PassThru -RedirectStandardOutput $logPath -RedirectStandardError $errPath
           "BACKEND_PID=$($proc.Id)" | Out-File -Append -FilePath $env:GITHUB_ENV
 
+          $healthOk = $false
           for ($i = 1; $i -le 30; $i++) {
             try {
               $resp = Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health -TimeoutSec 5
               if ($resp.status -eq 'ok' -and $resp.nodes_loaded -gt 0) {
                 Write-Host "Backend is up:"
                 $resp | ConvertTo-Json
-                exit 0
+                $healthOk = $true
+                break
               }
             } catch {}
             Start-Sleep -Seconds 2
           }
 
-          Write-Host "::error::Backend failed to respond after 60s"
-          Write-Host "--- backend.log ---"
-          if (Test-Path $logPath) { Get-Content $logPath }
-          Write-Host "--- backend.err ---"
-          if (Test-Path $errPath) { Get-Content $errPath }
-          exit 1
-
-      - name: Build frontend
-        shell: pwsh
-        run: |
-          # install.ps1 wrote pnpm to the *user* PATH as a literal
-          # `%PNPM_HOME%` reference. ExpandEnvironmentVariables resolves
-          # against the *current process* env, but pwsh started before
-          # pnpm's installer ran so PNPM_HOME isn't in the process env
-          # block. Copy user-scope installer vars into the process env
-          # first, then expand.
-          foreach ($var in @('PNPM_HOME', 'UV_INSTALL_DIR')) {
-            $val = [System.Environment]::GetEnvironmentVariable($var, 'User')
-            if ($val) { Set-Item -Path "env:$var" -Value $val }
+          if (-not $healthOk) {
+            Write-Host "::error::Backend failed to respond after 60s"
+            Write-Host "--- backend.log ---"
+            if (Test-Path $logPath) { Get-Content $logPath }
+            Write-Host "--- backend.err ---"
+            if (Test-Path $errPath) { Get-Content $errPath }
+            exit 1
           }
-          $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-          $user    = [System.Environment]::ExpandEnvironmentVariables(
-            [System.Environment]::GetEnvironmentVariable('Path', 'User')
-          )
-          $env:Path = "$machine;$user"
-          Set-Location (Join-Path $env:INSTALL_DIR 'frontend')
-          pnpm build
+
+          # SPA mount: GET / should return the React index.html
+          $rootResp = Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:8000/ -TimeoutSec 10
+          if ($rootResp.Content -notmatch 'id="root"') {
+            Write-Host "::error::GET / did not return the SPA index.html"
+            Write-Host $rootResp.Content.Substring(0, [Math]::Min(500, $rootResp.Content.Length))
+            exit 1
+          }
+          Write-Host "✓ GET / returned SPA index.html"
 
       - name: Stop backend
         if: always() && env.BACKEND_PID != ''
@@ -166,3 +207,31 @@ jobs:
         with:
           name: backend-log-windows
           path: ${{ runner.temp }}/backend.log
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Force-build path: end-to-end smoke test that contributors who DO have a
+  # Node toolchain can still install (CODEFYUI_FORCE_BUILD=1). Linux only —
+  # mac/windows already covered by the prebuilt path; this is a regression
+  # guard for the local-build branch in install.sh / dev.py.
+  # ─────────────────────────────────────────────────────────────────────────────
+  install-force-build:
+    name: install.sh + force-build (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run install.sh with CODEFYUI_FORCE_BUILD=1
+        shell: bash
+        env:
+          CODEFYUI_DIR: ${{ runner.temp }}/CodefyUI
+          CODEFYUI_FORCE_BUILD: '1'
+        run: |
+          bash ./install.sh
+          echo "INSTALL_DIR=$CODEFYUI_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify locally-built dist
+        shell: bash
+        run: |
+          test -f "$INSTALL_DIR/frontend/dist/index.html"
+          echo "✓ Local build produced frontend/dist/index.html"

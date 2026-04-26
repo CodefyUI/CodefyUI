@@ -1,0 +1,160 @@
+name: Release Build
+
+# Build the prebuilt frontend bundle and attach it to the GitHub release.
+# Triggers cover all the ways a release can be created:
+#   - push tags        — `git push --tags` (most common)
+#   - release: created — UI-created release with a pre-existing tag
+#                        (covers the case where the tag was pushed earlier
+#                        but no matching release existed yet)
+#   - workflow_dispatch — manual rebuild against a specified tag
+on:
+  push:
+    tags:
+      - '*.*.*'        # 1.2.3
+      - '*.*.*rc*'     # 1.0.0rc9
+      - 'v*.*.*'       # v1.2.3 (in case the convention shifts)
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach the asset to (leave blank to upload as artifact only)'
+        required: false
+
+# Serialize per-tag so re-pushing a tag (or a UI publish racing a tag-push run)
+# can't end up with two action-gh-release calls fighting over the same asset.
+concurrency:
+  group: release-build-${{ github.event.release.tag_name || github.ref_name || inputs.tag }}
+  cancel-in-progress: true
+
+jobs:
+  build-frontend-dist:
+    name: Build frontend-dist.tar.gz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write   # required for action-gh-release to upload assets
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REL_TAG: ${{ github.event.release.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release)           tag="$REL_TAG" ;;
+            push)              tag="$REF_NAME" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            *)                 tag="" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: '$tag' (event=$EVENT)"
+
+      # Always check out the tag's commit so the asset matches what's tagged,
+      # not whatever main looked like at workflow start time.
+      - uses: actions/checkout@v6
+        with:
+          # For tag push events the default ref is already the tag — but for
+          # `release: created` the default ref is the branch the release
+          # points at, so be explicit.
+          ref: ${{ steps.resolve.outputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm build
+
+      - name: Verify dist contents
+        run: |
+          test -f frontend/dist/index.html
+          test -d frontend/dist/assets
+          ls -la frontend/dist
+          ls -la frontend/dist/assets
+
+      - name: Package dist
+        id: pack
+        run: |
+          # Pack from inside the dist dir so extraction lands cleanly with
+          # `tar -xzf frontend-dist.tar.gz -C frontend/dist` (no strip needed).
+          tar -czf frontend-dist.tar.gz -C frontend/dist .
+          size_bytes=$(stat -c%s frontend-dist.tar.gz)
+          size_human=$(du -h frontend-dist.tar.gz | cut -f1)
+          {
+            echo "size_bytes=$size_bytes"
+            echo "size_human=$size_human"
+          } >> "$GITHUB_OUTPUT"
+          ls -la frontend-dist.tar.gz
+
+      - name: Upload as artifact (workflow_dispatch path)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend-dist.tar.gz
+          retention-days: 30
+
+      - name: Attach to GitHub release (tag push)
+        # Auto-creates a draft release for the tag if one doesn't exist; if a
+        # release already exists for the tag, updates it (asset replaced).
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          files: frontend-dist.tar.gz
+          fail_on_unmatched_files: true
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Attach to existing release (release:created)"
+        # Covers the UI-created-release case: tag may already exist with no
+        # asset; we attach without changing draft/published status.
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          files: frontend-dist.tar.gz
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach to specified tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: frontend-dist.tar.gz
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "### Release Build Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Tag        | \`${{ steps.resolve.outputs.tag }}\` |"
+            echo "| Commit SHA | \`${{ github.sha }}\` |"
+            echo "| Event      | \`${{ github.event_name }}\` |"
+            echo "| Asset size | ${{ steps.pack.outputs.size_human }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
