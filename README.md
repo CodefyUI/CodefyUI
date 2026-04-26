@@ -38,25 +38,29 @@ curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/insta
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
 ```
 
-Automatically installs git, Node.js, pnpm, uv if missing (Python is provided by uv — no separate install needed), and puts a `cdui` launcher on your PATH. After install, **open a new terminal** and run from anywhere:
+Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release — **no Node.js or pnpm required for end users**. After install, **open a new terminal** and run from anywhere:
 
 ```bash
-cdui dev
+cdui start
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The frontend proxies API/WS requests to the backend at `:8000`.
+Open [http://localhost:8000](http://localhost:8000). The single uvicorn process serves both the API and the prebuilt React app.
 
 | Command | Description |
 |---------|-------------|
-| `cdui install` | Install backend + frontend dependencies |
-| `cdui update` | Pull latest `main` and reinstall dependencies |
-| `cdui dev` | Start backend :8000 + frontend :5173 |
+| `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available) |
+| `cdui update` | Pull latest `main` and re-fetch the frontend bundle |
+| `cdui start` | Production mode — single uvicorn on `:8000` (no Node needed) |
+| `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
+| `cdui build` | Build the frontend bundle locally (requires Node + pnpm) |
 | `cdui stop` | Stop all services |
 | `cdui test` | Run backend tests |
-| `cdui clean` | Remove virtualenv and `node_modules` |
+| `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
 | `cdui uninstall` | Clean + remove the PATH launcher |
 
-> `cdui` is a thin launcher (`cdui.cmd` on Windows) placed at `~/.local/bin/cdui` by the installer. If you didn't restart your terminal yet, invoke the absolute path: `~/CodefyUI/cdui dev`. `python scripts/dev.py <cmd>` still works too — `dev.py` re-execs into the venv's Python automatically.
+> `cdui` is a thin launcher (`cdui.cmd` on Windows) placed at `~/.local/bin/cdui` by the installer. If you didn't restart your terminal yet, invoke the absolute path: `~/CodefyUI/cdui start`. `python scripts/dev.py <cmd>` still works too — `dev.py` re-execs into the venv's Python automatically.
+
+**Contributors:** if you want hot-reload (`cdui dev`), pass `CODEFYUI_FORCE_BUILD=1` to the installer or install Node 24+ and pnpm separately. Pin a specific release with `CODEFYUI_RELEASE_TAG=<tag>`.
 
 > This quick start assumes an **NVIDIA GPU with CUDA 12.4**. For CPU, Apple Silicon, AMD, or detailed troubleshooting, see the [full setup guide](./docs/SETUP.md).
 

@@ -1,8 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .api import (
     routes_custom_nodes,
@@ -105,3 +108,29 @@ async def reload_nodes():
         "presets": preset_count,
         "total": count + custom_count,
     }
+
+
+# Production mode: serve the pre-built frontend bundle. The catch-all is
+# registered last so it never shadows /api/* or /ws/* routes (FastAPI matches
+# in registration order). Skipped silently in dev when dist/ doesn't exist.
+DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+if (DIST_DIR / "index.html").exists():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=DIST_DIR / "assets"),
+        name="assets",
+    )
+
+    # Paths that should 404 instead of falling through to index.html so that
+    # frontend fetch() errors stay distinguishable from "the SPA loaded".
+    _NON_SPA_PREFIXES = ("api/", "ws/")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        if full_path.startswith(_NON_SPA_PREFIXES):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = DIST_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(DIST_DIR / "index.html")

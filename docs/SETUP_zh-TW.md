@@ -4,14 +4,14 @@
 
 CodefyUI 提供兩種安裝方式：
 
-1. **[快速安裝](#快速安裝)**（全平台）—— 一行指令自動安裝所有依賴，適合一般使用者。
+1. **[快速安裝](#快速安裝)**（全平台）—— 一行指令，使用者只需 `git`、`uv` 與 Python，**不需要 Node.js**。
 2. **[開發者安裝](#開發者安裝)**（全平台）—— 手動使用 [uv](https://github.com/astral-sh/uv) + pnpm 安裝，適合開發者與貢獻者。
 
 ---
 
 ## 快速安裝
 
-自動安裝缺少的依賴（git、Node.js、pnpm、uv）。Python 由 uv 提供，不需要額外安裝。
+自動安裝 `git`、`uv` 與 Python（由 uv 提供）。前端 bundle 會從 GitHub 最新 release 直接下載 — **一般使用者不需要 Node.js 或 pnpm**。
 
 ```bash
 # macOS / Linux
@@ -30,14 +30,28 @@ Windows 的 `install.ps1` 會透過 [winget](https://learn.microsoft.com/zh-tw/w
 install 腳本會把 `cdui` launcher 放到 `~/.local/bin/cdui`（Windows 為 `%USERPROFILE%\.local\bin\cdui.cmd`）。重新開啟 terminal 後，任何目錄都能執行：
 
 ```bash
-cdui dev
+cdui start
 ```
 
-支援指令：`install` / `update` / `dev` / `stop` / `test` / `clean` / `uninstall`。`cdui` 是一支輕量 launcher，會自動挑一個可用的 Python（優先 uv 管理的）並轉交給 `dev.py`。
+開啟瀏覽器至 [http://localhost:8000](http://localhost:8000)。單一 uvicorn 同時處理 API 與預編好的 React 前端。
 
-開啟瀏覽器至 [http://localhost:5173](http://localhost:5173)。前端會將 API/WS 請求代理到後端的 `:8000` 埠。
+支援指令：`install` / `update` / `build` / `start` / `dev` / `stop` / `test` / `clean` / `uninstall`。`cdui` 是一支輕量 launcher，會自動挑一個可用的 Python（優先 uv 管理的）並轉交給 `dev.py`。
+
+### 環境變數
+
+| 變數 | 用途 |
+|------|------|
+| `CODEFYUI_DIR` | 安裝目錄（預設 `~/CodefyUI`）|
+| `CODEFYUI_RELEASE_TAG` | 鎖定特定 release tag 的前端 bundle（預設 `latest`）|
+| `CODEFYUI_FORCE_BUILD` | 設為 `1` 強制安裝 Node + pnpm 並本地 build，不下載 release |
 
 > 預設的 PyTorch 安裝適用於所有平台（CPU / Apple Silicon MPS）。若需特定 NVIDIA CUDA 版本、AMD ROCm，或想驗證 GPU，請參考 [GPU 加速](#gpu-加速)。
+
+### Production 與 Developer 模式
+
+- `cdui start` — 單一 uvicorn 跑 `:8000` 同時 serve 預編前端，**不需要 Node**。一般使用者預設用這個。
+- `cdui dev` — Vite dev server 跑 `:5173`（HMR）+ uvicorn 跑 `:8000`，**需要 Node 24+ 與 pnpm**。改前端代碼時用這個。
+- `cdui build` — 本地重建 `frontend/dist`（也需要 Node + pnpm）。
 
 ---
 
@@ -213,6 +227,17 @@ uv pip install torch-directml
 
 ## 啟動後端與前端
 
+### Production 模式（一般使用者建議）
+
+先 build 前端一次，之後單一 uvicorn 全部處理：
+
+```bash
+cdui build               # 產生 frontend/dist（若 install 時已下載則略過）
+cdui start               # 同時 serve API 與前端，開 http://localhost:8000
+```
+
+### Developer 模式（HMR）
+
 **後端（終端機 1）：**
 
 ```bash
@@ -232,7 +257,7 @@ pnpm install
 pnpm dev
 ```
 
-開啟瀏覽器至 [http://localhost:5173](http://localhost:5173)。
+開啟瀏覽器至 [http://localhost:5173](http://localhost:5173)。Vite dev server 會把 API/WS proxy 到後端 `:8000`。
 
 或在專案根目錄同時啟動兩者：
 

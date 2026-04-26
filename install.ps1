@@ -2,13 +2,19 @@
 # 用法：
 #   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
 #
-# 可選環境變數：
-#   $env:CODEFYUI_DIR = 'D:\path\to\CodefyUI'   # 自訂安裝路徑（預設 $HOME\CodefyUI）
+# 環境變數：
+#   $env:CODEFYUI_DIR           自訂安裝路徑（預設 $HOME\CodefyUI）
+#   $env:CODEFYUI_RELEASE_TAG   指定要下載的 release tag（預設 latest）
+#   $env:CODEFYUI_FORCE_BUILD   設為 1 強制本地 build（會額外裝 Node + pnpm）
 
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'https://github.com/treeleaves30760/CodefyUI.git'
+$ReleaseRepo = 'treeleaves30760/CodefyUI'
+$ReleaseAsset = 'frontend-dist.tar.gz'
 $InstallDir = if ($env:CODEFYUI_DIR) { $env:CODEFYUI_DIR } else { Join-Path $HOME 'CodefyUI' }
+$ReleaseTag = if ($env:CODEFYUI_RELEASE_TAG) { $env:CODEFYUI_RELEASE_TAG } else { 'latest' }
+$ForceBuild = ($env:CODEFYUI_FORCE_BUILD -eq '1')
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 function Step($msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Blue }
@@ -42,12 +48,99 @@ function Install-Winget($id, $friendlyName) {
     Refresh-Path
 }
 
+function Install-NodeToolchain {
+    Step "pnpm（僅本地 build 路徑使用）"
+    if (-not (Test-Cmd pnpm)) {
+        Warn "Not installed, running standalone installer..."
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://get.pnpm.io/install.ps1' | Invoke-Expression
+        $PnpmHome = [System.Environment]::GetEnvironmentVariable('PNPM_HOME', 'User')
+        if (-not $PnpmHome) { $PnpmHome = Join-Path $env:LOCALAPPDATA 'pnpm' }
+        $env:PNPM_HOME = $PnpmHome
+        $env:Path = "$PnpmHome;$env:Path"
+        if (-not (Test-Cmd pnpm)) { Die "pnpm not found on PATH after install. Open a new shell and re-run." }
+    }
+    Ok "pnpm $(pnpm --version)"
+
+    Step "Node.js（透過 pnpm env）"
+    $nodeMin = 24
+    $nodeOk = $false
+    if (Test-Cmd node) {
+        $currentMajor = ((node --version) -replace '^v','' -split '\.')[0]
+        if ($currentMajor -match '^\d+$' -and [int]$currentMajor -ge $nodeMin) {
+            $nodeOk = $true
+        }
+    }
+    if (-not $nodeOk) {
+        Warn "Not installed or version < $nodeMin, installing Node $nodeMin via 'pnpm env use --global $nodeMin'..."
+        pnpm env use --global $nodeMin
+        if ($LASTEXITCODE -ne 0) { Die "pnpm env use --global $nodeMin failed" }
+        Refresh-Path
+        if (-not (Test-Cmd node)) { Die "node not found on PATH after install. Open a new shell and re-run." }
+    }
+    Ok "Node.js $(node --version)"
+}
+
+function Fetch-ReleaseDist {
+    param([string]$DistDir)
+
+    $url = if ($ReleaseTag -eq 'latest') {
+        "https://github.com/$ReleaseRepo/releases/latest/download/$ReleaseAsset"
+    } else {
+        "https://github.com/$ReleaseRepo/releases/download/$ReleaseTag/$ReleaseAsset"
+    }
+
+    Write-Host "  下載：$url"
+
+    $tmpdir = Join-Path $env:TEMP "cdui-dist-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null
+    $tarball = Join-Path $tmpdir $ReleaseAsset
+
+    try {
+        # -UseBasicParsing avoids loading IE engine (Server Core / nano).
+        # GitHub redirects 302 → S3 — Invoke-WebRequest follows by default.
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tarball -TimeoutSec 60
+    } catch {
+        Warn "下載失敗（網路問題或 release 還沒附這個 asset）：$($_.Exception.Message)"
+        Remove-Item -Recurse -Force $tmpdir -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    # Windows 10 1803+ ships tar.exe in System32 — extracts .tar.gz natively.
+    if (-not (Test-Cmd tar)) {
+        Warn "找不到 tar.exe（Windows 10 1803+ 應內建）"
+        Remove-Item -Recurse -Force $tmpdir -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    if (Test-Path $DistDir) { Remove-Item -Recurse -Force $DistDir }
+    New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
+
+    & tar -xzf $tarball -C $DistDir
+    if ($LASTEXITCODE -ne 0) {
+        Warn "Tarball 解壓失敗（exit $LASTEXITCODE）"
+        Remove-Item -Recurse -Force $DistDir, $tmpdir -ErrorAction SilentlyContinue
+        return $false
+    }
+    Remove-Item -Recurse -Force $tmpdir -ErrorAction SilentlyContinue
+
+    if (-not (Test-Path (Join-Path $DistDir 'index.html'))) {
+        Warn "解壓後找不到 index.html，asset 內容可能有誤"
+        Remove-Item -Recurse -Force $DistDir -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    Ok "Prebuilt dist 解壓至 $DistDir"
+    return $true
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 Write-Host ""
 Write-Host "+======================================+"
 Write-Host "|        CodefyUI Installer (Windows)  |"
 Write-Host "+======================================+"
-Write-Host "  Install dir: $InstallDir"
+Write-Host "  Install dir:  $InstallDir"
+Write-Host "  Release tag:  $ReleaseTag"
+if ($ForceBuild) { Write-Host "  強制本地 build (CODEFYUI_FORCE_BUILD=1)" -ForegroundColor Yellow }
 
 # ── git ───────────────────────────────────────────────────────────────────────
 Step "git"
@@ -58,7 +151,6 @@ if (-not (Test-Cmd git)) {
 Ok (git --version)
 
 # ── uv ────────────────────────────────────────────────────────────────────────
-# Use uv to manage Python — users don't need any pre-existing Python install.
 Step "uv"
 if (-not (Test-Cmd uv)) {
     Warn "Not installed, running standalone installer..."
@@ -76,40 +168,6 @@ $PythonCmd = (uv python find 3.11).Trim()
 if (-not (Test-Path $PythonCmd)) { Die "uv python find returned invalid path: $PythonCmd" }
 Ok "$(& $PythonCmd --version) ($PythonCmd)"
 
-# ── pnpm ──────────────────────────────────────────────────────────────────────
-Step "pnpm"
-if (-not (Test-Cmd pnpm)) {
-    Warn "Not installed, running standalone installer..."
-    Invoke-WebRequest -UseBasicParsing -Uri 'https://get.pnpm.io/install.ps1' | Invoke-Expression
-    # pnpm installer sets PNPM_HOME in the user env; pull it into this session
-    $PnpmHome = [System.Environment]::GetEnvironmentVariable('PNPM_HOME', 'User')
-    if (-not $PnpmHome) { $PnpmHome = Join-Path $env:LOCALAPPDATA 'pnpm' }
-    $env:PNPM_HOME = $PnpmHome
-    $env:Path = "$PnpmHome;$env:Path"
-    if (-not (Test-Cmd pnpm)) { Die "pnpm not found on PATH after install. Open a new shell and re-run." }
-}
-Ok "pnpm $(pnpm --version)"
-
-# ── Node.js (let pnpm manage it) ──────────────────────────────────────────────
-# Require Node 24+; older versions are upgraded via pnpm-managed runtime.
-Step "Node.js"
-$NodeMin = 24
-$NodeOk = $false
-if (Test-Cmd node) {
-    $currentMajor = ((node --version) -replace '^v','' -split '\.')[0]
-    if ($currentMajor -match '^\d+$' -and [int]$currentMajor -ge $NodeMin) {
-        $NodeOk = $true
-    }
-}
-if (-not $NodeOk) {
-    Warn "Not installed or version < $NodeMin, installing Node $NodeMin via 'pnpm env use --global $NodeMin'..."
-    pnpm env use --global $NodeMin
-    if ($LASTEXITCODE -ne 0) { Die "pnpm env use --global $NodeMin failed" }
-    Refresh-Path
-    if (-not (Test-Cmd node)) { Die "node not found on PATH after install. Open a new shell and re-run." }
-}
-Ok "Node.js $(node --version)"
-
 # ── Clone / Update ────────────────────────────────────────────────────────────
 Step "Downloading CodefyUI"
 if (Test-Path (Join-Path $InstallDir '.git')) {
@@ -124,15 +182,31 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     Ok "Clone complete"
 }
 
+# ── Frontend dist：先試 release，失敗才裝 Node 本地 build ─────────────────────
+$DistDir = Join-Path $InstallDir 'frontend\dist'
+$UsePrebuilt = $false
+if (-not $ForceBuild) {
+    Step "Frontend dist (從 release 下載)"
+    if (Fetch-ReleaseDist -DistDir $DistDir) {
+        $UsePrebuilt = $true
+    }
+}
+
+if (-not $UsePrebuilt) {
+    Warn "改用本地 build 路徑（會額外安裝 Node.js 與 pnpm）"
+    Install-NodeToolchain
+}
+
 # ── Install project deps ──────────────────────────────────────────────────────
 Step "Installing project dependencies"
 Set-Location $InstallDir
+# 透傳給 dev.py，避免 dev.py 跳過 dist 重建
+$env:CODEFYUI_FORCE_BUILD = if ($ForceBuild) { '1' } else { '0' }
+$env:CODEFYUI_RELEASE_TAG = $ReleaseTag
 & $PythonCmd scripts\dev.py install
 if ($LASTEXITCODE -ne 0) { Die "scripts\dev.py install failed" }
 
 # ── Install cdui launcher to PATH ─────────────────────────────────────────────
-# Write a small forwarding stub at %USERPROFILE%\.local\bin\cdui.cmd (uv already
-# adds this dir to user PATH; we add it defensively in case uv wasn't used).
 Step "Installing cdui launcher to PATH"
 $LauncherDir = Join-Path $env:USERPROFILE '.local\bin'
 $Launcher = Join-Path $LauncherDir 'cdui.cmd'
@@ -162,10 +236,13 @@ Write-Host "|         Installation complete!       |" -ForegroundColor Green
 Write-Host "+======================================+" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Restart PowerShell to pick up PATH, then:"
-Write-Host "    cdui dev            # from any directory"
+if ($UsePrebuilt) {
+    Write-Host "    cdui start          # production 模式（單一 :8000，不需 Node）"
+}
+Write-Host "    cdui dev            # 開發模式（HMR；需 Node）"
 Write-Host ""
 Write-Host "  Or from the current shell using the absolute path:"
-Write-Host "    $InstallDir\cdui.cmd dev"
+Write-Host "    $InstallDir\cdui.cmd start"
 Write-Host ""
-Write-Host "  Other commands: cdui update | stop | test | clean | uninstall"
+Write-Host "  Other commands: cdui update | build | stop | test | clean | uninstall"
 Write-Host ""

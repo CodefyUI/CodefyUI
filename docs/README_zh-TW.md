@@ -38,25 +38,29 @@ curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/insta
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
 ```
 
-自動安裝缺少的依賴（git、Node.js、pnpm、uv；Python 由 uv 提供，不需要額外安裝），並把 `cdui` launcher 加到你的 PATH。安裝完成後，**請重新開啟 terminal**，然後在任何目錄執行：
+只安裝執行需要的東西：`git`、`uv`、Python（由 uv 提供）。前端 bundle 會從 GitHub 的最新 release 直接下載 — **一般使用者完全不需要 Node.js 或 pnpm**。安裝完成後，**請重新開啟 terminal**，然後在任何目錄執行：
 
 ```bash
-cdui dev
+cdui start
 ```
 
-開啟 [http://localhost:5173](http://localhost:5173)。前端會將 API/WS 請求代理到後端的 `:8000` 埠。
+開啟 [http://localhost:8000](http://localhost:8000)。單一 uvicorn 同時處理 API 與預編好的 React 前端。
 
 | 指令 | 說明 |
 |------|------|
-| `cdui install` | 安裝 backend + frontend 依賴 |
-| `cdui update` | 拉取最新 `main` 並重新安裝依賴 |
-| `cdui dev` | 啟動 backend :8000 + frontend :5173 |
+| `cdui install` | 安裝 backend；前端從 release 下載（或本地 build，若有 `pnpm`）|
+| `cdui update` | 拉取最新 `main` 並重新取得前端 bundle |
+| `cdui start` | Production 模式 — 單一 uvicorn 跑 `:8000`（不需 Node）|
+| `cdui dev` | 開發模式 — backend `:8000` + Vite HMR `:5173`（需 Node + pnpm）|
+| `cdui build` | 本地建置前端 bundle（需 Node + pnpm）|
 | `cdui stop` | 停止所有服務 |
 | `cdui test` | 執行 backend 測試 |
-| `cdui clean` | 移除虛擬環境與 node_modules |
+| `cdui clean` | 移除虛擬環境、node_modules 與 `frontend/dist` |
 | `cdui uninstall` | clean + 移除 PATH 上的 launcher |
 
-> `cdui` 是 install 腳本放到 `~/.local/bin/cdui` 的輕量 launcher（Windows 為 `cdui.cmd`）。若你還沒重開 terminal，可改用絕對路徑：`~/CodefyUI/cdui dev`。`python scripts/dev.py <cmd>` 也一樣能用——`dev.py` 會自動切換到 venv 的 Python。
+> `cdui` 是 install 腳本放到 `~/.local/bin/cdui` 的輕量 launcher（Windows 為 `cdui.cmd`）。若你還沒重開 terminal，可改用絕對路徑：`~/CodefyUI/cdui start`。`python scripts/dev.py <cmd>` 也一樣能用——`dev.py` 會自動切換到 venv 的 Python。
+
+**貢獻者：** 若要 HMR（`cdui dev`），可在執行 install 腳本前設 `CODEFYUI_FORCE_BUILD=1`，或自行安裝 Node 24+ 與 pnpm。要鎖定特定版本，可設 `CODEFYUI_RELEASE_TAG=<tag>`。
 
 > 以上快速開始假設使用 **NVIDIA 顯卡 + CUDA 12.4**。若使用 CPU、Apple Silicon、AMD 或需要更詳細的疑難排解，請參考[完整安裝指南](./SETUP_zh-TW.md)。
 

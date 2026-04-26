@@ -4,14 +4,14 @@
 
 Two ways to get CodefyUI running:
 
-1. **[Quick Install](#quick-install)** (all platforms) — one-liner, auto-installs all dependencies. Recommended for most users.
+1. **[Quick Install](#quick-install)** (all platforms) — one-liner, end users only need `git`, `uv`, and Python. **No Node.js required.**
 2. **[Dev Install](#dev-install)** (all platforms) — manual [uv](https://github.com/astral-sh/uv) + pnpm setup. Use this for development or contributing.
 
 ---
 
 ## Quick Install
 
-Automatically installs git, Node.js, pnpm, and uv if missing. Python itself is then provided by uv — you don't need to install Python separately.
+Automatically installs `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release — **end users do not need Node.js or pnpm**.
 
 ```bash
 # macOS / Linux
@@ -30,14 +30,28 @@ On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/en-us/window
 The installer places a `cdui` launcher at `~/.local/bin/cdui` (Windows: `%USERPROFILE%\.local\bin\cdui.cmd`). Restart your terminal, then from any directory:
 
 ```bash
-cdui dev
+cdui start
 ```
 
-Available commands: `install` / `update` / `dev` / `stop` / `test` / `clean` / `uninstall`. `cdui` is a tiny launcher that finds a Python (uv-managed or system) and forwards to `dev.py`.
+Open [http://localhost:8000](http://localhost:8000). A single uvicorn process serves both the API and the prebuilt React app.
 
-Open [http://localhost:5173](http://localhost:5173). The frontend proxies API/WS to the backend at `:8000`.
+Available commands: `install` / `update` / `build` / `start` / `dev` / `stop` / `test` / `clean` / `uninstall`. `cdui` is a tiny launcher that finds a Python (uv-managed or system) and forwards to `dev.py`.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `CODEFYUI_DIR` | Install directory (default: `~/CodefyUI`) |
+| `CODEFYUI_RELEASE_TAG` | Pin the frontend bundle to a specific release tag (default: `latest`) |
+| `CODEFYUI_FORCE_BUILD` | Set to `1` to install Node + pnpm and build locally instead of downloading a release |
 
 > The default PyTorch install works on every platform (CPU / Apple Silicon MPS). For specific NVIDIA CUDA versions, AMD ROCm, or GPU verification, see [GPU Acceleration](#gpu-acceleration).
+
+### Production vs developer mode
+
+- `cdui start` — single uvicorn on `:8000` serves the prebuilt frontend. **No Node needed.** This is the default end-user mode.
+- `cdui dev` — Vite dev server on `:5173` with HMR + uvicorn on `:8000`. **Requires Node 24+ and pnpm.** Use this when editing frontend code.
+- `cdui build` — rebuild `frontend/dist` locally (also needs Node + pnpm).
 
 ---
 
@@ -213,6 +227,17 @@ uv pip install torch-directml
 
 ## Start the Backend and Frontend
 
+### Production mode (recommended for end users)
+
+Build the frontend once, then a single uvicorn serves everything:
+
+```bash
+cdui build               # produces frontend/dist (skip if you used the installer with prebuilt dist)
+cdui start               # serves API + frontend at http://localhost:8000
+```
+
+### Developer mode (HMR)
+
 **Backend (terminal 1):**
 
 ```bash
@@ -232,7 +257,7 @@ pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+Open [http://localhost:5173](http://localhost:5173). The Vite dev server proxies API/WS to backend `:8000`.
 
 Or start both at once from the project root:
 
