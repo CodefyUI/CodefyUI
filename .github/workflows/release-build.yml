@@ -50,17 +50,45 @@ jobs:
             workflow_dispatch) tag="$INPUT_TAG" ;;
             *)                 tag="" ;;
           esac
+          # Auto-detect pre-release flag from tag name. Pre-1.0 conventions
+          # like "rc", "beta", "alpha", "dev" all mean "not stable".
+          prerelease=false
+          shopt -s nocasematch
+          if [[ "$tag" =~ (rc|beta|alpha|dev) ]]; then
+            prerelease=true
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: '$tag' (event=$EVENT)"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: '$tag' (event=$EVENT, prerelease=$prerelease)"
 
       # Always check out the tag's commit so the asset matches what's tagged,
-      # not whatever main looked like at workflow start time.
+      # not whatever main looked like at workflow start time. Need full history
+      # for the tag annotation read-back step below.
       - uses: actions/checkout@v6
         with:
-          # For tag push events the default ref is already the tag — but for
-          # `release: created` the default ref is the branch the release
-          # points at, so be explicit.
           ref: ${{ steps.resolve.outputs.tag || github.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read tag annotation as release body
+        id: tagmsg
+        shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          # Pull the annotated tag's message. `%(contents)` includes the
+          # subject + body (and strips PGP sig if any).
+          msg="$(git tag -l --format='%(contents)' "$TAG")"
+          if [[ -z "$msg" ]]; then
+            # Lightweight tag (no -m) — fall back to the commit subject so the
+            # release isn't completely empty.
+            msg="$(git log -1 --format='%s%n%n%b' "$TAG")"
+          fi
+          # Write to a file: avoids GITHUB_OUTPUT heredoc quoting hazards
+          # for messages with backticks / dollars / EOF lines.
+          printf '%s\n' "$msg" > release-body.md
+          echo "Tag message ($(wc -l < release-body.md) lines):"
+          head -20 release-body.md
 
       - uses: pnpm/action-setup@v4
         with:
@@ -111,7 +139,8 @@ jobs:
 
       - name: Attach to GitHub release (tag push)
         # Auto-creates a draft release for the tag if one doesn't exist; if a
-        # release already exists for the tag, updates it (asset replaced).
+        # release already exists for the tag, updates it (asset replaced,
+        # prerelease/body refreshed).
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
@@ -119,13 +148,19 @@ jobs:
           files: frontend-dist.tar.gz
           fail_on_unmatched_files: true
           draft: true
-          generate_release_notes: true
+          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
+          # `make_latest: true` overrides GitHub's default of skipping
+          # pre-releases for /releases/latest/download/... URLs — without
+          # this, install.sh would fall through to the previous stable.
+          make_latest: 'true'
+          body_path: release-body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: "Attach to existing release (release:created)"
         # Covers the UI-created-release case: tag may already exist with no
-        # asset; we attach without changing draft/published status.
+        # asset; we attach without forcing draft/published status (don't
+        # un-publish a release the maintainer already published).
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
@@ -142,6 +177,12 @@ jobs:
           tag_name: ${{ inputs.tag }}
           files: frontend-dist.tar.gz
           fail_on_unmatched_files: true
+          # Manual dispatch: assume the maintainer is fixing a release that
+          # already exists. Update prerelease + body to match the tag, but
+          # don't flip draft status.
+          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
+          make_latest: 'true'
+          body_path: release-body.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

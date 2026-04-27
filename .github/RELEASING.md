@@ -12,14 +12,16 @@ git push origin 1.0.0rcN
 ```
 
 Then on GitHub:
-1. Wait for **Release Build** to finish (≈2 min) — produces a draft release with
-   `frontend-dist.tar.gz` attached.
+1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.
+   The workflow already sets:
+   - `frontend-dist.tar.gz` attached
+   - body = your tag annotation (`git tag -a -m "..."`)
+   - `prerelease` = true if the tag matches `rc` / `beta` / `alpha` / `dev`
+   - `make_latest` = true (overrides GitHub's "skip prereleases for /latest"
+     so `releases/latest/download/...` resolves to this rc)
 2. Open the draft, **edit notes if needed**.
-3. **For pre-release tags (`*rc*`)**: tick *Set as a pre-release* AND *Set as
-   the latest release* — without the latter, `releases/latest/download/...`
-   skips the rc and end-user installers fall through to local build.
-4. Click **Publish**.
-5. **Install Check** workflow fires automatically and end-to-ends `install.sh` /
+3. Click **Publish** — no manual flag toggles required.
+4. **Install Check** workflow fires automatically and end-to-ends `install.sh` /
    `install.ps1` against the just-published asset on Linux/macOS/Windows.
 
 ## Workflows that gate the release
