@@ -137,54 +137,78 @@ jobs:
           path: frontend-dist.tar.gz
           retention-days: 30
 
-      - name: Attach to GitHub release (tag push)
-        # Auto-creates a draft release for the tag if one doesn't exist; if a
-        # release already exists for the tag, updates it (asset replaced,
-        # prerelease/body refreshed).
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.resolve.outputs.tag }}
-          files: frontend-dist.tar.gz
-          fail_on_unmatched_files: true
-          draft: true
-          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
-          # `make_latest: true` overrides GitHub's default of skipping
-          # pre-releases for /releases/latest/download/... URLs — without
-          # this, install.sh would fall through to the previous stable.
-          make_latest: 'true'
-          body_path: release-body.md
+      # Use gh CLI directly instead of softprops/action-gh-release to avoid a
+      # known bug: when there's an existing draft release for the same tag,
+      # softprops can create a *duplicate* release instead of updating the
+      # draft, leaving GitHub with two records for one tag.
+      - name: Create or update release
+        if: github.event_name != 'workflow_dispatch' || inputs.tag != ''
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          PRERELEASE: ${{ steps.resolve.outputs.prerelease }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
 
-      - name: "Attach to existing release (release:created)"
-        # Covers the UI-created-release case: tag may already exist with no
-        # asset; we attach without forcing draft/published status (don't
-        # un-publish a release the maintainer already published).
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.resolve.outputs.tag }}
-          files: frontend-dist.tar.gz
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Find any existing release for this tag (drafts included).
+          existing_id=$(gh api "repos/$REPO/releases" \
+            --paginate \
+            --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -1 || true)
 
-      - name: Attach to specified tag (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: frontend-dist.tar.gz
-          fail_on_unmatched_files: true
-          # Manual dispatch: assume the maintainer is fixing a release that
-          # already exists. Update prerelease + body to match the tag, but
-          # don't flip draft status.
-          prerelease: ${{ steps.resolve.outputs.prerelease == 'true' }}
-          make_latest: 'true'
-          body_path: release-body.md
+          # `release: created` means the maintainer already created a release
+          # via the UI — preserve their draft/published choice. For tag push
+          # and dispatch we always create/keep as draft so the maintainer can
+          # review notes before publishing.
+          if [[ "$EVENT" == "release" ]]; then
+            preserve_draft=true
+          else
+            preserve_draft=false
+          fi
+
+          body="$(cat release-body.md)"
+
+          if [[ -n "$existing_id" ]]; then
+            echo "Updating existing release $existing_id"
+            if [[ "$preserve_draft" == "true" ]]; then
+              gh api -X PATCH "repos/$REPO/releases/$existing_id" \
+                -f tag_name="$TAG" \
+                -f name="$TAG" \
+                -F prerelease="$PRERELEASE" \
+                -f body="$body" \
+                -f make_latest=true
+            else
+              gh api -X PATCH "repos/$REPO/releases/$existing_id" \
+                -f tag_name="$TAG" \
+                -f name="$TAG" \
+                -F draft=true \
+                -F prerelease="$PRERELEASE" \
+                -f body="$body" \
+                -f make_latest=true
+            fi
+          else
+            echo "Creating new draft release for $TAG"
+            gh api -X POST "repos/$REPO/releases" \
+              -f tag_name="$TAG" \
+              -f name="$TAG" \
+              -F draft=true \
+              -F prerelease="$PRERELEASE" \
+              -f body="$body" \
+              -f make_latest=true
+          fi
+
+      - name: Upload frontend-dist.tar.gz to release
+        if: github.event_name != 'workflow_dispatch' || inputs.tag != ''
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          # `--clobber` overwrites a previously uploaded asset of the same
+          # name; without it a re-run would fail on conflict.
+          gh release upload "$TAG" frontend-dist.tar.gz --clobber
 
       - name: Build summary
         if: always()
