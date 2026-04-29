@@ -1,9 +1,11 @@
 import { memo } from 'react';
 import { Handle, Node, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
+import { useI18n } from '../../i18n';
 import type { LayerNodeData } from './graphSerialization';
 
 function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) {
+  const { t } = useI18n();
   const paramEntries = Object.entries(data.params);
   const hasParams = paramEntries.length > 0;
 
@@ -65,7 +67,7 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
           ))}
           {paramEntries.length > 3 && (
             <div style={{ fontSize: '0.5625rem', color: '#555', textAlign: 'center' }}>
-              +{paramEntries.length - 3} more
+              {t('subgraph.layerNode.moreParams', { count: paramEntries.length - 3 })}
             </div>
           )}
         </div>

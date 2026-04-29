@@ -1,6 +1,11 @@
 import type { NodeTranslations } from './types';
 
 const zhTW: NodeTranslations = {
+  // ── Control ──
+  Start: {
+    description: '標記執行的進入點。將此節點連接到要執行的腳本的第一個節點，類似於「當綠旗被點擊」積木。',
+  },
+
   // ── CNN ──
   Conv2d: {
     description: '對輸入張量套用 2D 卷積（封裝 nn.Conv2d）。$y[i,j]=\\sum_{k,l} x[i+k,j+l]\\cdot w[k,l] + b$',
@@ -177,6 +182,16 @@ const zhTW: NodeTranslations = {
   },
 
   // ── Data ──
+  TensorInput: {
+    description: '教學用進入點 — 內嵌張量編輯器，可使用明確值、隨機、零、一或 arange 模式。隨機模式可用 seed 重現。',
+    params: {
+      shape: '張量形狀，以逗號分隔的整數（例如 \'1,4,4\'）',
+      dtype: '資料型別',
+      value_mode: '張量填充方式',
+      values: '巢狀值列表（當 value_mode=explicit 時使用）',
+      seed: '可重現隨機數的種子（當 value_mode=random 時使用）',
+    },
+  },
   Dataset: {
     description: '載入標準資料集（MNIST、CIFAR10 或 FashionMNIST）',
     params: {
@@ -245,6 +260,9 @@ const zhTW: NodeTranslations = {
       grad_clip_norm: '最大梯度範數裁剪（0 = 停用）',
     },
   },
+  BackwardOnce: {
+    description: '標記張量為 autograd 反向傳播的目標，供 Backward 檢視器使用。僅在工具列啟用 Backward 模式時執行。反向傳播目標：$\\mathcal{L} = \\sum(\\text{input})$（合成純量）。',
+  },
 
   LRScheduler: {
     description: '建立學習率排程器',
@@ -295,19 +313,20 @@ const zhTW: NodeTranslations = {
   },
 
   ModelSaver: {
-    description: '將模型權重（state_dict）儲存為 .pt/.pth 檔案',
+    description: '將模型權重（state_dict）儲存為 .pt/.pth/.safetensors 檔案',
     params: {
-      path: '輸出檔案路徑（.pt 或 .pth）',
+      path: '輸出檔案路徑（.pt、.pth 或 .safetensors）',
       save_mode: '儲存模式：state_dict（推薦）或完整模型',
+      format: '檔案格式：pytorch（.pt/.pth）或 safetensors（.safetensors）',
     },
   },
   ModelLoader: {
-    description: '從 .pt/.pth 檔案載入模型權重，或載入完整的已儲存模型',
+    description: '從 .pt/.pth/.safetensors 檔案載入模型權重，或載入完整的已儲存模型',
     params: {
-      path: '權重檔案路徑（.pt 或 .pth）',
+      path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
       load_mode: '載入模式：state_dict（需要模型輸入）或完整模型',
       device: '載入權重的裝置',
-      strict: '是否嚴格要求 state_dict 中的鍵值匹配',
+      strict: '是否嚴格要求 state_dict 中的鍵值匹配（僅 state_dict 模式）',
     },
   },
   CheckpointSaver: {

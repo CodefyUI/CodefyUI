@@ -125,6 +125,7 @@ const zhTW: Record<TranslationKey, string> = {
   'note.unbind': '解除綁定',
   'note.changeColor': '更改顏色',
   'note.layoutWarning': '未綁定的註記不會被自動排版重新定位。',
+  'note.boundToNode': '已綁定到節點',
 
   // Tabs
   'tabs.add': '新增分頁',
@@ -164,6 +165,7 @@ const zhTW: Record<TranslationKey, string> = {
   'subgraph.port.namePlaceholder': 'port 名稱',
   'subgraph.port.duplicate': 'port 名稱重複',
   'subgraph.port.list': 'Ports',
+  'subgraph.layerNode.moreParams': '+{count} 更多',
 
   // Tooltips
   'toolbar.tooltips.on': '提示 ON',
@@ -181,6 +183,15 @@ const zhTW: Record<TranslationKey, string> = {
   'customNodes.upload': '上傳 .py',
   'toolbar.customNodes': '自訂節點',
   'toolbar.customNodes.title': '管理自訂節點',
+
+  // ParamField（模型 / 影像檔案選擇器）
+  'paramField.upload.model': '上傳模型檔案',
+  'paramField.upload.image': '上傳影像檔案',
+  'paramField.download': '下載選取的檔案',
+  'paramField.refresh': '重新整理檔案列表',
+  'paramField.selectFile': '-- 選擇檔案 --',
+  'paramField.uploadFailed': '上傳失敗',
+  'paramField.downloadFailed': '下載失敗',
 
   // Grid Snap
   'toolbar.gridSnap.on': '吸附 ON',
@@ -216,6 +227,12 @@ const zhTW: Record<TranslationKey, string> = {
   'results.epoch': '輪次',
   'results.currentLoss': '損失',
   'results.bestLoss': '最佳',
+  'results.lossCurve': '損失曲線',
+  'results.waitingEpoch': '等待第一個 epoch...',
+  'results.epochsHeader': 'Epoch（{current}/{total}）',
+  'results.col.loss': '損失',
+  'results.col.delta': '變化量',
+  'results.col.time': '耗時',
 
   // Beginner Mode
   'toolbar.beginnerMode.on': '入門模式',
@@ -246,12 +263,16 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.title': '檢視器',
   'inspector.collapse': '收合檢視器',
   'inspector.expand': '展開檢視器',
+  'inspector.collapsedStub': '檢視器',
+  'inspector.segmentBadge': '段落',
+  'inspector.emptyPorts': '此節點沒有連接埠。',
   'inspector.empty.notRun': '執行圖以捕獲資料',
   'inspector.empty.notRunHint': '確認「錄製」已開啟，然後按下「執行」',
   'inspector.empty.noSelection': '選取節點或段落以檢視',
   'inspector.empty.noSelectionHint': '點擊任一節點，或 Shift 選兩個後按「段落比較」',
   'inspector.segment.inputs': '段落輸入（{count}）',
   'inspector.segment.outputs': '段落輸出（{count}）',
+  'inspector.valueDiff.noValues': '此連接埠沒有捕獲的值',
   'segment.removeThis': '移除此段落',
 
   // A1 — 詳細／步驟追蹤模式

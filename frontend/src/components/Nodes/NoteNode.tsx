@@ -111,7 +111,7 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
       <div className={styles.accentBar} style={{ background: noteColor }} />
 
       {/* Bind indicator */}
-      {isBound && <div className={styles.bindIcon} title="Bound to node">&#128279;</div>}
+      {isBound && <div className={styles.bindIcon} title={t('note.boundToNode')}>&#128279;</div>}
 
       {/* Text note */}
       {noteKind === 'text' && (

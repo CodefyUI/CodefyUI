@@ -194,7 +194,7 @@ export function InspectorPanel() {
     return (
       <div className={`${styles.panel} ${styles.collapsed}`}>
         {collapseButton}
-        <div className={styles.collapsedStub}>INSPECTOR</div>
+        <div className={styles.collapsedStub}>{t('inspector.collapsedStub')}</div>
       </div>
     );
   }
@@ -235,7 +235,7 @@ export function InspectorPanel() {
       <div className={styles.panel}>
         {collapseButton}
         <div className={styles.panelHeader}>
-          <span className={styles.segmentBadge}>SEGMENT</span>
+          <span className={styles.segmentBadge}>{t('inspector.segmentBadge')}</span>
           <span className={styles.segmentNames}>
             {targets.headName} → {targets.tailName}
           </span>
@@ -299,7 +299,7 @@ export function InspectorPanel() {
         {inspectorTab === 'forward' && (
           <>
             {inputs.length === 0 && outputs.length === 0 && (
-              <div className={styles.emptyState}>This node has no ports.</div>
+              <div className={styles.emptyState}>{t('inspector.emptyPorts')}</div>
             )}
             {/* Pair input[i] with output[i] when possible */}
             {pairLists(inputs, outputs).map((row, i) => {

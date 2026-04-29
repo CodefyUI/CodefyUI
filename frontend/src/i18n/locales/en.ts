@@ -123,6 +123,7 @@ const en = {
   'note.unbind': 'Unbind Note',
   'note.changeColor': 'Change Color',
   'note.layoutWarning': 'Unbound notes were not repositioned by auto-layout.',
+  'note.boundToNode': 'Bound to node',
 
   // Tabs
   'tabs.add': 'New tab',
@@ -162,6 +163,7 @@ const en = {
   'subgraph.port.namePlaceholder': 'port name',
   'subgraph.port.duplicate': 'Duplicate port name',
   'subgraph.port.list': 'Ports',
+  'subgraph.layerNode.moreParams': '+{count} more',
 
   // Tooltips
   'toolbar.tooltips.on': 'Tips ON',
@@ -179,6 +181,15 @@ const en = {
   'customNodes.upload': 'Upload .py',
   'toolbar.customNodes': 'Custom Nodes',
   'toolbar.customNodes.title': 'Manage custom nodes',
+
+  // ParamField (file picker for model / image params)
+  'paramField.upload.model': 'Upload model file',
+  'paramField.upload.image': 'Upload image file',
+  'paramField.download': 'Download selected file',
+  'paramField.refresh': 'Refresh file list',
+  'paramField.selectFile': '-- select file --',
+  'paramField.uploadFailed': 'Upload failed',
+  'paramField.downloadFailed': 'Download failed',
 
   // Grid Snap
   'toolbar.gridSnap.on': 'Snap ON',
@@ -214,6 +225,12 @@ const en = {
   'results.epoch': 'Epoch',
   'results.currentLoss': 'Loss',
   'results.bestLoss': 'Best',
+  'results.lossCurve': 'Loss Curve',
+  'results.waitingEpoch': 'Waiting for first epoch...',
+  'results.epochsHeader': 'Epochs ({current}/{total})',
+  'results.col.loss': 'Loss',
+  'results.col.delta': 'Delta',
+  'results.col.time': 'Time',
 
   // Beginner Mode
   'toolbar.beginnerMode.on': 'Beginner',
@@ -244,12 +261,16 @@ const en = {
   'inspector.title': 'Inspector',
   'inspector.collapse': 'Collapse inspector',
   'inspector.expand': 'Expand inspector',
+  'inspector.collapsedStub': 'INSPECTOR',
+  'inspector.segmentBadge': 'SEGMENT',
+  'inspector.emptyPorts': 'This node has no ports.',
   'inspector.empty.notRun': 'Run the graph to capture data',
   'inspector.empty.notRunHint': 'Make sure Rec is ON, then click ▶ Run',
   'inspector.empty.noSelection': 'Select a node or segment to inspect',
   'inspector.empty.noSelectionHint': 'Click any node, or shift-select two and press Compare',
   'inspector.segment.inputs': 'Segment inputs ({count})',
   'inspector.segment.outputs': 'Segment outputs ({count})',
+  'inspector.valueDiff.noValues': 'No values captured for this port',
   'segment.removeThis': 'Remove this segment',
 
   // A1 — Verbose / step-trace mode
