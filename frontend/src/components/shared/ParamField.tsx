@@ -8,6 +8,7 @@ import {
   uploadImageFile,
   uploadModelFile,
 } from '../../api/rest';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
 import { TensorGridEditor } from '../ConfigPanel/TensorGridEditor';
 import styles from './ParamField.module.css';
@@ -29,7 +30,7 @@ interface FileFieldBackend {
   upload: (file: File) => Promise<{ filename: string }>;
   download: (filename: string) => Promise<void>;
   accept: string;
-  uploadTitle: string;
+  uploadTitleKey: TranslationKey;
 }
 
 const MODEL_FILE_BACKEND: FileFieldBackend = {
@@ -37,7 +38,7 @@ const MODEL_FILE_BACKEND: FileFieldBackend = {
   upload: uploadModelFile,
   download: downloadModelFile,
   accept: '.pt,.pth,.safetensors,.ckpt,.bin',
-  uploadTitle: 'Upload model file',
+  uploadTitleKey: 'paramField.upload.model',
 };
 
 const IMAGE_FILE_BACKEND: FileFieldBackend = {
@@ -45,7 +46,7 @@ const IMAGE_FILE_BACKEND: FileFieldBackend = {
   upload: uploadImageFile,
   download: downloadImageFile,
   accept: '.png,.jpg,.jpeg,.bmp,.webp,.gif,.tiff',
-  uploadTitle: 'Upload image file',
+  uploadTitleKey: 'paramField.upload.image',
 };
 
 function FileField({
@@ -61,6 +62,7 @@ function FileField({
   displayLabel: string;
   backend: FileFieldBackend;
 }) {
+  const { t } = useI18n();
   const [files, setFiles] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -83,7 +85,7 @@ function FileField({
       refresh();
       onChange(param.name, result.filename);
     } catch (err: any) {
-      useToastStore.getState().addToast(err.message ?? 'Upload failed', 'error');
+      useToastStore.getState().addToast(err.message ?? t('paramField.uploadFailed'), 'error');
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -96,7 +98,7 @@ function FileField({
     try {
       await backend.download(String(value));
     } catch (err: any) {
-      useToastStore.getState().addToast(err.message ?? 'Download failed', 'error');
+      useToastStore.getState().addToast(err.message ?? t('paramField.downloadFailed'), 'error');
     } finally {
       setDownloading(false);
     }
@@ -112,7 +114,7 @@ function FileField({
           className={`${styles.input} ${styles.select} ${styles.modelFileSelect}`}
         >
           <option value="" style={{ background: '#222' }}>
-            -- select file --
+            {t('paramField.selectFile')}
           </option>
           {files.map((f) => (
             <option key={f} value={f} style={{ background: '#222' }}>
@@ -125,7 +127,7 @@ function FileField({
           className={styles.modelFileBtn}
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
-          title={backend.uploadTitle}
+          title={t(backend.uploadTitleKey)}
         >
           {uploading ? '...' : '↑'}
         </button>
@@ -134,7 +136,7 @@ function FileField({
           className={styles.modelFileBtn}
           onClick={handleDownload}
           disabled={!value || downloading}
-          title="Download selected file"
+          title={t('paramField.download')}
         >
           {downloading ? '...' : '↓'}
         </button>
@@ -142,7 +144,7 @@ function FileField({
           type="button"
           className={styles.modelFileBtn}
           onClick={refresh}
-          title="Refresh file list"
+          title={t('paramField.refresh')}
         >
           ↻
         </button>

@@ -26,7 +26,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
   const presets = useNodeDefStore((s) => s.presets);
   const addNode = useTabStore((s) => s.addNode);
   const addPresetNode = useTabStore((s) => s.addPresetNode);
-  const { tn } = useI18n();
+  const { t, tn } = useI18n();
 
   // Filter results
   const results: SearchResult[] = (() => {
@@ -139,12 +139,12 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={handleKeyDown}
         className={styles.input}
-        placeholder="Search nodes..."
+        placeholder={t('palette.search')}
         autoComplete="off"
       />
       <div ref={listRef} className={styles.list}>
         {results.length === 0 && (
-          <div className={styles.empty}>No matches</div>
+          <div className={styles.empty}>{t('palette.noMatch')}</div>
         )}
         {results.map((r, i) => {
           const name = r.kind === 'node' ? r.def.node_name : r.preset.preset_name;

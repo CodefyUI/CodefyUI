@@ -351,14 +351,14 @@ export function ResultsPanel() {
               <div className={styles.trainingColumns}>
                 {/* Loss chart */}
                 <div className={styles.trainingChartCol}>
-                  <div className={styles.sectionHeader}>Loss Curve</div>
+                  <div className={styles.sectionHeader}>{t('results.lossCurve')}</div>
                   {trainingData.epochs.length > 0 ? (
                     <LossChart
                       losses={trainingData.epochs.map((e) => e.loss)}
                       height={Math.max(80, panelHeight - 90)}
                     />
                   ) : (
-                    <div className={styles.emptyState}>Waiting for first epoch...</div>
+                    <div className={styles.emptyState}>{t('results.waitingEpoch')}</div>
                   )}
                 </div>
 
@@ -408,16 +408,16 @@ export function ResultsPanel() {
                         const last = trainingData.epochs[trainingData.epochs.length - 1];
                         return (
                           <div className={styles.sectionHeader}>
-                            Epochs ({last.epoch}/{last.total})
+                            {t('results.epochsHeader', { current: last.epoch, total: last.total })}
                           </div>
                         );
                       })()}
                       <div className={styles.epochTable}>
                         <div className={`${styles.epochRow} ${styles.epochRowHeader}`}>
                           <span>#</span>
-                          <span>Loss</span>
-                          <span>Delta</span>
-                          <span>Time</span>
+                          <span>{t('results.col.loss')}</span>
+                          <span>{t('results.col.delta')}</span>
+                          <span>{t('results.col.time')}</span>
                         </div>
                         {trainingData.epochs.map((ep, i) => {
                           const prev = i > 0 ? trainingData.epochs[i - 1].loss : null;

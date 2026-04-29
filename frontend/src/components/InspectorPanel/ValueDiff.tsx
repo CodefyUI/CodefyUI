@@ -1,3 +1,4 @@
+import { useI18n } from '../../i18n';
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
 import styles from './InspectorPanel.module.css';
@@ -50,8 +51,9 @@ function makeHighlight(
 }
 
 export function ValueDiff({ input, output, inputLabel = 'Input', outputLabel = 'Output' }: Props) {
+  const { t } = useI18n();
   if (input === null && output === null) {
-    return <div className={styles.diffEmpty}>No values captured for this port</div>;
+    return <div className={styles.diffEmpty}>{t('inspector.valueDiff.noValues')}</div>;
   }
 
   let highlight: ((i: number, j: number) => number) | undefined;
