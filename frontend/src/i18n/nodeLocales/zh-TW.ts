@@ -482,7 +482,7 @@ const zhTW: NodeTranslations = {
     },
   },
   Embedding: {
-    description: '為整數索引查找嵌入向量（封裝 nn.Embedding）。$E[i] = W[i, :]$ — 取出可學習表的第 $i$ 列。',
+    description: '可學習的嵌入查表（封裝 nn.Embedding）。將整數索引對應到可訓練權重矩陣 $W$ 的列：$E[i] = W[i, :]$。如需預訓練詞向量（GloVe 等），請改用 LLM 分類下的 `WordVector` 節點。',
     params: {
       num_embeddings: '詞彙表大小',
       embedding_dim: '每個嵌入向量的維度',
@@ -498,6 +498,17 @@ const zhTW: NodeTranslations = {
       family: 'Tokenizer 家族。tiktoken 完全離線可跑 cl100k/o200k/p50k/gpt2；其餘會在第一次使用時從 HuggingFace 下載 tokenizer.json。',
       text: '要切分的文字。當沒有 `text` 輸入連線時使用此欄位。',
       show_special_tokens: '是否輸出 tokenizer 的特殊 token（BOS/EOS/CLS/SEP/...）。',
+    },
+  },
+  WordVector: {
+    description:
+      '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
+    params: {
+      backend:
+        '向量來源。demo-16d 是手工打造的玩具詞彙、完全離線可跑；glove-* 會在第一次使用時下載真實 GloVe 向量；minilm-sentence-384d 需要安裝 [llm-sentence] 額外相依套件。',
+      words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
+      normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
+      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
     },
   },
 
