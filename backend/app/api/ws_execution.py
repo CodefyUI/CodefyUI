@@ -36,6 +36,11 @@ def _summarize_single(value: Any) -> dict[str, Any]:
             elif value.numel() > 0:
                 summary["min"] = int(value.min())
                 summary["max"] = int(value.max())
+            # Embed values for small tensors so per-node viz (e.g. the
+            # embedding scatter plot) can render without a separate REST
+            # round-trip. Larger tensors keep going through /api/execution/outputs.
+            if value.numel() <= 256:
+                summary["values"] = value.detach().cpu().tolist()
             return summary
         if isinstance(value, torch.nn.Module):
             param_count = sum(p.numel() for p in value.parameters())

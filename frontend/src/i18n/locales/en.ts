@@ -356,6 +356,7 @@ const en = {
   'tokenizer.emptyOutput': 'No tokens — input text was empty.',
   'tokenizer.runHint': 'Run the graph to see tokens',
   'tokenizer.truncatedInline': 'showing first {shown} of {total} — see Inspector for full list',
+  'scatter.runHint': 'Run the graph to see the projection',
 } as const;
 
 export type TranslationKey = keyof typeof en;

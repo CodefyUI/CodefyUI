@@ -358,6 +358,7 @@ const zhTW: Record<TranslationKey, string> = {
   'tokenizer.emptyOutput': '沒有 token — 輸入文字為空。',
   'tokenizer.runHint': '執行圖以查看 token',
   'tokenizer.truncatedInline': '顯示前 {shown} 個（共 {total} 個）— 完整列表請看檢視器',
+  'scatter.runHint': '執行圖以查看投影結果',
 };
 
 export default zhTW;

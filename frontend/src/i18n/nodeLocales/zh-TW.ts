@@ -511,6 +511,15 @@ const zhTW: NodeTranslations = {
       keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
     },
   },
+  EmbeddingScatter: {
+    description:
+      '把高維嵌入投影到 2D 來「看見」嵌入空間的幾何結構。語意相近的字會聚成一群。PCA 是線性、決定性、快；t-SNE 是非線性、會更好保留局部鄰域結構，但每次跑出來的版面都略有不同。',
+    params: {
+      method: 'PCA：線性、決定性、快。t-SNE：非線性、保留局部鄰域結構。',
+      perplexity: '只在 t-SNE 使用 — 局部親和模型的鄰域大小。',
+      seed: '隨機種子（給 t-SNE）。同樣的種子會得到一樣的版面。',
+    },
+  },
 
   // ── Custom ──
   AddScalar: {
