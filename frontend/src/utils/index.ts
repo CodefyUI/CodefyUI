@@ -2,6 +2,16 @@ export function generateId(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Frontend allowlist mapping NODE_NAME → custom xyflow node type. Nodes not
+ * listed here render via the default `baseNode`. Backend stays UI-agnostic;
+ * the renderer choice lives in the frontend so saved graphs round-trip without
+ * baking a renderer hint into persistence.
+ */
+export const VIZ_NODE_TYPES: Record<string, string> = {
+  // Populated as viz nodes land (PR 3, PR 5).
+};
+
 export const DATA_TYPE_COLORS: Record<string, string> = {
   TENSOR: '#4CAF50',
   MODEL: '#2196F3',
@@ -123,7 +133,7 @@ export function resolveSerializedNodes(
     const def = defMap.get(nodeType);
     return {
       id: raw.id,
-      type: 'baseNode',
+      type: VIZ_NODE_TYPES[nodeType] ?? 'baseNode',
       position,
       data: {
         label: raw.data?.label ?? nodeType,
