@@ -520,6 +520,15 @@ const zhTW: NodeTranslations = {
       seed: '隨機種子（給 t-SNE）。同樣的種子會得到一樣的版面。',
     },
   },
+  CosineSimilarity: {
+    description:
+      '計算每個 query 與每個 key 之間的 cosine similarity。對單位向量輸入這就是點積；非單位向量會自動正規化。輸出整個相似度矩陣以及每個 query 的 top-k key — 這就是 RAG 中向量檢索的核心。',
+    params: {
+      top_k: '每個 query 要回傳的最相似 key 數量。',
+      exclude_self_words:
+        '要從 top-k 排除的標籤（以逗號分隔）。在類比示範中很有用：設成 "king,man,woman" 可以讓 top-1 直接顯示 queen。',
+    },
+  },
 
   // ── Custom ──
   AddScalar: {
