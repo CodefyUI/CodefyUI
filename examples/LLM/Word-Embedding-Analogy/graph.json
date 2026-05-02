@@ -14,7 +14,10 @@
     { "id": "print_top","type": "Print", "position": { "x": 1140, "y": 100 }, "data": { "params": { "label": "Top-k labels (excluding self)" } } }
   ],
   "edges": [
-    { "id": "trig",  "source": "start-1",  "target": "wv_king",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_king",  "source": "start-1", "target": "wv_king",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_man",   "source": "start-1", "target": "wv_man",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_woman", "source": "start-1", "target": "wv_woman", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_all",   "source": "start-1", "target": "wv_all",   "sourceHandle": "trigger", "type": "trigger" },
     { "id": "e1",    "source": "wv_king",  "target": "sub_man",   "sourceHandle": "embeddings", "targetHandle": "tensor_a" },
     { "id": "e2",    "source": "wv_man",   "target": "sub_man",   "sourceHandle": "embeddings", "targetHandle": "tensor_b" },
     { "id": "e3",    "source": "sub_man",  "target": "add_woman", "sourceHandle": "tensor",     "targetHandle": "tensor_a" },
