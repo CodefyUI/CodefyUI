@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, type ReactNode } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
@@ -12,7 +12,23 @@ import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
 import styles from './BaseNode.module.css';
 
-function BaseNode({ id, data, selected }: NodeProps<AppNode>) {
+type BaseNodeProps = NodeProps<AppNode> & {
+  /**
+   * Custom UI rendered inside the node card, between the ports area and the
+   * params summary. Used by viz nodes (e.g. TokenizerVizNode) to inject
+   * inline visualizations like animated token chips. The default `BaseNode`
+   * passes nothing.
+   */
+  bodyExtra?: ReactNode;
+};
+
+/**
+ * Named export — the full node card with an injectable body slot. Use this
+ * from custom xyflow node components that compose around BaseNode (e.g.
+ * `<BaseNodeBody {...props} bodyExtra={<MyViz />} />`). The default export
+ * below memoizes a slot-less version for the regular ``baseNode`` xyflow type.
+ */
+export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const openSubgraphModal = useTabStore((s) => s.openSubgraphModal);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
@@ -189,6 +205,9 @@ function BaseNode({ id, data, selected }: NodeProps<AppNode>) {
         ))}
       </div>
 
+      {/* Custom body slot — viz nodes inject animated chips, scatter plots, etc. */}
+      {bodyExtra}
+
       {/* Params display — special view for SequentialModel */}
       {isSequentialModel && (
         <div className={styles.subgraphSection}>
@@ -293,6 +312,10 @@ function BaseNode({ id, data, selected }: NodeProps<AppNode>) {
       )}
     </div>
   );
+}
+
+function BaseNode(props: NodeProps<AppNode>) {
+  return <BaseNodeBody {...props} />;
 }
 
 export default memo(BaseNode);

@@ -354,6 +354,8 @@ const en = {
   // LLM
   'tokenizer.tokenCount': '{count} tokens',
   'tokenizer.emptyOutput': 'No tokens — input text was empty.',
+  'tokenizer.runHint': 'Run the graph to see tokens',
+  'tokenizer.truncatedInline': 'showing first {shown} of {total} — see Inspector for full list',
 } as const;
 
 export type TranslationKey = keyof typeof en;

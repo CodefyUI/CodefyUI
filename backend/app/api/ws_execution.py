@@ -55,6 +55,27 @@ def _summarize_single(value: Any) -> dict[str, Any]:
         if rel is not None:
             summary["download_path"] = rel
         return summary
+    if isinstance(value, (list, tuple)):
+        out: dict[str, Any] = {
+            "type": "list",
+            "length": len(value),
+            "repr": repr(value)[:200],
+        }
+        # Embed values for short primitive lists so per-node UIs (e.g. the
+        # tokenizer viz) can render chips without a separate REST round-trip.
+        # The Inspector full-fidelity view still uses /api/execution/outputs.
+        if len(value) <= 256:
+            primitive_types = (str, int, float, bool, type(None))
+            if all(isinstance(x, primitive_types) for x in value):
+                out["values"] = list(value)
+            elif all(
+                isinstance(x, (list, tuple))
+                and len(x) == 2
+                and all(isinstance(y, (int, float)) for y in x)
+                for x in value
+            ):
+                out["values"] = [list(x) for x in value]
+        return out
     return {"type": type(value).__name__, "repr": repr(value)[:200]}
 
 

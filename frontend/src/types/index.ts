@@ -65,6 +65,14 @@ export interface OutputSummary {
   params?: number;
   trainable?: number;
   repr?: string;
+  /** For LIST outputs: total length (regardless of whether values are inlined). */
+  length?: number;
+  /**
+   * For short LIST outputs (≤256 primitive items, or 2-tuples of numbers),
+   * the actual values are embedded so per-node visualizations can render
+   * without a separate REST fetch.
+   */
+  values?: unknown[];
   // Set by the backend when the string value is a file under MODELS_DIR;
   // holds the path relative to MODELS_DIR so the frontend can download it.
   download_path?: string;

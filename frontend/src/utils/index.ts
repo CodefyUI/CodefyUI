@@ -9,7 +9,7 @@ export function generateId(): string {
  * baking a renderer hint into persistence.
  */
 export const VIZ_NODE_TYPES: Record<string, string> = {
-  // Populated as viz nodes land (PR 3, PR 5).
+  Tokenizer: 'tokenizerNode',
 };
 
 export const DATA_TYPE_COLORS: Record<string, string> = {
