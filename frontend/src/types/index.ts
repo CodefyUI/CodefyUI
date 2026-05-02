@@ -152,6 +152,17 @@ export interface StringOutput {
   value: string;
 }
 
+export interface ListOutput {
+  type: 'list';
+  run_id: string;
+  node_id: string;
+  port: string;
+  length: number;
+  /** Populated when the list is small and primitive (≤1024 strings/numbers/bools or 2-tuples of numbers). */
+  values?: unknown[];
+  repr?: string;
+}
+
 export interface GenericOutput {
   type: string;
   run_id: string;
@@ -166,6 +177,7 @@ export type OutputData =
   | ModelOutput
   | ScalarOutput
   | StringOutput
+  | ListOutput
   | GenericOutput;
 
 export interface RunOutputRef {

@@ -490,6 +490,17 @@ const zhTW: NodeTranslations = {
     },
   },
 
+  // ── LLM ──
+  Tokenizer: {
+    description:
+      '把文字切成 LLM 看得懂的整數 token。不同家族用不同演算法 — BPE（GPT）、WordPiece（BERT）、SentencePiece（Llama、T5）— 同一段文字會被切成不同的樣子。',
+    params: {
+      family: 'Tokenizer 家族。tiktoken 完全離線可跑 cl100k/o200k/p50k/gpt2；其餘會在第一次使用時從 HuggingFace 下載 tokenizer.json。',
+      text: '要切分的文字。當沒有 `text` 輸入連線時使用此欄位。',
+      show_special_tokens: '是否輸出 tokenizer 的特殊 token（BOS/EOS/CLS/SEP/...）。',
+    },
+  },
+
   // ── Custom ──
   AddScalar: {
     description: '將純量值加到張量上（自訂節點範例）',

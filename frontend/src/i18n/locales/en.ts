@@ -350,6 +350,10 @@ const en = {
   'settings.nodeMode.desc': 'Basic shows only the essential categories in the sidebar; All shows every category.',
   'settings.nodeMode.basic': 'Basic',
   'settings.nodeMode.all': 'All',
+
+  // LLM
+  'tokenizer.tokenCount': '{count} tokens',
+  'tokenizer.emptyOutput': 'No tokens — input text was empty.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

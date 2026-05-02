@@ -352,6 +352,10 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.nodeMode.desc': 'Basic 只在側欄顯示新手會用到的基礎類別；All 則顯示全部類別。',
   'settings.nodeMode.basic': '入門',
   'settings.nodeMode.all': '全部',
+
+  // LLM
+  'tokenizer.tokenCount': '{count} 個 token',
+  'tokenizer.emptyOutput': '沒有 token — 輸入文字為空。',
 };
 
 export default zhTW;
