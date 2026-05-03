@@ -50,6 +50,115 @@ if sys.platform == "win32":
     except (AttributeError, OSError):
         pass
 
+
+# ── i18n + ANSI styling ───────────────────────────────────────────────────────
+
+def _detect_lang() -> str:
+    """Decide between zh / en. CODEFYUI_LANG > LANG/LC_ALL > python locale > en."""
+    explicit = os.environ.get("CODEFYUI_LANG", "").strip().lower()
+    if explicit in ("en", "english"):
+        return "en"
+    if explicit in ("zh", "zh-tw", "zh_tw", "zh-hk", "zh_hk", "zh-cn", "zh_cn", "chinese"):
+        return "zh"
+    raw = (os.environ.get("LANG") or os.environ.get("LC_ALL") or "").lower()
+    if raw.startswith("zh"):
+        return "zh"
+    if raw.startswith("en"):
+        return "en"
+    try:
+        import locale
+        loc = (locale.getdefaultlocale()[0] or "").lower()
+        if loc.startswith("zh"):
+            return "zh"
+    except Exception:
+        pass
+    return "en"
+
+
+LANG = _detect_lang()
+
+
+def t(zh: str, en: str) -> str:
+    """Pick the localized message for the current LANG."""
+    return zh if LANG == "zh" else en
+
+
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if not sys.stdout.isatty():
+        return False
+    return True
+
+
+USE_COLOR = _supports_color()
+
+
+def _enable_windows_vt() -> None:
+    """Switch the legacy Windows console into VT mode so ANSI escapes render."""
+    if sys.platform != "win32" or not USE_COLOR:
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            kernel32.SetConsoleMode(h, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+_enable_windows_vt()
+
+
+def _ansi(*codes: int) -> str:
+    return f"\x1b[{';'.join(map(str, codes))}m" if USE_COLOR else ""
+
+
+RESET  = _ansi(0)
+BOLD   = _ansi(1)
+DIM    = _ansi(2)
+RED    = _ansi(31)
+GREEN  = _ansi(32)
+YELLOW = _ansi(33)
+BLUE   = _ansi(34)
+MAGENTA = _ansi(35)
+CYAN   = _ansi(36)
+GRAY   = _ansi(90)
+
+
+def _display_width(s: str) -> int:
+    """Visual column width — Chinese / fullwidth chars count as 2."""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in s)
+
+
+def section(zh: str, en: str) -> None:
+    """Coloured `=== heading ===` line, picks language."""
+    print(f"{BOLD}{CYAN}=== {t(zh, en)} ==={RESET}")
+
+
+def banner(zh: str, en: str) -> None:
+    """Top-of-screen banner used at the start of install."""
+    msg = t(zh, en)
+    w = _display_width(msg) + 2
+    print()
+    print(f"{BOLD}{MAGENTA}┌{'─' * w}┐{RESET}")
+    print(f"{BOLD}{MAGENTA}│ {msg} │{RESET}")
+    print(f"{BOLD}{MAGENTA}└{'─' * w}┘{RESET}")
+    print()
+
+
+def warn(zh: str, en: str) -> None:
+    print(f"{YELLOW}⚠ {t(zh, en)}{RESET}", file=sys.stderr)
+
+
+def err(zh: str, en: str) -> None:
+    print(f"{RED}✗ {t(zh, en)}{RESET}", file=sys.stderr)
+
+
 ROOT = Path(__file__).resolve().parent.parent  # dev.py lives in <root>/scripts/
 BACKEND_DIR = ROOT / "backend"
 FRONTEND_DIR = ROOT / "frontend"
@@ -334,6 +443,10 @@ def _parse_install_args(argv_tail: list[str]) -> argparse.Namespace:
         "--yes", "-y", action="store_true",
         help="Skip prompts; equivalent to --gpu auto --no-dev when nothing else set.",
     )
+    p.add_argument(
+        "--lang", choices=["en", "zh"], default=None,
+        help="Output language (en/zh). Auto-detected from CODEFYUI_LANG / LANG / locale otherwise.",
+    )
     return p.parse_args(argv_tail)
 
 
@@ -341,23 +454,46 @@ def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str
     """Interactive menu for GPU + dev choice. Stays inside the terminal — no curses."""
     options = ["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128",
                "rocm6.1", "rocm6.2", "mps", "skip"]
+    descriptions = {
+        "auto":    t("依偵測自動選擇", "auto-pick from detection"),
+        "cpu":     "CPU only",
+        "cu118":   "CUDA 11.8",
+        "cu121":   "CUDA 12.1",
+        "cu124":   "CUDA 12.4",
+        "cu126":   "CUDA 12.6",
+        "cu128":   "CUDA 12.8",
+        "rocm6.1": "ROCm 6.1 (AMD, Linux)",
+        "rocm6.2": "ROCm 6.2 (AMD, Linux)",
+        "mps":     t("Apple Silicon (MPS)", "Apple Silicon (MPS)"),
+        "skip":    t("不動 torch（保留現有）", "leave torch untouched"),
+    }
 
+    banner("CodefyUI 安裝", "CodefyUI installer")
+    print(f"  {DIM}{t('偵測到', 'Detected')}:{RESET} {GREEN}{detected_label}{RESET}")
+    print(f"  {DIM}{t('語言', 'Language')}:{RESET}  {LANG}  {GRAY}{t('（用 --lang en 或 CODEFYUI_LANG=en 切換）', '(set --lang or CODEFYUI_LANG to switch)')}{RESET}")
     print()
-    print("=== CodefyUI install ===")
-    print(f"偵測到：{detected_label}")
-    print()
-    print("選擇 PyTorch wheel：")
+    print(f"  {BOLD}{t('PyTorch wheel：', 'PyTorch wheel:')}{RESET}")
     for i, opt in enumerate(options, 1):
-        marker = ""
-        if opt == "auto":
-            marker = f"  → {detected_gpu}（依偵測結果）"
-        elif opt == detected_gpu:
-            marker = "  ← 偵測到"
-        print(f"  [{i:>2}] {opt}{marker}")
+        is_default = (opt == "auto")
+        is_detected = (opt == detected_gpu)
+        # Build trailing annotation
+        bits = [descriptions[opt]]
+        if is_default:
+            bits.append(t("預設", "default"))
+            bits.append(f"→ {detected_gpu}")
+        elif is_detected:
+            bits.append(t("符合偵測結果", "matches detection"))
+        annotation = f"  {GRAY}— {', '.join(bits)}{RESET}"
+
+        num = f"{i:>2}"
+        label_color = GREEN if is_default else (CYAN if is_detected else "")
+        label_reset = RESET if label_color else ""
+        print(f"   {DIM}{num}){RESET} {label_color}{opt:<8}{label_reset}{annotation}")
     print()
 
     while True:
-        raw = input("選擇（直接 Enter = 1, auto）：").strip() or "1"
+        prompt = t("選擇（Enter = 1, auto）", "Choose [1]")
+        raw = input(f"  {prompt}: ").strip() or "1"
         try:
             idx = int(raw) - 1
             if 0 <= idx < len(options):
@@ -365,24 +501,33 @@ def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str
                 break
         except ValueError:
             pass
-        print(f"  輸入無效，請填 1 到 {len(options)}")
+        print(f"  {YELLOW}{t('輸入無效，請填', 'Invalid choice — enter')} 1..{len(options)}{RESET}")
 
-    raw = input("是否安裝 dev 測試工具（pytest, httpx 等）？[y/N]：").strip().lower()
+    dev_prompt = t("安裝 dev 測試工具（pytest, httpx 等）？[y/N]", "Install dev tooling (pytest, httpx, ...) [y/N]")
+    raw = input(f"  {dev_prompt}: ").strip().lower()
     dev = raw in ("y", "yes")
 
-    print(f"\n→ gpu={gpu}, dev={dev}\n")
+    print()
+    print(f"  {DIM}→{RESET} gpu={GREEN}{gpu}{RESET}, dev={GREEN}{dev}{RESET}")
+    print()
     return gpu, dev
 
 
 def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
     """Combine CLI flags + env vars + interactive prompt into a final (gpu, dev)."""
     args = _parse_install_args(argv_tail)
+
+    # --lang flag overrides env-var-based LANG detection done at module load.
+    if args.lang:
+        global LANG
+        LANG = args.lang
+
     detected_label, detected_gpu = detect_gpu()
 
     gpu = args.gpu or os.environ.get("CODEFYUI_GPU", "").strip() or None
     if gpu is not None and gpu not in TORCH_INDEX_URLS:
-        print(f"錯誤：未知的 --gpu 值 {gpu!r}（合法值：{', '.join(TORCH_INDEX_URLS)}）",
-              file=sys.stderr)
+        err(f"未知的 --gpu 值 {gpu!r}（合法值：{', '.join(TORCH_INDEX_URLS)}）",
+            f"Unknown --gpu value {gpu!r} (valid: {', '.join(TORCH_INDEX_URLS)})")
         sys.exit(2)
 
     dev = args.dev
@@ -406,7 +551,10 @@ def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
             gpu = "auto"
         if dev is None:
             dev = False
-        print(f"=== CodefyUI install: gpu={gpu}, dev={dev}（偵測：{detected_label}）===")
+        section(
+            f"CodefyUI install: gpu={gpu}, dev={dev}（偵測：{detected_label}）",
+            f"CodefyUI install: gpu={gpu}, dev={dev} (detected: {detected_label})",
+        )
 
     if gpu == "auto":
         gpu = detected_gpu
@@ -414,25 +562,104 @@ def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
     return gpu, dev
 
 
+def _get_installed_torch_version() -> str | None:
+    """Read torch's __version__ from the venv without importing torch."""
+    candidates = [
+        VENV / "Lib" / "site-packages" / "torch" / "version.py",            # Windows
+        VENV / "lib" / "site-packages" / "torch" / "version.py",            # uv layout
+    ]
+    lib = VENV / "lib"
+    if lib.exists():
+        for entry in lib.iterdir():
+            cand = entry / "site-packages" / "torch" / "version.py"
+            if cand.exists():
+                candidates.append(cand)
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("__version__"):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+        except OSError:
+            pass
+    return None
+
+
+def _print_post_install_summary(gpu: str, dev: bool) -> None:
+    """Print the 'Installed / Next steps' panel — what was done + how to run it."""
+    torch_ver = _get_installed_torch_version() or t("(尚未安裝)", "(not installed)")
+    has_pnpm = bool(shutil.which("pnpm"))
+    has_dist = DIST_INDEX.exists()
+    cdui_cmd = ".\\cdui" if sys.platform == "win32" else "./cdui"
+
+    print()
+    print(f"{BOLD}{GREEN}✓ {t('安裝完成', 'Installation complete')}{RESET}")
+    print()
+    print(f"  {DIM}PyTorch:{RESET}  {torch_ver}  {GRAY}(gpu={gpu}){RESET}")
+    print(f"  {DIM}Backend:{RESET}  {BACKEND_DIR}")
+    print(f"  {DIM}Frontend:{RESET} {DIST_DIR if has_dist else t('(未建置)', '(not built)')}")
+    if dev:
+        print(f"  {DIM}Dev tools:{RESET} pytest, httpx, httpx-ws")
+    print()
+    print(f"{BOLD}{CYAN}▸ {t('下一步', 'Next steps')}{RESET}")
+    print()
+
+    if has_pnpm:
+        print(f"  {BOLD}{t('開發模式', 'Development')}{RESET} {GRAY}({t('HMR、需要 pnpm', 'HMR, requires pnpm')}){RESET}")
+        print(f"    {GREEN}{cdui_cmd} dev{RESET}")
+        print(f"      {GRAY}→ backend  http://localhost:8000{RESET}")
+        print(f"      {GRAY}→ frontend http://localhost:5173{RESET}")
+        print()
+
+    print(f"  {BOLD}{t('正式模式', 'Production')}{RESET} {GRAY}({t('單一 uvicorn 直接 serve dist', 'single uvicorn serving dist')}){RESET}")
+    print(f"    {GREEN}{cdui_cmd} start{RESET}")
+    print(f"      {GRAY}→ http://localhost:8000{RESET}")
+    print()
+
+    other_bits = [f"{cdui_cmd} stop", f"{cdui_cmd} clean"]
+    if dev:
+        other_bits.insert(1, f"{cdui_cmd} test")
+    print(f"  {DIM}{t('其他', 'Other')}:{RESET} " + GRAY + " | ".join(other_bits) + RESET)
+
+    if not has_pnpm:
+        print()
+        warn(
+            "未偵測到 pnpm，僅可使用 production 模式。如需開發模式請安裝 Node.js 24+ 與 pnpm。",
+            "pnpm not detected — only production mode available. Install Node.js 24+ and pnpm for dev mode.",
+        )
+    if gpu == "skip":
+        print()
+        warn(
+            "已略過 PyTorch 安裝；請自行確保 venv 內已安裝合適的 torch。",
+            "PyTorch install was skipped; ensure a suitable torch is already in the venv.",
+        )
+    print()
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def install(gpu: str, dev: bool) -> None:
     """Backend + frontend install. Caller resolves `gpu` / `dev` choices."""
     if VENV.exists():
-        print("=== Backend: 虛擬環境已存在，跳過建立 ===")
+        section("Backend: 虛擬環境已存在，跳過建立",
+                "Backend: virtual env already exists, skipping create")
     else:
-        print("=== Backend: 建立虛擬環境 ===")
+        section("Backend: 建立虛擬環境", "Backend: creating virtual env")
         run(["uv", "venv", "--python", "3.11"], cwd=BACKEND_DIR)
 
     # Step 1: PyTorch wheel — installed BEFORE `-e .` so the variant satisfies
     # the `torch>=2.0.0` dependency without re-resolving from PyPI default.
     index_url = TORCH_INDEX_URLS.get(gpu)
     if index_url == "__skip__":
-        print("=== Backend: 略過 PyTorch 安裝（保留現有版本）===")
+        section("Backend: 略過 PyTorch 安裝（保留現有版本）",
+                "Backend: skipping PyTorch install (keeping existing)")
     elif index_url is None:
-        print(f"=== Backend: PyTorch 走 PyPI 預設（gpu={gpu}）===")
+        section(f"Backend: PyTorch 走 PyPI 預設（gpu={gpu}）",
+                f"Backend: PyTorch from PyPI default (gpu={gpu})")
     else:
-        print(f"=== Backend: 安裝 PyTorch（{gpu}）— {index_url} ===")
+        section(f"Backend: 安裝 PyTorch（{gpu}）— {index_url}",
+                f"Backend: installing PyTorch ({gpu}) — {index_url}")
         run(["uv", "pip", "install", "torch", "torchvision",
              "--index-url", index_url], cwd=BACKEND_DIR)
 
@@ -440,7 +667,7 @@ def install(gpu: str, dev: bool) -> None:
     # `tiktoken` etc. are all in [project.dependencies] now — no separate
     # explicit install needed.
     spec = ".[dev]" if dev else "."
-    print(f"=== Backend: 安裝依賴（{spec}）===")
+    section(f"Backend: 安裝依賴（{spec}）", f"Backend: installing dependencies ({spec})")
     run(["uv", "pip", "install", "-e", spec], cwd=BACKEND_DIR)
 
     # Frontend: three branches in priority order.
@@ -451,28 +678,37 @@ def install(gpu: str, dev: bool) -> None:
     force_build = os.environ.get("CODEFYUI_FORCE_BUILD", "").strip() in ("1", "true", "yes")
 
     if DIST_INDEX.exists() and not force_build:
-        print("=== Frontend: dist 已存在，略過 ===")
+        section("Frontend: dist 已存在，略過", "Frontend: dist already exists, skipping")
     elif force_build or shutil.which("pnpm"):
         if not shutil.which("pnpm"):
-            print("錯誤：CODEFYUI_FORCE_BUILD=1 但找不到 pnpm", file=sys.stderr)
+            err("CODEFYUI_FORCE_BUILD=1 但找不到 pnpm",
+                "CODEFYUI_FORCE_BUILD=1 but pnpm not found")
             sys.exit(1)
-        print("=== Frontend: 安裝 node_modules ===")
+        section("Frontend: 安裝 node_modules", "Frontend: installing node_modules")
         run(["pnpm", "install"], cwd=FRONTEND_DIR)
-        print("=== Frontend: 建置 dist ===")
+        section("Frontend: 建置 dist", "Frontend: building dist")
         run(["pnpm", "build"], cwd=FRONTEND_DIR)
     else:
-        print("=== Frontend: 未偵測到 pnpm，改下載 release dist ===")
+        section("Frontend: 未偵測到 pnpm，改下載 release dist",
+                "Frontend: pnpm not found, downloading release dist instead")
         if not fetch_release_dist():
+            err("無法取得 frontend dist", "cannot fetch frontend dist")
             print(
-                "\n錯誤：無法取得 frontend dist。可選擇其一：\n"
-                "  1. 安裝 Node.js 24+ 與 pnpm 後重跑 cdui install\n"
-                "  2. 設定 CODEFYUI_RELEASE_TAG=<tag> 指定特定 release\n"
-                "  3. 檢查網路連線後重試",
+                t(
+                    "\n  可選擇其一：\n"
+                    "    1. 安裝 Node.js 24+ 與 pnpm 後重跑 cdui install\n"
+                    "    2. 設定 CODEFYUI_RELEASE_TAG=<tag> 指定特定 release\n"
+                    "    3. 檢查網路連線後重試",
+                    "\n  Try one of:\n"
+                    "    1. Install Node.js 24+ and pnpm, then re-run cdui install\n"
+                    "    2. Set CODEFYUI_RELEASE_TAG=<tag> to pin a specific release\n"
+                    "    3. Check your network and retry",
+                ),
                 file=sys.stderr,
             )
             sys.exit(1)
 
-    print("=== 安裝完成 ===")
+    _print_post_install_summary(gpu, dev)
 
 
 def install_command() -> None:
@@ -484,9 +720,10 @@ def install_command() -> None:
 def update() -> None:
     """拉取 main branch 的最新版本並重新同步依賴。Accepts the same flags as install."""
     if not (ROOT / ".git").exists():
-        print("錯誤：此目錄不是 git clone，無法 update", file=sys.stderr)
+        err("此目錄不是 git clone，無法 update",
+            "Not a git checkout — cannot update")
         sys.exit(1)
-    print("=== 拉取最新版本（main）===")
+    section("拉取最新版本（main）", "Pulling latest (main)")
     # Explicit remote/branch so the command works even on a detached HEAD or
     # a branch that doesn't track upstream.
     run(["git", "fetch", "origin", "main"], cwd=ROOT)
@@ -496,12 +733,11 @@ def update() -> None:
     # Old dist is for the previous source — wipe it so install re-downloads
     # (or re-builds, when pnpm is on PATH) for the new code.
     if DIST_DIR.exists():
-        print("=== 移除舊 frontend/dist ===")
+        section("移除舊 frontend/dist", "Removing stale frontend/dist")
         shutil.rmtree(DIST_DIR, ignore_errors=True)
 
     gpu, dev = _resolve_install_options(sys.argv[2:])
     install(gpu=gpu, dev=dev)
-    print("=== 更新完成 ===")
 
 
 def build() -> None:
