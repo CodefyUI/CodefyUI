@@ -660,7 +660,14 @@ def install(gpu: str, dev: bool) -> None:
     else:
         section(f"Backend: 安裝 PyTorch（{gpu}）— {index_url}",
                 f"Backend: installing PyTorch ({gpu}) — {index_url}")
-        run(["uv", "pip", "install", "torch", "torchvision",
+        # `--reinstall-package` forces uv to drop the existing torch even when
+        # the version constraint is already satisfied. Without it, swapping
+        # variants (e.g. `--gpu cpu` after a previous `cu128` install) is a
+        # no-op and the user keeps the wrong wheel.
+        run(["uv", "pip", "install",
+             "--reinstall-package", "torch",
+             "--reinstall-package", "torchvision",
+             "torch", "torchvision",
              "--index-url", index_url], cwd=BACKEND_DIR)
 
     # Step 2: project + every node's runtime deps. `gymnasium` / `safetensors` /
