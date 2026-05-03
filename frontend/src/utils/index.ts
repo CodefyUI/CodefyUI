@@ -11,6 +11,7 @@ export function generateId(): string {
 export const VIZ_NODE_TYPES: Record<string, string> = {
   Tokenizer: 'tokenizerNode',
   EmbeddingScatter: 'embeddingScatterNode',
+  TextInput: 'textInputNode',
 };
 
 export const DATA_TYPE_COLORS: Record<string, string> = {

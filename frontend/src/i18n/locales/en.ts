@@ -357,6 +357,8 @@ const en = {
   'tokenizer.runHint': 'Run the graph to see tokens',
   'tokenizer.truncatedInline': 'showing first {shown} of {total} — see Inspector for full list',
   'scatter.runHint': 'Run the graph to see the projection',
+  'textInput.placeholder': 'Type text here…',
+  'textInput.charCount': '{count} chars',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -490,6 +490,14 @@ const zhTW: NodeTranslations = {
     },
   },
 
+  TextInput: {
+    description:
+      '純文字輸入點。在節點本體的多行 textarea 中打字，輸出 STRING 可以接到 Tokenizer、WordVector 或任何吃 STRING 的輸入埠。對之後 RAG 的 DocumentInput 是同一條路。',
+    params: {
+      value: '多行文字。可以拖曳 textarea 右下角調整大小。',
+    },
+  },
+
   // ── LLM ──
   Tokenizer: {
     description:
