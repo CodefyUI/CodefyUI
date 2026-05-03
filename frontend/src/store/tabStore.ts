@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
-import { generateId } from '../utils';
+import { generateId, VIZ_NODE_TYPES } from '../utils';
 import { autoLayout, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup } from '../types';
 import { ExecutionWebSocket } from '../api/ws';
@@ -455,7 +455,10 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }
     const node: Node<NodeData> = {
       id: generateId(),
-      type: definition.node_name === 'Start' ? 'start' : 'baseNode',
+      type:
+        definition.node_name === 'Start'
+          ? 'start'
+          : (VIZ_NODE_TYPES[definition.node_name] ?? 'baseNode'),
       position,
       data: {
         label: definition.node_name,
