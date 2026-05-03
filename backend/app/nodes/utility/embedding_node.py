@@ -8,8 +8,10 @@ class EmbeddingNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "Embedding"
     CATEGORY = "Utility"
     DESCRIPTION = (
-        "Lookup embedding vectors for integer indices (wraps nn.Embedding). "
-        "Conceptually $E[i] = W[i, :]$ — gather the $i$-th row of a learnable table."
+        "Learnable embedding lookup (wraps nn.Embedding). Maps integer indices "
+        "to vectors from a trainable weight matrix $W$ — conceptually "
+        "$E[i] = W[i, :]$. For pre-trained word vectors (GloVe, etc.) use the "
+        "`WordVector` node in the LLM category instead."
     )
 
     structural_params = ("num_embeddings", "embedding_dim", "padding_idx")

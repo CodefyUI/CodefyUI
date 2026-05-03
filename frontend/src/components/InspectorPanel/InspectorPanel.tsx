@@ -11,6 +11,7 @@ import { TensorGridView } from './TensorGridView';
 import { ValueDiff } from './ValueDiff';
 import { StepTraceView } from './StepTraceView';
 import { BackwardView } from './BackwardView';
+import { TokenChipsView } from './TokenChipsView';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
 
@@ -130,6 +131,8 @@ export function InspectorPanel() {
       return {
         mode: 'single' as const,
         nodeName: node.data.label,
+        nodeType: node.data.type,
+        nodeId: node.id,
         inputs,
         outputs,
       };
@@ -298,6 +301,13 @@ export function InspectorPanel() {
       <div className={styles.panelContent}>
         {inspectorTab === 'forward' && (
           <>
+            {targets.nodeType === 'Tokenizer' && (
+              <TokenChipsView
+                tokens={fetches[keyOf(targets.nodeId, 'tokens')]?.data ?? null}
+                tokenIds={fetches[keyOf(targets.nodeId, 'token_ids')]?.data ?? null}
+                offsets={fetches[keyOf(targets.nodeId, 'offsets')]?.data ?? null}
+              />
+            )}
             {inputs.length === 0 && outputs.length === 0 && (
               <div className={styles.emptyState}>{t('inspector.emptyPorts')}</div>
             )}

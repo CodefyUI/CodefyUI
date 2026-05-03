@@ -1,0 +1,37 @@
+.container {
+  border: 1px solid #2a2a2a;
+  border-radius: 6px;
+  background: #161616;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #232323;
+}
+
+.headerLabel {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  line-height: 1.6;
+}
+
+.empty {
+  padding: 16px;
+  color: #666;
+  font-size: 12px;
+  font-style: italic;
+}

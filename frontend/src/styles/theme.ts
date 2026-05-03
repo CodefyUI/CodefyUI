@@ -4,6 +4,7 @@ export const CATEGORY_COLORS: Record<string, string> = {
   CNN: '#4CAF50',
   RNN: '#2196F3',
   Transformer: '#9C27B0',
+  LLM: '#A78BFA',
   RL: '#FF9800',
   Data: '#00BCD4',
   Training: '#F44336',
@@ -13,6 +14,30 @@ export const CATEGORY_COLORS: Record<string, string> = {
   Normalization: '#26A69A',
   'Tensor Operations': '#5C6BC0',
 };
+
+/**
+ * Token chip palette — soft pastels at ~60% saturation, tuned for the dark IDE
+ * surface. Cycled by token index in the tokenizer visualization. Adjacent chips
+ * remain distinguishable without jarring against #121212.
+ */
+export const TOKEN_COLORS: readonly string[] = [
+  '#7DD3FC', // sky
+  '#FCA5A5', // rose
+  '#86EFAC', // mint
+  '#FCD34D', // amber
+  '#C4B5FD', // lavender
+  '#FDA4AF', // pink
+  '#6EE7B7', // emerald
+  '#FDBA74', // peach
+  '#A5B4FC', // indigo
+  '#67E8F9', // cyan
+  '#F0ABFC', // fuchsia
+  '#BEF264', // lime
+] as const;
+
+export function getTokenColor(index: number): string {
+  return TOKEN_COLORS[index % TOKEN_COLORS.length];
+}
 
 export const DIFFICULTY_COLORS: Record<string, string> = {
   beginner: '#4CAF50',

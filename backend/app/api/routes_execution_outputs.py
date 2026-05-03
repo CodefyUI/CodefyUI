@@ -125,7 +125,26 @@ def _serialize_value(value: Any, slice_str: str, max_elements: int) -> dict[str,
     if isinstance(value, str):
         return {"type": "string", "value": value[:4000]}
     if isinstance(value, (list, tuple)):
-        return {"type": "list", "length": len(value), "repr": repr(value)[:4000]}
+        out: dict[str, Any] = {
+            "type": "list",
+            "length": len(value),
+            "repr": repr(value)[:4000],
+        }
+        # Include the actual values when the list is small and JSON-friendly so
+        # the Inspector can render token chips, token IDs, and offset pairs
+        # without a separate /list endpoint. Anything else stays repr-only.
+        if len(value) <= 1024:
+            primitive_types = (str, int, float, bool, type(None))
+            if all(isinstance(x, primitive_types) for x in value):
+                out["values"] = list(value)
+            elif all(
+                isinstance(x, (list, tuple))
+                and len(x) == 2
+                and all(isinstance(y, (int, float)) for y in x)
+                for x in value
+            ):
+                out["values"] = [list(x) for x in value]
+        return out
     return {"type": type(value).__name__, "repr": repr(value)[:4000]}
 
 

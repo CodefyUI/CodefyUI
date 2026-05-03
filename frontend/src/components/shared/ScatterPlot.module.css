@@ -1,0 +1,70 @@
+.wrapper {
+  position: relative;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.svg {
+  display: block;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #161616;
+  border: 1px dashed #2a2a2a;
+  border-radius: 4px;
+  color: #666;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.dot {
+  cursor: default;
+  transition: r 0.12s ease, stroke 0.12s ease;
+}
+
+.axis {
+  stroke: #2a2a2a;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.label {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9px;
+  pointer-events: none;
+  user-select: none;
+  transition: fill-opacity 0.12s ease;
+}
+
+.labelActive {
+  font-weight: 600;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10000;
+  background: #0a0f17;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #eee;
+  pointer-events: none;
+  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
+}
+
+.tooltipLabel {
+  font-weight: 600;
+}
+
+.tooltipCoords {
+  margin-top: 2px;
+  color: #888;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+}

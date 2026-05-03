@@ -20,6 +20,9 @@ import BaseNode from '../Nodes/BaseNode';
 import PresetNode from '../Nodes/PresetNode';
 import { StartNode } from '../Nodes/StartNode';
 import NoteNode from '../Nodes/NoteNode';
+import TokenizerVizNode from '../Nodes/TokenizerVizNode';
+import EmbeddingScatterVizNode from '../Nodes/EmbeddingScatterVizNode';
+import TextInputVizNode from '../Nodes/TextInputVizNode';
 import { CustomConnectionLine } from './CustomConnectionLine';
 import { SmartDataEdge } from './SmartDataEdge';
 import { TriggerEdge } from './TriggerEdge';
@@ -49,6 +52,9 @@ const nodeTypes: NodeTypes = {
   presetNode: PresetNode,
   start: StartNode,
   noteNode: NoteNode,
+  tokenizerNode: TokenizerVizNode,
+  embeddingScatterNode: EmbeddingScatterVizNode,
+  textInputNode: TextInputVizNode,
 };
 
 const edgeTypes: EdgeTypes = {

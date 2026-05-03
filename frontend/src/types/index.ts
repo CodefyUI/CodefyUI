@@ -65,6 +65,14 @@ export interface OutputSummary {
   params?: number;
   trainable?: number;
   repr?: string;
+  /** For LIST outputs: total length (regardless of whether values are inlined). */
+  length?: number;
+  /**
+   * For short LIST outputs (≤256 primitive items, or 2-tuples of numbers),
+   * the actual values are embedded so per-node visualizations can render
+   * without a separate REST fetch.
+   */
+  values?: unknown[];
   // Set by the backend when the string value is a file under MODELS_DIR;
   // holds the path relative to MODELS_DIR so the frontend can download it.
   download_path?: string;
@@ -152,6 +160,17 @@ export interface StringOutput {
   value: string;
 }
 
+export interface ListOutput {
+  type: 'list';
+  run_id: string;
+  node_id: string;
+  port: string;
+  length: number;
+  /** Populated when the list is small and primitive (≤1024 strings/numbers/bools or 2-tuples of numbers). */
+  values?: unknown[];
+  repr?: string;
+}
+
 export interface GenericOutput {
   type: string;
   run_id: string;
@@ -166,6 +185,7 @@ export type OutputData =
   | ModelOutput
   | ScalarOutput
   | StringOutput
+  | ListOutput
   | GenericOutput;
 
 export interface RunOutputRef {

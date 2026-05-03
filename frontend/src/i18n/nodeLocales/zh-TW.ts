@@ -482,11 +482,59 @@ const zhTW: NodeTranslations = {
     },
   },
   Embedding: {
-    description: '為整數索引查找嵌入向量（封裝 nn.Embedding）。$E[i] = W[i, :]$ — 取出可學習表的第 $i$ 列。',
+    description: '可學習的嵌入查表（封裝 nn.Embedding）。將整數索引對應到可訓練權重矩陣 $W$ 的列：$E[i] = W[i, :]$。如需預訓練詞向量（GloVe 等），請改用 LLM 分類下的 `WordVector` 節點。',
     params: {
       num_embeddings: '詞彙表大小',
       embedding_dim: '每個嵌入向量的維度',
       padding_idx: '填充 token 的索引（-1 表示無）',
+    },
+  },
+
+  TextInput: {
+    description:
+      '純文字輸入點。在節點本體的多行 textarea 中打字，輸出 STRING 可以接到 Tokenizer、WordVector 或任何吃 STRING 的輸入埠。對之後 RAG 的 DocumentInput 是同一條路。',
+    params: {
+      value: '多行文字。可以拖曳 textarea 右下角調整大小。',
+    },
+  },
+
+  // ── LLM ──
+  Tokenizer: {
+    description:
+      '把文字切成 LLM 看得懂的整數 token。不同家族用不同演算法 — BPE（GPT）、WordPiece（BERT）、SentencePiece（Llama、T5）— 同一段文字會被切成不同的樣子。',
+    params: {
+      family: 'Tokenizer 家族。tiktoken 完全離線可跑 cl100k/o200k/p50k/gpt2；其餘會在第一次使用時從 HuggingFace 下載 tokenizer.json。',
+      text: '要切分的文字。當沒有 `text` 輸入連線時使用此欄位。',
+      show_special_tokens: '是否輸出 tokenizer 的特殊 token（BOS/EOS/CLS/SEP/...）。',
+    },
+  },
+  WordVector: {
+    description:
+      '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
+    params: {
+      backend:
+        '向量來源。demo-16d 是手工打造的玩具詞彙、完全離線可跑；glove-* 會在第一次使用時下載真實 GloVe 向量；minilm-sentence-384d 需要安裝 [llm-sentence] 額外相依套件。',
+      words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
+      normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
+      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
+    },
+  },
+  EmbeddingScatter: {
+    description:
+      '把高維嵌入投影到 2D 來「看見」嵌入空間的幾何結構。語意相近的字會聚成一群。PCA 是線性、決定性、快；t-SNE 是非線性、會更好保留局部鄰域結構，但每次跑出來的版面都略有不同。',
+    params: {
+      method: 'PCA：線性、決定性、快。t-SNE：非線性、保留局部鄰域結構。',
+      perplexity: '只在 t-SNE 使用 — 局部親和模型的鄰域大小。',
+      seed: '隨機種子（給 t-SNE）。同樣的種子會得到一樣的版面。',
+    },
+  },
+  CosineSimilarity: {
+    description:
+      '計算每個 query 與每個 key 之間的 cosine similarity。對單位向量輸入這就是點積；非單位向量會自動正規化。輸出整個相似度矩陣以及每個 query 的 top-k key — 這就是 RAG 中向量檢索的核心。',
+    params: {
+      top_k: '每個 query 要回傳的最相似 key 數量。',
+      exclude_self_words:
+        '要從 top-k 排除的標籤（以逗號分隔）。在類比示範中很有用：設成 "king,man,woman" 可以讓 top-1 直接顯示 queen。',
     },
   },
 

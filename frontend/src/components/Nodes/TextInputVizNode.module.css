@@ -1,0 +1,36 @@
+.editorArea {
+  border-top: 1px solid #2a2a2a;
+  padding: 8px 10px;
+  background: #161616;
+  width: 280px;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 72px;
+  max-height: 320px;
+  resize: vertical;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  background: #0e0e0e;
+  color: #eee;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.textarea:focus {
+  border-color: #06b6d4;
+  box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.25);
+}
+
+.meta {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #888;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

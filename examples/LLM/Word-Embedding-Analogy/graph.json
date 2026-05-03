@@ -1,0 +1,32 @@
+{
+  "name": "Word Embedding Analogy: king − man + woman ≈ queen",
+  "description": "The canonical demonstration that pre-trained word vectors carry interpretable semantic geometry. We pull vectors for `king`, `man`, and `woman` from the offline demo-16d vocabulary, compose the analogy vector via two Add nodes (one with alpha=-1 to subtract `man`), and ask CosineSimilarity which word in the full vocabulary is closest to that target. With `king,man,woman` excluded from the top-k, the answer is `queen`. The EmbeddingScatter on the right projects the entire 16-D vocabulary down to 2D so you can see the royalty cluster sit apart from the mammal / vehicle / weather clusters.",
+  "nodes": [
+    { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 40 }, "data": { "params": {} } },
+    { "id": "wv_king",  "type": "WordVector", "position": { "x": 0,   "y": -120 }, "data": { "params": { "backend": "demo-16d", "words": "king",  "normalize": false, "keep_oov": false } } },
+    { "id": "wv_man",   "type": "WordVector", "position": { "x": 0,   "y": 0    }, "data": { "params": { "backend": "demo-16d", "words": "man",   "normalize": false, "keep_oov": false } } },
+    { "id": "wv_woman", "type": "WordVector", "position": { "x": 0,   "y": 120  }, "data": { "params": { "backend": "demo-16d", "words": "woman", "normalize": false, "keep_oov": false } } },
+    { "id": "sub_man",  "type": "Add", "position": { "x": 280, "y": -60 }, "data": { "params": { "alpha": -1.0 } } },
+    { "id": "add_woman","type": "Add", "position": { "x": 540, "y": 0   }, "data": { "params": { "alpha":  1.0 } } },
+    { "id": "wv_all",   "type": "WordVector", "position": { "x": 0,   "y": 320  }, "data": { "params": { "backend": "demo-16d", "words": "angel ant apple bee bird boat boy bread brother bus butterfly car cat cheese dog dolphin dream duchess duke eagle father fish fly girl god goddess horse imagine jump king kitten lion man mother owl pizza plane prince princess puppy queen rabbit rain remember run shark ship sister snow sparrow sun swim think tiger truck walk whale wind woman", "normalize": false, "keep_oov": false } } },
+    { "id": "similarity", "type": "CosineSimilarity", "position": { "x": 820, "y": 100 }, "data": { "params": { "top_k": 5, "exclude_self_words": "king,man,woman" } } },
+    { "id": "scatter",  "type": "EmbeddingScatter", "position": { "x": 820, "y": 360 }, "data": { "params": { "method": "PCA", "perplexity": 5.0, "seed": 42 } } },
+    { "id": "print_top","type": "Print", "position": { "x": 1140, "y": 100 }, "data": { "params": { "label": "Top-k labels (excluding self)" } } }
+  ],
+  "edges": [
+    { "id": "trig_king",  "source": "start-1", "target": "wv_king",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_man",   "source": "start-1", "target": "wv_man",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_woman", "source": "start-1", "target": "wv_woman", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_all",   "source": "start-1", "target": "wv_all",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",    "source": "wv_king",  "target": "sub_man",   "sourceHandle": "embeddings", "targetHandle": "tensor_a" },
+    { "id": "e2",    "source": "wv_man",   "target": "sub_man",   "sourceHandle": "embeddings", "targetHandle": "tensor_b" },
+    { "id": "e3",    "source": "sub_man",  "target": "add_woman", "sourceHandle": "tensor",     "targetHandle": "tensor_a" },
+    { "id": "e4",    "source": "wv_woman", "target": "add_woman", "sourceHandle": "embeddings", "targetHandle": "tensor_b" },
+    { "id": "e5",    "source": "add_woman","target": "similarity","sourceHandle": "tensor",     "targetHandle": "queries" },
+    { "id": "e6",    "source": "wv_all",   "target": "similarity","sourceHandle": "embeddings", "targetHandle": "keys" },
+    { "id": "e7",    "source": "wv_all",   "target": "similarity","sourceHandle": "labels",     "targetHandle": "key_labels" },
+    { "id": "e8",    "source": "wv_all",   "target": "scatter",   "sourceHandle": "embeddings", "targetHandle": "embeddings" },
+    { "id": "e9",    "source": "wv_all",   "target": "scatter",   "sourceHandle": "labels",     "targetHandle": "labels" },
+    { "id": "e10",   "source": "similarity","target": "print_top","sourceHandle": "top_k_labels","targetHandle": "value" }
+  ]
+}

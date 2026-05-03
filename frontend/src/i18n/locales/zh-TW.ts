@@ -352,6 +352,15 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.nodeMode.desc': 'Basic 只在側欄顯示新手會用到的基礎類別；All 則顯示全部類別。',
   'settings.nodeMode.basic': '入門',
   'settings.nodeMode.all': '全部',
+
+  // LLM
+  'tokenizer.tokenCount': '{count} 個 token',
+  'tokenizer.emptyOutput': '沒有 token — 輸入文字為空。',
+  'tokenizer.runHint': '執行圖以查看 token',
+  'tokenizer.truncatedInline': '顯示前 {shown} 個（共 {total} 個）— 完整列表請看檢視器',
+  'scatter.runHint': '執行圖以查看投影結果',
+  'textInput.placeholder': '在此輸入文字…',
+  'textInput.charCount': '{count} 字元',
 };
 
 export default zhTW;
