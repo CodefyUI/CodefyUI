@@ -7,8 +7,12 @@
     python scripts/dev.py <command>
 
 指令：
-    install     安裝所有依賴（backend；frontend dist 從 release 下載或本地 build）
-    update      拉取最新版本並重新安裝依賴（git pull + install）
+    install     安裝所有節點需要的依賴（含 PyTorch wheel 選擇）
+                旗標：--gpu {auto|cpu|cu118|cu121|cu124|cu126|cu128|rocm6.1|rocm6.2|mps|skip}
+                      --dev / --no-dev   是否安裝測試工具（pytest 等）
+                      --yes / -y         略過互動，自動偵測 + 非 dev
+                從 TTY 不帶旗標執行會跳出互動選單；從非 TTY（curl|bash、CI）走 --yes。
+    update      拉取最新版本並重新安裝依賴（接受同 install 的旗標）
     build       建置 frontend dist（需 Node + pnpm，給開發者）
     dev         啟動開發伺服器（HMR；需 Node + pnpm）
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
@@ -20,9 +24,13 @@
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
     CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
+    CODEFYUI_GPU            預設 --gpu 值（命令列旗標仍會覆蓋）
+    CODEFYUI_DEV            預設 --dev 值；1/true/yes 開、0/false/no 關
 """
 
+import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -222,21 +230,218 @@ def _warn_if_dist_stale() -> None:
     )
 
 
+# ── Install: PyTorch wheel selection ──────────────────────────────────────────
+
+# Mapping from `--gpu` choice → PyTorch wheel index URL.
+#   None      → let PyPI resolve via `-e .` (auto-detected fallback / mps)
+#   "__skip__" → don't touch torch at all (preserves user's manual override)
+TORCH_INDEX_URLS: dict[str, str | None] = {
+    "auto":    None,                                            # resolved at runtime
+    "cpu":     "https://download.pytorch.org/whl/cpu",
+    "cu118":   "https://download.pytorch.org/whl/cu118",
+    "cu121":   "https://download.pytorch.org/whl/cu121",
+    "cu124":   "https://download.pytorch.org/whl/cu124",
+    "cu126":   "https://download.pytorch.org/whl/cu126",
+    "cu128":   "https://download.pytorch.org/whl/cu128",
+    "rocm6.1": "https://download.pytorch.org/whl/rocm6.1",
+    "rocm6.2": "https://download.pytorch.org/whl/rocm6.2",
+    "mps":     None,                                            # default PyPI on Apple Silicon
+    "skip":    "__skip__",                                      # leave torch untouched
+}
+
+
+def _recommended_cu_for_driver(driver_version: str) -> str:
+    """Map an NVIDIA driver version to the latest compatible PyTorch CUDA wheel.
+
+    PyTorch's compat matrix shifts each release; these floors are deliberately
+    conservative — better to suggest an older wheel than ship one the driver
+    can't load. Users can override via the menu / --gpu flag.
+    """
+    try:
+        major = int(driver_version.split(".")[0])
+    except (ValueError, IndexError):
+        return "cu121"
+    if major >= 560:
+        return "cu128"
+    if major >= 555:
+        return "cu126"
+    if major >= 545:
+        return "cu124"
+    if major >= 530:
+        return "cu121"
+    if major >= 520:
+        return "cu118"
+    return "cpu"
+
+
+def detect_gpu() -> tuple[str, str]:
+    """Best-effort GPU detection. Returns ``(display_label, recommended_key)``.
+
+    The recommended_key is one of TORCH_INDEX_URLS' keys (excluding "auto" /
+    "skip"). Detection failures collapse to ("CPU only", "cpu") — never raises.
+    """
+    if platform.system() == "Darwin":
+        if platform.machine() in ("arm64", "aarch64"):
+            return ("Apple Silicon (MPS)", "mps")
+        return ("macOS x86_64", "cpu")
+
+    if shutil.which("nvidia-smi"):
+        try:
+            proc = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            first = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
+            if first:
+                name, _, driver = first.partition(",")
+                name, driver = name.strip(), driver.strip()
+                cu = _recommended_cu_for_driver(driver)
+                return (f"{name} (driver {driver})", cu)
+        except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+            pass
+
+    if platform.system() == "Linux" and shutil.which("rocm-smi"):
+        return ("AMD GPU (ROCm)", "rocm6.2")
+
+    return ("CPU only", "cpu")
+
+
+def _parse_install_args(argv_tail: list[str]) -> argparse.Namespace:
+    """Parse the flags passed to `cdui install` / `cdui update`."""
+    p = argparse.ArgumentParser(
+        prog="cdui install",
+        description=(
+            "Install backend (with PyTorch wheel + dev tooling choice) and "
+            "frontend. From a TTY without flags, runs an interactive menu."
+        ),
+    )
+    p.add_argument(
+        "--gpu",
+        choices=list(TORCH_INDEX_URLS.keys()),
+        default=None,
+        help="PyTorch wheel variant; auto-detect if omitted.",
+    )
+    dev_grp = p.add_mutually_exclusive_group()
+    dev_grp.add_argument(
+        "--dev", dest="dev", action="store_true", default=None,
+        help="Install dev tooling (pytest, httpx, ...).",
+    )
+    dev_grp.add_argument(
+        "--no-dev", dest="dev", action="store_false",
+        help="Skip dev tooling (default).",
+    )
+    p.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip prompts; equivalent to --gpu auto --no-dev when nothing else set.",
+    )
+    return p.parse_args(argv_tail)
+
+
+def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str, bool]:
+    """Interactive menu for GPU + dev choice. Stays inside the terminal — no curses."""
+    options = ["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128",
+               "rocm6.1", "rocm6.2", "mps", "skip"]
+
+    print()
+    print("=== CodefyUI install ===")
+    print(f"偵測到：{detected_label}")
+    print()
+    print("選擇 PyTorch wheel：")
+    for i, opt in enumerate(options, 1):
+        marker = ""
+        if opt == "auto":
+            marker = f"  → {detected_gpu}（依偵測結果）"
+        elif opt == detected_gpu:
+            marker = "  ← 偵測到"
+        print(f"  [{i:>2}] {opt}{marker}")
+    print()
+
+    while True:
+        raw = input("選擇（直接 Enter = 1, auto）：").strip() or "1"
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(options):
+                gpu = options[idx]
+                break
+        except ValueError:
+            pass
+        print(f"  輸入無效，請填 1 到 {len(options)}")
+
+    raw = input("是否安裝 dev 測試工具（pytest, httpx 等）？[y/N]：").strip().lower()
+    dev = raw in ("y", "yes")
+
+    print(f"\n→ gpu={gpu}, dev={dev}\n")
+    return gpu, dev
+
+
+def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
+    """Combine CLI flags + env vars + interactive prompt into a final (gpu, dev)."""
+    args = _parse_install_args(argv_tail)
+    detected_label, detected_gpu = detect_gpu()
+
+    gpu = args.gpu or os.environ.get("CODEFYUI_GPU", "").strip() or None
+    if gpu is not None and gpu not in TORCH_INDEX_URLS:
+        print(f"錯誤：未知的 --gpu 值 {gpu!r}（合法值：{', '.join(TORCH_INDEX_URLS)}）",
+              file=sys.stderr)
+        sys.exit(2)
+
+    dev = args.dev
+    if dev is None:
+        env_dev = os.environ.get("CODEFYUI_DEV", "").strip().lower()
+        if env_dev in ("1", "true", "yes"):
+            dev = True
+        elif env_dev in ("0", "false", "no"):
+            dev = False
+
+    interactive = (
+        not args.yes
+        and gpu is None
+        and dev is None
+        and sys.stdin.isatty()
+    )
+    if interactive:
+        gpu, dev = _prompt_install_options(detected_label, detected_gpu)
+    else:
+        if gpu is None:
+            gpu = "auto"
+        if dev is None:
+            dev = False
+        print(f"=== CodefyUI install: gpu={gpu}, dev={dev}（偵測：{detected_label}）===")
+
+    if gpu == "auto":
+        gpu = detected_gpu
+
+    return gpu, dev
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
-def install() -> None:
+def install(gpu: str, dev: bool) -> None:
+    """Backend + frontend install. Caller resolves `gpu` / `dev` choices."""
     if VENV.exists():
         print("=== Backend: 虛擬環境已存在，跳過建立 ===")
     else:
         print("=== Backend: 建立虛擬環境 ===")
         run(["uv", "venv", "--python", "3.11"], cwd=BACKEND_DIR)
 
-    print("=== Backend: 安裝依賴 ===")
-    run(["uv", "pip", "install", "-e", ".[dev]"], cwd=BACKEND_DIR)
+    # Step 1: PyTorch wheel — installed BEFORE `-e .` so the variant satisfies
+    # the `torch>=2.0.0` dependency without re-resolving from PyPI default.
+    index_url = TORCH_INDEX_URLS.get(gpu)
+    if index_url == "__skip__":
+        print("=== Backend: 略過 PyTorch 安裝（保留現有版本）===")
+    elif index_url is None:
+        print(f"=== Backend: PyTorch 走 PyPI 預設（gpu={gpu}）===")
+    else:
+        print(f"=== Backend: 安裝 PyTorch（{gpu}）— {index_url} ===")
+        run(["uv", "pip", "install", "torch", "torchvision",
+             "--index-url", index_url], cwd=BACKEND_DIR)
 
-    print("=== Backend: 安裝 PyTorch ===")
-    run(["uv", "pip", "install", "torch", "torchvision", "gymnasium", "safetensors"],
-        cwd=BACKEND_DIR)
+    # Step 2: project + every node's runtime deps. `gymnasium` / `safetensors` /
+    # `tiktoken` etc. are all in [project.dependencies] now — no separate
+    # explicit install needed.
+    spec = ".[dev]" if dev else "."
+    print(f"=== Backend: 安裝依賴（{spec}）===")
+    run(["uv", "pip", "install", "-e", spec], cwd=BACKEND_DIR)
 
     # Frontend: three branches in priority order.
     #   1. dist already present — nothing to do
@@ -270,8 +475,14 @@ def install() -> None:
     print("=== 安裝完成 ===")
 
 
+def install_command() -> None:
+    """Entry-point shim for `cdui install`: parse argv → resolve → install."""
+    gpu, dev = _resolve_install_options(sys.argv[2:])
+    install(gpu=gpu, dev=dev)
+
+
 def update() -> None:
-    """拉取 main branch 的最新版本並重新同步依賴。"""
+    """拉取 main branch 的最新版本並重新同步依賴。Accepts the same flags as install."""
     if not (ROOT / ".git").exists():
         print("錯誤：此目錄不是 git clone，無法 update", file=sys.stderr)
         sys.exit(1)
@@ -282,13 +493,14 @@ def update() -> None:
     run(["git", "checkout", "main"], cwd=ROOT)
     run(["git", "merge", "--ff-only", "origin/main"], cwd=ROOT)
 
-    # Old dist is for the previous source — wipe it so install() re-downloads
+    # Old dist is for the previous source — wipe it so install re-downloads
     # (or re-builds, when pnpm is on PATH) for the new code.
     if DIST_DIR.exists():
         print("=== 移除舊 frontend/dist ===")
         shutil.rmtree(DIST_DIR, ignore_errors=True)
 
-    install()
+    gpu, dev = _resolve_install_options(sys.argv[2:])
+    install(gpu=gpu, dev=dev)
     print("=== 更新完成 ===")
 
 
@@ -418,7 +630,7 @@ def uninstall() -> None:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 COMMANDS = {
-    "install": install,
+    "install": install_command,
     "update": update,
     "build": build,
     "dev": dev,
