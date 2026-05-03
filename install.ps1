@@ -203,7 +203,7 @@ Set-Location $InstallDir
 # 透傳給 dev.py，避免 dev.py 跳過 dist 重建
 $env:CODEFYUI_FORCE_BUILD = if ($ForceBuild) { '1' } else { '0' }
 $env:CODEFYUI_RELEASE_TAG = $ReleaseTag
-& $PythonCmd scripts\dev.py install
+& $PythonCmd scripts\dev.py install --yes
 if ($LASTEXITCODE -ne 0) { Die "scripts\dev.py install failed" }
 
 # ── Install cdui launcher to PATH ─────────────────────────────────────────────

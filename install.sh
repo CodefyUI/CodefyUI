@@ -196,7 +196,7 @@ cd "$INSTALL_DIR"
 # CODEFYUI_FORCE_BUILD 透傳給 dev.py，避免 dev.py 又跳過 dist 重建
 CODEFYUI_FORCE_BUILD="$FORCE_BUILD" \
 CODEFYUI_RELEASE_TAG="$RELEASE_TAG" \
-"$PYTHON" scripts/dev.py install
+"$PYTHON" scripts/dev.py install --yes
 
 # ── 安裝 cdui 到 PATH ─────────────────────────────────────────────────
 step "安裝 cdui 到 PATH"
