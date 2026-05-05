@@ -236,7 +236,8 @@ export function ResultsPanel() {
           <button
             onClick={toggleCollapse}
             className={styles.collapseBtn}
-            title={collapsed ? 'Expand panel' : 'Collapse panel'}
+            title={collapsed ? t('results.expand') : t('results.collapse')}
+            aria-label={collapsed ? t('results.expand') : t('results.collapse')}
           >
             {collapsed ? '▴' : '▾'}
           </button>

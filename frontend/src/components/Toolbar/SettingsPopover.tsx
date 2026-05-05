@@ -120,11 +120,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
     <div ref={ref} className={styles.panel} role="dialog" aria-label={t('toolbar.settings')}>
       <div className={styles.head}>
         <h4>{t('toolbar.settings')}</h4>
-        <input
-          className={styles.search}
-          placeholder={t('toolbar.settings.search')}
-          aria-label={t('toolbar.settings.search')}
-        />
+        {/* Search input deferred until per-toggle filtering lands — a
+            non-functional input at the top of the popover is more confusing
+            than helpful. The i18n key `toolbar.settings.search` is kept for
+            when it returns. */}
       </div>
 
       <div className={styles.body}>

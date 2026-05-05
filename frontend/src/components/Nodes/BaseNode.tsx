@@ -91,7 +91,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
     try {
       await downloadModelFile(downloadablePath);
     } catch (err: any) {
-      useToastStore.getState().addToast(err.message ?? 'Download failed', 'error');
+      useToastStore.getState().addToast(err.message ?? t('download.failed'), 'error');
     } finally {
       setDownloading(false);
     }

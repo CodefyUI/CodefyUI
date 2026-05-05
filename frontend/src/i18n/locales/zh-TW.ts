@@ -53,6 +53,11 @@ const zhTW: Record<TranslationKey, string> = {
   'status.skipped': '已跳過',
   'status.cached': '已快取',
 
+  // Connection (WebSocket reconnect surface)
+  'connection.lost': '連線中斷 — 嘗試重新連線中…',
+  'connection.restored': '已重新連線',
+  'connection.failed': '無法重新連線至執行伺服器',
+
   // Node Palette
   'palette.title': '節點',
   'palette.search': '搜尋節點...',
@@ -361,6 +366,17 @@ const zhTW: Record<TranslationKey, string> = {
   'scatter.runHint': '執行圖以查看投影結果',
   'textInput.placeholder': '在此輸入文字…',
   'textInput.charCount': '{count} 字元',
+
+  // Misc — 結果面板收合 / 空畫布節點數 / 下載錯誤 / Start 節點 /
+  // 工具列 aria / localStorage 配額不足
+  'results.expand': '展開面板',
+  'results.collapse': '收合面板',
+  'empty.nodeCount': '{count} 個節點',
+  'node.start.label': '開始',
+  'download.failed': '下載失敗',
+  'toolbar.layoutMode.aria': '排版模式',
+  'toolbar.language.aria': '語言',
+  'persistence.quotaError': '無法儲存分頁 — 瀏覽器儲存空間已滿。',
 };
 
 export default zhTW;
