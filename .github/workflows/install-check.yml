@@ -104,6 +104,44 @@ jobs:
         shell: bash
         run: kill "$BACKEND_PID" 2>/dev/null || true
 
+      # Separately exercise the cdui launcher stub installed by install.sh.
+      # The previous step ran uvicorn directly, which would mask a broken
+      # launcher (missing PATH entry, bad `exec`, wrong INSTALL_DIR).
+      - name: Smoke-test cdui launcher
+        shell: bash
+        run: |
+          launcher="$HOME/.local/bin/cdui"
+          [[ -x "$launcher" ]] \
+            || { echo "::error::cdui launcher missing or not executable: $launcher"; ls -la "$(dirname "$launcher")" || true; exit 1; }
+          # The launcher should forward to ${INSTALL_DIR}/cdui which dispatches
+          # `start`. Run it in the background and verify health.
+          "$launcher" start > "$RUNNER_TEMP/cdui-start.log" 2>&1 &
+          launcher_pid=$!
+          echo "CDUI_PID=$launcher_pid" >> "$GITHUB_ENV"
+          launcher_ok=false
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health > /dev/null; then
+              launcher_ok=true
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$launcher_ok" != "true" ]]; then
+            echo "::error::cdui start launcher failed to bring up backend in 60s"
+            cat "$RUNNER_TEMP/cdui-start.log" || true
+            exit 1
+          fi
+          echo "✓ cdui launcher reached /api/health"
+
+      - name: Stop cdui launcher
+        if: always() && env.CDUI_PID != ''
+        shell: bash
+        run: |
+          kill "$CDUI_PID" 2>/dev/null || true
+          # The launcher exec's cdui which exec's uvicorn; clean up that PID
+          # too so the runner shuts down cleanly.
+          pkill -f "uvicorn app.main:app" 2>/dev/null || true
+
       - name: Upload backend log on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -200,6 +238,48 @@ jobs:
         shell: pwsh
         run: |
           try { Stop-Process -Id $env:BACKEND_PID -Force -ErrorAction SilentlyContinue } catch {}
+
+      # Smoke-test the cdui.cmd launcher stub installed by install.ps1. The
+      # previous step ran uvicorn directly, which would miss a broken
+      # launcher (bad PATH patch, malformed cmd file, wrong install path).
+      - name: Smoke-test cdui launcher
+        shell: pwsh
+        run: |
+          $launcher = Join-Path $env:USERPROFILE '.local\bin\cdui.cmd'
+          if (-not (Test-Path $launcher)) {
+            Write-Host "::error::cdui.cmd launcher missing: $launcher"
+            Get-ChildItem (Split-Path $launcher) -ErrorAction SilentlyContinue
+            exit 1
+          }
+          $logPath = Join-Path $env:RUNNER_TEMP 'cdui-start.log'
+          $errPath = Join-Path $env:RUNNER_TEMP 'cdui-start.err'
+          $proc = Start-Process -FilePath $launcher `
+            -ArgumentList 'start' `
+            -NoNewWindow -PassThru -RedirectStandardOutput $logPath -RedirectStandardError $errPath
+          "CDUI_PID=$($proc.Id)" | Out-File -Append -FilePath $env:GITHUB_ENV
+          $launcherOk = $false
+          for ($i = 1; $i -le 30; $i++) {
+            try {
+              $resp = Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health -TimeoutSec 5
+              if ($resp.status -eq 'ok') { $launcherOk = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $launcherOk) {
+            Write-Host "::error::cdui.cmd start failed to bring up backend in 60s"
+            if (Test-Path $logPath) { Get-Content $logPath }
+            if (Test-Path $errPath) { Get-Content $errPath }
+            exit 1
+          }
+          Write-Host "✓ cdui.cmd launcher reached /api/health"
+
+      - name: Stop cdui launcher
+        if: always() && env.CDUI_PID != ''
+        shell: pwsh
+        run: |
+          try { Stop-Process -Id $env:CDUI_PID -Force -ErrorAction SilentlyContinue } catch {}
+          # The launcher chain forks a uvicorn.exe; kill any straggler too.
+          Get-Process uvicorn -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
       - name: Upload backend log on failure
         if: failure()
