@@ -3,6 +3,8 @@ name = "codefyui-backend"
 version = "0.1.0"
 description = "Visual Node-Based ML Pipeline Builder - Backend"
 requires-python = ">=3.10"
+license = { text = "AGPL-3.0-only" }
+license-files = ["../LICENSE", "../COMMERCIAL-LICENSE.md"]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",

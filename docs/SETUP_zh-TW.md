@@ -198,7 +198,7 @@ AMD 的支援度高度取決於你的作業系統。
 
 ```bash
 uv pip uninstall torch torchvision
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.3
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
 ```
 
 驗證：
@@ -273,7 +273,7 @@ python scripts/dev.py dev
    ```bash
    curl http://127.0.0.1:8000/api/health
    ```
-   應回傳 `{"status":"ok","nodes_loaded":62,"presets_loaded":3}`。
+   應回傳 `{"status":"ok","nodes_loaded":69,"presets_loaded":3}`（`nodes_loaded` 數量會隨版本增加，確認非 0 即可）。
 
 2. 驗證裝置偵測：
    ```bash
