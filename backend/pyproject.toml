@@ -3,8 +3,15 @@ name = "codefyui-backend"
 version = "0.1.0"
 description = "Visual Node-Based ML Pipeline Builder - Backend"
 requires-python = ">=3.10"
-license = { text = "AGPL-3.0-only" }
-license-files = ["../LICENSE", "../COMMERCIAL-LICENSE.md"]
+# PEP 639 SPDX license expression (bare string). The previous PEP 621
+# table form `{ text = "..." }` is rejected by setuptools >= 77 with
+# "configuration error: project.license must be string". The companion
+# `license-files` key is intentionally omitted because PEP 639 disallows
+# `..` paths and the LICENSE / COMMERCIAL-LICENSE.md files live at the
+# repo root, not inside backend/. Setuptools auto-detects LICENSE in
+# the project directory if present; for distribution metadata the SPDX
+# identifier above is the canonical statement.
+license = "AGPL-3.0-only"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
