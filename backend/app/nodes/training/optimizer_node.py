@@ -35,6 +35,7 @@ class OptimizerNode(BaseNode):
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        import inspect
         import torch.optim as optim
 
         model = inputs["model"]
@@ -58,6 +59,20 @@ class OptimizerNode(BaseNode):
         if optimizer_cls is None:
             raise ValueError(f"Unsupported optimizer type: {opt_type}")
 
-        optimizer = optimizer_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
+        # Not every optimizer accepts ``weight_decay`` (e.g. Rprop). Silently
+        # drop the kwarg when the user left it at the default 0.0 — that's
+        # equivalent to "not supplied" — but raise a clear error if they
+        # intentionally set a non-zero value the optimizer can't honour.
+        accepted = set(inspect.signature(optimizer_cls.__init__).parameters)
+        kwargs: dict[str, Any] = {"lr": lr}
+        if "weight_decay" in accepted:
+            kwargs["weight_decay"] = weight_decay
+        elif weight_decay:
+            raise ValueError(
+                f"Optimizer '{opt_type}' does not accept weight_decay; "
+                f"got {weight_decay}. Set weight_decay=0 or pick a different optimizer."
+            )
+
+        optimizer = optimizer_cls(model.parameters(), **kwargs)
 
         return {"optimizer": optimizer}

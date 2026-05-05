@@ -96,8 +96,20 @@ class TrainingLoopNode(BaseNode):
         # TrainingLoop with the model still on CPU, so any optimizer created there
         # holds stale references / state. Preserving the original class + defaults
         # keeps the user's choices (Adam/SGD/..., lr, weight_decay, etc.) intact.
+        #
+        # Filter ``defaults`` to keys the constructor actually accepts. PyTorch
+        # 2.11 added ``decoupled_weight_decay`` to Adam's defaults, but AdamW
+        # (an Adam subclass) re-routes that internally and rejects it as a
+        # public kwarg — a naive ``**defaults`` round-trip raises
+        # ``AdamW.__init__() got an unexpected keyword argument 'decoupled_weight_decay'``.
+        # Filtering by signature keeps the rebind robust against future
+        # upstream churn.
+        import inspect
         optimizer_cls = type(optimizer)
-        optimizer_kwargs = dict(optimizer.defaults)
+        accepted = set(inspect.signature(optimizer_cls.__init__).parameters)
+        optimizer_kwargs = {
+            k: v for k, v in optimizer.defaults.items() if k in accepted
+        }
         optimizer = optimizer_cls(model.parameters(), **optimizer_kwargs)
 
         # If an LR scheduler was passed in, rebind it to the new optimizer using
