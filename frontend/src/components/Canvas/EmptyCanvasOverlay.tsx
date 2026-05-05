@@ -21,6 +21,7 @@ const SECTION_ORDER: { category: string; titleKey: 'empty.section.trainable' | '
 function renderCard(
   example: ExampleSummary,
   onClick: (e: ExampleSummary) => void,
+  t: (k: any, vars?: Record<string, string | number>) => string,
 ) {
   const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? '#FF9800';
   const catLabel = example.category.replace(/_/g, ' ');
@@ -53,7 +54,7 @@ function renderCard(
         >
           {catLabel}
         </span>
-        <span className={styles.nodeCount}>{example.node_count} nodes</span>
+        <span className={styles.nodeCount}>{t('empty.nodeCount', { count: example.node_count })}</span>
       </div>
     </button>
   );
@@ -129,7 +130,7 @@ export function EmptyCanvasOverlay() {
           <div key={section.category} className={styles.section}>
             <div className={styles.sectionTitle}>{t(section.titleKey)}</div>
             <div className={styles.quickStartGrid}>
-              {section.items.map((example) => renderCard(example, handleClick))}
+              {section.items.map((example) => renderCard(example, handleClick, t))}
             </div>
           </div>
         ))}
@@ -137,7 +138,7 @@ export function EmptyCanvasOverlay() {
         {!loading && uncategorized.length > 0 && (
           <div className={styles.section}>
             <div className={styles.quickStartGrid}>
-              {uncategorized.map((example) => renderCard(example, handleClick))}
+              {uncategorized.map((example) => renderCard(example, handleClick, t))}
             </div>
           </div>
         )}

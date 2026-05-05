@@ -187,7 +187,7 @@ export function InspectorPanel() {
       className={styles.collapseBtn}
       onClick={() => setCollapsed((v) => !v)}
       title={collapsed ? t('inspector.expand') : t('inspector.collapse')}
-      aria-label={collapsed ? 'Expand inspector' : 'Collapse inspector'}
+      aria-label={collapsed ? t('inspector.expand') : t('inspector.collapse')}
     >
       {collapsed ? '‹' : '›'}
     </button>

@@ -208,6 +208,11 @@ interface PersistedTab {
   autoBackward?: boolean;
 }
 
+// Throttle the user-facing quota toast so a big graph editing session
+// doesn't burst N toasts when localStorage fills up. One per minute is
+// plenty to surface "your work isn't being saved".
+let _lastQuotaWarn = 0;
+
 function saveTabs(tabs: TabState[], activeTabId: string) {
   try {
     const data: { tabs: PersistedTab[]; activeTabId: string } = {
@@ -228,7 +233,19 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
-    // Storage full or unavailable — silently ignore
+    // QuotaExceededError / SecurityError / private mode etc. The README
+    // promises auto-save; failing silently lets the user lose work without
+    // realising. Surface once per minute at most.
+    const now = Date.now();
+    if (now - _lastQuotaWarn > 60_000) {
+      _lastQuotaWarn = now;
+      try {
+        const message = useI18n.getState().t('persistence.quotaError');
+        useToastStore.getState().addToast(message, 'error');
+      } catch {
+        /* toast/i18n not initialised yet — nothing useful to do here */
+      }
+    }
   }
 }
 
@@ -1133,6 +1150,25 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 }));
 
 // ── Auto-save to localStorage ──
-useTabStore.subscribe((state) => {
-  saveTabs(state.tabs, state.activeTabId);
+//
+// React Flow fires a state change per pointer event during a drag, and
+// status updates from the backend stream tick it many times per run. Writing
+// (and JSON-stringifying) the whole tab tree on every tick wastes CPU and
+// can stutter visibly on large graphs. We collapse a burst of changes into
+// a single trailing-edge save; the actual `saveTabs` call reads fresh state
+// at fire time so we never persist a stale snapshot.
+const SAVE_DEBOUNCE_MS = 250;
+let _saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function _scheduleSave() {
+  if (_saveTimer !== null) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    const s = useTabStore.getState();
+    saveTabs(s.tabs, s.activeTabId);
+  }, SAVE_DEBOUNCE_MS);
+}
+
+useTabStore.subscribe(() => {
+  _scheduleSave();
 });

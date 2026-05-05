@@ -51,6 +51,11 @@ const en = {
   'status.skipped': 'Skipped',
   'status.cached': 'Cached',
 
+  // Connection (WebSocket reconnect surface)
+  'connection.lost': 'Connection lost — reconnecting…',
+  'connection.restored': 'Connection restored',
+  'connection.failed': 'Could not reconnect to the execution server',
+
   // Node Palette
   'palette.title': 'Nodes',
   'palette.search': 'Search nodes...',
@@ -359,6 +364,18 @@ const en = {
   'scatter.runHint': 'Run the graph to see the projection',
   'textInput.placeholder': 'Type text here…',
   'textInput.charCount': '{count} chars',
+
+  // Misc strings extracted to translate UI surfaces that previously had
+  // hard-coded English (results panel collapse, empty-canvas card footer,
+  // download failures, Start node label, toolbar aria, persistence quota).
+  'results.expand': 'Expand panel',
+  'results.collapse': 'Collapse panel',
+  'empty.nodeCount': '{count} nodes',
+  'node.start.label': 'Start',
+  'download.failed': 'Download failed',
+  'toolbar.layoutMode.aria': 'Layout mode',
+  'toolbar.language.aria': 'Language',
+  'persistence.quotaError': 'Could not save tabs — browser storage is full.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

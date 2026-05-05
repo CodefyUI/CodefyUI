@@ -1,7 +1,9 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { useI18n } from '../../i18n';
 import styles from './StartNode.module.css';
 
 export function StartNode(_: NodeProps) {
+  const { t } = useI18n();
   return (
     <div className={styles.startNode}>
       <svg className={styles.icon} viewBox="0 0 16 16" fill="none">
@@ -15,7 +17,7 @@ export function StartNode(_: NodeProps) {
           fillOpacity="0.4"
         />
       </svg>
-      <span>Start</span>
+      <span>{t('node.start.label')}</span>
       <Handle
         type="source"
         position={Position.Right}

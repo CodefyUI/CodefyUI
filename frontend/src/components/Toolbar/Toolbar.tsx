@@ -483,7 +483,7 @@ export function Toolbar() {
           <button
             className={styles.splitButtonCaret}
             onClick={() => setLayoutMenuOpen((v) => !v)}
-            aria-label="Layout mode"
+            aria-label={t('toolbar.layoutMode.aria')}
           >
             ▾
           </button>
@@ -579,7 +579,7 @@ export function Toolbar() {
           <button
             onClick={() => setLangMenuOpen((v) => !v)}
             className={`${styles.dropdown} ${langMenuOpen ? styles.open : ''}`}
-            aria-label="Language"
+            aria-label={t('toolbar.language.aria')}
             aria-expanded={langMenuOpen}
           >
             {SUPPORTED_LOCALES.find((l) => l.code === locale)?.label ?? locale}

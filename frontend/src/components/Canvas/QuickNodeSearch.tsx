@@ -164,7 +164,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
               <span className={styles.dot} style={{ background: color }} />
               <div className={styles.itemContent}>
                 <span className={styles.itemName}>{name}</span>
-                {r.kind === 'preset' && <span className={styles.presetBadge}>PRESET</span>}
+                {r.kind === 'preset' && <span className={styles.presetBadge}>{t('preset.badge')}</span>}
                 {desc && <span className={styles.itemDesc}>{desc}</span>}
               </div>
               <span className={styles.itemCategory} style={{ color }}>{category}</span>
