@@ -192,6 +192,33 @@ def _exec_into_venv_if_available() -> None:
     os.execv(str(VENV_PY), [str(VENV_PY)] + sys.argv)
 
 
+def _require_venv_tool(tool_name: str) -> str:
+    """Resolve a venv-installed executable, or exit with a clean repair hint.
+
+    Many users land here after a partial install (network blip during
+    ``cdui install``, interrupted GPU index download, etc.). Surfacing a raw
+    ``FileNotFoundError`` from subprocess is hostile; a single sentence
+    explaining the fix is far better.
+    """
+    exe = VENV_BIN / (f"{tool_name}.exe" if sys.platform == "win32" else tool_name)
+    if exe.exists():
+        return str(exe)
+    if not VENV.exists():
+        msg = (
+            f"錯誤：找不到虛擬環境（{VENV}）。\n"
+            f"  請先安裝後再執行此指令：\n"
+            f"    cdui install\n"
+        )
+    else:
+        msg = (
+            f"錯誤：虛擬環境存在但找不到 {tool_name}（{exe}）。\n"
+            f"  上次 'cdui install' 可能未完成。建議：\n"
+            f"    cdui clean && cdui install\n"
+        )
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
 def _ensure_uv() -> None:
     if shutil.which("uv"):
         return
@@ -771,7 +798,7 @@ def start() -> None:
         )
         sys.exit(1)
     _warn_if_dist_stale()
-    uvicorn = str(VENV_BIN / "uvicorn")
+    uvicorn = _require_venv_tool("uvicorn")
     print("=== CodefyUI 啟動（Ctrl+C 停止）===")
     print("    開啟 → http://localhost:8000")
     print("")
@@ -789,7 +816,7 @@ def dev() -> None:
         sys.exit(1)
     _install_frontend_deps_if_needed()
 
-    uvicorn = str(VENV_BIN / "uvicorn")
+    uvicorn = _require_venv_tool("uvicorn")
     backend_cmd = [uvicorn, "app.main:app", "--reload"]
     frontend_cmd = ["pnpm", "dev"]
 
@@ -841,7 +868,7 @@ def stop() -> None:
 
 
 def test() -> None:
-    pytest = str(VENV_BIN / "pytest")
+    pytest = _require_venv_tool("pytest")
     run([pytest], cwd=BACKEND_DIR)
 
 

@@ -211,6 +211,56 @@ STUB
 chmod +x "$LAUNCHER"
 ok "cdui → $LAUNCHER"
 
+# ── 確保 ~/.local/bin 在 PATH 上 ─────────────────────────────────────
+# Distros vary: Debian's ~/.profile auto-adds ~/.local/bin if it exists, but
+# many minimal images / non-login shells don't source ~/.profile. We append
+# an export to whichever rc file the user's shell would actually read so
+# `cdui` is on PATH after they open a new terminal. Idempotent — guarded by
+# a marker so re-running install doesn't duplicate the line.
+ensure_path_rc() {
+  local rc="$1"
+  [[ -n "$rc" ]] || return 0
+  # Already on PATH and rc already mentions ~/.local/bin → nothing to do.
+  if grep -Fq "# >>> CodefyUI PATH (cdui) >>>" "$rc" 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$rc")"
+  cat >> "$rc" <<'PATCH'
+
+# >>> CodefyUI PATH (cdui) >>>
+# Added by install.sh so the `cdui` launcher in ~/.local/bin is on PATH.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# <<< CodefyUI PATH (cdui) <<<
+PATCH
+  ok "已將 ~/.local/bin 加入 $rc"
+}
+
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+  step "把 ~/.local/bin 加入 PATH"
+  shell_name="$(basename "${SHELL:-bash}")"
+  case "$shell_name" in
+    bash)
+      # Prefer ~/.bashrc for interactive non-login (most terminals); fall back
+      # to ~/.profile so login shells also pick it up.
+      ensure_path_rc "$HOME/.bashrc"
+      [[ -f "$HOME/.profile" || ! -f "$HOME/.bash_profile" ]] && ensure_path_rc "$HOME/.profile"
+      ;;
+    zsh)
+      ensure_path_rc "${ZDOTDIR:-$HOME}/.zshrc"
+      ;;
+    fish)
+      mkdir -p "$HOME/.config/fish"
+      ensure_path_rc "$HOME/.config/fish/config.fish"
+      ;;
+    *)
+      warn "未知的 shell：$shell_name；請手動把 ~/.local/bin 加入 PATH"
+      ;;
+  esac
+fi
+
 # ── 完成 ──────────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════╗${NC}"
@@ -224,4 +274,7 @@ fi
 echo -e "    ${BOLD}cdui dev${NC}        # 開發模式（HMR；需 Node）"
 echo ""
 echo -e "  其他指令：${BOLD}cdui update | build | stop | test | clean | uninstall${NC}"
+echo ""
+echo -e "  若 ${BOLD}cdui${NC} 仍找不到（例如非互動式 shell），可暫時使用："
+echo -e "    ${BOLD}~/.local/bin/cdui start${NC}  或  ${BOLD}$INSTALL_DIR/cdui start${NC}"
 echo ""
