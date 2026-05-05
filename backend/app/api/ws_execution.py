@@ -113,13 +113,26 @@ def _summarize_outputs(result: dict[str, Any]) -> dict[str, Any]:
 
 @router.websocket("/ws/execution")
 async def websocket_execution(ws: WebSocket):
-    # Validate Origin header against allowed CORS origins
+    # Origin policy:
+    # 1. Same-origin requests are always allowed. This covers `cdui start`
+    #    where the SPA is served by uvicorn at the same host:port — any
+    #    fixed CORS_ORIGINS list can't predict the user's chosen port and
+    #    rejecting same-origin would break production mode entirely.
+    # 2. Cross-origin requests (typically `cdui dev` with Vite on :5173
+    #    hitting the backend on :8000) must whitelist the origin in
+    #    settings.CORS_ORIGINS.
+    # 3. Missing Origin header (non-browser clients, e.g. the WS test
+    #    suite) is allowed — the existing CORS middleware already enforces
+    #    browser-side origin policy on regular HTTP requests.
     origin = ws.headers.get("origin")
     if origin:
-        allowed = {urlparse(o).netloc for o in settings.CORS_ORIGINS}
-        if urlparse(origin).netloc not in allowed:
-            await ws.close(code=4003, reason="Origin not allowed")
-            return
+        origin_netloc = urlparse(origin).netloc
+        request_host = ws.headers.get("host", "")
+        if origin_netloc != request_host:
+            allowed = {urlparse(o).netloc for o in settings.CORS_ORIGINS}
+            if origin_netloc not in allowed:
+                await ws.close(code=4003, reason="Origin not allowed")
+                return
 
     await ws.accept()
 
