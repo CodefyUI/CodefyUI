@@ -92,7 +92,10 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: latest
+          # Pin to the major that matches frontend/pnpm-lock.yaml. Floating to
+          # `latest` would silently break `pnpm install --frozen-lockfile`
+          # when pnpm cuts a new major.
+          version: 9
 
       - uses: actions/setup-node@v5
         with:
@@ -170,23 +173,36 @@ jobs:
 
           body="$(cat release-body.md)"
 
+          # IMPORTANT: GitHub rejects make_latest=true with HTTP 422 when the
+          # release is still a draft. We therefore only flip make_latest in
+          # the PATCH that targets an *already-published* release; for draft
+          # creates/updates we omit it and let the maintainer's "Publish
+          # release" click (or a follow-up step) do the flip.
           if [[ -n "$existing_id" ]]; then
             echo "Updating existing release $existing_id"
             if [[ "$preserve_draft" == "true" ]]; then
-              gh api -X PATCH "repos/$REPO/releases/$existing_id" \
-                -f tag_name="$TAG" \
-                -f name="$TAG" \
-                -F prerelease="$PRERELEASE" \
-                -f body="$body" \
-                -f make_latest=true
+              # UI-created release: don't change draft state. Read current
+              # draft flag so we can decide whether make_latest is allowed.
+              is_draft="$(gh api "repos/$REPO/releases/$existing_id" --jq '.draft')"
+              patch_args=( -X PATCH "repos/$REPO/releases/$existing_id"
+                           -f tag_name="$TAG"
+                           -f name="$TAG"
+                           -F prerelease="$PRERELEASE"
+                           -f body="$body" )
+              if [[ "$is_draft" == "false" ]]; then
+                patch_args+=( -f make_latest=true )
+              fi
+              gh api "${patch_args[@]}"
             else
+              # Tag-push / dispatch: always (re-)assert draft=true so the
+              # maintainer reviews notes before publishing. make_latest is
+              # invalid while draft=true and is intentionally omitted.
               gh api -X PATCH "repos/$REPO/releases/$existing_id" \
                 -f tag_name="$TAG" \
                 -f name="$TAG" \
                 -F draft=true \
                 -F prerelease="$PRERELEASE" \
-                -f body="$body" \
-                -f make_latest=true
+                -f body="$body"
             fi
           else
             echo "Creating new draft release for $TAG"
@@ -195,8 +211,7 @@ jobs:
               -f name="$TAG" \
               -F draft=true \
               -F prerelease="$PRERELEASE" \
-              -f body="$body" \
-              -f make_latest=true
+              -f body="$body"
           fi
 
       - name: Upload frontend-dist.tar.gz to release
