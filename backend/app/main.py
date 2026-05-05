@@ -98,8 +98,13 @@ async def health():
 @app.post("/api/nodes/reload")
 async def reload_nodes():
     registry.clear()
+    # Built-ins are immutable for the server lifetime — no point in paying
+    # the reload tax. Custom nodes, however, may have been edited on disk
+    # since the last load, so we force-reload them to pick up the changes.
     count = registry.discover(settings.NODES_DIR, "app.nodes")
-    custom_count = registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
+    custom_count = registry.discover(
+        settings.CUSTOM_NODES_DIR, "app.custom_nodes", force_reload=True
+    )
     preset_registry.clear()
     preset_count = preset_registry.discover(settings.PRESETS_DIR, registry)
     return {

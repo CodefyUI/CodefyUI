@@ -1,21 +1,16 @@
 """WordVectorNode — look up pre-trained vectors for input words/tokens.
 
-Supports two flavours of "word embedding":
+Currently the only user-selectable backend is ``demo-16d`` — a hand-crafted
+toy vocabulary (~60 words, 16 dimensions) shipped inline so the canonical
+``king − man + woman ≈ queen`` analogy works fully offline. Constructed
+dimensions (royalty / divinity / masculinity / femininity / animal classes /
+motion / vehicles / food / weather) are deliberately interpretable.
 
-* ``demo-16d`` — a hand-crafted toy vocabulary (~60 words, 16 dimensions)
-  shipped inline so the canonical analogy demo
-  (``king − man + woman ≈ queen``) works fully offline. Constructed dimensions
-  (royalty / divinity / masculinity / femininity / animal classes / motion /
-  vehicles / food / weather) are deliberately interpretable.
-
-* ``glove-50d`` / ``glove-100d`` — real GloVe vectors over a top-10k English
-  vocabulary, lazy-downloaded from a GitHub Release asset on first use via
-  :mod:`app.core.asset_cache`. When the URL hasn't been published yet the
-  node raises a friendly error pointing the user at ``demo-16d``.
-
-A third backend (``minilm-sentence-384d`` via the optional ``llm-sentence``
-extra) is reserved for a follow-up PR — the SELECT entry exists so the UI
-plumbing is in place, but it isn't loadable from this PR.
+:func:`_load_backend` keeps stub branches for ``glove-50d`` / ``glove-100d``
+and ``minilm-sentence-384d`` so saved graphs from earlier previews surface a
+clear "asset not yet published" error instead of a stack trace. The SELECT
+options will grow back once the GloVe asset bundle and the optional
+``[llm-sentence]`` extra ship.
 """
 
 from __future__ import annotations
@@ -114,6 +109,11 @@ class WordVectorNode(BaseNode):
 
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
+        # Only the offline ``demo-16d`` backend is exposed for now. The GloVe
+        # asset bundle and the optional sentence-transformer backend are
+        # implemented in :func:`_load_backend` but their assets / extras have
+        # not been published yet — exposing them here would surface a
+        # NotImplementedError at run time. Re-add when the asset URLs land.
         return [
             ParamDefinition(
                 name="backend",
@@ -121,14 +121,13 @@ class WordVectorNode(BaseNode):
                 default="demo-16d",
                 options=[
                     "demo-16d",
-                    "glove-50d",
-                    "glove-100d",
-                    "minilm-sentence-384d",
                 ],
                 description=(
-                    "Vector source. demo-16d is a hand-crafted toy vocab that "
-                    "ships offline; glove-* downloads real GloVe vectors on "
-                    "first use; minilm-sentence-384d requires the [llm-sentence] extra."
+                    "Vector source. demo-16d is a hand-crafted toy vocab "
+                    "(~60 words, 16 dimensions) that ships offline so the "
+                    "canonical king − man + woman ≈ queen analogy works. "
+                    "GloVe and sentence-transformer backends will return in a "
+                    "follow-up release."
                 ),
             ),
             ParamDefinition(

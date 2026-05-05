@@ -190,9 +190,14 @@ async def delete_custom_node(filename: str):
 
 
 def _reload_all():
-    """Re-discover all nodes and presets after a custom node change."""
+    """Re-discover all nodes and presets after a custom node change.
+
+    Built-ins are imported fresh after ``registry.clear()`` (no reload needed
+    since they don't change at runtime); custom nodes pass ``force_reload``
+    so edits to existing files actually take effect, not just adds/deletes.
+    """
     registry.clear()
     registry.discover(settings.NODES_DIR, "app.nodes")
-    registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
+    registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes", force_reload=True)
     preset_registry.clear()
     preset_registry.discover(settings.PRESETS_DIR, registry)
