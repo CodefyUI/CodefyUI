@@ -126,11 +126,29 @@ function SinglePanel({
 }: SinglePanelProps) {
   const n = matrix.length;
   const m = matrix[0]?.length ?? 0;
-  // Reserve gutter space for axis labels when present and n is small enough
-  // to fit them without overlap.
-  const labelGutter = (rowLabels || colLabels) && n <= 16 ? 36 : 4;
-  const innerW = Math.max(20, width - labelGutter);
-  const innerH = Math.max(20, height - labelGutter);
+
+  // Compute axis gutters from actual label content. Approx char width at
+  // 9px monospace ≈ 6.5px. Column labels rotate -45°, so their vertical
+  // projection is ``charW × len × sin(45°)`` plus padding for the font
+  // ascender (otherwise the leading characters get clipped against the
+  // SVG top edge — see https://github.com/treeleaves30760/CodefyUI/...).
+  const charW = 6.5;
+  const showLabels = n <= 16;
+  const maxColLen = showLabels && colLabels
+    ? Math.max(0, ...colLabels.slice(0, m).map((l) => String(l).length))
+    : 0;
+  const maxRowLen = showLabels && rowLabels
+    ? Math.max(0, ...rowLabels.slice(0, n).map((l) => String(l).length))
+    : 0;
+  const topGutter = maxColLen > 0
+    ? Math.max(36, Math.ceil(maxColLen * charW * 0.75) + 16)
+    : 6;
+  const leftGutter = maxRowLen > 0
+    ? Math.max(36, Math.ceil(maxRowLen * charW) + 10)
+    : 6;
+
+  const innerW = Math.max(20, width - leftGutter);
+  const innerH = Math.max(20, height - topGutter);
   const cellW = innerW / Math.max(1, m);
   const cellH = innerH / Math.max(1, n);
 
@@ -139,6 +157,9 @@ function SinglePanel({
       width={width}
       height={height}
       className={styles.panel}
+      // Allow rotated column labels to render past the nominal SVG bounds
+      // when a tight gutter calculation under-estimates by a pixel or two.
+      style={{ overflow: 'visible' }}
       data-causal-masked={causalMasked ? 'true' : 'false'}
       data-head-index={headIndex ?? -1}
     >
@@ -153,31 +174,44 @@ function SinglePanel({
           <line x1={0} y1={0} x2={0} y2={4} stroke="rgba(120,140,170,0.55)" strokeWidth={1} />
         </pattern>
       </defs>
-      {/* Column (key) labels along the top */}
-      {colLabels && n <= 16 && (
+      {/* Column (key) labels along the top.
+       *
+       * textAnchor="end" + rotate(+45) anchors the *end* of each label at the
+       * top of its column and lets the text body extend up-and-to-the-left
+       * into the gutter region. Earlier we tried rotate(-45) which sends the
+       * text body down-and-to-the-left — visually that pushed the leading
+       * characters underneath the heatmap cells (cells render after labels
+       * in the DOM, so they hid the overlap). Reading direction now goes
+       * upper-left → lower-right, which is the standard "\" convention for
+       * column headers. */}
+      {colLabels && showLabels && (
         <g>
-          {colLabels.slice(0, m).map((label, j) => (
-            <text
-              key={`c-${j}`}
-              x={labelGutter + j * cellW + cellW / 2}
-              y={labelGutter - 4}
-              className={styles.axisLabel}
-              textAnchor="end"
-              transform={`rotate(-45, ${labelGutter + j * cellW + cellW / 2}, ${labelGutter - 4})`}
-            >
-              {label}
-            </text>
-          ))}
+          {colLabels.slice(0, m).map((label, j) => {
+            const cx = leftGutter + j * cellW + cellW / 2;
+            const cy = topGutter - 6;
+            return (
+              <text
+                key={`c-${j}`}
+                x={cx}
+                y={cy}
+                className={styles.axisLabel}
+                textAnchor="end"
+                transform={`rotate(45, ${cx}, ${cy})`}
+              >
+                {label}
+              </text>
+            );
+          })}
         </g>
       )}
       {/* Row (query) labels along the left */}
-      {rowLabels && n <= 16 && (
+      {rowLabels && showLabels && (
         <g>
           {rowLabels.slice(0, n).map((label, i) => (
             <text
               key={`r-${i}`}
-              x={labelGutter - 4}
-              y={labelGutter + i * cellH + cellH / 2 + 3}
+              x={leftGutter - 6}
+              y={topGutter + i * cellH + cellH / 2 + 3}
               className={styles.axisLabel}
               textAnchor="end"
             >
@@ -187,7 +221,7 @@ function SinglePanel({
         </g>
       )}
       {/* Cells */}
-      <g transform={`translate(${labelGutter}, ${labelGutter})`}>
+      <g transform={`translate(${leftGutter}, ${topGutter})`}>
         {matrix.map((row, i) =>
           row.map((v, j) => {
             const masked = causalMasked && j > i && v === 0;
