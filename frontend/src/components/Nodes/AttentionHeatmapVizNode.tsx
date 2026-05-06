@@ -74,6 +74,7 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
           panelWidth={is3D ? 140 : 220}
           panelHeight={is3D ? 140 : 220}
           onExpand={() => setExpanded(true)}
+          normalizePerRow
         />
       )}
       <HeatmapModal
@@ -87,6 +88,7 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
         nodeId={id}
         port="weights"
         detectCausalMask
+        normalizePerRow
       />
     </div>
   );

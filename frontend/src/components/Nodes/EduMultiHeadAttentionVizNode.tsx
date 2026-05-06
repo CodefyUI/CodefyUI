@@ -68,6 +68,7 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
             panelWidth={panelSize}
             panelHeight={panelSize}
             onExpand={() => setExpanded(true)}
+            normalizePerRow
           />
           <div className={styles.metaRow}>
             <span>
@@ -88,6 +89,7 @@ function EduMultiHeadAttentionVizNode(props: NodeProps<AppNode>) {
         nodeId={id}
         port="weights"
         detectCausalMask
+        normalizePerRow
       />
     </div>
   );

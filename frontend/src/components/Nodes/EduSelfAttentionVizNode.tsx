@@ -73,6 +73,7 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
             panelWidth={220}
             panelHeight={220}
             onExpand={() => setExpanded(true)}
+            normalizePerRow
           />
           {causal && (
             <div className={styles.metaRow}>
@@ -92,6 +93,7 @@ function EduSelfAttentionVizNode(props: NodeProps<AppNode>) {
         nodeId={id}
         port="weights"
         detectCausalMask
+        normalizePerRow
       />
     </div>
   );

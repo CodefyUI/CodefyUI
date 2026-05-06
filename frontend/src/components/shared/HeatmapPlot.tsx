@@ -20,6 +20,14 @@ interface HeatmapPlotProps {
   className?: string;
   /** When set, an "expand" button appears at the top-right and the wrapper becomes clickable for opening a larger modal view. */
   onExpand?: () => void;
+  /**
+   * When true, each row is colour-mapped relative to its own max value. Use
+   * for attention weights (especially causal): later positions spread
+   * softmax mass across many tokens, so absolute values are tiny and
+   * everything looks dim under a global [0, 1] scale. Tooltips still show
+   * the raw weight.
+   */
+  normalizePerRow?: boolean;
 }
 
 interface HoverCell {
@@ -110,6 +118,7 @@ interface SinglePanelProps {
   colormap: HeatmapColormap;
   causalMasked: boolean;
   headIndex?: number;
+  normalizePerRow: boolean;
   onHover: (cell: HoverCell | null) => void;
 }
 
@@ -122,6 +131,7 @@ function SinglePanel({
   colormap,
   causalMasked,
   headIndex,
+  normalizePerRow,
   onHover,
 }: SinglePanelProps) {
   const n = matrix.length;
@@ -151,6 +161,17 @@ function SinglePanel({
   const innerH = Math.max(20, height - topGutter);
   const cellW = innerW / Math.max(1, m);
   const cellH = innerH / Math.max(1, n);
+
+  // Pre-compute per-row max for normalisation. Rows with all-zero values
+  // (e.g. fully masked) keep zero everywhere — divide-by-zero is suppressed
+  // by treating the max as 1.
+  const rowMaxes = normalizePerRow
+    ? matrix.map((row) => {
+        let max = 0;
+        for (const v of row) if (v > max) max = v;
+        return max > 0 ? max : 1;
+      })
+    : null;
 
   return (
     <svg
@@ -225,7 +246,12 @@ function SinglePanel({
         {matrix.map((row, i) =>
           row.map((v, j) => {
             const masked = causalMasked && j > i && v === 0;
-            const t = Math.max(0, Math.min(1, v));
+            // For colouring: optionally normalise by row max so the relative
+            // attention pattern is visible even when absolute weights are
+            // tiny (later rows of a causal sequence). Tooltips still show v.
+            const colorT = rowMaxes
+              ? Math.max(0, Math.min(1, v / rowMaxes[i]))
+              : Math.max(0, Math.min(1, v));
             return (
               <g key={`c-${i}-${j}`}>
                 <rect
@@ -233,12 +259,13 @@ function SinglePanel({
                   y={i * cellH}
                   width={cellW}
                   height={cellH}
-                  fill={valueToColor(t, colormap)}
+                  fill={valueToColor(colorT, colormap)}
                   stroke="rgba(0,0,0,0.15)"
                   strokeWidth={0.5}
                   data-i={i}
                   data-j={j}
                   data-masked={masked ? 'true' : 'false'}
+                  data-color-t={colorT.toFixed(3)}
                   className={styles.cell}
                   onMouseEnter={(e) => {
                     onHover({
@@ -306,6 +333,7 @@ export function HeatmapPlot({
   detectCausalMask = true,
   className,
   onExpand,
+  normalizePerRow = false,
 }: HeatmapPlotProps) {
   const [hover, setHover] = useState<HoverCell | null>(null);
 
@@ -364,6 +392,7 @@ export function HeatmapPlot({
             colormap={colormap}
             causalMasked={p.causalMasked}
             headIndex={p.head}
+            normalizePerRow={normalizePerRow}
             onHover={setHover}
           />
         ))}
