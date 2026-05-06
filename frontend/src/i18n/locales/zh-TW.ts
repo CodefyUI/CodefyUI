@@ -368,6 +368,8 @@ const zhTW: Record<TranslationKey, string> = {
   'attention.heads': '{count} 個 head',
   'attention.causalMasked': '斜紋格＝causal mask 阻擋',
   'attention.maskRunHint': '執行圖以查看 mask',
+  'attention.tooLargeInline': '張量太大無法直接預覽',
+  'attention.viewFull': '查看完整',
   'textInput.placeholder': '在此輸入文字…',
   'textInput.charCount': '{count} 字元',
 

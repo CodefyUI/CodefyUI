@@ -154,4 +154,18 @@ describe('HeatmapPlot', () => {
     expect(headLabels).toContain('h0');
     expect(headLabels).toContain('h1');
   });
+
+  it('does not render expand button when onExpand prop is not given', () => {
+    const m = [[0.5, 0.5], [0.3, 0.7]];
+    const { container } = render(<HeatmapPlot data={m} />);
+    const btns = container.querySelectorAll('button[aria-label="Expand heatmap"]');
+    expect(btns.length).toBe(0);
+  });
+
+  it('renders expand button when onExpand is given and calls it on click', async () => {
+    const m = [[0.5, 0.5], [0.3, 0.7]];
+    const { container } = render(<HeatmapPlot data={m} onExpand={() => {}} />);
+    const btns = container.querySelectorAll('button[aria-label="Expand heatmap"]');
+    expect(btns.length).toBe(1);
+  });
 });

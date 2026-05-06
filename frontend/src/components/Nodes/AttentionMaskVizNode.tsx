@@ -1,54 +1,77 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot } from '../shared/HeatmapPlot';
+import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
 import styles from './AttentionVizNode.module.css';
 
-/**
- * Visualises the [seq, seq] boolean mask emitted by AttentionMask.
- *
- * Backend serialises booleans as 0.0 / 1.0 in the embedded `values`. We
- * coerce to numbers so HeatmapPlot can render: blocked cells (1.0) show
- * up dark with the diagonal-stripe overlay; allowed cells (0.0) stay
- * light. Use the diverging RdBu colormap so 0/1 contrast is loud.
- */
 function AttentionMaskVizNode(props: NodeProps<AppNode>) {
-  const { id } = props;
+  const { id, data } = props;
   const { t } = useI18n();
   const summaries = useTabStore((s) => {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
+  const runId = useTabStore((s) => {
+    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
+    return tab?.lastRunId ?? null;
+  });
+
+  const [expanded, setExpanded] = useState(false);
 
   const matrix = useMemo<number[][] | null>(() => {
     const v = summaries?.mask?.values;
     if (!Array.isArray(v) || v.length === 0) return null;
-    // Coerce booleans (or 0/1) to 0/1 numbers.
     const rows = v as unknown[];
-    const numeric: number[][] = rows.map((row) =>
+    return rows.map((row) =>
       Array.isArray(row) ? row.map((x) => (x ? 1 : 0)) : [],
     );
-    return numeric;
   }, [summaries]);
+
+  const hasShape = !!summaries?.mask;
 
   const bodyExtra = (
     <div className={styles.vizArea}>
-      {matrix === null ? (
+      {matrix === null && !hasShape && (
         <div className={styles.emptyHint}>{t('attention.maskRunHint')}</div>
-      ) : (
+      )}
+      {matrix === null && hasShape && (
+        <div className={styles.tooBigHint}>
+          <div>{t('attention.tooLargeInline')}</div>
+          <button
+            type="button"
+            className={styles.expandLink}
+            onClick={() => setExpanded(true)}
+          >
+            {t('attention.viewFull')} →
+          </button>
+        </div>
+      )}
+      {matrix !== null && (
         <HeatmapPlot
           data={matrix}
           colormap="RdBu"
           panelWidth={180}
           panelHeight={180}
-          // Mask matrices are themselves the "block" signal — don't try to
-          // detect a causal pattern (the whole upper triangle is "1.0", not "0").
           detectCausalMask={false}
+          onExpand={() => setExpanded(true)}
         />
       )}
+      <HeatmapModal
+        isOpen={expanded}
+        onClose={() => setExpanded(false)}
+        title={`AttentionMask · ${data.label ?? id}`}
+        inlineData={matrix}
+        colormap="RdBu"
+        detectCausalMask={false}
+        runId={runId}
+        nodeId={id}
+        port="mask"
+        variant="mask"
+      />
     </div>
   );
 

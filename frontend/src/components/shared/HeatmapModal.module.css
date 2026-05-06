@@ -1,0 +1,108 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 24px;
+}
+
+.modal {
+  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  min-width: 480px;
+  min-height: 320px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #1f2937;
+  background: rgba(10, 15, 23, 0.6);
+}
+
+.title {
+  color: #e5e7eb;
+  font-weight: 600;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.closeBtn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.closeBtn:hover {
+  background: #1f2937;
+  border-color: #06b6d4;
+  color: #67e8f9;
+}
+
+.content {
+  padding: 16px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+}
+
+.status {
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.error {
+  color: #fca5a5;
+}
+
+.errorHint {
+  color: #94a3b8;
+  font-size: 11px;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-top: 1px solid #1f2937;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  background: rgba(10, 15, 23, 0.6);
+}
+
+.dim {
+  color: #64748b;
+}

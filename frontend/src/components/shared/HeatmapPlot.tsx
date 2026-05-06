@@ -18,6 +18,8 @@ interface HeatmapPlotProps {
   /** When true, cells with value exactly 0 in the upper triangle get a striped overlay marking them as causal-masked. */
   detectCausalMask?: boolean;
   className?: string;
+  /** When set, an "expand" button appears at the top-right and the wrapper becomes clickable for opening a larger modal view. */
+  onExpand?: () => void;
 }
 
 interface HoverCell {
@@ -269,6 +271,7 @@ export function HeatmapPlot({
   colormap = 'viridis',
   detectCausalMask = true,
   className,
+  onExpand,
 }: HeatmapPlotProps) {
   const [hover, setHover] = useState<HoverCell | null>(null);
 
@@ -301,6 +304,20 @@ export function HeatmapPlot({
 
   return (
     <div className={`${styles.wrapper} ${className ?? ''}`}>
+      {onExpand && (
+        <button
+          type="button"
+          className={styles.expandBtn}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpand();
+          }}
+          title="Open larger view"
+          aria-label="Expand heatmap"
+        >
+          ⤢
+        </button>
+      )}
       <div className={styles.grid}>
         {panels.map((p, idx) => (
           <SinglePanel

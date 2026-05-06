@@ -1,9 +1,10 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot, type HeatmapColormap } from '../shared/HeatmapPlot';
+import { HeatmapModal } from '../shared/HeatmapModal';
 import { BaseNodeBody } from './BaseNode';
 import styles from './AttentionVizNode.module.css';
 
@@ -11,8 +12,9 @@ import styles from './AttentionVizNode.module.css';
  * Pure-viz pass-through for any `weights:TENSOR` upstream — works with the
  * Edu* nodes as well as the production Transformer/MultiHeadAttention.
  *
- * Auto-detects 2D vs 3D shape; 4D ([B, H, seq, seq]) is collapsed to its
- * first batch like the other Edu wrappers.
+ * The "view full" path REST-fetches the tensor when WS values weren't
+ * embedded inline (numel > 256), so this works for production-sized
+ * attention matrices too.
  */
 function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
   const { id, data } = props;
@@ -21,11 +23,16 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
   });
+  const runId = useTabStore((s) => {
+    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
+    return tab?.lastRunId ?? null;
+  });
+
+  const [expanded, setExpanded] = useState(false);
 
   const matrix = useMemo<number[][] | number[][][] | null>(() => {
     const v = summaries?.weights?.values;
     if (!Array.isArray(v) || v.length === 0) return null;
-    // 4D collapse to 3D
     if (Array.isArray(v[0]) && Array.isArray(v[0][0]) && Array.isArray((v[0][0] as unknown[])[0])) {
       return (v as unknown as number[][][][])[0];
     }
@@ -39,20 +46,48 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
   }, [summaries]);
 
   const colormap = (data.params?.colormap as HeatmapColormap | undefined) ?? 'viridis';
+  const hasShape = !!summaries?.weights;
+  const is3D = matrix !== null && Array.isArray((matrix as number[][][])[0]?.[0]);
 
   const bodyExtra = (
     <div className={styles.vizArea}>
-      {matrix === null ? (
+      {matrix === null && !hasShape && (
         <div className={styles.emptyHint}>{t('attention.runHint')}</div>
-      ) : (
+      )}
+      {matrix === null && hasShape && (
+        <div className={styles.tooBigHint}>
+          <div>{t('attention.tooLargeInline')}</div>
+          <button
+            type="button"
+            className={styles.expandLink}
+            onClick={() => setExpanded(true)}
+          >
+            {t('attention.viewFull')} →
+          </button>
+        </div>
+      )}
+      {matrix !== null && (
         <HeatmapPlot
           data={matrix}
           rowLabels={labels}
           colormap={colormap}
-          panelWidth={Array.isArray((matrix as number[][][])[0]?.[0]) ? 140 : 220}
-          panelHeight={Array.isArray((matrix as number[][][])[0]?.[0]) ? 140 : 220}
+          panelWidth={is3D ? 140 : 220}
+          panelHeight={is3D ? 140 : 220}
+          onExpand={() => setExpanded(true)}
         />
       )}
+      <HeatmapModal
+        isOpen={expanded}
+        onClose={() => setExpanded(false)}
+        title={`AttentionHeatmap · ${data.label ?? id}`}
+        inlineData={matrix}
+        rowLabels={labels}
+        colormap={colormap}
+        runId={runId}
+        nodeId={id}
+        port="weights"
+        detectCausalMask
+      />
     </div>
   );
 

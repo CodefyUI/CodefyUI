@@ -4,6 +4,35 @@
   flex-direction: column;
   align-items: center;
   padding: 4px 0;
+  position: relative;
+}
+
+.expandBtn {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(10, 15, 23, 0.85);
+  border: 1px solid #1f2937;
+  color: #67e8f9;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-in;
+  z-index: 5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.expandBtn:hover {
+  background: #0e7490;
+  border-color: #06b6d4;
+  color: #fff;
 }
 
 .grid {
