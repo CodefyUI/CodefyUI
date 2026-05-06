@@ -111,6 +111,11 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
                 data_type=DataType.TENSOR,
                 description="Attention weights — [seq, seq] for 2D input, [batch, seq, seq] for 3D input.",
             ),
+            PortDefinition(
+                name="labels",
+                data_type=DataType.LIST,
+                description="Pass-through of the optional `labels` input — surfaces token names to the heatmap viz.",
+            ),
         ]
 
     @classmethod
@@ -214,6 +219,8 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
             output = out_bf.transpose(0, 1)  # [seq, batch, D]
             weights_out = weights  # [batch, seq, seq]
 
+        labels_out = list(inputs.get("labels") or [])
+
         verbose = context is not None and getattr(context, "verbose", False)
         if verbose:
             recorder = StepRecorder()
@@ -254,10 +261,11 @@ class EduSelfAttentionNode(StatefulModuleMixin, BaseNode):
             return {
                 "output": output,
                 "weights": weights_out,
+                "labels": labels_out,
                 "__steps__": recorder.steps,
             }
 
-        return {"output": output, "weights": weights_out}
+        return {"output": output, "weights": weights_out, "labels": labels_out}
 
     @staticmethod
     def _build_mask(seq: int, causal: bool, explicit_mask: Any) -> torch.Tensor | None:

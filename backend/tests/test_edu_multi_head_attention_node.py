@@ -23,7 +23,7 @@ def test_node_metadata():
     assert EduMultiHeadAttentionNode.NODE_NAME == "EduMultiHeadAttention"
     assert EduMultiHeadAttentionNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduMultiHeadAttentionNode.define_outputs()]
-    assert out_names == ["output", "weights"]
+    assert out_names == ["output", "weights", "labels"]
 
 
 def test_output_shape_2d_input():

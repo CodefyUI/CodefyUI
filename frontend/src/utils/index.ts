@@ -12,6 +12,10 @@ export const VIZ_NODE_TYPES: Record<string, string> = {
   Tokenizer: 'tokenizerNode',
   EmbeddingScatter: 'embeddingScatterNode',
   TextInput: 'textInputNode',
+  EduSelfAttention: 'eduSelfAttentionNode',
+  EduMultiHeadAttention: 'eduMultiHeadAttentionNode',
+  AttentionHeatmap: 'attentionHeatmapNode',
+  AttentionMask: 'attentionMaskNode',
 };
 
 export const DATA_TYPE_COLORS: Record<string, string> = {

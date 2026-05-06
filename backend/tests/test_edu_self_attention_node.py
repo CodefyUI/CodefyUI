@@ -25,7 +25,7 @@ def test_node_metadata():
     assert EduSelfAttentionNode.NODE_NAME == "EduSelfAttention"
     assert EduSelfAttentionNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduSelfAttentionNode.define_outputs()]
-    assert out_names == ["output", "weights"]
+    assert out_names == ["output", "weights", "labels"]
 
 
 def test_output_shape_2d():

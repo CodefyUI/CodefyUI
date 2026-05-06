@@ -364,6 +364,10 @@ const zhTW: Record<TranslationKey, string> = {
   'tokenizer.runHint': '執行圖以查看 token',
   'tokenizer.truncatedInline': '顯示前 {shown} 個（共 {total} 個）— 完整列表請看檢視器',
   'scatter.runHint': '執行圖以查看投影結果',
+  'attention.runHint': '執行圖以查看注意力權重',
+  'attention.heads': '{count} 個 head',
+  'attention.causalMasked': '斜紋格＝causal mask 阻擋',
+  'attention.maskRunHint': '執行圖以查看 mask',
   'textInput.placeholder': '在此輸入文字…',
   'textInput.charCount': '{count} 字元',
 
