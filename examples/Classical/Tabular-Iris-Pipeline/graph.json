@@ -1,0 +1,21 @@
+{
+  "name": "Tabular Iris Pipeline: CSV → features → train/test",
+  "description": "The C1-2 lesson made concrete. We load the classic Iris dataset (150 rows × 4 features × 3 species), pick all four features, z-score normalise per column, then split 80/20 stratified by class so train and test both see all three species. The Print at the end shows the train-feature tensor — students can verify the shape (120, 4) and check that means cluster around 0.",
+  "nodes": [
+    { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "select",    "type": "ColumnSelector", "position": { "x": 220,  "y": 0 }, "data": { "params": { "indices": "0,1,2,3", "names": "" } } },
+    { "id": "norm",      "type": "Normalize",      "position": { "x": 480,  "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "split",     "type": "TrainTestSplit", "position": { "x": 740,  "y": 0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "print",     "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "x_train (120, 4)" } } }
+  ],
+  "edges": [
+    { "id": "trig",       "source": "start-1", "target": "csv",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_csv_sel",  "source": "csv",     "target": "select", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_csv_cols", "source": "csv",     "target": "select", "sourceHandle": "columns","targetHandle": "columns" },
+    { "id": "e_sel_norm", "source": "select",  "target": "norm",   "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_norm_split","source": "norm",   "target": "split",  "sourceHandle": "tensor", "targetHandle": "features" },
+    { "id": "e_csv_split","source": "csv",     "target": "split",  "sourceHandle": "labels", "targetHandle": "labels" },
+    { "id": "e_split_print","source": "split", "target": "print",  "sourceHandle": "x_train","targetHandle": "value" }
+  ]
+}

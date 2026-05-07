@@ -28,6 +28,7 @@ import EduMultiHeadAttentionVizNode from '../Nodes/EduMultiHeadAttentionVizNode'
 import AttentionHeatmapVizNode from '../Nodes/AttentionHeatmapVizNode';
 import AttentionMaskVizNode from '../Nodes/AttentionMaskVizNode';
 import EduCrossAttentionVizNode from '../Nodes/EduCrossAttentionVizNode';
+import EduKNNVizNode from '../Nodes/EduKNNVizNode';
 import { CustomConnectionLine } from './CustomConnectionLine';
 import { SmartDataEdge } from './SmartDataEdge';
 import { TriggerEdge } from './TriggerEdge';
@@ -65,6 +66,7 @@ const nodeTypes: NodeTypes = {
   attentionHeatmapNode: AttentionHeatmapVizNode,
   attentionMaskNode: AttentionMaskVizNode,
   eduCrossAttentionNode: EduCrossAttentionVizNode,
+  eduKNNNode: EduKNNVizNode,
 };
 
 const edgeTypes: EdgeTypes = {

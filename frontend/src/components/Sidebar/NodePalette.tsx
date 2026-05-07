@@ -8,7 +8,7 @@ import type { NodeDefinition, PresetDefinition } from '../../types';
 import { CATEGORY_COLORS, DIFFICULTY_COLORS } from '../../styles/theme';
 import styles from './NodePalette.module.css';
 
-const CATEGORY_ORDER = ['Control', 'Data', 'IO', 'CNN', 'Normalization', 'RNN', 'Transformer', 'LLM', 'Diffusion', 'RL', 'Training', 'Tensor Operations', 'Utility'];
+const CATEGORY_ORDER = ['Control', 'Data', 'Classical', 'IO', 'CNN', 'Normalization', 'RNN', 'Transformer', 'LLM', 'Diffusion', 'RL', 'Training', 'Tensor Operations', 'Utility'];
 const BEGINNER_CATEGORIES = new Set(['Data', 'CNN', 'Training', 'IO']);
 
 // ── Operation Node Item ──
