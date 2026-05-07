@@ -588,12 +588,24 @@ async def execute_graph(
         # Check cache (skip for force-rerun nodes from partial re-execution).
         # Stateful nodes opt out via cacheable=False because their internal
         # weights drift across runs.
+        #
+        # Important: if ANY upstream is non-cacheable, *this* node also cannot
+        # be safely cached for this run. The cache key only encodes upstream
+        # *cache keys*, not their actual output tensors — so a non-cacheable
+        # upstream that produces different shapes between runs would still
+        # generate the same downstream cache key, returning a stale tensor.
+        # Propagate the non-cacheability instead of silently dropping the
+        # upstream from the key.
         node_cacheable = getattr(node_cls, "cacheable", True)
-        if cache is not None and node_cacheable:
-            upstream_keys = []
-            for src_id, _, _ in incoming.get(node_id, []):
-                if src_id in node_cache_keys:
-                    upstream_keys.append(node_cache_keys[src_id])
+        upstream_all_cached = all(
+            src_id in node_cache_keys
+            for src_id, _, _ in incoming.get(node_id, [])
+        )
+        if cache is not None and node_cacheable and upstream_all_cached:
+            upstream_keys = [
+                node_cache_keys[src_id]
+                for src_id, _, _ in incoming.get(node_id, [])
+            ]
             cache_key = cache.compute_key(node_type, params, upstream_keys)
             node_cache_keys[node_id] = cache_key
             if node_id not in force_rerun:
