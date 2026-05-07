@@ -6,6 +6,7 @@ export const CATEGORY_COLORS: Record<string, string> = {
   Transformer: '#9C27B0',
   LLM: '#A78BFA',
   Diffusion: '#EC4899',
+  Classical: '#F59E0B',
   RL: '#FF9800',
   Data: '#00BCD4',
   Training: '#F44336',

@@ -1,0 +1,31 @@
+{
+  "name": "RNN One Step: the recurrence written in two lines",
+  "description": "The simplest possible RNN demo: feed three input vectors x_1, x_2, x_3 through three RNNCells in series, where each cell's hidden output flows into the next cell's hidden input. Same parameters (input_size=4, hidden_size=8, seed=42) on every cell so they share one matrix W_ih and one matrix W_hh — that's the whole point of 'recurrent'. The final hidden state h_3 is what 'reading the whole sequence' looks like in this simplest possible architecture.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+
+    { "id": "x1",       "type": "TensorCreate", "position": { "x": -40,  "y": -150 }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "x2",       "type": "TensorCreate", "position": { "x": -40,  "y": 0    }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "x3",       "type": "TensorCreate", "position": { "x": -40,  "y": 150  }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
+
+    { "id": "cell1",    "type": "RNNCell",      "position": { "x": 240,  "y": -150 }, "data": { "params": { "input_size": 4, "hidden_size": 8, "nonlinearity": "tanh", "seed": 42 } } },
+    { "id": "cell2",    "type": "RNNCell",      "position": { "x": 240,  "y": 0    }, "data": { "params": { "input_size": 4, "hidden_size": 8, "nonlinearity": "tanh", "seed": 42 } } },
+    { "id": "cell3",    "type": "RNNCell",      "position": { "x": 240,  "y": 150  }, "data": { "params": { "input_size": 4, "hidden_size": 8, "nonlinearity": "tanh", "seed": 42 } } },
+
+    { "id": "print",    "type": "Print",        "position": { "x": 540,  "y": 150 }, "data": { "params": { "label": "h_3 (final hidden state)" } } }
+  ],
+  "edges": [
+    { "id": "trig_x1", "source": "start-1", "target": "x1", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_x2", "source": "start-1", "target": "x2", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_x3", "source": "start-1", "target": "x3", "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_x1_c1", "source": "x1",    "target": "cell1", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_x2_c2", "source": "x2",    "target": "cell2", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_x3_c3", "source": "x3",    "target": "cell3", "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_c1_c2", "source": "cell1", "target": "cell2", "sourceHandle": "hidden", "targetHandle": "hidden" },
+    { "id": "e_c2_c3", "source": "cell2", "target": "cell3", "sourceHandle": "hidden", "targetHandle": "hidden" },
+
+    { "id": "e_c3_pr", "source": "cell3", "target": "print", "sourceHandle": "hidden", "targetHandle": "value" }
+  ]
+}
