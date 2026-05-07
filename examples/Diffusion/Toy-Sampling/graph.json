@@ -1,0 +1,18 @@
+{
+  "name": "Toy Sampling: reverse diffusion with an untrained U-Net",
+  "description": "The reverse-diffusion sampling loop, using a freshly-initialized (untrained) `DiffusionUNet`. Because the model isn't trained, the final 'image' is meaningless noise — but the *trajectory* and the *schedule arithmetic* are exactly what a trained Stable Diffusion does. Watch the DDPMSampler node: 20 reverse-diffusion steps, each calling the U-Net once with a different timestep. To get a meaningful output you'd need to train the U-Net (separate workflow); this preset is about teaching the sampling math, not generating pretty pictures.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 80 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
+    { "id": "unet",     "type": "DiffusionUNet",  "position": { "x": 320,  "y": -80 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
+    { "id": "sampler",  "type": "DDPMSampler",    "position": { "x": 660,  "y": 0 }, "data": { "params": { "num_steps": 20, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 7 } } },
+    { "id": "print",    "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "Final x_0 (untrained → noise)" } } }
+  ],
+  "edges": [
+    { "id": "trig_noise", "source": "start-1", "target": "noise",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_unet",  "source": "start-1", "target": "unet",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_model",   "source": "unet",    "target": "sampler", "sourceHandle": "model", "targetHandle": "model" },
+    { "id": "e_noise",   "source": "noise",   "target": "sampler", "sourceHandle": "noise", "targetHandle": "noise" },
+    { "id": "e_out",     "source": "sampler", "target": "print",   "sourceHandle": "image", "targetHandle": "value" }
+  ]
+}
