@@ -1,59 +1,64 @@
 {
   "name": "UNet for Image Segmentation",
-  "description": "Classic 2-level UNet showing encoder-decoder architecture with Concat-based skip connections from encoder features into the decoder.",
+  "description": "Classic two-level U-Net wired in full so every encoder Conv, every MaxPool, every ConvTranspose, and every Concat-based skip is visible on the canvas. A 32×32 RGB image flows through: Lv1 Conv→ReLU at 32×32 (skip saved), MaxPool to 16×16, Lv2 Conv→ReLU (skip saved), MaxPool to 8×8, bottleneck Conv→ReLU, then mirror back up — ConvTranspose to 16×16, Concat with the Lv2 skip (channel-wise), Conv→ReLU, ConvTranspose to 32×32, Concat with the Lv1 skip, Conv→ReLU, finishing with a 1×1 head Conv that projects to a single segmentation channel. The skip-Concat edges (encoder→decoder) cross the canvas — those are the U-shape that gives the architecture its name.",
   "nodes": [
-    {
-      "id": "start-1",
-      "type": "Start",
-      "position": {
-        "x": -150,
-        "y": 200
-      },
-      "data": {
-        "params": {}
-      }
-    },
-    {
-      "id": "model-builder",
-      "type": "SequentialModel",
-      "position": {
-        "x": 50,
-        "y": 200
-      },
-      "data": {
-        "params": {
-          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"e1c1\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 3, \"out_channels\": 16, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"e1r1\", \"type\": \"ReLU\"}, {\"id\": \"e1c2\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 16, \"out_channels\": 16, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"e1r2\", \"type\": \"ReLU\"}, {\"id\": \"p1\", \"type\": \"MaxPool2d\", \"params\": {\"kernel_size\": 2, \"stride\": 2}}, {\"id\": \"e2c1\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 16, \"out_channels\": 32, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"e2r1\", \"type\": \"ReLU\"}, {\"id\": \"e2c2\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 32, \"out_channels\": 32, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"e2r2\", \"type\": \"ReLU\"}, {\"id\": \"p2\", \"type\": \"MaxPool2d\", \"params\": {\"kernel_size\": 2, \"stride\": 2}}, {\"id\": \"bnc1\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 32, \"out_channels\": 64, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"bnr1\", \"type\": \"ReLU\"}, {\"id\": \"bnc2\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 64, \"out_channels\": 64, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"bnr2\", \"type\": \"ReLU\"}, {\"id\": \"u2\", \"type\": \"ConvTranspose2d\", \"params\": {\"in_channels\": 64, \"out_channels\": 32, \"kernel_size\": 2, \"stride\": 2}}, {\"id\": \"cat2\", \"type\": \"Concat\", \"params\": {\"dim\": 1}}, {\"id\": \"d2c1\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 64, \"out_channels\": 32, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"d2r1\", \"type\": \"ReLU\"}, {\"id\": \"d2c2\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 32, \"out_channels\": 32, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"d2r2\", \"type\": \"ReLU\"}, {\"id\": \"u1\", \"type\": \"ConvTranspose2d\", \"params\": {\"in_channels\": 32, \"out_channels\": 16, \"kernel_size\": 2, \"stride\": 2}}, {\"id\": \"cat1\", \"type\": \"Concat\", \"params\": {\"dim\": 1}}, {\"id\": \"d1c1\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 32, \"out_channels\": 16, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"d1r1\", \"type\": \"ReLU\"}, {\"id\": \"d1c2\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 16, \"out_channels\": 16, \"kernel_size\": 3, \"padding\": 1}}, {\"id\": \"d1r2\", \"type\": \"ReLU\"}, {\"id\": \"head\", \"type\": \"Conv2d\", \"params\": {\"in_channels\": 16, \"out_channels\": 1, \"kernel_size\": 1}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"sourceHandle\": \"p_x\", \"target\": \"e1c1\"}, {\"id\": \"e2\", \"source\": \"e1c1\", \"target\": \"e1r1\"}, {\"id\": \"e3\", \"source\": \"e1r1\", \"target\": \"e1c2\"}, {\"id\": \"e4\", \"source\": \"e1c2\", \"target\": \"e1r2\"}, {\"id\": \"e5\", \"source\": \"e1r2\", \"target\": \"p1\"}, {\"id\": \"e6\", \"source\": \"p1\", \"target\": \"e2c1\"}, {\"id\": \"e7\", \"source\": \"e2c1\", \"target\": \"e2r1\"}, {\"id\": \"e8\", \"source\": \"e2r1\", \"target\": \"e2c2\"}, {\"id\": \"e9\", \"source\": \"e2c2\", \"target\": \"e2r2\"}, {\"id\": \"e10\", \"source\": \"e2r2\", \"target\": \"p2\"}, {\"id\": \"e11\", \"source\": \"p2\", \"target\": \"bnc1\"}, {\"id\": \"e12\", \"source\": \"bnc1\", \"target\": \"bnr1\"}, {\"id\": \"e13\", \"source\": \"bnr1\", \"target\": \"bnc2\"}, {\"id\": \"e14\", \"source\": \"bnc2\", \"target\": \"bnr2\"}, {\"id\": \"e15\", \"source\": \"bnr2\", \"target\": \"u2\"}, {\"id\": \"e16\", \"source\": \"u2\", \"target\": \"cat2\"}, {\"id\": \"e17\", \"source\": \"e2r2\", \"target\": \"cat2\"}, {\"id\": \"e18\", \"source\": \"cat2\", \"target\": \"d2c1\"}, {\"id\": \"e19\", \"source\": \"d2c1\", \"target\": \"d2r1\"}, {\"id\": \"e20\", \"source\": \"d2r1\", \"target\": \"d2c2\"}, {\"id\": \"e21\", \"source\": \"d2c2\", \"target\": \"d2r2\"}, {\"id\": \"e22\", \"source\": \"d2r2\", \"target\": \"u1\"}, {\"id\": \"e23\", \"source\": \"u1\", \"target\": \"cat1\"}, {\"id\": \"e24\", \"source\": \"e1r2\", \"target\": \"cat1\"}, {\"id\": \"e25\", \"source\": \"cat1\", \"target\": \"d1c1\"}, {\"id\": \"e26\", \"source\": \"d1c1\", \"target\": \"d1r1\"}, {\"id\": \"e27\", \"source\": \"d1r1\", \"target\": \"d1c2\"}, {\"id\": \"e28\", \"source\": \"d1c2\", \"target\": \"d1r2\"}, {\"id\": \"e29\", \"source\": \"d1r2\", \"target\": \"head\"}, {\"id\": \"e30\", \"source\": \"head\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
-        }
-      }
-    },
-    {
-      "id": "print-model",
-      "type": "Print",
-      "position": {
-        "x": 500,
-        "y": 200
-      },
-      "data": {
-        "params": {
-          "label": "UNet model"
-        }
-      }
-    }
+    { "id": "start-1",   "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+
+    { "id": "x_in",      "type": "TensorCreate", "position": { "x": -40,   "y": 0 }, "data": { "params": { "shape": "1,3,32,32", "fill": "randn", "value": 0, "requires_grad": false } } },
+
+    { "id": "e1_conv",   "type": "Conv2d",     "position": { "x": 200,   "y": 0 },     "data": { "params": { "in_channels": 3, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "e1_relu",   "type": "Activation", "position": { "x": 380,   "y": 0 },     "data": { "params": { "function": "relu" } } },
+
+    { "id": "pool1",     "type": "MaxPool2d",  "position": { "x": 540,   "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+
+    { "id": "e2_conv",   "type": "Conv2d",     "position": { "x": 720,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "e2_relu",   "type": "Activation", "position": { "x": 900,   "y": 0 },     "data": { "params": { "function": "relu" } } },
+
+    { "id": "pool2",     "type": "MaxPool2d",  "position": { "x": 1060,  "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+
+    { "id": "bn_conv",   "type": "Conv2d",     "position": { "x": 1240,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 64, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "bn_relu",   "type": "Activation", "position": { "x": 1420,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+
+    { "id": "up2",       "type": "ConvTranspose2d", "position": { "x": 1600, "y": 0 },  "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
+    { "id": "cat2",      "type": "Concat",     "position": { "x": 1820,  "y": 0 },     "data": { "params": { "dim": 1 } } },
+    { "id": "d2_conv",   "type": "Conv2d",     "position": { "x": 2020,  "y": 0 },     "data": { "params": { "in_channels": 64, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "d2_relu",   "type": "Activation", "position": { "x": 2200,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+
+    { "id": "up1",       "type": "ConvTranspose2d", "position": { "x": 2380, "y": 0 },  "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 2, "stride": 2, "padding": 0, "output_padding": 0 } } },
+    { "id": "cat1",      "type": "Concat",     "position": { "x": 2600,  "y": 0 },     "data": { "params": { "dim": 1 } } },
+    { "id": "d1_conv",   "type": "Conv2d",     "position": { "x": 2800,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "d1_relu",   "type": "Activation", "position": { "x": 2980,  "y": 0 },     "data": { "params": { "function": "relu" } } },
+
+    { "id": "head",      "type": "Conv2d",     "position": { "x": 3160,  "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 1, "kernel_size": 1, "stride": 1, "padding": 0 } } },
+    { "id": "print",     "type": "Print",      "position": { "x": 3360,  "y": 0 },     "data": { "params": { "label": "Segmentation mask" } } }
   ],
   "edges": [
-    {
-      "id": "e1",
-      "source": "model-builder",
-      "target": "print-model",
-      "sourceHandle": "model",
-      "targetHandle": "value"
-    },
-    {
-      "id": "e-trigger-1",
-      "source": "start-1",
-      "target": "model-builder",
-      "sourceHandle": "trigger",
-      "type": "trigger"
-    }
+    { "id": "trig", "source": "start-1", "target": "x_in", "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_xin_e1c", "source": "x_in",   "target": "e1_conv", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_e1c_e1r", "source": "e1_conv","target": "e1_relu", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_e1r_p1",  "source": "e1_relu","target": "pool1",   "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_p1_e2c",  "source": "pool1",  "target": "e2_conv", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_e2c_e2r", "source": "e2_conv","target": "e2_relu", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_e2r_p2",  "source": "e2_relu","target": "pool2",   "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_p2_bnc",  "source": "pool2",  "target": "bn_conv", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_bnc_bnr", "source": "bn_conv","target": "bn_relu", "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_bnr_up2", "source": "bn_relu","target": "up2",     "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_up2_cat", "source": "up2",    "target": "cat2",    "sourceHandle": "tensor", "targetHandle": "tensor_a" },
+    { "id": "e_skip2",   "source": "e2_relu","target": "cat2",    "sourceHandle": "tensor", "targetHandle": "tensor_b" },
+    { "id": "e_cat2_d2c","source": "cat2",   "target": "d2_conv", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_d2c_d2r", "source": "d2_conv","target": "d2_relu", "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_d2r_up1", "source": "d2_relu","target": "up1",     "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_up1_cat", "source": "up1",    "target": "cat1",    "sourceHandle": "tensor", "targetHandle": "tensor_a" },
+    { "id": "e_skip1",   "source": "e1_relu","target": "cat1",    "sourceHandle": "tensor", "targetHandle": "tensor_b" },
+    { "id": "e_cat1_d1c","source": "cat1",   "target": "d1_conv", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_d1c_d1r", "source": "d1_conv","target": "d1_relu", "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "e_d1r_head","source": "d1_relu","target": "head",    "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_head_pr", "source": "head",   "target": "print",   "sourceHandle": "tensor", "targetHandle": "value" }
   ]
 }

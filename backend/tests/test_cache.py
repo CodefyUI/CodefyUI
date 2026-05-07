@@ -166,3 +166,105 @@ async def test_cache_hit_still_populates_output_store():
     )
     assert statuses.get("1") == "cached"
     assert await store.get("run-2", "1", "out") == "hello"
+
+
+class _NonCacheableNode(BaseNode):
+    """Stateful-style node that returns a fresh value on every execution."""
+
+    NODE_NAME = "_NonCacheable"
+    CATEGORY = "Test"
+    DESCRIPTION = "Returns a different output every call"
+    cacheable = False
+
+    @classmethod
+    def define_inputs(cls):
+        return []
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="out", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params):
+        # Use the call counter passed via params so each test invocation
+        # produces a known sequence.
+        _NonCacheableNode._counter = getattr(_NonCacheableNode, "_counter", 0) + 1
+        return {"out": f"call-{_NonCacheableNode._counter}"}
+
+
+class _PassthroughNode(BaseNode):
+    """Cacheable node that passes its input through unchanged."""
+
+    NODE_NAME = "_Passthrough"
+    CATEGORY = "Test"
+    DESCRIPTION = "Pass-through"
+    cacheable = True
+
+    @classmethod
+    def define_inputs(cls):
+        return [PortDefinition(name="in_value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="out", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params):
+        return {"out": inputs.get("in_value")}
+
+
+@pytest.mark.asyncio
+async def test_non_cacheable_upstream_invalidates_downstream_cache():
+    """Regression: when upstream is non-cacheable, the downstream node's cache
+    key must NOT be reused across runs — otherwise a downstream cache hit
+    returns a stale tensor whose actual upstream content has changed.
+
+    Repro: Start → _NonCacheable → _Passthrough → output. Each run, the
+    non-cacheable node returns a different value; the downstream Passthrough
+    must observe that change rather than returning a cached "call-1" output
+    indefinitely.
+    """
+    registry._nodes["_NonCacheable"] = _NonCacheableNode
+    registry._nodes["_Passthrough"] = _PassthroughNode
+    _NonCacheableNode._counter = 0
+    try:
+        cache = ExecutionCache()
+        nodes = [
+            _start_node(),
+            {"id": "src", "type": "_NonCacheable", "data": {"params": {}}},
+            {"id": "pass", "type": "_Passthrough", "data": {"params": {}}},
+        ]
+        edges = [
+            _trigger("et", "start", "src"),
+            {"id": "e1", "source": "src", "target": "pass", "sourceHandle": "out", "targetHandle": "in_value"},
+        ]
+
+        outputs1: dict[str, dict] = {}
+        outputs2: dict[str, dict] = {}
+
+        async def capture1(node_id, status, data):
+            if status == "completed":
+                outputs1[node_id] = data
+            elif status == "cached":
+                outputs1[node_id] = data
+
+        async def capture2(node_id, status, data):
+            if status == "completed":
+                outputs2[node_id] = data
+            elif status == "cached":
+                outputs2[node_id] = data
+
+        await execute_graph(nodes, edges, cache=cache, on_progress=capture1)
+        await execute_graph(nodes, edges, cache=cache, on_progress=capture2)
+
+        # First run: src = "call-1", pass = "call-1" (forwarded)
+        # Second run: src = "call-2"; pass MUST also see "call-2", not the
+        # stale "call-1" cached from run 1.
+        assert outputs1["src"]["out"] == "call-1"
+        assert outputs1["pass"]["out"] == "call-1"
+        assert outputs2["src"]["out"] == "call-2"
+        assert outputs2["pass"]["out"] == "call-2", (
+            "Downstream cache must invalidate when upstream is non-cacheable; "
+            f"got {outputs2['pass']['out']}"
+        )
+    finally:
+        registry._nodes.pop("_NonCacheable", None)
+        registry._nodes.pop("_Passthrough", None)

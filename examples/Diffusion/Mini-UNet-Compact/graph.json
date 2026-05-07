@@ -1,0 +1,18 @@
+{
+  "name": "Mini U-Net (Compact): the same architecture in one node",
+  "description": "Counterpart to `Mini-UNet-Expanded`: instead of wiring every ResBlock + Upsample + Concat by hand, the entire U-Net is packaged into a single `DiffusionUNet` meta-node. Same teaching architecture, same hyperparameters, just collapsed into one block — the form you'd actually use when assembling a sampling pipeline. Run it: GaussianNoise feeds the model + DDPMSampler at one step to confirm the output shape is preserved.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 60 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
+    { "id": "unet",     "type": "DiffusionUNet",  "position": { "x": 320,  "y": -60 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
+    { "id": "sampler",  "type": "DDPMSampler",    "position": { "x": 660,  "y": 0 }, "data": { "params": { "num_steps": 1, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 42 } } },
+    { "id": "print",    "type": "Print",          "position": { "x": 1000, "y": 0 }, "data": { "params": { "label": "Compact U-Net output (1-step denoise)" } } }
+  ],
+  "edges": [
+    { "id": "trig_noise", "source": "start-1", "target": "noise",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_unet",  "source": "start-1", "target": "unet",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_model",   "source": "unet",    "target": "sampler", "sourceHandle": "model", "targetHandle": "model" },
+    { "id": "e_noise",   "source": "noise",   "target": "sampler", "sourceHandle": "noise", "targetHandle": "noise" },
+    { "id": "e_out",     "source": "sampler", "target": "print",   "sourceHandle": "image", "targetHandle": "value" }
+  ]
+}

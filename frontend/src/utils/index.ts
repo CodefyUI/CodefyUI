@@ -16,6 +16,7 @@ export const VIZ_NODE_TYPES: Record<string, string> = {
   EduMultiHeadAttention: 'eduMultiHeadAttentionNode',
   AttentionHeatmap: 'attentionHeatmapNode',
   AttentionMask: 'attentionMaskNode',
+  EduCrossAttention: 'eduCrossAttentionNode',
 };
 
 export const DATA_TYPE_COLORS: Record<string, string> = {

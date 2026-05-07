@@ -1,0 +1,24 @@
+{
+  "name": "Forward Diffusion: gradually adding noise",
+  "description": "The forward diffusion process gradually destroys a clean image by mixing in Gaussian noise according to a schedule. The classical equation is $x_t = \\sqrt{\\bar\\alpha_t}\\,x_0 + \\sqrt{1-\\bar\\alpha_t}\\,\\epsilon$, with $\\bar\\alpha_t$ shrinking from 1 (clean) to 0 (pure noise) as t grows. Here we approximate this with a single Lerp at alpha=0.4 — the result $x_t$ is a 40/60 blend of clean signal and noise. The TimestepEmbedding on the side shows how a scalar t becomes a 32-d vector that the U-Net can use as a conditioning signal.",
+  "nodes": [
+    { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "x0",      "type": "TensorCreate", "position": { "x": 0,   "y": -150 }, "data": { "params": { "shape": "1,3,8,8", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "t_input", "type": "TensorCreate", "position": { "x": 0,   "y": 60   }, "data": { "params": { "shape": "1",       "fill": "full",  "value": 50, "requires_grad": false } } },
+    { "id": "noise",   "type": "GaussianNoise", "position": { "x": 320, "y": 100  }, "data": { "params": { "shape": "1,3,8,8", "mean": 0, "std": 1, "seed": 42 } } },
+    { "id": "tembed",  "type": "TimestepEmbedding", "position": { "x": 320, "y": -50 }, "data": { "params": { "embed_dim": 32, "max_period": 10000, "seed": 42 } } },
+    { "id": "lerp",    "type": "Lerp", "position": { "x": 660, "y": 0 }, "data": { "params": { "alpha": 0.4 } } },
+    { "id": "print_xt", "type": "Print", "position": { "x": 1000, "y": -50 }, "data": { "params": { "label": "x_t (noised image)" } } },
+    { "id": "print_emb","type": "Print", "position": { "x": 660, "y": -180 }, "data": { "params": { "label": "Timestep embedding" } } }
+  ],
+  "edges": [
+    { "id": "trig_x0",     "source": "start-1", "target": "x0",      "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_t",      "source": "start-1", "target": "t_input", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_t_to_emb",  "source": "t_input", "target": "tembed",  "sourceHandle": "tensor",     "targetHandle": "timestep" },
+    { "id": "e_x0_to_noise","source": "x0",     "target": "noise",   "sourceHandle": "tensor",     "targetHandle": "shape_ref" },
+    { "id": "e_x0",        "source": "x0",      "target": "lerp",    "sourceHandle": "tensor",     "targetHandle": "tensor_a" },
+    { "id": "e_noise",     "source": "noise",   "target": "lerp",    "sourceHandle": "noise",      "targetHandle": "tensor_b" },
+    { "id": "e_lerp_print","source": "lerp",    "target": "print_xt","sourceHandle": "tensor",     "targetHandle": "value" },
+    { "id": "e_emb_print", "source": "tembed",  "target": "print_emb","sourceHandle": "embedding", "targetHandle": "value" }
+  ]
+}
