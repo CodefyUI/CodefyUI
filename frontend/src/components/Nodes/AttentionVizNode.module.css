@@ -1,0 +1,60 @@
+.vizArea {
+  padding: 6px 8px 8px 8px;
+  background: #0a0f17;
+  border-top: 1px solid #1f2937;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.emptyHint {
+  font-size: 11px;
+  color: #64748b;
+  font-style: italic;
+  padding: 18px 8px;
+  text-align: center;
+}
+
+.tooBigHint {
+  font-size: 11px;
+  color: #94a3b8;
+  padding: 14px 8px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+.expandLink {
+  background: transparent;
+  border: 1px solid #0e7490;
+  color: #67e8f9;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: zoom-in;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.expandLink:hover {
+  background: #0e7490;
+  color: #fff;
+}
+
+.metaRow {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 10px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding-top: 2px;
+}
+
+.metaRow > span:last-child {
+  color: #67e8f9;
+}
