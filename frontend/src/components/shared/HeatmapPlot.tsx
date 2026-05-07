@@ -162,14 +162,30 @@ function SinglePanel({
   const cellW = innerW / Math.max(1, m);
   const cellH = innerH / Math.max(1, n);
 
-  // Pre-compute per-row max for normalisation. Rows with all-zero values
-  // (e.g. fully masked) keep zero everywhere — divide-by-zero is suppressed
-  // by treating the max as 1.
-  const rowMaxes = normalizePerRow
+  // Pre-compute per-row min/max for contrast stretching.
+  //
+  // Why min-max instead of just divide-by-max? In stacked attention, later
+  // layers tend to spread the softmax mass roughly evenly across positions
+  // (≈ 1/N per cell). Dividing by max alone leaves every cell in the
+  // [0.85, 1.0] band — visually all yellow, no pattern visible. Subtracting
+  // the row's min then dividing by (max - min) restretches the band to
+  // [0, 1] regardless of how compressed the original range is.
+  //
+  // For causal masking we ignore exact-zero cells when computing min, so
+  // the masked upper-triangle doesn't pin min at 0 (which would degenerate
+  // back to divide-by-max). When a row's non-zero values are themselves
+  // identical (true uniform), range collapses to 0 and we render those
+  // cells at colour-t=0.5 — a neutral signal that means "no peak".
+  const rowStats = normalizePerRow
     ? matrix.map((row) => {
         let max = 0;
-        for (const v of row) if (v > max) max = v;
-        return max > 0 ? max : 1;
+        let nonZeroMin = Infinity;
+        for (const v of row) {
+          if (v > max) max = v;
+          if (v > 0 && v < nonZeroMin) nonZeroMin = v;
+        }
+        if (nonZeroMin === Infinity) nonZeroMin = 0;
+        return { min: nonZeroMin, max };
       })
     : null;
 
@@ -246,12 +262,24 @@ function SinglePanel({
         {matrix.map((row, i) =>
           row.map((v, j) => {
             const masked = causalMasked && j > i && v === 0;
-            // For colouring: optionally normalise by row max so the relative
-            // attention pattern is visible even when absolute weights are
-            // tiny (later rows of a causal sequence). Tooltips still show v.
-            const colorT = rowMaxes
-              ? Math.max(0, Math.min(1, v / rowMaxes[i]))
-              : Math.max(0, Math.min(1, v));
+            // For colouring: optionally min-max stretch each row so the
+            // relative attention pattern is visible even when absolute
+            // weights are tiny *and* near-uniform (deeper attention layers).
+            // Tooltips still show the raw v.
+            let colorT: number;
+            if (rowStats) {
+              if (masked || v === 0) {
+                colorT = 0;
+              } else {
+                const { min, max } = rowStats[i];
+                const range = max - min;
+                colorT = range > 1e-9
+                  ? Math.max(0, Math.min(1, (v - min) / range))
+                  : 0.5; // truly-uniform row — neutral signal, no peak
+              }
+            } else {
+              colorT = Math.max(0, Math.min(1, v));
+            }
             return (
               <g key={`c-${i}-${j}`}>
                 <rect

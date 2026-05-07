@@ -169,9 +169,13 @@ describe('HeatmapPlot', () => {
     expect(btns.length).toBe(1);
   });
 
-  it('normalises colours per-row when normalizePerRow is true', () => {
-    // Row 0: max=0.1 → all cells should saturate to colour-t≈1 (bright)
-    // Row 1: max=0.5, mid=0.25 → cells should be 1.0 and 0.5
+  it('contrast-stretches each row to [0, 1] when normalizePerRow is true', () => {
+    // Row 0: non-zero min=0.05, max=0.1, range=0.05
+    //   cell 0.1 → (0.1-0.05)/0.05 = 1.0
+    //   cell 0.05 → (0.05-0.05)/0.05 = 0.0
+    // Row 1: non-zero min=0.25, max=0.5, range=0.25
+    //   cell 0.5 → 1.0
+    //   cell 0.25 → 0.0
     const m = [
       [0.1, 0.05, 0.0],
       [0.5, 0.25, 0.0],
@@ -180,13 +184,56 @@ describe('HeatmapPlot', () => {
     const cells = Array.from(container.querySelectorAll('rect[data-i]')) as SVGRectElement[];
     const get = (i: number, j: number) =>
       cells.find((c) => c.getAttribute('data-i') === String(i) && c.getAttribute('data-j') === String(j));
-    // Row 0 max cell (0,0) should map to colour-t=1.0 just like row 1's (1,0).
     expect(get(0, 0)?.getAttribute('data-color-t')).toBe('1.000');
+    expect(get(0, 1)?.getAttribute('data-color-t')).toBe('0.000');
     expect(get(1, 0)?.getAttribute('data-color-t')).toBe('1.000');
-    // Row 0 cell (0,1)=0.05 normalises to 0.5 (against row max 0.1).
-    expect(get(0, 1)?.getAttribute('data-color-t')).toBe('0.500');
-    // Row 1 cell (1,1)=0.25 also normalises to 0.5 (against row max 0.5).
-    expect(get(1, 1)?.getAttribute('data-color-t')).toBe('0.500');
+    expect(get(1, 1)?.getAttribute('data-color-t')).toBe('0.000');
+  });
+
+  it('reveals tiny within-row variations under min-max stretch (deep attention case)', () => {
+    // A near-uniform row that previously rendered as all-yellow under
+    // the old divide-by-max scheme: weights barely differ but the visual
+    // should show the relative ordering clearly.
+    const m = [[0.166, 0.167, 0.168, 0.169]];
+    const { container } = render(<HeatmapPlot data={m} normalizePerRow />);
+    const cells = Array.from(container.querySelectorAll('rect[data-i]')) as SVGRectElement[];
+    const ts = cells.map((c) => parseFloat(c.getAttribute('data-color-t') ?? '0'));
+    // First cell maps to 0 (row min), last cell maps to 1 (row max).
+    expect(ts[0]).toBe(0);
+    expect(ts[3]).toBe(1);
+    // Middle cells should land between, monotonically increasing.
+    expect(ts[1]).toBeGreaterThan(0);
+    expect(ts[1]).toBeLessThan(ts[2]);
+    expect(ts[2]).toBeLessThan(1);
+  });
+
+  it('renders truly-uniform non-zero rows at neutral colour-t=0.5', () => {
+    // When every non-zero cell is identical, range collapses to 0 — fall
+    // back to a neutral colour rather than dividing by zero.
+    const m = [[0.2, 0.2, 0.2, 0.2]];
+    const { container } = render(<HeatmapPlot data={m} normalizePerRow />);
+    const cells = Array.from(container.querySelectorAll('rect[data-i]')) as SVGRectElement[];
+    const ts = cells.map((c) => c.getAttribute('data-color-t'));
+    expect(ts).toEqual(['0.500', '0.500', '0.500', '0.500']);
+  });
+
+  it('keeps causal-masked cells at colour-t=0 under normalization', () => {
+    // Row 1 of a causal pattern: lower triangle [0.4, 0.6], upper [0].
+    // Non-zero min=0.4, max=0.6, range=0.2.
+    //   cell (1,0)=0.4 → (0.4-0.4)/0.2 = 0.0
+    //   cell (1,1)=0.6 → 1.0
+    //   cell (1,2)=0.0 → masked → 0.0
+    const m = [
+      [1.0, 0.0, 0.0],
+      [0.4, 0.6, 0.0],
+      [0.3, 0.3, 0.4],
+    ];
+    const { container } = render(<HeatmapPlot data={m} normalizePerRow />);
+    const get = (i: number, j: number) =>
+      container.querySelector(`rect[data-i="${i}"][data-j="${j}"]`);
+    expect(get(1, 1)?.getAttribute('data-color-t')).toBe('1.000');
+    expect(get(1, 0)?.getAttribute('data-color-t')).toBe('0.000');
+    expect(get(1, 2)?.getAttribute('data-color-t')).toBe('0.000');
   });
 
   it('uses absolute colour scale when normalizePerRow is false', () => {
