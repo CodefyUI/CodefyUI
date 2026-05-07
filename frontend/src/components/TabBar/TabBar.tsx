@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
+import { confirm } from '../../utils/dialog';
 import styles from './TabBar.module.css';
 
 export function TabBar() {
@@ -28,12 +29,16 @@ export function TabBar() {
   }, [editingId, editingName, renameTab]);
 
   const handleClose = useCallback(
-    (e: React.MouseEvent, id: string) => {
+    async (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
       if (tabs.length <= 1) return;
       const tab = tabs.find((t) => t.id === id);
       if (tab && tab.status === 'running') {
-        if (!window.confirm(t('tabs.closeRunning'))) return;
+        const ok = await confirm({
+          title: t('tabs.closeRunning'),
+          variant: 'danger',
+        });
+        if (!ok) return;
       }
       removeTab(id);
     },

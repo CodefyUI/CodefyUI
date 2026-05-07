@@ -11,6 +11,7 @@ import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
 import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorModal';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
+import { DialogContainer } from './components/shared/DialogContainer';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -91,6 +92,7 @@ function App() {
       <SubgraphEditorModal />
       <ToastContainer />
       <ShortcutsModal />
+      <DialogContainer />
     </div>
   );
 }

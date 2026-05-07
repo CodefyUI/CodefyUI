@@ -7,6 +7,7 @@ import { saveGraph, loadGraph, listGraphs, createPreset, exportGraph } from '../
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
+import { confirm, prompt } from '../../utils/dialog';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import type { LayoutMode } from '../../utils/autoLayout';
@@ -222,7 +223,10 @@ export function Toolbar() {
   const handleStop = useCallback(() => stop(), [stop]);
 
   const handleSave = useCallback(async () => {
-    const name = window.prompt(t('toolbar.save.prompt'));
+    const name = await prompt({
+      title: t('toolbar.save.prompt'),
+      placeholder: 'graph-name',
+    });
     if (!name?.trim()) return;
     try {
       const { nodes, edges, presets } = getSerializedGraph();
@@ -233,8 +237,13 @@ export function Toolbar() {
     }
   }, [getSerializedGraph, t, addToast]);
 
-  const handleClear = useCallback(() => {
-    if (window.confirm(t('toolbar.clear.confirm'))) clear();
+  const handleClear = useCallback(async () => {
+    const ok = await confirm({
+      title: t('toolbar.clear.confirm'),
+      confirmText: t('toolbar.clear'),
+      variant: 'danger',
+    });
+    if (ok) clear();
   }, [clear, t]);
 
   const handleLoadGraph = useCallback(
@@ -326,7 +335,10 @@ export function Toolbar() {
       addToast(t('toolbar.export.empty'), 'warning');
       return;
     }
-    const name = window.prompt(t('toolbar.export.prompt'));
+    const name = await prompt({
+      title: t('toolbar.export.prompt'),
+      placeholder: 'preset-name',
+    });
     if (!name?.trim()) return;
     try {
       await createPreset({ name: name.trim(), nodes, edges });

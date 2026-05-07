@@ -48,6 +48,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
 import { isValidConnection, getPortColor } from '../../utils';
+import { prompt } from '../../utils/dialog';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
 import type { OutputSummary } from '../../types';
@@ -399,10 +400,13 @@ export function FlowCanvas() {
   );
 
   const handleRename = useCallback(
-    (nodeId: string) => {
+    async (nodeId: string) => {
       const node = activeTab.nodes.find((n) => n.id === nodeId);
       const currentLabel = node?.data.label ?? '';
-      const newLabel = window.prompt(t('contextMenu.rename.prompt'), currentLabel);
+      const newLabel = await prompt({
+        title: t('contextMenu.rename.prompt'),
+        defaultValue: currentLabel,
+      });
       if (newLabel !== null && newLabel.trim()) {
         renameNode(nodeId, newLabel.trim());
       }
