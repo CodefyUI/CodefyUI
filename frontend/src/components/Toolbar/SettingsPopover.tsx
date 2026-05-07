@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n';
 import { resetWeights } from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
+import { confirm } from '../../utils/dialog';
 import styles from './SettingsPopover.module.css';
 
 interface Props {
@@ -76,7 +77,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
   const handleResetWeights = async () => {
     if (!graphId) return;
-    if (!window.confirm(t('toolbar.weights.resetAllConfirm'))) return;
+    const ok = await confirm({
+      title: t('toolbar.weights.resetAllConfirm'),
+      confirmText: t('toolbar.weights.resetAll'),
+      variant: 'danger',
+    });
+    if (!ok) return;
     try {
       const r = await resetWeights(graphId);
       addToast(`${t('toolbar.weights.resetAllOk')} (${r.evicted})`, 'success');

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { listCustomNodes, toggleCustomNode, uploadCustomNode, deleteCustomNode, type CustomNodeInfo } from '../../api/rest';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
+import { confirm } from '../../utils/dialog';
 import styles from './CustomNodeManager.module.css';
 
 interface CustomNodeManagerProps {
@@ -45,7 +46,12 @@ export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
   }, [fetchNodes, reload]);
 
   const handleDelete = useCallback(async (filename: string) => {
-    if (!window.confirm(t('customNodes.delete.confirm', { name: filename }))) return;
+    const ok = await confirm({
+      title: t('customNodes.delete.confirm', { name: filename }),
+      confirmText: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
     try {
       await deleteCustomNode(filename);
       await fetchNodes();
