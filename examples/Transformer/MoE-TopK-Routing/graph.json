@@ -1,0 +1,17 @@
+{
+  "name": "Mixture of Experts: top-k routing in 5 nodes",
+  "description": "What MoE actually does to a token batch. A 2 × 5 × 32 tensor (2 batches of 5 tokens, hidden dim 32) goes into MoELayer with N=4 experts and top_k=2. Each token picks its 2 best experts by softmax over a small gating network; the layer's output is the weighted sum of those 2 experts' FFN outputs. The Print on routing_weights shows the [B, T, k] tensor so students can read off which experts each token chose and how confident the gate was. Same architecture pattern as Switch Transformer, Mixtral, and DeepSeek-MoE — sized down so the routing decisions fit on one screen.",
+  "nodes": [
+    { "id": "start-1",   "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
+    { "id": "x",         "type": "TensorCreate", "position": { "x": -40,  "y": 0    }, "data": { "params": { "shape": "2,5,32", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "moe",       "type": "MoELayer",     "position": { "x": 240,  "y": 0    }, "data": { "params": { "num_experts": 4, "top_k": 2, "hidden_dim": 32, "expert_hidden_dim": 64, "seed": 42 } } },
+    { "id": "print_w",   "type": "Print",        "position": { "x": 540,  "y": -100 }, "data": { "params": { "label": "routing_weights [B, T, k]" } } },
+    { "id": "print_idx", "type": "Print",        "position": { "x": 540,  "y": 100  }, "data": { "params": { "label": "expert_indices [B, T, k]" } } }
+  ],
+  "edges": [
+    { "id": "trig_x",  "source": "start-1", "target": "x",         "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_x_moe", "source": "x",       "target": "moe",       "sourceHandle": "tensor",          "targetHandle": "x" },
+    { "id": "e_moe_w", "source": "moe",     "target": "print_w",   "sourceHandle": "routing_weights", "targetHandle": "value" },
+    { "id": "e_moe_i", "source": "moe",     "target": "print_idx", "sourceHandle": "expert_indices",  "targetHandle": "value" }
+  ]
+}
