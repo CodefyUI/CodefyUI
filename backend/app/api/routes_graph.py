@@ -55,14 +55,26 @@ async def list_graphs():
 async def export_graph(graph: GraphData):
     """Export graph as a standalone Python script."""
     from ..core.codegen import generate_python
-    from ..core.graph_engine import topological_sort
+    from ..core.graph_engine import expand_presets, topological_sort
 
     nodes = [n.model_dump() for n in graph.nodes]
     edges = [e.model_dump() for e in graph.edges]
 
+    # Validate the user-authored graph (presets are validated against the
+    # preset registry rather than expanded here).
     errors = validate_graph(nodes, edges)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
+
+    # Expand preset:* nodes into their real sub-graphs so codegen sees the
+    # actual training nodes (Dataset, DataLoader, Optimizer, Loss, etc.).
+    try:
+        for _ in range(10):  # support nested presets, same depth cap as execution
+            if not any(n.get("type", "").startswith("preset:") for n in nodes):
+                break
+            nodes, edges, _ = expand_presets(nodes, edges)
+    except GraphValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     try:
         order = topological_sort(nodes, edges)
