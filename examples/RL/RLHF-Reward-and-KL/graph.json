@@ -1,0 +1,28 @@
+{
+  "name": "RLHF building blocks: reward + KL",
+  "description": "The two pieces that turn a pretrained LLM into an RLHF-tuned one. Top half: a fake hidden-state batch (4 sequences × 16 dim) is fed into RewardModel, which scores each sequence with one scalar — this is what you'd train on human preferences. Bottom half: a random logit tensor (the 'policy') and a zero-logit tensor (the uniform 'reference') are compared by KLDivergence — this is the regularisation term that keeps PPO from drifting too far from the reference model. The two blocks are independent here so each can be inspected in isolation; in a real RLHF run, KL-divergence × β is subtracted from the reward inside PPO.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start",        "position": { "x": -260, "y": 0    }, "data": { "params": {} } },
+
+    { "id": "h",        "type": "TensorCreate", "position": { "x": -40,  "y": -120 }, "data": { "params": { "shape": "4,16", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "rm",       "type": "RewardModel",  "position": { "x": 220,  "y": -120 }, "data": { "params": { "input_dim": 16, "hidden_dim": 32, "seed": 42 } } },
+    { "id": "print_r",  "type": "Print",        "position": { "x": 520,  "y": -120 }, "data": { "params": { "label": "rewards per sequence" } } },
+
+    { "id": "p",        "type": "TensorCreate", "position": { "x": -40,  "y": 100  }, "data": { "params": { "shape": "1,4", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "q",        "type": "TensorCreate", "position": { "x": -40,  "y": 220  }, "data": { "params": { "shape": "1,4", "fill": "full", "value": 0.0, "requires_grad": false } } },
+    { "id": "kl",       "type": "KLDivergence", "position": { "x": 240,  "y": 160  }, "data": { "params": { "input_kind": "logits", "reduction": "batchmean" } } },
+    { "id": "print_kl", "type": "Print",        "position": { "x": 540,  "y": 160  }, "data": { "params": { "label": "KL(policy || ref)" } } }
+  ],
+  "edges": [
+    { "id": "trig_h", "source": "start-1", "target": "h",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_p", "source": "start-1", "target": "p",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_q", "source": "start-1", "target": "q",  "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_h_rm",  "source": "h",  "target": "rm",       "sourceHandle": "tensor", "targetHandle": "hidden_states" },
+    { "id": "e_rm_pr", "source": "rm", "target": "print_r",  "sourceHandle": "rewards", "targetHandle": "value" },
+
+    { "id": "e_p_kl",  "source": "p",  "target": "kl",       "sourceHandle": "tensor", "targetHandle": "p" },
+    { "id": "e_q_kl",  "source": "q",  "target": "kl",       "sourceHandle": "tensor", "targetHandle": "q" },
+    { "id": "e_kl_pr", "source": "kl", "target": "print_kl", "sourceHandle": "kl", "targetHandle": "value" }
+  ]
+}

@@ -1,9 +1,12 @@
 """Classical machine-learning teaching nodes.
 
-Edu-style hand-written implementations of foundational classifiers and
-regressors — KNN, linear regression, logistic regression. They expose
-the core math (distances, normal equation, gradient descent) directly
-so a step trace can show each computation. Production users who just
-want sklearn behaviour go through the matching ``KNN`` /
-``LinearRegression`` / ``LogisticRegression`` wrapper nodes (next PR).
+Two parallel tracks:
+
+- ``Edu*`` — hand-written implementations that expose the core math
+  (distances, normal equation, gradient descent) for step-tracing.
+  Right for ≤200-row teaching datasets.
+- production wrappers (``KNN``, ``LinearRegression``,
+  ``LogisticRegression``, ``SVMClassifier``, ``DecisionTreeClassifier``)
+  — sklearn-backed, drop-in replacements that scale and add the full
+  knob set. Right for "the textbook is done, ship it."
 """

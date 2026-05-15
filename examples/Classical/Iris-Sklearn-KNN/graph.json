@@ -1,0 +1,25 @@
+{
+  "name": "Iris with sklearn KNN: same graph, production scale",
+  "description": "Identical pipeline shape to KNN-from-Scratch — CSV → ColumnSelector → Normalize → TrainTestSplit — but the classifier is the production KNN node (sklearn-backed) instead of EduKNN. Both nodes share the same input/output contract, so swapping is a one-edit change in the graph; the goal of the lesson is to show that the dual-track design lets you teach the math with EduKNN and ship with KNN. Distance-weighted voting + KD-tree internally means this same graph would still run at 100k+ rows.",
+  "nodes": [
+    { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "select",    "type": "ColumnSelector", "position": { "x": 220,  "y": 0 }, "data": { "params": { "indices": "2,3", "names": "" } } },
+    { "id": "norm",      "type": "Normalize",      "position": { "x": 480,  "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "split",     "type": "TrainTestSplit", "position": { "x": 740,  "y": 0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "knn",       "type": "KNN",            "position": { "x": 1020, "y": 0 }, "data": { "params": { "n_neighbors": 5, "weights": "distance", "metric": "minkowski" } } },
+    { "id": "print",     "type": "Print",          "position": { "x": 1300, "y": 0 }, "data": { "params": { "label": "sklearn KNN test predictions" } } }
+  ],
+  "edges": [
+    { "id": "trig",          "source": "start-1", "target": "csv",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_csv_sel",     "source": "csv",     "target": "select", "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_csv_cols",    "source": "csv",     "target": "select", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "e_sel_norm",    "source": "select",  "target": "norm",   "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_norm_split",  "source": "norm",    "target": "split",  "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_csv_split",   "source": "csv",     "target": "split",  "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtrain",      "source": "split",   "target": "knn",    "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytrain",      "source": "split",   "target": "knn",    "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xtest",       "source": "split",   "target": "knn",    "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_pred_print",  "source": "knn",     "target": "print",  "sourceHandle": "predictions", "targetHandle": "value" }
+  ]
+}
