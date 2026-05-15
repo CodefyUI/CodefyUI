@@ -3,53 +3,144 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from typing import Any
 
 
-# ── Per-node-type code generators ─────────────────────────────────
+# ── Per-layer source rendering (shared between legacy + v2 builders) ──
+
+_ACTIVATIONS = {
+    "ReLU", "GELU", "Sigmoid", "Tanh", "LeakyReLU",
+    "ELU", "SiLU", "Mish", "SELU", "PReLU", "Hardswish",
+}
+_INPLACE_ACTIVATIONS = {"ReLU", "LeakyReLU", "ELU", "SiLU", "Mish", "SELU", "Hardswish"}
+
 
 def _var(nid: str) -> str:
     return nid.replace("-", "_")
 
 
+def _layer_to_source(layer_type: str, params: dict) -> str:
+    """Render a single layer dict as an ``nn.X(...)`` Python expression."""
+    if layer_type == "Softmax":
+        return "nn.Softmax(dim=-1)"
+    if layer_type in _ACTIVATIONS:
+        if layer_type in _INPLACE_ACTIVATIONS:
+            return f"nn.{layer_type}(inplace=True)"
+        return f"nn.{layer_type}()"
+    args = ", ".join(f"{k}={v!r}" for k, v in params.items())
+    return f"nn.{layer_type}({args})"
+
+
+# ── SequentialModel codegen (legacy + v2) ────────────────────────────
+
+
 def _gen_sequential_model(var: str, params: dict) -> list[str]:
     layers_json = params.get("layers", "[]")
-    layers = json.loads(layers_json) if isinstance(layers_json, str) else layers_json
-    lines = [f"# Build nn.Sequential model"]
-    layer_strs: list[str] = []
-    for layer in layers:
-        t = layer.get("type", "")
-        p = {k: v for k, v in layer.items() if k != "type"}
-        activations = {
-            "ReLU", "GELU", "Sigmoid", "Tanh", "LeakyReLU",
-            "ELU", "SiLU", "Mish", "SELU", "PReLU", "Hardswish",
-        }
-        if t == "Softmax":
-            layer_strs.append("nn.Softmax(dim=-1)")
-        elif t in activations:
-            if t in ("ReLU", "LeakyReLU", "ELU", "SiLU", "Mish", "SELU", "Hardswish"):
-                layer_strs.append(f"nn.{t}(inplace=True)")
-            else:
-                layer_strs.append(f"nn.{t}()")
-        else:
-            args = ", ".join(f"{k}={v!r}" for k, v in p.items())
-            layer_strs.append(f"nn.{t}({args})")
-    lines.append(f"{var} = nn.Sequential(")
-    for i, s in enumerate(layer_strs):
-        comma = "," if i < len(layer_strs) - 1 else ","
-        lines.append(f"    {s}{comma}")
+    spec = json.loads(layers_json) if isinstance(layers_json, str) else layers_json
+
+    # v2 graph spec: {"version":2, "nodes":[...], "edges":[...]}.  Older
+    # graphs still ship a flat list of layer dicts.
+    if isinstance(spec, dict) and spec.get("version") == 2:
+        return _gen_v2_sequential(var, spec)
+    return _gen_legacy_sequential(var, spec)
+
+
+def _gen_legacy_sequential(var: str, layers: list[dict]) -> list[str]:
+    layer_strs = [_layer_to_source(l.get("type", ""), {k: v for k, v in l.items() if k != "type"}) for l in layers]
+    lines = ["# Build nn.Sequential model", f"{var} = nn.Sequential("]
+    for s in layer_strs:
+        lines.append(f"    {s},")
     lines.append(")")
     return lines
+
+
+def _gen_v2_sequential(var: str, spec: dict) -> list[str]:
+    """Emit an ``nn.Sequential`` when the v2 graph is a simple chain.
+
+    For DAGs with merges/branches we fall back to a clear TODO comment;
+    callers can wire up a custom ``nn.Module`` by hand. (Most teaching
+    examples — CNN-MNIST, GPT-Mini, etc. — are simple chains.)
+    """
+    nodes = spec.get("nodes", [])
+    edges = spec.get("edges", [])
+    nodes_by_id = {n["id"]: n for n in nodes}
+
+    inputs = [n for n in nodes if n["type"] == "Input"]
+    outputs = [n for n in nodes if n["type"] == "Output"]
+    if len(inputs) != 1 or len(outputs) != 1:
+        return [
+            f"# {var}: SequentialModel has {len(inputs)} input(s) and {len(outputs)} output(s)",
+            f"# Custom forward needed — define a nn.Module subclass manually.",
+            f"{var} = None",
+        ]
+
+    incoming: dict[str, list[str]] = {n["id"]: [] for n in nodes}
+    outgoing: dict[str, list[str]] = {n["id"]: [] for n in nodes}
+    for e in edges:
+        src, tgt = e["source"], e["target"]
+        if src in nodes_by_id and tgt in nodes_by_id:
+            incoming[tgt].append(src)
+            outgoing[src].append(tgt)
+
+    # Topological order (Kahn's algorithm).
+    in_degree = {nid: len(incoming[nid]) for nid in nodes_by_id}
+    queue = deque(nid for nid, d in in_degree.items() if d == 0)
+    topo: list[str] = []
+    while queue:
+        nid = queue.popleft()
+        topo.append(nid)
+        for tgt in outgoing[nid]:
+            in_degree[tgt] -= 1
+            if in_degree[tgt] == 0:
+                queue.append(tgt)
+
+    # Detect "simple chain": no merge nodes, every non-boundary layer has
+    # exactly 1 in and 1 out edge.
+    merge_types = {"Add", "Concat", "Multiply", "Subtract", "Mean", "Stack"}
+    is_chain = True
+    for n in nodes:
+        if n["type"] in ("Input", "Output"):
+            continue
+        if n["type"] in merge_types:
+            is_chain = False
+            break
+        if len(incoming[n["id"]]) > 1 or len(outgoing[n["id"]]) > 1:
+            is_chain = False
+            break
+
+    if not is_chain:
+        return [
+            f"# {var}: SequentialModel contains merges or branches",
+            f"# (Add/Concat/Multiply/skip-connections) — define a nn.Module subclass manually.",
+            f"{var} = None",
+        ]
+
+    layer_strs: list[str] = []
+    for nid in topo:
+        n = nodes_by_id[nid]
+        if n["type"] in ("Input", "Output"):
+            continue
+        layer_strs.append(_layer_to_source(n["type"], n.get("params", {})))
+
+    lines = ["# Build nn.Sequential model (compiled from v2 graph spec)", f"{var} = nn.Sequential("]
+    for s in layer_strs:
+        lines.append(f"    {s},")
+    lines.append(")")
+    return lines
+
+
+# ── Other node codegens ──────────────────────────────────────────────
 
 
 def _gen_dataset(var: str, params: dict) -> list[str]:
     name = params.get("name", "MNIST")
     split = params.get("split", "train")
     data_dir = params.get("data_dir", "./data")
-    is_train = "true" if split == "train" else "false"
+    is_train = split == "train"
     return [
-        f"transform_{_var(var)} = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])",
-        f"{var} = datasets.{name}({data_dir!r}, train={is_train.capitalize()}, download=True, transform=transform_{_var(var)})",
+        f"transform_{var} = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])",
+        f"{var} = datasets.{name}({data_dir!r}, train={is_train}, download=True, transform=transform_{var})",
     ]
 
 
@@ -84,35 +175,34 @@ def _gen_training_loop(var: str, params: dict, inputs: dict[str, str]) -> list[s
     loader_var = inputs.get("dataloader", "dataloader")
     opt_var = inputs.get("optimizer", "optimizer")
     loss_var = inputs.get("loss_fn", "loss_fn")
-    lines = [
-        f"# Training loop",
+    return [
+        "# Training loop",
         f"device = {device!r}",
         f"{model_var} = {model_var}.to(device)",
         f"{model_var}.train()",
-        f"epoch_losses = []",
+        "epoch_losses = []",
         f"for epoch in range({epochs}):",
-        f"    running_loss = 0.0",
-        f"    batch_count = 0",
+        "    running_loss = 0.0",
+        "    batch_count = 0",
         f"    for batch_data in {loader_var}:",
-        f"        if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:",
-        f"            data, targets = batch_data",
-        f"            data, targets = data.to(device), targets.to(device)",
-        f"        else:",
-        f"            data = batch_data.to(device) if hasattr(batch_data, 'to') else batch_data",
-        f"            targets = None",
+        "        if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:",
+        "            data, targets = batch_data",
+        "            data, targets = data.to(device), targets.to(device)",
+        "        else:",
+        "            data = batch_data.to(device) if hasattr(batch_data, 'to') else batch_data",
+        "            targets = None",
         f"        {opt_var}.zero_grad()",
         f"        outputs = {model_var}(data)",
         f"        loss = {loss_var}(outputs, targets) if targets is not None else {loss_var}(outputs)",
-        f"        loss.backward()",
+        "        loss.backward()",
         f"        {opt_var}.step()",
-        f"        running_loss += loss.item()",
-        f"        batch_count += 1",
-        f"    avg_loss = running_loss / max(batch_count, 1)",
-        f"    epoch_losses.append(avg_loss)",
+        "        running_loss += loss.item()",
+        "        batch_count += 1",
+        "    avg_loss = running_loss / max(batch_count, 1)",
+        "    epoch_losses.append(avg_loss)",
         f'    print(f"Epoch {{epoch + 1}}/{epochs} — Loss: {{avg_loss:.4f}}")',
         f"{var}_losses = torch.tensor(epoch_losses)",
     ]
-    return lines
 
 
 def _gen_model_saver(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
@@ -120,8 +210,8 @@ def _gen_model_saver(var: str, params: dict, inputs: dict[str, str]) -> list[str
     mode = params.get("save_mode", "state_dict")
     model_var = inputs.get("model", "model")
     if mode == "state_dict":
-        return [f"torch.save({model_var}.state_dict(), {path!r})", f'print(f"Model saved to {path}")']
-    return [f"torch.save({model_var}, {path!r})", f'print(f"Model saved to {path}")']
+        return [f"torch.save({model_var}.state_dict(), {path!r})", f"print('Model saved to', {path!r})"]
+    return [f"torch.save({model_var}, {path!r})", f"print('Model saved to', {path!r})"]
 
 
 def _gen_model_loader(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
@@ -146,9 +236,9 @@ def _gen_inference(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
         f"{model_var} = {model_var}.to({device!r})",
         f"{input_var} = {input_var}.to({device!r})",
         f"{model_var}.eval()",
-        f"with torch.no_grad():",
+        "with torch.no_grad():",
         f"    {var} = {model_var}({input_var})",
-        f'print(f"Output shape: {{{var}.shape}")',
+        f'print(f"Output shape: {{{var}.shape}}")',
     ]
 
 
@@ -156,18 +246,15 @@ def _gen_visualize(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
     title = params.get("title", "Plot")
     plot_type = params.get("plot_type", "line")
     data_var = inputs.get("data", "data")
-    lines = [
-        f"import matplotlib.pyplot as plt",
-        f"plt.figure(figsize=(8, 5))",
-    ]
+    lines = ["plt.figure(figsize=(8, 5))"]
     if plot_type == "line":
         lines.append(f"plt.plot({data_var}.cpu().numpy() if hasattr({data_var}, 'cpu') else {data_var})")
     else:
         lines.append(f"plt.bar(range(len({data_var})), {data_var}.cpu().numpy() if hasattr({data_var}, 'cpu') else {data_var})")
     lines += [
         f"plt.title({title!r})",
-        f"plt.tight_layout()",
-        f"plt.show()",
+        "plt.tight_layout()",
+        "plt.show()",
     ]
     return lines
 
@@ -181,6 +268,7 @@ def _gen_print(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
 
 
 # ── Generator dispatch ────────────────────────────────────────────
+
 
 _GENERATORS: dict[str, Any] = {
     "SequentialModel": lambda v, p, i: _gen_sequential_model(v, p),
@@ -196,8 +284,14 @@ _GENERATORS: dict[str, Any] = {
     "Print": _gen_print,
 }
 
+# Start is an execution-flow marker — it has no runtime representation in
+# the exported script, so we skip it silently rather than dumping a
+# placeholder comment.
+_SKIP_TYPES = {"Start"}
+
 
 # ── Main entry point ─────────────────────────────────────────────
+
 
 def generate_python(
     nodes: list[dict],
@@ -209,17 +303,14 @@ def generate_python(
 
     node_map = {n["id"]: n for n in nodes}
 
-    # Build input mapping: for each node, which output vars feed into which inputs
+    # input_mapping[node_id][target_handle] = source variable name
     input_mapping: dict[str, dict[str, str]] = {n["id"]: {} for n in nodes}
-    # Also track which output port var name to use
-    output_vars: dict[str, dict[str, str]] = {}
 
     for nid in order:
         node = node_map[nid]
         ntype = node["type"]
         var = _var(nid)
 
-        # Determine output variable names
         out_map: dict[str, str] = {}
         if ntype == "SequentialModel":
             out_map["model"] = var
@@ -241,7 +332,7 @@ def generate_python(
         elif ntype == "ModelSaver":
             model_in = input_mapping[nid].get("model", "model")
             out_map["model"] = model_in
-            out_map["path"] = f'"{node.get("data", {}).get("params", {}).get("path", "model_weights.pt")}"'
+            out_map["path"] = repr(node.get("data", {}).get("params", {}).get("path", "model_weights.pt"))
         elif ntype == "Inference":
             out_map["output"] = var
             out_map["model"] = input_mapping[nid].get("model", "model")
@@ -252,25 +343,26 @@ def generate_python(
         else:
             out_map["output"] = var
 
-        output_vars[nid] = out_map
-
-        # Wire edges from this node to downstream nodes
         for edge in edges:
-            if edge["source"] == nid:
-                target = edge["target"]
-                src_handle = edge.get("sourceHandle", "output")
-                tgt_handle = edge.get("targetHandle", "input")
-                var_name = out_map.get(src_handle, var)
-                if target in input_mapping:
-                    input_mapping[target][tgt_handle] = var_name
+            if edge["source"] != nid:
+                continue
+            if edge.get("type", "data") == "trigger":
+                continue
+            target = edge["target"]
+            src_handle = edge.get("sourceHandle", "output")
+            tgt_handle = edge.get("targetHandle", "input")
+            var_name = out_map.get(src_handle, var)
+            if target in input_mapping:
+                input_mapping[target][tgt_handle] = var_name
 
-    # Collect needed imports
+    # ── Header (imports) ─────────────────────────────────────────────
     needs_torch = False
     needs_nn = False
     needs_optim = False
     needs_dataloader = False
     needs_datasets = False
     needs_transforms = False
+    needs_pyplot = False
 
     for nid in order:
         ntype = node_map[nid]["type"]
@@ -287,14 +379,15 @@ def generate_python(
             needs_dataloader = True
         if ntype in ("ModelSaver", "ModelLoader", "TrainingLoop"):
             needs_torch = True
+        if ntype == "Visualize":
+            needs_pyplot = True
 
-    # Build header
     header: list[str] = [
-        f'"""',
-        f"{name}",
-        f"Auto-generated by CodefyUI",
-        f'"""',
-        f"",
+        '"""',
+        name,
+        "Auto-generated by CodefyUI",
+        '"""',
+        "",
     ]
     if needs_torch:
         header.append("import torch")
@@ -308,24 +401,30 @@ def generate_python(
         header.append("from torchvision import datasets")
     if needs_transforms:
         header.append("from torchvision import transforms")
+    if needs_pyplot:
+        header.append("import matplotlib.pyplot as plt")
     header.append("")
 
-    # Generate body
+    # ── Body ────────────────────────────────────────────────────────
     body: list[str] = []
     for nid in order:
         node = node_map[nid]
         ntype = node["type"]
+        if ntype in _SKIP_TYPES:
+            continue
         params = node.get("data", {}).get("params", {})
         var = _var(nid)
         inputs = input_mapping.get(nid, {})
 
         gen = _GENERATORS.get(ntype)
         if gen:
-            body.append(f"")
+            body.append("")
             body.extend(gen(var, params, inputs))
         else:
-            body.append(f"")
-            body.append(f"# {ntype} (id: {nid}) — no codegen template, implement manually")
-            body.append(f"# params: {params}")
+            body.append("")
+            body.append(f"# TODO: {ntype} (id: {nid}) — no codegen template yet, please implement manually.")
+            if params:
+                body.append(f"# params: {params}")
+            body.append(f"{var} = None")
 
     return "\n".join(header + body) + "\n"
