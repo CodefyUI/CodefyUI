@@ -478,7 +478,8 @@ function SubgraphFlowInner({
   }, [snapEnabled]);
 
   useEffect(() => {
-    setTimeout(() => fitView({ padding: 0.3 }), 50);
+    const timerId = setTimeout(() => fitView({ padding: 0.3 }), 50);
+    return () => clearTimeout(timerId);
   }, [fitView]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;

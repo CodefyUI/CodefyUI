@@ -1,114 +1,154 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { useTabStore } from '../store/tabStore';
+import { useCallback, useEffect } from 'react';
+import { useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
 import { useI18n } from '../i18n';
+import type { ExecutionWebSocket } from '../api/ws';
+
+type WsHandlerEntry = {
+  ws: ExecutionWebSocket;
+  type: string;
+  handler: (data: unknown) => void;
+};
 
 export function useGraphExecution() {
-  const activeTabId = useTabStore((s) => s.activeTabId);
   const getActiveTab = useTabStore((s) => s.getActiveTab);
   const getSerializedGraph = useTabStore((s) => s.getSerializedGraph);
   const clearExecutionStatus = useTabStore((s) => s.clearExecutionStatus);
   const setTabStatus = useTabStore((s) => s.setTabStatus);
-  const setTabNodeExecutionStatus = useTabStore((s) => s.setTabNodeExecutionStatus);
-  const setTabNodeProgress = useTabStore((s) => s.setTabNodeProgress);
-  const setTabOutputSummary = useTabStore((s) => s.setTabOutputSummary);
   const clearOutputSummaries = useTabStore((s) => s.clearOutputSummaries);
   const addTabLog = useTabStore((s) => s.addTabLog);
   const clearLogs = useTabStore((s) => s.clearLogs);
-  const setLastRunId = useTabStore((s) => s.setLastRunId);
 
-  // Track which tabs have had WS listeners attached
-  const attachedTabs = useRef(new Set<string>());
-
-  // Attach WS listeners for the active tab (idempotent per tab)
+  // Attach per-tab WS listeners. We subscribe to tabStore directly (rather
+  // than re-running on activeTabId change) so background tabs keep receiving
+  // their own execution events even when not in focus. All registrations are
+  // released when this hook unmounts, so react-doctor's effect-needs-cleanup
+  // contract is satisfied without breaking that persistence.
   useEffect(() => {
-    const tab = getActiveTab();
-    if (attachedTabs.current.has(tab.id)) return;
-    attachedTabs.current.add(tab.id);
+    const attached = new Map<string, WsHandlerEntry[]>();
 
-    const tabId = tab.id;
-    const ws = tab.ws;
+    const detachTab = (tabId: string) => {
+      const entries = attached.get(tabId);
+      if (!entries) return;
+      for (const { ws, type, handler } of entries) ws.off(type, handler);
+      attached.delete(tabId);
+    };
 
-    ws.on('node_status', (data: any) => {
-      // Handle progress updates (mid-execution, e.g. training epochs)
-      if (data.status === 'progress' && data.progress) {
-        const p = data.progress;
-        setTabNodeProgress(tabId, data.node_id, p);
-        if (p.event === 'epoch' || p.event === 'config') {
-          addTabLog(tabId, {
+    const attachTab = (tab: TabState) => {
+      if (attached.has(tab.id)) return;
+      const tabId = tab.id;
+      const ws = tab.ws;
+
+      const onNodeStatus = (raw: unknown) => {
+        const data = raw as any;
+        const store = useTabStore.getState();
+
+        if (data.status === 'progress' && data.progress) {
+          const p = data.progress;
+          store.setTabNodeProgress(tabId, data.node_id, p);
+          if (p.event === 'epoch' || p.event === 'config') {
+            store.addTabLog(tabId, {
+              nodeId: data.node_id,
+              message: `__PROGRESS__:${JSON.stringify(p)}`,
+              type: 'info',
+            });
+          }
+          return;
+        }
+
+        store.setTabNodeExecutionStatus(tabId, data.node_id, data.status, data.error);
+
+        // Suppress running/cached chatter — only surface terminal transitions.
+        if (data.status !== 'running' && data.status !== 'cached') {
+          const currentTab = store.tabs.find((t) => t.id === store.activeTabId);
+          const nodeLabel =
+            currentTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
+            String(data.node_id).slice(0, 8);
+
+          store.addTabLog(tabId, {
             nodeId: data.node_id,
-            message: `__PROGRESS__:${JSON.stringify(p)}`,
+            message: `Node ${nodeLabel} ${data.status}${data.error ? ': ' + data.error : ''}`,
+            type:
+              data.status === 'error'
+                ? 'error'
+                : data.status === 'completed'
+                  ? 'success'
+                  : 'info',
+          });
+        }
+
+        if (data.log) {
+          store.addTabLog(tabId, { nodeId: data.node_id, message: data.log, type: 'info' });
+        }
+        if (data.image) {
+          store.addTabLog(tabId, {
+            nodeId: data.node_id,
+            message: `__IMAGE__:${data.image}`,
             type: 'info',
           });
         }
-        return;
-      }
+        if (data.output_summary) {
+          store.setTabOutputSummary(tabId, data.node_id, data.output_summary);
+        }
+      };
 
-      setTabNodeExecutionStatus(tabId, data.node_id, data.status, data.error);
+      const onExecutionComplete = () => {
+        const store = useTabStore.getState();
+        store.setTabStatus(tabId, 'completed');
+        store.addTabLog(tabId, { message: 'Execution completed successfully', type: 'success' });
+      };
 
-      // Don't log running/cached status to reduce noise
-      if (data.status !== 'running' && data.status !== 'cached') {
-        const currentTab = useTabStore.getState().tabs.find(
-          (t) => t.id === useTabStore.getState().activeTabId,
-        );
-        const nodeLabel =
-          currentTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
-          String(data.node_id).slice(0, 8);
+      const onExecutionError = (raw: unknown) => {
+        const data = raw as { error: string };
+        const store = useTabStore.getState();
+        store.setTabStatus(tabId, 'error');
+        store.addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
+      };
 
-        addTabLog(tabId, {
-          nodeId: data.node_id,
-          message: `Node ${nodeLabel} ${data.status}${data.error ? ': ' + data.error : ''}`,
-          type: data.status === 'error' ? 'error' : data.status === 'completed' ? 'success' : 'info',
-        });
-      }
+      const onExecutionStart = (raw: unknown) => {
+        const data = raw as { run_id?: string };
+        const store = useTabStore.getState();
+        store.setTabStatus(tabId, 'running');
+        if (typeof data.run_id === 'string') {
+          store.setLastRunId(tabId, data.run_id);
+        }
+        store.addTabLog(tabId, { message: 'Execution started', type: 'info' });
+      };
 
-      // If the node produced log output (Print node), show it
-      if (data.log) {
-        addTabLog(tabId, {
-          nodeId: data.node_id,
-          message: data.log,
-          type: 'info',
-        });
+      const onExecutionStopped = () => {
+        const store = useTabStore.getState();
+        store.setTabStatus(tabId, 'idle');
+        store.addTabLog(tabId, { message: 'Execution cancelled', type: 'info' });
+      };
+
+      const entries: WsHandlerEntry[] = [
+        { ws, type: 'node_status', handler: onNodeStatus },
+        { ws, type: 'execution_complete', handler: onExecutionComplete },
+        { ws, type: 'execution_error', handler: onExecutionError },
+        { ws, type: 'execution_start', handler: onExecutionStart },
+        { ws, type: 'execution_stopped', handler: onExecutionStopped },
+      ];
+      for (const { type, handler } of entries) ws.on(type, handler);
+      attached.set(tabId, entries);
+    };
+
+    for (const tab of useTabStore.getState().tabs) attachTab(tab);
+
+    const unsubscribe = useTabStore.subscribe((state) => {
+      const currentIds = new Set(state.tabs.map((t) => t.id));
+      for (const id of Array.from(attached.keys())) {
+        if (!currentIds.has(id)) detachTab(id);
       }
-      // If the node produced a base64 image, add it as a separate log entry
-      if (data.image) {
-        addTabLog(tabId, {
-          nodeId: data.node_id,
-          message: `__IMAGE__:${data.image}`,
-          type: 'info',
-        });
-      }
-      // Store output summaries for edge inspection
-      if (data.output_summary) {
-        setTabOutputSummary(tabId, data.node_id, data.output_summary);
-      }
+      for (const tab of state.tabs) attachTab(tab);
     });
 
-    ws.on('execution_complete', () => {
-      setTabStatus(tabId, 'completed');
-      addTabLog(tabId, { message: 'Execution completed successfully', type: 'success' });
-    });
-
-    ws.on('execution_error', (data: any) => {
-      setTabStatus(tabId, 'error');
-      addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
-    });
-
-    ws.on('execution_start', (data: any) => {
-      setTabStatus(tabId, 'running');
-      if (data && typeof data.run_id === 'string') {
-        setLastRunId(tabId, data.run_id);
-      }
-      addTabLog(tabId, { message: 'Execution started', type: 'info' });
-    });
-
-    ws.on('execution_stopped', () => {
-      setTabStatus(tabId, 'idle');
-      addTabLog(tabId, { message: 'Execution cancelled', type: 'info' });
-    });
-  }, [activeTabId, getActiveTab, setTabNodeExecutionStatus, setTabNodeProgress, setTabOutputSummary, setTabStatus, setLastRunId, addTabLog]);
+    return () => {
+      unsubscribe();
+      for (const tabId of Array.from(attached.keys())) detachTab(tabId);
+    };
+  }, []);
 
   const execute = useCallback(async () => {
     const tab = getActiveTab();
