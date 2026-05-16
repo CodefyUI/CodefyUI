@@ -1,0 +1,25 @@
+{
+  "name": "C6-2 ViT: image → 16 patches → 1 Transformer block → class hidden",
+  "description": "Extends Patchify-101 into the rest of the §C6.2.4 ViT pipeline. A (1, 3, 16, 16) image is split by EduPatchify into 16 tokens (patch_size=4). Squeeze drops the batch dim so the Edu attention/FFN nodes (which expect [seq, D] or [seq, batch, D]) see a clean [16, 48] sequence. PositionalEncoding adds position vectors; LayerNorm → EduMultiHeadAttention → EduFFN is one Transformer block (a real ViT-Base has 12 stacked). Output shape (16, 48) — 16 patch tokens, each a 48-dim hidden — is what ViT feeds to its final classifier head. Bump patch_size down to 2 to land 64 tokens, up to 8 for 4 tokens.",
+  "nodes": [
+    { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },
+    { "id": "patch", "type": "EduPatchify",            "position": { "x":  240, "y":   0 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
+    { "id": "sq",    "type": "Squeeze",                "position": { "x":  540, "y":   0 }, "data": { "params": { "dim": 0 } } },
+    { "id": "pe",    "type": "PositionalEncoding",     "position": { "x":  840, "y":   0 }, "data": { "params": { "mode": "sinusoidal", "max_len": 64, "seed": 42 } } },
+    { "id": "ln",    "type": "LayerNorm",              "position": { "x": 1140, "y":   0 }, "data": { "params": { "normalized_shape": "48", "eps": 1e-5 } } },
+    { "id": "mha",   "type": "EduMultiHeadAttention",  "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 48, "num_heads": 4, "causal": false, "seed": 42 } } },
+    { "id": "ffn",   "type": "EduFFN",                 "position": { "x": 1740, "y":   0 }, "data": { "params": { "embed_dim": 48, "hidden_dim": 96, "activation": "gelu", "seed": 42 } } },
+    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Final patch hiddens (16, 48) — feed to MLP classifier head" } } }
+  ],
+  "edges": [
+    { "id": "et",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "img",   "target": "patch", "sourceHandle": "tensor",  "targetHandle": "image" },
+    { "id": "esq",  "source": "patch", "target": "sq",    "sourceHandle": "tokens",  "targetHandle": "tensor" },
+    { "id": "e2",   "source": "sq",    "target": "pe",    "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e3",   "source": "pe",    "target": "ln",    "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e4",   "source": "ln",    "target": "mha",   "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e5",   "source": "mha",   "target": "ffn",   "sourceHandle": "output",  "targetHandle": "tensor" },
+    { "id": "e6",   "source": "ffn",   "target": "p_out", "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

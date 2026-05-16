@@ -1,0 +1,19 @@
+{
+  "name": "C6-4 MoE: per-token routing picks top-2 of 4 experts",
+  "description": "The §C6.4.1 'classroom group project' analogy made into actual tensors. Input is a (1, 8, 32) batch — 8 tokens of width 32. MoELayer is set up with num_experts=4 and top_k=2: each token's router scores 4 experts, softmaxes the top 2, and combines only those two experts' outputs. routing_weights (1, 8, 2) and expert_indices (1, 8, 2) show which experts each token picked and with what weight. This is the §C6.4.2 'total params big, per-token compute small' trade-off that powers DeepSeek-V3 671B (37B active) and Mixtral.",
+  "nodes": [
+    { "id": "start",   "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
+    { "id": "x",       "type": "TensorInput", "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,8,32", "dtype": "float32", "value_mode": "random", "seed": 9 } } },
+    { "id": "moe",     "type": "MoELayer",    "position": { "x":  280, "y":   0 }, "data": { "params": { "num_experts": 4, "top_k": 2, "hidden_dim": 32, "expert_hidden_dim": 64, "seed": 42 } } },
+    { "id": "p_out",   "type": "Print",       "position": { "x":  600, "y": -120 }, "data": { "params": { "label": "MoE output (1, 8, 32) — same shape as input" } } },
+    { "id": "p_w",     "type": "Print",       "position": { "x":  600, "y":    0 }, "data": { "params": { "label": "Routing weights (1, 8, 2) — softmax over top-2 experts per token" } } },
+    { "id": "p_idx",   "type": "Print",       "position": { "x":  600, "y":  120 }, "data": { "params": { "label": "Expert indices (1, 8, 2) — which 2 of 4 experts each token used" } } }
+  ],
+  "edges": [
+    { "id": "et",   "source": "start", "target": "x",     "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "ex",   "source": "x",     "target": "moe",   "sourceHandle": "tensor",  "targetHandle": "x" },
+    { "id": "po",   "source": "moe",   "target": "p_out", "sourceHandle": "output",  "targetHandle": "value" },
+    { "id": "pw",   "source": "moe",   "target": "p_w",   "sourceHandle": "routing_weights", "targetHandle": "value" },
+    { "id": "pi",   "source": "moe",   "target": "p_idx", "sourceHandle": "expert_indices",  "targetHandle": "value" }
+  ]
+}

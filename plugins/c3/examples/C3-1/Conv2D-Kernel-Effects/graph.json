@@ -1,0 +1,19 @@
+{
+  "name": "C3-1 3×3 kernel sliding over a synthetic image",
+  "description": "Forward pass of a 32-kernel Conv2d layer on a (1, 1, 8, 8) synthetic image — the §C3.1.3.1 'kernel slides, output is element-wise multiply + sum' computation made concrete in tensor shape. Output shape (1, 32, 8, 8) is 32 simultaneous feature maps from 32 randomly-initialised kernels, the §C3.1.4 'multi-kernel layer' picture. The kernels are random here because training is what teaches them to detect edges / textures / parts (§C3.1.4) — bump out_channels to see one layer's parameter count grow as `out_channels × in_channels × kernel² + out_channels` bias terms.",
+  "nodes": [
+    { "id": "start", "type": "Start",        "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",  "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "1,1,8,8", "dtype": "float32", "value_mode": "random", "seed": 7 } } },
+    { "id": "conv",  "type": "Conv2d",       "position": { "x":  280, "y":   0 }, "data": { "params": { "in_channels": 1, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "relu",  "type": "Activation",   "position": { "x":  580, "y":   0 }, "data": { "params": { "type": "ReLU" } } },
+    { "id": "pool",  "type": "MaxPool2d",    "position": { "x":  880, "y":   0 }, "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+    { "id": "p_out", "type": "Print",        "position": { "x": 1180, "y":   0 }, "data": { "params": { "label": "After conv→ReLU→pool — shape should be (1, 32, 4, 4)" } } }
+  ],
+  "edges": [
+    { "id": "et",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "img",   "target": "conv",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e2",   "source": "conv",  "target": "relu",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e3",   "source": "relu",  "target": "pool",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e4",   "source": "pool",  "target": "p_out", "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

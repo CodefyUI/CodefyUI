@@ -1,0 +1,30 @@
+{
+  "name": "C3-2 Mini U-Net forward — encoder/bottleneck/decoder/skip in 6 nodes",
+  "description": "Walks a (1, 1, 16, 16) synthetic image through a minimal U-shape: two down-sampling Conv+Pool blocks shrink 16→8→4, a ConvTranspose2d up-samples 4→8, and Concat fuses the §C3.2.2.3 skip from the matching encoder layer (8×8 + 8×8 → channel 32). Final ConvTranspose2d brings it back to 16×16. The shapes that print at every step are the textbook's §C3.2.5 'spatial halves, channels double' picture in actual tensor numbers — without training, just to verify the geometry. For a real segmentation training run, swap the inputs for HuggingFaceDataset and add a Training Pipeline preset.",
+  "nodes": [
+    { "id": "start", "type": "Start",            "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",      "position": { "x":  -60, "y":    0 }, "data": { "params": { "shape": "1,1,16,16", "dtype": "float32", "value_mode": "random", "seed": 3 } } },
+    { "id": "enc1",  "type": "Conv2d",           "position": { "x":  220, "y": -120 }, "data": { "params": { "in_channels": 1,  "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "pool1", "type": "MaxPool2d",        "position": { "x":  500, "y": -120 }, "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+    { "id": "enc2",  "type": "Conv2d",           "position": { "x":  780, "y": -120 }, "data": { "params": { "in_channels": 16, "out_channels": 32, "kernel_size": 3, "stride": 1, "padding": 1 } } },
+    { "id": "pool2", "type": "MaxPool2d",        "position": { "x": 1060, "y": -120 }, "data": { "params": { "kernel_size": 2, "stride": 2 } } },
+    { "id": "up1",   "type": "ConvTranspose2d",  "position": { "x": 1340, "y":   40 }, "data": { "params": { "in_channels": 32, "out_channels": 16, "kernel_size": 2, "stride": 2, "padding": 0 } } },
+    { "id": "skip",  "type": "Concat",           "position": { "x": 1620, "y":   40 }, "data": { "params": { "dim": 1 } } },
+    { "id": "up2",   "type": "ConvTranspose2d",  "position": { "x": 1900, "y":   40 }, "data": { "params": { "in_channels": 48, "out_channels": 1,  "kernel_size": 2, "stride": 2, "padding": 0 } } },
+    { "id": "p_bn",  "type": "Print",            "position": { "x": 1340, "y": -120 }, "data": { "params": { "label": "Bottleneck shape (1, 32, 4, 4)" } } },
+    { "id": "p_out", "type": "Print",            "position": { "x": 2180, "y":   40 }, "data": { "params": { "label": "Final shape (1, 1, 16, 16) — back to input resolution" } } }
+  ],
+  "edges": [
+    { "id": "et",   "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "img",   "target": "enc1",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e2",   "source": "enc1",  "target": "pool1", "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e3",   "source": "pool1", "target": "enc2",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e4",   "source": "enc2",  "target": "pool2", "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e5",   "source": "pool2", "target": "up1",   "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "ebn",  "source": "pool2", "target": "p_bn",  "sourceHandle": "tensor",  "targetHandle": "value" },
+    { "id": "e6",   "source": "up1",   "target": "skip",  "sourceHandle": "tensor",  "targetHandle": "tensor_a" },
+    { "id": "e_skip","source": "enc2", "target": "skip",  "sourceHandle": "tensor",  "targetHandle": "tensor_b" },
+    { "id": "e7",   "source": "skip",  "target": "up2",   "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_out","source": "up2",   "target": "p_out", "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

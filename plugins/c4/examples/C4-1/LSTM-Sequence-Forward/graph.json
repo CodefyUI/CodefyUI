@@ -1,0 +1,17 @@
+{
+  "name": "C4-1 LSTM reads a 10-token sequence",
+  "description": "Forward pass of an LSTM on a (1, 10, 32) tensor — batch of 1, sequence length 10, 32-dim per-token features. The §C4.1.2 'two matrix multiplications + tanh per step' is run 10 times under the hood; the LSTM also maintains the §C4.1.5 cell-state highway so memories survive across the whole sequence. Output is (1, 10, 64) for the per-step hidden states and (1, 1, 64) for the final h_T. Inspector lets you watch h_t evolve across time-steps; print the final hidden to see the §C4.1.3.1 'h_5 contains the whole sentence' picture in concrete tensors.",
+  "nodes": [
+    { "id": "start", "type": "Start",       "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "seq",   "type": "TensorInput", "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "1,10,32", "dtype": "float32", "value_mode": "random", "seed": 5 } } },
+    { "id": "lstm",  "type": "LSTM",        "position": { "x":  260, "y":   0 }, "data": { "params": { "input_size": 32, "hidden_size": 64, "num_layers": 1, "batch_first": true, "bidirectional": false } } },
+    { "id": "p_out", "type": "Print",       "position": { "x":  580, "y": -80 }, "data": { "params": { "label": "Per-step hidden states (1, 10, 64)" } } },
+    { "id": "p_fin", "type": "Print",       "position": { "x":  580, "y":  80 }, "data": { "params": { "label": "Final h_T — the §C4.1.3.1 'sentence summary' (1, 1, 64)" } } }
+  ],
+  "edges": [
+    { "id": "et",    "source": "start", "target": "seq",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_in",  "source": "seq",   "target": "lstm",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_out", "source": "lstm",  "target": "p_out", "sourceHandle": "output",  "targetHandle": "value" },
+    { "id": "e_fin", "source": "lstm",  "target": "p_fin", "sourceHandle": "hidden",  "targetHandle": "value" }
+  ]
+}

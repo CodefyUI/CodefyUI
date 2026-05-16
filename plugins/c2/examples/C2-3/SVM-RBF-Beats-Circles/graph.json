@@ -1,0 +1,25 @@
+{
+  "name": "C2-3 SVM kernel trick: bend the line that linear couldn't",
+  "description": "Same wiring as C2-2 Concentric-Circles-Failure with one change: the classifier node is SVMClassifier with kernel='rbf'. Where LogisticRegression hits 50%, SVM-RBF lifts the circles into a 3D space where they are linearly separable, slices a plane, projects the cut back down as a closed curve, and lands ≈95%. The §C2.3.2 'kernel trick' becomes a single param flip in the same graph. Try kernel='linear' to confirm: linear-SVM falls back to the same 50% wall as logistic.",
+  "nodes": [
+    { "id": "start",   "type": "Start",            "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "data",    "type": "SyntheticDataset", "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
+    { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "clf",     "type": "SVMClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "C": 1.0, "kernel": "rbf", "gamma": "scale" } } },
+    { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 = kernel trick rescues circles)" } } },
+    { "id": "p_sv",    "type": "Print",            "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Support vectors (points that define the boundary)" } } }
+  ],
+  "edges": [
+    { "id": "et",         "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_feat",     "source": "data",  "target": "split", "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_lbl",      "source": "data",  "target": "split", "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtr",      "source": "split", "target": "clf",   "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytr",      "source": "split", "target": "clf",   "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xte",      "source": "split", "target": "clf",   "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_preds",    "source": "clf",   "target": "acc",   "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_yte",      "source": "split", "target": "acc",   "sourceHandle": "y_test",  "targetHandle": "labels" },
+    { "id": "e_acc_p",    "source": "acc",   "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" },
+    { "id": "e_sv_p",     "source": "clf",   "target": "p_sv",  "sourceHandle": "support_vectors", "targetHandle": "value" }
+  ]
+}

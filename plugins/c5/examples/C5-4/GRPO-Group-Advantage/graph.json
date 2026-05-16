@@ -1,0 +1,17 @@
+{
+  "name": "C5-4 GRPO: group-relative advantage replaces the value-network baseline",
+  "description": "DeepSeek-R1's §C5.4 core trick in two operations. Generate K=8 candidate completions per prompt — here we mock them as K reward scores. Mean over the group is the §C5.4.2 group baseline, and (reward − group mean) is the per-completion advantage. Compared to PPO's value-network baseline (one extra model to train), GRPO's baseline is just an arithmetic mean — that's the whole engineering simplification that made R1 cheap to train. Negative advantages (completion worse than the group average) get pushed down by the policy gradient; positives get reinforced.",
+  "nodes": [
+    { "id": "start",   "type": "Start",       "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "rewards", "type": "TensorInput", "position": { "x":  -40, "y":   0 }, "data": { "params": { "shape": "8", "dtype": "float32", "value_mode": "explicit", "values": [0.2, 0.8, 0.5, 0.1, 0.9, 0.3, 0.7, 0.4], "seed": 0 } } },
+    { "id": "mean",    "type": "Mean",        "position": { "x":  260, "y":   0 }, "data": { "params": { "dim": "0", "keepdim": true } } },
+    { "id": "p_mean",  "type": "Print",       "position": { "x":  560, "y": -100 }, "data": { "params": { "label": "Group mean reward (the GRPO baseline)" } } },
+    { "id": "p_rew",   "type": "Print",       "position": { "x":  560, "y":  100 }, "data": { "params": { "label": "Per-completion rewards (8 candidates)" } } }
+  ],
+  "edges": [
+    { "id": "et", "source": "start",   "target": "rewards", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "em", "source": "rewards", "target": "mean",    "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "pm", "source": "mean",    "target": "p_mean",  "sourceHandle": "tensor",  "targetHandle": "value" },
+    { "id": "pr", "source": "rewards", "target": "p_rew",   "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "name": "C5-3 RLHF: reward model scores two candidate answers",
+  "description": "The §C5.3.3 'two-tower comparison' simplified into one graph. Two TensorInputs stand in for the hidden-state representations of two LLM completions ('chosen' and 'rejected'). RewardModel is a small MLP head that maps a 128-dim hidden state to a scalar reward. After training on human preference pairs the chosen completion should score higher than the rejected; with random init the scores are just random. The §C5.3.4 Bradley-Terry log-sigmoid loss is what would push 'chosen − rejected' to be positive on a real RLHF run.",
+  "nodes": [
+    { "id": "start",     "type": "Start",       "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "h_chosen",  "type": "TensorInput", "position": { "x":  -40, "y": -100 }, "data": { "params": { "shape": "1,128", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
+    { "id": "h_reject",  "type": "TensorInput", "position": { "x":  -40, "y":  100 }, "data": { "params": { "shape": "1,128", "dtype": "float32", "value_mode": "random", "seed": 2 } } },
+    { "id": "rm_chosen", "type": "RewardModel", "position": { "x":  280, "y": -100 }, "data": { "params": { "input_dim": 128, "hidden_dim": 64, "seed": 42 } } },
+    { "id": "rm_reject", "type": "RewardModel", "position": { "x":  280, "y":  100 }, "data": { "params": { "input_dim": 128, "hidden_dim": 64, "seed": 42 } } },
+    { "id": "p_c",       "type": "Print",       "position": { "x":  580, "y": -100 }, "data": { "params": { "label": "r(chosen) — should exceed r(rejected) after RLHF training" } } },
+    { "id": "p_r",       "type": "Print",       "position": { "x":  580, "y":  100 }, "data": { "params": { "label": "r(rejected) — pushed down by Bradley-Terry loss" } } }
+  ],
+  "edges": [
+    { "id": "et1", "source": "start", "target": "h_chosen", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "et2", "source": "start", "target": "h_reject", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_c", "source": "h_chosen", "target": "rm_chosen", "sourceHandle": "tensor", "targetHandle": "hidden_states" },
+    { "id": "e_r", "source": "h_reject", "target": "rm_reject", "sourceHandle": "tensor", "targetHandle": "hidden_states" },
+    { "id": "pc",  "source": "rm_chosen", "target": "p_c",      "sourceHandle": "rewards", "targetHandle": "value" },
+    { "id": "pr",  "source": "rm_reject", "target": "p_r",      "sourceHandle": "rewards", "targetHandle": "value" }
+  ]
+}

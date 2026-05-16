@@ -1,0 +1,23 @@
+{
+  "name": "C2-4 Multi-layer ≠ depth without activation",
+  "description": "Same architecture as MLP-Solves-Circles (16, 16 hidden) — but activation='identity'. With no non-linearity between layers, two linear transforms collapse into one linear transform: W₂·W₁·x + b is still a single straight line. Accuracy crashes back to the 50% wall, exactly like LogisticRegression in C2-2. Run both C2-4 graphs side by side and §C2.4.3 ('without activation the whole network is one linear layer') is no longer a claim — it's a demonstration.",
+  "nodes": [
+    { "id": "start",   "type": "Start",            "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "data",    "type": "SyntheticDataset", "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
+    { "id": "split",   "type": "TrainTestSplit",   "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "mlp",     "type": "MLPClassifier",    "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "16,16", "activation": "identity", "max_iter": 800, "learning_rate_init": 0.01, "seed": 42 } } },
+    { "id": "acc",     "type": "Accuracy",         "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_acc",   "type": "Print",            "position": { "x": 1140, "y":   0 }, "data": { "params": { "label": "Test accuracy (≈ 0.50 = no activation → no depth)" } } }
+  ],
+  "edges": [
+    { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_feat",    "source": "data",  "target": "split", "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_lbl",     "source": "data",  "target": "split", "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtr",     "source": "split", "target": "mlp",   "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytr",     "source": "split", "target": "mlp",   "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xte",     "source": "split", "target": "mlp",   "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_preds",   "source": "mlp",   "target": "acc",   "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_yte",     "source": "split", "target": "acc",   "sourceHandle": "y_test",  "targetHandle": "labels" },
+    { "id": "e_acc_p",   "source": "acc",   "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" }
+  ]
+}
