@@ -80,6 +80,18 @@ def validate_python_source(
             elif isinstance(func, ast.Attribute):
                 name = func.attr
             if name and name in _DANGEROUS_NAMES:
+                # getattr/setattr/delattr are the common false-positives — the
+                # attack shape that matters is *dynamic* attribute lookup
+                # (`getattr(__builtins__, name_from_user)`). Pinned-literal
+                # access like `getattr(context, "verbose", False)` is a
+                # mainstream Python idiom and safe to allow.
+                if (
+                    name in ("getattr", "setattr", "delattr")
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and isinstance(node.args[1].value, str)
+                ):
+                    continue
                 raise PluginValidationError(
                     f"Use of '{name}()' is not allowed in {filename}"
                 )

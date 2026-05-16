@@ -200,6 +200,18 @@ shows the population-std formula as `sum → divide → deviations² → varianc
 loss`; `EduPatchify` makes `unfold → permute → flatten` visible. Switch
 **Verbose mode** in the toolbar ⚙ Settings popover to capture them.
 
+### Writing your own plugin
+
+Fork the [**Official Plugin Template**](https://github.com/treeleaves30760/CodefyUI-Plugin-Official) — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. The README there walks you through every field and the AST security gate.
+
+```bash
+# Install the template itself to see the pattern live
+cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
+
+# After forking
+cdui plugin install your-username/your-fork
+```
+
 > **BREAKING (v0.2):** the `Edu*` nodes that used to ship in
 > `backend/app/nodes/` have moved into per-chapter plugins. Existing graph
 > JSONs that reference `EduKNN`, `EduSelfAttention`, `EduCrossAttention`,

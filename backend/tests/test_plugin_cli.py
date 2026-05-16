@@ -118,6 +118,33 @@ def test_validate_nodes_dir_honours_allowed_modules(tmp_path):
     plugin_cli.validate_nodes_dir(nodes, allowed_modules=["pathlib"])
 
 
+def test_validate_nodes_dir_allows_getattr_with_literal(tmp_path):
+    """`getattr(obj, "literal")` is the common idiom for optional attrs —
+    refining the AST gate so plugins that just want `getattr(context,
+    "verbose", False)` aren't false-positived."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "verbose_check.py").write_text(
+        "def f(context):\n"
+        "    return getattr(context, 'verbose', False)\n",
+        encoding="utf-8",
+    )
+    plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+
+def test_validate_nodes_dir_rejects_dynamic_getattr(tmp_path):
+    """Dynamic attribute names — the actual sandbox-bypass shape — stay blocked."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "bad.py").write_text(
+        "def f(name):\n"
+        "    return getattr(__builtins__, name)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+
 # ── load_catalog ────────────────────────────────────────────────────────────
 
 def test_load_catalog_returns_six_chapter_packs():
