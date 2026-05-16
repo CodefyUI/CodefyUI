@@ -355,9 +355,9 @@ export function Toolbar() {
       addToast(t('toolbar.exportPython.empty'), 'warning');
       return;
     }
+    const name = activeTab.name || 'graph';
     try {
-      const result = await exportGraph(nodes, edges);
-      const name = activeTab.name || 'graph';
+      const result = await exportGraph(nodes, edges, name);
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
