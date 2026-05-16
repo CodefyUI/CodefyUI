@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.classical.edu_linear_regression_node import EduLinearRegressionNode
+from cdui_plugins.c2.nodes.edu_linear_regression_node import EduLinearRegressionNode
 
 
 def _run(x_train, y_train, x_query, **params):

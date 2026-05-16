@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.llm.edu_token_embedding_node import EduTokenEmbeddingNode
+from cdui_plugins.c4.nodes.edu_token_embedding_node import EduTokenEmbeddingNode
 
 
 def _run(*, tokens=None, token_ids=None, **params):

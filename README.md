@@ -57,6 +57,9 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui test` | Run backend tests |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
 | `cdui uninstall` | Clean + remove the PATH launcher |
+| `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `C2`, `owner/repo[@ref]`, or full GitHub URL) |
+| `cdui plugin list` | List installed plugin packs |
+| `cdui plugin uninstall <id>` | Remove an installed plugin pack |
 
 > `cdui` is a thin launcher (`cdui.cmd` on Windows) placed at `~/.local/bin/cdui` by the installer. If you didn't restart your terminal yet, invoke the absolute path: `~/CodefyUI/cdui start`. `python scripts/dev.py <cmd>` still works too — `dev.py` re-execs into the venv's Python automatically.
 
@@ -161,6 +164,59 @@ The toolbar **⚙ Settings** popover groups every per-tab teaching/training swit
 | **Show node tooltips** | Reveal the description card when hovering nodes on the canvas. |
 | **Node category mode** | `Basic` shows only essential categories in the sidebar; `All` shows every category. |
 
+## Plugin Packs
+
+Lesson-specific and educational nodes ship as installable plugin packs so a
+default install keeps the palette focused on production nodes:
+
+```bash
+cdui plugin install C1 C2 C3 C4 C5 C6   # full textbook companion (12 Edu nodes)
+cdui plugin list
+cdui plugin info C4                      # manifest, lessons covered, node names
+cdui plugin search attention             # query the catalog
+cdui plugin install foo/bar              # third-party pack from GitHub
+cdui plugin uninstall C4
+```
+
+Built-in chapter packs live in `plugins/<id>/` inside this repo (activated
+in place, no copies). Third-party packs are downloaded as a pinned-SHA
+tarball into `<USER_DATA>/plugins/<id>/` and AST-validated before install.
+The lockfile at `<USER_DATA>/plugins/installed.json` records every install
+and lets `cdui start` rediscover them on the next launch.
+
+| Pack | Chapter | Lessons | Edu nodes |
+|------|---------|---------|-----------|
+| `c1` | 基本資訊 | C1-2 (tabular) | EduColumnStats |
+| `c2` | 經典 AI | C2-2 (classifiers) | EduKNN, EduLinearRegression, EduLogisticRegression |
+| `c3` | 圖像處理 | C3-2 (UNet), C3-3 (Diffusion) | EduCrossAttention, EduResBlock |
+| `c4` | 序列處理 | C4-2 (attention), C4-3 (Transformer) | EduTokenEmbedding, EduSelfAttention, EduMultiHeadAttention, EduFFN |
+| `c5` | 強化學習 | C5-1, C5-2 (PPO) | EduPolicyGradient |
+| `c6` | 前沿技術 | C6-2 (ViT) | EduPatchify |
+
+Each Edu node decomposes a single lesson concept into a chain of named steps
+that the Teaching Inspector renders one row at a time — `EduColumnStats`
+shows the population-std formula as `sum → divide → deviations² → variance
+→ sqrt`; `EduPolicyGradient` exposes `softmax → gather → log → baseline →
+loss`; `EduPatchify` makes `unfold → permute → flatten` visible. Switch
+**Verbose mode** in the toolbar ⚙ Settings popover to capture them.
+
+### Writing your own plugin
+
+Fork the [**Official Plugin Template**](https://github.com/treeleaves30760/CodefyUI-Plugin-Official) — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. The README there walks you through every field and the AST security gate.
+
+```bash
+# Install the template itself to see the pattern live
+cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
+
+# After forking
+cdui plugin install your-username/your-fork
+```
+
+> **BREAKING (v0.2):** the `Edu*` nodes that used to ship in
+> `backend/app/nodes/` have moved into per-chapter plugins. Existing graph
+> JSONs that reference `EduKNN`, `EduSelfAttention`, `EduCrossAttention`,
+> etc. will fail to run until you `cdui plugin install C2 C3 C4`.
+
 ## Custom Nodes
 
 Drop a `.py` file in `backend/app/custom_nodes/` extending `BaseNode`:
@@ -225,6 +281,9 @@ Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the to
 | `/api/custom-nodes/upload` | POST | Upload a custom node |
 | `/api/custom-nodes/toggle` | POST | Enable/disable a custom node |
 | `/api/custom-nodes/{filename}` | DELETE | Delete a custom node |
+| `/api/plugins` | GET | List installed plugin packs |
+| `/api/plugins/{id}` | GET | Get a plugin's manifest + README |
+| `/api/plugins/reload` | POST | Hot-reload all node and preset sources |
 | `/api/models` | GET | List uploaded model files |
 | `/api/models/upload` | POST | Upload a model weight file |
 | `/api/models/download/{filename}` | GET | Download a model weight file (supports nested paths) |

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.diffusion.edu_resblock_node import EduResBlockNode
+from cdui_plugins.c3.nodes.edu_resblock_node import EduResBlockNode
 
 
 def _run(tensor, *, time_emb=None, **params):

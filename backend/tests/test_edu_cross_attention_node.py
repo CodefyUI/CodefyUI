@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.diffusion.edu_cross_attention_node import EduCrossAttentionNode
+from cdui_plugins.c3.nodes.edu_cross_attention_node import EduCrossAttentionNode
 
 
 def _run(query, context, *, mask=None, q_labels=None, k_labels=None, **params):

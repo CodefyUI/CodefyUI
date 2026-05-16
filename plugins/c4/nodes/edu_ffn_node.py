@@ -22,15 +22,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...core.node_base import (
+from app.core.node_base import (
     BaseNode,
     DataType,
     ParamDefinition,
     ParamType,
     PortDefinition,
 )
-from ...core.stateful_module import StatefulModuleMixin
-from ...core.step_trace import StepRecorder
+from app.core.stateful_module import StatefulModuleMixin
+from app.core.step_trace import StepRecorder
 
 
 class _EduFFNModule(nn.Module):
