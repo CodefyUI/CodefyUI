@@ -9,9 +9,14 @@ to ``/api/plugins/reload``).
 from __future__ import annotations
 
 import logging
-import tomllib
+import sys
 from pathlib import Path
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport — same API.
 
 from fastapi import APIRouter, HTTPException
 

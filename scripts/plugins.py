@@ -29,12 +29,16 @@ import sys
 import tarfile
 import tempfile
 import time
-import tomllib
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport — same API.
 
 from app.core.plugin_loader import (
     MANIFEST_FILENAME,
