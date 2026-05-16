@@ -152,11 +152,14 @@ def test_hf_dataset_node_happy_path(monkeypatch):
 
     fake = _make_two_row_hf_image_dataset()
 
-    def fake_load_dataset(name, subset=None, split=None, cache_dir=None):
+    def fake_load_dataset(name, subset=None, split=None, cache_dir=None, **kwargs):
         assert name == "fake/dataset"
         assert subset is None
         assert split == "train"
         assert cache_dir is None
+        # M-3 fix: HF node must pass trust_remote_code=False to prevent the
+        # dataset-script RCE class.
+        assert kwargs.get("trust_remote_code") is False
         return fake
 
     monkeypatch.setattr(hf_datasets, "load_dataset", fake_load_dataset)
@@ -503,7 +506,7 @@ def test_hf_dataset_node_empty_split_falls_back_to_train(monkeypatch):
     fake = _make_two_row_hf_image_dataset()
     captured = {}
 
-    def fake_load_dataset(name, subset=None, split=None, cache_dir=None):
+    def fake_load_dataset(name, subset=None, split=None, cache_dir=None, **kwargs):
         captured["split"] = split
         return fake
 

@@ -13,11 +13,18 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from app.config import settings
+from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import NodeRegistry, registry
 from app.core.plugin_loader import install_plugin_finder, purge_all_plugin_modules
 from app.core.preset_registry import preset_registry
 from app.main import app
+
+# Tests use ``base_url="http://127.0.0.1:8000"`` which the production Host
+# whitelist already accepts, but seed it explicitly here so tests don't rely
+# on lifespan-time initialisation (lifespan runs once per app instance and
+# ASGITransport doesn't always go through it).
+init_allowed_hosts(settings.HOST, settings.PORT)
 
 # Register the in-repo chapter plugin packs in the synthetic `cdui_plugins`
 # namespace AT CONFTEST IMPORT TIME, before any test_*.py module is collected.
@@ -102,9 +109,18 @@ def _ensure_registry_intact(registry_with_nodes):
 
 @pytest.fixture
 async def test_client():
-    """Async HTTP client connected to the FastAPI app via ASGI transport."""
+    """Async HTTP client connected to the FastAPI app via ASGI transport.
+
+    The base URL is chosen so the ``Host`` header (set automatically by
+    httpx) matches the production whitelist seeded above. The session
+    token is also pre-attached so tests don't need to know about it.
+    """
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(
+        transport=transport,
+        base_url=f"http://127.0.0.1:{settings.PORT}",
+        headers={TOKEN_HEADER: session_token()},
+    ) as client:
         yield client
 
 

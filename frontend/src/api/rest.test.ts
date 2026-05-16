@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { exportGraph } from './rest';
+import { _setSessionTokenForTesting } from './_auth';
 
 const g = globalThis as unknown as { fetch: typeof fetch };
 let originalFetch: typeof fetch;
@@ -17,10 +18,14 @@ function mockFetch(status: number, body: unknown) {
 
 beforeEach(() => {
   originalFetch = g.fetch;
+  // Pre-seed the cached session token so apiFetch doesn't try to bootstrap
+  // (mocking that round-trip in every test would be noisy).
+  _setSessionTokenForTesting('test-token');
 });
 
 afterEach(() => {
   g.fetch = originalFetch;
+  _setSessionTokenForTesting(null);
 });
 
 describe('exportGraph', () => {

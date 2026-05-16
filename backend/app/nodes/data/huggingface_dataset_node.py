@@ -95,7 +95,18 @@ class HuggingFaceDatasetNode(BaseNode):
         cache_dir = params.get("cache_dir", "") or None
 
         try:
-            ds = load_dataset(dataset_name, subset, split=split, cache_dir=cache_dir)
+            # trust_remote_code=False blocks the HF dataset-script RCE class:
+            # without this, ``datasets`` < 2.16 silently executes a script.py
+            # bundled in the remote dataset repo on first load. We err on the
+            # side of refusing rather than silently running attacker code,
+            # even though newer versions default to False.
+            ds = load_dataset(
+                dataset_name,
+                subset,
+                split=split,
+                cache_dir=cache_dir,
+                trust_remote_code=False,
+            )
         except Exception as e:
             err_name = type(e).__name__
             err_msg = str(e)

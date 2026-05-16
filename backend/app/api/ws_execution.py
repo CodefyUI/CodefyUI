@@ -9,6 +9,12 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import settings
+from ..core.auth import (
+    TOKEN_QUERY_PARAM,
+    constant_time_equals,
+    host_is_allowed,
+    session_token,
+)
 from ..core.cache import ExecutionCache
 from ..core.execution_context import CancellationError, ExecutionContext
 from ..core.graph_engine import GraphValidationError, execute_graph
@@ -113,26 +119,35 @@ def _summarize_outputs(result: dict[str, Any]) -> dict[str, Any]:
 
 @router.websocket("/ws/execution")
 async def websocket_execution(ws: WebSocket):
-    # Origin policy:
-    # 1. Same-origin requests are always allowed. This covers `cdui start`
-    #    where the SPA is served by uvicorn at the same host:port — any
-    #    fixed CORS_ORIGINS list can't predict the user's chosen port and
-    #    rejecting same-origin would break production mode entirely.
-    # 2. Cross-origin requests (typically `cdui dev` with Vite on :5173
-    #    hitting the backend on :8000) must whitelist the origin in
-    #    settings.CORS_ORIGINS.
-    # 3. Missing Origin header (non-browser clients, e.g. the WS test
-    #    suite) is allowed — the existing CORS middleware already enforces
-    #    browser-side origin policy on regular HTTP requests.
+    # Host header check (DNS rebinding defence). Browsers tricked into
+    # resolving attacker.com → 127.0.0.1 still send Host: attacker.com;
+    # we reject those before they can even start a graph.
+    request_host = ws.headers.get("host", "")
+    if not host_is_allowed(request_host):
+        await ws.close(code=4003, reason="Host not allowed")
+        return
+
+    # Origin policy (browser layer): same as the HTTP middleware.
     origin = ws.headers.get("origin")
     if origin:
         origin_netloc = urlparse(origin).netloc
-        request_host = ws.headers.get("host", "")
         if origin_netloc != request_host:
             allowed = {urlparse(o).netloc for o in settings.CORS_ORIGINS}
             if origin_netloc not in allowed:
                 await ws.close(code=4003, reason="Origin not allowed")
                 return
+
+    # Session-token check. Browsers cannot set custom headers on WebSocket
+    # handshakes, so we accept the token via ``?token=`` query parameter.
+    # Header is also accepted to keep server-to-server clients (tests, future
+    # CLI) consistent with the REST API.
+    provided = (
+        ws.headers.get("x-codefyui-token")
+        or ws.query_params.get(TOKEN_QUERY_PARAM)
+    )
+    if not constant_time_equals(provided, session_token()):
+        await ws.close(code=4401, reason="Missing or invalid session token")
+        return
 
     await ws.accept()
 

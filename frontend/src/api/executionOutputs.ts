@@ -1,4 +1,5 @@
 import type { OutputData, RunOutputRef } from '../types';
+import { apiFetch } from './_auth';
 
 const BASE_URL = '/api/execution/outputs';
 
@@ -64,7 +65,7 @@ export async function listRunOutputs(runId: string): Promise<RunOutputRef[]> {
 }
 
 export async function deleteRun(runId: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+  const res = await apiFetch(`${BASE_URL}/${encodeURIComponent(runId)}`, { method: 'DELETE' });
   if (res.status === 404) throw new RunDataExpiredError(runId);
   if (!res.ok) throw new Error(`deleteRun failed: ${await readDetail(res)}`);
 }

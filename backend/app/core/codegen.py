@@ -1,10 +1,51 @@
-"""Generate a standalone Python script from a CodefyUI graph."""
+"""Generate a standalone Python script from a CodefyUI graph.
+
+Security note: all node-supplied type names that get interpolated into the
+generated source (dataset name, optimizer class, loss class, etc.) are
+whitelisted against the lists below. A malicious graph.json that puts
+``"MNIST(); __import__('os').system('rm -rf /')"`` into the dataset ``name``
+field would otherwise produce a runnable exploit when the user downloads
+and executes the script.
+
+The whitelists are intentionally narrow — the export feature is meant to
+hand off a *teaching example* to the user, not a generic graph→Python
+compiler. Anything the whitelist doesn't cover is emitted as a TODO comment
+so the user understands they need to fill it in by hand.
+"""
 
 from __future__ import annotations
 
 import json
 from collections import deque
 from typing import Any
+
+
+# ── Whitelists for user-controlled type names ─────────────────────────
+
+# torchvision.datasets — the common ones we generate transforms for. Anything
+# outside this list produces a TODO comment instead of an interpolated call.
+_DATASET_WHITELIST = frozenset({
+    "MNIST", "FashionMNIST", "KMNIST", "EMNIST", "QMNIST",
+    "CIFAR10", "CIFAR100", "ImageNet", "ImageFolder",
+    "Caltech101", "Caltech256", "CelebA", "STL10", "SVHN",
+    "Cityscapes", "VOCSegmentation", "VOCDetection",
+    "CocoCaptions", "CocoDetection",
+})
+
+# torch.optim subclasses.
+_OPTIMIZER_WHITELIST = frozenset({
+    "Adam", "AdamW", "SGD", "RMSprop", "Adagrad", "Adadelta",
+    "Adamax", "ASGD", "LBFGS", "NAdam", "RAdam", "Rprop",
+})
+
+# torch.nn loss modules.
+_LOSS_WHITELIST = frozenset({
+    "CrossEntropyLoss", "MSELoss", "L1Loss", "SmoothL1Loss",
+    "BCELoss", "BCEWithLogitsLoss", "NLLLoss", "PoissonNLLLoss",
+    "KLDivLoss", "MarginRankingLoss", "MultiMarginLoss",
+    "HuberLoss", "HingeEmbeddingLoss", "CosineEmbeddingLoss",
+    "TripletMarginLoss", "CTCLoss",
+})
 
 
 # ── Per-layer source rendering (shared between legacy + v2 builders) ──
@@ -20,14 +61,39 @@ def _var(nid: str) -> str:
     return nid.replace("-", "_")
 
 
+_SAFE_LAYER_TYPES = frozenset({
+    "Linear", "Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d",
+    "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
+    "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d",
+    "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
+    "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm",
+    "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d",
+    "Dropout", "Dropout1d", "Dropout2d", "Dropout3d",
+    "Flatten", "Unflatten", "Embedding",
+    "LSTM", "GRU", "RNN",
+    "MultiheadAttention", "TransformerEncoderLayer", "TransformerDecoderLayer",
+    "Softmax", "LogSoftmax", "Identity",
+})
+
+
 def _layer_to_source(layer_type: str, params: dict) -> str:
-    """Render a single layer dict as an ``nn.X(...)`` Python expression."""
+    """Render a single layer dict as an ``nn.X(...)`` Python expression.
+
+    Layer type is whitelisted against the union of activations, normalisation,
+    pooling, and the other common building blocks. Any layer type not on the
+    list produces an Identity placeholder so the export stays runnable while
+    making the missing piece obvious to the user.
+    """
     if layer_type == "Softmax":
         return "nn.Softmax(dim=-1)"
     if layer_type in _ACTIVATIONS:
         if layer_type in _INPLACE_ACTIVATIONS:
             return f"nn.{layer_type}(inplace=True)"
         return f"nn.{layer_type}()"
+    if layer_type not in _SAFE_LAYER_TYPES:
+        # Refuse to interpolate an unknown layer type — that's the H-2 injection
+        # vector. Leave a placeholder so the script still parses.
+        return f"nn.Identity()  # TODO: unsupported layer type {layer_type!r}"
     args = ", ".join(f"{k}={v!r}" for k, v in params.items())
     return f"nn.{layer_type}({args})"
 
@@ -138,6 +204,12 @@ def _gen_dataset(var: str, params: dict) -> list[str]:
     split = params.get("split", "train")
     data_dir = params.get("data_dir", "./data")
     is_train = split == "train"
+    if name not in _DATASET_WHITELIST:
+        return [
+            f"# TODO: Dataset {name!r} is not in the codegen whitelist.",
+            f"# Edit this block manually to instantiate the dataset you want.",
+            f"{var} = None",
+        ]
     return [
         f"transform_{var} = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])",
         f"{var} = datasets.{name}({data_dir!r}, train={is_train}, download=True, transform=transform_{var})",
@@ -157,14 +229,34 @@ def _gen_optimizer(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
     lr = params.get("lr", 0.001)
     wd = params.get("weight_decay", 0.0)
     model_var = inputs.get("model", "model")
-    args = f"{model_var}.parameters(), lr={lr}"
-    if wd:
-        args += f", weight_decay={wd}"
+    if opt_type not in _OPTIMIZER_WHITELIST:
+        return [
+            f"# TODO: Optimizer {opt_type!r} is not in the codegen whitelist.",
+            f"{var} = None",
+        ]
+    # Coerce numeric params through float() so a malicious graph can't smuggle
+    # arbitrary expressions through e.g. ``"lr": "1; __import__('os').system(...)"``.
+    try:
+        lr_v = float(lr)
+        wd_v = float(wd) if wd else 0.0
+    except (TypeError, ValueError):
+        return [
+            f"# TODO: Optimizer {opt_type} has non-numeric lr/weight_decay.",
+            f"{var} = None",
+        ]
+    args = f"{model_var}.parameters(), lr={lr_v}"
+    if wd_v:
+        args += f", weight_decay={wd_v}"
     return [f"{var} = optim.{opt_type}({args})"]
 
 
 def _gen_loss(var: str, params: dict) -> list[str]:
     loss_type = params.get("type", "CrossEntropyLoss")
+    if loss_type not in _LOSS_WHITELIST:
+        return [
+            f"# TODO: Loss {loss_type!r} is not in the codegen whitelist.",
+            f"{var} = None",
+        ]
     return [f"{var} = nn.{loss_type}()"]
 
 
@@ -225,7 +317,20 @@ def _gen_model_loader(var: str, params: dict, inputs: dict[str, str]) -> list[st
             f"{model_var}.load_state_dict(state_dict)",
             f"{model_var} = {model_var}.to({device!r})",
         ]
-    return [f"{model_var} = torch.load({path!r}, map_location={device!r}, weights_only=False)"]
+    # full_model mode used to emit ``weights_only=False`` which deserialises
+    # arbitrary pickle — that's a known RCE class (CVE-2025-32434 et al.). We
+    # refuse to emit unsafe loads; tell the user to re-export their checkpoint
+    # as state_dict, which is the supported safe path.
+    unsafe_msg = (
+        "full_model load mode is disabled for safety; "
+        "re-save the checkpoint as state_dict."
+    )
+    return [
+        "# TODO: full_model load mode is unsafe (pickle RCE risk).",
+        "# Re-save your checkpoint with mode='state_dict' and update this node.",
+        f"raise RuntimeError({unsafe_msg!r})",
+        f"{model_var} = None",
+    ]
 
 
 def _gen_inference(var: str, params: dict, inputs: dict[str, str]) -> list[str]:

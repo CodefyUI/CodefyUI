@@ -58,9 +58,22 @@ async def list_examples():
     return results
 
 
+def _safe_resolve_under(base: Path, rel: str) -> Path:
+    """Resolve *rel* under *base* and raise 400 if it escapes the directory.
+
+    Uses ``Path.is_relative_to`` instead of ``str.startswith`` to avoid the
+    classic ``/repo/examples`` vs ``/repo/examples-evil`` prefix bug.
+    """
+    base_resolved = base.resolve()
+    candidate = (base / rel).resolve()
+    if not candidate.is_relative_to(base_resolved):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return candidate
+
+
 @router.get("/load")
 async def load_example(path: str = Query(..., description="Relative path to the example directory")):
-    if ".." in path or path.startswith("/"):
+    if ".." in path or path.startswith("/") or path.startswith("\\"):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     # plugin:<id>/<rest> resolves under the plugin's examples/ root.
@@ -71,18 +84,14 @@ async def load_example(path: str = Query(..., description="Relative path to the 
             settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, load_lockfile()
         ):
             if pid == plugin_id:
-                examples_root = (plugin_dir / "examples").resolve()
-                resolved = (examples_root / rest / "graph.json").resolve()
-                if not str(resolved).startswith(str(examples_root)):
-                    raise HTTPException(status_code=400, detail="Invalid path")
+                examples_root = plugin_dir / "examples"
+                resolved = _safe_resolve_under(examples_root, f"{rest}/graph.json")
                 if not resolved.exists():
                     raise HTTPException(status_code=404, detail=f"Example not found: {path}")
                 return json.loads(resolved.read_text(encoding="utf-8"))
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not installed")
 
-    resolved = (settings.EXAMPLES_DIR / path / "graph.json").resolve()
-    if not str(resolved).startswith(str(settings.EXAMPLES_DIR.resolve())):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    resolved = _safe_resolve_under(settings.EXAMPLES_DIR, f"{path}/graph.json")
     if not resolved.exists():
         raise HTTPException(status_code=404, detail=f"Example not found: {path}")
     return json.loads(resolved.read_text(encoding="utf-8"))

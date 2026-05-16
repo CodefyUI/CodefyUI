@@ -1,5 +1,6 @@
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
+import { wsUrlWithToken } from './_auth';
 
 type MessageHandler = (data: any) => void;
 
@@ -26,14 +27,17 @@ export class ExecutionWebSocket {
   // not one per backoff tick.
   private notifiedDisconnect = false;
 
-  connect(): Promise<void> {
+  async connect(): Promise<void> {
     this.intentionalClose = false;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/execution`);
+    // Token is appended as ?token=... because browsers cannot set custom
+    // headers on WebSocket handshakes. wsUrlWithToken() awaits the bootstrap
+    // exchange the first time it's called and caches the value afterwards.
+    const url = await wsUrlWithToken('/ws/execution');
+    this.ws = new WebSocket(url);
 
     this.ws.onmessage = (event) => {
       try {

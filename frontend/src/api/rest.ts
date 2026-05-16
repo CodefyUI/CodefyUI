@@ -1,4 +1,5 @@
 import type { NodeDefinition, GraphSaveData, PresetDefinition } from '../types';
+import { apiFetch } from './_auth';
 
 const BASE_URL = '/api';
 
@@ -15,7 +16,7 @@ export async function fetchPresetDefinitions(): Promise<PresetDefinition[]> {
 }
 
 export async function validateGraph(nodes: any[], edges: any[]) {
-  const res = await fetch(`${BASE_URL}/graph/validate`, {
+  const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ nodes, edges }),
@@ -25,7 +26,7 @@ export async function validateGraph(nodes: any[], edges: any[]) {
 }
 
 export async function saveGraph(data: GraphSaveData) {
-  const res = await fetch(`${BASE_URL}/graph/save`, {
+  const res = await apiFetch(`${BASE_URL}/graph/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -49,7 +50,7 @@ export async function listGraphs() {
 export async function exportGraph(nodes: any[], edges: any[], name?: string) {
   const body: { nodes: any[]; edges: any[]; name?: string } = { nodes, edges };
   if (name) body.name = name;
-  const res = await fetch(`${BASE_URL}/graph/export`, {
+  const res = await apiFetch(`${BASE_URL}/graph/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -63,7 +64,7 @@ export async function exportGraph(nodes: any[], edges: any[], name?: string) {
  * the entire graph. Returns `{ graph_id, scope, evicted }`.
  */
 export async function resetWeights(graphId: string, nodeIds?: string[]) {
-  const res = await fetch(`${BASE_URL}/execution/state/reset`, {
+  const res = await apiFetch(`${BASE_URL}/execution/state/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -83,7 +84,7 @@ export async function createPreset(data: {
   nodes: any[];
   edges: any[];
 }): Promise<PresetDefinition> {
-  const res = await fetch(`${BASE_URL}/presets/create`, {
+  const res = await apiFetch(`${BASE_URL}/presets/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -119,7 +120,7 @@ export async function loadExample(path: string) {
 }
 
 export async function reloadNodes() {
-  const res = await fetch(`${BASE_URL}/nodes/reload`, { method: 'POST' });
+  const res = await apiFetch(`${BASE_URL}/nodes/reload`, { method: 'POST' });
   if (!res.ok) throw new Error(`Reload failed: ${res.statusText}`);
   return res.json();
 }
@@ -139,7 +140,7 @@ export async function listCustomNodes(): Promise<CustomNodeInfo[]> {
 }
 
 export async function toggleCustomNode(filename: string) {
-  const res = await fetch(`${BASE_URL}/custom-nodes/toggle`, {
+  const res = await apiFetch(`${BASE_URL}/custom-nodes/toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filename }),
@@ -151,7 +152,7 @@ export async function toggleCustomNode(filename: string) {
 export async function uploadCustomNode(file: File) {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${BASE_URL}/custom-nodes/upload`, {
+  const res = await apiFetch(`${BASE_URL}/custom-nodes/upload`, {
     method: 'POST',
     body: form,
   });
@@ -160,7 +161,7 @@ export async function uploadCustomNode(file: File) {
 }
 
 export async function deleteCustomNode(filename: string) {
-  const res = await fetch(`${BASE_URL}/custom-nodes/${encodeURIComponent(filename)}`, {
+  const res = await apiFetch(`${BASE_URL}/custom-nodes/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
@@ -183,7 +184,7 @@ export async function listModelFiles(): Promise<ModelFileInfo[]> {
 export async function uploadModelFile(file: File): Promise<ModelFileInfo> {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${BASE_URL}/models/upload`, {
+  const res = await apiFetch(`${BASE_URL}/models/upload`, {
     method: 'POST',
     body: form,
   });
@@ -195,7 +196,7 @@ export async function uploadModelFile(file: File): Promise<ModelFileInfo> {
 }
 
 export async function deleteModelFile(filename: string) {
-  const res = await fetch(`${BASE_URL}/models/${encodeURIComponent(filename)}`, {
+  const res = await apiFetch(`${BASE_URL}/models/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
@@ -238,7 +239,7 @@ export async function listImageFiles(): Promise<ImageFileInfo[]> {
 export async function uploadImageFile(file: File): Promise<ImageFileInfo> {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${BASE_URL}/images/upload`, {
+  const res = await apiFetch(`${BASE_URL}/images/upload`, {
     method: 'POST',
     body: form,
   });
@@ -250,7 +251,7 @@ export async function uploadImageFile(file: File): Promise<ImageFileInfo> {
 }
 
 export async function deleteImageFile(filename: string) {
-  const res = await fetch(`${BASE_URL}/images/${encodeURIComponent(filename)}`, {
+  const res = await apiFetch(`${BASE_URL}/images/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);

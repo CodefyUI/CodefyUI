@@ -63,8 +63,11 @@ def chapter_lockfile(tmp_path, monkeypatch):
 @pytest.fixture
 def client(chapter_lockfile):
     """TestClient with lifespan run AFTER the lockfile redirect — discovery sees c2/c3/c4."""
+    from app.config import settings
+    from app.core.auth import TOKEN_HEADER, session_token
     from app.main import app
-    with TestClient(app) as c:
+    with TestClient(app, base_url=f"http://127.0.0.1:{settings.PORT}") as c:
+        c.headers[TOKEN_HEADER] = session_token()
         yield c
 
 

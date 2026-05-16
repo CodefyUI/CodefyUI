@@ -7,6 +7,7 @@ import {
   InvalidSliceError,
   PayloadTooLargeError,
 } from './executionOutputs';
+import { _setSessionTokenForTesting } from './_auth';
 
 const g = globalThis as unknown as { fetch: typeof fetch };
 let originalFetch: typeof fetch;
@@ -24,10 +25,13 @@ function mockFetch(status: number, body: unknown) {
 
 beforeEach(() => {
   originalFetch = g.fetch;
+  // Pre-seed the cached session token so apiFetch doesn't bootstrap.
+  _setSessionTokenForTesting('test-token');
 });
 
 afterEach(() => {
   g.fetch = originalFetch;
+  _setSessionTokenForTesting(null);
 });
 
 describe('fetchOutput', () => {
