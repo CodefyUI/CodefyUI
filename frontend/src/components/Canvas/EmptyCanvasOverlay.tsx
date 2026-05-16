@@ -63,6 +63,7 @@ function renderCard(
 export function EmptyCanvasOverlay() {
   const setNodes = useTabStore((s) => s.setNodes);
   const setEdges = useTabStore((s) => s.setEdges);
+  const renameTab = useTabStore((s) => s.renameTab);
   const { t } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -106,6 +107,14 @@ export function EmptyCanvasOverlay() {
         setNodes(resolvedNodes);
         setEdges(resolvedEdges);
 
+        // Mirror the example name onto the active tab so saves, exports,
+        // and the script header all use a meaningful name out of the box.
+        const exampleName = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : null;
+        if (exampleName) {
+          const { activeTabId } = useTabStore.getState();
+          renameTab(activeTabId, exampleName);
+        }
+
         if (importedPresets.length > 0) {
           useNodeDefStore.setState({ presets: mergedPresets });
         }
@@ -113,7 +122,7 @@ export function EmptyCanvasOverlay() {
         addToast(t('empty.loadError'), 'error');
       }
     },
-    [setNodes, setEdges, t],
+    [setNodes, setEdges, renameTab, t, addToast],
   );
 
   return (

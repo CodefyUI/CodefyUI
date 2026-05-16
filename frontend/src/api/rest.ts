@@ -46,14 +46,16 @@ export async function listGraphs() {
   return res.json();
 }
 
-export async function exportGraph(nodes: any[], edges: any[]) {
+export async function exportGraph(nodes: any[], edges: any[], name?: string) {
+  const body: { nodes: any[]; edges: any[]; name?: string } = { nodes, edges };
+  if (name) body.name = name;
   const res = await fetch(`${BASE_URL}/graph/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes, edges }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Export failed: ${res.statusText}`);
-  return res.json();
+  return res.json() as Promise<{ script: string }>;
 }
 
 /** A2: clear persisted layer weights kept by the backend NodeStateStore.
