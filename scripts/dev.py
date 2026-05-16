@@ -916,7 +916,33 @@ COMMANDS = {
 # rewrites deps in-place).
 _SKIP_VENV_EXEC = {"install", "update", "clean", "uninstall"}
 
+
+def _dispatch_plugin_subcommand() -> int:
+    """Hand off ``cdui plugin <subcmd> ...`` to scripts/plugins.py.
+
+    The plugin CLI imports ``app.core.plugin_loader`` and ``platformdirs`` —
+    both require the codefyui venv, so we must be running inside it before
+    delegating. ``_exec_into_venv_if_available()`` is the same hop the
+    other top-level commands take.
+    """
+    _exec_into_venv_if_available()
+    _ensure_uv()
+
+    # scripts/ is not normally on sys.path when dev.py is invoked directly,
+    # so bootstrap it before importing the sibling module.
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    import plugins as plugin_cli  # noqa: PLC0415 — late import: needs venv
+    return plugin_cli.main(sys.argv[2:])
+
+
 if __name__ == "__main__":
+    # Long-form sub-grouped commands come first.
+    if len(sys.argv) >= 2 and sys.argv[1] == "plugin":
+        sys.exit(_dispatch_plugin_subcommand())
+
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(__doc__)
         sys.exit(1)

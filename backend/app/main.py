@@ -16,6 +16,7 @@ from .api import (
     routes_images,
     routes_models,
     routes_nodes,
+    routes_plugins,
     routes_presets,
     ws_execution,
 )
@@ -23,6 +24,13 @@ from .config import settings
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
+from .core.plugin_loader import (
+    MANIFEST_FILENAME,
+    install_plugin_finder,
+    iter_plugin_dirs,
+    load_lockfile,
+    rediscover_all,
+)
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
 
@@ -45,14 +53,43 @@ async def lifespan(app: FastAPI):
     custom_count = registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
     logger.info("Discovered %d custom nodes", custom_count)
 
+    # Discover plugin nodes (per-user installed packs + built-in chapter packs)
+    lockfile = load_lockfile()
+    pairs = install_plugin_finder(
+        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+    )
+    plugin_count = 0
+    for nodes_dir, pkg_name in pairs:
+        plugin_count += registry.discover(nodes_dir, pkg_name)
+    logger.info(
+        "Discovered %d plugin nodes from %d active plugin(s)", plugin_count, len(pairs)
+    )
+
     for name in sorted(registry.nodes.keys()):
         logger.debug("  - %s (%s)", name, registry.nodes[name].CATEGORY)
 
-    # Discover presets
+    # Discover presets (built-in + per-plugin)
     preset_count = preset_registry.discover(settings.PRESETS_DIR, registry)
+    for _plugin_id, plugin_dir in iter_plugin_dirs(
+        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+    ):
+        preset_count += preset_registry.discover(plugin_dir / "presets", registry)
     logger.info("Discovered %d presets", preset_count)
     for name in sorted(preset_registry.presets.keys()):
         logger.debug("  * %s", name)
+
+    # Mount each installed plugin's assets/ dir so the frontend can fetch
+    # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
+    for plugin_id, plugin_dir in iter_plugin_dirs(
+        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+    ):
+        assets = plugin_dir / "assets"
+        if assets.is_dir():
+            app.mount(
+                f"/plugins/{plugin_id}/assets",
+                StaticFiles(directory=assets),
+                name=f"plugin_{plugin_id}_assets",
+            )
 
     # In-memory store for captured per-run node outputs (Teaching Inspector)
     app.state.run_output_store = RunOutputStore(max_runs=20)
@@ -79,6 +116,7 @@ app.include_router(routes_examples.router)
 app.include_router(routes_graph.router)
 app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
+app.include_router(routes_plugins.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
@@ -97,22 +135,19 @@ async def health():
 
 @app.post("/api/nodes/reload")
 async def reload_nodes():
-    registry.clear()
     # Built-ins are immutable for the server lifetime — no point in paying
-    # the reload tax. Custom nodes, however, may have been edited on disk
-    # since the last load, so we force-reload them to pick up the changes.
-    count = registry.discover(settings.NODES_DIR, "app.nodes")
-    custom_count = registry.discover(
-        settings.CUSTOM_NODES_DIR, "app.custom_nodes", force_reload=True
+    # the reload tax. Custom nodes and plugins, however, may have been
+    # edited on disk since the last load, so :func:`rediscover_all` force-
+    # reloads them to pick up the changes. Plugin presets are also re-scanned.
+    return rediscover_all(
+        registry,
+        preset_registry,
+        nodes_dir=settings.NODES_DIR,
+        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
+        presets_dir=settings.PRESETS_DIR,
+        builtin_root=settings.PLUGINS_BUILTIN_DIR,
+        user_root=settings.PLUGINS_USER_DIR,
     )
-    preset_registry.clear()
-    preset_count = preset_registry.discover(settings.PRESETS_DIR, registry)
-    return {
-        "builtin": count,
-        "custom": custom_count,
-        "presets": preset_count,
-        "total": count + custom_count,
-    }
 
 
 # Production mode: serve the pre-built frontend bundle. The catch-all is

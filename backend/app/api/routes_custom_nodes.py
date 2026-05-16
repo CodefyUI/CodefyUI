@@ -1,8 +1,5 @@
 """API routes for managing custom nodes (list, enable/disable, upload, delete)."""
 
-import ast
-import importlib
-import inspect
 import logging
 from pathlib import Path
 
@@ -11,6 +8,8 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from ..config import settings
 from ..core.node_base import BaseNode
 from ..core.node_registry import registry
+from ..core.plugin_loader import rediscover_all
+from ..core.plugin_validator import PluginValidationError, validate_python_source
 from ..core.preset_registry import preset_registry
 
 logger = logging.getLogger(__name__)
@@ -24,62 +23,6 @@ def _safe_path(base_dir: Path, filename: str) -> Path:
     if not resolved.is_relative_to(base_dir.resolve()):
         raise HTTPException(status_code=400, detail="Invalid filename")
     return resolved
-
-
-def _validate_python_source(content: bytes, filename: str) -> None:
-    """Parse the uploaded Python file as AST to reject obviously malicious code.
-
-    Blocks module-level calls to dangerous builtins such as exec, eval,
-    __import__, os.system, subprocess, etc.  This is a best-effort gate,
-    NOT a sandbox — but it prevents trivial RCE payloads from being imported.
-    """
-    try:
-        tree = ast.parse(content, filename=filename)
-    except SyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"Syntax error in uploaded file: {e}")
-
-    DANGEROUS_NAMES = frozenset({
-        "exec", "eval", "compile", "__import__", "breakpoint",
-        "globals", "locals", "getattr", "setattr", "delattr",
-    })
-    DANGEROUS_MODULES = frozenset({
-        "os", "subprocess", "shutil", "sys", "importlib",
-        "ctypes", "socket", "http", "urllib", "requests",
-        "pathlib", "tempfile", "signal", "pickle", "shelve",
-        "code", "codeop", "compileall",
-    })
-
-    for node in ast.walk(tree):
-        # Block dangerous import statements
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                top = alias.name.split(".")[0]
-                if top in DANGEROUS_MODULES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Importing '{alias.name}' is not allowed in custom nodes",
-                    )
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                top = node.module.split(".")[0]
-                if top in DANGEROUS_MODULES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Importing from '{node.module}' is not allowed in custom nodes",
-                    )
-        # Block calls to dangerous builtins at any level
-        elif isinstance(node, ast.Call):
-            func = node.func
-            name = None
-            if isinstance(func, ast.Name):
-                name = func.id
-            elif isinstance(func, ast.Attribute):
-                name = func.attr
-            if name and name in DANGEROUS_NAMES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Use of '{name}()' is not allowed in custom nodes",
-                )
 
 
 def _scan_file(filepath: Path) -> list[str]:
@@ -166,7 +109,10 @@ async def upload_custom_node(file: UploadFile):
     if len(content) > settings.MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large")
 
-    _validate_python_source(content, file.filename)
+    try:
+        validate_python_source(content, file.filename)
+    except PluginValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     dest.write_bytes(content)
     _reload_all()
@@ -192,12 +138,16 @@ async def delete_custom_node(filename: str):
 def _reload_all():
     """Re-discover all nodes and presets after a custom node change.
 
-    Built-ins are imported fresh after ``registry.clear()`` (no reload needed
-    since they don't change at runtime); custom nodes pass ``force_reload``
-    so edits to existing files actually take effect, not just adds/deletes.
+    Delegates to :func:`rediscover_all` so plugins stay registered when a
+    custom node is added/toggled (otherwise ``registry.clear()`` would
+    silently drop them from the palette).
     """
-    registry.clear()
-    registry.discover(settings.NODES_DIR, "app.nodes")
-    registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes", force_reload=True)
-    preset_registry.clear()
-    preset_registry.discover(settings.PRESETS_DIR, registry)
+    rediscover_all(
+        registry,
+        preset_registry,
+        nodes_dir=settings.NODES_DIR,
+        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
+        presets_dir=settings.PRESETS_DIR,
+        builtin_root=settings.PLUGINS_BUILTIN_DIR,
+        user_root=settings.PLUGINS_USER_DIR,
+    )

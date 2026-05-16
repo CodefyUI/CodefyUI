@@ -42,7 +42,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 from ...core.stateful_module import StatefulModuleMixin
-from .edu_resblock_node import _ResBlockModule
+from ._resblock_module import _ResBlockModule
 from .timestep_embedding_node import _TimestepMLP
 
 

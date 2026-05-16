@@ -1,0 +1,15 @@
+[plugin]
+id              = "c3"
+name            = "Chapter 3 — 圖像處理"
+version         = "0.1.0"
+description     = "Stepped-out diffusion and U-Net building blocks for textbook chapter C3: cross-attention, residual block with time embedding."
+schema_version  = 1
+requires_codefyui = ">=0.2.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"
+
+[lessons]
+chapters = ["C3"]
+lessons  = ["C3-2", "C3-3"]

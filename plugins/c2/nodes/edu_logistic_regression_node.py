@@ -29,14 +29,14 @@ from typing import Any
 
 import torch
 
-from ...core.node_base import (
+from app.core.node_base import (
     BaseNode,
     DataType,
     ParamDefinition,
     ParamType,
     PortDefinition,
 )
-from ...core.step_trace import StepRecorder
+from app.core.step_trace import StepRecorder
 
 
 class EduLogisticRegressionNode(BaseNode):

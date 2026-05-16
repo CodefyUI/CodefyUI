@@ -1,0 +1,15 @@
+[plugin]
+id              = "c6"
+name            = "Chapter 6 — 前沿技術"
+version         = "0.1.0"
+description     = "Frontier-topic teaching nodes for textbook chapter C6. EduPatchify makes the unfold → permute → flatten chain explicit so students see how an image becomes a ViT token sequence."
+schema_version  = 1
+requires_codefyui = ">=0.2.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"
+
+[lessons]
+chapters = ["C6"]
+lessons  = ["C6-2"]

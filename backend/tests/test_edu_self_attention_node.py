@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from app.nodes.llm.edu_self_attention_node import EduSelfAttentionNode
+from cdui_plugins.c4.nodes.edu_self_attention_node import EduSelfAttentionNode
 
 
 def _run(tensor, *, mask=None, labels=None, **params):

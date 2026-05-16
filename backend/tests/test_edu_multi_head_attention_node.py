@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.llm.edu_multi_head_attention_node import EduMultiHeadAttentionNode
+from cdui_plugins.c4.nodes.edu_multi_head_attention_node import EduMultiHeadAttentionNode
 
 
 def _run(tensor, *, mask=None, labels=None, **params):

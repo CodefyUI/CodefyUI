@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.classical.edu_logistic_regression_node import EduLogisticRegressionNode
+from cdui_plugins.c2.nodes.edu_logistic_regression_node import EduLogisticRegressionNode
 
 
 def _run(x_train, y_train, x_query, **params):

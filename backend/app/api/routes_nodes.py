@@ -17,11 +17,29 @@ def _filter_device_options(param_name: str, options: list[str]) -> list[str]:
     return filtered if filtered else ["cpu"]
 
 
+def _provider_for(cls: type[BaseNode]) -> str:
+    """Classify a node by where it was loaded from, via its module path."""
+    mod = cls.__module__ or ""
+    if mod.startswith("app.nodes"):
+        return "builtin"
+    if mod.startswith("app.custom_nodes"):
+        return "custom"
+    if mod.startswith("cdui_plugins."):
+        # cdui_plugins.<py_id>.nodes.<file>  →  provider = "plugin:<py_id>"
+        # py_id may have underscores (from kebab-case → snake_case during load);
+        # callers wanting the original id should look at the lockfile.
+        parts = mod.split(".")
+        if len(parts) >= 2:
+            return f"plugin:{parts[1]}"
+    return "builtin"
+
+
 def _node_to_definition(cls: type[BaseNode]) -> NodeDefinition:
     return NodeDefinition(
         node_name=cls.NODE_NAME,
         category=cls.CATEGORY,
         description=cls.DESCRIPTION,
+        provider=_provider_for(cls),
         inputs=[
             PortDefinitionSchema(
                 name=p.name,

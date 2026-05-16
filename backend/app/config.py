@@ -1,4 +1,5 @@
 from pathlib import Path
+from platformdirs import user_data_dir
 from pydantic_settings import BaseSettings
 
 
@@ -17,6 +18,11 @@ class Settings(BaseSettings):
     MODELS_DIR: Path = Path(__file__).parent.parent / "data" / "models"
     IMAGES_DIR: Path = Path(__file__).parent.parent / "data" / "images"
     EXAMPLES_DIR: Path = Path(__file__).parent.parent.parent / "examples"
+
+    # First-party plugin packs shipped with the repo (<REPO>/plugins/).
+    PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
+    # Third-party downloads + lockfile (per-user, platformdirs).
+    PLUGINS_USER_DIR: Path = Path(user_data_dir("codefyui", appauthor=False)) / "plugins"
 
     LOG_LEVEL: str = "INFO"
     LOG_DIR: Path | None = None

@@ -29,6 +29,10 @@ class NodeDefinition(BaseModel):
     inputs: list[PortDefinitionSchema]
     outputs: list[PortDefinitionSchema]
     params: list[ParamDefinitionSchema]
+    # "builtin" | "custom" | "plugin:<id>" — populated from the class's __module__
+    # so the frontend can badge plugin-provided nodes and prompt for install
+    # when a graph references a node from a plugin that isn't loaded.
+    provider: str = "builtin"
 
 
 class NodeData(BaseModel):

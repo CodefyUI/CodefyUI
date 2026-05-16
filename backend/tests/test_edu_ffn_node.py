@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.llm.edu_ffn_node import EduFFNNode
+from cdui_plugins.c4.nodes.edu_ffn_node import EduFFNNode
 
 
 def _run(tensor, **params):

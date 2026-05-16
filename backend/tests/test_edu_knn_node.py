@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.nodes.classical.edu_knn_node import EduKNNNode
+from cdui_plugins.c2.nodes.edu_knn_node import EduKNNNode
 
 
 def _run(x_train, y_train, x_query, **params):
