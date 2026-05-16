@@ -6,6 +6,46 @@ const zhTW: NodeTranslations = {
     description: '標記執行的進入點。將此節點連接到要執行的腳本的第一個節點，類似於「當綠旗被點擊」積木。',
   },
 
+  // ── Classical (sklearn) ──
+  DecisionTreeClassifier: {
+    description: 'CART 決策樹（封裝 sklearn）。遞迴切分特徵以最大化純度；教學上最有價值的是 tree_text 輸出 — 直接把學到的 if/else 規則以易讀格式印出來。',
+    params: {
+      max_depth: '樹的最大深度。0 = 不設限（一路長到全純）。',
+      criterion: '切分品質的衡量函式：gini 不純度、entropy 或 log loss。',
+      random_state: '同分時打破平手用的種子；可重現的關鍵。',
+    },
+  },
+  KNN: {
+    description: 'k 近鄰分類器（封裝 sklearn）。EduKNN 的正式版替身：內部用 KD-tree 索引、可選距離加權與多種度量。要看數學去用 EduKNN，要實際跑資料就用這個。',
+    params: {
+      n_neighbors: '鄰居數 k。',
+      weights: '投票權重：uniform 每個鄰居等權；distance 越近權重越大。',
+      metric: '距離度量。minkowski 預設 p=2 等同 euclidean。',
+    },
+  },
+  LinearRegression: {
+    description: '普通最小平方法線性迴歸（封裝 sklearn）。封閉解、不需迭代。輸出係數、截距與對 query 集合的預測值。所有迴歸課程的第一行公式。',
+    params: {
+      fit_intercept: '若為 False，迴歸直線會通過原點（不擬合截距）。',
+    },
+  },
+  LogisticRegression: {
+    description: '多類別邏輯斯迴歸（封裝 sklearn）。擬合 softmax 分類器，支援 L2/L1 正則化；I/O 介面與 EduLogisticRegression 相同，可直接抽換。',
+    params: {
+      C: '正則化強度的倒數（值越小，正則化越強）。',
+      max_iter: '求解器最大迭代次數。',
+      penalty: '正則化類型。l1 需要 liblinear/saga 求解器；sklearn 會自動挑。',
+    },
+  },
+  SVMClassifier: {
+    description: '支援向量分類器（封裝 sklearn SVC）。求出最大邊界超平面，並用 kernel trick 畫出非線性決策邊界。會輸出 support vectors 給下游視覺化 — 那才是真正決定邊界的點。',
+    params: {
+      C: '懲罰強度；C 越小邊界越寬，可容忍更多違規。',
+      kernel: '核函式：linear 線性、rbf 高斯、poly 多項式、sigmoid。',
+      gamma: 'rbf/poly/sigmoid 的核係數。「scale」用 1/(F·var(X))、「auto」用 1/F，也可以填數字字串。',
+    },
+  },
+
   // ── CNN ──
   Conv2d: {
     description: '對輸入張量套用 2D 卷積（封裝 nn.Conv2d）。$y[i,j]=\\sum_{k,l} x[i+k,j+l]\\cdot w[k,l] + b$',
@@ -109,6 +149,15 @@ const zhTW: NodeTranslations = {
   },
 
   // ── RNN ──
+  RNNCell: {
+    description: '單步原生 RNN cell：$h_t = \\phi(W_{ih} x_t + W_{hh} h_{t-1} + b)$。封裝 nn.RNNCell。把上一個 cell 的 hidden 輸出接到下一個 cell 的 hidden 輸入，就能手動展開遞迴。',
+    params: {
+      input_size: '每個時間步的輸入向量維度。',
+      hidden_size: '隱藏狀態的維度。',
+      nonlinearity: '套用在遞迴輸出上的激活函式。',
+      seed: 'W_ih / W_hh / 偏置初始化的隨機種子。',
+    },
+  },
   LSTM: {
     description: '對輸入序列套用 LSTM 遞迴層（封裝 nn.LSTM）',
     params: {
@@ -156,6 +205,16 @@ const zhTW: NodeTranslations = {
       dim_feedforward: '前饋網路維度',
     },
   },
+  MoELayer: {
+    description: '混合專家（Mixture-of-Experts）前饋層。每個 token 由 gate 以 softmax 分數挑出 top-k 個專家，輸出為這 k 個專家輸出的加權和。Switch Transformer、Mixtral、DeepSeek-MoE 都採用這個結構。',
+    params: {
+      num_experts: '專家 FFN 的數量。',
+      top_k: '每個 token 路由到的專家數（會 clamp 在 num_experts 內）。',
+      hidden_dim: 'Token 的隱藏維度 H。',
+      expert_hidden_dim: '每個專家 FFN 內部的寬度。',
+      seed: '初始化的隨機種子，確保可重現。',
+    },
+  },
 
   // ── RL ──
   DQN: {
@@ -178,6 +237,21 @@ const zhTW: NodeTranslations = {
     description: '建立並封裝 Gymnasium 環境，回傳環境與初始觀測值',
     params: {
       env_name: 'Gymnasium 環境 ID',
+    },
+  },
+  KLDivergence: {
+    description: 'KL(p || q) 散度 — RLHF 中用來把策略約束在參考策略附近的正則項。可接受機率或 logits 作為輸入；預設輸出純量，也可以改成 per-sample。',
+    params: {
+      input_kind: 'p、q 是已經算好的機率，還是尚未經過 softmax 的 logits。',
+      reduction: '如何把每個樣本的 KL 聚合起來。batchmean = sum / batch_size，是 RLHF 的預設用法。',
+    },
+  },
+  RewardModel: {
+    description: 'RLHF 的獎勵頭。一個小 MLP 把序列打成單一純量分數 — 你會先用人類偏好資料訓練它，再讓 PPO 去最大化它。可接受 [B, H]（每筆一個向量）或 [B, T, H]（取最後一個 token）。',
+    params: {
+      input_dim: '隱藏狀態的維度 H。',
+      hidden_dim: 'MLP 中間層的寬度。',
+      seed: '初始化的隨機種子，確保可重現。',
     },
   },
 
@@ -233,6 +307,37 @@ const zhTW: NodeTranslations = {
       resize: '調整大小維度（0 表示不調整）',
       normalize: '套用正規化（mean=0.5, std=0.5）',
       to_tensor: '將 PIL 影像轉為張量',
+    },
+  },
+  CSVReader: {
+    description: '把 CSV 載入為「特徵張量 + 標籤列表」。數值欄位（若有設 include_columns 會再篩選）轉成 [N, F] 的 float32 張量；target_column 指定的欄位則變成下游分類器吃的字串標籤列表。',
+    params: {
+      path: 'CSV 檔案路徑（絕對路徑或相對於後端工作目錄）。',
+      target_column: '標籤欄位名稱（選填）。留空表示沒有標籤、純資料載入。',
+      include_columns: '要保留的特徵欄位（逗號分隔，選填）。留空表示「除了 target 之外所有數值欄位」。',
+      skip_header: 'True 代表第一列是欄位名稱；False 則自動把欄位命名為 0、1、2…',
+    },
+  },
+  ColumnSelector: {
+    description: '從 2D 張量中挑出部分欄位。設 indices 用位置選；設 names（需同時接 columns 輸入）則用名稱選。兩者同時設定時 names 優先。',
+    params: {
+      indices: '以逗號分隔的欄位索引，例：「0,2,3」。當 names 為空時使用。',
+      names: '以逗號分隔的欄位名稱。一旦設定就會蓋過 indices，並且需要連上 columns 輸入。',
+    },
+  },
+  Normalize: {
+    description: '沿指定軸縮放張量。zscore = $(x-\\mu)/\\sigma$、minmax = $(x-\\min)/(\\max-\\min)$、unit_norm = $x/\\|x\\|_2$。表格資料逐欄正規化用 axis=0；逐樣本正規化用 axis=1。',
+    params: {
+      mode: '正規化方法。',
+      axis: '計算統計量的軸。0 = 逐欄，1 = 逐列。',
+    },
+  },
+  TrainTestSplit: {
+    description: '把 (features, labels) 切成訓練集與測試集，封裝 sklearn.train_test_split。開啟 stratify 會讓兩邊保持相同的類別比例 — 對不平衡資料是必備的。',
+    params: {
+      test_size: '保留作為測試集的樣本比例，必須介於 (0, 1)。',
+      seed: '隨機洗牌的種子，方便可重現。',
+      stratify: '是否在兩邊保留每個類別的比例（分層抽樣）。',
     },
   },
 
@@ -535,6 +640,81 @@ const zhTW: NodeTranslations = {
       top_k: '每個 query 要回傳的最相似 key 數量。',
       exclude_self_words:
         '要從 top-k 排除的標籤（以逗號分隔）。在類比示範中很有用：設成 "king,man,woman" 可以讓 top-1 直接顯示 queen。',
+    },
+  },
+  PositionalEncoding: {
+    description: '把位置資訊加到 token 嵌入上。sinusoidal 用 Vaswani et al. (2017) 的公式 PE(pos, 2i)=sin(pos/10000^(2i/d))；learnable 則回傳種子可控的亂數樣式（同樣種子會得到一樣結果）。',
+    params: {
+      mode: 'sinusoidal = Vaswani 公式；learnable = 種子可控的隨機初始化。',
+      max_len: '支援的最大序列長度。輸入超過此值會直接報錯。',
+      seed: 'learnable 模式的隨機種子。sinusoidal 會忽略此值。',
+    },
+  },
+  AttentionMask: {
+    description: '產生布林注意力遮罩（True 表示被擋）。causal 會擋掉未來位置（GPT 風格 decoder）；padding 會擋掉值等於 pad_token 的欄位，避免注意力洩漏到填補欄位。',
+    params: {
+      mode: 'causal：擋掉嚴格未來的位置（decoder 風格）。padding：擋掉值與 pad_token 相同的欄位。',
+      pad_token: '視為填補的字串符號，只在 padding 模式下使用。',
+    },
+  },
+  AttentionHeatmap: {
+    description: '純視覺化節點：原樣轉送 attention 權重，同時把它暴露給熱圖視圖。可以串在任何 attention 節點（教學版或正式版）的 weights 輸出後面，不會改變下游圖的結構。',
+    params: {
+      head_index: '若權重是 per-head 形式（[H,seq,seq] 或 [B,H,seq,seq]），可指定顯示哪一個 head。-1 代表保留全部 head 並排顯示。',
+      colormap: '熱圖視覺化用的色階（僅前端使用，後端會忽略）。',
+    },
+  },
+
+  // ── Diffusion ──
+  GaussianNoise: {
+    description: '產生獨立同分布的高斯噪聲 $\\epsilon \\sim \\mathcal{N}(\\mu, \\sigma^2)$。把張量接到 shape_ref 就會自動跟隨上游形狀（diffusion 中 x_0 與 noise 配對的標準作法）；否則就讀 shape 參數。可指定種子確保可重現。',
+    params: {
+      shape: '逗號分隔的維度，例：「1,3,32,32」。當 shape_ref 沒接時才會用。',
+      mean: '高斯分布的平均值，預設 0（標準常態）。',
+      std: '標準差，預設 1（標準常態）。',
+      seed: '隨機種子；同樣的種子會得到相同的噪聲。',
+    },
+  },
+  Lerp: {
+    description: '線性內插：$\\alpha\\,a + (1-\\alpha)\\,b$。$\\alpha=1$ 時等於 $a$；$\\alpha=0$ 時等於 $b$。可作為 diffusion 前向公式的教學替身。',
+    params: {
+      alpha: '內插權重（0..1）。只在沒接 alpha 輸入時才會用此參數。',
+    },
+  },
+  TimestepEmbedding: {
+    description: '把 diffusion 的時間步 $t$ 編碼成可餵給 U-Net 各 block 的向量。沿用 Vaswani 風格的正弦頻率組合，後面接 Linear→SiLU→Linear，是 DDPM 的標準配方。',
+    params: {
+      embed_dim: '時間向量的維度，必須是偶數（sin/cos 各半）。',
+      max_period: '頻率組中最大的週期 — 控制能分辨多少個不同的時間步。',
+      seed: '投影層初始化的隨機種子。',
+    },
+  },
+  Upsample: {
+    description: '純粹的空間 upsample（使用 F.interpolate，沒有可學習權重）。預設把空間維度放大為 2 倍。U-Net 解碼路徑若不想讓 upsample 也跟著學習，就用這個（相較之下 ConvTranspose2d 會學）。',
+    params: {
+      mode: '插值方式。nearest=直接複製像素、bilinear=雙線性平滑、area=平均（適合做 downsample）。',
+      scale_factor: '空間維度的縮放倍數。2.0 放大兩倍、0.5 縮成一半。',
+    },
+  },
+  DiffusionUNet: {
+    description: '把整個玩具版 diffusion U-Net 封裝成單一節點。輸出一個 nn.Module，輸入 $(x, t)$ 後會回傳形狀與 x 相同的「預測噪聲」。可串到 DDPMSampler 跑反向 diffusion。若想看到架構被一塊塊明確接起來，可以改用 `Mini-UNet-Expanded` preset。',
+    params: {
+      in_channels: '噪聲輸入的通道數（RGB 為 3，常見 SD latent 為 4）。',
+      base_channels: '經過 stem 後的通道數。每一層會以對應的 channel_mult 倍率相乘。',
+      channel_mult: '每一層的通道倍率，以逗號分隔；長度決定深度（下行區塊數 + bottleneck）。',
+      time_emb_dim: '時間步嵌入的維度，必須是偶數。',
+      num_groups: '每個 ResBlock 內部 GroupNorm 的分組數，必須能整除所有層的通道數。',
+      seed: '所有權重初始化的隨機種子。',
+    },
+  },
+  DDPMSampler: {
+    description: '執行反向 DDPM 去噪。會依照排程逐步呼叫 `model(x_t, t)` 預測噪聲，再套用 DDPM 更新公式。整個反向迴圈封在節點內部，圖才能維持無環 — 開啟 verbose 後可在 step trace 看到中間軌跡。',
+    params: {
+      num_steps: '反向 diffusion 的步數。步數越多軌跡越平滑，但也越慢。',
+      schedule: '噪聲排程。linear 是原版 DDPM；cosine（Nichol & Dhariwal 2021）在接近資料的區域噪聲增加得更慢。',
+      beta_start: '線性排程的起始 variance。cosine 模式會忽略此值。',
+      beta_end: '線性排程的結束 variance。cosine 模式會忽略此值。',
+      seed: '取樣時每一步加入的高斯噪聲 z 所使用的種子。',
     },
   },
 
