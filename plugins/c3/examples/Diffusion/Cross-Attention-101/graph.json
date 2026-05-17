@@ -5,7 +5,7 @@
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "q",   "type": "TensorCreate", "position": { "x": 0,   "y": -100 }, "data": { "params": { "shape": "6,8", "fill": "randn", "value": 0, "requires_grad": false } } },
     { "id": "ctx", "type": "TensorCreate", "position": { "x": 0,   "y": 100  }, "data": { "params": { "shape": "4,8", "fill": "randn", "value": 0, "requires_grad": false } } },
-    { "id": "attn", "type": "EduCrossAttention", "position": { "x": 320, "y": 0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "seed": 42 } } },
+    { "id": "attn", "type": "c3:EduCrossAttention", "position": { "x": 320, "y": 0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "seed": 42 } } },
     { "id": "print", "type": "Print", "position": { "x": 700, "y": 0 }, "data": { "params": { "label": "Cross-attn output" } } }
   ],
   "edges": [

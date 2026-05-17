@@ -5,9 +5,9 @@
     { "id": "start", "type": "Start",             "position": { "x": -320, "y":    0 }, "data": { "params": {} } },
     { "id": "img",   "type": "TensorInput",       "position": { "x":  -60, "y": -120 }, "data": { "params": { "shape": "1,3,12,12", "dtype": "float32", "value_mode": "random", "seed": 13 } } },
     { "id": "txt",   "type": "TensorInput",       "position": { "x":  -60, "y":  120 }, "data": { "params": { "shape": "4,48",    "dtype": "float32", "value_mode": "random", "seed": 14 } } },
-    { "id": "patch", "type": "EduPatchify",       "position": { "x":  240, "y": -120 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
+    { "id": "patch", "type": "c6:EduPatchify",       "position": { "x":  240, "y": -120 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
     { "id": "sq",    "type": "Squeeze",           "position": { "x":  540, "y": -120 }, "data": { "params": { "dim": 0 } } },
-    { "id": "xattn", "type": "EduCrossAttention", "position": { "x":  840, "y":    0 }, "data": { "params": { "embed_dim": 48, "num_heads": 4, "seed": 42 } } },
+    { "id": "xattn", "type": "c3:EduCrossAttention", "position": { "x":  840, "y":    0 }, "data": { "params": { "embed_dim": 48, "num_heads": 4, "seed": 42 } } },
     { "id": "p_out", "type": "Print",             "position": { "x": 1180, "y":    0 }, "data": { "params": { "label": "Image tokens, text-grounded — shape (9, 48)" } } }
   ],
   "edges": [

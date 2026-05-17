@@ -10,21 +10,21 @@
 
     { "id": "stem",     "type": "Conv2d",            "position": { "x": 220,   "y": 0 },     "data": { "params": { "in_channels": 3, "out_channels": 16, "kernel_size": 3, "stride": 1, "padding": 1 } } },
 
-    { "id": "rb_d1",    "type": "EduResBlock",       "position": { "x": 480,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 16, "groups": 4, "time_emb_dim": 32, "seed": 101 } } },
+    { "id": "rb_d1",    "type": "c3:EduResBlock",       "position": { "x": 480,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 16, "groups": 4, "time_emb_dim": 32, "seed": 101 } } },
     { "id": "pool_d1",  "type": "MaxPool2d",         "position": { "x": 720,   "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
 
-    { "id": "rb_d2",    "type": "EduResBlock",       "position": { "x": 940,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 32, "groups": 4, "time_emb_dim": 32, "seed": 102 } } },
+    { "id": "rb_d2",    "type": "c3:EduResBlock",       "position": { "x": 940,   "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 32, "groups": 4, "time_emb_dim": 32, "seed": 102 } } },
     { "id": "pool_d2",  "type": "MaxPool2d",         "position": { "x": 1180,  "y": 0 },     "data": { "params": { "kernel_size": 2, "stride": 2 } } },
 
-    { "id": "rb_bot",   "type": "EduResBlock",       "position": { "x": 1400,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 64, "groups": 4, "time_emb_dim": 32, "seed": 200 } } },
+    { "id": "rb_bot",   "type": "c3:EduResBlock",       "position": { "x": 1400,  "y": 0 },     "data": { "params": { "in_channels": 32, "out_channels": 64, "groups": 4, "time_emb_dim": 32, "seed": 200 } } },
 
     { "id": "up_2",     "type": "Upsample",          "position": { "x": 1640,  "y": 0 },     "data": { "params": { "mode": "nearest", "scale_factor": 2.0 } } },
     { "id": "cat_2",    "type": "Concat",            "position": { "x": 1860,  "y": 0 },     "data": { "params": { "dim": 1 } } },
-    { "id": "rb_u2",    "type": "EduResBlock",       "position": { "x": 2080,  "y": 0 },     "data": { "params": { "in_channels": 96, "out_channels": 32, "groups": 4, "time_emb_dim": 32, "seed": 301 } } },
+    { "id": "rb_u2",    "type": "c3:EduResBlock",       "position": { "x": 2080,  "y": 0 },     "data": { "params": { "in_channels": 96, "out_channels": 32, "groups": 4, "time_emb_dim": 32, "seed": 301 } } },
 
     { "id": "up_1",     "type": "Upsample",          "position": { "x": 2320,  "y": 0 },     "data": { "params": { "mode": "nearest", "scale_factor": 2.0 } } },
     { "id": "cat_1",    "type": "Concat",            "position": { "x": 2540,  "y": 0 },     "data": { "params": { "dim": 1 } } },
-    { "id": "rb_u1",    "type": "EduResBlock",       "position": { "x": 2760,  "y": 0 },     "data": { "params": { "in_channels": 48, "out_channels": 16, "groups": 4, "time_emb_dim": 32, "seed": 302 } } },
+    { "id": "rb_u1",    "type": "c3:EduResBlock",       "position": { "x": 2760,  "y": 0 },     "data": { "params": { "in_channels": 48, "out_channels": 16, "groups": 4, "time_emb_dim": 32, "seed": 302 } } },
 
     { "id": "head",     "type": "Conv2d",            "position": { "x": 3000,  "y": 0 },     "data": { "params": { "in_channels": 16, "out_channels": 3, "kernel_size": 1, "stride": 1, "padding": 0 } } },
     { "id": "print",    "type": "Print",             "position": { "x": 3220,  "y": 0 },     "data": { "params": { "label": "Predicted noise" } } }

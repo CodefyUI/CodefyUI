@@ -34,9 +34,17 @@ def _provider_for(cls: type[BaseNode]) -> str:
     return "builtin"
 
 
-def _node_to_definition(cls: type[BaseNode]) -> NodeDefinition:
+def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinition:
+    """Build the wire-shape definition for one registered node.
+
+    ``qualified_name`` is the registry key — bare ``"Linear"`` for builtin
+    nodes, ``"c2:EduKNN"`` for plugin-provided nodes. The frontend palette
+    uses this as the display label and as the value it writes into saved
+    graph JSON, so two plugins shipping the same bare ``NODE_NAME`` no
+    longer collide and the graph JSON becomes self-documenting.
+    """
     return NodeDefinition(
-        node_name=cls.NODE_NAME,
+        node_name=qualified_name,
         category=cls.CATEGORY,
         description=cls.DESCRIPTION,
         provider=_provider_for(cls),
@@ -75,7 +83,7 @@ def _node_to_definition(cls: type[BaseNode]) -> NodeDefinition:
 
 @router.get("", response_model=list[NodeDefinition])
 async def list_nodes():
-    return [_node_to_definition(cls) for cls in registry.nodes.values()]
+    return [_node_to_definition(name, cls) for name, cls in registry.nodes.items()]
 
 
 @router.get("/{node_name}", response_model=NodeDefinition)
@@ -84,4 +92,12 @@ async def get_node(node_name: str):
     if not cls:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"Node '{node_name}' not found")
-    return _node_to_definition(cls)
+    # If caller passed a bare name and got a fallback match, surface the
+    # qualified form back so the frontend can show it.
+    qualified = node_name
+    if node_name not in registry._nodes:
+        for k, v in registry._nodes.items():
+            if v is cls:
+                qualified = k
+                break
+    return _node_to_definition(qualified, cls)

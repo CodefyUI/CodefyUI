@@ -6,7 +6,7 @@
     { "id": "logits",  "type": "TensorInput",        "position": { "x":   40, "y": -160 }, "data": { "params": { "shape": "4,3", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
     { "id": "actions", "type": "TensorInput",        "position": { "x":   40, "y":    0 }, "data": { "params": { "shape": "4",   "dtype": "int64",   "value_mode": "explicit", "values": [0, 1, 2, 1], "seed": 2 } } },
     { "id": "rewards", "type": "TensorInput",        "position": { "x":   40, "y":  160 }, "data": { "params": { "shape": "4",   "dtype": "float32", "value_mode": "random", "seed": 3 } } },
-    { "id": "pg",      "type": "EduPolicyGradient",  "position": { "x":  380, "y":    0 }, "data": { "params": { "baseline": "mean", "temperature": 1.0 } } },
+    { "id": "pg",      "type": "c5:EduPolicyGradient",  "position": { "x":  380, "y":    0 }, "data": { "params": { "baseline": "mean", "temperature": 1.0 } } },
     { "id": "p_loss",  "type": "Print",              "position": { "x":  720, "y": -120 }, "data": { "params": { "label": "Policy-gradient loss" } } },
     { "id": "p_adv",   "type": "Print",              "position": { "x":  720, "y":    0 }, "data": { "params": { "label": "Advantages (rewards − baseline)" } } },
     { "id": "p_lp",    "type": "Print",              "position": { "x":  720, "y":  120 }, "data": { "params": { "label": "log π(a|s)" } } }

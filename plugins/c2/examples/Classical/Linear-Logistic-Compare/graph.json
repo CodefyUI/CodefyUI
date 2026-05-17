@@ -7,10 +7,10 @@
     { "id": "x_data",   "type": "TensorCreate",           "position": { "x": -40,  "y": -160 }, "data": { "params": { "shape": "30,2", "fill": "randn", "value": 0, "requires_grad": false } } },
     { "id": "y_reg",    "type": "TensorCreate",           "position": { "x": -40,  "y": -50  }, "data": { "params": { "shape": "30",  "fill": "randn", "value": 0, "requires_grad": false } } },
 
-    { "id": "linreg",   "type": "EduLinearRegression",    "position": { "x": 280,  "y": -100 }, "data": { "params": { "method": "closed_form", "lr": 0.01, "epochs": 100, "regularization": 0.0 } } },
+    { "id": "linreg",   "type": "c2:EduLinearRegression",    "position": { "x": 280,  "y": -100 }, "data": { "params": { "method": "closed_form", "lr": 0.01, "epochs": 100, "regularization": 0.0 } } },
     { "id": "print_lin","type": "Print",                  "position": { "x": 600,  "y": -100 }, "data": { "params": { "label": "Linear regression: weights" } } },
 
-    { "id": "logreg",   "type": "EduLogisticRegression",  "position": { "x": 280,  "y": 120  }, "data": { "params": { "lr": 0.1, "epochs": 200, "regularization": 0.0 } } },
+    { "id": "logreg",   "type": "c2:EduLogisticRegression",  "position": { "x": 280,  "y": 120  }, "data": { "params": { "lr": 0.1, "epochs": 200, "regularization": 0.0 } } },
     { "id": "y_log_csv","type": "CSVReader",              "position": { "x": -40,  "y": 200  }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "petal length (cm),petal width (cm)", "skip_header": true } } },
     { "id": "print_log","type": "Print",                  "position": { "x": 600,  "y": 120  }, "data": { "params": { "label": "Logistic regression: predictions" } } }
   ],

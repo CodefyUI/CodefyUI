@@ -4,7 +4,7 @@
   "nodes": [
     { "id": "start-1", "type": "Start",          "position": { "x": -240, "y": 0 }, "data": { "params": {} } },
     { "id": "table",   "type": "TensorInput",    "position": { "x":   40, "y": 0 }, "data": { "params": { "shape": "6,3", "dtype": "float32", "value_mode": "random", "seed": 7 } } },
-    { "id": "stats",   "type": "EduColumnStats", "position": { "x":  340, "y": 0 }, "data": { "params": { "unbiased": false } } },
+    { "id": "stats",   "type": "c1:EduColumnStats", "position": { "x":  340, "y": 0 }, "data": { "params": { "unbiased": false } } },
     { "id": "p_mean",  "type": "Print",          "position": { "x":  660, "y": -120 }, "data": { "params": { "label": "Per-column mean" } } },
     { "id": "p_std",   "type": "Print",          "position": { "x":  660, "y":   0 }, "data": { "params": { "label": "Per-column std" } } },
     { "id": "p_range", "type": "Print",          "position": { "x":  660, "y": 120 }, "data": { "params": { "label": "Per-column min" } } }

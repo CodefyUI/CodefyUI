@@ -5,11 +5,11 @@
     { "id": "start", "type": "Start",                  "position": { "x": -260, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -40, "y":   0 }, "data": { "params": { "value": "I learned that the cat" } } },
     { "id": "tok",   "type": "Tokenizer",              "position": { "x":  240, "y":   0 }, "data": { "params": { "family": "cl100k_base", "text": "", "show_special_tokens": false } } },
-    { "id": "embed", "type": "EduTokenEmbedding",      "position": { "x":  520, "y":   0 }, "data": { "params": { "embed_dim": 8, "vocab_size": 32, "seed": 42, "mode": "ordinal" } } },
+    { "id": "embed", "type": "c4:EduTokenEmbedding",      "position": { "x":  520, "y":   0 }, "data": { "params": { "embed_dim": 8, "vocab_size": 32, "seed": 42, "mode": "ordinal" } } },
     { "id": "pe",    "type": "PositionalEncoding",     "position": { "x":  800, "y":   0 }, "data": { "params": { "mode": "sinusoidal", "max_len": 64, "seed": 42 } } },
     { "id": "ln",    "type": "LayerNorm",              "position": { "x": 1080, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
-    { "id": "attn",  "type": "EduSelfAttention",       "position": { "x": 1360, "y":   0 }, "data": { "params": { "embed_dim": 8, "seed": 42 } } },
-    { "id": "ffn",   "type": "EduFFN",                 "position": { "x": 1640, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 16, "activation": "gelu", "seed": 42 } } },
+    { "id": "attn",  "type": "c4:EduSelfAttention",       "position": { "x": 1360, "y":   0 }, "data": { "params": { "embed_dim": 8, "seed": 42 } } },
+    { "id": "ffn",   "type": "c4:EduFFN",                 "position": { "x": 1640, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 16, "activation": "gelu", "seed": 42 } } },
     { "id": "p_out", "type": "Print",                  "position": { "x": 1920, "y":   0 }, "data": { "params": { "label": "Hidden-state per token — a real LLM projects this to vocab logits" } } }
   ],
   "edges": [

@@ -5,9 +5,9 @@
     { "id": "start", "type": "Start",                  "position": { "x": -260, "y":   0 }, "data": { "params": {} } },
     { "id": "text",  "type": "TextInput",              "position": { "x":  -40, "y":   0 }, "data": { "params": { "value": "她去了那家貓咖啡因為它很可愛" } } },
     { "id": "tok",   "type": "Tokenizer",              "position": { "x":  240, "y":   0 }, "data": { "params": { "family": "cl100k_base", "text": "", "show_special_tokens": false } } },
-    { "id": "embed", "type": "EduTokenEmbedding",      "position": { "x":  520, "y":   0 }, "data": { "params": { "embed_dim": 16, "vocab_size": 64, "seed": 42, "mode": "ordinal" } } },
+    { "id": "embed", "type": "c4:EduTokenEmbedding",      "position": { "x":  520, "y":   0 }, "data": { "params": { "embed_dim": 16, "vocab_size": 64, "seed": 42, "mode": "ordinal" } } },
     { "id": "pe",    "type": "PositionalEncoding",     "position": { "x":  800, "y":   0 }, "data": { "params": { "mode": "sinusoidal", "max_len": 64, "seed": 42 } } },
-    { "id": "attn",  "type": "EduSelfAttention",       "position": { "x": 1080, "y":   0 }, "data": { "params": { "embed_dim": 16, "causal": false, "temperature": 1.0, "seed": 42 } } },
+    { "id": "attn",  "type": "c4:EduSelfAttention",       "position": { "x": 1080, "y":   0 }, "data": { "params": { "embed_dim": 16, "causal": false, "temperature": 1.0, "seed": 42 } } },
     { "id": "p_w",   "type": "Print",                  "position": { "x": 1380, "y": -80 }, "data": { "params": { "label": "Attention weights (T, T) — hover 'it' row for §C4.2.4 heatmap" } } },
     { "id": "p_out", "type": "Print",                  "position": { "x": 1380, "y":  80 }, "data": { "params": { "label": "Output: each token's new representation (text-aware)" } } }
   ],

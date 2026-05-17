@@ -5,10 +5,10 @@
     { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
     { "id": "x",     "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,5,8", "dtype": "float32", "value_mode": "random", "seed": 4 } } },
     { "id": "ln1",   "type": "LayerNorm",              "position": { "x":  240, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
-    { "id": "mha",   "type": "EduMultiHeadAttention",  "position": { "x":  540, "y":   0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "causal": false, "seed": 42 } } },
+    { "id": "mha",   "type": "c4:EduMultiHeadAttention",  "position": { "x":  540, "y":   0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "causal": false, "seed": 42 } } },
     { "id": "add1",  "type": "Add",                    "position": { "x":  840, "y":   0 }, "data": { "params": {} } },
     { "id": "ln2",   "type": "LayerNorm",              "position": { "x": 1140, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
-    { "id": "ffn",   "type": "EduFFN",                 "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 32, "activation": "gelu", "seed": 42 } } },
+    { "id": "ffn",   "type": "c4:EduFFN",                 "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 32, "activation": "gelu", "seed": 42 } } },
     { "id": "add2",  "type": "Add",                    "position": { "x": 1740, "y":   0 }, "data": { "params": {} } },
     { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Block output — same shape (1, 5, 8) as the input" } } }
   ],

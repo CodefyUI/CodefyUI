@@ -7,7 +7,7 @@
     { "id": "select",    "type": "ColumnSelector", "position": { "x": 220,  "y": 0 }, "data": { "params": { "indices": "2,3", "names": "" } } },
     { "id": "norm",      "type": "Normalize",      "position": { "x": 480,  "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
     { "id": "split",     "type": "TrainTestSplit", "position": { "x": 740,  "y": 0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
-    { "id": "knn",       "type": "EduKNN",         "position": { "x": 1020, "y": 0 }, "data": { "params": { "k": 5, "metric": "euclidean" } } },
+    { "id": "knn",       "type": "c2:EduKNN",         "position": { "x": 1020, "y": 0 }, "data": { "params": { "k": 5, "metric": "euclidean" } } },
     { "id": "print",     "type": "Print",          "position": { "x": 1300, "y": 0 }, "data": { "params": { "label": "Predictions on test set" } } }
   ],
   "edges": [

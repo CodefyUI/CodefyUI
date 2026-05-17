@@ -144,9 +144,11 @@ def test_disable_then_enable_via_api(client):
     assert by_id["c2"]["nodes"] == []  # not registered → none reported
 
     nodes_after_disable = {n["node_name"] for n in client.get("/api/nodes").json()}
-    assert "EduKNN" not in nodes_after_disable
+    # Names are qualified ("c2:EduKNN") since the registry namespacing change —
+    # confirms both the disable filter and the qualified-name surface in one go.
+    assert "c2:EduKNN" not in nodes_after_disable
     # Other plugins' nodes survive — toggle is per-plugin only.
-    assert "EduCrossAttention" in nodes_after_disable
+    assert "c3:EduCrossAttention" in nodes_after_disable
 
     # Re-enable restores everything.
     r = client.post("/api/plugins/c2/enable")
@@ -154,7 +156,7 @@ def test_disable_then_enable_via_api(client):
     assert r.json()["enabled"] is True
 
     nodes_after_enable = {n["node_name"] for n in client.get("/api/nodes").json()}
-    assert "EduKNN" in nodes_after_enable
+    assert "c2:EduKNN" in nodes_after_enable
 
 
 def test_disable_missing_plugin_returns_404(client):
@@ -195,9 +197,11 @@ def test_provider_field_is_plugin_for_edu_nodes(client):
     r = client.get("/api/nodes")
     assert r.status_code == 200
     by_name = {n["node_name"]: n for n in r.json()}
-    assert by_name["EduKNN"]["provider"] == "plugin:c2"
-    assert by_name["EduCrossAttention"]["provider"] == "plugin:c3"
-    assert by_name["EduSelfAttention"]["provider"] == "plugin:c4"
+    # API names are namespaced (c2:EduKNN, not bare EduKNN) after the plugin
+    # node-name registry change — provider field stays a clean ``plugin:<id>``.
+    assert by_name["c2:EduKNN"]["provider"] == "plugin:c2"
+    assert by_name["c3:EduCrossAttention"]["provider"] == "plugin:c3"
+    assert by_name["c4:EduSelfAttention"]["provider"] == "plugin:c4"
 
 
 def test_provider_field_is_builtin_for_production_nodes(client):
@@ -228,7 +232,10 @@ def test_examples_load_resolves_plugin_path(client):
     assert r.status_code == 200
     graph = r.json()
     assert "nodes" in graph
-    assert any(n.get("type") == "EduKNN" for n in graph["nodes"])
+    # Plugin example graphs now reference nodes by their qualified type
+    # ("c2:EduKNN"), so two plugins can't shadow each other and a reader
+    # can tell which pack the node came from just by looking at the JSON.
+    assert any(n.get("type") == "c2:EduKNN" for n in graph["nodes"])
 
 
 def test_examples_load_rejects_traversal_in_plugin_path(client):
