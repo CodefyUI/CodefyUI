@@ -1,0 +1,37 @@
+{
+  "name": "C3-1 Train LeNet-style CNN on MNIST",
+  "description": "The §C3.1.5 LeNet pipeline as a real training run. SequentialModel = Conv(32, 3×3) → ReLU → MaxPool → Conv(64, 3×3) → ReLU → MaxPool → Flatten → Linear(3136→128) → ReLU → Linear(128→10). Training Pipeline preset wires Dataset(MNIST) → DataLoader → CrossEntropy → Adam → 5-epoch loop. Reaches ≈99% val accuracy — the canonical demonstration that learned kernels (random at init → edges/textures/parts after training, §C3.1.4) actually crush MNIST. Compare with C2-5 MLP-MNIST (≈98% with no spatial inductive bias) to feel the §C2.5.6 'parameter explosion' MLP weakness that CNN solves.",
+  "nodes": [
+    { "id": "start", "type": "Start", "position": { "x": -260, "y": 200 }, "data": { "params": {} } },
+    {
+      "id": "cnn", "type": "SequentialModel", "position": { "x": -20, "y": 200 },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":1,\"out_channels\":32,\"kernel_size\":3,\"padding\":1}},{\"id\":\"r1\",\"type\":\"ReLU\"},{\"id\":\"p1\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":32,\"out_channels\":64,\"kernel_size\":3,\"padding\":1}},{\"id\":\"r2\",\"type\":\"ReLU\"},{\"id\":\"p2\",\"type\":\"MaxPool2d\",\"params\":{\"kernel_size\":2,\"stride\":2}},{\"id\":\"f\",\"type\":\"Flatten\"},{\"id\":\"l1\",\"type\":\"Linear\",\"params\":{\"in_features\":3136,\"out_features\":128}},{\"id\":\"r3\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e1\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"c1\"},{\"id\":\"e2\",\"source\":\"c1\",\"target\":\"r1\"},{\"id\":\"e3\",\"source\":\"r1\",\"target\":\"p1\"},{\"id\":\"e4\",\"source\":\"p1\",\"target\":\"c2\"},{\"id\":\"e5\",\"source\":\"c2\",\"target\":\"r2\"},{\"id\":\"e6\",\"source\":\"r2\",\"target\":\"p2\"},{\"id\":\"e7\",\"source\":\"p2\",\"target\":\"f\"},{\"id\":\"e8\",\"source\":\"f\",\"target\":\"l1\"},{\"id\":\"e9\",\"source\":\"l1\",\"target\":\"r3\"},{\"id\":\"e10\",\"source\":\"r3\",\"target\":\"l2\"},{\"id\":\"e11\",\"source\":\"l2\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "pipeline", "type": "preset:Training Pipeline", "position": { "x": 360, "y": 200 },
+      "data": {
+        "params": {},
+        "internalParams": {
+          "dataset":    { "name": "MNIST", "split": "train", "data_dir": "./data" },
+          "dataloader": { "batch_size": 64, "shuffle": true, "num_workers": 0 },
+          "loss":       { "type": "CrossEntropyLoss" },
+          "optimizer":  { "type": "Adam", "lr": 0.001, "weight_decay": 0.0 },
+          "train_loop": { "epochs": 5, "device": "cpu" }
+        }
+      }
+    },
+    { "id": "viz", "type": "Visualize", "position": { "x": 800, "y": 100 }, "data": { "params": { "title": "C3-1 LeNet loss curve", "plot_type": "line" } } },
+    { "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 }, "data": { "params": { "label": "Trained LeNet" } } }
+  ],
+  "edges": [
+    { "id": "et", "source": "start", "target": "cnn", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1", "source": "cnn",   "target": "pipeline", "sourceHandle": "model", "targetHandle": "model" },
+    { "id": "e2", "source": "cnn",   "target": "pipeline", "sourceHandle": "model", "targetHandle": "model_for_opt" },
+    { "id": "e3", "source": "pipeline", "target": "viz", "sourceHandle": "losses", "targetHandle": "data" },
+    { "id": "e4", "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" }
+  ]
+}

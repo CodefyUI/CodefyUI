@@ -120,15 +120,88 @@ def test_reload_plugins_returns_counts(client):
     assert data["total"] == data["builtin"] + data["custom"] + data["plugins"]
 
 
+# ── /api/plugins/{id}/enable|disable ───────────────────────────────────────
+
+def test_list_plugins_includes_enabled_flag(client):
+    """Every entry must carry the explicit enabled field for the UI."""
+    r = client.get("/api/plugins")
+    by_id = {p["id"]: p for p in r.json()}
+    for pid in ("c2", "c3", "c4"):
+        assert "enabled" in by_id[pid]
+        assert by_id[pid]["enabled"] is True
+
+
+def test_disable_then_enable_via_api(client):
+    """Toggling drops c2 from the registry then restores it after enable."""
+    r = client.post("/api/plugins/c2/disable")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+
+    # After disable, c2 must still appear in the listing (it's installed)
+    # but its enabled flag flips and its nodes drop out of /api/nodes.
+    by_id = {p["id"]: p for p in client.get("/api/plugins").json()}
+    assert by_id["c2"]["enabled"] is False
+    assert by_id["c2"]["nodes"] == []  # not registered → none reported
+
+    nodes_after_disable = {n["node_name"] for n in client.get("/api/nodes").json()}
+    # Names are qualified ("c2:EduKNN") since the registry namespacing change —
+    # confirms both the disable filter and the qualified-name surface in one go.
+    assert "c2:EduKNN" not in nodes_after_disable
+    # Other plugins' nodes survive — toggle is per-plugin only.
+    assert "c3:EduCrossAttention" in nodes_after_disable
+
+    # Re-enable restores everything.
+    r = client.post("/api/plugins/c2/enable")
+    assert r.status_code == 200
+    assert r.json()["enabled"] is True
+
+    nodes_after_enable = {n["node_name"] for n in client.get("/api/nodes").json()}
+    assert "c2:EduKNN" in nodes_after_enable
+
+
+def test_disable_missing_plugin_returns_404(client):
+    r = client.post("/api/plugins/does-not-exist/disable")
+    assert r.status_code == 404
+
+
+def test_enable_missing_plugin_returns_404(client):
+    r = client.post("/api/plugins/does-not-exist/enable")
+    assert r.status_code == 404
+
+
+def test_disabled_plugin_examples_disappear_from_list(client):
+    """`/api/examples/list` must hide examples shipped by disabled plugins."""
+    # Each example carries source="plugin:c2" (exact) and path="plugin:c2/...".
+    def c2_examples() -> set[str]:
+        return {
+            e["path"]
+            for e in client.get("/api/examples/list").json()
+            if e.get("source") == "plugin:c2"
+        }
+
+    before = c2_examples()
+    assert before, "expected some c2 plugin examples in the catalog before disable"
+
+    client.post("/api/plugins/c2/disable")
+    after = c2_examples()
+    assert after == set(), f"c2 examples should be hidden when disabled, got {after}"
+
+    # Restore so the next test (or another worker on shared state) isn't surprised.
+    client.post("/api/plugins/c2/enable")
+    assert c2_examples() == before
+
+
 # ── /api/nodes provider field ──────────────────────────────────────────────
 
 def test_provider_field_is_plugin_for_edu_nodes(client):
     r = client.get("/api/nodes")
     assert r.status_code == 200
     by_name = {n["node_name"]: n for n in r.json()}
-    assert by_name["EduKNN"]["provider"] == "plugin:c2"
-    assert by_name["EduCrossAttention"]["provider"] == "plugin:c3"
-    assert by_name["EduSelfAttention"]["provider"] == "plugin:c4"
+    # API names are namespaced (c2:EduKNN, not bare EduKNN) after the plugin
+    # node-name registry change — provider field stays a clean ``plugin:<id>``.
+    assert by_name["c2:EduKNN"]["provider"] == "plugin:c2"
+    assert by_name["c3:EduCrossAttention"]["provider"] == "plugin:c3"
+    assert by_name["c4:EduSelfAttention"]["provider"] == "plugin:c4"
 
 
 def test_provider_field_is_builtin_for_production_nodes(client):
@@ -159,7 +232,10 @@ def test_examples_load_resolves_plugin_path(client):
     assert r.status_code == 200
     graph = r.json()
     assert "nodes" in graph
-    assert any(n.get("type") == "EduKNN" for n in graph["nodes"])
+    # Plugin example graphs now reference nodes by their qualified type
+    # ("c2:EduKNN"), so two plugins can't shadow each other and a reader
+    # can tell which pack the node came from just by looking at the JSON.
+    assert any(n.get("type") == "c2:EduKNN" for n in graph["nodes"])
 
 
 def test_examples_load_rejects_traversal_in_plugin_path(client):

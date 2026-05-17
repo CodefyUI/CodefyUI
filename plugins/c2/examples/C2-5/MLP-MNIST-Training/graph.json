@@ -1,0 +1,45 @@
+{
+  "name": "C2-5 Train a 784→128→64→10 MLP on MNIST",
+  "description": "The flagship C2 example. SequentialModel assembles the §C2.5.2 architecture (Flatten → Linear 784→128 → ReLU → Linear 128→64 → ReLU → Linear 64→10) and the Training Pipeline preset wires the standard Dataset(MNIST) → DataLoader → CrossEntropyLoss → Adam → TrainingLoop. After 5 epochs the loss curve should drop from ~2.3 (random) to ~0.05 and val accuracy hit ≈98% — matching the table in §C2.5.4. Bump 'Epochs' on the preset to 20 for the full §C2.5.4 training curve; set 'activation' inside the layer config to identity to demonstrate the §C2.5.6 'no activation = single linear layer' collapse.",
+  "nodes": [
+    {
+      "id": "start", "type": "Start", "position": { "x": -260, "y": 200 }, "data": { "params": {} }
+    },
+    {
+      "id": "mlp", "type": "SequentialModel", "position": { "x": -20, "y": 200 },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"flat\",\"type\":\"Flatten\"},{\"id\":\"l1\",\"type\":\"Linear\",\"params\":{\"in_features\":784,\"out_features\":128}},{\"id\":\"r1\",\"type\":\"ReLU\"},{\"id\":\"l2\",\"type\":\"Linear\",\"params\":{\"in_features\":128,\"out_features\":64}},{\"id\":\"r2\",\"type\":\"ReLU\"},{\"id\":\"l3\",\"type\":\"Linear\",\"params\":{\"in_features\":64,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e1\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"flat\"},{\"id\":\"e2\",\"source\":\"flat\",\"target\":\"l1\"},{\"id\":\"e3\",\"source\":\"l1\",\"target\":\"r1\"},{\"id\":\"e4\",\"source\":\"r1\",\"target\":\"l2\"},{\"id\":\"e5\",\"source\":\"l2\",\"target\":\"r2\"},{\"id\":\"e6\",\"source\":\"r2\",\"target\":\"l3\"},{\"id\":\"e7\",\"source\":\"l3\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "pipeline", "type": "preset:Training Pipeline", "position": { "x": 360, "y": 200 },
+      "data": {
+        "params": {},
+        "internalParams": {
+          "dataset":    { "name": "MNIST", "split": "train", "data_dir": "./data" },
+          "dataloader": { "batch_size": 64, "shuffle": true, "num_workers": 0 },
+          "loss":       { "type": "CrossEntropyLoss" },
+          "optimizer":  { "type": "Adam", "lr": 0.001, "weight_decay": 0.0 },
+          "train_loop": { "epochs": 5, "device": "cpu" }
+        }
+      }
+    },
+    {
+      "id": "viz", "type": "Visualize", "position": { "x": 800, "y": 100 },
+      "data": { "params": { "title": "C2-5 MLP loss curve", "plot_type": "line" } }
+    },
+    {
+      "id": "p_model", "type": "Print", "position": { "x": 800, "y": 300 },
+      "data": { "params": { "label": "Trained MLP (state_dict ready to save)" } }
+    }
+  ],
+  "edges": [
+    { "id": "et",  "source": "start", "target": "mlp", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",  "source": "mlp", "target": "pipeline", "sourceHandle": "model", "targetHandle": "model" },
+    { "id": "e2",  "source": "mlp", "target": "pipeline", "sourceHandle": "model", "targetHandle": "model_for_opt" },
+    { "id": "e3",  "source": "pipeline", "target": "viz", "sourceHandle": "losses", "targetHandle": "data" },
+    { "id": "e4",  "source": "pipeline", "target": "p_model", "sourceHandle": "model", "targetHandle": "value" }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "C4-3 Transformer Block: pre-norm → MHA → residual → pre-norm → FFN → residual",
+  "description": "The §C4.3.5 pre-norm Transformer block built from the parts you already know. A (1, 5, 8) tensor goes through: LayerNorm → EduMultiHeadAttention → Add (residual back to the original input) → LayerNorm → EduFFN → Add (second residual). Every output port is shape (1, 5, 8) — proof that a block is a pure 'in-place enhancement' of token features (§C4.3.6). Stacking N of these (12 for GPT-2 small, 80 for Llama 70B) is how the production architecture grows; no new operators are introduced, just this same block on repeat.",
+  "nodes": [
+    { "id": "start", "type": "Start",                  "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
+    { "id": "x",     "type": "TensorInput",            "position": { "x":  -60, "y":   0 }, "data": { "params": { "shape": "1,5,8", "dtype": "float32", "value_mode": "random", "seed": 4 } } },
+    { "id": "ln1",   "type": "LayerNorm",              "position": { "x":  240, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
+    { "id": "mha",   "type": "c4:EduMultiHeadAttention",  "position": { "x":  540, "y":   0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "causal": false, "seed": 42 } } },
+    { "id": "add1",  "type": "Add",                    "position": { "x":  840, "y":   0 }, "data": { "params": {} } },
+    { "id": "ln2",   "type": "LayerNorm",              "position": { "x": 1140, "y":   0 }, "data": { "params": { "normalized_shape": "8", "eps": 1e-5 } } },
+    { "id": "ffn",   "type": "c4:EduFFN",                 "position": { "x": 1440, "y":   0 }, "data": { "params": { "embed_dim": 8, "hidden_dim": 32, "activation": "gelu", "seed": 42 } } },
+    { "id": "add2",  "type": "Add",                    "position": { "x": 1740, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_out", "type": "Print",                  "position": { "x": 2040, "y":   0 }, "data": { "params": { "label": "Block output — same shape (1, 5, 8) as the input" } } }
+  ],
+  "edges": [
+    { "id": "et",   "source": "start", "target": "x",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "x",     "target": "ln1",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e2",   "source": "ln1",   "target": "mha",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e3a",  "source": "mha",   "target": "add1", "sourceHandle": "output",  "targetHandle": "tensor_a" },
+    { "id": "e3b",  "source": "x",     "target": "add1", "sourceHandle": "tensor",  "targetHandle": "tensor_b" },
+    { "id": "e4",   "source": "add1",  "target": "ln2",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e5",   "source": "ln2",   "target": "ffn",  "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e6a",  "source": "ffn",   "target": "add2", "sourceHandle": "tensor",  "targetHandle": "tensor_a" },
+    { "id": "e6b",  "source": "add1",  "target": "add2", "sourceHandle": "tensor",  "targetHandle": "tensor_b" },
+    { "id": "eout", "source": "add2",  "target": "p_out","sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

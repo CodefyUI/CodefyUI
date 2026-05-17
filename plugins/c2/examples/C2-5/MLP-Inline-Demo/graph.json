@@ -1,0 +1,25 @@
+{
+  "name": "C2-5 MLP inline demo (no MNIST download required)",
+  "description": "A no-network-needed companion to MLP-MNIST-Training. Uses MLPClassifier on a synthetic 2-moons dataset — the network is still the same family (multi-layer ReLU MLP fit with Adam) but the data is 200 points instead of 60,000 images, so it runs in under a second. Good for quick 'does my graph engine work' smoke tests and for showing that MLP isn't married to MNIST — same model, any tabular dataset.",
+  "nodes": [
+    { "id": "start", "type": "Start",              "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "data",  "type": "SyntheticDataset",   "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "moons", "n_samples": 200, "noise": 0.15, "seed": 42 } } },
+    { "id": "split", "type": "TrainTestSplit",     "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "mlp",   "type": "MLPClassifier",      "position": { "x":  560, "y":   0 }, "data": { "params": { "hidden_sizes": "32,16", "activation": "relu", "max_iter": 800, "seed": 42 } } },
+    { "id": "acc",   "type": "Accuracy",           "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_acc", "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 on moons)" } } },
+    { "id": "p_loss","type": "Print",              "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Final training loss" } } }
+  ],
+  "edges": [
+    { "id": "et",       "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_feat",   "source": "data",  "target": "split", "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_lbl",    "source": "data",  "target": "split", "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtr",    "source": "split", "target": "mlp",   "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytr",    "source": "split", "target": "mlp",   "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xte",    "source": "split", "target": "mlp",   "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_preds",  "source": "mlp",   "target": "acc",   "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_yte",    "source": "split", "target": "acc",   "sourceHandle": "y_test",  "targetHandle": "labels" },
+    { "id": "e_acc_p",  "source": "acc",   "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" },
+    { "id": "e_loss_p", "source": "mlp",   "target": "p_loss", "sourceHandle": "train_loss", "targetHandle": "value" }
+  ]
+}

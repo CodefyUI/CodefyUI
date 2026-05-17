@@ -1,0 +1,25 @@
+{
+  "name": "C2-1 Supervised Learning: fit a function from (x, y) pairs",
+  "description": "The simplest possible 'data → model → prediction' loop. SyntheticDataset (kind='blobs', 2 centers) creates a tidy linearly-separable cloud, TrainTestSplit holds 20% out as the unseen exam, LogisticRegression learns w·x+b on the training half, and Accuracy reports how well the learned function generalises to the held-out half. Run it as-is to see ≈95% test accuracy — proof that 'learn the pattern, not the answer' actually works. Then change the SyntheticDataset's seed to see the pipeline produce the same kind of result on fresh data; that is C2-1 §C2.1.4 's 'train/test discipline' in concrete form.",
+  "nodes": [
+    { "id": "start",   "type": "Start",              "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "data",    "type": "SyntheticDataset",   "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "blobs", "n_samples": 200, "noise": 0.15, "centers": 2, "seed": 7 } } },
+    { "id": "split",   "type": "TrainTestSplit",     "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "model",   "type": "LogisticRegression", "position": { "x":  560, "y":   0 }, "data": { "params": {} } },
+    { "id": "acc",     "type": "Accuracy",           "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_acc",   "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.95 = learned the pattern, generalises)" } } },
+    { "id": "p_train", "type": "Print",              "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "Training set size (held back from the model fit)" } } }
+  ],
+  "edges": [
+    { "id": "et",         "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_feat",     "source": "data",  "target": "split", "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_lbl",      "source": "data",  "target": "split", "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtr",      "source": "split", "target": "model", "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytr",      "source": "split", "target": "model", "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xte",      "source": "split", "target": "model", "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_preds",    "source": "model", "target": "acc",   "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_yte",      "source": "split", "target": "acc",   "sourceHandle": "y_test",  "targetHandle": "labels" },
+    { "id": "e_acc_p",    "source": "acc",   "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" },
+    { "id": "e_xtr_p",    "source": "split", "target": "p_train", "sourceHandle": "x_train", "targetHandle": "value" }
+  ]
+}

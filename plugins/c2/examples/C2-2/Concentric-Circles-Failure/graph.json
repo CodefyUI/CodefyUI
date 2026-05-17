@@ -1,0 +1,25 @@
+{
+  "name": "C2-2 Concentric Circles: where linear classifiers die",
+  "description": "Pays off the §C2.2.5 cliffhanger. SyntheticDataset(kind='circles') makes a textbook-perfect 'inner red ring + outer blue ring' dataset that no straight line can split. LogisticRegression draws its best line, Accuracy reports ~50% (no better than a coin flip). Switch the classifier node to SVMClassifier with kernel='rbf' and the same wiring suddenly hits ~95% — the punchline that motivates C2-3 (kernel trick) and C2-4 (neural network).",
+  "nodes": [
+    { "id": "start",   "type": "Start",              "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "data",    "type": "SyntheticDataset",   "position": { "x":  -40, "y":   0 }, "data": { "params": { "kind": "circles", "n_samples": 300, "noise": 0.08, "factor": 0.5, "seed": 42 } } },
+    { "id": "split",   "type": "TrainTestSplit",     "position": { "x":  260, "y":   0 }, "data": { "params": { "test_size": 0.2, "seed": 42, "stratify": true } } },
+    { "id": "clf",     "type": "LogisticRegression", "position": { "x":  560, "y":   0 }, "data": { "params": {} } },
+    { "id": "acc",     "type": "Accuracy",           "position": { "x":  860, "y":   0 }, "data": { "params": {} } },
+    { "id": "p_acc",   "type": "Print",              "position": { "x": 1140, "y": -80 }, "data": { "params": { "label": "Test accuracy (≈ 0.50 = linear methods fail)" } } },
+    { "id": "p_preds", "type": "Print",              "position": { "x": 1140, "y":  80 }, "data": { "params": { "label": "First few predictions" } } }
+  ],
+  "edges": [
+    { "id": "et",        "source": "start", "target": "data",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_d_feat",  "source": "data",  "target": "split", "sourceHandle": "tensor",  "targetHandle": "features" },
+    { "id": "e_d_lbl",   "source": "data",  "target": "split", "sourceHandle": "labels",  "targetHandle": "labels" },
+    { "id": "e_xtr",     "source": "split", "target": "clf",   "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "e_ytr",     "source": "split", "target": "clf",   "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "e_xte",     "source": "split", "target": "clf",   "sourceHandle": "x_test",  "targetHandle": "x_query" },
+    { "id": "e_preds",   "source": "clf",   "target": "acc",   "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "e_yte",     "source": "split", "target": "acc",   "sourceHandle": "y_test",  "targetHandle": "labels" },
+    { "id": "e_acc_p",   "source": "acc",   "target": "p_acc", "sourceHandle": "accuracy", "targetHandle": "value" },
+    { "id": "e_preds_p", "source": "clf",   "target": "p_preds", "sourceHandle": "predictions", "targetHandle": "value" }
+  ]
+}

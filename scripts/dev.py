@@ -21,11 +21,27 @@
     clean       移除虛擬環境、node_modules 與 frontend/dist
     uninstall   解除安裝：clean + 移除全域 cdui launcher
 
+    plugin <subcmd> ...
+                與 cdui plugin 完全相同的介面，但 lockfile 寫到 repo 內的
+                <repo>/.codefyui_dev/plugins/ 而不是 %LOCALAPPDATA%\\codefyui，
+                讓多個 dev clone 互不干擾。官方 c1–c6 chapter pack 預設不會
+                安裝，需要時逐一裝即可。範例：
+                    python scripts/dev.py plugin install c2
+                    python scripts/dev.py plugin install owner/repo@main
+                    python scripts/dev.py plugin list
+                    python scripts/dev.py plugin enable c2     # 啟用
+                    python scripts/dev.py plugin disable c2    # 停用（檔案保留）
+                    python scripts/dev.py plugin uninstall c2  # 從 lockfile 移除
+
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
     CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
     CODEFYUI_GPU            預設 --gpu 值（命令列旗標仍會覆蓋）
     CODEFYUI_DEV            預設 --dev 值；1/true/yes 開、0/false/no 關
+    CODEFYUI_USER_DATA_DIR  覆蓋 platformdirs user-data 位置（plugin lockfile
+                            + session.token + asset cache）。執行 scripts/dev.py
+                            的任何子命令都會自動設成 <repo>/.codefyui_dev/。
+                            外部明確設定的值（譬如 CI）會優先生效。
 """
 
 import argparse
@@ -167,6 +183,32 @@ DIST_INDEX = DIST_DIR / "index.html"
 VENV = BACKEND_DIR / ".venv"
 VENV_BIN = VENV / ("Scripts" if sys.platform == "win32" else "bin")
 VENV_PY = VENV_BIN / ("python.exe" if sys.platform == "win32" else "python")
+
+# In-repo user-data dir for dev-mode plugin installs. Backend reads this via
+# the CODEFYUI_USER_DATA_DIR env var (see plugin_loader.plugins_user_root).
+# Gitignored so each dev clone manages its own lockfile.
+DEV_USER_DATA_DIR = ROOT / ".codefyui_dev"
+DEV_LOCKFILE = DEV_USER_DATA_DIR / "plugins" / "installed.json"
+
+
+def _apply_dev_env() -> None:
+    """Force dev-mode user-data dir.
+
+    Running ``scripts/dev.py`` from inside a clone is itself the dev-mode
+    signal — set ``CODEFYUI_USER_DATA_DIR=<repo>/.codefyui_dev/`` so plugin
+    install, the running server, hot-reload's session token, and the asset
+    cache all land in the same repo-local sandbox. The global
+    ``cdui plugin install`` path (which writes to
+    ``%LOCALAPPDATA%\\codefyui``) stays untouched, so contributors can
+    keep a separate production install on the same machine.
+
+    Idempotent and safe to call multiple times — only ever writes to
+    ``os.environ`` if the variable isn't already set, so an outer caller
+    that intentionally sets it (e.g. CI pointing at a tmp dir) wins.
+    """
+    os.environ.setdefault("CODEFYUI_USER_DATA_DIR", str(DEV_USER_DATA_DIR))
+    DEV_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DEV_USER_DATA_DIR / "plugins").mkdir(parents=True, exist_ok=True)
 
 RELEASE_REPO = "treeleaves30760/CodefyUI"
 RELEASE_ASSET = "frontend-dist.tar.gz"
@@ -798,9 +840,11 @@ def start() -> None:
         )
         sys.exit(1)
     _warn_if_dist_stale()
+    _apply_dev_env()
     uvicorn = _require_venv_tool("uvicorn")
     print("=== CodefyUI 啟動（Ctrl+C 停止）===")
     print("    開啟 → http://localhost:8000")
+    print(f"    dev lockfile → {DEV_LOCKFILE}")
     print("")
     run([uvicorn, "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=BACKEND_DIR)
@@ -815,6 +859,7 @@ def dev() -> None:
         )
         sys.exit(1)
     _install_frontend_deps_if_needed()
+    _apply_dev_env()
 
     uvicorn = _require_venv_tool("uvicorn")
     backend_cmd = [uvicorn, "app.main:app", "--reload"]
@@ -872,6 +917,11 @@ def test() -> None:
     run([pytest], cwd=BACKEND_DIR)
 
 
+    # No bulk `dev-install` shortcut: official packs are opt-in. Contributors
+    # decide per-chapter what they need and run ``plugin install`` themselves
+    # (matches what an end user would do via the global ``cdui plugin``).
+
+
 def clean() -> None:
     print("=== 清除虛擬環境、node_modules 與 frontend/dist ===")
     shutil.rmtree(VENV, ignore_errors=True)
@@ -927,6 +977,7 @@ def _dispatch_plugin_subcommand() -> int:
     """
     _exec_into_venv_if_available()
     _ensure_uv()
+    _apply_dev_env()
 
     # scripts/ is not normally on sys.path when dev.py is invoked directly,
     # so bootstrap it before importing the sibling module.

@@ -1,0 +1,25 @@
+{
+  "name": "C5-1 RL framework: one (state, action, reward) trajectory shown in tensors",
+  "description": "L1 chapter — no algorithm to run, just the §C5.1.2 five elements laid out as tensors. 'state' = (4, 6) one row per timestep with 6-feature observations (like CartPole). 'action' = (4,) one int per timestep (left/right/idle for example). 'reward' = (4,) one float per timestep. The §C5.1.3 cumulative-return Mean shows how 'how good was this episode overall' becomes a single number. Drop a real env in by swapping the state TensorInput for an EnvWrapper node and the action input for a policy network.",
+  "nodes": [
+    { "id": "start",  "type": "Start",        "position": { "x": -300, "y":   0 }, "data": { "params": {} } },
+    { "id": "states", "type": "TensorInput",  "position": { "x":  -40, "y": -160 }, "data": { "params": { "shape": "4,6", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
+    { "id": "acts",   "type": "TensorInput",  "position": { "x":  -40, "y":    0 }, "data": { "params": { "shape": "4", "dtype": "int64", "value_mode": "explicit", "values": [0, 1, 0, 1], "seed": 0 } } },
+    { "id": "rews",   "type": "TensorInput",  "position": { "x":  -40, "y":  160 }, "data": { "params": { "shape": "4", "dtype": "float32", "value_mode": "explicit", "values": [0.1, 0.5, -0.2, 1.0], "seed": 0 } } },
+    { "id": "return", "type": "Mean",         "position": { "x":  280, "y":  160 }, "data": { "params": { "dim": "0", "keepdim": false } } },
+    { "id": "p_s",    "type": "Print",        "position": { "x":  580, "y": -160 }, "data": { "params": { "label": "State trajectory (4 timesteps × 6 features)" } } },
+    { "id": "p_a",    "type": "Print",        "position": { "x":  580, "y":    0 }, "data": { "params": { "label": "Action sequence (4 ints, one per step)" } } },
+    { "id": "p_r",    "type": "Print",        "position": { "x":  580, "y":  120 }, "data": { "params": { "label": "Reward sequence (4 floats)" } } },
+    { "id": "p_ret",  "type": "Print",        "position": { "x":  580, "y":  240 }, "data": { "params": { "label": "Episode return = mean reward (cumulative goodness)" } } }
+  ],
+  "edges": [
+    { "id": "et1", "source": "start",  "target": "states", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "et2", "source": "start",  "target": "acts",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "et3", "source": "start",  "target": "rews",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_r", "source": "rews",   "target": "return", "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "ps",  "source": "states", "target": "p_s",    "sourceHandle": "tensor",  "targetHandle": "value" },
+    { "id": "pa",  "source": "acts",   "target": "p_a",    "sourceHandle": "tensor",  "targetHandle": "value" },
+    { "id": "pr",  "source": "rews",   "target": "p_r",    "sourceHandle": "tensor",  "targetHandle": "value" },
+    { "id": "pret","source": "return", "target": "p_ret",  "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

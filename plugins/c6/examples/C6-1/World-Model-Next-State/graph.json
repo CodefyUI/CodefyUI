@@ -1,0 +1,24 @@
+{
+  "name": "C6-1 World Model: one-step dynamics prediction in a 4-D state space",
+  "description": "The §C6.1 'agent imagines what happens next' compressed to its smallest form. Concat a 4-dim state with a 2-dim action to form a 6-dim context, push through a Linear → ReLU → Linear, and out comes a predicted 4-dim next-state. A real world model (Sora, DreamerV3, Genie) would do this for 1080p frames over 30 timesteps; the operator is the same. Chain multiple of these end-to-end and you have rollout — the model 'dreams' a multi-step future without touching the real environment.",
+  "nodes": [
+    { "id": "start",  "type": "Start",       "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
+    { "id": "state",  "type": "TensorInput", "position": { "x":  -60, "y": -100 }, "data": { "params": { "shape": "1,4", "dtype": "float32", "value_mode": "explicit", "values": [0.2, -0.5, 0.0, 1.0], "seed": 0 } } },
+    { "id": "action", "type": "TensorInput", "position": { "x":  -60, "y":  100 }, "data": { "params": { "shape": "1,2", "dtype": "float32", "value_mode": "explicit", "values": [1.0, 0.0], "seed": 0 } } },
+    { "id": "cat",    "type": "Concat",      "position": { "x":  240, "y":   0 }, "data": { "params": { "dim": 1 } } },
+    { "id": "fc1",    "type": "Linear",      "position": { "x":  540, "y":   0 }, "data": { "params": { "in_features": 6, "out_features": 16, "bias": true } } },
+    { "id": "relu",   "type": "Activation",  "position": { "x":  840, "y":   0 }, "data": { "params": { "function": "relu" } } },
+    { "id": "fc2",    "type": "Linear",      "position": { "x": 1140, "y":   0 }, "data": { "params": { "in_features": 16, "out_features": 4, "bias": true } } },
+    { "id": "p_next", "type": "Print",       "position": { "x": 1440, "y":   0 }, "data": { "params": { "label": "Predicted next state (1, 4) — replaces a step of real environment" } } }
+  ],
+  "edges": [
+    { "id": "et1",   "source": "start",  "target": "state",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "et2",   "source": "start",  "target": "action", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_a",   "source": "state",  "target": "cat",    "sourceHandle": "tensor",  "targetHandle": "tensor_a" },
+    { "id": "e_b",   "source": "action", "target": "cat",    "sourceHandle": "tensor",  "targetHandle": "tensor_b" },
+    { "id": "e1",    "source": "cat",    "target": "fc1",    "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e2",    "source": "fc1",    "target": "relu",   "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e3",    "source": "relu",   "target": "fc2",    "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "ep",    "source": "fc2",    "target": "p_next", "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}

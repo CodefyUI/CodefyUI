@@ -282,7 +282,9 @@ def _read_session_token() -> str | None:
         from platformdirs import user_data_dir
     except ImportError:
         return None
-    p = Path(user_data_dir("codefyui", appauthor=False)) / "session.token"
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    base = Path(override) if override else Path(user_data_dir("codefyui", appauthor=False))
+    p = base / "session.token"
     try:
         return p.read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError):
@@ -465,6 +467,7 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
         "installed_at": now_iso(),
         "manifest": manifest.get("plugin", {}),
         "trusted_modules": list(allowed),
+        "enabled": True,
     }
     save_lockfile(lockfile)
 
@@ -608,6 +611,7 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             "installed_at": now_iso(),
             "manifest": manifest.get("plugin", {}),
             "trusted_modules": list(allowed),
+            "enabled": True,
         }
         save_lockfile(lockfile)
 
@@ -644,16 +648,73 @@ def cmd_list(args: argparse.Namespace) -> int:
         version = manifest.get("version", "")
         kind = entry.get("source_kind", "")
         src = entry.get("source", "")
+        enabled = entry.get("enabled", True)
         bits: list[str] = []
         if version:
             bits.append(f"v{version}")
         bits.append(f"{kind}:{src}")
         if entry.get("sha"):
             bits.append(entry["sha"][:7])
-        print(
-            f"  {BOLD}{plugin_id.ljust(width)}{RESET}{name}  {DIM}{'  '.join(bits)}{RESET}"
-        )
+        if enabled:
+            # Normal layout — bold id, plain name, dim metadata.
+            print(
+                f"  {BOLD}{plugin_id.ljust(width)}{RESET}{name}  {DIM}{'  '.join(bits)}{RESET}"
+            )
+        else:
+            # Whole row dimmed + explicit [disabled] tag so it's obvious
+            # the plugin is installed but inactive.
+            print(
+                f"  {DIM}{plugin_id.ljust(width)}{name}  [disabled]  {'  '.join(bits)}{RESET}"
+            )
     return 0
+
+
+def _set_enabled(plugin_id: str, enabled: bool) -> int:
+    """Shared body for ``cmd_enable`` / ``cmd_disable``.
+
+    Flips the ``enabled`` field on the lockfile entry, persists, and asks
+    the running server to hot-reload its registry. Returns CLI exit code.
+    """
+    verb_zh = "啟用" if enabled else "停用"
+    verb_en = "Enabling" if enabled else "Disabling"
+    section(f"{verb_zh}外掛：{plugin_id}", f"{verb_en} plugin: {plugin_id}")
+
+    lockfile = load_lockfile()
+    entry = lockfile.get("plugins", {}).get(plugin_id)
+    if not entry:
+        err(
+            f"找不到外掛 {plugin_id}（請先 install）",
+            f"Plugin '{plugin_id}' is not installed (run install first)",
+        )
+        return 1
+
+    current = entry.get("enabled", True)
+    if current == enabled:
+        state_zh = "已啟用" if enabled else "已停用"
+        state_en = "already enabled" if enabled else "already disabled"
+        info(f"{plugin_id} {state_zh}（無動作）", f"{plugin_id} is {state_en} (no-op)")
+        return 0
+
+    entry["enabled"] = enabled
+    save_lockfile(lockfile)
+
+    if _backend_reload():
+        ok("熱重載完成", "Hot-reloaded backend")
+    else:
+        info("伺服器未運行", "Server not running")
+
+    done_zh = "已啟用" if enabled else "已停用"
+    done_en = "Enabled" if enabled else "Disabled"
+    ok(f"{done_zh} {plugin_id}", f"{done_en} {plugin_id}")
+    return 0
+
+
+def cmd_enable(args: argparse.Namespace) -> int:
+    return _set_enabled(args.plugin_id.lower(), True)
+
+
+def cmd_disable(args: argparse.Namespace) -> int:
+    return _set_enabled(args.plugin_id.lower(), False)
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -960,6 +1021,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_un = sub.add_parser("uninstall", help="Remove an installed plugin")
     p_un.add_argument("plugin_id")
     p_un.set_defaults(_func=cmd_uninstall)
+
+    p_en = sub.add_parser(
+        "enable",
+        help="Activate an installed plugin (write enabled=true to lockfile)",
+    )
+    p_en.add_argument("plugin_id")
+    p_en.set_defaults(_func=cmd_enable)
+
+    p_dis = sub.add_parser(
+        "disable",
+        help="Deactivate an installed plugin without uninstalling — files stay on disk",
+    )
+    p_dis.add_argument("plugin_id")
+    p_dis.set_defaults(_func=cmd_disable)
 
     p_info = sub.add_parser("info", help="Show manifest + lockfile details for a plugin")
     p_info.add_argument("source_or_id",

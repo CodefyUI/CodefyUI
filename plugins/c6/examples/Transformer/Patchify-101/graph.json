@@ -4,7 +4,7 @@
   "nodes": [
     { "id": "start-1", "type": "Start",         "position": { "x": -240, "y":    0 }, "data": { "params": {} } },
     { "id": "image",   "type": "TensorInput",   "position": { "x":   40, "y":    0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },
-    { "id": "patch",   "type": "EduPatchify",   "position": { "x":  360, "y":    0 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
+    { "id": "patch",   "type": "c6:EduPatchify",   "position": { "x":  360, "y":    0 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
     { "id": "p_tok",   "type": "Print",         "position": { "x":  680, "y": -100 }, "data": { "params": { "label": "Patch tokens [B, N, C·P·P]" } } },
     { "id": "p_grid",  "type": "Print",         "position": { "x":  680, "y":  100 }, "data": { "params": { "label": "Patch grid [grid_h, grid_w]" } } }
   ],

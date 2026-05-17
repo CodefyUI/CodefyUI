@@ -1,0 +1,20 @@
+{
+  "name": "C3-3 Diffusion: 20 denoising steps from pure noise to image",
+  "description": "The §C3.3.2 'reverse process' as a single graph. GaussianNoise samples the starting x_T (1×3×16×16 of standard normal), DiffusionUNet builds a noise-predicting U-Net (random weights — a real diffusion model would be trained on millions of images first), and DDPMSampler iterates `num_steps=20` denoising steps with a linear beta schedule. The output is x_0, a same-shape tensor that, on a trained model, would be a coherent image. With random weights it's just a smoothed noise field — but the shape flow is exactly what Stable Diffusion runs at inference time (§C3.3.5). Swap GaussianNoise's shape to 1,3,64,64 to feel how compute scales with resolution.",
+  "nodes": [
+    { "id": "start", "type": "Start",         "position": { "x": -320, "y":   0 }, "data": { "params": {} } },
+    { "id": "noise", "type": "GaussianNoise", "position": { "x":  -40, "y": -100 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0.0, "std": 1.0, "seed": 0 } } },
+    { "id": "unet",  "type": "DiffusionUNet", "position": { "x":  -40, "y":  100 }, "data": { "params": { "in_channels": 3, "base_channels": 16, "channel_mult": "1,2,4", "time_emb_dim": 32, "num_groups": 4, "seed": 42 } } },
+    { "id": "samp",  "type": "DDPMSampler",   "position": { "x":  320, "y":   0 }, "data": { "params": { "num_steps": 20, "schedule": "linear", "beta_start": 0.0001, "beta_end": 0.02, "seed": 42 } } },
+    { "id": "p_x0",  "type": "Print",         "position": { "x":  640, "y": -80 }, "data": { "params": { "label": "Final denoised image x_0 (untrained → just smoothed noise)" } } },
+    { "id": "p_xT",  "type": "Print",         "position": { "x":  640, "y":  80 }, "data": { "params": { "label": "Starting noise x_T (pure Gaussian)" } } }
+  ],
+  "edges": [
+    { "id": "et1",   "source": "start", "target": "noise", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "et2",   "source": "start", "target": "unet",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_n",   "source": "noise", "target": "samp",  "sourceHandle": "noise",   "targetHandle": "noise" },
+    { "id": "e_m",   "source": "unet",  "target": "samp",  "sourceHandle": "model",   "targetHandle": "model" },
+    { "id": "e_x0",  "source": "samp",  "target": "p_x0",  "sourceHandle": "image",   "targetHandle": "value" },
+    { "id": "e_xT",  "source": "noise", "target": "p_xT",  "sourceHandle": "noise",   "targetHandle": "value" }
+  ]
+}

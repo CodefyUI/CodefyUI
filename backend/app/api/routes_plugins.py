@@ -24,9 +24,11 @@ from ..config import settings
 from ..core.node_registry import registry
 from ..core.plugin_loader import (
     MANIFEST_FILENAME,
+    is_enabled,
     iter_plugin_dirs,
     load_lockfile,
     rediscover_all,
+    save_lockfile,
 )
 from ..core.preset_registry import preset_registry
 
@@ -59,11 +61,20 @@ def _nodes_for_plugin(plugin_id: str) -> list[str]:
 
 @router.get("")
 async def list_plugins() -> list[dict[str, Any]]:
-    """List every installed plugin with active node names + lockfile metadata."""
+    """List every installed plugin (enabled + disabled) with metadata.
+
+    ``include_disabled=True`` so the frontend can render disabled rows
+    greyed-out without an extra round-trip. Each entry carries an
+    explicit ``enabled`` field; nodes list is empty for disabled plugins
+    because they are not in the registry.
+    """
     lockfile = load_lockfile()
     out: list[dict[str, Any]] = []
     for plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        settings.PLUGINS_BUILTIN_DIR,
+        settings.PLUGINS_USER_DIR,
+        lockfile,
+        include_disabled=True,
     ):
         entry = lockfile["plugins"][plugin_id]
         manifest = _read_manifest(plugin_dir)
@@ -79,6 +90,7 @@ async def list_plugins() -> list[dict[str, Any]]:
             "sha": entry.get("sha", ""),
             "ref": entry.get("ref", ""),
             "installed_at": entry.get("installed_at", ""),
+            "enabled": is_enabled(entry),
             "homepage": plugin_meta.get("homepage", ""),
             "chapters": lessons_meta.get("chapters", []),
             "lessons": lessons_meta.get("lessons", []),
@@ -132,3 +144,55 @@ async def reload_plugins() -> dict[str, int]:
         builtin_root=settings.PLUGINS_BUILTIN_DIR,
         user_root=settings.PLUGINS_USER_DIR,
     )
+
+
+def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
+    """Shared implementation behind the two toggle endpoints.
+
+    Returns the new lockfile entry on success; raises HTTPException 404
+    when the plugin is not installed. Hot-reloads the registry so the
+    change is immediately visible without restarting the server.
+    """
+    lockfile = load_lockfile()
+    entry = lockfile.get("plugins", {}).get(plugin_id)
+    if not entry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plugin '{plugin_id}' is not installed",
+        )
+
+    entry["enabled"] = enabled
+    save_lockfile(lockfile)
+
+    rediscover_all(
+        registry,
+        preset_registry,
+        nodes_dir=settings.NODES_DIR,
+        custom_nodes_dir=settings.CUSTOM_NODES_DIR,
+        presets_dir=settings.PRESETS_DIR,
+        builtin_root=settings.PLUGINS_BUILTIN_DIR,
+        user_root=settings.PLUGINS_USER_DIR,
+    )
+    return {"id": plugin_id, "enabled": enabled}
+
+
+@router.post("/{plugin_id}/enable")
+async def enable_plugin(plugin_id: str) -> dict[str, Any]:
+    """Activate a previously-installed plugin without re-downloading.
+
+    The lockfile entry stays put; only the ``enabled`` flag flips. After
+    the call the plugin's nodes are in the registry, its examples appear
+    in ``GET /api/examples/list``, and any ``assets/`` route is mounted.
+    """
+    return _set_plugin_enabled(plugin_id, True)
+
+
+@router.post("/{plugin_id}/disable")
+async def disable_plugin(plugin_id: str) -> dict[str, Any]:
+    """Deactivate a plugin without uninstalling — its files stay on disk.
+
+    The plugin's nodes are dropped from the registry, examples and assets
+    are hidden, but a follow-up ``/enable`` re-activates instantly with no
+    re-download (useful for large third-party packs).
+    """
+    return _set_plugin_enabled(plugin_id, False)
