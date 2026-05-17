@@ -273,7 +273,7 @@ python scripts/dev.py dev
    ```bash
    curl http://127.0.0.1:8000/api/health
    ```
-   Should return `{"status":"ok","nodes_loaded":69,"presets_loaded":3}` (the exact `nodes_loaded` count grows with each release; check it's non-zero).
+   Should return `{"status":"ok","nodes_loaded":94,"presets_loaded":3}` (the exact `nodes_loaded` count grows with each release; check it's non-zero).
 
 2. Verify device detection:
    ```bash

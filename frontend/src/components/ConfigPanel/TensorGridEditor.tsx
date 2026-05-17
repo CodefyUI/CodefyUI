@@ -151,7 +151,7 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
       {!disabled && total > MAX_INLINE_NUMEL && (
         <div className={styles.hintWarn}>
           Shape has {total} elements — too large for inline editing (max {MAX_INLINE_NUMEL}).
-          Switch value_mode to <code>random</code> or upload a file (coming soon).
+          Switch <code>value_mode</code> to <code>random</code>, <code>zeros</code>, <code>ones</code>, or <code>arange</code>.
         </div>
       )}
 

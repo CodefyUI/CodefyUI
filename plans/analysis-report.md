@@ -499,7 +499,7 @@ ExecutionContext.backward_mode=True
 
 #### 2.7.1 Plugin 系統
 
-**Why now：** 91 個內建節點已涵蓋 CNN/RNN/Transformer/RL/Diffusion/Classical/LLM 的核心，再往下擴充會撐爆 built-in 集合的可維護性。教育場景的需求是「按章節、按課程、按學派」分離節點集——這就是 plugin 系統的核心目的。
+**Why now：** 94 個內建節點已涵蓋 CNN/RNN/Transformer/RL/Diffusion/Classical/LLM 的核心，再往下擴充會撐爆 built-in 集合的可維護性。教育場景的需求是「按章節、按課程、按學派」分離節點集——這就是 plugin 系統的核心目的。
 
 **架構：**
 ```
@@ -813,7 +813,7 @@ cdui plugin search <query>
 - ~~end users 需要裝 Node~~ — frontend-dist 發佈管線解決
 - ~~Window.confirm / prompt 體驗差~~ — PR #17 解決
 - ~~測試框架不足~~ — 0f2473c 60 個節點測試 + plugin 測試
-- ~~i18n 未完成~~ — PR #23 91 個節點完成 zh-TW
+- ~~i18n 未完成~~ — PR #23 起累積完成 94/94 個內建節點 zh-TW
 - ~~AGPL 授權未正式化~~ — PR #9 完成
 
 ### 4.4 反向觀察：CodefyUI 已建立的領先優勢（2026-05 update）

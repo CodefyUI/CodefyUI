@@ -9,7 +9,7 @@
 ## 功能特色
 
 - **視覺化圖形編輯器** — 拖放節點、型別安全的連線、即時驗證
-- **69 個內建節點**，涵蓋 13 大類別（CNN、RNN、Transformer、RL、資料、資料流、訓練、IO、控制、工具、正規化、張量運算、LLM）
+- **94 個內建節點**，涵蓋 15 大類別（CNN、RNN、Transformer、RL、資料、資料流、訓練、IO、控制、工具、正規化、張量運算、LLM、傳統機器學習、Diffusion）
 - **教學檢視器 (Teaching Inspector)** — 記錄每個節點的完整輸出，在右側面板對照輸入與輸出張量的差異；用 **段落比較** 功能以淺橘色泡泡包住一段子圖，只比較 head 的輸入與 tail 的輸出。搭配新的 `TensorInput` 節點（可在網頁直接編輯格子）餵入資料，看資料逐節點變化
 - **預設模組系統** — 內建模型模板快速開始；可將子圖匯出為可重用的預設模組
 - **多分頁工作區** — 多個獨立畫布，各自擁有獨立的執行環境
@@ -107,10 +107,10 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | 類別 | 節點 | 數量 |
 |------|------|------|
 | **CNN** | Conv2d、Conv1d、ConvTranspose2d、MaxPool2d、AvgPool2d、AdaptiveAvgPool2d、BatchNorm2d、Dropout、Activation | 9 |
-| **RNN** | LSTM、GRU | 2 |
-| **Transformer** | MultiHeadAttention、TransformerEncoder、TransformerDecoder | 3 |
-| **RL** | DQN、PPO、EnvWrapper | 3 |
-| **資料** | Dataset、DataLoader、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput | 7 |
+| **RNN** | LSTM、GRU、RNNCell | 3 |
+| **Transformer** | MultiHeadAttention、TransformerEncoder、TransformerDecoder、MoELayer | 4 |
+| **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence | 5 |
+| **資料** | Dataset、DataLoader、Transform、HuggingFaceDataset、KaggleDataset、TensorInput、TextInput、CSVReader、ColumnSelector、Normalize、SyntheticDataset、TrainTestSplit | 12 |
 | **資料流** | Map、Reduce、Switch | 3 |
 | **訓練** | Optimizer、Loss、TrainingLoop、LRScheduler、SequentialModel、BackwardOnce | 6 |
 | **IO** | ImageReader、ImageWriter、ImageBatchReader、FileReader、CheckpointSaver、CheckpointLoader、ModelLoader、ModelSaver、Inference | 9 |
@@ -118,7 +118,9 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | **工具** | Print、Reshape、Concat、Flatten、Linear、Visualize、Embedding | 7 |
 | **正規化** | BatchNorm1d、LayerNorm、GroupNorm、InstanceNorm2d | 4 |
 | **張量運算** | Add、MatMul、Mean、Multiply、Permute、Softmax、Split、Squeeze、Stack、TensorCreate、Unsqueeze | 11 |
-| **LLM** | Tokenizer、WordVector、EmbeddingScatter、CosineSimilarity | 4 |
+| **LLM** | Tokenizer、WordVector、EmbeddingScatter、CosineSimilarity、AttentionMask、AttentionHeatmap、PositionalEncoding | 7 |
+| **傳統機器學習 (Classical)** | KNN、LinearRegression、LogisticRegression、DecisionTreeClassifier、SVMClassifier、MLPClassifier、Accuracy | 7 |
+| **Diffusion** | Upsample、TimestepEmbedding、Lerp、GaussianNoise、DDPMSampler、DiffusionUNet | 6 |
 
 ## 範例
 
