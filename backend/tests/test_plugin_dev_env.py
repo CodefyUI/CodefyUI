@@ -2,13 +2,17 @@
 
 The override lets a clone of CodefyUI keep its own plugin lockfile inside
 the repo (``.codefyui_dev/``) instead of sharing the global user-data dir
-with every other clone on the machine. The override is read by:
+with every other clone on the machine. Five places honor the override:
 
+    - ``config.Settings.PLUGINS_USER_DIR`` (server reads on startup —
+      this is the load-bearing path; all the others below ride on top)
     - ``plugin_loader.plugins_user_root`` (lockfile + downloaded packs)
     - ``auth._token_dir`` (session token file)
+    - ``asset_cache.cache_dir`` (downloaded asset cache)
+    - ``scripts/plugins.py`` (CLI's session-token read-back for hot reload)
 
-Both should fall back to ``platformdirs.user_data_dir`` when the env var
-is unset, so non-dev installs keep working untouched.
+All five should fall back to ``platformdirs`` when the env var is unset,
+so non-dev installs keep working untouched.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from app.core import auth, plugin_loader
+from app.core import asset_cache
 
 
 @pytest.fixture
@@ -53,3 +58,26 @@ def test_override_is_per_process(clean_env, tmp_path, monkeypatch):
     monkeypatch.delenv("CODEFYUI_USER_DATA_DIR")
     default = plugin_loader.plugins_user_root()
     assert redirected != default
+
+
+def test_override_redirects_settings_plugins_user_dir(clean_env, tmp_path, monkeypatch):
+    """Settings re-evaluates the path each instantiation (default_factory).
+
+    This is the critical end-to-end check — server startup reads
+    ``settings.PLUGINS_USER_DIR``, not ``plugin_loader.plugins_user_root()``.
+    If config.py froze the path at import time the override would have no
+    effect on the running server.
+    """
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    # Late import so we instantiate Settings fresh under the patched env.
+    from app.config import Settings  # noqa: PLC0415
+
+    s = Settings()
+    assert s.PLUGINS_USER_DIR == tmp_path / "plugins"
+
+
+def test_override_redirects_asset_cache(clean_env, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    cd = asset_cache.cache_dir()
+    assert cd == tmp_path / "cache"
+    assert cd.is_dir()  # cache_dir() mkdir-p's the path

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -70,7 +71,19 @@ def test_chapter_graph_executes(graph_path: Path):
             "manual run required for full execution."
         )
 
-    # execute_graph is async; pytest-asyncio is set up for async fixtures
-    # but plain ``asyncio.run`` is the simplest pattern when we only need a
-    # one-shot execution per graph.
-    asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
+    # Some example graphs reference data files via paths relative to the
+    # backend cwd (CSVReader's default is ``data/samples/iris.csv``).
+    # ``cdui test`` always launches pytest from backend/, but a contributor
+    # running ``pytest`` directly from the repo root would otherwise hit a
+    # FileNotFoundError. Hop cwd just for this test to keep both invocations
+    # working — restore afterwards so other tests aren't affected.
+    backend_dir = Path(__file__).resolve().parents[1]
+    prev_cwd = Path.cwd()
+    os.chdir(backend_dir)
+    try:
+        # execute_graph is async; pytest-asyncio is set up for async fixtures
+        # but plain ``asyncio.run`` is the simplest pattern when we only need
+        # a one-shot execution per graph.
+        asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
+    finally:
+        os.chdir(prev_cwd)

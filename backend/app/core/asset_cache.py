@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,8 +47,18 @@ class AssetSpec:
 
 
 def cache_dir() -> Path:
-    """Return (and create) the codefyui asset cache directory."""
-    p = Path(user_cache_dir(_APP_NAME, appauthor=False))
+    """Return (and create) the codefyui asset cache directory.
+
+    Honors ``CODEFYUI_USER_DATA_DIR`` so a dev clone keeps its downloaded
+    assets in ``.codefyui_dev/cache/`` rather than the OS-wide cache,
+    matching the same dev-mode isolation applied to the plugin lockfile
+    and session token.
+    """
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    if override:
+        p = Path(override) / "cache"
+    else:
+        p = Path(user_cache_dir(_APP_NAME, appauthor=False))
     p.mkdir(parents=True, exist_ok=True)
     return p
 

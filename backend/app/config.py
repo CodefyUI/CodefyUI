@@ -1,6 +1,26 @@
+import os
 from pathlib import Path
 from platformdirs import user_data_dir
+from pydantic import Field
 from pydantic_settings import BaseSettings
+
+
+def _user_data_root() -> Path:
+    """Resolve the per-user data root (lockfile, downloaded plugins, session token).
+
+    Honors ``CODEFYUI_USER_DATA_DIR`` so a dev clone using
+    ``scripts/dev.py`` can keep its lockfile in ``.codefyui_dev/`` inside
+    the repo, isolated from the global ``cdui`` install at
+    ``%LOCALAPPDATA%\\codefyui``. ``plugin_loader.plugins_user_root`` and
+    ``auth._token_dir`` honor the same variable so plugin install, the
+    server, and the hot-reload token all stay in sync.
+    """
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    return Path(override) if override else Path(user_data_dir("codefyui", appauthor=False))
+
+
+def _default_plugins_user_dir() -> Path:
+    return _user_data_root() / "plugins"
 
 
 class Settings(BaseSettings):
@@ -21,8 +41,12 @@ class Settings(BaseSettings):
 
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
-    # Third-party downloads + lockfile (per-user, platformdirs).
-    PLUGINS_USER_DIR: Path = Path(user_data_dir("codefyui", appauthor=False)) / "plugins"
+    # Third-party downloads + lockfile. Resolved per-instance so the
+    # CODEFYUI_USER_DATA_DIR env var picked up by dev-mode tooling actually
+    # flows through to the server. Without default_factory the snapshot
+    # would freeze at module-import time, before scripts/dev.py sets the
+    # env var.
+    PLUGINS_USER_DIR: Path = Field(default_factory=_default_plugins_user_dir)
 
     LOG_LEVEL: str = "INFO"
     LOG_DIR: Path | None = None
