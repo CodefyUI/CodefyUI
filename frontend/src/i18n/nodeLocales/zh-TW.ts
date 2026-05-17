@@ -7,6 +7,9 @@ const zhTW: NodeTranslations = {
   },
 
   // ── Classical (sklearn) ──
+  Accuracy: {
+    description: '計算預測標籤與真實標籤的分類正確率。會輸出 [0, 1] 的小數、答對數與樣本總數三個欄位 — 讓圖表能直接落在「50%」這種一目了然的數字上。C2 章節的標準收尾節點：線性分類器在同心圓資料上失敗時，這裡就會跳出 ≈ 0.5 的證據。',
+  },
   DecisionTreeClassifier: {
     description: 'CART 決策樹（封裝 sklearn）。遞迴切分特徵以最大化純度；教學上最有價值的是 tree_text 輸出 — 直接把學到的 if/else 規則以易讀格式印出來。',
     params: {
@@ -35,6 +38,16 @@ const zhTW: NodeTranslations = {
       C: '正則化強度的倒數（值越小，正則化越強）。',
       max_iter: '求解器最大迭代次數。',
       penalty: '正則化類型。l1 需要 liblinear/saga 求解器；sklearn 會自動挑。',
+    },
+  },
+  MLPClassifier: {
+    description: '前饋神經網路分類器（封裝 sklearn MLPClassifier）。一層或多層隱藏層、ReLU/tanh 激活、Adam 優化器。I/O 介面與線性分類器完全相同，所以「同心圓線性分類失敗 → 換 MLP 救回」這個敘事只需換一個節點型別。要看內部步驟用 Edu 系列，要直接拿結果用這個。',
+    params: {
+      hidden_sizes: '逗號分隔的隱藏層大小。「16,16」代表兩層、每層 16 個神經元。',
+      activation: '隱藏層激活函數。「identity」會讓整個網路退化成線性 — 用來示範為什麼需要非線性激活。',
+      max_iter: '最大訓練迭代次數（在整個資料集上跑幾輪）。',
+      learning_rate_init: 'Adam 的初始學習率。',
+      seed: '可重現用的隨機種子。',
     },
   },
   SVMClassifier: {
@@ -272,6 +285,17 @@ const zhTW: NodeTranslations = {
       name: '要載入的資料集',
       split: '資料分割',
       data_dir: '下載/儲存資料集的目錄',
+    },
+  },
+  SyntheticDataset: {
+    description: '用 sklearn 即時生成 2D 玩具資料集（同心圓、雙月、blob 群聚或一般 make_classification）。輸出格式與 CSVReader 一致，所以 TrainTestSplit 與下游分類器可以直接接 — 範例圖不再需要綁定 CSV 檔。C2-2 ~ C2-5 的標準資料來源。',
+    params: {
+      kind: 'circles 同心圓（線性不可分）；moons 雙交錯半月；blobs 等向高斯群聚（線性可分）；classification 通用 sklearn make_classification。',
+      n_samples: '要生成的樣本總數。',
+      noise: '加在點上的高斯噪聲（僅 circles/moons/classification 用得到）。',
+      factor: 'circles 內外圈半徑比，介於 0 與 1 之間。其他 kind 會忽略。',
+      centers: 'blob 群聚的中心數（只在 kind=blobs 時使用）。',
+      seed: '可重現用的隨機種子。',
     },
   },
   HuggingFaceDataset: {

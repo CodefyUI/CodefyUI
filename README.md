@@ -9,7 +9,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 ## Features
 
 - **Visual Graph Editor** — Drag-and-drop nodes, connect ports with type-safe edges, real-time validation
-- **69 Built-in Nodes** across 13 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM)
+- **94 Built-in Nodes** across 15 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM, Classical, Diffusion)
 - **Teaching Inspector** — Record full per-node outputs, inspect input→output tensor diffs side-by-side, and wrap a subgraph with the **Compare Segment** bubble to focus on just head-input vs tail-output. Drop in a `TensorInput` node with an inline grid editor to feed the pipeline and watch each transformation
 - **Preset System** — Pre-built model templates for quick start; export your own subgraphs as reusable presets
 - **Multi-Tab Workspace** — Multiple independent canvases, each with its own execution context
@@ -110,10 +110,10 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | Category | Nodes | Count |
 |----------|-------|-------|
 | **CNN** | Conv2d, Conv1d, ConvTranspose2d, MaxPool2d, AvgPool2d, AdaptiveAvgPool2d, BatchNorm2d, Dropout, Activation | 9 |
-| **RNN** | LSTM, GRU | 2 |
-| **Transformer** | MultiHeadAttention, TransformerEncoder, TransformerDecoder | 3 |
-| **RL** | DQN, PPO, EnvWrapper | 3 |
-| **Data** | Dataset, DataLoader, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput | 7 |
+| **RNN** | LSTM, GRU, RNNCell | 3 |
+| **Transformer** | MultiHeadAttention, TransformerEncoder, TransformerDecoder, MoELayer | 4 |
+| **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence | 5 |
+| **Data** | Dataset, DataLoader, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, Normalize, SyntheticDataset, TrainTestSplit | 12 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
 | **Training** | Optimizer, Loss, TrainingLoop, LRScheduler, SequentialModel, BackwardOnce | 6 |
 | **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference | 9 |
@@ -121,7 +121,9 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding | 7 |
 | **Normalization** | BatchNorm1d, LayerNorm, GroupNorm, InstanceNorm2d | 4 |
 | **Tensor Operations** | Add, MatMul, Mean, Multiply, Permute, Softmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze | 11 |
-| **LLM** | Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity | 4 |
+| **LLM** | Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding | 7 |
+| **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, SVMClassifier, MLPClassifier, Accuracy | 7 |
+| **Diffusion** | Upsample, TimestepEmbedding, Lerp, GaussianNoise, DDPMSampler, DiffusionUNet | 6 |
 
 ## Examples
 
