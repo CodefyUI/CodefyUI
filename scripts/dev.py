@@ -15,6 +15,8 @@
     update      拉取最新版本並重新安裝依賴（接受同 install 的旗標）
     build       建置 frontend dist（需 Node + pnpm，給開發者）
     dev         啟動開發伺服器（HMR；需 Node + pnpm）
+    dev-install 把六個官方 chapter pack (c1–c6) 裝到 repo 內 .codefyui_dev/
+                — 給專案內開發者用，與全域 cdui plugin 完全隔離
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
     stop        停止所有服務
     test        執行 backend 測試
@@ -26,6 +28,9 @@
     CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
     CODEFYUI_GPU            預設 --gpu 值（命令列旗標仍會覆蓋）
     CODEFYUI_DEV            預設 --dev 值；1/true/yes 開、0/false/no 關
+    CODEFYUI_USER_DATA_DIR  覆蓋 platformdirs user-data 位置（plugin lockfile
+                            + session.token），dev-install 會自動設定到
+                            <repo>/.codefyui_dev/
 """
 
 import argparse
@@ -167,6 +172,25 @@ DIST_INDEX = DIST_DIR / "index.html"
 VENV = BACKEND_DIR / ".venv"
 VENV_BIN = VENV / ("Scripts" if sys.platform == "win32" else "bin")
 VENV_PY = VENV_BIN / ("python.exe" if sys.platform == "win32" else "python")
+
+# In-repo user-data dir for dev-mode plugin installs. Backend reads this via
+# the CODEFYUI_USER_DATA_DIR env var (see plugin_loader.plugins_user_root).
+# Gitignored so each dev clone manages its own lockfile.
+DEV_USER_DATA_DIR = ROOT / ".codefyui_dev"
+DEV_LOCKFILE = DEV_USER_DATA_DIR / "plugins" / "installed.json"
+
+
+def _apply_dev_env_if_active() -> None:
+    """Point the server at the repo-local plugin lockfile when it exists.
+
+    The user explicitly opts into dev-mode plugins by running
+    ``cdui dev-install`` once — that creates ``DEV_LOCKFILE``. From then on,
+    every ``cdui start`` / ``cdui dev`` from this checkout uses that lockfile
+    instead of the global one in user-data-dir. Other dev clones on the same
+    machine stay isolated.
+    """
+    if DEV_LOCKFILE.exists():
+        os.environ.setdefault("CODEFYUI_USER_DATA_DIR", str(DEV_USER_DATA_DIR))
 
 RELEASE_REPO = "treeleaves30760/CodefyUI"
 RELEASE_ASSET = "frontend-dist.tar.gz"
@@ -798,9 +822,12 @@ def start() -> None:
         )
         sys.exit(1)
     _warn_if_dist_stale()
+    _apply_dev_env_if_active()
     uvicorn = _require_venv_tool("uvicorn")
     print("=== CodefyUI 啟動（Ctrl+C 停止）===")
     print("    開啟 → http://localhost:8000")
+    if os.environ.get("CODEFYUI_USER_DATA_DIR"):
+        print(f"    dev plugins → {DEV_USER_DATA_DIR}")
     print("")
     run([uvicorn, "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=BACKEND_DIR)
@@ -815,6 +842,7 @@ def dev() -> None:
         )
         sys.exit(1)
     _install_frontend_deps_if_needed()
+    _apply_dev_env_if_active()
 
     uvicorn = _require_venv_tool("uvicorn")
     backend_cmd = [uvicorn, "app.main:app", "--reload"]
@@ -872,6 +900,55 @@ def test() -> None:
     run([pytest], cwd=BACKEND_DIR)
 
 
+_DEV_BUILTIN_PACKS = ("c1", "c2", "c3", "c4", "c5", "c6")
+
+
+def dev_install() -> None:
+    """Install the six built-in chapter packs into a repo-local lockfile.
+
+    Designed for contributors working **inside the cloned repo** — different
+    from the global ``cdui plugin install`` which writes the lockfile to
+    ``%LOCALAPPDATA%\\codefyui\\plugins\\`` (shared across every clone).
+
+    Effect:
+        1. Creates ``./.codefyui_dev/plugins/`` in the repo (gitignored).
+        2. Sets ``CODEFYUI_USER_DATA_DIR`` for the install + every subsequent
+           ``cdui start`` / ``cdui dev`` from this checkout.
+        3. Activates c1, c2, c3, c4, c5, c6 via the existing plugin install
+           machinery (lockfile-only — no file copy for builtin sources).
+
+    Idempotent: re-running just refreshes the lockfile timestamp.
+    """
+    _exec_into_venv_if_available()
+    _ensure_uv()
+
+    os.environ["CODEFYUI_USER_DATA_DIR"] = str(DEV_USER_DATA_DIR)
+    DEV_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DEV_USER_DATA_DIR / "plugins").mkdir(parents=True, exist_ok=True)
+
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    import plugins as plugin_cli  # noqa: PLC0415 — late import needs venv
+
+    print("=== Dev plugin install — repo-local lockfile ===")
+    print(f"    target → {DEV_LOCKFILE}")
+    print(f"    packs  → {' '.join(_DEV_BUILTIN_PACKS)}")
+    print("")
+
+    rc = plugin_cli.main(["install", *_DEV_BUILTIN_PACKS, "--no-confirm"])
+    if rc != 0:
+        print("=== 安裝失敗（rc={}）===".format(rc), file=sys.stderr)
+        sys.exit(rc)
+
+    print("")
+    print("=== 完成 — 下一步 ===")
+    print("    cdui start       # 用 dev lockfile 啟 server")
+    print("    cdui dev         # 同上 + Vite HMR")
+    print("    cdui plugin list # 確認列出 c1–c6")
+
+
 def clean() -> None:
     print("=== 清除虛擬環境、node_modules 與 frontend/dist ===")
     shutil.rmtree(VENV, ignore_errors=True)
@@ -904,6 +981,7 @@ COMMANDS = {
     "update": update,
     "build": build,
     "dev": dev,
+    "dev-install": dev_install,
     "start": start,
     "stop": stop,
     "test": test,
@@ -927,6 +1005,7 @@ def _dispatch_plugin_subcommand() -> int:
     """
     _exec_into_venv_if_available()
     _ensure_uv()
+    _apply_dev_env_if_active()
 
     # scripts/ is not normally on sys.path when dev.py is invoked directly,
     # so bootstrap it before importing the sibling module.

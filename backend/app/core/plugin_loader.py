@@ -17,6 +17,7 @@ Layout::
 from __future__ import annotations
 
 import json
+import os
 import sys
 import types
 from datetime import datetime, timezone
@@ -40,8 +41,16 @@ def plugins_builtin_root() -> Path:
 
 
 def plugins_user_root() -> Path:
-    """``<USER_DATA>/plugins/`` — where downloaded packs and the lockfile live."""
-    return Path(user_data_dir("codefyui", appauthor=False)) / "plugins"
+    """``<USER_DATA>/plugins/`` — where downloaded packs and the lockfile live.
+
+    Honors the ``CODEFYUI_USER_DATA_DIR`` environment variable so a dev clone
+    can pin the lockfile inside the project directory (``.codefyui_dev/``)
+    instead of sharing the production user data dir across every clone on the
+    machine. ``scripts/dev.py dev-install`` / ``start`` set this automatically.
+    """
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    base = Path(override) if override else Path(user_data_dir("codefyui", appauthor=False))
+    return base / "plugins"
 
 
 def lockfile_path() -> Path:

@@ -56,6 +56,16 @@ def session_token() -> str:
 
 
 def _token_dir() -> Path:
+    """Where the session token file lives.
+
+    Honors ``CODEFYUI_USER_DATA_DIR`` for dev mode so a repo-local
+    ``.codefyui_dev/`` install can keep its own session token without
+    clobbering a global ``cdui start`` running in parallel. Mirrors the
+    same override in ``plugin_loader.plugins_user_root``.
+    """
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    if override:
+        return Path(override)
     return Path(user_data_dir("codefyui", appauthor=False))
 
 

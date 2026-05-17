@@ -282,7 +282,9 @@ def _read_session_token() -> str | None:
         from platformdirs import user_data_dir
     except ImportError:
         return None
-    p = Path(user_data_dir("codefyui", appauthor=False)) / "session.token"
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    base = Path(override) if override else Path(user_data_dir("codefyui", appauthor=False))
+    p = base / "session.token"
     try:
         return p.read_text(encoding="ascii").strip()
     except (OSError, UnicodeDecodeError):
