@@ -22,17 +22,16 @@
     uninstall   解除安裝：clean + 移除全域 cdui launcher
 
     plugin <subcmd> ...
-                與 cdui plugin 完全相同的介面（install / list / uninstall /
-                info / update / search），但 lockfile 寫到 repo 內的
+                與 cdui plugin 完全相同的介面，但 lockfile 寫到 repo 內的
                 <repo>/.codefyui_dev/plugins/ 而不是 %LOCALAPPDATA%\\codefyui，
-                讓多個 dev clone 互不干擾。範例：
+                讓多個 dev clone 互不干擾。官方 c1–c6 chapter pack 預設不會
+                安裝，需要時逐一裝即可。範例：
                     python scripts/dev.py plugin install c2
                     python scripts/dev.py plugin install owner/repo@main
                     python scripts/dev.py plugin list
-                    python scripts/dev.py plugin uninstall c2
-
-    dev-install 便利捷徑 — 等同 `plugin install c1 c2 c3 c4 c5 c6`，
-                給 fresh clone 一鍵裝完六個官方 chapter pack 用
+                    python scripts/dev.py plugin enable c2     # 啟用
+                    python scripts/dev.py plugin disable c2    # 停用（檔案保留）
+                    python scripts/dev.py plugin uninstall c2  # 從 lockfile 移除
 
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
@@ -918,49 +917,9 @@ def test() -> None:
     run([pytest], cwd=BACKEND_DIR)
 
 
-_DEV_BUILTIN_PACKS = ("c1", "c2", "c3", "c4", "c5", "c6")
-
-
-def dev_install() -> None:
-    """Convenience wrapper — bulk-install all six built-in chapter packs.
-
-    Equivalent to::
-
-        python scripts/dev.py plugin install c1 c2 c3 c4 c5 c6
-
-    Use the per-pack form when you only need a subset, want to install a
-    third-party plugin for testing, or want to mirror what an end user
-    would do (``cdui plugin install ...``). All three of these go through
-    the same dev-mode lockfile at ``.codefyui_dev/plugins/installed.json``
-    when invoked via ``scripts/dev.py``.
-    """
-    _exec_into_venv_if_available()
-    _ensure_uv()
-    _apply_dev_env()
-
-    scripts_dir = str(Path(__file__).resolve().parent)
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-
-    import plugins as plugin_cli  # noqa: PLC0415 — late import needs venv
-
-    print("=== Dev plugin install — repo-local lockfile ===")
-    print(f"    target → {DEV_LOCKFILE}")
-    print(f"    packs  → {' '.join(_DEV_BUILTIN_PACKS)}")
-    print("")
-
-    rc = plugin_cli.main(["install", *_DEV_BUILTIN_PACKS, "--no-confirm"])
-    if rc != 0:
-        print("=== 安裝失敗（rc={}）===".format(rc), file=sys.stderr)
-        sys.exit(rc)
-
-    print("")
-    print("=== 完成 — 下一步 ===")
-    print("    python scripts/dev.py start          # 用 dev lockfile 啟 server")
-    print("    python scripts/dev.py dev            # 同上 + Vite HMR")
-    print("    python scripts/dev.py plugin list    # 確認列出 c1–c6")
-    print("    # 安裝其他官方 pack：    python scripts/dev.py plugin install <id>")
-    print("    # 安裝第三方測試 pack：  python scripts/dev.py plugin install owner/repo[@ref]")
+    # No bulk `dev-install` shortcut: official packs are opt-in. Contributors
+    # decide per-chapter what they need and run ``plugin install`` themselves
+    # (matches what an end user would do via the global ``cdui plugin``).
 
 
 def clean() -> None:
@@ -995,7 +954,6 @@ COMMANDS = {
     "update": update,
     "build": build,
     "dev": dev,
-    "dev-install": dev_install,
     "start": start,
     "stop": stop,
     "test": test,

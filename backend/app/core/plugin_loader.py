@@ -96,6 +96,16 @@ def _resolve_plugin_dir(
     return user_root / plugin_id
 
 
+def is_enabled(entry: dict[str, Any]) -> bool:
+    """Whether a lockfile entry is currently activated.
+
+    Missing field defaults to ``True`` so lockfiles from before the
+    enabled/disabled feature keep working without migration. New entries
+    written by ``cmd_install`` always set the field explicitly.
+    """
+    return bool(entry.get("enabled", True))
+
+
 def install_plugin_finder(
     builtin_root: Path,
     user_root: Path,
@@ -104,9 +114,10 @@ def install_plugin_finder(
     """Register the synthetic namespace and return ``(nodes_dir, package_name)`` pairs.
 
     The returned pairs are ready to pass straight to
-    :meth:`NodeRegistry.discover`. Plugins whose manifest is missing or
-    whose ``nodes/`` directory is absent are skipped silently — the caller
-    is responsible for surfacing those.
+    :meth:`NodeRegistry.discover`. Plugins whose manifest is missing,
+    whose ``nodes/`` directory is absent, **or whose ``enabled`` flag is
+    false** are skipped silently — the caller is responsible for surfacing
+    those.
     """
     pkg = sys.modules.get(NAMESPACE_PACKAGE)
     if pkg is None:
@@ -116,6 +127,8 @@ def install_plugin_finder(
 
     pairs: list[tuple[Path, str]] = []
     for plugin_id, entry in lockfile.get("plugins", {}).items():
+        if not is_enabled(entry):
+            continue
         plugin_dir = _resolve_plugin_dir(plugin_id, entry, builtin_root, user_root)
         if not (plugin_dir / MANIFEST_FILENAME).exists():
             continue
@@ -158,10 +171,20 @@ def iter_plugin_dirs(
     builtin_root: Path,
     user_root: Path,
     lockfile: dict[str, Any],
+    *,
+    include_disabled: bool = False,
 ) -> list[tuple[str, Path]]:
-    """Return ``(plugin_id, plugin_dir)`` for every installed plugin with a manifest."""
+    """Return ``(plugin_id, plugin_dir)`` for every installed plugin with a manifest.
+
+    Skips disabled plugins by default so examples / asset routes / preset
+    discovery all silently respect the ``enabled`` flag. Pass
+    ``include_disabled=True`` to enumerate every entry regardless of state
+    — the plugin list API uses this to render greyed-out rows.
+    """
     out: list[tuple[str, Path]] = []
     for plugin_id, entry in lockfile.get("plugins", {}).items():
+        if not include_disabled and not is_enabled(entry):
+            continue
         plugin_dir = _resolve_plugin_dir(plugin_id, entry, builtin_root, user_root)
         if (plugin_dir / MANIFEST_FILENAME).exists():
             out.append((plugin_id, plugin_dir))
