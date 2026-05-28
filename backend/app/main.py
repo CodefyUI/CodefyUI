@@ -1,7 +1,21 @@
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
+
+# Windows reads MIME types from the registry, which other installers (VS, IIS,
+# antivirus, etc.) routinely clobber — `.js` often ends up as `text/plain`,
+# which browsers refuse to execute under `<script type="module">` strict MIME
+# checks, leaving the SPA blank. Force the correct types in-process so we
+# never depend on whatever the host registry happens to say.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/woff", ".woff")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
