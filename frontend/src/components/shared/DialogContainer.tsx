@@ -29,18 +29,20 @@ export function DialogContainer() {
   // Reset input + focus the right element each time a new dialog opens.
   useEffect(() => {
     if (!active) return;
+    let timerId: ReturnType<typeof setTimeout>;
     if (active.kind === 'prompt') {
       setInputValue(active.defaultValue ?? '');
       setValidationError(null);
       // Focus + select the input on next paint so the default value is
       // overwritable in one keystroke (matches native window.prompt UX).
-      setTimeout(() => {
+      timerId = setTimeout(() => {
         inputRef.current?.focus();
         inputRef.current?.select();
       }, 0);
     } else {
-      setTimeout(() => confirmBtnRef.current?.focus(), 0);
+      timerId = setTimeout(() => confirmBtnRef.current?.focus(), 0);
     }
+    return () => clearTimeout(timerId);
   }, [active]);
 
   // ESC cancels.
