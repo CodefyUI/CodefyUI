@@ -67,6 +67,7 @@ const en = {
   'palette.hint': 'Drag nodes onto the canvas',
   'palette.composite': 'Composite',
   'palette.basic': 'Basic',
+  'palette.chapterPacks': 'Chapter packs',
 
   // Config Panel
   'config.title': 'Node Config',

@@ -1,4 +1,4 @@
-import type { NodeDefinition, GraphSaveData, PresetDefinition } from '../types';
+import type { NodeDefinition, GraphSaveData, PresetDefinition, ChapterPack } from '../types';
 import { apiFetch } from './_auth';
 
 const BASE_URL = '/api';
@@ -6,6 +6,12 @@ const BASE_URL = '/api';
 export async function fetchNodeDefinitions(): Promise<NodeDefinition[]> {
   const res = await fetch(`${BASE_URL}/nodes`);
   if (!res.ok) throw new Error(`Failed to fetch node definitions: ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchChapterPacks(): Promise<ChapterPack[]> {
+  const res = await fetch(`${BASE_URL}/plugins/chapter-packs`);
+  if (!res.ok) throw new Error(`Failed to fetch chapter packs: ${res.statusText}`);
   return res.json();
 }
 

@@ -32,6 +32,18 @@ export interface NodeDefinition {
   params: ParamDefinition[];
 }
 
+/**
+ * Virtual palette grouping declared by a plugin's `[chapter_pack]` manifest table.
+ * Nodes are qualified names matched against the registry; the same node also
+ * stays visible in its original CATEGORY (soft-link).
+ */
+export interface ChapterPack {
+  plugin_id: string;
+  label: string;
+  position: number;
+  nodes: string[];
+}
+
 export interface PresetDefinition {
   preset_name: string;
   category: string;

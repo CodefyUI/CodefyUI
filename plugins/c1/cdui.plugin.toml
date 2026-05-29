@@ -13,3 +13,23 @@ examples_dir = "examples"
 [lessons]
 chapters = ["C1"]
 lessons  = ["C1-2"]
+
+# Virtual "chapter pack" section rendered at the bottom of the node palette.
+# `nodes` is an ordered, de-duplicated list of qualified node names
+# (e.g. "CSVReader", "c1:EduFilterRows") that this chapter uses. They show
+# up as a single grouped section in the UI while staying available in their
+# original CATEGORY — same node, two entry points. The display strips the
+# `<plugin>:` namespace prefix; drag payload keeps it.
+[chapter_pack]
+label    = "C1 — 基本資訊"
+position = 100
+nodes    = [
+  "Start",
+  "CSVReader",
+  "ColumnSelector",
+  "Squeeze",
+  "Mean",
+  "Print",
+  "c1:EduColumnStats",
+  "c1:EduFilterRows",
+]

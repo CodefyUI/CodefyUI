@@ -69,6 +69,7 @@ const zhTW: Record<TranslationKey, string> = {
   'palette.hint': '拖曳節點到畫布上',
   'palette.composite': '復合',
   'palette.basic': '基本',
+  'palette.chapterPacks': '章節分組',
 
   // Config Panel
   'config.title': '節點設定',

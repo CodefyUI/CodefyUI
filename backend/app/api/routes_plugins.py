@@ -99,6 +99,48 @@ async def list_plugins() -> list[dict[str, Any]]:
     return out
 
 
+@router.get("/chapter-packs")
+async def list_chapter_packs() -> list[dict[str, Any]]:
+    """Return the [chapter_pack] declarations from every enabled plugin.
+
+    A "chapter pack" is a virtual palette grouping: an ordered list of
+    qualified node names (any provider — builtin, plugin, custom) that
+    one textbook chapter uses. The frontend renders each pack as one
+    extra section at the bottom of the node palette so a chapter's
+    nodes can be reached without hunting across CATEGORY tabs. Manifest
+    order is preserved verbatim — it's the pedagogical sequence.
+
+    The endpoint is intentionally route-ordered *before* ``/{plugin_id}``
+    so FastAPI doesn't treat ``chapter-packs`` as a plugin id and 404.
+    """
+    lockfile = load_lockfile()
+    packs: list[dict[str, Any]] = []
+    for plugin_id, plugin_dir in iter_plugin_dirs(
+        settings.PLUGINS_BUILTIN_DIR,
+        settings.PLUGINS_USER_DIR,
+        lockfile,
+    ):
+        manifest = _read_manifest(plugin_dir)
+        chapter_pack = manifest.get("chapter_pack")
+        if not isinstance(chapter_pack, dict):
+            continue
+        nodes = chapter_pack.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            continue
+        label = chapter_pack.get("label") or plugin_id
+        position = chapter_pack.get("position", 999)
+        if not isinstance(position, (int, float)):
+            position = 999
+        packs.append({
+            "plugin_id": plugin_id,
+            "label": str(label),
+            "position": float(position),
+            "nodes": [str(n) for n in nodes if isinstance(n, str)],
+        })
+    packs.sort(key=lambda p: (p["position"], p["plugin_id"]))
+    return packs
+
+
 @router.get("/{plugin_id}")
 async def get_plugin(plugin_id: str) -> dict[str, Any]:
     lockfile = load_lockfile()

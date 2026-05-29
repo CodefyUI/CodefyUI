@@ -230,6 +230,31 @@
   margin-top: 3px;
 }
 
+/* ── Chapter pack divider (separates regular CATEGORY sections from per-chapter virtual groups) ── */
+.chapterPackDivider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 10px 4px;
+  margin-top: 8px;
+  border-top: 1px solid #2a2a2a;
+}
+
+.chapterPackDividerLine {
+  flex: 1;
+  height: 1px;
+  background: transparent;
+}
+
+.chapterPackDividerText {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: #777;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 /* ── Footer hint ── */
 .footer {
   padding: 6px 10px;
