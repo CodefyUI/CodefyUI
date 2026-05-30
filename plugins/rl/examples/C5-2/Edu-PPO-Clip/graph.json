@@ -1,0 +1,24 @@
+{
+  "name": "PPO clip: why the trust region stops a runaway update",
+  "description": "Two states, three actions. The new policy prefers action 0 in state 0 more strongly than the old policy did, so its probability ratio exceeds 1+epsilon. Turn on Verbose mode to watch ratio = exp(logp_new - logp_old), the clamp to [1-eps, 1+eps], and the min(ratio*A, clipped*A) that defines the surrogate — for the positive-advantage sample the clipped branch wins, removing the incentive to push the policy any further.",
+  "nodes": [
+    { "id": "start", "type": "Start",            "position": { "x": -340, "y": 0 },   "data": { "params": {} } },
+    { "id": "ln",    "type": "TensorInput",      "position": { "x": -100, "y": -150 }, "data": { "params": { "shape": "2,3", "dtype": "float32", "value_mode": "explicit", "values": [[2, 1, 0], [0, 1, 2]] } } },
+    { "id": "lo",    "type": "TensorInput",      "position": { "x": -100, "y": -40 },  "data": { "params": { "shape": "2,3", "dtype": "float32", "value_mode": "explicit", "values": [[1, 1, 1], [1, 1, 1]] } } },
+    { "id": "act",   "type": "TensorInput",      "position": { "x": -100, "y": 70 },   "data": { "params": { "shape": "2", "dtype": "int64", "value_mode": "explicit", "values": [0, 2] } } },
+    { "id": "adv",   "type": "TensorInput",      "position": { "x": -100, "y": 180 },  "data": { "params": { "shape": "2", "dtype": "float32", "value_mode": "explicit", "values": [1.0, -1.0] } } },
+    { "id": "ppo",   "type": "rl:Edu-PPOClip",   "position": { "x": 280,  "y": 0 },    "data": { "params": { "clip_epsilon": 0.2, "temperature": 1.0 } } },
+    { "id": "print", "type": "Print",            "position": { "x": 600,  "y": 0 },    "data": { "params": { "label": "PPO clipped loss" } } }
+  ],
+  "edges": [
+    { "id": "t1", "source": "start", "target": "ln",    "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "t2", "source": "start", "target": "lo",    "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "t3", "source": "start", "target": "act",   "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "t4", "source": "start", "target": "adv",   "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "e1", "source": "ln",    "target": "ppo",   "sourceHandle": "tensor",      "targetHandle": "logits_new" },
+    { "id": "e2", "source": "lo",    "target": "ppo",   "sourceHandle": "tensor",      "targetHandle": "logits_old" },
+    { "id": "e3", "source": "act",   "target": "ppo",   "sourceHandle": "tensor",      "targetHandle": "actions" },
+    { "id": "e4", "source": "adv",   "target": "ppo",   "sourceHandle": "tensor",      "targetHandle": "advantages" },
+    { "id": "e5", "source": "ppo",   "target": "print", "sourceHandle": "loss",        "targetHandle": "value" }
+  ]
+}
