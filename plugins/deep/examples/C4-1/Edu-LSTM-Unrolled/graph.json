@@ -1,0 +1,15 @@
+{
+  "name": "LSTM cell, unrolled gate by gate",
+  "description": "A length-5 sequence of 4-dim vectors is fed through Edu-LSTMCell (hidden size 8). Turn on Verbose mode to watch, at each timestep, the input gate i, forget gate f, candidate g, and output gate o decide what to write to and read from the cell state — the forget gate deciding what to drop, the input gate admitting new candidate memory. The h_seq output is the full hidden-state trajectory.",
+  "nodes": [
+    { "id": "start", "type": "Start",              "position": { "x": -280, "y": 0 }, "data": { "params": {} } },
+    { "id": "seq",   "type": "TensorInput",        "position": { "x": -40,  "y": 0 }, "data": { "params": { "shape": "5,4", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
+    { "id": "lstm",  "type": "deep:Edu-LSTMCell",  "position": { "x": 260,  "y": 0 }, "data": { "params": { "input_size": 4, "hidden_size": 8, "seed": 0 } } },
+    { "id": "print", "type": "Print",              "position": { "x": 560,  "y": 0 }, "data": { "params": { "label": "hidden states h_seq" } } }
+  ],
+  "edges": [
+    { "id": "trig", "source": "start", "target": "seq",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "seq",   "target": "lstm",  "sourceHandle": "tensor",  "targetHandle": "x_seq" },
+    { "id": "e2",   "source": "lstm",  "target": "print", "sourceHandle": "h_seq",   "targetHandle": "value" }
+  ]
+}

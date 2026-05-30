@@ -1,0 +1,18 @@
+{
+  "name": "One denoising step: x_t and a predicted noise into x_(t-1)",
+  "description": "A noisy 4x4 latent x_t and a predicted noise epsilon are combined in one deterministic DDIM reverse step. Turn on Verbose mode to see the schedule coefficients (alpha-bar_t, alpha-bar_(t-1) and their square roots), the predicted clean image pred_x0 = (x_t - sqrt(1-abar_t)*eps)/sqrt(abar_t), and the recombined x_(t-1). Chaining many of these is the whole reverse diffusion process.",
+  "nodes": [
+    { "id": "start", "type": "Start",                 "position": { "x": -320, "y": 0 },   "data": { "params": {} } },
+    { "id": "xt",    "type": "TensorInput",           "position": { "x": -80,  "y": -90 }, "data": { "params": { "shape": "1,1,4,4", "dtype": "float32", "value_mode": "random", "seed": 0 } } },
+    { "id": "eps",   "type": "TensorInput",           "position": { "x": -80,  "y": 90 },  "data": { "params": { "shape": "1,1,4,4", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
+    { "id": "dn",    "type": "deep:Edu-DenoiseStep",  "position": { "x": 260,  "y": 0 },   "data": { "params": { "t": 50, "num_steps": 100, "beta_start": 0.0001, "beta_end": 0.02 } } },
+    { "id": "print", "type": "Print",                 "position": { "x": 560,  "y": 0 },   "data": { "params": { "label": "x_(t-1)" } } }
+  ],
+  "edges": [
+    { "id": "trig1", "source": "start", "target": "xt",    "sourceHandle": "trigger",    "type": "trigger" },
+    { "id": "trig2", "source": "start", "target": "eps",   "sourceHandle": "trigger",    "type": "trigger" },
+    { "id": "e1",    "source": "xt",    "target": "dn",    "sourceHandle": "tensor",     "targetHandle": "x_t" },
+    { "id": "e2",    "source": "eps",   "target": "dn",    "sourceHandle": "tensor",     "targetHandle": "noise_pred" },
+    { "id": "e3",    "source": "dn",    "target": "print", "sourceHandle": "x_prev",     "targetHandle": "value" }
+  ]
+}

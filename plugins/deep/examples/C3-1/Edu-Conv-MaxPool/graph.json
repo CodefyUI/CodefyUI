@@ -1,0 +1,17 @@
+{
+  "name": "Conv + MaxPool: the two CNN operators, stepped out",
+  "description": "A 6x6 single-channel image flows through Edu-Conv2d (2 output channels, 3x3 kernel, padding 1) then Edu-MaxPool2d (2x2). Turn on Verbose mode to watch the convolution as an im2col → matmul → fold chain, then max pooling keep one value per window and halve the spatial size (6x6 → 3x3). The `cols` output makes the 'sliding kernel = one big matmul' identity explicit.",
+  "nodes": [
+    { "id": "start", "type": "Start",                 "position": { "x": -280, "y": 0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",           "position": { "x": -40,  "y": 0 }, "data": { "params": { "shape": "1,1,6,6", "dtype": "float32", "value_mode": "random", "seed": 0 } } },
+    { "id": "conv",  "type": "deep:Edu-Conv2d",       "position": { "x": 240,  "y": 0 }, "data": { "params": { "out_channels": 2, "kernel_size": 3, "stride": 1, "padding": 1, "seed": 0 } } },
+    { "id": "pool",  "type": "deep:Edu-MaxPool2d",    "position": { "x": 520,  "y": 0 }, "data": { "params": { "kernel_size": 2, "stride": 0, "padding": 0 } } },
+    { "id": "print", "type": "Print",                 "position": { "x": 800,  "y": 0 }, "data": { "params": { "label": "pooled feature map" } } }
+  ],
+  "edges": [
+    { "id": "trig", "source": "start", "target": "img",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e1",   "source": "img",   "target": "conv",  "sourceHandle": "tensor",  "targetHandle": "x" },
+    { "id": "e2",   "source": "conv",  "target": "pool",  "sourceHandle": "y",       "targetHandle": "x" },
+    { "id": "e3",   "source": "pool",  "target": "print", "sourceHandle": "y",       "targetHandle": "value" }
+  ]
+}
