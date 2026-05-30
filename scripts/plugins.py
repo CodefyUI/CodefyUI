@@ -2,7 +2,7 @@
 
 Two install sources, one command::
 
-    cdui plugin install C2                              # built-in chapter pack via catalog
+    cdui plugin install deep                            # built-in direction pack via catalog
     cdui plugin install foo/bar                         # GitHub short form, default branch
     cdui plugin install foo/bar@v1.2.3                  # GitHub, tagged release
     cdui plugin install https://github.com/foo/bar      # full URL
@@ -139,7 +139,7 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
 
     raise ValueError(
         f"Could not parse plugin source: {spec!r}. "
-        "Expected a catalog name (e.g. C2), owner/repo[@ref], or a GitHub URL."
+        "Expected a catalog name (e.g. foundations), owner/repo[@ref], or a GitHub URL."
     )
 
 

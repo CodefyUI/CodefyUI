@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from cdui_plugins.c5.nodes.edu_policy_gradient_node import EduPolicyGradientNode
+from cdui_plugins.rl.nodes.edu_policy_gradient_node import EduPolicyGradientNode
 
 
 def _run(logits, actions, rewards, **params):
@@ -20,7 +20,7 @@ def _run(logits, actions, rewards, **params):
 
 
 def test_node_metadata():
-    assert EduPolicyGradientNode.NODE_NAME == "EduPolicyGradient"
+    assert EduPolicyGradientNode.NODE_NAME == "Edu-PolicyGradient"
     assert EduPolicyGradientNode.CATEGORY == "RL"
     out_names = [p.name for p in EduPolicyGradientNode.define_outputs()]
     assert out_names == ["log_probs", "advantages", "loss", "probs"]

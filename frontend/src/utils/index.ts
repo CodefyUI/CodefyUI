@@ -12,12 +12,12 @@ export const VIZ_NODE_TYPES: Record<string, string> = {
   Tokenizer: 'tokenizerNode',
   EmbeddingScatter: 'embeddingScatterNode',
   TextInput: 'textInputNode',
-  EduSelfAttention: 'eduSelfAttentionNode',
-  EduMultiHeadAttention: 'eduMultiHeadAttentionNode',
+  'Edu-SelfAttention': 'eduSelfAttentionNode',
+  'Edu-MultiHeadAttention': 'eduMultiHeadAttentionNode',
   AttentionHeatmap: 'attentionHeatmapNode',
   AttentionMask: 'attentionMaskNode',
-  EduCrossAttention: 'eduCrossAttentionNode',
-  EduKNN: 'eduKNNNode',
+  'Edu-CrossAttention': 'eduCrossAttentionNode',
+  'Edu-KNN': 'eduKNNNode',
 };
 
 export const DATA_TYPE_COLORS: Record<string, string> = {
@@ -139,9 +139,13 @@ export function resolveSerializedNodes(
 
     // Regular node
     const def = defMap.get(nodeType);
+    // VIZ_NODE_TYPES is keyed by the bare NODE_NAME, but a serialized plugin node
+    // carries a namespaced type ("foundations:Edu-KNN"). Strip the "<plugin>:" prefix
+    // so the custom renderer still fires regardless of which pack ships the node.
+    const bareType = nodeType.includes(':') ? nodeType.slice(nodeType.lastIndexOf(':') + 1) : nodeType;
     return {
       id: raw.id,
-      type: VIZ_NODE_TYPES[nodeType] ?? 'baseNode',
+      type: VIZ_NODE_TYPES[bareType] ?? 'baseNode',
       position,
       data: {
         label: raw.data?.label ?? nodeType,

@@ -1,0 +1,22 @@
+{
+  "name": "Self-Attention 101: how a single attention head looks",
+  "description": "A single attention head, fully transparent: text → tokens → tiny embeddings → positional encoding → hand-written scaled-dot-product attention. The heatmap on EduSelfAttention shows weights[i, j] — how much position i attended to position j. Run it, then change `causal` to true to see the upper triangle blocked, or tweak `temperature` to watch the distribution sharpen / flatten.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start",              "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "text",     "type": "TextInput",          "position": { "x": -40,  "y": 0 }, "data": { "params": { "value": "the cat sat on the mat" } } },
+    { "id": "tok",      "type": "Tokenizer",          "position": { "x": 240,  "y": 0 }, "data": { "params": { "family": "cl100k_base", "text": "", "show_special_tokens": false } } },
+    { "id": "embed",    "type": "foundations:Edu-TokenEmbedding",  "position": { "x": 520,  "y": 0 }, "data": { "params": { "embed_dim": 8, "vocab_size": 32, "seed": 42, "mode": "ordinal" } } },
+    { "id": "pe",       "type": "PositionalEncoding", "position": { "x": 800,  "y": 0 }, "data": { "params": { "mode": "sinusoidal", "max_len": 64, "seed": 42 } } },
+    { "id": "attn",     "type": "deep:Edu-SelfAttention",   "position": { "x": 1080, "y": 0 }, "data": { "params": { "embed_dim": 8, "causal": false, "temperature": 1.0, "seed": 42 } } },
+    { "id": "print",    "type": "Print",              "position": { "x": 1380, "y": 0 }, "data": { "params": { "label": "Attention output" } } }
+  ],
+  "edges": [
+    { "id": "trig",  "source": "start-1", "target": "text",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_t1",  "source": "text",    "target": "tok",   "sourceHandle": "text",       "targetHandle": "text" },
+    { "id": "e_t2",  "source": "tok",     "target": "embed", "sourceHandle": "tokens",     "targetHandle": "tokens" },
+    { "id": "e_t3",  "source": "embed",   "target": "pe",    "sourceHandle": "embeddings", "targetHandle": "tensor" },
+    { "id": "e_t4",  "source": "pe",      "target": "attn",  "sourceHandle": "tensor",     "targetHandle": "tensor" },
+    { "id": "e_lbl", "source": "tok",     "target": "attn",  "sourceHandle": "tokens",     "targetHandle": "labels" },
+    { "id": "e_out", "source": "attn",    "target": "print", "sourceHandle": "output",     "targetHandle": "value" }
+  ]
+}

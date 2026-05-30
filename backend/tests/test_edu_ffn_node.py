@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c4.nodes.edu_ffn_node import EduFFNNode
+from cdui_plugins.foundations.nodes.edu_ffn_node import EduFFNNode
 
 
 def _run(tensor, **params):
@@ -20,7 +20,7 @@ def _run(tensor, **params):
 
 
 def test_node_metadata():
-    assert EduFFNNode.NODE_NAME == "EduFFN"
+    assert EduFFNNode.NODE_NAME == "Edu-FFN"
     assert EduFFNNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduFFNNode.define_outputs()]
     assert out_names == ["tensor", "activations"]

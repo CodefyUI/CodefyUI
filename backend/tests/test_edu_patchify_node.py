@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c6.nodes.edu_patchify_node import EduPatchifyNode
+from cdui_plugins.deep.nodes.edu_patchify_node import EduPatchifyNode
 
 
 def _run(image, **params):
@@ -15,7 +15,7 @@ def _run(image, **params):
 
 
 def test_node_metadata():
-    assert EduPatchifyNode.NODE_NAME == "EduPatchify"
+    assert EduPatchifyNode.NODE_NAME == "Edu-Patchify"
     assert EduPatchifyNode.CATEGORY == "Transformer"
     out_names = [p.name for p in EduPatchifyNode.define_outputs()]
     assert out_names == ["tokens", "grid"]

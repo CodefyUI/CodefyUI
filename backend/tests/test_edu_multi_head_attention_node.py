@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c4.nodes.edu_multi_head_attention_node import EduMultiHeadAttentionNode
+from cdui_plugins.deep.nodes.edu_multi_head_attention_node import EduMultiHeadAttentionNode
 
 
 def _run(tensor, *, mask=None, labels=None, **params):
@@ -20,7 +20,7 @@ def _run(tensor, *, mask=None, labels=None, **params):
 
 
 def test_node_metadata():
-    assert EduMultiHeadAttentionNode.NODE_NAME == "EduMultiHeadAttention"
+    assert EduMultiHeadAttentionNode.NODE_NAME == "Edu-MultiHeadAttention"
     assert EduMultiHeadAttentionNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduMultiHeadAttentionNode.define_outputs()]
     assert out_names == ["output", "weights", "labels"]

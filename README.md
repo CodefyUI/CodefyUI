@@ -168,38 +168,36 @@ The toolbar **⚙ Settings** popover groups every per-tab teaching/training swit
 
 ## Plugin Packs
 
-Lesson-specific and educational nodes ship as installable plugin packs so a
-default install keeps the palette focused on production nodes:
+Educational ("Edu") nodes ship as installable plugin packs, organised **by
+direction** so each maps onto a hands-on textbook module and installs
+cumulatively as you progress:
 
 ```bash
-cdui plugin install C1 C2 C3 C4 C5 C6   # full textbook companion (12 Edu nodes)
+cdui plugin install foundations deep rl   # full textbook companion
 cdui plugin list
-cdui plugin info C4                      # manifest, lessons covered, node names
-cdui plugin search attention             # query the catalog
-cdui plugin install foo/bar              # third-party pack from GitHub
-cdui plugin uninstall C4
+cdui plugin info deep                      # manifest, lessons covered, node names
+cdui plugin search attention              # query the catalog
+cdui plugin install foo/bar               # third-party pack from GitHub
+cdui plugin uninstall deep
 ```
 
-Built-in chapter packs live in `plugins/<id>/` inside this repo (activated
+Built-in direction packs live in `plugins/<id>/` inside this repo (activated
 in place, no copies). Third-party packs are downloaded as a pinned-SHA
 tarball into `<USER_DATA>/plugins/<id>/` and AST-validated before install.
 The lockfile at `<USER_DATA>/plugins/installed.json` records every install
 and lets `cdui start` rediscover them on the next launch.
 
-| Pack | Chapter | Lessons | Edu nodes |
-|------|---------|---------|-----------|
-| `c1` | 基本資訊 | C1-2 (tabular) | EduColumnStats |
-| `c2` | 經典 AI | C2-2 (classifiers) | EduKNN, EduLinearRegression, EduLogisticRegression |
-| `c3` | 圖像處理 | C3-2 (UNet), C3-3 (Diffusion) | EduCrossAttention, EduResBlock |
-| `c4` | 序列處理 | C4-2 (attention), C4-3 (Transformer) | EduTokenEmbedding, EduSelfAttention, EduMultiHeadAttention, EduFFN |
-| `c5` | 強化學習 | C5-1, C5-2 (PPO) | EduPolicyGradient |
-| `c6` | 前沿技術 | C6-2 (ViT) | EduPatchify |
+| Pack | Hands-on modules | Edu nodes |
+|------|------------------|-----------|
+| `foundations` | I1 資料表示 · I2 經典 ML | Edu-ColumnStats, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-TokenEmbedding, Edu-FFN |
+| `deep` | I3 視覺 · I4 序列 | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |
+| `rl` | I5 強化學習 | Edu-PolicyGradient |
 
 Each Edu node decomposes a single lesson concept into a chain of named steps
-that the Teaching Inspector renders one row at a time — `EduColumnStats`
+that the Teaching Inspector renders one row at a time — `Edu-ColumnStats`
 shows the population-std formula as `sum → divide → deviations² → variance
-→ sqrt`; `EduPolicyGradient` exposes `softmax → gather → log → baseline →
-loss`; `EduPatchify` makes `unfold → permute → flatten` visible. Switch
+→ sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline →
+loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch
 **Verbose mode** in the toolbar ⚙ Settings popover to capture them.
 
 ### Writing your own plugin
@@ -214,10 +212,11 @@ cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
 cdui plugin install your-username/your-fork
 ```
 
-> **BREAKING (v0.2):** the `Edu*` nodes that used to ship in
-> `backend/app/nodes/` have moved into per-chapter plugins. Existing graph
-> JSONs that reference `EduKNN`, `EduSelfAttention`, `EduCrossAttention`,
-> etc. will fail to run until you `cdui plugin install C2 C3 C4`.
+> **BREAKING (v0.3):** the chapter packs `c1`–`c6` are repackaged into three
+> direction packs `foundations` / `deep` / `rl`, and every Edu node's type id
+> gains a dash (`EduKNN` → `Edu-KNN`). Saved graphs that reference the old
+> `cN:EduFoo` types must be updated to `<pack>:Edu-Foo` and the packs
+> reinstalled with `cdui plugin install foundations deep rl`.
 
 ## Custom Nodes
 

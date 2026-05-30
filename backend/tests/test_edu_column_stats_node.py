@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c1.nodes.edu_column_stats_node import EduColumnStatsNode
+from cdui_plugins.foundations.nodes.edu_column_stats_node import EduColumnStatsNode
 
 
 def _run(table, **params):
@@ -13,7 +13,7 @@ def _run(table, **params):
 
 
 def test_node_metadata():
-    assert EduColumnStatsNode.NODE_NAME == "EduColumnStats"
+    assert EduColumnStatsNode.NODE_NAME == "Edu-ColumnStats"
     assert EduColumnStatsNode.CATEGORY == "Classical"
     out_names = [p.name for p in EduColumnStatsNode.define_outputs()]
     assert out_names == ["means", "stds", "mins", "maxs", "counts"]

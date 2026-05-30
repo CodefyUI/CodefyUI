@@ -16,10 +16,10 @@ from app.core.plugin_validator import PluginValidationError
 # ── parse_source ───────────────────────────────────────────────────────────
 
 def test_parse_source_catalog_case_insensitive():
-    # 'C2' / 'c2' / 'C3' / etc. live in plugins/registry.json
-    assert plugin_cli.parse_source("C2") == ("catalog", "c2", "", "")
-    assert plugin_cli.parse_source("c2") == ("catalog", "c2", "", "")
-    assert plugin_cli.parse_source("c6") == ("catalog", "c6", "", "")
+    # 'foundations' / 'deep' / 'rl' live in plugins/registry.json
+    assert plugin_cli.parse_source("foundations") == ("catalog", "foundations", "", "")
+    assert plugin_cli.parse_source("Foundations") == ("catalog", "foundations", "", "")
+    assert plugin_cli.parse_source("RL") == ("catalog", "rl", "", "")
 
 
 def test_parse_source_github_short_no_ref():
@@ -147,11 +147,11 @@ def test_validate_nodes_dir_rejects_dynamic_getattr(tmp_path):
 
 # ── load_catalog ────────────────────────────────────────────────────────────
 
-def test_load_catalog_returns_six_chapter_packs():
+def test_load_catalog_returns_three_direction_packs():
     catalog = plugin_cli.load_catalog()
     plugins = catalog.get("plugins", {})
-    assert set(plugins.keys()) >= {"c1", "c2", "c3", "c4", "c5", "c6"}
-    for pid in ("c1", "c2", "c3", "c4", "c5", "c6"):
+    assert set(plugins.keys()) >= {"foundations", "deep", "rl"}
+    for pid in ("foundations", "deep", "rl"):
         assert plugins[pid].get("kind") == "builtin"
         assert plugins[pid].get("path") == f"plugins/{pid}"
 

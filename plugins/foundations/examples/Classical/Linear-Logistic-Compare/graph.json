@@ -1,0 +1,32 @@
+{
+  "name": "Linear vs Logistic: same skeleton, different last operator",
+  "description": "Two parallel chains illustrating C2-2's punchline — KNN, linear, and logistic regression share the same `feature → linear combination` skeleton; the only difference is what happens to the linear output. The top chain runs EduLinearRegression on a regression target (real-valued); the bottom chain runs EduLogisticRegression on the same features but with a binary classification target. The Print nodes show how the same input fits two different models.",
+  "nodes": [
+    { "id": "start-1",  "type": "Start",                  "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+
+    { "id": "x_data",   "type": "TensorCreate",           "position": { "x": -40,  "y": -160 }, "data": { "params": { "shape": "30,2", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "y_reg",    "type": "TensorCreate",           "position": { "x": -40,  "y": -50  }, "data": { "params": { "shape": "30",  "fill": "randn", "value": 0, "requires_grad": false } } },
+
+    { "id": "linreg",   "type": "foundations:Edu-LinearRegression",    "position": { "x": 280,  "y": -100 }, "data": { "params": { "method": "closed_form", "lr": 0.01, "epochs": 100, "regularization": 0.0 } } },
+    { "id": "print_lin","type": "Print",                  "position": { "x": 600,  "y": -100 }, "data": { "params": { "label": "Linear regression: weights" } } },
+
+    { "id": "logreg",   "type": "foundations:Edu-LogisticRegression",  "position": { "x": 280,  "y": 120  }, "data": { "params": { "lr": 0.1, "epochs": 200, "regularization": 0.0 } } },
+    { "id": "y_log_csv","type": "CSVReader",              "position": { "x": -40,  "y": 200  }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "petal length (cm),petal width (cm)", "skip_header": true } } },
+    { "id": "print_log","type": "Print",                  "position": { "x": 600,  "y": 120  }, "data": { "params": { "label": "Logistic regression: predictions" } } }
+  ],
+  "edges": [
+    { "id": "trig_x",     "source": "start-1", "target": "x_data",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_yreg",  "source": "start-1", "target": "y_reg",    "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_csv",   "source": "start-1", "target": "y_log_csv","sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_lin_x",    "source": "x_data",  "target": "linreg",   "sourceHandle": "tensor", "targetHandle": "x_train" },
+    { "id": "e_lin_y",    "source": "y_reg",   "target": "linreg",   "sourceHandle": "tensor", "targetHandle": "y_train" },
+    { "id": "e_lin_q",    "source": "x_data",  "target": "linreg",   "sourceHandle": "tensor", "targetHandle": "x_query" },
+    { "id": "e_lin_print","source": "linreg",  "target": "print_lin","sourceHandle": "weights","targetHandle": "value" },
+
+    { "id": "e_log_x",    "source": "y_log_csv","target": "logreg",  "sourceHandle": "tensor", "targetHandle": "x_train" },
+    { "id": "e_log_y",    "source": "y_log_csv","target": "logreg",  "sourceHandle": "labels", "targetHandle": "y_train" },
+    { "id": "e_log_q",    "source": "y_log_csv","target": "logreg",  "sourceHandle": "tensor", "targetHandle": "x_query" },
+    { "id": "e_log_print","source": "logreg",  "target": "print_log","sourceHandle": "predictions","targetHandle": "value" }
+  ]
+}

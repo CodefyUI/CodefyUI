@@ -1,0 +1,17 @@
+{
+  "name": "Patchify 101: an image becomes a token sequence",
+  "description": "Supports lesson C6-2 (ViT). A synthetic 1×3×16×16 image is split into 4×4 patches via EduPatchify. With patch_size=4 the 16×16 image becomes a 4×4 grid of patches → 16 token vectors of length C·P·P = 48. Toggle `flatten=false` to keep the [C,P,P] structure per patch (handy for the Inspector to render each patch as a tiny image). The verbose 'Steps' tab walks unfold → permute → flatten so students see how the spatial dimensions collapse into the token dimension.",
+  "nodes": [
+    { "id": "start-1", "type": "Start",         "position": { "x": -240, "y":    0 }, "data": { "params": {} } },
+    { "id": "image",   "type": "TensorInput",   "position": { "x":   40, "y":    0 }, "data": { "params": { "shape": "1,3,16,16", "dtype": "float32", "value_mode": "random", "seed": 11 } } },
+    { "id": "patch",   "type": "deep:Edu-Patchify",   "position": { "x":  360, "y":    0 }, "data": { "params": { "patch_size": 4, "flatten": true } } },
+    { "id": "p_tok",   "type": "Print",         "position": { "x":  680, "y": -100 }, "data": { "params": { "label": "Patch tokens [B, N, C·P·P]" } } },
+    { "id": "p_grid",  "type": "Print",         "position": { "x":  680, "y":  100 }, "data": { "params": { "label": "Patch grid [grid_h, grid_w]" } } }
+  ],
+  "edges": [
+    { "id": "trig", "source": "start-1", "target": "image", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_im", "source": "image",   "target": "patch", "sourceHandle": "tensor",  "targetHandle": "image" },
+    { "id": "e_t",  "source": "patch",   "target": "p_tok", "sourceHandle": "tokens",  "targetHandle": "value" },
+    { "id": "e_g",  "source": "patch",   "target": "p_grid","sourceHandle": "grid",    "targetHandle": "value" }
+  ]
+}
