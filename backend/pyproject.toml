@@ -28,6 +28,13 @@ dependencies = [
     "safetensors>=0.4.0",
     "datasets>=2.14",
     "kagglehub>=0.3",
+    # kagglehub's handle.py imports `get_web_endpoint` from kagglesdk, but
+    # kagglesdk 0.1.24 (2026-05-26) renamed it to `get_endpoint`, so newer
+    # kagglesdk breaks `import kagglehub` outright. CI and dev.py install via
+    # `uv pip install` which ignores uv.lock, so the cap must live in the
+    # dependency spec itself. Remove once kagglehub ships a release that uses
+    # the new name.
+    "kagglesdk<0.1.24",
     "tiktoken>=0.7.0",
     "tokenizers>=0.15.0",
     "huggingface_hub>=0.20.0",
