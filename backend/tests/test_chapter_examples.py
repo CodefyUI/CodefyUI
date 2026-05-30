@@ -1,9 +1,9 @@
-"""Smoke-test every chapter plugin example by actually executing its graph.
+"""Smoke-test every plugin example by actually executing its graph.
 
-Each chapter has at least one ``plugins/c{N}/examples/C{N}-{M}/<name>/graph.json``
-that the textbook references. A broken graph wastes the student's first
-attempt at running the example, so this test asserts each graph parses,
-validates, and executes end-to-end without error.
+Each direction pack ships ``plugins/<pack>/examples/**/graph.json`` files that
+the textbook references. A broken graph wastes the student's first attempt at
+running the example, so this test asserts each graph parses, validates, and
+executes end-to-end without error.
 
 Parametrised by glob so adding a new example file is enough — no test
 code changes required.
@@ -25,7 +25,9 @@ _PLUGIN_ROOT = _REPO_ROOT / "plugins"
 
 
 def _discover_chapter_graphs() -> list[Path]:
-    return sorted(_PLUGIN_ROOT.glob("c?/examples/**/graph.json"))
+    # Match every direction pack (foundations / deep / rl) — and any future
+    # pack — under plugins/<pack>/examples/.
+    return sorted(_PLUGIN_ROOT.glob("*/examples/**/graph.json"))
 
 
 _GRAPHS = _discover_chapter_graphs()
