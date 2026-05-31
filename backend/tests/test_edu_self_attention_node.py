@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from cdui_plugins.c4.nodes.edu_self_attention_node import EduSelfAttentionNode
+from cdui_plugins.deep.nodes.edu_self_attention_node import EduSelfAttentionNode
 
 
 def _run(tensor, *, mask=None, labels=None, **params):
@@ -22,7 +22,7 @@ def _run(tensor, *, mask=None, labels=None, **params):
 
 
 def test_node_metadata():
-    assert EduSelfAttentionNode.NODE_NAME == "EduSelfAttention"
+    assert EduSelfAttentionNode.NODE_NAME == "Edu-SelfAttention"
     assert EduSelfAttentionNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduSelfAttentionNode.define_outputs()]
     assert out_names == ["output", "weights", "labels"]

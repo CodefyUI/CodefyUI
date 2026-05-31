@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c2.nodes.edu_knn_node import EduKNNNode
+from cdui_plugins.foundations.nodes.edu_knn_node import EduKNNNode
 
 
 def _run(x_train, y_train, x_query, **params):
@@ -17,7 +17,7 @@ def _run(x_train, y_train, x_query, **params):
 
 
 def test_node_metadata():
-    assert EduKNNNode.NODE_NAME == "EduKNN"
+    assert EduKNNNode.NODE_NAME == "Edu-KNN"
     assert EduKNNNode.CATEGORY == "Classical"
     out_names = [p.name for p in EduKNNNode.define_outputs()]
     assert out_names == [

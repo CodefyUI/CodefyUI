@@ -1,0 +1,15 @@
+[plugin]
+id              = "foundations"
+name            = "Foundations — 資料表示與經典 ML"
+version         = "0.1.0"
+description     = "Educational nodes for the I1–I2 hands-on track: data representation (column stats, image sliding window, token embedding, vector similarity) and classical ML (KNN, linear / logistic regression, SVM, decision tree, feed-forward network). Every node exposes its intermediate steps in verbose mode."
+schema_version  = 1
+requires_codefyui = ">=0.2.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"
+
+[lessons]
+chapters = ["C1", "C2"]
+lessons  = ["C1-2", "C1-3", "C2-1", "C2-2", "C2-4"]

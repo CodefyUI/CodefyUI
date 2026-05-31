@@ -1,47 +1,26 @@
 {
   "schema": 1,
   "plugins": {
-    "c1": {
-      "name": "Chapter 1 — 基本資訊",
-      "description": "Data inspection nodes that make tabular / image / text shapes legible. Includes EduColumnStats (per-column statistics with each step recorded).",
+    "foundations": {
+      "name": "Foundations — 資料表示與經典 ML",
+      "description": "Data-representation and classical-ML teaching nodes for hands-on modules I1–I2: Edu-ColumnStats, Edu-SlidingWindow, Edu-TokenEmbedding, Edu-VectorSimilarity, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-SVM, Edu-DecisionTree, Edu-FFN. Each step is recorded in verbose mode.",
       "kind": "builtin",
-      "path": "plugins/c1",
-      "chapters": ["C1"]
+      "path": "plugins/foundations",
+      "chapters": ["C1", "C2"]
     },
-    "c2": {
-      "name": "Chapter 2 — 經典 AI",
-      "description": "Hand-written classifiers: KNN, Linear Regression, Logistic Regression. Drop-in counterparts to the sklearn-backed production nodes.",
+    "deep": {
+      "name": "Deep Models — 視覺與序列",
+      "description": "Vision and sequence teaching nodes for hands-on modules I3–I4: Edu-Conv2d, Edu-MaxPool2d, Edu-ResBlock, Edu-Resample, Edu-DenoiseStep, Edu-CrossAttention, Edu-Patchify, Edu-RNNCell, Edu-LSTMCell, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-LayerNorm. Stepped out so each tensor transform is visible.",
       "kind": "builtin",
-      "path": "plugins/c2",
-      "chapters": ["C2"]
+      "path": "plugins/deep",
+      "chapters": ["C3", "C4", "C6"]
     },
-    "c3": {
-      "name": "Chapter 3 — 圖像處理",
-      "description": "Stepped-out diffusion / U-Net teaching blocks: cross-attention, residual block with time embedding.",
+    "rl": {
+      "name": "Reinforcement Learning — 強化學習",
+      "description": "Reinforcement-learning teaching nodes for hands-on module I5: Edu-PolicyGradient, Edu-PPOClip, Edu-GRPO, Edu-PreferenceLoss. Each RL update is exposed as softmax → gather → baseline → ratio → clip → loss.",
       "kind": "builtin",
-      "path": "plugins/c3",
-      "chapters": ["C3"]
-    },
-    "c4": {
-      "name": "Chapter 4 — 序列處理",
-      "description": "Transformer ingredients exposed step-by-step: token embedding, self-attention, multi-head attention, FFN.",
-      "kind": "builtin",
-      "path": "plugins/c4",
-      "chapters": ["C4"]
-    },
-    "c5": {
-      "name": "Chapter 5 — 強化學習",
-      "description": "Reinforcement learning teaching nodes. Includes EduPolicyGradient — one REINFORCE step exposed as softmax → gather → log → baseline → loss.",
-      "kind": "builtin",
-      "path": "plugins/c5",
+      "path": "plugins/rl",
       "chapters": ["C5"]
-    },
-    "c6": {
-      "name": "Chapter 6 — 前沿技術",
-      "description": "Frontier topics. Includes EduPatchify — the unfold → permute → flatten chain that turns an image into a ViT token sequence.",
-      "kind": "builtin",
-      "path": "plugins/c6",
-      "chapters": ["C6"]
     }
   }
 }

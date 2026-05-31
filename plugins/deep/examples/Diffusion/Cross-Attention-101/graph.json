@@ -1,0 +1,18 @@
+{
+  "name": "Cross-Attention 101: Q from one place, K/V from another",
+  "description": "The mechanism that lets Stable Diffusion's U-Net condition on a text prompt. Self-attention sources Q, K, V all from one tensor; cross-attention sources Q from a 'query' tensor (the image patches) and K/V from a 'context' tensor (the text token embeddings). The two may have different sequence lengths — the heatmap on the right is rectangular, with image positions on the rows and text positions on the columns. Run it and check the inline heatmap to see which 'text' position each 'image' position attended to.",
+  "nodes": [
+    { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "q",   "type": "TensorCreate", "position": { "x": 0,   "y": -100 }, "data": { "params": { "shape": "6,8", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "ctx", "type": "TensorCreate", "position": { "x": 0,   "y": 100  }, "data": { "params": { "shape": "4,8", "fill": "randn", "value": 0, "requires_grad": false } } },
+    { "id": "attn", "type": "deep:Edu-CrossAttention", "position": { "x": 320, "y": 0 }, "data": { "params": { "embed_dim": 8, "num_heads": 2, "seed": 42 } } },
+    { "id": "print", "type": "Print", "position": { "x": 700, "y": 0 }, "data": { "params": { "label": "Cross-attn output" } } }
+  ],
+  "edges": [
+    { "id": "trig_q",   "source": "start-1", "target": "q",   "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig_ctx", "source": "start-1", "target": "ctx", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_q",   "source": "q",   "target": "attn", "sourceHandle": "tensor", "targetHandle": "query" },
+    { "id": "e_ctx", "source": "ctx", "target": "attn", "sourceHandle": "tensor", "targetHandle": "context" },
+    { "id": "e_out", "source": "attn", "target": "print", "sourceHandle": "output", "targetHandle": "value" }
+  ]
+}

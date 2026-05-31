@@ -1,0 +1,25 @@
+{
+  "name": "Policy Gradient 101: one REINFORCE step exposed",
+  "description": "Supports lesson C5-2 (PPO) — minus the clipping. Three input tensors stand in for the trajectory: `logits` (the policy's preference over 3 actions for 4 timesteps), `actions` (which action was actually sampled), and `rewards` (the return that followed). EduPolicyGradient softmaxes the logits, gathers π(a|s), subtracts the batch-mean baseline to get advantages, and assembles the scalar loss. Run it, then switch `baseline` to 'none' and watch how the loss changes when the variance-reduction trick is removed.",
+  "nodes": [
+    { "id": "start-1", "type": "Start",              "position": { "x": -240, "y":   0 }, "data": { "params": {} } },
+    { "id": "logits",  "type": "TensorInput",        "position": { "x":   40, "y": -160 }, "data": { "params": { "shape": "4,3", "dtype": "float32", "value_mode": "random", "seed": 1 } } },
+    { "id": "actions", "type": "TensorInput",        "position": { "x":   40, "y":    0 }, "data": { "params": { "shape": "4",   "dtype": "int64",   "value_mode": "explicit", "values": [0, 1, 2, 1], "seed": 2 } } },
+    { "id": "rewards", "type": "TensorInput",        "position": { "x":   40, "y":  160 }, "data": { "params": { "shape": "4",   "dtype": "float32", "value_mode": "random", "seed": 3 } } },
+    { "id": "pg",      "type": "rl:Edu-PolicyGradient",  "position": { "x":  380, "y":    0 }, "data": { "params": { "baseline": "mean", "temperature": 1.0 } } },
+    { "id": "p_loss",  "type": "Print",              "position": { "x":  720, "y": -120 }, "data": { "params": { "label": "Policy-gradient loss" } } },
+    { "id": "p_adv",   "type": "Print",              "position": { "x":  720, "y":    0 }, "data": { "params": { "label": "Advantages (rewards − baseline)" } } },
+    { "id": "p_lp",    "type": "Print",              "position": { "x":  720, "y":  120 }, "data": { "params": { "label": "log π(a|s)" } } }
+  ],
+  "edges": [
+    { "id": "trig",  "source": "start-1", "target": "logits",  "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig2", "source": "start-1", "target": "actions", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "trig3", "source": "start-1", "target": "rewards", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_l",   "source": "logits",  "target": "pg",      "sourceHandle": "tensor", "targetHandle": "logits" },
+    { "id": "e_a",   "source": "actions", "target": "pg",      "sourceHandle": "tensor", "targetHandle": "actions" },
+    { "id": "e_r",   "source": "rewards", "target": "pg",      "sourceHandle": "tensor", "targetHandle": "rewards" },
+    { "id": "e_pl",  "source": "pg",      "target": "p_loss",  "sourceHandle": "loss",       "targetHandle": "value" },
+    { "id": "e_pa",  "source": "pg",      "target": "p_adv",   "sourceHandle": "advantages", "targetHandle": "value" },
+    { "id": "e_plp", "source": "pg",      "target": "p_lp",    "sourceHandle": "log_probs",  "targetHandle": "value" }
+  ]
+}

@@ -52,14 +52,14 @@ def test_install_plugin_finder_skips_disabled(tmp_path):
     lockfile = {
         "schema": 1,
         "plugins": {
-            "c1": {"source_kind": "builtin", "source": "c1", "enabled": True},
-            "c2": {"source_kind": "builtin", "source": "c2", "enabled": False},
+            "foundations": {"source_kind": "builtin", "source": "foundations", "enabled": True},
+            "deep": {"source_kind": "builtin", "source": "deep", "enabled": False},
         },
     }
     pairs = plugin_loader.install_plugin_finder(builtin, tmp_path, lockfile)
     paths = {p[0].parent.name for p in pairs}
-    assert "c1" in paths
-    assert "c2" not in paths
+    assert "foundations" in paths
+    assert "deep" not in paths
 
 
 def test_iter_plugin_dirs_include_disabled_flag(tmp_path):
@@ -67,8 +67,8 @@ def test_iter_plugin_dirs_include_disabled_flag(tmp_path):
     lockfile = {
         "schema": 1,
         "plugins": {
-            "c1": {"source_kind": "builtin", "source": "c1", "enabled": True},
-            "c2": {"source_kind": "builtin", "source": "c2", "enabled": False},
+            "foundations": {"source_kind": "builtin", "source": "foundations", "enabled": True},
+            "deep": {"source_kind": "builtin", "source": "deep", "enabled": False},
         },
     }
     enabled_only = {p[0] for p in plugin_loader.iter_plugin_dirs(builtin, tmp_path, lockfile)}
@@ -78,8 +78,8 @@ def test_iter_plugin_dirs_include_disabled_flag(tmp_path):
             builtin, tmp_path, lockfile, include_disabled=True
         )
     }
-    assert enabled_only == {"c1"}
-    assert with_all == {"c1", "c2"}
+    assert enabled_only == {"foundations"}
+    assert with_all == {"foundations", "deep"}
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────
@@ -92,40 +92,40 @@ def _read_lockfile(root: Path) -> dict:
 
 def test_cli_install_sets_enabled_true(isolated_lockfile):
     """Fresh install always writes enabled=true so the entry is active."""
-    rc = plugin_cli.main(["install", "c1", "--no-confirm"])
+    rc = plugin_cli.main(["install", "foundations", "--no-confirm"])
     assert rc == 0
-    assert _read_lockfile(isolated_lockfile)["plugins"]["c1"]["enabled"] is True
+    assert _read_lockfile(isolated_lockfile)["plugins"]["foundations"]["enabled"] is True
 
 
 def test_cli_disable_then_enable_cycle(isolated_lockfile):
-    plugin_cli.main(["install", "c1", "--no-confirm"])
+    plugin_cli.main(["install", "foundations", "--no-confirm"])
 
-    assert plugin_cli.main(["disable", "c1"]) == 0
-    assert _read_lockfile(isolated_lockfile)["plugins"]["c1"]["enabled"] is False
+    assert plugin_cli.main(["disable", "foundations"]) == 0
+    assert _read_lockfile(isolated_lockfile)["plugins"]["foundations"]["enabled"] is False
 
-    assert plugin_cli.main(["enable", "c1"]) == 0
-    assert _read_lockfile(isolated_lockfile)["plugins"]["c1"]["enabled"] is True
+    assert plugin_cli.main(["enable", "foundations"]) == 0
+    assert _read_lockfile(isolated_lockfile)["plugins"]["foundations"]["enabled"] is True
 
 
 def test_cli_disable_is_idempotent_noop(isolated_lockfile, capsys):
-    plugin_cli.main(["install", "c1", "--no-confirm"])
-    plugin_cli.main(["disable", "c1"])
+    plugin_cli.main(["install", "foundations", "--no-confirm"])
+    plugin_cli.main(["disable", "foundations"])
     # Second disable should succeed with a "already disabled" notice, not error.
-    assert plugin_cli.main(["disable", "c1"]) == 0
-    assert _read_lockfile(isolated_lockfile)["plugins"]["c1"]["enabled"] is False
+    assert plugin_cli.main(["disable", "foundations"]) == 0
+    assert _read_lockfile(isolated_lockfile)["plugins"]["foundations"]["enabled"] is False
 
 
 def test_cli_disable_missing_plugin_fails(isolated_lockfile):
-    assert plugin_cli.main(["disable", "c1"]) == 1
+    assert plugin_cli.main(["disable", "foundations"]) == 1
 
 
 def test_cli_disable_preserves_repo_files(isolated_lockfile):
-    """Disable must not delete the repo's plugins/c1/ directory."""
-    plugin_cli.main(["install", "c1", "--no-confirm"])
-    repo_dir = plugin_loader.plugins_builtin_root() / "c1"
+    """Disable must not delete the repo's plugins/foundations/ directory."""
+    plugin_cli.main(["install", "foundations", "--no-confirm"])
+    repo_dir = plugin_loader.plugins_builtin_root() / "foundations"
     nodes_before = sorted(p.name for p in (repo_dir / "nodes").glob("*.py"))
 
-    plugin_cli.main(["disable", "c1"])
+    plugin_cli.main(["disable", "foundations"])
 
     assert repo_dir.is_dir()
     nodes_after = sorted(p.name for p in (repo_dir / "nodes").glob("*.py"))

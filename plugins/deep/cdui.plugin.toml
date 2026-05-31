@@ -1,0 +1,15 @@
+[plugin]
+id              = "deep"
+name            = "Deep Models — 視覺與序列"
+version         = "0.1.0"
+description     = "Educational nodes for the I3–I4 hands-on track: vision (conv with sliding window, max-pool, residual block, resample, diffusion denoise step, cross-attention, patchify) and sequence (RNN / LSTM cell, self-attention, multi-head attention, layer norm). Stepped out so learners watch each tensor transform."
+schema_version  = 1
+requires_codefyui = ">=0.2.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"
+
+[lessons]
+chapters = ["C3", "C4", "C6"]
+lessons  = ["C3-1", "C3-2", "C3-3", "C4-1", "C4-2", "C4-3", "C6-2"]

@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
     custom_count = registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
     logger.info("Discovered %d custom nodes", custom_count)
 
-    # Discover plugin nodes (per-user installed packs + built-in chapter packs)
+    # Discover plugin nodes (per-user installed packs + built-in direction packs)
     lockfile = load_lockfile()
     pairs = install_plugin_finder(
         settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile

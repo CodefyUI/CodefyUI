@@ -24,14 +24,14 @@
     plugin <subcmd> ...
                 與 cdui plugin 完全相同的介面，但 lockfile 寫到 repo 內的
                 <repo>/.codefyui_dev/plugins/ 而不是 %LOCALAPPDATA%\\codefyui，
-                讓多個 dev clone 互不干擾。官方 c1–c6 chapter pack 預設不會
-                安裝，需要時逐一裝即可。範例：
-                    python scripts/dev.py plugin install c2
+                讓多個 dev clone 互不干擾。官方 foundations/deep/rl direction
+                pack 預設不會安裝，需要時逐一裝即可。範例：
+                    python scripts/dev.py plugin install deep
                     python scripts/dev.py plugin install owner/repo@main
                     python scripts/dev.py plugin list
-                    python scripts/dev.py plugin enable c2     # 啟用
-                    python scripts/dev.py plugin disable c2    # 停用（檔案保留）
-                    python scripts/dev.py plugin uninstall c2  # 從 lockfile 移除
+                    python scripts/dev.py plugin enable deep     # 啟用
+                    python scripts/dev.py plugin disable deep    # 停用（檔案保留）
+                    python scripts/dev.py plugin uninstall deep  # 從 lockfile 移除
 
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）

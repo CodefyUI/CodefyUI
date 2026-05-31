@@ -28,9 +28,9 @@ init_allowed_hosts(settings.HOST, settings.PORT)
 
 # Register the in-repo chapter plugin packs in the synthetic `cdui_plugins`
 # namespace AT CONFTEST IMPORT TIME, before any test_*.py module is collected.
-# Tests for Edu nodes import them from `cdui_plugins.c{2,3,4}.nodes.*` — those
-# imports happen during pytest's collection pass, which runs after conftest is
-# imported, so the namespace must exist by then.
+# Tests for Edu nodes import them from `cdui_plugins.{foundations,deep,rl}.nodes.*`
+# — those imports happen during pytest's collection pass, which runs after conftest
+# is imported, so the namespace must exist by then.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 purge_all_plugin_modules()
 install_plugin_finder(
@@ -39,12 +39,9 @@ install_plugin_finder(
     lockfile={
         "schema": 1,
         "plugins": {
-            "c1": {"source_kind": "builtin", "source": "c1"},
-            "c2": {"source_kind": "builtin", "source": "c2"},
-            "c3": {"source_kind": "builtin", "source": "c3"},
-            "c4": {"source_kind": "builtin", "source": "c4"},
-            "c5": {"source_kind": "builtin", "source": "c5"},
-            "c6": {"source_kind": "builtin", "source": "c6"},
+            "foundations": {"source_kind": "builtin", "source": "foundations"},
+            "deep": {"source_kind": "builtin", "source": "deep"},
+            "rl": {"source_kind": "builtin", "source": "rl"},
         },
     },
 )
@@ -74,11 +71,11 @@ def registry_with_nodes() -> NodeRegistry:
     if len(registry.nodes) == 0:
         registry.discover(settings.NODES_DIR, "app.nodes")
         registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
-        # Plugin nodes — c{1..6} are the six textbook chapter packs.
-        for chapter in ("c1", "c2", "c3", "c4", "c5", "c6"):
-            plugin_nodes = _REPO_ROOT / "plugins" / chapter / "nodes"
+        # Plugin nodes — the three direction packs (foundations / deep / rl).
+        for plugin_id in ("foundations", "deep", "rl"):
+            plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
             if plugin_nodes.exists():
-                registry.discover(plugin_nodes, f"cdui_plugins.{chapter}.nodes")
+                registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
         preset_registry.discover(settings.PRESETS_DIR, registry)
     registry._nodes["_TestSource"] = _TestSourceNode
     return registry
@@ -99,10 +96,10 @@ def _ensure_registry_intact(registry_with_nodes):
         # Wholesale rebuild — registry was nuked by an earlier reload.
         registry.discover(settings.NODES_DIR, "app.nodes")
         registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
-        for chapter in ("c1", "c2", "c3", "c4", "c5", "c6"):
-            plugin_nodes = _REPO_ROOT / "plugins" / chapter / "nodes"
+        for plugin_id in ("foundations", "deep", "rl"):
+            plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
             if plugin_nodes.exists():
-                registry.discover(plugin_nodes, f"cdui_plugins.{chapter}.nodes")
+                registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
         registry._nodes["_TestSource"] = _TestSourceNode
     yield
 

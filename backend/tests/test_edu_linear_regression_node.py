@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c2.nodes.edu_linear_regression_node import EduLinearRegressionNode
+from cdui_plugins.foundations.nodes.edu_linear_regression_node import EduLinearRegressionNode
 
 
 def _run(x_train, y_train, x_query, **params):
@@ -17,7 +17,7 @@ def _run(x_train, y_train, x_query, **params):
 
 
 def test_node_metadata():
-    assert EduLinearRegressionNode.NODE_NAME == "EduLinearRegression"
+    assert EduLinearRegressionNode.NODE_NAME == "Edu-LinearRegression"
     assert EduLinearRegressionNode.CATEGORY == "Classical"
     out_names = [p.name for p in EduLinearRegressionNode.define_outputs()]
     assert out_names == ["predictions", "weights", "bias"]

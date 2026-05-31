@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c3.nodes.edu_cross_attention_node import EduCrossAttentionNode
+from cdui_plugins.deep.nodes.edu_cross_attention_node import EduCrossAttentionNode
 
 
 def _run(query, context, *, mask=None, q_labels=None, k_labels=None, **params):
@@ -22,7 +22,7 @@ def _run(query, context, *, mask=None, q_labels=None, k_labels=None, **params):
 
 
 def test_node_metadata():
-    assert EduCrossAttentionNode.NODE_NAME == "EduCrossAttention"
+    assert EduCrossAttentionNode.NODE_NAME == "Edu-CrossAttention"
     assert EduCrossAttentionNode.CATEGORY == "Diffusion"
     out_names = [p.name for p in EduCrossAttentionNode.define_outputs()]
     assert out_names == ["output", "weights", "q_labels", "k_labels"]

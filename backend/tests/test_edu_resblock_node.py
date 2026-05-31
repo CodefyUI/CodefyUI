@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c3.nodes.edu_resblock_node import EduResBlockNode
+from cdui_plugins.deep.nodes.edu_resblock_node import EduResBlockNode
 
 
 def _run(tensor, *, time_emb=None, **params):
@@ -24,7 +24,7 @@ def _run(tensor, *, time_emb=None, **params):
 
 
 def test_node_metadata():
-    assert EduResBlockNode.NODE_NAME == "EduResBlock"
+    assert EduResBlockNode.NODE_NAME == "Edu-ResBlock"
     assert EduResBlockNode.CATEGORY == "Diffusion"
     out_names = [p.name for p in EduResBlockNode.define_outputs()]
     assert out_names == ["tensor"]

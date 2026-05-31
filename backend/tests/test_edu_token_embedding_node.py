@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cdui_plugins.c4.nodes.edu_token_embedding_node import EduTokenEmbeddingNode
+from cdui_plugins.foundations.nodes.edu_token_embedding_node import EduTokenEmbeddingNode
 
 
 def _run(*, tokens=None, token_ids=None, **params):
@@ -20,7 +20,7 @@ def _run(*, tokens=None, token_ids=None, **params):
 
 
 def test_node_metadata():
-    assert EduTokenEmbeddingNode.NODE_NAME == "EduTokenEmbedding"
+    assert EduTokenEmbeddingNode.NODE_NAME == "Edu-TokenEmbedding"
     assert EduTokenEmbeddingNode.CATEGORY == "LLM"
     out_names = [p.name for p in EduTokenEmbeddingNode.define_outputs()]
     assert out_names == ["embeddings", "vocab"]
