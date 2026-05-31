@@ -190,7 +190,7 @@ and lets `cdui start` rediscover them on the next launch.
 | Pack | Hands-on modules | Edu nodes |
 |------|------------------|-----------|
 | `foundations` | I1 資料表示 · I2 經典 ML | Edu-ColumnStats, Edu-SlidingWindow, Edu-TokenEmbedding, Edu-VectorSimilarity, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-SVM, Edu-DecisionTree, Edu-FFN |
-| `deep` | I3 視覺 · I4 序列 | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |
+| `deep` | I3 視覺 · I4 序列 | Edu-Conv2d, Edu-MaxPool2d, Edu-ResBlock, Edu-Resample, Edu-DenoiseStep, Edu-CrossAttention, Edu-Patchify, Edu-RNNCell, Edu-LSTMCell, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-LayerNorm |
 | `rl` | I5 強化學習 | Edu-PolicyGradient |
 
 Each Edu node decomposes a single lesson concept into a chain of named steps
