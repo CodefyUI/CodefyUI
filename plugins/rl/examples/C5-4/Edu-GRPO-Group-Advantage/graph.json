@@ -1,0 +1,21 @@
+{
+  "name": "GRPO: a group of samples becomes its own baseline",
+  "description": "DeepSeek R1's core change. Four sampled completions get rewards [1, 0, 2, -1]; instead of a learned value baseline, GRPO standardizes the rewards within the group: advantage = (reward - group_mean) / (group_std + eps). Turn on Verbose mode to see the group mean/std and the resulting z-scored advantages that weight each sample's log-prob — the single conceptual diff from REINFORCE.",
+  "nodes": [
+    { "id": "start", "type": "Start",         "position": { "x": -320, "y": 0 },   "data": { "params": {} } },
+    { "id": "lg",    "type": "TensorInput",   "position": { "x": -80,  "y": -110 }, "data": { "params": { "shape": "4,3", "dtype": "float32", "value_mode": "random", "seed": 0 } } },
+    { "id": "act",   "type": "TensorInput",   "position": { "x": -80,  "y": 10 },  "data": { "params": { "shape": "4", "dtype": "int64", "value_mode": "explicit", "values": [0, 1, 2, 0] } } },
+    { "id": "rew",   "type": "TensorInput",   "position": { "x": -80,  "y": 130 }, "data": { "params": { "shape": "4", "dtype": "float32", "value_mode": "explicit", "values": [1.0, 0.0, 2.0, -1.0] } } },
+    { "id": "grpo",  "type": "rl:Edu-GRPO",   "position": { "x": 280,  "y": 0 },   "data": { "params": { "temperature": 1.0 } } },
+    { "id": "print", "type": "Print",         "position": { "x": 600,  "y": 0 },   "data": { "params": { "label": "group-normalized advantages" } } }
+  ],
+  "edges": [
+    { "id": "t1", "source": "start", "target": "lg",    "sourceHandle": "trigger",    "type": "trigger" },
+    { "id": "t2", "source": "start", "target": "act",   "sourceHandle": "trigger",    "type": "trigger" },
+    { "id": "t3", "source": "start", "target": "rew",   "sourceHandle": "trigger",    "type": "trigger" },
+    { "id": "e1", "source": "lg",    "target": "grpo",  "sourceHandle": "tensor",     "targetHandle": "logits" },
+    { "id": "e2", "source": "act",   "target": "grpo",  "sourceHandle": "tensor",     "targetHandle": "actions" },
+    { "id": "e3", "source": "rew",   "target": "grpo",  "sourceHandle": "tensor",     "targetHandle": "rewards" },
+    { "id": "e4", "source": "grpo",  "target": "print", "sourceHandle": "advantages", "targetHandle": "value" }
+  ]
+}
