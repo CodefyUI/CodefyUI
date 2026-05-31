@@ -1,0 +1,15 @@
+{
+  "name": "Sliding Window 101: a kernel sweeping an image",
+  "description": "The convolution prototype, fully visible. A 5x5 image (arange 0..24) is swept by a 3x3 edge-detection (Laplacian) kernel: at every position the receptive field is multiplied elementwise by the kernel and summed into one output cell, producing a 3x3 feature map. Turn on Verbose mode to scrub each window position — receptive field, elementwise product, and sum — in the Inspector Steps tab. Switch `kernel_preset` to blur / sharpen / sobel_x to feel what each kernel measures.",
+  "nodes": [
+    { "id": "start", "type": "Start",                        "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",                  "position": { "x": -20,  "y": 0 }, "data": { "params": { "shape": "5,5", "dtype": "float32", "value_mode": "arange" } } },
+    { "id": "sw",    "type": "foundations:Edu-SlidingWindow", "position": { "x": 260,  "y": 0 }, "data": { "params": { "kernel_preset": "edge", "stride": 1, "padding": 0 } } },
+    { "id": "print", "type": "Print",                         "position": { "x": 560,  "y": 0 }, "data": { "params": { "label": "feature map" } } }
+  ],
+  "edges": [
+    { "id": "trig", "source": "start", "target": "img",   "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "e1",   "source": "img",   "target": "sw",    "sourceHandle": "tensor",      "targetHandle": "image" },
+    { "id": "e2",   "source": "sw",    "target": "print", "sourceHandle": "feature_map", "targetHandle": "value" }
+  ]
+}

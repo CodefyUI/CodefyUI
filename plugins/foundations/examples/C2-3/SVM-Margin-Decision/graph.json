@@ -1,0 +1,21 @@
+{
+  "name": "Edu-SVM: a linear margin learned by gradient descent",
+  "description": "Two well-separated blobs (class 0 near the origin, class 1 near (5,5)) train a hand-written linear soft-margin SVM. Turn on Verbose mode to watch the hinge loss fall and the support-vector count shrink across epochs in the Inspector Steps tab; the final step exposes the weight vector, bias, the support-vector mask, and the query decision values. The two query points (0.5,0.5) and (4.5,4.5) should be classified 0 and 1.",
+  "nodes": [
+    { "id": "start", "type": "Start",                "position": { "x": -300, "y": 0 },   "data": { "params": {} } },
+    { "id": "xtr",   "type": "TensorInput",          "position": { "x": -60,  "y": -120 }, "data": { "params": { "shape": "6,2", "dtype": "float32", "value_mode": "explicit", "values": [[0, 0], [1, 0], [0, 1], [5, 5], [4, 5], [5, 4]] } } },
+    { "id": "ytr",   "type": "TensorInput",          "position": { "x": -60,  "y": 20 },   "data": { "params": { "shape": "6", "dtype": "int64", "value_mode": "explicit", "values": [0, 0, 0, 1, 1, 1] } } },
+    { "id": "xq",    "type": "TensorInput",          "position": { "x": -60,  "y": 160 },  "data": { "params": { "shape": "2,2", "dtype": "float32", "value_mode": "explicit", "values": [[0.5, 0.5], [4.5, 4.5]] } } },
+    { "id": "svm",   "type": "foundations:Edu-SVM",  "position": { "x": 280,  "y": 0 },    "data": { "params": { "C": 1.0, "lr": 0.1, "epochs": 200 } } },
+    { "id": "print", "type": "Print",                "position": { "x": 600,  "y": 0 },    "data": { "params": { "label": "predictions" } } }
+  ],
+  "edges": [
+    { "id": "trig1", "source": "start", "target": "xtr",   "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "trig2", "source": "start", "target": "ytr",   "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "trig3", "source": "start", "target": "xq",    "sourceHandle": "trigger",     "type": "trigger" },
+    { "id": "e1",    "source": "xtr",   "target": "svm",   "sourceHandle": "tensor",      "targetHandle": "x_train" },
+    { "id": "e2",    "source": "ytr",   "target": "svm",   "sourceHandle": "tensor",      "targetHandle": "y_train" },
+    { "id": "e3",    "source": "xq",    "target": "svm",   "sourceHandle": "tensor",      "targetHandle": "x_query" },
+    { "id": "e4",    "source": "svm",   "target": "print", "sourceHandle": "predictions", "targetHandle": "value" }
+  ]
+}
