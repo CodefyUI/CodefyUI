@@ -133,6 +133,18 @@ function Fetch-ReleaseDist {
     return $true
 }
 
+# 解析要安裝的 release tag（把 "latest" 解析成具體版號）；失敗回傳 $null。
+function Resolve-ReleaseTag {
+    if ($ReleaseTag -ne 'latest') { return $ReleaseTag }
+    try {
+        $api = "https://api.github.com/repos/$ReleaseRepo/releases/latest"
+        $resp = Invoke-RestMethod -UseBasicParsing -Uri $api -TimeoutSec 30 `
+            -Headers @{ 'User-Agent' = 'CodefyUI-installer' }
+        if ($resp.tag_name) { return $resp.tag_name }
+    } catch { }
+    return $null
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 Write-Host ""
 Write-Host "+======================================+"
@@ -168,18 +180,47 @@ $PythonCmd = (uv python find 3.11).Trim()
 if (-not (Test-Path $PythonCmd)) { Die "uv python find returned invalid path: $PythonCmd" }
 Ok "$(& $PythonCmd --version) ($PythonCmd)"
 
+# ── Resolve release tag ────────────────────────────────────────────────────────
+# 預編 dist 路徑會把 backend 鎖到與 dist 同一個 release tag，避免「main 後端 +
+# 舊 release 前端」版本漂移（舊前端不會跟新後端做 token bootstrap，寫入請求被
+# auth_guard 擋成 403，導致 localhost:8000 打得開卻無法執行）。
+$PinnedTag = $null
+if (-not $ForceBuild) {
+    $PinnedTag = Resolve-ReleaseTag
+    if ($PinnedTag) {
+        $ReleaseTag = $PinnedTag
+        Write-Host "  鎖定 release：$PinnedTag（前後端同版）"
+    } else {
+        Warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
+    }
+}
+
 # ── Clone / Update ────────────────────────────────────────────────────────────
 Step "Downloading CodefyUI"
 if (Test-Path (Join-Path $InstallDir '.git')) {
     Warn "Directory exists, updating..."
-    git -C $InstallDir pull --ff-only
-    if ($LASTEXITCODE -ne 0) { Die "git pull failed" }
-    Ok "Updated"
+    git -C $InstallDir fetch --tags --depth 1 origin
+    if ($PinnedTag) {
+        git -C $InstallDir fetch --depth 1 origin "refs/tags/${PinnedTag}:refs/tags/${PinnedTag}" 2>$null
+        git -C $InstallDir checkout -f $PinnedTag
+        if ($LASTEXITCODE -ne 0) { Die "git checkout $PinnedTag failed" }
+        Ok "Updated and pinned to $PinnedTag"
+    } else {
+        git -C $InstallDir pull --ff-only
+        if ($LASTEXITCODE -ne 0) { Die "git pull failed" }
+        Ok "Updated"
+    }
 } else {
     New-Item -ItemType Directory -Path (Split-Path -Parent $InstallDir) -Force | Out-Null
-    git clone --depth 1 $Repo $InstallDir
-    if ($LASTEXITCODE -ne 0) { Die "git clone failed" }
-    Ok "Clone complete"
+    if ($PinnedTag) {
+        git clone --depth 1 --branch $PinnedTag $Repo $InstallDir
+        if ($LASTEXITCODE -ne 0) { Die "git clone failed" }
+        Ok "Clone complete ($PinnedTag)"
+    } else {
+        git clone --depth 1 $Repo $InstallDir
+        if ($LASTEXITCODE -ne 0) { Die "git clone failed" }
+        Ok "Clone complete"
+    }
 }
 
 # ── Frontend dist：先試 release，失敗才裝 Node 本地 build ─────────────────────

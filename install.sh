@@ -131,6 +131,21 @@ fetch_release_dist() {
   ok "Prebuilt dist 解壓至 $dist_dir"
 }
 
+# 解析要安裝的 release tag。回傳實際 tag（把 "latest" 解析成具體版號），
+# 解析失敗則回傳空字串。用 GitHub API，不依賴 jq。
+resolve_release_tag() {
+  if [[ "$RELEASE_TAG" != "latest" ]]; then
+    echo "$RELEASE_TAG"
+    return 0
+  fi
+  local api="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
+  local tag
+  tag="$(curl -fsSL --connect-timeout 10 --retry 2 "$api" 2>/dev/null \
+    | grep -m1 '"tag_name"' \
+    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  [[ -n "$tag" ]] && echo "$tag"
+}
+
 # ══════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════╗${NC}"
@@ -164,16 +179,46 @@ PYTHON="$(uv python find 3.11)"
 [[ -x "$PYTHON" ]] || die "uv python find 回傳無效路徑：$PYTHON"
 ok "$("$PYTHON" --version) ($PYTHON)"
 
+# ── 解析 release tag ──────────────────────────────────────────────────
+# 預編 dist 路徑（非 FORCE_BUILD）會把 backend 鎖到與 dist 同一個 release
+# tag，避免「main 後端 + 舊 release 前端」版本漂移——那正是 cdui start 後
+# 打開 localhost:8000 卻無法執行的根因（舊前端不會跟新後端做 token bootstrap，
+# 所有寫入請求被 auth_guard 擋成 403）。
+PINNED_TAG=""
+if [[ "$FORCE_BUILD" != "1" ]]; then
+  PINNED_TAG="$(resolve_release_tag)"
+  if [[ -n "$PINNED_TAG" ]]; then
+    # fetch_release_dist 用 RELEASE_TAG 決定下載哪個 dist；鎖成解析後的具體
+    # tag，確保前後端來自同一版。
+    RELEASE_TAG="$PINNED_TAG"
+    echo -e "  ${BOLD}鎖定 release：${NC}$PINNED_TAG（前後端同版）"
+  else
+    warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
+  fi
+fi
+
 # ── Clone / Update ────────────────────────────────────────────────────
 # Clone 先做，這樣後面才能把 dist 解壓到 $INSTALL_DIR/frontend/dist
 step "下載 CodefyUI"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   warn "目錄已存在，執行更新..."
-  git -C "$INSTALL_DIR" pull --ff-only
-  ok "已更新至最新版本"
+  git -C "$INSTALL_DIR" fetch --tags --depth 1 origin
+  if [[ -n "$PINNED_TAG" ]]; then
+    git -C "$INSTALL_DIR" fetch --depth 1 origin "refs/tags/${PINNED_TAG}:refs/tags/${PINNED_TAG}" 2>/dev/null || true
+    git -C "$INSTALL_DIR" checkout -f "$PINNED_TAG"
+    ok "已更新並鎖定至 $PINNED_TAG"
+  else
+    git -C "$INSTALL_DIR" pull --ff-only
+    ok "已更新至最新版本"
+  fi
 else
-  git clone --depth 1 "$REPO" "$INSTALL_DIR"
-  ok "Clone 完成"
+  if [[ -n "$PINNED_TAG" ]]; then
+    git clone --depth 1 --branch "$PINNED_TAG" "$REPO" "$INSTALL_DIR"
+    ok "Clone 完成（$PINNED_TAG）"
+  else
+    git clone --depth 1 "$REPO" "$INSTALL_DIR"
+    ok "Clone 完成"
+  fi
 fi
 
 # ── Frontend dist：先試 release，失敗才裝 Node 本地 build ────────────────
