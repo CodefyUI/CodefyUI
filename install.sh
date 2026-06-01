@@ -191,7 +191,7 @@ if [[ "$FORCE_BUILD" != "1" ]]; then
     # fetch_release_dist 用 RELEASE_TAG 決定下載哪個 dist；鎖成解析後的具體
     # tag，確保前後端來自同一版。
     RELEASE_TAG="$PINNED_TAG"
-    echo -e "  ${BOLD}鎖定 release：${NC}$PINNED_TAG（前後端同版）"
+    echo -e "  ${BOLD}鎖定 release：${NC}${PINNED_TAG}（前後端同版）"
   else
     warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
   fi
@@ -214,7 +214,7 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
 else
   if [[ -n "$PINNED_TAG" ]]; then
     git clone --depth 1 --branch "$PINNED_TAG" "$REPO" "$INSTALL_DIR"
-    ok "Clone 完成（$PINNED_TAG）"
+    ok "Clone 完成（${PINNED_TAG}）"
   else
     git clone --depth 1 "$REPO" "$INSTALL_DIR"
     ok "Clone 完成"
