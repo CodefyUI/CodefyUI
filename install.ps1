@@ -189,7 +189,7 @@ if (-not $ForceBuild) {
     $PinnedTag = Resolve-ReleaseTag
     if ($PinnedTag) {
         $ReleaseTag = $PinnedTag
-        Write-Host "  鎖定 release：$PinnedTag（前後端同版）"
+        Write-Host "  鎖定 release：${PinnedTag}（前後端同版）"
     } else {
         Warn "無法解析 latest release tag；改用 main（前後端可能版本漂移）"
     }
