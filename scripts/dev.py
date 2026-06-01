@@ -45,6 +45,7 @@
 """
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -310,6 +311,29 @@ def _release_dist_url() -> str:
     if tag == "latest":
         return f"https://github.com/{RELEASE_REPO}/releases/latest/download/{RELEASE_ASSET}"
     return f"https://github.com/{RELEASE_REPO}/releases/download/{tag}/{RELEASE_ASSET}"
+
+
+def _resolve_release_tag() -> "str | None":
+    """Resolve the release tag to install (``latest`` → concrete version).
+
+    Returns the concrete tag, or ``None`` when the GitHub API can't be
+    reached. Used to pin the backend checkout to the same release the
+    prebuilt frontend dist comes from, so the two never drift apart.
+    """
+    tag = os.environ.get("CODEFYUI_RELEASE_TAG", "latest").strip() or "latest"
+    if tag != "latest":
+        return tag
+    url = f"https://api.github.com/repos/{RELEASE_REPO}/releases/latest"
+    try:
+        req = Request(url, headers={"User-Agent": "cdui-installer",
+                                    "Accept": "application/vnd.github+json"})
+        with urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+        name = data.get("tag_name")
+        return name or None
+    except (URLError, HTTPError, TimeoutError, ValueError) as e:
+        print(f"  無法解析 latest release tag：{e}")
+        return None
 
 
 def fetch_release_dist() -> bool:
@@ -799,12 +823,31 @@ def update() -> None:
         err("此目錄不是 git clone，無法 update",
             "Not a git checkout — cannot update")
         sys.exit(1)
-    section("拉取最新版本（main）", "Pulling latest (main)")
-    # Explicit remote/branch so the command works even on a detached HEAD or
-    # a branch that doesn't track upstream.
-    run(["git", "fetch", "origin", "main"], cwd=ROOT)
-    run(["git", "checkout", "main"], cwd=ROOT)
-    run(["git", "merge", "--ff-only", "origin/main"], cwd=ROOT)
+    # Decide whether this install will use a prebuilt release dist (no Node) or
+    # build the frontend from source (pnpm available / forced). On the prebuilt
+    # path we MUST pin the backend to the same release tag as the dist — pulling
+    # `main` while fetching an older release's frontend leaves the SPA out of
+    # sync with the API (e.g. it never bootstraps the session token, so every
+    # mutating request is rejected 403 and the app "loads but doesn't work").
+    force_build = os.environ.get("CODEFYUI_FORCE_BUILD", "").strip() in ("1", "true", "yes")
+    will_build_from_source = force_build or bool(shutil.which("pnpm"))
+
+    pinned_tag = None if will_build_from_source else _resolve_release_tag()
+
+    if pinned_tag:
+        section(f"切換至 release {pinned_tag}（前後端同版）",
+                f"Checking out release {pinned_tag} (frontend/backend in sync)")
+        run(["git", "fetch", "--tags", "origin"], cwd=ROOT)
+        run(["git", "checkout", "-f", pinned_tag], cwd=ROOT)
+        # install() reads this to fetch the matching dist.
+        os.environ["CODEFYUI_RELEASE_TAG"] = pinned_tag
+    else:
+        section("拉取最新版本（main）", "Pulling latest (main)")
+        # Explicit remote/branch so the command works even on a detached HEAD or
+        # a branch that doesn't track upstream.
+        run(["git", "fetch", "origin", "main"], cwd=ROOT)
+        run(["git", "checkout", "main"], cwd=ROOT)
+        run(["git", "merge", "--ff-only", "origin/main"], cwd=ROOT)
 
     # Old dist is for the previous source — wipe it so install re-downloads
     # (or re-builds, when pnpm is on PATH) for the new code.

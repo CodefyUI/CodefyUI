@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/insta
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
 ```
 
-Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release — **no Node.js or pnpm required for end users**. After install, **open a new terminal** and run from anywhere:
+Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release, and the backend is **checked out at that same release tag** so the two stay in sync — **no Node.js or pnpm required for end users**. After install, **open a new terminal** and run from anywhere:
 
 ```bash
 cdui start
@@ -49,7 +49,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | Command | Description |
 |---------|-------------|
 | `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available) |
-| `cdui update` | Pull latest `main` and re-fetch the frontend bundle |
+| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (when building from source) and re-sync the frontend |
 | `cdui start` | Production mode — single uvicorn on `:8000` (no Node needed) |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
 | `cdui build` | Build the frontend bundle locally (requires Node + pnpm) |
@@ -63,7 +63,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 
 > `cdui` is a thin launcher (`cdui.cmd` on Windows) placed at `~/.local/bin/cdui` by the installer. If you didn't restart your terminal yet, invoke the absolute path: `~/CodefyUI/cdui start`. `python scripts/dev.py <cmd>` still works too — `dev.py` re-execs into the venv's Python automatically.
 
-**Contributors:** if you want hot-reload (`cdui dev`), pass `CODEFYUI_FORCE_BUILD=1` to the installer or install Node 24+ and pnpm separately. Pin a specific release with `CODEFYUI_RELEASE_TAG=<tag>`.
+**Contributors:** if you want hot-reload (`cdui dev`), pass `CODEFYUI_FORCE_BUILD=1` to the installer or install Node 24+ and pnpm separately. `CODEFYUI_FORCE_BUILD=1` also tracks the bleeding-edge `main` branch (building the frontend from source so it matches the backend), whereas the default prebuilt path pins to the latest tagged release. Pin a specific release with `CODEFYUI_RELEASE_TAG=<tag>`.
 
 #### `cdui install` flags & environment variables
 
