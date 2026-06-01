@@ -291,11 +291,31 @@ async def reload_nodes():
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 if (DIST_DIR / "index.html").exists():
+    # Vite emits content-hashed asset filenames (e.g. index-LKCMvfbh.js), so a
+    # given URL's bytes never change — cache them aggressively & immutably.
+    class _ImmutableStaticFiles(StaticFiles):
+        def file_response(self, *args, **kwargs):
+            resp = super().file_response(*args, **kwargs)
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
+
     app.mount(
         "/assets",
-        StaticFiles(directory=DIST_DIR / "assets"),
+        _ImmutableStaticFiles(directory=DIST_DIR / "assets"),
         name="assets",
     )
+
+    # index.html, by contrast, must NEVER be cached: it's the only file that
+    # references the current hashed bundles by name. If a browser serves a
+    # stale index.html after an upgrade, it loads an OLD bundle against the NEW
+    # backend — and that old bundle predates the session-token handshake, so
+    # every WebSocket / mutating request is rejected 403 ("loads but the Run
+    # button does nothing"). `no-cache` forces revalidation on every load so
+    # the document always matches the running server.
+    _INDEX_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
+    def _index_response() -> FileResponse:
+        return FileResponse(DIST_DIR / "index.html", headers=_INDEX_HEADERS)
 
     # Paths that should 404 instead of falling through to index.html so that
     # frontend fetch() errors stay distinguishable from "the SPA loaded".
@@ -318,4 +338,4 @@ if (DIST_DIR / "index.html").exists():
             raise HTTPException(status_code=400, detail="Invalid path")
         if full_path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(DIST_DIR / "index.html")
+        return _index_response()
