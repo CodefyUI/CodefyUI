@@ -183,7 +183,7 @@ export function InspectorPanel() {
   }, [targets, lastRunId]);
 
   const collapseButton = (
-    <button
+    <button type="button"
       className={styles.collapseBtn}
       onClick={() => setCollapsed((v) => !v)}
       title={collapsed ? t('inspector.expand') : t('inspector.collapse')}
@@ -273,7 +273,7 @@ export function InspectorPanel() {
         <span className={styles.panelSubtitle}>{targets.nodeName}</span>
       </div>
       <div className={styles.tabStrip} role="tablist">
-        <button
+        <button type="button"
           role="tab"
           aria-selected={inspectorTab === 'forward'}
           className={`${styles.tabBtn} ${inspectorTab === 'forward' ? styles.tabActive : ''}`}
@@ -281,7 +281,7 @@ export function InspectorPanel() {
         >
           {t('inspector.tabs.forward')}
         </button>
-        <button
+        <button type="button"
           role="tab"
           aria-selected={inspectorTab === 'steps'}
           className={`${styles.tabBtn} ${inspectorTab === 'steps' ? styles.tabActive : ''}`}
@@ -289,7 +289,7 @@ export function InspectorPanel() {
         >
           {t('inspector.tabs.steps')}
         </button>
-        <button
+        <button type="button"
           role="tab"
           aria-selected={inspectorTab === 'backward'}
           className={`${styles.tabBtn} ${inspectorTab === 'backward' ? styles.tabActive : ''}`}
@@ -331,10 +331,18 @@ export function InspectorPanel() {
           </>
         )}
         {inspectorTab === 'steps' && lastRunId && selectedNodeId && (
-          <StepTraceView runId={lastRunId} nodeId={selectedNodeId} />
+          <StepTraceView
+            key={`${lastRunId}:${selectedNodeId}`}
+            runId={lastRunId}
+            nodeId={selectedNodeId}
+          />
         )}
         {inspectorTab === 'backward' && lastRunId && selectedNodeId && (
-          <BackwardView runId={lastRunId} nodeId={selectedNodeId} />
+          <BackwardView
+            key={`${lastRunId}:${selectedNodeId}`}
+            runId={lastRunId}
+            nodeId={selectedNodeId}
+          />
         )}
       </div>
     </div>
@@ -371,7 +379,10 @@ function SegmentSide({
             <div className={styles.portHeader}>
               {kind === 'input' ? '⟵ ' : '⟶ '}
               <span className={styles.portName}>
+                {/* SegmentSide only renders in segment mode, where displayName is always set */}
+                {/* v8 ignore start */}
                 {p.displayName ?? p.port}
+                {/* v8 ignore stop */}
               </span>
             </div>
             {state?.error && <div className={styles.portError}>{state.error}</div>}

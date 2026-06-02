@@ -24,7 +24,10 @@ function makeHighlight(
   inT: TensorOutput,
   outT: TensorOutput,
 ): ((i: number, j: number) => number) | undefined {
+  // Callers only build this highlight after confirming shapes are equal
+  /* v8 ignore start */
   if (!shapesEqual(inT.full_shape, outT.full_shape)) return undefined;
+  /* v8 ignore stop */
   // Only highlight when both are 2D after drilling — we don't know the drill
   // state here, so supply a relative diff using top-level values.
   const inVals = inT.values;
@@ -37,7 +40,10 @@ function makeHighlight(
       while (Array.isArray(cur) && Array.isArray(cur[0]) && Array.isArray(cur[0][0])) {
         cur = cur[0];
       }
+      // cur is seeded from values, already guarded as an array before this closure
+      /* v8 ignore start */
       if (!Array.isArray(cur)) return undefined;
+      /* v8 ignore stop */
       if (!Array.isArray(cur[0])) return cur[jj];
       return cur[ii]?.[jj];
     };

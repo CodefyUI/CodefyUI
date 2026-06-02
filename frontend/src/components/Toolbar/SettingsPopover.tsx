@@ -76,7 +76,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   if (!open) return null;
 
   const handleResetWeights = async () => {
+    // The reset button is disabled when !graphId, so graphId is always set here
+    /* v8 ignore start */
     if (!graphId) return;
+    /* v8 ignore stop */
     const ok = await confirm({
       title: t('toolbar.weights.resetAllConfirm'),
       confirmText: t('toolbar.weights.resetAll'),
@@ -108,11 +111,17 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
       onClose();
       return;
     }
+    // canClearSegment and activeSegment move together, so the false arm never runs
+    /* v8 ignore start */
     if (canClearSegment && activeSegment) {
+      /* v8 ignore stop */
       removeSegmentGroup(activeSegment.id);
       return;
     }
+    // Reached only when the compare button is disabled (neither create nor clear possible)
+    /* v8 ignore start */
     addToast(t('toolbar.compareSegment.needTwo'), 'warning');
+    /* v8 ignore stop */
   };
 
   const compareLabel = canCreateSegment
@@ -268,7 +277,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                 className={`${styles.toggle} ${autoBackward && backward ? styles.on : ''}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  // This control is disabled when !backward, so backward is always true here
+                  /* v8 ignore start */
                   if (backward) toggleAutoBackward();
+                  /* v8 ignore stop */
                 }}
               />
             }

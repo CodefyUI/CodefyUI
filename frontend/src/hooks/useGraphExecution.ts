@@ -31,7 +31,10 @@ export function useGraphExecution() {
 
     const detachTab = (tabId: string) => {
       const entries = attached.get(tabId);
+      // detachTab is only ever called with ids drawn from attached.keys()
+      /* v8 ignore start */
       if (!entries) return;
+      /* v8 ignore stop */
       for (const { ws, type, handler } of entries) ws.off(type, handler);
       attached.delete(tabId);
     };

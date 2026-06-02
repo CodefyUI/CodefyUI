@@ -6,11 +6,10 @@ import { confirm } from '../../utils/dialog';
 import styles from './CustomNodeManager.module.css';
 
 interface CustomNodeManagerProps {
-  open: boolean;
   onClose: () => void;
 }
 
-export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
+export function CustomNodeManager({ onClose }: CustomNodeManagerProps) {
   const [nodes, setNodes] = useState<CustomNodeInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,9 +30,11 @@ export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
     }
   }, []);
 
+  // The parent mounts this component only while the manager is open, so the
+  // node list is fetched once on mount rather than synced off an `open` prop.
   useEffect(() => {
-    if (open) fetchNodes();
-  }, [open, fetchNodes]);
+    fetchNodes();
+  }, [fetchNodes]);
 
   const handleToggle = useCallback(async (filename: string) => {
     try {
@@ -74,14 +75,12 @@ export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
     event.target.value = '';
   }, [fetchNodes, reload]);
 
-  if (!open) return null;
-
   return (
     <div className={styles.overlay} onClick={onClose}>
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
           <h2 className={styles.title}>{t('customNodes.title')}</h2>
-          <button className={styles.closeButton} onClick={onClose}>x</button>
+          <button type="button" className={styles.closeButton} onClick={onClose}>x</button>
         </div>
 
         {error && <div className={styles.error}>{error}</div>}
@@ -104,13 +103,13 @@ export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
                 )}
               </div>
               <div className={styles.nodeActions}>
-                <button
+                <button type="button"
                   className={`${styles.toggleButton} ${node.enabled ? styles.toggleOn : styles.toggleOff}`}
                   onClick={() => handleToggle(node.filename)}
                 >
                   {node.enabled ? t('customNodes.enabled') : t('customNodes.disabled')}
                 </button>
-                <button
+                <button type="button"
                   className={styles.deleteButton}
                   onClick={() => handleDelete(node.filename)}
                 >
@@ -122,7 +121,7 @@ export function CustomNodeManager({ open, onClose }: CustomNodeManagerProps) {
         </div>
 
         <div className={styles.footer}>
-          <button
+          <button type="button"
             className={styles.uploadButton}
             onClick={() => fileInputRef.current?.click()}
           >

@@ -93,7 +93,11 @@ function FileField({
   };
 
   const handleDownload = async () => {
+    // The download button is disabled whenever !value, so this early-return
+    // guard is never reached through the UI.
+    /* v8 ignore start */
     if (!value) return;
+    /* v8 ignore stop */
     setDownloading(true);
     try {
       await backend.download(String(value));

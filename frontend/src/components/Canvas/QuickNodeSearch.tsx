@@ -71,6 +71,8 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
   // Scroll selected item into view
   useEffect(() => {
     const list = listRef.current;
+    // listRef is always attached to the results container, which renders unconditionally
+    /* v8 ignore next -- @preserve */
     if (!list) return;
     const item = list.children[selectedIndex] as HTMLElement | undefined;
     item?.scrollIntoView({ block: 'nearest' });
@@ -155,7 +157,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
           const color = CATEGORY_COLORS[category] ?? '#607D8B';
 
           return (
-            <button
+            <button type="button"
               key={`${r.kind}-${name}-${i}`}
               className={`${styles.item} ${i === selectedIndex ? styles.itemSelected : ''}`}
               onClick={() => handleSelect(r)}

@@ -59,16 +59,28 @@ export function StepTraceView({ runId, nodeId }: Props) {
   const [tensors, setTensors] = useState<TensorMap>({});
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
 
-  // Fetch the step index for this (run, node) pair.
+  // Fetch the step index for this (run, node) pair. The parent remounts this
+  // component (via a `key` on runId:nodeId), so each mount starts from fresh
+  // state — no manual reset needed, and the user never sees the prior node's
+  // trace flash before the new fetch resolves.
   useEffect(() => {
     let cancelled = false;
-    setSteps(null);
-    setIndexError(null);
-    setTensors({});
     fetchStepIndex(runId, nodeId)
       .then((entries) => {
         if (cancelled) return;
         setSteps(entries);
+        // Seed loading placeholders for every tensor the next effect fetches.
+        const initial: TensorMap = {};
+        for (const step of entries) {
+          for (const name of step.tensor_keys) {
+            initial[tkey(step.index, name)] = {
+              loading: true,
+              error: null,
+              data: null,
+            };
+          }
+        }
+        setTensors(initial);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -83,22 +95,11 @@ export function StepTraceView({ runId, nodeId }: Props) {
     };
   }, [runId, nodeId]);
 
-  // After we have the step index, fetch each tensor in parallel.
+  // After we have the step index, fetch each tensor in parallel. The loading
+  // placeholders were already seeded alongside setSteps above.
   useEffect(() => {
     if (!steps || steps.length === 0) return;
     let cancelled = false;
-    const initial: TensorMap = {};
-    for (const step of steps) {
-      for (const name of step.tensor_keys) {
-        initial[tkey(step.index, name)] = {
-          loading: true,
-          error: null,
-          data: null,
-        };
-      }
-    }
-    setTensors(initial);
-
     const tasks: Promise<void>[] = [];
     for (const step of steps) {
       for (const name of step.tensor_keys) {

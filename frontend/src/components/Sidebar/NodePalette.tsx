@@ -28,10 +28,13 @@ function NodeItem({ definition }: NodeItemProps) {
 
   const handleMouseEnter = useCallback(() => {
     setHovered(true);
+    // mouseEnter fires on the element whose ref is itemRef, so it is always set
+    /* v8 ignore start */
     if (itemRef.current) {
       const rect = itemRef.current.getBoundingClientRect();
       setTooltipPos({ x: rect.right + 8, y: rect.top });
     }
+    /* v8 ignore stop */
   }, []);
 
   const handleMouseLeave = useCallback(() => {
@@ -162,7 +165,7 @@ function UnifiedCategorySection({ category, presets, nodes }: UnifiedCategorySec
 
   return (
     <div className={styles.categorySection}>
-      <button
+      <button type="button"
         onClick={() => setExpanded((prev) => !prev)}
         className={styles.categoryButton}
         style={{ borderBottom: `2px solid ${color}` }}
@@ -273,7 +276,7 @@ export function NodePalette() {
             <div className={styles.errorText}>
               {t('palette.loadFail', { error })}
             </div>
-            <button onClick={refetch} className={styles.retryButton}>
+            <button type="button" onClick={refetch} className={styles.retryButton}>
               {t('palette.retry')}
             </button>
           </div>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { DialogContainer } from './DialogContainer';
 import { useDialogStore } from '../../store/dialogStore';
@@ -7,6 +7,10 @@ import { confirm, prompt } from '../../utils/dialog';
 describe('DialogContainer', () => {
   beforeEach(() => {
     useDialogStore.setState({ active: null, resolve: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders nothing when no dialog is active', () => {
@@ -49,6 +53,26 @@ describe('DialogContainer', () => {
     render(<DialogContainer />);
     const p = confirm({ title: 'X' });
     await screen.findByText('X');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await expect(p).resolves.toBe(false);
+  });
+
+  it('Escape on a prompt resolves null (prompt-cancel branch)', async () => {
+    render(<DialogContainer />);
+    const p = prompt({ title: 'Name?', defaultValue: 'x' });
+    await screen.findByText('Name?');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await expect(p).resolves.toBeNull();
+  });
+
+  it('ignores non-Escape keydowns while a dialog is open', async () => {
+    render(<DialogContainer />);
+    const p = confirm({ title: 'KeepOpen' });
+    await screen.findByText('KeepOpen');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    fireEvent.keyDown(window, { key: 'a' });
+    // Dialog stays open; promise unresolved. Resolve it to clean up.
+    expect(screen.getByText('KeepOpen')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
     await expect(p).resolves.toBe(false);
   });

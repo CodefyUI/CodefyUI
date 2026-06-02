@@ -76,7 +76,7 @@ export function PortListEditor({ node, edges, onUpdatePorts, onRemoveEdges }: Pr
               outline: 'none',
             }}
           />
-          <button
+          <button type="button"
             onClick={() => removePort(p.id)}
             disabled={ports.length === 1}
             style={{
@@ -94,7 +94,7 @@ export function PortListEditor({ node, edges, onUpdatePorts, onRemoveEdges }: Pr
           </button>
         </div>
       ))}
-      <button
+      <button type="button"
         onClick={addPort}
         style={{
           marginTop: 8,

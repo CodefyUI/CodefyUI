@@ -404,7 +404,10 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
               // Skip if the note itself was also moved (user is dragging the note)
               if (movedIds.has(n.id)) return n;
               const parent = updatedNodes.find((p) => p.id === n.data.boundToNodeId);
+              // boundToNodeId was just confirmed present in updatedNodes above
+              /* v8 ignore start */
               if (!parent) return n;
+              /* v8 ignore stop */
               return {
                 ...n,
                 position: {

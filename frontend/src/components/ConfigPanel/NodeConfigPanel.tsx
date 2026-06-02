@@ -70,7 +70,7 @@ export function NodeConfigPanel() {
             <div className={styles.presetHint}>
               {t('preset.nodeCount', { count: selectedNode.data.presetDefinition?.nodes.length ?? 0 })}
             </div>
-            <button
+            <button type="button"
               onClick={() => openPresetModal(selectedNode.id)}
               className={styles.presetConfigureBtn}
             >
