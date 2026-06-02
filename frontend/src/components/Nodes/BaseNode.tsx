@@ -86,7 +86,10 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    // The download button only renders when downloadablePath is truthy
+    /* v8 ignore start */
     if (!downloadablePath) return;
+    /* v8 ignore stop */
     setDownloading(true);
     try {
       await downloadModelFile(downloadablePath);

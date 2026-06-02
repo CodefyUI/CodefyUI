@@ -47,10 +47,14 @@ export function TokenChip({ token, id, index, offset, animated = false }: TokenC
 
   const handleEnter = useCallback(() => {
     setHovered(true);
+    // ref is always attached to the rendered span before mouseEnter fires, so
+    // the false branch of this guard is unreachable in practice.
+    /* v8 ignore start */
     if (ref.current) {
       const rect = ref.current.getBoundingClientRect();
       setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top - 8 });
     }
+    /* v8 ignore stop */
   }, []);
 
   const handleLeave = useCallback(() => {

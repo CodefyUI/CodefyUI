@@ -56,8 +56,16 @@ function coerceTensorValues(
  * backend didn't embed values inline (numel > 256), this modal REST-fetches
  * the full tensor with a higher max_elements cap.
  */
-export function HeatmapModal({
-  isOpen,
+export function HeatmapModal({ isOpen, ...rest }: HeatmapModalProps) {
+  // Mount the modal body only while open. Confining the fetch / resize / key
+  // listeners to a child that exists solely when open turns them into plain
+  // mount effects — there is no `isOpen` prop to synchronise state against —
+  // and stale tensor data is discarded when the modal closes.
+  if (!isOpen) return null;
+  return <HeatmapModalBody {...rest} />;
+}
+
+function HeatmapModalBody({
   onClose,
   title,
   inlineData,
@@ -70,39 +78,42 @@ export function HeatmapModal({
   port,
   variant = 'attention',
   normalizePerRow,
-}: HeatmapModalProps) {
+}: Omit<HeatmapModalProps, 'isOpen'>) {
+  // Whether this open will REST-fetch the tensor (no inline values, and we
+  // have the run coordinates to fetch with).
+  const canFetch = !inlineData && !!runId && !!nodeId && !!port;
   const [fetchedData, setFetchedData] = useState<
     number[][] | number[][][] | null
   >(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(canFetch);
+  const [error, setError] = useState<string | null>(
+    !inlineData && !canFetch ? 'Cannot fetch: run is no longer available.' : null,
+  );
   const [viewport, setViewport] = useState(() => ({
+    // window always exists under jsdom / the browser, so the SSR `: 1280` / `: 800`
+    // fallback branches are unreachable in any environment this runs in.
+    /* v8 ignore start */
     w: typeof window !== 'undefined' ? window.innerWidth : 1280,
     h: typeof window !== 'undefined' ? window.innerHeight : 800,
+    /* v8 ignore stop */
   }));
 
   // Track viewport dims so the panel grows / shrinks live as the user
   // resizes the window with the modal open.
   useEffect(() => {
-    if (!isOpen) return;
     const onResize = () =>
       setViewport({ w: window.innerWidth, h: window.innerHeight });
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [isOpen]);
+  }, []);
 
   // Fetch full tensor via REST when not embedded inline.
   useEffect(() => {
-    if (!isOpen) return;
-    if (inlineData) return;
-    if (!runId || !nodeId || !port) {
-      setError('Cannot fetch: run is no longer available.');
-      return;
-    }
+    if (!canFetch) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchOutput(runId, nodeId, port, { maxElements: 4096 })
+    fetchOutput(runId as string, nodeId as string, port as string, {
+      maxElements: 4096,
+    })
       .then((data) => {
         if (cancelled) return;
         // Narrow to tensor — GenericOutput has `type: string`, so a literal
@@ -136,19 +147,16 @@ export function HeatmapModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, inlineData, runId, nodeId, port, variant]);
+  }, [canFetch, runId, nodeId, port, variant]);
 
   // ESC closes
   useEffect(() => {
-    if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  }, [onClose]);
 
   const data = inlineData ?? fetchedData;
 

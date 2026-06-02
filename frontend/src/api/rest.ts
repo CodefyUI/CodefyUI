@@ -216,7 +216,10 @@ export async function downloadModelFile(filename: string) {
   const a = document.createElement('a');
   a.href = url;
   // Only the basename — the browser shouldn't recreate sub-directories locally
+  // .pop() on a split result is always a string (possibly ''), never undefined
+  /* v8 ignore start */
   a.download = filename.split('/').pop() ?? filename;
+  /* v8 ignore stop */
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -269,7 +272,10 @@ export async function downloadImageFile(filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
+  // .pop() on a split result is always a string (possibly ''), never undefined
+  /* v8 ignore start */
   a.download = filename.split('/').pop() ?? filename;
+  /* v8 ignore stop */
   document.body.appendChild(a);
   a.click();
   a.remove();

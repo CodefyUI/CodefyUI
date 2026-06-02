@@ -28,7 +28,7 @@ export function ShortcutsModal() {
       <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
           <h3 className={styles.title}>{t('shortcuts.title')}</h3>
-          <button className={styles.close} onClick={toggle}>&times;</button>
+          <button type="button" className={styles.close} onClick={toggle}>&times;</button>
         </div>
         <div className={styles.list}>
           {shortcuts.map((s, i) => (

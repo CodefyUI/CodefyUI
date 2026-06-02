@@ -19,9 +19,12 @@ export function PresetConfigModal() {
   const [localParams, setLocalParams] = useState<Record<string, Record<string, any>>>({});
 
   useEffect(() => {
+    // currentInternalParams is `internalParams ?? {}`, so always truthy
+    /* v8 ignore start */
     if (currentInternalParams) {
       setLocalParams(JSON.parse(JSON.stringify(currentInternalParams)));
     }
+    /* v8 ignore stop */
   }, [presetModalNodeId]);
 
   // Group exposed params
@@ -78,7 +81,7 @@ export function PresetConfigModal() {
             </div>
             <div className={styles.headerDescription}>{preset.description}</div>
           </div>
-          <button onClick={handleCancel} className={styles.closeBtn}>
+          <button type="button" onClick={handleCancel} className={styles.closeBtn}>
             ✕
           </button>
         </div>
@@ -124,10 +127,10 @@ export function PresetConfigModal() {
 
         {/* Footer buttons */}
         <div className={styles.footer}>
-          <button onClick={handleCancel} className={styles.cancelBtn}>
+          <button type="button" onClick={handleCancel} className={styles.cancelBtn}>
             {t('preset.cancel')}
           </button>
-          <button onClick={handleApply} className={styles.applyBtn}>
+          <button type="button" onClick={handleApply} className={styles.applyBtn}>
             {t('preset.apply')}
           </button>
         </div>

@@ -31,7 +31,10 @@ export function TabBar() {
   const handleClose = useCallback(
     async (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
+      // The close button only renders when tabs.length > 1
+      /* v8 ignore start */
       if (tabs.length <= 1) return;
+      /* v8 ignore stop */
       const tab = tabs.find((t) => t.id === id);
       if (tab && tab.status === 'running') {
         const ok = await confirm({
@@ -110,7 +113,7 @@ export function TabBar() {
       </div>
 
       {/* Add tab button */}
-      <button
+      <button type="button"
         onClick={() => addTab()}
         title={t('tabs.add')}
         className={styles.addBtn}

@@ -49,4 +49,21 @@ describe('ContextMenu', () => {
     fireEvent.mouseDown(document.body);
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('does NOT close on mousedown inside the menu', () => {
+    const onClose = vi.fn();
+    render(
+      <ContextMenu
+        x={0}
+        y={0}
+        items={[{ id: 'foo', label: 'Foo Action' }]}
+        onSelect={() => {}}
+        onClose={onClose}
+      />
+    );
+    // mousedown on a menu item is inside ref.current → contains() is true →
+    // the !contains() guard is false → onClose must NOT fire.
+    fireEvent.mouseDown(screen.getByText('Foo Action'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

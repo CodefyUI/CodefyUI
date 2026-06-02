@@ -20,7 +20,7 @@ export function ToastContainer() {
         <div key={toast.id} className={`${styles.toast} ${styles[toast.type]}`}>
           <span className={styles.icon}>{TYPE_ICONS[toast.type]}</span>
           <span className={styles.message}>{toast.message}</span>
-          <button className={styles.close} onClick={() => removeToast(toast.id)}>
+          <button type="button" className={styles.close} onClick={() => removeToast(toast.id)}>
             &times;
           </button>
         </div>

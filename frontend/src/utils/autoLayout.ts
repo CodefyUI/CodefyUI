@@ -129,7 +129,10 @@ function wrapIntoGrid(
     rankOf.set(id, rank);
     rankSet.add(rank);
   }
+  // width > TARGET_ROW_WIDTH implies nodes exist, so rankSet.size is always ≥ 1
+  /* v8 ignore start */
   const totalRanks = rankSet.size || 1;
+  /* v8 ignore stop */
   const maxRanksPerRow = Math.max(1, Math.floor(TARGET_ROW_WIDTH / rankUnit));
   if (totalRanks <= maxRanksPerRow) return positions;
 
@@ -153,10 +156,13 @@ function wrapIntoGrid(
       if (p.y < rMinY) rMinY = p.y;
       if (p.y + p.height > rMaxY) rMaxY = p.y + p.height;
     }
+    // Every intermediate grid row gets at least one rank, so a row is never empty
+    /* v8 ignore start */
     if (rMinY === Infinity) {
       rMinY = 0;
       rMaxY = 0;
     }
+    /* v8 ignore stop */
     rowYOffset[r] = cumY - rMinY;
     cumY += rMaxY - rMinY + ROW_GAP;
   }

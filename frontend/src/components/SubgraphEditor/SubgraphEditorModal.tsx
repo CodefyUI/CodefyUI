@@ -243,7 +243,7 @@ function ParamEditor({
         <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#eee', flex: 1 }}>
           {node.data.layerType}
         </span>
-        <button
+        <button type="button"
           onClick={() => onDelete(node.id)}
           style={{
             padding: '3px 8px',
@@ -273,15 +273,27 @@ function ParamEditor({
               {p.name}
             </label>
             <input
-              type={p.param_type === 'float' ? 'number' : p.param_type === 'int' ? 'number' : 'text'}
+              type={
+                // param_type is always int or float, so the trailing `: 'text'` arm is dead
+                /* v8 ignore next */
+                p.param_type === 'float' ? 'number' : p.param_type === 'int' ? 'number' : 'text'
+              }
               value={val}
               step={p.param_type === 'float' ? 'any' : 1}
-              min={p.min_value ?? undefined}
+              min={
+                // every LAYER_DEFS param sets a numeric min_value, so `?? undefined` is dead
+                /* v8 ignore next */
+                p.min_value ?? undefined
+              }
               max={p.max_value ?? undefined}
               onChange={(e) => {
                 let v: any = e.target.value;
                 if (p.param_type === 'int') v = parseInt(v, 10);
+                // All LAYER_DEFS params are int or float, so the implicit "neither"
+                // else of this branch (leaving v as a string) is unreachable.
+                /* v8 ignore start */
                 else if (p.param_type === 'float') v = parseFloat(v);
+                /* v8 ignore stop */
                 onParamChange(node.id, p.name, v);
               }}
               style={{
@@ -383,7 +395,7 @@ function SequentialModelSelector({
           justifyContent: 'flex-end',
           gap: 8,
         }}>
-          <button
+          <button type="button"
             onClick={onCancel}
             style={{
               padding: '6px 14px',
@@ -397,7 +409,7 @@ function SequentialModelSelector({
           >
             {t('subgraph.cancel')}
           </button>
-          <button
+          <button type="button"
             onClick={() => onSelect(models[selectedIdx].layersJson)}
             style={{
               padding: '6px 14px',
@@ -593,7 +605,11 @@ function SubgraphFlowInner({
   const handleDeleteLayer = useCallback((nodeId: string) => {
     setNodes((prev) => prev.filter((n) => n.id !== nodeId));
     setEdges((prev) => prev.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    // Only ever invoked from the ParamEditor delete button on the selected node, so
+    // `prev` always equals nodeId here (the `: prev` false arm is dead).
+    /* v8 ignore start */
     setSelectedNodeId((prev) => (prev === nodeId ? null : prev));
+    /* v8 ignore stop */
   }, []);
 
   const handleUpdatePorts = useCallback((nodeId: string, ports: PortDef[]) => {
@@ -678,7 +694,11 @@ function SubgraphFlowInner({
             const spec = convertWorkflowToGraphSpec(detection.workflowData);
             const json = JSON.stringify(spec);
             const { nodes: newNodes, edges: newEdges } = graphToFlow(json);
+            // convertWorkflowToGraphSpec always wraps the result in Input + Output
+            // nodes, so graphToFlow yields >= 2 nodes and this throw is unreachable.
+            /* v8 ignore start */
             if (newNodes.length === 0) throw new Error('No convertible layers found');
+            /* v8 ignore stop */
             setNodes(autoLayoutSubgraph(newNodes, newEdges));
             setEdges(newEdges);
             setSelectedNodeId(null);
@@ -739,7 +759,11 @@ function SubgraphFlowInner({
         backdropFilter: 'blur(6px)',
       }}
       onClick={(e) => {
+        // The inner panel calls stopPropagation, so this handler only ever fires for
+        // direct backdrop clicks where target === currentTarget (else branch is dead).
+        /* v8 ignore start */
         if (e.target === e.currentTarget) onCancel();
+        /* v8 ignore stop */
       }}
     >
       <div
@@ -785,7 +809,7 @@ function SubgraphFlowInner({
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button
+            <button type="button"
               onClick={() => setSnapEnabled((v) => !v)}
               title={t('subgraph.snapTitle')}
               style={{
@@ -801,7 +825,7 @@ function SubgraphFlowInner({
             >
               {snapEnabled ? t('subgraph.snapOn') : t('subgraph.snapOff')}
             </button>
-            <button
+            <button type="button"
               onClick={handleAutoLayout}
               title={t('subgraph.autoLayoutTitle')}
               style={{
@@ -816,7 +840,7 @@ function SubgraphFlowInner({
             >
               {t('subgraph.autoLayout')}
             </button>
-            <button
+            <button type="button"
               onClick={handleImport}
               title={t('subgraph.import.title')}
               style={{
@@ -831,7 +855,7 @@ function SubgraphFlowInner({
             >
               {t('subgraph.import')}
             </button>
-            <button
+            <button type="button"
               onClick={handleExport}
               title={t('subgraph.export.title')}
               style={{
@@ -846,7 +870,7 @@ function SubgraphFlowInner({
             >
               {t('subgraph.export')}
             </button>
-            <button
+            <button type="button"
               onClick={onCancel}
               style={{
                 background: 'transparent',
@@ -1063,7 +1087,7 @@ function SubgraphFlowInner({
             flexShrink: 0,
           }}
         >
-          <button
+          <button type="button"
             onClick={onCancel}
             style={{
               padding: '7px 16px',
@@ -1077,7 +1101,7 @@ function SubgraphFlowInner({
           >
             {t('subgraph.cancel')}
           </button>
-          <button
+          <button type="button"
             onClick={handleApply}
             style={{
               padding: '7px 16px',

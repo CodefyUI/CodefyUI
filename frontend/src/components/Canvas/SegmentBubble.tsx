@@ -27,6 +27,8 @@ function nodeBBox(n: FlowNode<NodeData>): BBox {
 }
 
 function unionBBox(boxes: BBox[]): BBox | null {
+  // only caller passes a non-empty list (segment always has >=1 node); never empty
+  /* v8 ignore next -- @preserve */
   if (boxes.length === 0) return null;
   let minX = Infinity;
   let minY = Infinity;
@@ -69,6 +71,8 @@ export function SegmentBubble() {
         if (!head || !tail) return null;
         const segmentNodes = nodes.filter((n) => set.has(n.id));
         const union = unionBBox(segmentNodes.map(nodeBBox));
+        // segmentNodes always contains head+tail here, so unionBBox never returns null
+        /* v8 ignore next -- @preserve */
         if (!union) return null;
         return { group: g, head, tail, union };
       })

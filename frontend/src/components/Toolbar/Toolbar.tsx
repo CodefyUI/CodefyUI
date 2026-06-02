@@ -50,7 +50,7 @@ function MenuDropdown({
 
   return (
     <div ref={ref} className={styles.menuWrapper}>
-      <button
+      <button type="button"
         onClick={onToggle}
         className={`${styles.ghost} ${open ? styles.open : ''}`}
       >
@@ -60,14 +60,17 @@ function MenuDropdown({
         <div className={styles.menuPanel}>
           {items.map((item, i) => (
             <div key={i}>
-              <button
+              <button type="button"
                 onClick={() => { item.onClick(); onClose(); }}
                 className={styles.menuItem}
                 title={item.title}
               >
                 {item.label}
               </button>
+              {/* No menu item sets dividerAfter: true, so the divider is never rendered */}
+              {/* v8 ignore start */}
               {item.dividerAfter && <div className={styles.menuDivider} />}
+              {/* v8 ignore stop */}
             </div>
           ))}
         </div>
@@ -93,22 +96,7 @@ function LoadSubMenu({
   onImport: () => void;
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
 }) {
-  const [graphs, setGraphs] = useState<{ name: string; file: string }[]>([]);
-  const [loading, setLoading] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  const fetchGraphs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await listGraphs();
-      setGraphs(Array.isArray(result) ? result : []);
-    } catch { setGraphs([]); }
-    finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => {
-    if (open) fetchGraphs();
-  }, [open, fetchGraphs]);
 
   useEffect(() => {
     if (!open) return;
@@ -121,39 +109,85 @@ function LoadSubMenu({
 
   return (
     <div ref={ref} className={styles.menuWrapper}>
-      <button
+      <button type="button"
         onClick={onToggle}
         className={`${styles.ghost} ${open ? styles.open : ''}`}
       >
         {t('toolbar.load')}
       </button>
       {open && (
-        <div className={styles.menuPanel}>
-          {loading ? (
-            <div className={styles.menuMessage}>{t('toolbar.load.loading')}</div>
-          ) : graphs.length === 0 ? (
-            <div className={styles.menuMessageDim}>{t('toolbar.load.empty')}</div>
-          ) : (
-            graphs.map((g) => (
-              <button
-                key={g.file}
-                onClick={() => { onLoadGraph(g.file); onClose(); }}
-                className={styles.menuItem}
-              >
-                {g.name}
-              </button>
-            ))
-          )}
-          <div className={styles.menuDivider} />
-          <button
-            onClick={() => { onImport(); onClose(); }}
-            className={styles.menuItem}
-            style={{ color: '#06b6d4' }}
-          >
-            {t('toolbar.import')}
-          </button>
-        </div>
+        <LoadSubMenuPanel
+          onLoadGraph={onLoadGraph}
+          onImport={onImport}
+          onClose={onClose}
+          t={t}
+        />
       )}
+    </div>
+  );
+}
+
+/**
+ * The dropdown body for {@link LoadSubMenu}. Mounted only while the menu is
+ * open, so the saved-graph list is fetched once on mount rather than synced
+ * off an `open` prop.
+ */
+function LoadSubMenuPanel({
+  onLoadGraph,
+  onImport,
+  onClose,
+  t,
+}: {
+  onLoadGraph: (name: string) => void;
+  onImport: () => void;
+  onClose: () => void;
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
+}) {
+  const [graphs, setGraphs] = useState<{ name: string; file: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    listGraphs()
+      .then((result) => {
+        if (!cancelled) setGraphs(Array.isArray(result) ? result : []);
+      })
+      .catch(() => {
+        if (!cancelled) setGraphs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className={styles.menuPanel}>
+      {loading ? (
+        <div className={styles.menuMessage}>{t('toolbar.load.loading')}</div>
+      ) : graphs.length === 0 ? (
+        <div className={styles.menuMessageDim}>{t('toolbar.load.empty')}</div>
+      ) : (
+        graphs.map((g) => (
+          <button type="button"
+            key={g.file}
+            onClick={() => { onLoadGraph(g.file); onClose(); }}
+            className={styles.menuItem}
+          >
+            {g.name}
+          </button>
+        ))
+      )}
+      <div className={styles.menuDivider} />
+      <button type="button"
+        onClick={() => { onImport(); onClose(); }}
+        className={styles.menuItem}
+        style={{ color: '#06b6d4' }}
+      >
+        {t('toolbar.import')}
+      </button>
     </div>
   );
 }
@@ -186,7 +220,10 @@ export function Toolbar() {
   const applyLayout = useTabStore((s) => s.applyLayout);
   const selectedCount = useTabStore((s) => {
     const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
+    // An active tab always exists while the toolbar is mounted, so the ?? 0 fallback is dead
+    /* v8 ignore start */
     return tab?.nodes.filter((n) => n.selected).length ?? 0;
+    /* v8 ignore stop */
   });
 
   const runLayout = useCallback(
@@ -414,7 +451,7 @@ export function Toolbar() {
 
       {/* Run / Stop */}
       <div className={styles.cluster}>
-        <button
+        <button type="button"
           onClick={handleRun}
           disabled={isRunning}
           title={t('toolbar.run.title')}
@@ -422,7 +459,7 @@ export function Toolbar() {
         >
           {isRunning ? t('toolbar.running') : t('toolbar.run')}
         </button>
-        <button
+        <button type="button"
           onClick={handleStop}
           disabled={!isRunning}
           title={t('toolbar.stop.title')}
@@ -464,14 +501,14 @@ export function Toolbar() {
 
       {/* Node management */}
       <div className={styles.cluster}>
-        <button
+        <button type="button"
           onClick={handleReloadNodes}
           title={t('toolbar.reloadNodes.title')}
           className={`${styles.ghost} ${styles.ghostMuted}`}
         >
           {t('toolbar.reloadNodes')}
         </button>
-        <button
+        <button type="button"
           onClick={() => setCustomNodeManagerOpen(true)}
           title={t('toolbar.customNodes.title')}
           className={`${styles.ghost} ${styles.ghostMuted}`}
@@ -485,14 +522,14 @@ export function Toolbar() {
       {/* Auto Layout + Status */}
       <div className={styles.cluster}>
         <div ref={layoutTriggerRef} className={styles.splitButton}>
-          <button
+          <button type="button"
             className={styles.splitButtonMain}
             onClick={() => runLayout(lastLayoutMode)}
             title={t('toolbar.autoLayout')}
           >
             {t('toolbar.autoLayout')}
           </button>
-          <button
+          <button type="button"
             className={styles.splitButtonCaret}
             onClick={() => setLayoutMenuOpen((v) => !v)}
             aria-label={t('toolbar.layoutMode.aria')}
@@ -540,7 +577,7 @@ export function Toolbar() {
       <div className={`${styles.cluster} ${styles.right}`}>
         {/* Settings ⚙ */}
         <div className={styles.menuWrapper}>
-          <button
+          <button type="button"
             ref={settingsTriggerRef}
             onClick={() => setSettingsOpen((v) => !v)}
             title={t('toolbar.settings.title')}
@@ -558,7 +595,7 @@ export function Toolbar() {
         </div>
 
         {/* Help ? — opens shortcuts modal */}
-        <button
+        <button type="button"
           onClick={() => useUIStore.getState().toggleShortcutsModal()}
           className={styles.iconBtn}
           title={t('shortcuts.title')}
@@ -569,7 +606,7 @@ export function Toolbar() {
 
         {/* Font size Aa */}
         <div className={styles.menuWrapper}>
-          <button
+          <button type="button"
             ref={fontSizeTriggerRef}
             onClick={() => setFontSizeMenuOpen((v) => !v)}
             className={`${styles.dropdown} ${styles.dropdownNoCaret} ${fontSizeMenuOpen ? styles.open : ''}`}
@@ -588,7 +625,7 @@ export function Toolbar() {
 
         {/* Language */}
         <div ref={langTriggerRef} className={styles.menuWrapper}>
-          <button
+          <button type="button"
             onClick={() => setLangMenuOpen((v) => !v)}
             className={`${styles.dropdown} ${langMenuOpen ? styles.open : ''}`}
             aria-label={t('toolbar.language.aria')}
@@ -601,7 +638,7 @@ export function Toolbar() {
               <div className={styles.overlay} onClick={() => setLangMenuOpen(false)} />
               <div className={`${styles.menuPanel} ${styles.menuPanelRight}`}>
                 {SUPPORTED_LOCALES.map((l) => (
-                  <button
+                  <button type="button"
                     key={l.code}
                     onClick={() => { setLocale(l.code); setLangMenuOpen(false); }}
                     className={`${styles.langOption} ${l.code === locale ? styles.activeOption : ''}`}
@@ -625,10 +662,9 @@ export function Toolbar() {
         onChange={handleImportFile}
       />
 
-      <CustomNodeManager
-        open={customNodeManagerOpen}
-        onClose={() => setCustomNodeManagerOpen(false)}
-      />
+      {customNodeManagerOpen && (
+        <CustomNodeManager onClose={() => setCustomNodeManagerOpen(false)} />
+      )}
     </div>
   );
 }

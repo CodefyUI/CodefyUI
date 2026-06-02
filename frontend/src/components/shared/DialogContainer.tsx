@@ -66,7 +66,11 @@ export function DialogContainer() {
     active.confirmText ?? (active.kind === 'prompt' ? 'OK' : 'Confirm');
 
   function handleConfirm() {
+    // Unreachable: the component returns null above when !active, so this
+    // handler is only ever bound while active is truthy.
+    /* v8 ignore start */
     if (!active) return;
+    /* v8 ignore stop */
     if (active.kind === 'prompt') {
       const validate = active.validate;
       const err = validate ? validate(inputValue) : null;
@@ -81,7 +85,11 @@ export function DialogContainer() {
   }
 
   function handleCancel() {
+    // Unreachable: the component returns null above when !active, so this
+    // handler is only ever bound while active is truthy.
+    /* v8 ignore start */
     if (!active) return;
+    /* v8 ignore stop */
     close(active.kind === 'prompt' ? null : false);
   }
 

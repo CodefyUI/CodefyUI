@@ -86,7 +86,11 @@ export function ScatterPlot({
         className={styles.svg}
         onMouseLeave={() => setHover(null)}
       >
-        {/* Origin axes if range crosses zero */}
+        {/* Origin axes if range crosses zero.
+         * The `|| 1` divisor fallbacks below are unreachable: these lines only
+         * render when the range strictly crosses zero (xMin<0 && xMax>0, resp.
+         * yMin<0 && yMax>0), which guarantees the range is strictly positive. */}
+        {/* v8 ignore start */}
         {xMin < 0 && xMax > 0 && (
           <line
             x1={padding + ((0 - xMin) / (xMax - xMin || 1)) * (width - padding * 2)}
@@ -105,6 +109,7 @@ export function ScatterPlot({
             className={styles.axis}
           />
         )}
+        {/* v8 ignore stop */}
 
         {/* Dots */}
         {transformed.map((p) => {

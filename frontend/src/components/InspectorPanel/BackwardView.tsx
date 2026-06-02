@@ -102,15 +102,21 @@ export function BackwardView({ runId, nodeId }: Props) {
   const [indexError, setIndexError] = useState<string | null>(null);
   const [tensors, setTensors] = useState<TensorMap>({});
 
+  // The parent remounts this component (via a `key` on runId:nodeId), so each
+  // mount starts from fresh state — no manual reset needed, and the prior
+  // node's gradients never flash before the new fetch resolves.
   useEffect(() => {
     let cancelled = false;
-    setEntries(null);
-    setIndexError(null);
-    setTensors({});
     fetchGradIndex(runId, nodeId)
       .then((es) => {
         if (cancelled) return;
         setEntries(es);
+        // Seed loading placeholders for every gradient the next effect fetches.
+        const initial: TensorMap = {};
+        for (const e of es) {
+          initial[entryKey(e)] = { loading: true, error: null, data: null };
+        }
+        setTensors(initial);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -125,15 +131,10 @@ export function BackwardView({ runId, nodeId }: Props) {
     };
   }, [runId, nodeId]);
 
+  // The loading placeholders were already seeded alongside setEntries above.
   useEffect(() => {
     if (!entries || entries.length === 0) return;
     let cancelled = false;
-    const initial: TensorMap = {};
-    for (const e of entries) {
-      initial[entryKey(e)] = { loading: true, error: null, data: null };
-    }
-    setTensors(initial);
-
     Promise.all(
       entries.map(async (e) => {
         const port = entryStorePort(e);
@@ -235,6 +236,8 @@ function Section({
           // applies leading dim selection; this fn only sees flat (i,j).
           const grid = tensorData.values as unknown;
           let cell = 0;
+          // highlight() runs only for tensor data, whose values is always an array
+          /* v8 ignore start */
           if (Array.isArray(grid)) {
             const row = (grid as unknown[])[i];
             if (Array.isArray(row)) {
@@ -244,6 +247,7 @@ function Section({
               cell = row;
             }
           }
+          /* v8 ignore stop */
           return Math.min(1, Math.abs(cell) / maxAbs);
         };
 

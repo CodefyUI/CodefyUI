@@ -26,7 +26,7 @@ function renderCard(
   const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? '#FF9800';
   const catLabel = example.category.replace(/_/g, ' ');
   return (
-    <button
+    <button type="button"
       key={example.path}
       onClick={() => onClick(example)}
       className={styles.presetCard}

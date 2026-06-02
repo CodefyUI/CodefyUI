@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { HeatmapPlot, detectCausalPattern, valueToColor } from './HeatmapPlot';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('detectCausalPattern', () => {
   it('detects strictly upper-triangular zeros with non-zero lower', () => {
@@ -164,9 +168,80 @@ describe('HeatmapPlot', () => {
 
   it('renders expand button when onExpand is given and calls it on click', async () => {
     const m = [[0.5, 0.5], [0.3, 0.7]];
-    const { container } = render(<HeatmapPlot data={m} onExpand={() => {}} />);
-    const btns = container.querySelectorAll('button[aria-label="Expand heatmap"]');
-    expect(btns.length).toBe(1);
+    const onExpand = vi.fn();
+    const { container } = render(<HeatmapPlot data={m} onExpand={onExpand} />);
+    const btn = container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    // Click fires onExpand and stops propagation so the wrapper click doesn't
+    // also fire (covers the e.stopPropagation() + onExpand() body).
+    const stop = vi.fn();
+    fireEvent.click(btn, {});
+    expect(onExpand).toHaveBeenCalledTimes(1);
+    // Verify stopPropagation is wired: dispatch a real event and spy on it.
+    const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+    const spy = vi.spyOn(ev, 'stopPropagation');
+    btn.dispatchEvent(ev);
+    expect(spy).toHaveBeenCalled();
+    expect(onExpand).toHaveBeenCalledTimes(2);
+    void stop;
+  });
+
+  it('surfaces a tooltip on cell hover and clears it on leave', () => {
+    const m = [
+      [0.5, 0.5],
+      [0.3, 0.7],
+    ];
+    const { container } = render(
+      <HeatmapPlot data={m} rowLabels={['q0', 'q1']} colLabels={['k0', 'k1']} />,
+    );
+    const cell = container.querySelector('rect[data-i="0"][data-j="1"]') as SVGRectElement;
+    fireEvent.mouseEnter(cell, { clientX: 30, clientY: 40 });
+    const tip = document.body.querySelector('[class*="tooltip"]') as HTMLElement;
+    expect(tip).toBeTruthy();
+    // Header shows w[i, j] = value (no head segment for 2D input).
+    expect(within(tip).getByText(/w\[0, 1\] = 0\.500/)).toBeTruthy();
+    // Row/col label pair present.
+    expect(within(tip).getByText('q0')).toBeTruthy();
+    expect(within(tip).getByText('k1')).toBeTruthy();
+    // mouseMove keeps/updates the tooltip.
+    fireEvent.mouseMove(cell, { clientX: 99, clientY: 88 });
+    const moved = document.body.querySelector('[class*="tooltip"]') as HTMLElement;
+    expect(moved.style.left).toBe('111px'); // 99 + 12
+    expect(moved.style.top).toBe('100px'); // 88 + 12
+    fireEvent.mouseLeave(cell);
+    expect(document.body.querySelector('[class*="tooltip"]')).toBeNull();
+  });
+
+  it('tooltip shows a head segment and falls back to q/k labels for 3D input', () => {
+    const data = [
+      [
+        [0.5, 0.5],
+        [0.3, 0.7],
+      ],
+    ];
+    // rowLabels shorter than seq → fallback "q{i}"/"k{j}" indices used.
+    const { container } = render(
+      <HeatmapPlot data={data} rowLabels={['only']} colLabels={['c']} />,
+    );
+    const cell = container.querySelector('rect[data-i="1"][data-j="1"]') as SVGRectElement;
+    fireEvent.mouseEnter(cell, { clientX: 5, clientY: 5 });
+    const tip = document.body.querySelector('[class*="tooltip"]') as HTMLElement;
+    expect(within(tip).getByText(/head 0/)).toBeTruthy();
+    expect(within(tip).getByText(/w\[1, 1\] = 0\.700/)).toBeTruthy();
+    // Missing labels at index 1 → fallbacks.
+    expect(within(tip).getByText('q1')).toBeTruthy();
+    expect(within(tip).getByText('k1')).toBeTruthy();
+  });
+
+  it('omits the label-pair row when no labels are provided', () => {
+    const m = [[0.5, 0.5], [0.3, 0.7]];
+    const { container } = render(<HeatmapPlot data={m} />);
+    const cell = container.querySelector('rect[data-i="0"][data-j="0"]') as SVGRectElement;
+    fireEvent.mouseEnter(cell, { clientX: 1, clientY: 1 });
+    const tip = document.body.querySelector('[class*="tooltip"]') as HTMLElement;
+    expect(tip).toBeTruthy();
+    // No tooltipPair element since rowLabels/effectiveCol are undefined.
+    expect(tip.querySelector('[class*="tooltipPair"]')).toBeNull();
   });
 
   it('contrast-stretches each row to [0, 1] when normalizePerRow is true', () => {
@@ -256,6 +331,24 @@ describe('HeatmapPlot', () => {
     const { container } = render(<HeatmapPlot data={m} normalizePerRow />);
     const cells = container.querySelectorAll('rect[data-i]');
     expect(cells.length).toBe(2);
+  });
+
+  it('renders a 3D input whose trailing head is empty (matrix[0] undefined → m=0)', () => {
+    // The empty-data guard only inspects panels[0]; a non-first head with an
+    // empty matrix still reaches SinglePanel, where `matrix[0]?.length ?? 0`
+    // must fall back to 0 rather than throw.
+    const data = [
+      [
+        [0.5, 0.5],
+        [0.3, 0.7],
+      ],
+      [], // empty trailing head — matrix[0] is undefined here
+    ];
+    const { container } = render(<HeatmapPlot data={data} />);
+    // Two panels render (one per head); the empty head contributes no cells.
+    expect(container.querySelectorAll('svg').length).toBe(2);
+    // Only the first head's 2x2 = 4 cells exist.
+    expect(container.querySelectorAll('rect[data-i]').length).toBe(4);
   });
 
   it('handles all-zero rows safely under normalizePerRow', () => {

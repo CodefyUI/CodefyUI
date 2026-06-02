@@ -46,7 +46,7 @@ export function NodeContextMenu({ position, items, onClose }: NodeContextMenuPro
       >
         {items.map((item, i) => (
           <div key={i}>
-            <button
+            <button type="button"
               onClick={() => { item.action(); onClose(); }}
               className={styles.menuItem}
               style={{ color: item.color ?? '#ccc' }}
