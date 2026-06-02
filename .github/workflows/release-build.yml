@@ -90,7 +90,7 @@ jobs:
           echo "Tag message ($(wc -l < release-body.md) lines):"
           head -20 release-body.md
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           # Pin to the major that matches frontend/pnpm-lock.yaml. Floating to
           # `latest` would silently break `pnpm install --frozen-lockfile`
