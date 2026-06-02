@@ -16,7 +16,10 @@
     build       建置 frontend dist（需 Node + pnpm，給開發者）
     dev         啟動開發伺服器（HMR；需 Node + pnpm）
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
-    stop        停止所有服務
+                預設在背景執行（關掉 terminal 也會繼續跑），用 cdui status /
+                cdui stop 管理。加 --foreground / -f 則在前景執行（Ctrl+C 停止）。
+    status      顯示背景伺服器狀態（PID、健康檢查）
+    stop        停止所有服務（含背景伺服器）
     test        執行 backend 測試
     clean       移除虛擬環境、node_modules 與 frontend/dist
     uninstall   解除安裝：clean + 移除全域 cdui launcher
@@ -54,6 +57,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -84,7 +88,12 @@ def _detect_lang() -> str:
         return "en"
     try:
         import locale
-        loc = (locale.getdefaultlocale()[0] or "").lower()
+        # getlocale() replaces the deprecated getdefaultlocale() (removed in
+        # Python 3.15). Fall back to the LANG/LC_* env vars it reads from when
+        # the C library reports no locale (common on minimal images).
+        loc = (locale.getlocale()[0] or "").lower()
+        if not loc:
+            loc = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "").lower()
         if loc.startswith("zh"):
             return "zh"
     except Exception:
@@ -872,8 +881,65 @@ def build() -> None:
     print(f"=== 建置完成：{DIST_DIR} ===")
 
 
+# ── Background server management ───────────────────────────────────────
+# `cdui start` daemonizes by default so users can close the terminal and keep
+# the server running, then manage it with `cdui status` / `cdui stop`. The PID
+# + log live under the repo-local dev data dir alongside the session token.
+SERVER_PIDFILE = DEV_USER_DATA_DIR / "server.pid"
+SERVER_LOG = DEV_USER_DATA_DIR / "server.log"
+SERVER_HEALTH_URL = "http://127.0.0.1:8000/api/health"
+
+
+def _read_server_pid() -> "int | None":
+    try:
+        return int(SERVER_PIDFILE.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with *pid* currently exists."""
+    if sys.platform == "win32":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True,
+        )
+        return str(pid) in out.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    return True
+
+
+def _server_healthy(timeout: float = 1.0) -> bool:
+    try:
+        with urlopen(SERVER_HEALTH_URL, timeout=timeout) as resp:
+            return resp.status == 200
+    except (URLError, HTTPError, TimeoutError, OSError):
+        return False
+
+
+def _running_server_pid() -> "int | None":
+    """Return the PID of the live background server, or None. Clears a stale
+    pidfile as a side effect so callers don't act on a dead PID."""
+    pid = _read_server_pid()
+    if pid is None:
+        return None
+    if _pid_alive(pid):
+        return pid
+    # Stale pidfile (server crashed / was killed externally) — tidy up.
+    SERVER_PIDFILE.unlink(missing_ok=True)
+    return None
+
+
 def start() -> None:
-    """Production 模式：單一 uvicorn 由 FastAPI 直接 serve dist。"""
+    """Production 模式：單一 uvicorn 由 FastAPI 直接 serve dist。
+
+    預設背景執行（daemon）；加 --foreground / -f 改在前景執行。
+    """
     if not DIST_INDEX.exists():
         print(
             "錯誤：找不到 frontend/dist/index.html\n"
@@ -882,15 +948,101 @@ def start() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    foreground = any(a in ("-f", "--foreground") for a in sys.argv[2:])
+
+    existing = _running_server_pid()
+    if existing is not None:
+        print(f"CodefyUI 已在背景執行（PID {existing}）。")
+        print("  查看狀態：cdui status    停止：cdui stop")
+        return
+
     _warn_if_dist_stale()
     _apply_dev_env()
     uvicorn = _require_venv_tool("uvicorn")
-    print("=== CodefyUI 啟動（Ctrl+C 停止）===")
-    print("    開啟 → http://localhost:8000")
+    cmd = [uvicorn, "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+
+    if foreground:
+        print("=== CodefyUI 啟動（前景；Ctrl+C 停止）===")
+        print("    開啟 → http://localhost:8000")
+        print(f"    dev lockfile → {DEV_LOCKFILE}")
+        print("")
+        run(cmd, cwd=BACKEND_DIR)
+        return
+
+    # ── Background / daemon path ──────────────────────────────────────
+    SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    logf = open(SERVER_LOG, "a", buffering=1)  # noqa: SIM115 — handed to child
+    popen_kw: dict = {}
+    if sys.platform == "win32":
+        # New process group + detached so closing the console doesn't kill it.
+        DETACHED_PROCESS = 0x00000008
+        popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+    else:
+        # New session → no controlling terminal, so SIGHUP on terminal close
+        # doesn't reach the server.
+        popen_kw["start_new_session"] = True
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=BACKEND_DIR,
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        **popen_kw,
+    )
+    SERVER_PIDFILE.write_text(str(proc.pid))
+
+    # Wait for the server to become healthy (or die) before reporting.
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            SERVER_PIDFILE.unlink(missing_ok=True)
+            print("錯誤：伺服器啟動後隨即結束。最後的日誌：", file=sys.stderr)
+            _print_log_tail(20)
+            sys.exit(1)
+        if _server_healthy():
+            break
+        time.sleep(0.5)
+    else:
+        print("警告：等候逾時，伺服器尚未回應健康檢查（仍在背景嘗試啟動）。")
+
+    print("=== CodefyUI 已在背景啟動 ===")
+    print(f"    PID         → {proc.pid}")
+    print("    開啟        → http://localhost:8000")
+    print(f"    日誌        → {SERVER_LOG}")
     print(f"    dev lockfile → {DEV_LOCKFILE}")
     print("")
-    run([uvicorn, "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
-        cwd=BACKEND_DIR)
+    print("    關掉 terminal 也會繼續執行。管理：cdui status / cdui stop")
+
+
+def _print_log_tail(n: int) -> None:
+    try:
+        lines = SERVER_LOG.read_text(errors="replace").splitlines()
+        for ln in lines[-n:]:
+            print("    " + ln, file=sys.stderr)
+    except OSError:
+        pass
+
+
+def status() -> None:
+    """顯示背景伺服器狀態。"""
+    pid = _running_server_pid()
+    healthy = _server_healthy()
+    if pid is not None:
+        print(f"CodefyUI 背景伺服器執行中（PID {pid}）。")
+        print(f"  健康檢查：{'✓ 正常' if healthy else '✗ 尚未回應'}  ({SERVER_HEALTH_URL})")
+        print("  開啟 → http://localhost:8000")
+        print(f"  日誌 → {SERVER_LOG}")
+    elif healthy:
+        # Something is serving :8000 but we have no pidfile for it (e.g. a
+        # foreground `cdui start` in another terminal, or an external process).
+        print("有伺服器在 http://localhost:8000 回應，但不是由 cdui 背景啟動的"
+              "（沒有 PID 檔）。")
+        print("  可能是前景 'cdui start -f' 或其他程序占用了 :8000。")
+    else:
+        print("CodefyUI 沒有在背景執行。用 'cdui start' 啟動。")
+        sys.exit(1)
 
 
 def dev() -> None:
@@ -946,6 +1098,20 @@ def dev() -> None:
 
 def stop() -> None:
     print("=== 停止所有服務 ===")
+    # First, stop the tracked background server gracefully via its PID. On
+    # POSIX it was started with start_new_session, so its PID is also its
+    # process-group leader — kill the whole group to catch any children.
+    pid = _read_server_pid()
+    if pid is not None and _pid_alive(pid):
+        print(f"  停止背景伺服器（PID {pid}）...")
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True)
+        else:
+            _terminate_posix(pid)
+    SERVER_PIDFILE.unlink(missing_ok=True)
+
+    # Sweep up anything else (foreground starts, dev-mode vite, stray workers).
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/IM", "uvicorn.exe"], capture_output=True)
         subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq vite*"], capture_output=True)
@@ -953,6 +1119,30 @@ def stop() -> None:
         subprocess.run(["pkill", "-f", "uvicorn app.main:app"], capture_output=True)
         subprocess.run(["pkill", "-f", "vite"], capture_output=True)
     print("=== 完成 ===")
+
+
+def _terminate_posix(pid: int) -> None:
+    """SIGTERM the process group, then SIGKILL anything still alive."""
+    import signal  # noqa: PLC0415 — only needed here, POSIX only
+
+    def _signal_group(sig: int) -> None:
+        try:
+            os.killpg(os.getpgid(pid), sig)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # Couldn't resolve/kill the group — fall back to the bare PID.
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+
+    _signal_group(signal.SIGTERM)
+    for _ in range(20):  # up to ~2s for a graceful shutdown
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.1)
+    _signal_group(signal.SIGKILL)
 
 
 def test() -> None:
@@ -998,6 +1188,7 @@ COMMANDS = {
     "build": build,
     "dev": dev,
     "start": start,
+    "status": status,
     "stop": stop,
     "test": test,
     "clean": clean,
