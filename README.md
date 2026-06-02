@@ -51,7 +51,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available) |
 | `cdui update` | Update to the latest release (prebuilt path) or pull `main` (when building from source) and re-sync the frontend |
 | `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground`/`-f` runs it attached |
-| `cdui status` | Show the background server's PID and health |
+| `cdui status` | btop / k9s-style dashboard: CPU, memory, disk, GPU, top processes, plus the server's PID and health. Add `--watch` (`-w [seconds]`) to refresh live |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
 | `cdui build` | Build the frontend bundle locally (requires Node + pnpm) |
 | `cdui stop` | Stop all services (including the background server) |

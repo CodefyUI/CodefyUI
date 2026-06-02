@@ -18,7 +18,10 @@
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
                 預設在背景執行（關掉 terminal 也會繼續跑），用 cdui status /
                 cdui stop 管理。加 --foreground / -f 則在前景執行（Ctrl+C 停止）。
-    status      顯示背景伺服器狀態（PID、健康檢查）
+    status      顯示系統與伺服器狀態儀表板（像 btop / k9s：CPU、記憶體、
+                磁碟、GPU、行程、伺服器 PID 與健康檢查）
+                旗標：--watch / -w [秒]   持續刷新（預設 2 秒，Ctrl+C 離開）
+                      --once             只輸出一次（預設行為）
     stop        停止所有服務（含背景伺服器）
     test        執行 backend 測試
     clean       移除虛擬環境、node_modules 與 frontend/dist
@@ -919,11 +922,20 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _server_healthy(timeout: float = 1.0) -> bool:
+    return _server_health_info(timeout) is not None
+
+
+def _server_health_info(timeout: float = 1.0) -> "dict | None":
+    """Fetch and parse /api/health. Returns the JSON dict, or None if the
+    server isn't responding (or returned a non-200 / unparseable body)."""
     try:
         with urlopen(SERVER_HEALTH_URL, timeout=timeout) as resp:
-            return resp.status == 200
-    except (URLError, HTTPError, TimeoutError, OSError):
-        return False
+            if resp.status != 200:
+                return None
+            import json  # noqa: PLC0415 — only needed here
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except (URLError, HTTPError, TimeoutError, OSError, ValueError):
+        return None
 
 
 def _running_server_pid() -> "int | None":
@@ -1029,24 +1041,326 @@ def _print_log_tail(n: int) -> None:
         pass
 
 
-def status() -> None:
-    """顯示背景伺服器狀態。"""
-    pid = _running_server_pid()
-    healthy = _server_healthy()
-    if pid is not None:
-        print(f"CodefyUI 背景伺服器執行中（PID {pid}）。")
-        print(f"  健康檢查：{'✓ 正常' if healthy else '✗ 尚未回應'}  ({SERVER_HEALTH_URL})")
-        print("  開啟 → http://localhost:8000")
-        print(f"  日誌 → {SERVER_LOG}")
-    elif healthy:
-        # Something is serving :8000 but we have no pidfile for it (e.g. a
-        # foreground `cdui start` in another terminal, or an external process).
-        print("有伺服器在 http://localhost:8000 回應，但不是由 cdui 背景啟動的"
-              "（沒有 PID 檔）。")
-        print("  可能是前景 'cdui start -f' 或其他程序占用了 :8000。")
+# ── System status dashboard (`cdui status`) ───────────────────────────────
+# A btop / k9s-style snapshot: host + OS, CPU (overall + per-core bars),
+# memory, swap, disk, GPU (via nvidia-smi when present) and the top processes,
+# followed by the CodefyUI server's own PID / health. Built on psutil when it's
+# installed (it ships with the backend); degrades to a stdlib-only view when not.
+
+def _human_bytes(n: "float | None") -> str:
+    """Human-readable size, e.g. 1.5 GiB. Returns '—' for None."""
+    if n is None:
+        return "—"
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    size = float(n)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} PiB"  # pragma: no cover — loop always returns first
+
+
+def _pct_color(pct: float) -> str:
+    """Green < 60% < yellow < 85% < red — the usual saturation gradient."""
+    if pct >= 85:
+        return RED
+    if pct >= 60:
+        return YELLOW
+    return GREEN
+
+
+def _bar(pct: "float | None", width: int = 24) -> str:
+    """A coloured [████░░░░] usage bar. pct is 0–100; None renders empty."""
+    if pct is None:
+        return f"{GRAY}[{'░' * width}]{RESET}"
+    pct = max(0.0, min(100.0, pct))
+    filled = int(round(pct / 100 * width))
+    color = _pct_color(pct)
+    return f"{GRAY}[{color}{'█' * filled}{GRAY}{'░' * (width - filled)}{GRAY}]{RESET}"
+
+
+def _fmt_uptime(seconds: float) -> str:
+    secs = int(seconds)
+    days, secs = divmod(secs, 86400)
+    hours, secs = divmod(secs, 3600)
+    mins, _ = divmod(secs, 60)
+    if days:
+        return t(f"{days} 天 {hours} 小時 {mins} 分", f"{days}d {hours}h {mins}m")
+    if hours:
+        return t(f"{hours} 小時 {mins} 分", f"{hours}h {mins}m")
+    return t(f"{mins} 分", f"{mins}m")
+
+
+def _kv(label: str, value: str) -> None:
+    """Aligned `label  value` line; label padded to a fixed visual width."""
+    pad = max(0, 14 - _display_width(label))
+    print(f"  {DIM}{label}{RESET}{' ' * pad}  {value}")
+
+
+def _gpu_stats() -> "list[dict]":
+    """Per-GPU utilisation via `nvidia-smi` (fast, no torch import). Empty list
+    when nvidia-smi is missing or errors (CPU-only / macOS / AMD machines)."""
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        out = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    gpus: list[dict] = []
+    for line in out.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            gpus.append({
+                "name": parts[0],
+                "util": float(parts[1]),
+                "mem_used": float(parts[2]) * 1024 * 1024,
+                "mem_total": float(parts[3]) * 1024 * 1024,
+                "temp": float(parts[4]),
+            })
+        except ValueError:
+            continue
+    return gpus
+
+
+def _render_dashboard(interval: float, first: bool) -> None:
+    """Print one frame of the status dashboard.
+
+    *interval* is the psutil CPU sampling window (also the watch refresh gap);
+    *first* gates a one-line hint that's pointless to repeat every frame.
+    """
+    try:
+        import psutil  # noqa: PLC0415 — optional, ships with the backend
+    except ImportError:
+        psutil = None
+
+    # Prime per-process CPU counters *before* the blocking CPU sample below so
+    # the first read returns a real percentage rather than psutil's initial
+    # 0.0. We hold the Process objects; the cpu_percent(interval=…) call in the
+    # CPU section provides the sampling gap, then we read them back later.
+    primed_procs: list = []
+    if psutil is not None:
+        for p in psutil.process_iter():
+            try:
+                p.cpu_percent(None)
+                primed_procs.append(p)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+    section("CodefyUI 系統狀態", "CodefyUI System Status")
+
+    # ── Host / OS ─────────────────────────────────────────────────────────
+    import platform  # noqa: PLC0415
+    _kv(t("主機", "Host"), platform.node() or "—")
+    _kv(t("作業系統", "OS"),
+        f"{platform.system()} {platform.release()} ({platform.machine()})")
+    if psutil is not None:
+        try:
+            _kv(t("開機時間", "Uptime"),
+                _fmt_uptime(time.time() - psutil.boot_time()))
+        except (OSError, AttributeError):
+            pass
+    if hasattr(os, "getloadavg"):
+        try:
+            la = os.getloadavg()
+            _kv(t("負載平均", "Load avg"),
+                f"{la[0]:.2f}  {la[1]:.2f}  {la[2]:.2f}")
+        except OSError:
+            pass
+
+    # ── CPU ───────────────────────────────────────────────────────────────
+    print()
+    section("CPU", "CPU")
+    cores = os.cpu_count() or 1
+    if psutil is not None:
+        overall = psutil.cpu_percent(interval=interval)
+        per_core = psutil.cpu_percent(interval=None, percpu=True)
+        _kv(t("總使用率", "Overall"),
+            f"{_bar(overall)} {_pct_color(overall)}{overall:5.1f}%{RESET}"
+            f"  {DIM}{cores} {t('核心', 'cores')}{RESET}")
+        try:
+            freq = psutil.cpu_freq()
+            if freq and freq.current:
+                _kv(t("時脈", "Freq"), f"{freq.current/1000:.2f} GHz")
+        except (OSError, AttributeError):
+            pass
+        for i, cpct in enumerate(per_core):
+            print(f"    {DIM}core {i:>2}{RESET} {_bar(cpct, 18)} "
+                  f"{_pct_color(cpct)}{cpct:5.1f}%{RESET}")
     else:
-        print("CodefyUI 沒有在背景執行。用 'cdui start' 啟動。")
-        sys.exit(1)
+        _kv(t("核心數", "Cores"), str(cores))
+        print(f"    {DIM}{t('安裝 psutil 以顯示即時使用率', 'install psutil for live usage')}{RESET}")
+
+    # ── Memory ────────────────────────────────────────────────────────────
+    print()
+    section("記憶體", "Memory")
+    if psutil is not None:
+        vm = psutil.virtual_memory()
+        _kv("RAM",
+            f"{_bar(vm.percent)} {_pct_color(vm.percent)}{vm.percent:5.1f}%{RESET}"
+            f"  {_human_bytes(vm.used)} / {_human_bytes(vm.total)}")
+        sm = psutil.swap_memory()
+        if sm.total:
+            _kv("Swap",
+                f"{_bar(sm.percent)} {_pct_color(sm.percent)}{sm.percent:5.1f}%{RESET}"
+                f"  {_human_bytes(sm.used)} / {_human_bytes(sm.total)}")
+    else:
+        print(f"    {DIM}{t('安裝 psutil 以顯示記憶體用量', 'install psutil for memory usage')}{RESET}")
+
+    # ── Disk ──────────────────────────────────────────────────────────────
+    print()
+    section("磁碟", "Disk")
+    root = "C:\\" if sys.platform == "win32" else "/"
+    try:
+        du = shutil.disk_usage(root)
+        pct = du.used / du.total * 100 if du.total else 0.0
+        _kv(root,
+            f"{_bar(pct)} {_pct_color(pct)}{pct:5.1f}%{RESET}"
+            f"  {_human_bytes(du.used)} / {_human_bytes(du.total)}"
+            f"  ({_human_bytes(du.free)} {t('可用', 'free')})")
+    except OSError:
+        pass
+
+    # ── GPU ───────────────────────────────────────────────────────────────
+    gpus = _gpu_stats()
+    if gpus:
+        print()
+        section("GPU", "GPU")
+        for i, g in enumerate(gpus):
+            mem_pct = g["mem_used"] / g["mem_total"] * 100 if g["mem_total"] else 0.0
+            _kv(f"GPU {i}", f"{g['name']}  {g['temp']:.0f}°C")
+            print(f"    {DIM}util {RESET}{_bar(g['util'], 18)} "
+                  f"{_pct_color(g['util'])}{g['util']:5.1f}%{RESET}")
+            print(f"    {DIM}vram {RESET}{_bar(mem_pct, 18)} "
+                  f"{_pct_color(mem_pct)}{mem_pct:5.1f}%{RESET}  "
+                  f"{_human_bytes(g['mem_used'])} / {_human_bytes(g['mem_total'])}")
+
+    # ── Top processes ─────────────────────────────────────────────────────
+    if psutil is not None:
+        print()
+        section("行程（依 CPU 排序）", "Top processes (by CPU)")
+        # psutil reports per-process CPU% relative to a single core, so a busy
+        # core can read >100%; normalise by core count for a system-wide view.
+        cores = os.cpu_count() or 1
+        procs = []
+        for p in primed_procs:
+            try:
+                procs.append({
+                    "pid": p.pid,
+                    "name": p.name(),
+                    "cpu": p.cpu_percent(None) / cores,
+                    "mem": p.memory_percent(),
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        procs.sort(key=lambda x: x["cpu"], reverse=True)
+        print(f"    {DIM}{'PID':>7}  {'CPU%':>6}  {'MEM%':>6}  {t('名稱', 'NAME')}{RESET}")
+        for info in procs[:8]:
+            name = (info["name"] or "?")[:28]
+            cpu, mem = info["cpu"], info["mem"]
+            print(f"    {info['pid']:>7}  "
+                  f"{_pct_color(cpu)}{cpu:6.1f}{RESET}  {mem:6.1f}  {name}")
+
+    # ── CodefyUI server ───────────────────────────────────────────────────
+    print()
+    section("CodefyUI 伺服器", "CodefyUI Server")
+    pid = _running_server_pid()
+    info = _server_health_info()
+    healthy = info is not None
+    if pid is not None:
+        _kv(t("狀態", "State"),
+            f"{GREEN}● {t('背景執行中', 'running (background)')}{RESET}  PID {pid}")
+        _kv(t("健康檢查", "Health"),
+            f"{GREEN}✓ {t('正常', 'ok')}{RESET}" if healthy
+            else f"{RED}✗ {t('尚未回應', 'not responding')}{RESET}")
+        if info:
+            _kv(t("節點 / 預設", "Nodes / Presets"),
+                f"{info.get('nodes_loaded', '?')} / {info.get('presets_loaded', '?')}")
+        _kv("URL", "http://localhost:8000")
+        _kv(t("日誌", "Log"), str(SERVER_LOG))
+    elif healthy:
+        orphan = t("有伺服器回應，但非 cdui 背景啟動（無 PID 檔）",
+                   "responding, but not a cdui background server (no PID file)")
+        _kv(t("狀態", "State"), f"{YELLOW}● {orphan}{RESET}")
+        _kv("URL", "http://localhost:8000")
+        if info:
+            _kv(t("節點 / 預設", "Nodes / Presets"),
+                f"{info.get('nodes_loaded', '?')} / {info.get('presets_loaded', '?')}")
+    else:
+        _kv(t("狀態", "State"),
+            f"{GRAY}○ {t('未執行', 'not running')}{RESET}  "
+            f"{DIM}{t('用 cdui start 啟動', 'start with: cdui start')}{RESET}")
+
+    if first and not _watch_requested():
+        tip = t("提示：cdui status --watch 可持續刷新（像 btop）",
+                "tip: cdui status --watch refreshes live (like btop)")
+        print()
+        print(f"  {DIM}{tip}{RESET}")
+
+
+def _watch_requested() -> bool:
+    return any(a in ("-w", "--watch") for a in sys.argv[2:])
+
+
+def _parse_watch_interval() -> float:
+    """Read the optional numeric argument after --watch / -w (default 2.0s)."""
+    argv = sys.argv[2:]
+    for i, a in enumerate(argv):
+        if a in ("-w", "--watch"):
+            if i + 1 < len(argv):
+                try:
+                    return max(0.5, float(argv[i + 1]))
+                except ValueError:
+                    pass
+            break
+    return 2.0
+
+
+def status() -> None:
+    """系統與伺服器狀態儀表板（btop / k9s 風格）。"""
+    watch = _watch_requested()
+
+    if not watch:
+        # One-shot. Use a short CPU sampling window so the reading is real
+        # (psutil's first non-blocking call always returns 0.0).
+        _render_dashboard(interval=0.3, first=True)
+        # Mirror the old contract: exit non-zero when nothing is serving :8000,
+        # so scripts can still gate on `cdui status`.
+        if _running_server_pid() is None and not _server_healthy():
+            sys.exit(1)
+        return
+
+    interval = _parse_watch_interval()
+    hide = "\x1b[?25l" if USE_COLOR else ""
+    showp = "\x1b[?25h" if USE_COLOR else ""
+    try:
+        if hide:
+            sys.stdout.write(hide)
+        first = True
+        while True:
+            # Clear screen + home cursor for a stable, btop-like refresh.
+            if USE_COLOR:
+                sys.stdout.write("\x1b[2J\x1b[H")
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{DIM}{t('刷新間隔', 'refresh')} {interval:g}s · {ts} · "
+                  f"{t('按 Ctrl+C 離開', 'Ctrl+C to quit')}{RESET}")
+            _render_dashboard(interval=interval, first=first)
+            first = False
+            sys.stdout.flush()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if showp:
+            sys.stdout.write(showp)
+            sys.stdout.flush()
 
 
 def dev() -> None:
