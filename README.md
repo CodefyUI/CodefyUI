@@ -44,16 +44,17 @@ Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). Th
 cdui start
 ```
 
-Open [http://localhost:8000](http://localhost:8000). The single uvicorn process serves both the API and the prebuilt React app.
+Open [http://localhost:8000](http://localhost:8000). The single uvicorn process serves both the API and the prebuilt React app. `cdui start` runs in the **background** by default — you can close the terminal and the server keeps running; manage it with `cdui status` and `cdui stop`. Add `--foreground` (`-f`) to run it attached and stop with `Ctrl+C`.
 
 | Command | Description |
 |---------|-------------|
 | `cdui install` | Install backend deps; download prebuilt frontend (or local build if `pnpm` available) |
 | `cdui update` | Update to the latest release (prebuilt path) or pull `main` (when building from source) and re-sync the frontend |
-| `cdui start` | Production mode — single uvicorn on `:8000` (no Node needed) |
+| `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground`/`-f` runs it attached |
+| `cdui status` | Show the background server's PID and health |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
 | `cdui build` | Build the frontend bundle locally (requires Node + pnpm) |
-| `cdui stop` | Stop all services |
+| `cdui stop` | Stop all services (including the background server) |
 | `cdui test` | Run backend tests |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
 | `cdui uninstall` | Clean + remove the PATH launcher |
