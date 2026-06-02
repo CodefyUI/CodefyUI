@@ -852,11 +852,15 @@ def update() -> None:
         os.environ["CODEFYUI_RELEASE_TAG"] = pinned_tag
     else:
         section("拉取最新版本（main）", "Pulling latest (main)")
-        # Explicit remote/branch so the command works even on a detached HEAD or
-        # a branch that doesn't track upstream.
-        run(["git", "fetch", "origin", "main"], cwd=ROOT)
-        run(["git", "checkout", "main"], cwd=ROOT)
-        run(["git", "merge", "--ff-only", "origin/main"], cwd=ROOT)
+        # install.sh makes a *shallow* (`--depth 1`), tag-pinned clone, so the
+        # local history is grafted and `main` can share no common ancestor with
+        # the fetched tip — `git merge --ff-only origin/main` then dies with
+        # "refusing to merge unrelated histories". An install dir is a
+        # deployment, not a dev checkout, so just hard-realign `main` to the
+        # fetched commit regardless of ancestry. `checkout -B` from FETCH_HEAD
+        # works whether or not the branch existed / tracked upstream.
+        run(["git", "fetch", "origin", "main", "--depth", "1"], cwd=ROOT)
+        run(["git", "checkout", "-B", "main", "FETCH_HEAD"], cwd=ROOT)
 
     # Old dist is for the previous source — wipe it so install re-downloads
     # (or re-builds, when pnpm is on PATH) for the new code.
