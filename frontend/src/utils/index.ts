@@ -38,6 +38,46 @@ export function getPortColor(dataType: string): string {
   return DATA_TYPE_COLORS[dataType.toUpperCase()] ?? DATA_TYPE_COLORS['ANY'];
 }
 
+const SPLIT_MAX_CHUNKS = 32;
+
+function bareName(qualifiedName: string): string {
+  const idx = qualifiedName.lastIndexOf(':');
+  return idx >= 0 ? qualifiedName.slice(idx + 1) : qualifiedName;
+}
+
+/**
+ * Resolve a node's *live* output ports, expanding param-driven nodes whose
+ * port count depends on a runtime parameter. Mirrors the backend
+ * `BaseNode.define_outputs_dynamic` mechanism so palette template and live
+ * canvas agree on what handles exist.
+ *
+ * For nodes whose ports don't depend on params (every node except Split as
+ * of writing) this just returns `definition.outputs` verbatim. New
+ * dynamic-port nodes added in the future should add a clause here.
+ */
+export function resolveDynamicOutputs(
+  definition: import('../types').NodeDefinition | undefined,
+  params: Record<string, unknown> | undefined,
+): import('../types').PortDefinition[] {
+  if (!definition) return [];
+  const bare = bareName(definition.node_name);
+  if (bare === 'Split') {
+    const raw = params?.chunks;
+    const parsed = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
+    const chunks = Math.max(
+      1,
+      Math.min(SPLIT_MAX_CHUNKS, Number.isFinite(parsed) ? Math.floor(parsed) : 2),
+    );
+    return Array.from({ length: chunks }, (_, i) => ({
+      name: `chunk_${i}`,
+      data_type: 'TENSOR',
+      description: `Chunk ${i} of ${chunks}`,
+      optional: false,
+    }));
+  }
+  return definition.outputs;
+}
+
 /**
  * Reconstruct full ReactFlow nodes from the minimal serialized graph format.
  * The serialized format (from getSerializedGraph / backend save) only stores:

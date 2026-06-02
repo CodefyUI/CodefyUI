@@ -206,7 +206,12 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> list[str]:
 
         src_port = edge.get("sourceHandle", "")
         tgt_port = edge.get("targetHandle", "")
-        src_outputs = {p.name: p for p in src_cls.define_outputs()}
+        # define_outputs_dynamic lets param-driven nodes (e.g. SplitNode whose
+        # `chunks` param decides how many chunk_i ports exist) expose their
+        # live port set. Nodes that don't override fall back to the static
+        # define_outputs() via BaseNode's default.
+        src_params = src.get("data", {}).get("params", {}) if isinstance(src.get("data"), dict) else {}
+        src_outputs = {p.name: p for p in src_cls.define_outputs_dynamic(src_params)}
         tgt_inputs = {p.name: p for p in tgt_cls.define_inputs()}
 
         if src_port not in src_outputs:

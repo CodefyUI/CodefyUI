@@ -76,6 +76,23 @@ class BaseNode(ABC):
         ...
 
     @classmethod
+    def define_outputs_dynamic(
+        cls,
+        params: dict[str, Any] | None = None,
+    ) -> list[PortDefinition]:
+        """Per-instance output ports, optionally expanded based on params.
+
+        Default delegates to the static ``define_outputs()``. Nodes whose
+        port count depends on a parameter (e.g. ``SplitNode`` whose
+        ``chunks`` param decides how many ``chunk_i`` outputs exist) override
+        this to return the live port list. Callers that have access to a
+        node instance's params (graph validator, renderer) should prefer
+        this; callers that only know the class (palette template, preset
+        registry) keep using the static method.
+        """
+        return cls.define_outputs()
+
+    @classmethod
     def define_params(cls) -> list[ParamDefinition]:
         return []
 
