@@ -15,6 +15,14 @@ export interface ParamDefinition {
   options: string[];
   min_value: number | null;
   max_value: number | null;
+  /**
+   * Conditional visibility — the param renders only when every key in
+   * this dict matches the live value of the corresponding sibling param.
+   * Example: ``{ preset: "Custom" }`` on Conv2dKernel's ``weights`` means
+   * the editor only shows when ``preset === "Custom"``. ``null`` /
+   * undefined means always visible.
+   */
+  visible_when?: Record<string, unknown> | null;
 }
 
 export interface SegmentGroup {

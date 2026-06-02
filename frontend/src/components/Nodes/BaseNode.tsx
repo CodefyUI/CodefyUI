@@ -2,7 +2,7 @@ import { memo, useState, type ReactNode } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { getPortColor, isValidConnection, resolveDynamicOutputs } from '../../utils';
+import { getPortColor, isParamVisible, isValidConnection, resolveDynamicOutputs } from '../../utils';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
@@ -240,20 +240,22 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {/* Params display — normal nodes */}
       {!isSequentialModel && def && def.params.length > 0 && (
         <div className={styles.paramsSection}>
-          {def.params.map((p) => {
-            const val = data.params[p.name] ?? p.default;
-            return (
-              <div key={p.name} className={styles.paramRow}>
-                <span className={styles.paramName}>{p.name}</span>
-                <span
-                  className={styles.paramValue}
-                  title={String(val)}
-                >
-                  {String(val)}
-                </span>
-              </div>
-            );
-          })}
+          {def.params
+            .filter((p) => isParamVisible(p, data.params))
+            .map((p) => {
+              const val = data.params[p.name] ?? p.default;
+              return (
+                <div key={p.name} className={styles.paramRow}>
+                  <span className={styles.paramName}>{p.name}</span>
+                  <span
+                    className={styles.paramValue}
+                    title={String(val)}
+                  >
+                    {String(val)}
+                  </span>
+                </div>
+              );
+            })}
         </div>
       )}
 

@@ -20,6 +20,9 @@ class ParamDefinitionSchema(BaseModel):
     options: list[str] = []
     min_value: float | None = None
     max_value: float | None = None
+    # Conditional visibility — forwarded verbatim to the frontend.
+    # See ParamDefinition.visible_when for semantics.
+    visible_when: dict[str, Any] | None = None
 
 
 class NodeDefinition(BaseModel):

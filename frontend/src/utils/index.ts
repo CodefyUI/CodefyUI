@@ -38,6 +38,29 @@ export function getPortColor(dataType: string): string {
   return DATA_TYPE_COLORS[dataType.toUpperCase()] ?? DATA_TYPE_COLORS['ANY'];
 }
 
+/**
+ * Evaluate a param's ``visible_when`` rule against the current params on
+ * the node. Returns true when the param should render. The default rule
+ * (no ``visible_when``) is "always visible".
+ *
+ * Matching is shallow equality after string coercion — sufficient for
+ * SELECT / INT / BOOL / FLOAT params, which cover every realistic use of
+ * conditional visibility.
+ */
+export function isParamVisible(
+  param: import('../types').ParamDefinition,
+  params: Record<string, unknown> | undefined,
+): boolean {
+  const rule = param.visible_when;
+  if (!rule) return true;
+  const live = params ?? {};
+  for (const [siblingName, expected] of Object.entries(rule)) {
+    const actual = live[siblingName];
+    if (String(actual) !== String(expected)) return false;
+  }
+  return true;
+}
+
 const SPLIT_MAX_CHUNKS = 32;
 
 function bareName(qualifiedName: string): string {

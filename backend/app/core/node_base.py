@@ -52,6 +52,13 @@ class ParamDefinition:
     options: list[str] = field(default_factory=list)  # for SELECT type
     min_value: float | None = None
     max_value: float | None = None
+    # Conditional visibility, evaluated client-side. When set, the param
+    # only renders in the config panel / node card if every key in this
+    # dict matches the live value of the corresponding sibling param.
+    # Example: ``visible_when={"preset": "Custom"}`` on Conv2dKernel's
+    # ``weights`` param means the editor only shows when ``preset`` is
+    # set to ``"Custom"``. None means always visible.
+    visible_when: dict[str, Any] | None = None
 
 
 class BaseNode(ABC):

@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n';
 import { ParamField } from '../shared/ParamField';
 import { MathText } from '../shared/MathText';
 import { CATEGORY_COLORS } from '../../styles/theme';
+import { isParamVisible } from '../../utils';
 import styles from './NodeConfigPanel.module.css';
 
 export function NodeConfigPanel() {
@@ -84,7 +85,9 @@ export function NodeConfigPanel() {
           <div>
             <div className={styles.sectionHeader}>{t('config.parameters')}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {def.params.map((param) => (
+              {def.params
+                .filter((param) => isParamVisible(param, selectedNode.data.params))
+                .map((param) => (
                 <div key={param.name}>
                   <ParamField
                     param={param}
