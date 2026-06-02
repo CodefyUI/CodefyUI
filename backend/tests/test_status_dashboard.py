@@ -122,27 +122,40 @@ def test_server_health_info_bad_json(monkeypatch):
 # ── Watch flag parsing ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "argv, expected",
+    "argv, isatty, expected",
     [
-        (["dev.py", "status"], False),
-        (["dev.py", "status", "--watch"], True),
-        (["dev.py", "status", "-w"], True),
-        (["dev.py", "status", "--once"], False),
+        # Continuous is the default on an interactive terminal...
+        (["dev.py", "status"], True, True),
+        (["dev.py", "status", "1"], True, True),
+        # ...but a single frame when stdout is piped/redirected...
+        (["dev.py", "status"], False, False),
+        # ...or when --once / -1 is explicit (even on a TTY)...
+        (["dev.py", "status", "--once"], True, False),
+        (["dev.py", "status", "-1"], True, False),
+        # ...and --watch forces the loop even off a TTY.
+        (["dev.py", "status", "--watch"], False, True),
+        (["dev.py", "status", "-w"], False, True),
     ],
 )
-def test_watch_requested(monkeypatch, argv, expected):
+def test_continuous_default(monkeypatch, argv, isatty, expected):
     monkeypatch.setattr(dev.sys, "argv", argv)
-    assert dev._watch_requested() is expected
+    monkeypatch.setattr(dev.sys, "stdout", io.StringIO())
+    # io.StringIO.isatty() is always False; override just that for the test.
+    monkeypatch.setattr(dev.sys.stdout, "isatty", lambda: isatty)
+    assert dev._continuous_default() is expected
 
 
 @pytest.mark.parametrize(
     "argv, expected",
     [
-        (["dev.py", "status", "--watch"], 2.0),       # default
+        (["dev.py", "status"], 2.0),                  # default
+        (["dev.py", "status", "1"], 1.0),            # bare positional
+        (["dev.py", "status", "0.1"], 0.5),         # clamped to floor
+        (["dev.py", "status", "--watch"], 2.0),       # flag, no value
         (["dev.py", "status", "-w", "1"], 1.0),
         (["dev.py", "status", "-w", "0.1"], 0.5),     # clamped to floor
         (["dev.py", "status", "-w", "abc"], 2.0),     # non-numeric → default
-        (["dev.py", "status"], 2.0),                  # flag absent → default
+        (["dev.py", "status", "--once"], 2.0),        # only flags → default
     ],
 )
 def test_parse_watch_interval(monkeypatch, argv, expected):
@@ -231,7 +244,7 @@ def test_render_dashboard_without_psutil(monkeypatch, capsys):
 # ── status() entry point ───────────────────────────────────────────────────
 
 def test_status_oneshot_exits_nonzero_when_down(monkeypatch):
-    monkeypatch.setattr(dev.sys, "argv", ["dev.py", "status"])
+    monkeypatch.setattr(dev.sys, "argv", ["dev.py", "status", "--once"])
     monkeypatch.setattr(dev, "_running_server_pid", lambda: None)
     monkeypatch.setattr(dev, "_server_healthy", lambda *a, **k: False)
     monkeypatch.setattr(dev, "_server_health_info", lambda *a, **k: None)
@@ -241,13 +254,32 @@ def test_status_oneshot_exits_nonzero_when_down(monkeypatch):
 
 
 def test_status_oneshot_ok_when_up(monkeypatch):
-    monkeypatch.setattr(dev.sys, "argv", ["dev.py", "status"])
+    monkeypatch.setattr(dev.sys, "argv", ["dev.py", "status", "--once"])
     monkeypatch.setattr(dev, "_running_server_pid", lambda: 999)
     monkeypatch.setattr(dev, "_server_healthy", lambda *a, **k: True)
     monkeypatch.setattr(dev, "_server_health_info",
                         lambda *a, **k: {"nodes_loaded": 1, "presets_loaded": 1})
     # Should return cleanly (no SystemExit) when the server is up.
     dev.status()
+
+
+def test_status_loops_by_default_on_tty(monkeypatch):
+    """Plain `cdui status` on a terminal loops (continuous is the default)."""
+    monkeypatch.setattr(dev.sys, "argv", ["dev.py", "status"])
+    monkeypatch.setattr(dev, "_continuous_default", lambda: True)
+    monkeypatch.setattr(dev, "_running_server_pid", lambda: None)
+    monkeypatch.setattr(dev, "_server_health_info", lambda *a, **k: None)
+
+    calls = {"n": 0}
+
+    def fake_render(interval, first):
+        calls["n"] += 1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dev, "_render_dashboard", fake_render)
+    monkeypatch.setattr(dev.sys, "stdout", io.StringIO())
+    dev.status()
+    assert calls["n"] == 1
 
 
 def test_status_watch_single_frame(monkeypatch):

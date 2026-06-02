@@ -20,8 +20,10 @@
                 cdui stop 管理。加 --foreground / -f 則在前景執行（Ctrl+C 停止）。
     status      顯示系統與伺服器狀態儀表板（像 btop / k9s：CPU、記憶體、
                 磁碟、GPU、行程、伺服器 PID 與健康檢查）
-                旗標：--watch / -w [秒]   持續刷新（預設 2 秒，Ctrl+C 離開）
-                      --once             只輸出一次（預設行為）
+                預設持續刷新（每 2 秒，Ctrl+C 離開）；輸出被導向管線或非互動
+                環境時自動改為只輸出一次。
+                旗標：[秒] 或 -w [秒]    自訂刷新間隔（如 cdui status 1）
+                      --once / -1       只輸出一次
     stop        停止所有服務（含背景伺服器）
     test        執行 backend 測試
     clean       移除虛擬環境、node_modules 與 frontend/dist
@@ -1299,19 +1301,37 @@ def _render_dashboard(interval: float, first: bool) -> None:
             f"{GRAY}○ {t('未執行', 'not running')}{RESET}  "
             f"{DIM}{t('用 cdui start 啟動', 'start with: cdui start')}{RESET}")
 
-    if first and not _watch_requested():
-        tip = t("提示：cdui status --watch 可持續刷新（像 btop）",
-                "tip: cdui status --watch refreshes live (like btop)")
+    if first and _watch_disabled():
+        tip = t("提示：直接執行 cdui status 會持續刷新（像 btop）",
+                "tip: plain `cdui status` refreshes live (like btop)")
         print()
         print(f"  {DIM}{tip}{RESET}")
 
 
-def _watch_requested() -> bool:
-    return any(a in ("-w", "--watch") for a in sys.argv[2:])
+def _watch_disabled() -> bool:
+    """True when we must print a single frame instead of looping: an explicit
+    --once, or a non-interactive stdout (pipe / CI) where a clearing loop and
+    its never-returning exit code would be useless or harmful."""
+    if any(a in ("-1", "--once") for a in sys.argv[2:]):
+        return True
+    return not sys.stdout.isatty()
+
+
+def _continuous_default() -> bool:
+    """Whether `cdui status` should loop. Continuous is the default; only an
+    explicit --once or a non-TTY stdout falls back to a single frame. An
+    explicit --watch / -w forces the loop even past those (e.g. for testing)."""
+    if any(a in ("-w", "--watch") for a in sys.argv[2:]):
+        return True
+    return not _watch_disabled()
 
 
 def _parse_watch_interval() -> float:
-    """Read the optional numeric argument after --watch / -w (default 2.0s)."""
+    """Read the optional numeric refresh interval (default 2.0s).
+
+    Accepts it after --watch / -w, or as a bare positional number so plain
+    `cdui status 1` works: `cdui status`, `cdui status 1`, `cdui status -w 0.5`.
+    """
     argv = sys.argv[2:]
     for i, a in enumerate(argv):
         if a in ("-w", "--watch"):
@@ -1320,17 +1340,23 @@ def _parse_watch_interval() -> float:
                     return max(0.5, float(argv[i + 1]))
                 except ValueError:
                     pass
-            break
+            return 2.0
+    # Bare positional number, e.g. `cdui status 1`.
+    for a in argv:
+        if not a.startswith("-"):
+            try:
+                return max(0.5, float(a))
+            except ValueError:
+                continue
     return 2.0
 
 
 def status() -> None:
-    """系統與伺服器狀態儀表板（btop / k9s 風格）。"""
-    watch = _watch_requested()
-
-    if not watch:
-        # One-shot. Use a short CPU sampling window so the reading is real
-        # (psutil's first non-blocking call always returns 0.0).
+    """系統與伺服器狀態儀表板（btop / k9s 風格，預設持續刷新）。"""
+    if not _continuous_default():
+        # Single frame (--once, or stdout isn't a TTY). Use a short CPU
+        # sampling window so the reading is real (psutil's first non-blocking
+        # call always returns 0.0).
         _render_dashboard(interval=0.3, first=True)
         # Mirror the old contract: exit non-zero when nothing is serving :8000,
         # so scripts can still gate on `cdui status`.
