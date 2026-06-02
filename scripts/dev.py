@@ -1365,28 +1365,72 @@ def status() -> None:
         return
 
     interval = _parse_watch_interval()
+    _watch_loop(interval)
+
+
+def _render_frame_text(interval: float, first: bool) -> str:
+    """Render one dashboard frame into a string (incl. the header line) by
+    temporarily redirecting stdout. Lets the watch loop repaint atomically."""
+    import io  # noqa: PLC0415
+    buf = io.StringIO()
+    real = sys.stdout
+    sys.stdout = buf
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{DIM}{t('刷新間隔', 'refresh')} {interval:g}s · {ts} · "
+              f"{t('按 Ctrl+C 離開', 'Ctrl+C to quit')}{RESET}")
+        _render_dashboard(interval=interval, first=first)
+    finally:
+        sys.stdout = real
+    return buf.getvalue()
+
+
+def _watch_loop(interval: float) -> None:
+    """btop-style live refresh without the full-screen-clear flicker.
+
+    Each frame is rendered into a buffer, then painted by homing the cursor
+    (``\\x1b[H``) and overwriting line by line — each line cleared to its end
+    (``\\x1b[K``) so leftover characters from a longer previous frame vanish —
+    and finally erasing anything below (``\\x1b[J``). The screen is only fully
+    cleared once, up front, so there's never a blank flash between frames.
+    """
     hide = "\x1b[?25l" if USE_COLOR else ""
     showp = "\x1b[?25h" if USE_COLOR else ""
     try:
-        if hide:
-            sys.stdout.write(hide)
+        if USE_COLOR:
+            sys.stdout.write(hide + "\x1b[2J\x1b[H")
+            sys.stdout.flush()
         first = True
         while True:
-            # Clear screen + home cursor for a stable, btop-like refresh.
-            if USE_COLOR:
-                sys.stdout.write("\x1b[2J\x1b[H")
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"{DIM}{t('刷新間隔', 'refresh')} {interval:g}s · {ts} · "
-                  f"{t('按 Ctrl+C 離開', 'Ctrl+C to quit')}{RESET}")
-            _render_dashboard(interval=interval, first=first)
+            frame = _render_frame_text(interval, first)
             first = False
+            if USE_COLOR:
+                lines = frame.split("\n")
+                # Home, then overwrite each line (clearing trailing leftovers),
+                # then clear everything below the shorter-or-equal new frame.
+                painted = "\x1b[H" + "\x1b[K\n".join(lines) + "\x1b[J"
+                sys.stdout.write(painted)
+            else:
+                sys.stdout.write(frame)
             sys.stdout.flush()
+            # When psutil is absent there's no blocking cpu sample, so the loop
+            # would spin hot — pace it ourselves in that case.
+            if not _has_psutil():
+                time.sleep(interval)
     except KeyboardInterrupt:
         pass
     finally:
         if showp:
             sys.stdout.write(showp)
             sys.stdout.flush()
+
+
+def _has_psutil() -> bool:
+    try:
+        import psutil  # noqa: F401, PLC0415
+        return True
+    except ImportError:
+        return False
 
 
 def dev() -> None:
