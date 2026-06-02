@@ -1031,7 +1031,7 @@ def start() -> None:
     print(f"    日誌        → {SERVER_LOG}")
     print(f"    dev lockfile → {DEV_LOCKFILE}")
     print("")
-    print("    關掉 terminal 也會繼續執行。管理：cdui status / cdui stop")
+    print("    管理：cdui status / cdui stop")
 
 
 def _print_log_tail(n: int) -> None:
