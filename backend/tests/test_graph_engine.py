@@ -197,6 +197,113 @@ def test_validate_graph_required_input_satisfied_by_edge():
 from app.core.graph_engine import find_entry_points, reachable_from_entry_points
 
 
+def test_execute_graph_pulls_in_pure_producer_feeding_required_input():
+    """Regression: pure-producer nodes (no inputs, no triggers) whose
+    outputs feed into otherwise-executable nodes must NOT be pruned by
+    the executable-subgraph filter.
+
+    The bug: ``execute_graph`` computes ``executable_ids`` via forward BFS
+    from trigger entry points through DATA edges. Conv2dKernel has no
+    inputs and no trigger → unreachable by forward BFS → got dropped
+    along with its outgoing edges → downstream Conv2dExplicit then
+    failed validation with "Missing required input 'kernel'".
+
+    The fix: after forward BFS, iterate to fixpoint pulling in any
+    producer whose data edge lands on an already-executable target.
+    """
+    nodes = [
+        _start_node(),
+        # Reachable via trigger from Start.
+        {"id": "trig_src", "type": "TensorInput",
+         "data": {"params": {"shape": "1,1,5,5", "value_mode": "zeros"}}},
+        # Pure producer — no inputs, no trigger. Used to fail to get into
+        # executable_ids and would be pruned.
+        {"id": "kernel", "type": "Conv2dKernel",
+         "data": {"params": {"preset": "EdgeDetection3x3"}}},
+        # Downstream node with TWO required inputs, one fed by the
+        # trigger chain and one by the pure producer.
+        {"id": "conv", "type": "Conv2dExplicit",
+         "data": {"params": {"stride": 1, "padding": 1}}},
+        {"id": "sink", "type": "Print",
+         "data": {"params": {"label": "out"}}},
+    ]
+    edges = [
+        _trigger("et", "start", "trig_src"),
+        {"id": "e_src_conv", "source": "trig_src", "target": "conv",
+         "sourceHandle": "tensor", "targetHandle": "tensor"},
+        {"id": "e_kernel_conv", "source": "kernel", "target": "conv",
+         "sourceHandle": "tensor", "targetHandle": "kernel"},
+        {"id": "e_conv_sink", "source": "conv", "target": "sink",
+         "sourceHandle": "tensor", "targetHandle": "value"},
+    ]
+
+    results = asyncio.run(execute_graph(nodes, edges))
+
+    # Without the fix this asyncio.run would raise GraphValidationError
+    # ("Missing required input 'kernel' on node conv (Conv2dExplicit)").
+    # With the fix the pure producer is retained, the conv runs, the
+    # sink prints, and every node id shows up in results.
+    assert "kernel" in results, "Pure producer Conv2dKernel must be executed"
+    assert "conv" in results, "Conv2dExplicit downstream must be executed"
+    assert "sink" in results
+
+
+def test_execute_graph_pure_producer_chain_walks_all_the_way_back():
+    """Producer-A → Producer-B → executable. The iterative fixpoint loop
+    must pull A in via the edge to B (after B was pulled in via the edge
+    to the trigger-reachable consumer). One-shot logic would miss A."""
+    nodes = [
+        _start_node(),
+        {"id": "trig_src", "type": "TensorInput",
+         "data": {"params": {"shape": "1,1,3,3", "value_mode": "zeros"}}},
+        # Producer chain: kernel_a feeds nothing of its own, but is
+        # reachable only because conv requires it AND conv is reachable.
+        # Use TensorInput as a "transit" producer that has no inputs and
+        # outputs a tensor, mimicking a chain where Conv2dKernel's kernel
+        # itself came from another upstream non-triggered node.
+        {"id": "kernel_src", "type": "TensorInput",
+         "data": {"params": {"shape": "3,3", "value_mode": "ones"}}},
+        {"id": "conv", "type": "Conv2dExplicit",
+         "data": {"params": {"stride": 1, "padding": 1}}},
+        {"id": "sink", "type": "Print",
+         "data": {"params": {"label": "x"}}},
+    ]
+    edges = [
+        _trigger("et", "start", "trig_src"),
+        {"id": "e1", "source": "trig_src", "target": "conv",
+         "sourceHandle": "tensor", "targetHandle": "tensor"},
+        # kernel_src has no incoming edges → pure producer; same shape
+        # as the bug above just with TensorInput instead of Conv2dKernel.
+        {"id": "e2", "source": "kernel_src", "target": "conv",
+         "sourceHandle": "tensor", "targetHandle": "kernel"},
+        {"id": "e3", "source": "conv", "target": "sink",
+         "sourceHandle": "tensor", "targetHandle": "value"},
+    ]
+    results = asyncio.run(execute_graph(nodes, edges))
+    assert "kernel_src" in results
+    assert "conv" in results
+
+
+def test_execute_graph_still_prunes_draft_pure_producer():
+    """A pure producer that does NOT feed into anything reachable should
+    still be pruned (the fix doesn't relax the draft-component rule)."""
+    nodes = [
+        _start_node(),
+        {"id": "trig_src", "type": "_TestSource", "data": {"params": {"val": 1}}},
+        # Draft producer: not wired to anything reachable.
+        {"id": "draft_producer", "type": "Conv2dKernel",
+         "data": {"params": {"preset": "EdgeDetection3x3"}}},
+    ]
+    edges = [
+        _trigger("et", "start", "trig_src"),
+    ]
+    results = asyncio.run(execute_graph(nodes, edges))
+    assert "trig_src" in results
+    assert "draft_producer" not in results, (
+        "Producer with no executable consumer should still be pruned"
+    )
+
+
 def test_find_entry_points_only_trigger_targets():
     """Only nodes with incoming trigger edges are entry points."""
     nodes = [

@@ -2,13 +2,78 @@ import { describe, expect, it } from 'vitest';
 import {
   generateId,
   getPortColor,
+  isParamVisible,
   isValidConnection,
   DATA_TYPE_COLORS,
   VIZ_NODE_TYPES,
   resolveSerializedNodes,
   resolveSerializedEdges,
 } from './index';
-import type { NodeDefinition, PresetDefinition } from '../types';
+import type { NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
+
+function buildParam(overrides: Partial<ParamDefinition>): ParamDefinition {
+  return {
+    name: 'p',
+    param_type: 'int',
+    default: 0,
+    description: '',
+    options: [],
+    min_value: null,
+    max_value: null,
+    ...overrides,
+  };
+}
+
+describe('isParamVisible', () => {
+  it('returns true when visible_when is omitted', () => {
+    const param = buildParam({ name: 'preset' });
+    expect(isParamVisible(param, { preset: 'EdgeDetection3x3' })).toBe(true);
+  });
+
+  it('returns true when visible_when is null', () => {
+    const param = buildParam({ name: 'preset', visible_when: null });
+    expect(isParamVisible(param, { preset: 'EdgeDetection3x3' })).toBe(true);
+  });
+
+  it('returns true when every key in visible_when matches the live params', () => {
+    const param = buildParam({ name: 'weights', visible_when: { preset: 'Custom' } });
+    expect(isParamVisible(param, { preset: 'Custom' })).toBe(true);
+  });
+
+  it('returns false when a visible_when key does not match', () => {
+    const param = buildParam({ name: 'weights', visible_when: { preset: 'Custom' } });
+    expect(isParamVisible(param, { preset: 'EdgeDetection3x3' })).toBe(false);
+  });
+
+  it('returns false when the sibling param is absent from live params', () => {
+    const param = buildParam({ name: 'weights', visible_when: { preset: 'Custom' } });
+    expect(isParamVisible(param, {})).toBe(false);
+  });
+
+  it('requires every entry in visible_when to match (logical AND)', () => {
+    const param = buildParam({
+      name: 'advanced',
+      visible_when: { preset: 'Custom', mode: 'expert' },
+    });
+    expect(isParamVisible(param, { preset: 'Custom', mode: 'expert' })).toBe(true);
+    expect(isParamVisible(param, { preset: 'Custom', mode: 'beginner' })).toBe(false);
+    expect(isParamVisible(param, { preset: 'Sharpen3x3', mode: 'expert' })).toBe(false);
+  });
+
+  it('coerces non-string values for comparison', () => {
+    const param = buildParam({ name: 'kernel_size', visible_when: { use_custom: 'true' } });
+    expect(isParamVisible(param, { use_custom: true })).toBe(true);
+    expect(isParamVisible(param, { use_custom: false })).toBe(false);
+    const numeric = buildParam({ visible_when: { kernel_size: 5 } });
+    expect(isParamVisible(numeric, { kernel_size: 5 })).toBe(true);
+    expect(isParamVisible(numeric, { kernel_size: '5' })).toBe(true);
+  });
+
+  it('treats undefined live params as no match', () => {
+    const param = buildParam({ name: 'weights', visible_when: { preset: 'Custom' } });
+    expect(isParamVisible(param, undefined)).toBe(false);
+  });
+});
 
 describe('generateId', () => {
   it('returns a valid UUID string', () => {

@@ -75,6 +75,7 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
                 options=_filter_device_options(p.name, p.options),
                 min_value=p.min_value,
                 max_value=p.max_value,
+                visible_when=p.visible_when,
             )
             for p in cls.define_params()
         ],

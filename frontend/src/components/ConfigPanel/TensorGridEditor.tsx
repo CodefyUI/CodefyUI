@@ -115,7 +115,27 @@ function set2D(
 }
 
 export function TensorGridEditor({ param, value, onChange, displayLabel, siblingParams }: Props) {
-  const shape = useMemo(() => parseShape(siblingParams?.shape), [siblingParams?.shape]);
+  // Shape sources, in priority order:
+  //   1. siblingParams.shape — the convention used by TensorInput
+  //      ("3,4,5" comma-separated string).
+  //   2. siblingParams.kernel_size — used by Conv2dKernel and any future
+  //      square-matrix param ("3" → [3, 3]).
+  // We also track which source won so the disabled-by-default rule for
+  // value_mode doesn't fire on kernel_size nodes that don't expose one.
+  const { shape, shapeSource } = useMemo<{
+    shape: number[];
+    shapeSource: 'shape' | 'kernel_size' | 'none';
+  }>(() => {
+    const fromShape = parseShape(siblingParams?.shape);
+    if (fromShape.length > 0) return { shape: fromShape, shapeSource: 'shape' };
+    const k = siblingParams?.kernel_size;
+    const kNum = typeof k === 'number' ? k : parseInt(String(k ?? ''), 10);
+    if (Number.isFinite(kNum) && kNum > 0) {
+      const side = Math.floor(kNum);
+      return { shape: [side, side], shapeSource: 'kernel_size' };
+    }
+    return { shape: [], shapeSource: 'none' };
+  }, [siblingParams?.shape, siblingParams?.kernel_size]);
   const total = numel(shape);
   const rank = shape.length;
   const leadingCount = Math.max(0, rank - 2);
@@ -126,7 +146,13 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
     setLeading(Array(leadingCount).fill(0));
   }
 
-  const valueMode = siblingParams?.value_mode ?? 'random';
+  // value_mode is a TensorInput-style sibling (SELECT: random / zeros /
+  // ones / arange / explicit). For TensorInput the default is 'random' so
+  // the editor stays disabled until the user opts into 'explicit'. For
+  // kernel_size-driven nodes (Conv2dKernel) there is no such sibling and
+  // the grid is meant to be edit-first → default to 'explicit'.
+  const valueMode =
+    siblingParams?.value_mode ?? (shapeSource === 'kernel_size' ? 'explicit' : 'random');
   const disabled = valueMode !== 'explicit';
 
   // Reshape existing value to current shape — but only if mode is explicit

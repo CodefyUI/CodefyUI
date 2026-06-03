@@ -2,7 +2,7 @@ import { memo, useState, type ReactNode } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { getPortColor, isValidConnection } from '../../utils';
+import { getPortColor, isParamVisible, isValidConnection, resolveDynamicOutputs } from '../../utils';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
@@ -179,33 +179,38 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           </div>
         ))}
 
-        {/* Divider between inputs and outputs */}
-        {def && def.inputs.length > 0 && def.outputs.length > 0 && (
-          <div className={styles.divider} />
-        )}
-
-        {/* Output handles */}
-        {def?.outputs.map((output) => (
-          <div
-            key={`out-${output.name}`}
-            className={styles.portRowOutput}
-            title={output.description}
-          >
-            <span
-              className={styles.portLabel}
-              style={{ color: getPortColor(output.data_type) }}
-            >
-              {output.name}
-            </span>
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={output.name}
-              className={`${styles.portHandle} ${styles.portHandleOutput}`}
-              style={{ background: getPortColor(output.data_type) }}
-            />
-          </div>
-        ))}
+        {/* Output handles — param-driven nodes (e.g. Split) expand here */}
+        {(() => {
+          const liveOutputs = resolveDynamicOutputs(def, data.params);
+          return (
+            <>
+              {def && def.inputs.length > 0 && liveOutputs.length > 0 && (
+                <div className={styles.divider} />
+              )}
+              {liveOutputs.map((output) => (
+                <div
+                  key={`out-${output.name}`}
+                  className={styles.portRowOutput}
+                  title={output.description}
+                >
+                  <span
+                    className={styles.portLabel}
+                    style={{ color: getPortColor(output.data_type) }}
+                  >
+                    {output.name}
+                  </span>
+                  <Handle
+                    type="source"
+                    position={Position.Right}
+                    id={output.name}
+                    className={`${styles.portHandle} ${styles.portHandleOutput}`}
+                    style={{ background: getPortColor(output.data_type) }}
+                  />
+                </div>
+              ))}
+            </>
+          );
+        })()}
       </div>
 
       {/* Custom body slot — viz nodes inject animated chips, scatter plots, etc. */}
@@ -235,20 +240,22 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {/* Params display — normal nodes */}
       {!isSequentialModel && def && def.params.length > 0 && (
         <div className={styles.paramsSection}>
-          {def.params.map((p) => {
-            const val = data.params[p.name] ?? p.default;
-            return (
-              <div key={p.name} className={styles.paramRow}>
-                <span className={styles.paramName}>{p.name}</span>
-                <span
-                  className={styles.paramValue}
-                  title={String(val)}
-                >
-                  {String(val)}
-                </span>
-              </div>
-            );
-          })}
+          {def.params
+            .filter((p) => isParamVisible(p, data.params))
+            .map((p) => {
+              const val = data.params[p.name] ?? p.default;
+              return (
+                <div key={p.name} className={styles.paramRow}>
+                  <span className={styles.paramName}>{p.name}</span>
+                  <span
+                    className={styles.paramValue}
+                    title={String(val)}
+                  >
+                    {String(val)}
+                  </span>
+                </div>
+              );
+            })}
         </div>
       )}
 

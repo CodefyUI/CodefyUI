@@ -57,6 +57,46 @@ describe('TensorGridEditor — non-explicit / disabled mode', () => {
     expect(screen.getByText(/to edit values inline/)).toBeInTheDocument();
   });
 
+  it('kernel_size sibling alone (no value_mode) defaults to explicit and renders an editable k×k grid', () => {
+    // Conv2dKernel-style: shape derived from kernel_size, no value_mode
+    // sibling. The grid should be live — no "set value_mode" hint.
+    renderEditor({
+      value: [
+        [0, 0, 0],
+        [0, 1, 0],
+        [0, 0, 0],
+      ],
+      siblingParams: { kernel_size: 3 },
+    });
+    expect(screen.queryByText(/to edit values inline/)).not.toBeInTheDocument();
+    expect(screen.getByText('Fill 0')).toBeInTheDocument();
+    expect(screen.getByText(/\[3, 3\] · 9 cells/)).toBeInTheDocument();
+    const inputs = screen.getAllByRole('spinbutton') as HTMLInputElement[];
+    expect(inputs).toHaveLength(9);
+    expect(inputs.map((i) => i.value)).toEqual(['0', '0', '0', '0', '1', '0', '0', '0', '0']);
+  });
+
+  it('kernel_size as a numeric string is still accepted', () => {
+    renderEditor({
+      value: [
+        [0, 0],
+        [0, 0],
+      ],
+      siblingParams: { kernel_size: '2' },
+    });
+    expect(screen.getByText(/\[2, 2\] · 4 cells/)).toBeInTheDocument();
+  });
+
+  it('explicit shape wins over kernel_size when both are present', () => {
+    // If both sources are present, the shape string takes precedence so
+    // a future node could expose both without ambiguity.
+    renderEditor({
+      value: [0, 0, 0, 0],
+      siblingParams: { shape: '4', kernel_size: 3, value_mode: 'explicit' },
+    });
+    expect(screen.getByText(/\[4\] · 4 cells/)).toBeInTheDocument();
+  });
+
   it('fillAll is a no-op when disabled (no onChange, no buttons)', () => {
     const onChange = vi.fn();
     renderEditor({ siblingParams: { shape: '2', value_mode: 'zeros' }, onChange });

@@ -39,6 +39,69 @@ export function getPortColor(dataType: string): string {
 }
 
 /**
+ * Evaluate a param's ``visible_when`` rule against the current params on
+ * the node. Returns true when the param should render. The default rule
+ * (no ``visible_when``) is "always visible".
+ *
+ * Matching is shallow equality after string coercion — sufficient for
+ * SELECT / INT / BOOL / FLOAT params, which cover every realistic use of
+ * conditional visibility.
+ */
+export function isParamVisible(
+  param: import('../types').ParamDefinition,
+  params: Record<string, unknown> | undefined,
+): boolean {
+  const rule = param.visible_when;
+  if (!rule) return true;
+  const live = params ?? {};
+  for (const [siblingName, expected] of Object.entries(rule)) {
+    const actual = live[siblingName];
+    if (String(actual) !== String(expected)) return false;
+  }
+  return true;
+}
+
+const SPLIT_MAX_CHUNKS = 32;
+
+function bareName(qualifiedName: string): string {
+  const idx = qualifiedName.lastIndexOf(':');
+  return idx >= 0 ? qualifiedName.slice(idx + 1) : qualifiedName;
+}
+
+/**
+ * Resolve a node's *live* output ports, expanding param-driven nodes whose
+ * port count depends on a runtime parameter. Mirrors the backend
+ * `BaseNode.define_outputs_dynamic` mechanism so palette template and live
+ * canvas agree on what handles exist.
+ *
+ * For nodes whose ports don't depend on params (every node except Split as
+ * of writing) this just returns `definition.outputs` verbatim. New
+ * dynamic-port nodes added in the future should add a clause here.
+ */
+export function resolveDynamicOutputs(
+  definition: import('../types').NodeDefinition | undefined,
+  params: Record<string, unknown> | undefined,
+): import('../types').PortDefinition[] {
+  if (!definition) return [];
+  const bare = bareName(definition.node_name);
+  if (bare === 'Split') {
+    const raw = params?.chunks;
+    const parsed = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
+    const chunks = Math.max(
+      1,
+      Math.min(SPLIT_MAX_CHUNKS, Number.isFinite(parsed) ? Math.floor(parsed) : 2),
+    );
+    return Array.from({ length: chunks }, (_, i) => ({
+      name: `chunk_${i}`,
+      data_type: 'TENSOR',
+      description: `Chunk ${i} of ${chunks}`,
+      optional: false,
+    }));
+  }
+  return definition.outputs;
+}
+
+/**
  * Reconstruct full ReactFlow nodes from the minimal serialized graph format.
  * The serialized format (from getSerializedGraph / backend save) only stores:
  *   { id, type, position, data: { params, internalParams? } }
