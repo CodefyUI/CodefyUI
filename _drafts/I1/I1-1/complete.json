@@ -1,0 +1,29 @@
+{
+  "name": "I1-1 表格資料動手 — 完整答案圖",
+  "description": "對應教材 I1-1。一張 30 列 4 欄的成績表，回答『英文及格（>80）的同學，他們的英文平均是多少？』。主線：CSVReader → Edu-FilterRows(英文>80) → ColumnSelector(英文) → Squeeze → Mean → Print，shape 從 (30,4) 一路收到 0D 純量；Edu-FilterRows 另接一個 Print 顯示及格人數。純內建 + custom node，無 plugin 依賴。",
+  "nodes": [
+    { "id": "start",       "type": "Start",          "position": { "x": -320, "y": 40 },  "data": { "params": {} } },
+    { "id": "csv",         "type": "CSVReader",      "position": { "x": -80,  "y": 40 },  "data": { "params": { "path": "data/samples/grades.csv", "target_column": "", "include_columns": "", "skip_header": true } } },
+
+    { "id": "filter",      "type": "Edu-FilterRows", "position": { "x": 200,  "y": 40 },  "data": { "params": { "column_name": "英文", "column_index": 0, "op": ">", "threshold": 80 } } },
+    { "id": "print_count", "type": "Print",          "position": { "x": 200,  "y": 240 }, "data": { "params": { "label": "Pass count (英文 > 80)" } } },
+
+    { "id": "select",      "type": "ColumnSelector", "position": { "x": 460,  "y": 40 },  "data": { "params": { "names": "英文", "indices": "1" } } },
+    { "id": "squeeze",     "type": "Squeeze",        "position": { "x": 700,  "y": 40 },  "data": { "params": { "dim": 1 } } },
+    { "id": "mean",        "type": "Mean",           "position": { "x": 920,  "y": 40 },  "data": { "params": { "dim": "0", "keepdim": false } } },
+    { "id": "print_avg",   "type": "Print",          "position": { "x": 1160, "y": 40 },  "data": { "params": { "label": "Avg 英文 of pass group" } } }
+  ],
+  "edges": [
+    { "id": "e_trig",        "source": "start",  "target": "csv",         "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_csv_filt_t",  "source": "csv",    "target": "filter",      "sourceHandle": "tensor",  "targetHandle": "table" },
+    { "id": "e_csv_filt_c",  "source": "csv",    "target": "filter",      "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "e_filt_count",  "source": "filter", "target": "print_count", "sourceHandle": "count",   "targetHandle": "value" },
+
+    { "id": "e_filt_sel_t",  "source": "filter", "target": "select",      "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_csv_sel_c",   "source": "csv",    "target": "select",      "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "e_sel_squeeze", "source": "select", "target": "squeeze",     "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_squeeze_mean","source": "squeeze","target": "mean",        "sourceHandle": "tensor",  "targetHandle": "tensor" },
+    { "id": "e_mean_print",  "source": "mean",   "target": "print_avg",   "sourceHandle": "tensor",  "targetHandle": "value" }
+  ]
+}
