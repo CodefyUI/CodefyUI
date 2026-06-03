@@ -9,6 +9,7 @@ import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
+import * as exportDiagram from '../../utils/exportDiagram';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -35,6 +36,14 @@ vi.mock('../../api/rest', () => ({
 }));
 
 const mockedRest = vi.mocked(rest);
+
+// Keep the real graphToSvg (pure), but stub PNG rasterization — it relies on
+// Image/<canvas>, which jsdom does not implement.
+vi.mock('../../utils/exportDiagram', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/exportDiagram')>();
+  return { ...actual, svgToPngBlob: vi.fn() };
+});
+const mockedExportDiagram = vi.mocked(exportDiagram);
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -97,6 +106,9 @@ describe('Toolbar', () => {
     // Default async resolutions
     mockedRest.listGraphs.mockResolvedValue([]);
     mockedRest.listCustomNodes.mockResolvedValue([]);
+
+    mockedExportDiagram.svgToPngBlob.mockReset();
+    mockedExportDiagram.svgToPngBlob.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
 
     execute.mockReset();
     stop.mockReset();
@@ -651,6 +663,89 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() =>
       expect(useToastStore.getState().toasts.some((t) => t.type === 'error' && t.message.includes('compile error'))).toBe(true),
+    );
+  });
+
+  // ── Export Diagram (SVG / PNG architecture) ─────────────────────────
+
+  it('Export Diagram: empty canvas warns and does not download', () => {
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (SVG)'));
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('Export Diagram: a canvas with only notes warns (notes are not architecture)', () => {
+    setActiveTab({
+      nodes: [
+        { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: { type: 'note', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (PNG)'));
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('Export Diagram (SVG): with nodes downloads an SVG blob', () => {
+    setActiveTab({
+      name: 'My Graph!!',
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
+        { id: 'n2', type: 'baseNode', position: { x: 300, y: 0 }, data: { label: 'ReLU', type: 'ReLU', params: {} } },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2', style: { stroke: '#4CAF50' } }],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (SVG)'));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+    expect(mockedExportDiagram.svgToPngBlob).not.toHaveBeenCalled();
+  });
+
+  it('Export Diagram (SVG): uses the "graph" filename fallback when the tab name is empty', () => {
+    setActiveTab({
+      name: '',
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (SVG)'));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it('Export Diagram (PNG): rasterizes the SVG and downloads a PNG blob', async () => {
+    setActiveTab({
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (PNG)'));
+    await waitFor(() => expect(mockedExportDiagram.svgToPngBlob).toHaveBeenCalled());
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
+  });
+
+  it('Export Diagram (PNG): a rasterization failure toasts an error', async () => {
+    mockedExportDiagram.svgToPngBlob.mockRejectedValueOnce(new Error('canvas boom'));
+    setActiveTab({
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Add', type: 'Add', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export Diagram (PNG)'));
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.some((t) => t.type === 'error' && t.message.includes('canvas boom')),
+      ).toBe(true),
     );
   });
 

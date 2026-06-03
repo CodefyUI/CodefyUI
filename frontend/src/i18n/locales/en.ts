@@ -42,6 +42,11 @@ const en = {
   'toolbar.exportPython.title': 'Download graph as a standalone Python script',
   'toolbar.exportPython.empty': 'Canvas is empty — add some nodes before exporting.',
   'toolbar.exportPython.fail': 'Python export failed: {error}',
+  'toolbar.exportDiagram.svg': 'Export Diagram (SVG)',
+  'toolbar.exportDiagram.png': 'Export Diagram (PNG)',
+  'toolbar.exportDiagram.title': 'Download the architecture (nodes, input/output ports & connections — no parameter values) as an image',
+  'toolbar.exportDiagram.empty': 'Canvas is empty — add some nodes before exporting.',
+  'toolbar.exportDiagram.fail': 'Diagram export failed: {error}',
 
   // Status
   'status.idle': 'Idle',

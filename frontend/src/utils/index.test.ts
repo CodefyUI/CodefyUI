@@ -8,6 +8,7 @@ import {
   VIZ_NODE_TYPES,
   resolveSerializedNodes,
   resolveSerializedEdges,
+  resolveDynamicOutputs,
 } from './index';
 import type { NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
 
@@ -371,5 +372,55 @@ describe('resolveSerializedNodes', () => {
     expect(node.position).toEqual({ x: 0, y: 0 });
     expect((node.data as Record<string, unknown>).params).toEqual({});
     expect(node.type).toBe('baseNode');
+  });
+});
+
+describe('resolveDynamicOutputs', () => {
+  function buildDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
+    return {
+      node_name: 'Split',
+      category: 'Tensor Operations',
+      description: '',
+      inputs: [],
+      outputs: [{ name: 'out', data_type: 'TENSOR', description: '', optional: false }],
+      params: [],
+      ...overrides,
+    };
+  }
+
+  it('returns [] when the definition is undefined', () => {
+    expect(resolveDynamicOutputs(undefined, {})).toEqual([]);
+  });
+
+  it('returns the static outputs verbatim for a non-Split node', () => {
+    const def = buildDef({ node_name: 'Add' });
+    expect(resolveDynamicOutputs(def, {})).toBe(def.outputs);
+  });
+
+  it('expands Split into N TENSOR chunk ports for a numeric chunks param', () => {
+    const ports = resolveDynamicOutputs(buildDef(), { chunks: 3 });
+    expect(ports.map((p) => p.name)).toEqual(['chunk_0', 'chunk_1', 'chunk_2']);
+    expect(ports.every((p) => p.data_type === 'TENSOR' && !p.optional)).toBe(true);
+    expect(ports[2].description).toBe('Chunk 2 of 3');
+  });
+
+  it('parses a string chunks param', () => {
+    expect(resolveDynamicOutputs(buildDef(), { chunks: '4' })).toHaveLength(4);
+  });
+
+  it('defaults to 2 chunks when the param is missing or non-numeric', () => {
+    expect(resolveDynamicOutputs(buildDef(), undefined)).toHaveLength(2);
+    expect(resolveDynamicOutputs(buildDef(), { chunks: 'abc' })).toHaveLength(2);
+  });
+
+  it('clamps chunks to the [1, 32] range', () => {
+    expect(resolveDynamicOutputs(buildDef(), { chunks: 99 })).toHaveLength(32);
+    expect(resolveDynamicOutputs(buildDef(), { chunks: 0 })).toHaveLength(1);
+    expect(resolveDynamicOutputs(buildDef(), { chunks: -5 })).toHaveLength(1);
+  });
+
+  it('strips a plugin prefix before matching the Split node name', () => {
+    const ports = resolveDynamicOutputs(buildDef({ node_name: 'foundations:Split' }), { chunks: 2 });
+    expect(ports.map((p) => p.name)).toEqual(['chunk_0', 'chunk_1']);
   });
 });

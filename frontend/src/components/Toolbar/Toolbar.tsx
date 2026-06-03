@@ -7,6 +7,7 @@ import { saveGraph, loadGraph, listGraphs, createPreset, exportGraph } from '../
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
+import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
@@ -407,6 +408,37 @@ export function Toolbar() {
     }
   }, [getSerializedGraph, activeTab.name, t, addToast]);
 
+  const handleExportDiagram = useCallback(
+    async (format: 'svg' | 'png') => {
+      // Architecture diagram = nodes + their ports + connections (no param
+      // values), built from the live nodes/edges rather than the serialized
+      // graph (which drops the labels, category colors and ports the diagram
+      // needs). Notes are annotations, not architecture, so they don't count.
+      const drawable = activeTab.nodes.filter((n) => n.type !== 'noteNode');
+      if (drawable.length === 0) {
+        addToast(t('toolbar.exportDiagram.empty'), 'warning');
+        return;
+      }
+      const base = (activeTab.name || 'graph').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const svg = graphToSvg(activeTab.nodes, activeTab.edges);
+      try {
+        const blob =
+          format === 'png'
+            ? await svgToPngBlob(svg)
+            : new Blob([svg], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${base}-architecture.${format}`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        addToast(t('toolbar.exportDiagram.fail', { error: (e as Error).message }), 'error');
+      }
+    },
+    [activeTab.nodes, activeTab.edges, activeTab.name, t, addToast],
+  );
+
   const handleReloadNodes = useCallback(async () => {
     try { await reload(); }
     catch (e) { addToast(t('toolbar.reload.fail', { error: (e as Error).message }), 'error'); }
@@ -421,6 +453,8 @@ export function Toolbar() {
 
   const exportMenuItems: MenuItem[] = [
     { label: t('toolbar.exportJson'), title: t('toolbar.exportJson.title'), onClick: handleExportJson },
+    { label: t('toolbar.exportDiagram.svg'), title: t('toolbar.exportDiagram.title'), onClick: () => handleExportDiagram('svg') },
+    { label: t('toolbar.exportDiagram.png'), title: t('toolbar.exportDiagram.title'), onClick: () => handleExportDiagram('png') },
     { label: t('toolbar.export'), title: t('toolbar.export.title'), onClick: handleExportSubgraph },
     { label: t('toolbar.exportPython'), title: t('toolbar.exportPython.title'), onClick: handleExportPython },
   ];
