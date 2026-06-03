@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderWithFlow } from '../../test/utils';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
@@ -127,5 +127,56 @@ describe('EmbeddingScatterVizNode', () => {
     });
     const { container } = renderNode();
     expect(container.querySelectorAll('circle').length).toBe(1);
+  });
+
+  it('shows the too-large hint (not the run hint) when values are absent but a shape says N>0', () => {
+    // Large N: backend omits inline values (numel > 256) but keeps the shape.
+    seed({ points_2d: { type: 'tensor', shape: [200, 2] } });
+    renderNode();
+    const t = useI18n.getState().t;
+    expect(screen.getByText(t('scatter.tooLargeInline'))).toBeTruthy();
+    expect(screen.queryByText(t('scatter.runHint'))).toBeNull();
+  });
+
+  it('opens the modal from the too-large "open detailed view" button', () => {
+    seed({ points_2d: { type: 'tensor', shape: [200, 2] } });
+    renderNode();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /open detailed view/i }));
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(screen.getByText(/EmbeddingScatter · Embedding/)).toBeTruthy();
+  });
+
+  it('opens the modal from the inline plot expand affordance', () => {
+    seed({
+      points_2d: { type: 'tensor', values: [[0, 0], [1, 1]] },
+      labels: { type: 'list', values: ['cat', 'dog'] },
+    });
+    const { container } = renderNode();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    // The expand button rendered by ScatterPlot when onExpand is wired.
+    const expandBtn = container.querySelector('button') as HTMLButtonElement;
+    expect(expandBtn).toBeTruthy();
+    fireEvent.click(expandBtn);
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+  });
+
+  it('titles the modal with the node id when the label is absent, and Esc closes it', () => {
+    seed({ points_2d: { type: 'tensor', values: [[0, 0], [1, 1]] } });
+    const noLabel = { ...data(), label: undefined as unknown as string };
+    const { container } = renderWithFlow(
+      <EmbeddingScatterVizNode
+        id={NODE_ID}
+        type="embeddingScatterNode"
+        data={noLabel}
+        selected={false}
+        {...flowProps}
+      />,
+    );
+    fireEvent.click(container.querySelector('button') as HTMLButtonElement);
+    expect(screen.getByText(new RegExp(`EmbeddingScatter · ${NODE_ID}`))).toBeTruthy();
+    // Closing the modal flips the node's expanded state back off.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });

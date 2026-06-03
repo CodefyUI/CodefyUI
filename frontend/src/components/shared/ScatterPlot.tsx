@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getTokenColor } from '../../styles/theme';
+import { useI18n } from '../../i18n';
+import { ExpandIcon } from './Icons';
 import styles from './ScatterPlot.module.css';
 
 export interface ScatterPoint {
@@ -21,6 +23,11 @@ interface ScatterPlotProps {
   padding?: number;
   /** Extra CSS class for the wrapper, e.g. for component-scoped sizing. */
   className?: string;
+  /**
+   * When set, an expand button appears at the top-right and double-clicking
+   * the plot opens it — used to launch the larger, zoomable ScatterModal.
+   */
+  onExpand?: () => void;
 }
 
 interface HoverState {
@@ -41,7 +48,9 @@ export function ScatterPlot({
   showLabels = true,
   padding = 16,
   className,
+  onExpand,
 }: ScatterPlotProps) {
+  const { t } = useI18n();
   const [hover, setHover] = useState<HoverState | null>(null);
 
   const { transformed, xMin, xMax, yMin, yMax } = useMemo(() => {
@@ -79,7 +88,38 @@ export function ScatterPlot({
   }
 
   return (
-    <div className={`${styles.wrapper} ${className ?? ''}`} style={{ width, height }}>
+    <div
+      className={`${styles.wrapper} ${onExpand ? styles.expandable : ''} ${className ?? ''}`}
+      style={{ width, height }}
+      // When expandable, keep plot interaction self-contained: a click on the
+      // plot must not bubble to React Flow (which would select the node and
+      // slide the config panel over the plot, stealing the second click of a
+      // double-click). Double-click then reliably opens the modal.
+      onMouseDown={onExpand ? (e) => e.stopPropagation() : undefined}
+      onClick={onExpand ? (e) => e.stopPropagation() : undefined}
+      onDoubleClick={
+        onExpand
+          ? (e) => {
+              e.stopPropagation();
+              onExpand();
+            }
+          : undefined
+      }
+    >
+      {onExpand && (
+        <button
+          type="button"
+          className={styles.expandBtn}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExpand();
+          }}
+          title={t('scatter.openDetail')}
+          aria-label={t('scatter.openDetail')}
+        >
+          <ExpandIcon size={13} />
+        </button>
+      )}
       <svg
         width={width}
         height={height}
