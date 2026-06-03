@@ -454,24 +454,13 @@ async def execute_graph(
         if e.get("type", "data") == "trigger" and e["target"] in executable_ids:
             executable_ids.add(e["source"])
 
-    # Pull in pure-producer nodes (no incoming edges, e.g. TensorInput /
-    # Conv2dKernel) whose outputs feed into executable nodes. Forward-BFS
-    # from trigger entry points only walks downstream, so a producer that
-    # supplies a `kernel` (or any other input) to an otherwise-reachable
-    # node would be silently pruned and then validate_graph would complain
-    # that the input is missing. Iterate to fixpoint to handle chains
-    # (producer → producer → executable).
-    changed = True
-    while changed:
-        changed = False
-        for e in expanded_edges:
-            if (
-                e.get("type", "data") == "data"
-                and e["target"] in executable_ids
-                and e["source"] not in executable_ids
-            ):
-                executable_ids.add(e["source"])
-                changed = True
+    # Every execution path must originate from a Start node: a node is only
+    # executable if it (or an upstream node along its data path) carries an
+    # incoming trigger edge. Producers with no trigger — even ones that feed a
+    # required input of an otherwise-reachable node — are NOT auto-included;
+    # the user must wire a Start node into that producer to run it. This keeps
+    # the entry-point contract simple: if it's not reachable from a Start, it
+    # doesn't run (validate_graph will then flag any missing required input).
 
     # If any internal node of a preset is reachable, include ALL sibling
     # nodes from that preset.  A preset is a logical unit — its internal
