@@ -153,4 +153,58 @@ describe('ScatterPlot', () => {
     expect(circles[0].getAttribute('fill')).toBeTruthy();
     expect(circles[1].getAttribute('fill')).toBeTruthy();
   });
+
+  it('shows no expand button when onExpand is not provided', () => {
+    const { container } = render(<ScatterPlot points={[{ x: 0, y: 0 }]} />);
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('renders an expand button that calls onExpand (and stops propagation)', () => {
+    const onExpand = vi.fn();
+    const { container } = render(
+      <ScatterPlot points={[{ x: 0, y: 0, label: 'a' }]} onExpand={onExpand} />,
+    );
+    const btn = container.querySelector('button') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    fireEvent.click(btn);
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('double-clicking the plot calls onExpand', () => {
+    const onExpand = vi.fn();
+    const { container } = render(
+      <ScatterPlot points={[{ x: 0, y: 0 }]} onExpand={onExpand} />,
+    );
+    fireEvent.doubleClick(container.firstElementChild as HTMLElement);
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('an expandable plot stops click/mousedown/dblclick from bubbling (so the node is not selected)', () => {
+    const onExpand = vi.fn();
+    const parentClick = vi.fn();
+    const parentDown = vi.fn();
+    const { container } = render(
+      <div onClick={parentClick} onMouseDown={parentDown}>
+        <ScatterPlot points={[{ x: 0, y: 0 }]} onExpand={onExpand} />
+      </div>,
+    );
+    const wrapper = container.querySelector('[class*="wrapper"]') as HTMLElement;
+    fireEvent.mouseDown(wrapper);
+    fireEvent.click(wrapper);
+    fireEvent.doubleClick(wrapper);
+    expect(parentDown).not.toHaveBeenCalled();
+    expect(parentClick).not.toHaveBeenCalled();
+    expect(onExpand).toHaveBeenCalledTimes(1); // only the double-click opens it
+  });
+
+  it('a non-expandable plot lets clicks bubble to the parent (node stays selectable)', () => {
+    const parentClick = vi.fn();
+    const { container } = render(
+      <div onClick={parentClick}>
+        <ScatterPlot points={[{ x: 0, y: 0 }]} />
+      </div>,
+    );
+    fireEvent.click(container.querySelector('[class*="wrapper"]') as HTMLElement);
+    expect(parentClick).toHaveBeenCalledTimes(1);
+  });
 });
