@@ -44,6 +44,11 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.exportPython.title': '將圖表下載為獨立的 Python 腳本',
   'toolbar.exportPython.empty': '畫布為空 — 請先新增一些節點再匯出。',
   'toolbar.exportPython.fail': 'Python 匯出失敗：{error}',
+  'toolbar.exportDiagram.svg': '匯出架構圖 (SVG)',
+  'toolbar.exportDiagram.png': '匯出架構圖 (PNG)',
+  'toolbar.exportDiagram.title': '將架構圖（節點、輸入/輸出埠與連接線,不含參數數值）下載為圖片',
+  'toolbar.exportDiagram.empty': '畫布為空 — 請先新增一些節點再匯出。',
+  'toolbar.exportDiagram.fail': '架構圖匯出失敗：{error}',
 
   // Status
   'status.idle': '閒置',
