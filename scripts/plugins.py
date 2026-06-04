@@ -365,7 +365,16 @@ def _build_dep_spec(name: str, ver: str) -> str:
 
 
 def _install_deps(deps: dict[str, str]) -> int:
-    """Install ``python_deps`` via ``uv pip`` into the codefyui venv."""
+    """Install ``python_deps`` via ``uv pip`` into the codefyui venv.
+
+    Targets the current interpreter explicitly with ``--python sys.executable``.
+    ``cdui``/``dev.py`` re-exec into ``backend/.venv`` before running plugin
+    commands, so ``sys.executable`` is the codefyui venv — but a bare
+    ``uv pip install`` would look for a ``.venv`` relative to the *cwd* (the
+    repo root, where the user invoked ``.\\cdui``), not ``backend/.venv``, and
+    fail with "No virtual environment found". Pinning ``--python`` removes the
+    cwd dependency.
+    """
     specs: list[str] = []
     for name, ver in deps.items():
         try:
@@ -373,7 +382,7 @@ def _install_deps(deps: dict[str, str]) -> int:
         except _UnsafeDepSpec as e:
             err(str(e), str(e))
             return 1
-    cmd = ["uv", "pip", "install", *specs]
+    cmd = ["uv", "pip", "install", "--python", sys.executable, *specs]
     info(
         f"執行：{' '.join(cmd)}",
         f"Running: {' '.join(cmd)}",
