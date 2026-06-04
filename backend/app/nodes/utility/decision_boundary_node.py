@@ -56,6 +56,12 @@ class DecisionBoundaryNode(BaseNode):
                 max_value=500,
                 description="每軸鋪幾格（越大邊界越平滑、越慢）。",
             ),
+            ParamDefinition(
+                name="show_support_vectors",
+                param_type=ParamType.BOOL,
+                default=False,
+                description="標出支持向量（只有 SVM 的 model 帶這個資訊；其他分類器會自動忽略）。",
+            ),
             ParamDefinition(name="title", param_type=ParamType.STRING, default="", description="圖標題。"),
         ]
 
@@ -127,6 +133,16 @@ class DecisionBoundaryNode(BaseNode):
         for i, c in enumerate(classes):
             mask = arr == c
             ax.scatter(x_np[mask, 0], x_np[mask, 1], s=18, color=colors[i], edgecolor="white", linewidth=0.4, label=c)
+
+        if bool(params.get("show_support_vectors", False)):
+            sv = getattr(model, "support_vectors", None)
+            if sv is not None and len(sv) > 0:
+                sv = np.asarray(sv, dtype=float)
+                ax.scatter(
+                    sv[:, 0], sv[:, 1], s=140, facecolors="none",
+                    edgecolors="black", linewidths=1.6, label="support vectors",
+                )
+
         ax.legend(title="class", loc="best", fontsize=8)
         ax.set_xlabel("x0")
         ax.set_ylabel("x1")
