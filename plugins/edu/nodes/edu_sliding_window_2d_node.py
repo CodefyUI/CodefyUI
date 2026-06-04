@@ -68,7 +68,7 @@ def _flatten(x: Any) -> list[float]:
 
 
 class EduSlidingWindow2DNode(BaseNode):
-    NODE_NAME = "Edu-SlidingWindow2D"
+    NODE_NAME = "SlidingWindow2D"
     CATEGORY = "EDU"
     DESCRIPTION = (
         "在影像上滑動一個 kernel 做加權加總（cross-correlation）。吃 (C,H,W) 影像"
@@ -161,7 +161,7 @@ class EduSlidingWindow2DNode(BaseNode):
 
         image = inputs.get("image")
         if image is None:
-            raise ValueError("Edu-SlidingWindow2D requires an `image` input.")
+            raise ValueError("SlidingWindow2D requires an `image` input.")
         if not isinstance(image, torch.Tensor):
             image = torch.as_tensor(image, dtype=torch.float32)
         image = image.float()
@@ -172,7 +172,7 @@ class EduSlidingWindow2DNode(BaseNode):
             image = image.unsqueeze(0)  # (1, H, W)
         if image.dim() != 3:
             raise ValueError(
-                f"Edu-SlidingWindow2D expects a (C, H, W) or (H, W) image; got shape {list(image.shape)}."
+                f"SlidingWindow2D expects a (C, H, W) or (H, W) image; got shape {list(image.shape)}."
             )
 
         c = image.size(0)

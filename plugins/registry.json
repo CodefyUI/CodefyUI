@@ -3,7 +3,7 @@
   "plugins": {
     "edu": {
       "name": "EDU — 動手做教學節點",
-      "description": "Hands-on teaching nodes for the textbook's I-series labs. I1: Edu-FilterRows (條件篩選表格列), Edu-SlidingWindow2D (影像滑動視窗 / 卷積), Edu-SentenceEmbedding (句子語意向量, model2vec). Each node exposes its intermediate steps in verbose mode.",
+      "description": "Hands-on teaching nodes for the textbook's I-series labs. I1: FilterRows (條件篩選表格列), SlidingWindow2D (影像滑動視窗 / 卷積), SentenceEmbedding (句子語意向量, model2vec). Each node exposes its intermediate steps in verbose mode.",
       "kind": "builtin",
       "path": "plugins/edu",
       "chapters": ["I1"]

@@ -43,7 +43,7 @@ _OPS = {
 
 
 class EduFilterRowsNode(BaseNode):
-    NODE_NAME = "Edu-FilterRows"
+    NODE_NAME = "FilterRows"
     CATEGORY = "EDU"
     DESCRIPTION = (
         "依條件篩選 2D 表格的列：只保留「指定欄 op 門檻」成立的列（例如 英文 > 80）。"
@@ -129,13 +129,13 @@ class EduFilterRowsNode(BaseNode):
     ) -> dict[str, Any]:
         x = inputs.get("table")
         if x is None:
-            raise ValueError("Edu-FilterRows requires a `table` input.")
+            raise ValueError("FilterRows requires a `table` input.")
         if not isinstance(x, torch.Tensor):
             x = torch.as_tensor(x, dtype=torch.float32)
         x = x.float()
         if x.ndim != 2:
             raise ValueError(
-                f"Edu-FilterRows expects a 2D [rows, columns] tensor; got shape {tuple(x.shape)}."
+                f"FilterRows expects a 2D [rows, columns] tensor; got shape {tuple(x.shape)}."
             )
 
         column_name = str(params.get("column_name", "")).strip()
@@ -143,28 +143,28 @@ class EduFilterRowsNode(BaseNode):
             cols_in = inputs.get("columns")
             if not cols_in:
                 raise ValueError(
-                    "Edu-FilterRows: `column_name` is set but no `columns` input is connected — "
+                    "FilterRows: `column_name` is set but no `columns` input is connected — "
                     "connect a list of column names (e.g. CSVReader.columns) or clear "
                     "`column_name` to filter by `column_index`."
                 )
             cols_list = [str(c) for c in cols_in]
             if column_name not in cols_list:
                 raise ValueError(
-                    f"Edu-FilterRows: column_name {column_name!r} not found in columns {cols_list}."
+                    f"FilterRows: column_name {column_name!r} not found in columns {cols_list}."
                 )
             col_idx = cols_list.index(column_name)
         else:
             col_idx = int(params.get("column_index", 0))
             if col_idx < 0 or col_idx >= x.shape[1]:
                 raise ValueError(
-                    f"Edu-FilterRows: column_index {col_idx} is out of range for a table "
+                    f"FilterRows: column_index {col_idx} is out of range for a table "
                     f"with {x.shape[1]} columns."
                 )
 
         op = str(params.get("op", ">")).strip()
         if op not in _OPS:
             raise ValueError(
-                f"Edu-FilterRows: unknown op {op!r}. Choose one of {list(_OPS)}."
+                f"FilterRows: unknown op {op!r}. Choose one of {list(_OPS)}."
             )
         threshold = float(params.get("threshold", 0.0))
 

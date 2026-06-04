@@ -48,7 +48,7 @@ def _load_model(repo: str) -> Any:
         from model2vec import StaticModel
     except ImportError as e:
         raise ValueError(
-            "Edu-SentenceEmbedding 需要 `model2vec` 套件。"
+            "SentenceEmbedding 需要 `model2vec` 套件。"
             "請在後端環境安裝：`uv pip install model2vec`。"
         ) from e
     model = StaticModel.from_pretrained(repo)
@@ -57,7 +57,7 @@ def _load_model(repo: str) -> Any:
 
 
 class EduSentenceEmbeddingNode(BaseNode):
-    NODE_NAME = "Edu-SentenceEmbedding"
+    NODE_NAME = "SentenceEmbedding"
     CATEGORY = "EDU"
     DESCRIPTION = (
         "把一段文字壓成一條有語意的句子向量 (d,)。意思接近的句子向量方向也接近，"
