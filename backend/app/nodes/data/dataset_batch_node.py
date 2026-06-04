@@ -33,7 +33,7 @@ class DatasetBatchNode(BaseNode):
             PortDefinition(
                 name="labels",
                 data_type=DataType.TENSOR,
-                description="對應的標籤張量，形狀 (N,)。",
+                description="對應的標籤：分類資料集是 (N,) 類別；分割資料集是 (N, H, W) 的逐像素遮罩。",
             ),
         ]
 
@@ -68,15 +68,25 @@ class DatasetBatchNode(BaseNode):
             raise ValueError("Dataset is empty.")
 
         images: list[Any] = []
-        labels: list[int] = []
+        labels: list[Any] = []
+        label_is_tensor = False
         for offset in range(batch_size):
             sample, label = dataset[(start + offset) % n]
             if not torch.is_tensor(sample):
                 sample = torch.as_tensor(sample)
             images.append(sample)
-            labels.append(int(label))
+            # Scalar label (classification) -> int; tensor label with spatial
+            # dims (e.g. a segmentation mask (H, W)) -> keep as a tensor.
+            if torch.is_tensor(label) and label.ndim > 0:
+                label_is_tensor = True
+                labels.append(label)
+            else:
+                labels.append(int(label))
 
         images_tensor = torch.stack(images, dim=0)
-        labels_tensor = torch.tensor(labels, dtype=torch.long)
+        if label_is_tensor:
+            labels_tensor = torch.stack(labels, dim=0)
+        else:
+            labels_tensor = torch.tensor(labels, dtype=torch.long)
 
         return {"images": images_tensor, "labels": labels_tensor}
