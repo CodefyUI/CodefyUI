@@ -84,9 +84,32 @@ class VisualizeNode(BaseNode):
             fig.colorbar(im, ax=ax)
 
         elif plot_type == "image":
-            # Drop a leading batch dim of 1, e.g. (1,C,H,W) -> (C,H,W)
-            if data.ndim == 4 and data.shape[0] == 1:
-                data = data[0]
+            # A batch of images (N,C,H,W): N==1 -> drop batch dim; N>1 -> tile into a grid.
+            if data.ndim == 4:
+                if data.shape[0] == 1:
+                    data = data[0]
+                else:
+                    n, c = data.shape[0], data.shape[1]
+                    if c in (1, 3, 4):
+                        imgs = np.transpose(data, (0, 2, 3, 1))  # (N,H,W,C)
+                        if imgs.shape[-1] == 1:
+                            imgs = imgs[..., 0]                  # (N,H,W)
+                    else:
+                        imgs = data[:, 0]                        # take first channel
+                    cols = int(np.ceil(np.sqrt(n)))
+                    rows = int(np.ceil(n / cols))
+                    ih, iw = imgs.shape[1], imgs.shape[2]
+                    pad = 1
+                    fill = float(imgs.min())
+                    if imgs.ndim == 4:
+                        grid = np.full((rows * ih + (rows + 1) * pad, cols * iw + (cols + 1) * pad, imgs.shape[-1]), fill, dtype=imgs.dtype)
+                    else:
+                        grid = np.full((rows * ih + (rows + 1) * pad, cols * iw + (cols + 1) * pad), fill, dtype=imgs.dtype)
+                    for idx in range(n):
+                        r, cc = idx // cols, idx % cols
+                        y0, x0 = pad + r * (ih + pad), pad + cc * (iw + pad)
+                        grid[y0:y0 + ih, x0:x0 + iw] = imgs[idx]
+                    data = grid
             # Render an image tensor directly: (C,H,W), (H,W,C), or (H,W)
             if data.ndim == 3 and data.shape[0] in (1, 3, 4):
                 # (C,H,W) -> (H,W,C)
