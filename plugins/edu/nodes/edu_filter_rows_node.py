@@ -14,8 +14,7 @@ Teaching Inspector 能一格一格顯示：
     4. filtered    = table[mask]
 
 它比 RowSelector / ColumnSelector「多做事」（帶條件判斷），所以歸在教學用的
-`edu` plugin 而非平台內建；CATEGORY 暫留 Custom，細部分類等之後統一的節點
-分類 pass 再定。
+`edu` plugin 而非平台內建；面板上歸到 EDU 分類。
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ _OPS = {
 
 class EduFilterRowsNode(BaseNode):
     NODE_NAME = "Edu-FilterRows"
-    CATEGORY = "Custom"
+    CATEGORY = "EDU"
     DESCRIPTION = (
         "依條件篩選 2D 表格的列：只保留「指定欄 op 門檻」成立的列（例如 英文 > 80）。"
         "可用欄名選欄（需連 `columns` 輸入）或用位置 `column_index`。"

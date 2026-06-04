@@ -58,7 +58,7 @@ def _load_model(repo: str) -> Any:
 
 class EduSentenceEmbeddingNode(BaseNode):
     NODE_NAME = "Edu-SentenceEmbedding"
-    CATEGORY = "Custom"
+    CATEGORY = "EDU"
     DESCRIPTION = (
         "把一段文字壓成一條有語意的句子向量 (d,)。意思接近的句子向量方向也接近，"
         "丟給 CosineSimilarity 就能量「兩句話意思多接近」（多語言模型下還能跨語言）。"

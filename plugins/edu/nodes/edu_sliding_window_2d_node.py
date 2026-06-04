@@ -69,7 +69,7 @@ def _flatten(x: Any) -> list[float]:
 
 class EduSlidingWindow2DNode(BaseNode):
     NODE_NAME = "Edu-SlidingWindow2D"
-    CATEGORY = "Custom"
+    CATEGORY = "EDU"
     DESCRIPTION = (
         "在影像上滑動一個 kernel 做加權加總（cross-correlation）。吃 (C,H,W) 影像"
         "（單通道 (H,W) 也接），對每個通道套用同一個 kernel，輸出同階影像。"
