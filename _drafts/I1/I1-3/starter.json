@@ -1,0 +1,16 @@
+{
+  "name": "I1-3 文字與 embedding — 起始（挖空）圖",
+  "description": "I1-3 的起始圖：已擺好一條做好的『TextInput → Edu-SentenceEmbedding』示範分支（A 句），以及一個等著接結果的 Print。要學生補的：(1) 照示範再接一條 TextInput → Edu-SentenceEmbedding 當 B 句；(2) 加一個 CosineSimilarity，把 A 的 embedding 接 queries、B 的接 keys；(3) 把 CosineSimilarity 的 similarity 接到 Print。補完就會變成 complete.json。",
+  "nodes": [
+    { "id": "start",  "type": "Start",                 "position": { "x": -360, "y": 120 }, "data": { "params": {} } },
+
+    { "id": "text_a", "type": "TextInput",             "position": { "x": -120, "y": 20 },  "data": { "params": { "value": "我喜歡貓" } } },
+    { "id": "emb_a",  "type": "Edu-SentenceEmbedding", "position": { "x": 160,  "y": 20 },  "data": { "params": { "model": "multilingual" } } },
+
+    { "id": "print",  "type": "Print",                 "position": { "x": 720,  "y": 120 }, "data": { "params": { "label": "cosine(A, B)" } } }
+  ],
+  "edges": [
+    { "id": "e_trig_a", "source": "start",  "target": "text_a", "sourceHandle": "trigger", "type": "trigger" },
+    { "id": "e_ta_ea",  "source": "text_a", "target": "emb_a",  "sourceHandle": "text",    "targetHandle": "text" }
+  ]
+}
