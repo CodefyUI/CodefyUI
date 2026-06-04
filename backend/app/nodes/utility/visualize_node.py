@@ -84,6 +84,9 @@ class VisualizeNode(BaseNode):
             fig.colorbar(im, ax=ax)
 
         elif plot_type == "image":
+            # Drop a leading batch dim of 1, e.g. (1,C,H,W) -> (C,H,W)
+            if data.ndim == 4 and data.shape[0] == 1:
+                data = data[0]
             # Render an image tensor directly: (C,H,W), (H,W,C), or (H,W)
             if data.ndim == 3 and data.shape[0] in (1, 3, 4):
                 # (C,H,W) -> (H,W,C)
