@@ -13,9 +13,9 @@ Teaching Inspector 能一格一格顯示：
     3. count       = mask.sum()
     4. filtered    = table[mask]
 
-它比 RowSelector / ColumnSelector「多做事」（帶條件判斷），CATEGORY 暫定 Custom
-把它跟那些純挑選的基礎算子分開；節點分類與 plugin 歸屬之後會在獨立的 task
-統一處理，目前先當內建節點放這裡。
+它比 RowSelector / ColumnSelector「多做事」（帶條件判斷），所以歸在教學用的
+`edu` plugin 而非平台內建；CATEGORY 暫留 Custom，細部分類等之後統一的節點
+分類 pass 再定。
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ from typing import Any
 
 import torch
 
-from ...core.node_base import (
+from app.core.node_base import (
     BaseNode,
     DataType,
     ParamDefinition,
     ParamType,
     PortDefinition,
 )
-from ...core.step_trace import StepRecorder
+from app.core.step_trace import StepRecorder
 
 _OPS = {
     ">": lambda c, t: c > t,

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.node_base import (
+from app.core.node_base import (
     BaseNode,
     DataType,
     ParamDefinition,

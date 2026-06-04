@@ -1,0 +1,19 @@
+[plugin]
+id              = "edu"
+name            = "EDU — 動手做教學節點"
+version         = "0.1.0"
+description     = "Hands-on teaching nodes for the textbook's I-series labs. I1: Edu-FilterRows (條件篩選表格列), Edu-SlidingWindow2D (影像滑動視窗 / 卷積), Edu-SentenceEmbedding (句子語意向量, model2vec). Each node exposes its intermediate steps in verbose mode so the Teaching Inspector can show the work."
+schema_version  = 1
+requires_codefyui = ">=0.2.0"
+
+[content]
+nodes_dir = "nodes"
+
+[lessons]
+chapters = ["I1"]
+lessons  = ["I1-1", "I1-2", "I1-3"]
+
+# Edu-SentenceEmbedding 用 model2vec 算真正帶語意的句子向量（純 CPU、靜態嵌入）。
+# `cdui plugin install edu` 會自動把它裝進 codefyui 的 venv。
+[python_deps]
+model2vec = ">=0.8.0"
