@@ -83,7 +83,7 @@ def info(zh: str, en: str) -> None:
 
 
 def warn(zh: str, en: str) -> None:
-    print(f"  {YELLOW}⚠ {t(zh, en)}{RESET}")
+    print(f"  {YELLOW}! {t(zh, en)}{RESET}")
 
 
 def err(zh: str, en: str) -> None:

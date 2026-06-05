@@ -28,7 +28,7 @@ describe('ToastContainer', () => {
       success: '✓',
       error: '✗',
       info: 'ⓘ',
-      warning: '⚠',
+      warning: '!',
     };
     useToastStore.setState({
       toasts: (Object.keys(expected) as ToastType[]).map((type, i) => ({
