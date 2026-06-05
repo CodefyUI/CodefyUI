@@ -259,3 +259,20 @@
 .action.accent:hover:not(:disabled) {
   background: rgba(6, 182, 212, 0.15);
 }
+
+.select {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  border-radius: 0.3125rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.select:hover {
+  border-color: #475569;
+  color: #e5e7eb;
+}

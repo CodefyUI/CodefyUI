@@ -3,6 +3,7 @@ import {
   exportGraph,
   fetchNodeDefinitions,
   fetchPresetDefinitions,
+  fetchDevices,
   validateGraph,
   saveGraph,
   loadGraph,
@@ -120,6 +121,12 @@ describe('GET endpoints', () => {
       fn: () => fetchPresetDefinitions(),
       url: '/api/presets',
       errorRe: /Failed to fetch presets/,
+    },
+    {
+      name: 'fetchDevices',
+      fn: () => fetchDevices(),
+      url: '/api/system/devices',
+      errorRe: /Failed to fetch devices/,
     },
     {
       name: 'listGraphs',

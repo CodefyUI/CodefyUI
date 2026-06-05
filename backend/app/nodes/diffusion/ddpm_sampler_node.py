@@ -173,6 +173,14 @@ class DDPMSamplerNode(BaseNode):
         gen = torch.Generator()
         gen.manual_seed(seed)
         x = noise.clone().float()
+
+        # Align the schedule tensors with x's (global) device so the per-step
+        # scalar arithmetic doesn't mix cpu/mps. The model was already moved to
+        # the device by its layer node.
+        betas = betas.to(x.device)
+        alphas = alphas.to(x.device)
+        alpha_bars = alpha_bars.to(x.device)
+
         if hasattr(model, "eval"):
             model.eval()
 
@@ -192,7 +200,8 @@ class DDPMSamplerNode(BaseNode):
                 mean = inv_sqrt_alpha * (x - eps_coef * eps_hat)
 
                 if t > 0:
-                    z = torch.randn(x.shape, generator=gen, dtype=x.dtype)
+                    # CPU generator (reproducible) → move to x's device.
+                    z = torch.randn(x.shape, generator=gen, dtype=x.dtype).to(x.device)
                     sigma = torch.sqrt(beta_t)
                     x = mean + sigma * z
                 else:

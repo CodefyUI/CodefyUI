@@ -24,6 +24,13 @@ class ExecutionContext:
     max_workers: int = 4
     _cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
+    # Global compute device ("cpu" / "cuda" / "mps") for the whole run. Already
+    # resolved (availability-checked) at the execution entry point. Tensor-
+    # source nodes create on it and StatefulModuleMixin moves layer modules to
+    # it, so the entire graph — not just the device-aware sink nodes — runs on
+    # the chosen accelerator.
+    device: str = "cpu"
+
     # A1: verbose step-trace mode. Instrumented nodes emit __steps__ when True.
     verbose: bool = False
 

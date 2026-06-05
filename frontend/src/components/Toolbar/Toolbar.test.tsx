@@ -33,6 +33,9 @@ vi.mock('../../api/rest', () => ({
   deleteCustomNode: vi.fn(),
   // Used by the child SettingsPopover
   resetWeights: vi.fn(),
+  fetchDevices: vi.fn(() =>
+    Promise.resolve({ default: 'cpu', devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }] }),
+  ),
 }));
 
 const mockedRest = vi.mocked(rest);

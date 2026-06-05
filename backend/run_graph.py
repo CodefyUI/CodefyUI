@@ -67,7 +67,13 @@ def _on_progress(node_id: str, status: str, data: dict[str, Any] | None) -> None
         logger.error("  [%s] ERROR: %s", node_id, err)
 
 
-async def run(graph_path: str, *, validate_only: bool = False, verbose: bool = False) -> None:
+async def run(
+    graph_path: str,
+    *,
+    validate_only: bool = False,
+    verbose: bool = False,
+    device: str | None = None,
+) -> None:
     t0 = time.time()
 
     # Load graph
@@ -109,11 +115,20 @@ async def run(graph_path: str, *, validate_only: bool = False, verbose: bool = F
     # Execute
     logger.info("Starting graph execution...")
     logger.info("-" * 60)
+    context = None
+    if device:
+        from app.core.device_utils import resolve_device
+        from app.core.execution_context import ExecutionContext
+
+        resolved = resolve_device(device)
+        logger.info("Global device: %s", resolved)
+        context = ExecutionContext(device=resolved)
     try:
         outputs = await execute_graph(
             nodes,
             edges,
             on_progress=_on_progress if verbose else _on_progress,
+            context=context,
         )
     except GraphValidationError as e:
         logger.error("Validation error: %s", e)
@@ -164,13 +179,14 @@ def main() -> None:
     parser.add_argument("graph", help="Path to graph.json file")
     parser.add_argument("--validate-only", action="store_true", help="Only validate, do not execute")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output and tracebacks")
+    parser.add_argument("--device", default=None, help="Global compute device: cpu / cuda / mps (default cpu)")
     args = parser.parse_args()
 
     level = "DEBUG" if args.verbose else "INFO"
     setup_logging(level=level)
 
     _init_registries()
-    asyncio.run(run(args.graph, validate_only=args.validate_only, verbose=args.verbose))
+    asyncio.run(run(args.graph, validate_only=args.validate_only, verbose=args.verbose, device=args.device))
 
 
 if __name__ == "__main__":

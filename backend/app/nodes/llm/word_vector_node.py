@@ -222,6 +222,11 @@ class WordVectorNode(BaseNode):
                     embeddings=tensor,
                 )
 
+        # Embeddings come from numpy on CPU; move them to the global run device
+        # so downstream tensor ops (Add, CosineSimilarity) stay on one device.
+        from ...core.device_utils import context_device, to_device
+        tensor = to_device(tensor, context_device(context))
+
         result: dict[str, Any] = {"embeddings": tensor, "labels": labels}
         if recorder is not None:
             result["__steps__"] = recorder.steps

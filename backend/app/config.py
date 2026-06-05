@@ -4,6 +4,13 @@ from platformdirs import user_data_dir
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+# Let the handful of ops not yet implemented for Apple MPS fall back to CPU
+# instead of hard-crashing the graph run. Set here (before torch is imported
+# anywhere) so it applies to the server, the CLI runner, and tests alike.
+# ``setdefault`` keeps an explicit external value (e.g. a test pinning "0" to
+# assert native MPS support) authoritative.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 
 def _user_data_root() -> Path:
     """Resolve the per-user data root (lockfile, downloaded plugins, session token).

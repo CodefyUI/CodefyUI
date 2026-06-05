@@ -7,11 +7,20 @@ import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
-import { resetWeights } from '../../api/rest';
+import { resetWeights, fetchDevices } from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
 vi.mock('../../api/rest', () => ({
   resetWeights: vi.fn(),
+  fetchDevices: vi.fn(() =>
+    Promise.resolve({
+      default: 'cpu',
+      devices: [
+        { value: 'cpu', label: 'CPU', detail: '', available: true },
+        { value: 'mps', label: 'Apple MPS', detail: 'Metal Performance Shaders', available: true },
+      ],
+    }),
+  ),
 }));
 
 vi.mock('../../utils/segmentPath', () => ({
@@ -59,6 +68,14 @@ describe('SettingsPopover', () => {
       gridSnapEnabled: false,
       tooltipsEnabled: true,
       beginnerMode: false,
+      globalDevice: 'cpu',
+    });
+    vi.mocked(fetchDevices).mockResolvedValue({
+      default: 'cpu',
+      devices: [
+        { value: 'cpu', label: 'CPU', detail: '', available: true },
+        { value: 'mps', label: 'Apple MPS', detail: 'Metal Performance Shaders', available: true },
+      ],
     });
     useToastStore.setState({ toasts: [] });
     useDialogStore.setState({ active: null, resolve: null });
@@ -77,12 +94,48 @@ describe('SettingsPopover', () => {
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('renders all three sections when open', () => {
+  it('renders all sections when open', () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(screen.getByText('Execution')).toBeInTheDocument();
     expect(screen.getByText('Recording & Inspection')).toBeInTheDocument();
     expect(screen.getByText('Training Behavior')).toBeInTheDocument();
     expect(screen.getByText('Editor')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  // ── Execution: global device selector ─────────────────────────────
+
+  it('populates the device selector from the backend and reflects the store value', async () => {
+    useUIStore.setState({ globalDevice: 'mps' });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' }) as HTMLSelectElement;
+    // Options arrive asynchronously from fetchDevices.
+    await waitFor(() =>
+      expect(within(select).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
+    );
+    expect(select.value).toBe('mps');
+    expect(within(select).getByRole('option', { name: 'CPU' })).toBeInTheDocument();
+  });
+
+  it('changing the device select updates the UI store', async () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' });
+    await waitFor(() =>
+      expect(within(select).getByRole('option', { name: /Apple MPS/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(select, { target: { value: 'mps' } });
+    expect(useUIStore.getState().globalDevice).toBe('mps');
+  });
+
+  it('falls back to a CPU-only option when the devices fetch fails', async () => {
+    vi.mocked(fetchDevices).mockRejectedValueOnce(new Error('offline'));
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const select = screen.getByRole('combobox', { name: 'Compute device' });
+    // The rejection settles on a microtask; flush it.
+    await waitFor(() => expect(fetchDevices).toHaveBeenCalled());
+    const options = within(select).getAllByRole('option');
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent('CPU');
   });
 
   // ── outside-click / esc behaviour ─────────────────────────────────

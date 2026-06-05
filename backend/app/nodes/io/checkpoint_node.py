@@ -114,29 +114,24 @@ class CheckpointLoaderNode(BaseNode):
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                description="Device to load onto",
-                options=["cpu", "cuda", "mps"],
+                default="auto",
+                description="Device to load onto ('auto' follows the global device)",
+                options=["auto", "cpu", "cuda", "mps"],
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
         from pathlib import Path
 
         from ...config import settings
 
+        from ...core.device_utils import is_mps_device, resolve_node_device, to_device
+
         model = inputs["model"]
         optimizer = inputs["optimizer"]
         path = params.get("path", "checkpoint.pt")
-        device = params.get("device", "cpu")
-
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
-        elif device == "mps" and not torch.backends.mps.is_available():
-            logger.warning("MPS not available, falling back to CPU")
-            device = "cpu"
+        device = resolve_node_device(params.get("device"), context)
 
         p = Path(path)
         if not p.is_absolute():
@@ -151,10 +146,13 @@ class CheckpointLoaderNode(BaseNode):
         if not p.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {p}")
 
-        checkpoint = torch.load(str(p), map_location=device, weights_only=True)
+        # MPS can't receive float64 via map_location, so stage doubles on CPU
+        # and let to_device downcast them on the way to the device.
+        load_device = "cpu" if is_mps_device(device) else device
+        checkpoint = torch.load(str(p), map_location=load_device, weights_only=True)
 
         model.load_state_dict(checkpoint["model_state_dict"])
-        model = model.to(device)
+        model = to_device(model, device)
 
         # Re-bind optimizer to device-mapped parameters before restoring state
         for param_group in optimizer.param_groups:
@@ -166,7 +164,7 @@ class CheckpointLoaderNode(BaseNode):
         for state in optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
+                    state[k] = to_device(v, device)
 
         epoch = checkpoint.get("epoch", 0)
         losses = checkpoint.get("losses", torch.tensor([]))

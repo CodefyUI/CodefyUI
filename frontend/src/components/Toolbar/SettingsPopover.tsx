@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
-import { resetWeights } from '../../api/rest';
+import { resetWeights, fetchDevices, type DeviceInfo } from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
@@ -45,6 +45,27 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const toggleGridSnap = useUIStore((s) => s.toggleGridSnap);
   const toggleTooltips = useUIStore((s) => s.toggleTooltips);
   const toggleBeginnerMode = useUIStore((s) => s.toggleBeginnerMode);
+
+  // Global execution device. Options come from the backend (CPU + any GPU
+  // backend present); fall back to CPU-only if the fetch fails.
+  const globalDevice = useUIStore((s) => s.globalDevice);
+  const setGlobalDevice = useUIStore((s) => s.setGlobalDevice);
+  const [devices, setDevices] = useState<DeviceInfo[]>([
+    { value: 'cpu', label: 'CPU', detail: '', available: true },
+  ]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchDevices()
+      .then((r) => {
+        if (!cancelled && r.devices.length > 0) setDevices(r.devices);
+      })
+      .catch(() => {
+        /* keep the CPU-only fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const addToast = useToastStore((s) => s.addToast);
 
@@ -142,6 +163,32 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
       </div>
 
       <div className={styles.body}>
+        {/* ── Execution ──────────────────────────────────────────── */}
+        <section className={styles.section}>
+          <div className={styles.sectionTitle}>
+            {t('toolbar.settings.section.execution')}
+          </div>
+
+          <Row
+            name={t('settings.device.name')}
+            desc={t('settings.device.desc')}
+            ctrl={
+              <select
+                aria-label={t('settings.device.name')}
+                className={styles.select}
+                value={globalDevice}
+                onChange={(e) => setGlobalDevice(e.target.value)}
+              >
+                {devices.map((d) => (
+                  <option key={d.value} value={d.value}>
+                    {d.detail ? `${d.label} — ${d.detail}` : d.label}
+                  </option>
+                ))}
+              </select>
+            }
+          />
+        </section>
+
         {/* ── Recording & Inspection ─────────────────────────────── */}
         <section className={styles.section}>
           <div className={styles.sectionTitle}>

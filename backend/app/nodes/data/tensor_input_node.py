@@ -64,6 +64,8 @@ class TensorInputNode(BaseNode):
     ) -> dict[str, Any]:
         import torch
 
+        from ...core.device_utils import context_device, to_device
+
         shape_str = params.get("shape", "1,4,4")
         shape = tuple(int(s.strip()) for s in shape_str.split(",") if s.strip())
         if not shape:
@@ -115,6 +117,11 @@ class TensorInputNode(BaseNode):
             tensor = torch.arange(numel, dtype=dtype).reshape(shape)
         else:
             raise ValueError(f"Unsupported value_mode: {mode}")
+
+        # Move to the run's global device. Seeded RNG above runs on the CPU
+        # generator for reproducibility, so we generate on CPU then move —
+        # this also downcasts float64→float32 for MPS via to_device.
+        tensor = to_device(tensor, context_device(context))
 
         # When the graph runs in backward mode, opt floating tensors into
         # autograd so .grad becomes available after the post-forward

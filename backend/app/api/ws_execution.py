@@ -16,6 +16,7 @@ from ..core.auth import (
     session_token,
 )
 from ..core.cache import ExecutionCache
+from ..core.device_utils import resolve_device
 from ..core.execution_context import CancellationError, ExecutionContext
 from ..core.graph_engine import GraphValidationError, execute_graph
 
@@ -186,7 +187,13 @@ async def websocket_execution(ws: WebSocket):
                 auto_backward = bool(data.get("auto_backward", False))
                 node_state_store = getattr(ws.app.state, "node_state_store", None)
 
+                # Global compute device. resolve_device falls back to CPU (with
+                # a warning) when an unavailable backend is requested, so a
+                # client that asks for "mps" on a CUDA box still runs.
+                device = resolve_device(data.get("device"))
+
                 current_context = ExecutionContext(
+                    device=device,
                     verbose=verbose_mode,
                     graph_id=graph_id,
                     weights_persistent=weights_persistent,

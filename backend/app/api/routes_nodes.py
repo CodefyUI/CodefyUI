@@ -9,11 +9,15 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
 
 def _filter_device_options(param_name: str, options: list[str]) -> list[str]:
-    """For params named 'device', remove backends that aren't available in this environment."""
+    """For params named 'device', remove backends that aren't available in this environment.
+
+    ``"auto"`` (follow the global device selector) is always kept — it's not a
+    physical backend so it bypasses the availability filter.
+    """
     if param_name != "device" or not options:
         return options
     available = set(get_available_devices())
-    filtered = [o for o in options if o in available]
+    filtered = [o for o in options if o == "auto" or o in available]
     return filtered if filtered else ["cpu"]
 
 
@@ -70,7 +74,7 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
             ParamDefinitionSchema(
                 name=p.name,
                 param_type=p.param_type.value,
-                default=p.default if p.name != "device" or p.default in get_available_devices() else "cpu",
+                default=p.default if p.name != "device" or p.default == "auto" or p.default in get_available_devices() else "cpu",
                 description=p.description,
                 options=_filter_device_options(p.name, p.options),
                 min_value=p.min_value,

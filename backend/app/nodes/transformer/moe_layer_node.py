@@ -153,6 +153,11 @@ class MoELayerNode(BaseNode):
         finally:
             torch.random.set_rng_state(gen_state)
 
+        # The layer is built fresh on CPU; move it to the input's device so the
+        # gate/expert weights match x under the global device setting.
+        from ...core.device_utils import to_device
+        layer = to_device(layer, x.device)
+
         with torch.no_grad():
             out, routing_w, idx = layer(x)
 
