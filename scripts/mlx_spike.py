@@ -106,7 +106,7 @@ def main() -> int:
     print(f"mlx   GPU forward  : {t_mlx * 1e3:.2f} ms")
 
     ok = max_abs < 1e-4
-    print(f"\n{'✅ PASS' if ok else '❌ FAIL'} — inference-subset parity "
+    print(f"\n{'PASS' if ok else 'FAIL'} — inference-subset parity "
           f"{'within' if ok else 'EXCEEDS'} 1e-4 tolerance.")
     print("結論：把已訓練模型的前向推論搬到 MLX 可行且數值一致；"
           "可作為未來可選 MLX 推論加速器的基礎。圖引擎 Apple 預設仍為 MPS。")

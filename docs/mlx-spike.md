@@ -19,7 +19,7 @@ max abs difference : 1.937e-07
 torch CPU forward  : 0.21 ms
 mlx   GPU forward  : 0.68 ms
 
-✅ PASS — inference-subset parity within 1e-4 tolerance.
+PASS — inference-subset parity within 1e-4 tolerance.
 ```
 
 So: **feasible and correct** for the inference subset. MLX stays an *optional

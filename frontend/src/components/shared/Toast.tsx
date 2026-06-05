@@ -5,7 +5,7 @@ const TYPE_ICONS: Record<ToastType, string> = {
   success: '\u2713',
   error: '\u2717',
   info: '\u24D8',
-  warning: '\u26A0',
+  warning: '!',
 };
 
 export function ToastContainer() {

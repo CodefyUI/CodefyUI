@@ -183,7 +183,7 @@ def banner(zh: str, en: str) -> None:
 
 
 def warn(zh: str, en: str) -> None:
-    print(f"{YELLOW}⚠ {t(zh, en)}{RESET}", file=sys.stderr)
+    print(f"{YELLOW}! {t(zh, en)}{RESET}", file=sys.stderr)
 
 
 def err(zh: str, en: str) -> None:
@@ -438,7 +438,7 @@ def _warn_if_dist_stale() -> None:
     src_when = datetime.fromtimestamp(src_mtime).strftime("%Y-%m-%d %H:%M")
     dist_when = datetime.fromtimestamp(dist_mtime).strftime("%Y-%m-%d %H:%M")
     print(
-        f"\n⚠️  警告：frontend/dist 比 src 舊 {delta_min:.0f} 分鐘\n"
+        f"\n警告：frontend/dist 比 src 舊 {delta_min:.0f} 分鐘\n"
         f"    dist mtime: {dist_when}\n"
         f"    src  mtime: {src_when}\n"
         f"    若想看到最新前端，請先執行 'cdui build' 重新打包。\n",

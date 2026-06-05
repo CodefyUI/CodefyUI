@@ -25,6 +25,16 @@ import sys
 import traceback
 from pathlib import Path
 
+# Force UTF-8 on Windows so the Chinese docstring / argparse help (and any
+# other non-ASCII) print without a cp1252 UnicodeEncodeError on a non-CJK
+# console. Mirrors the same guard in scripts/dev.py.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND = _REPO_ROOT / "backend"
 if str(_BACKEND) not in sys.path:
@@ -119,13 +129,12 @@ async def _main() -> int:
     failures = 0
     for path in graph_paths:
         if not path.exists():
-            print(f"⚠️  [SKIP] {path} (not found)")
+            print(f"[SKIP] {path} (not found)")
             continue
         ok, detail = await _run_one(path, device, cap_epochs)
-        marker = "✅" if ok else "❌"
         status = "OK" if ok else "FAIL"
         label = path.parent.name if path.name == "graph.json" else path.name
-        print(f"{marker} [{status}] {label}")
+        print(f"[{status}] {label}")
         first = detail.splitlines()[0] if detail else ""
         print(f"      {first}")
         if not ok:
