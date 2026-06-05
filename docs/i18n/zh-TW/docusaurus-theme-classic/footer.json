@@ -1,0 +1,54 @@
+{
+  "link.title.Docs": {
+    "message": "文件",
+    "description": "The title of the footer links column with title=Docs in the footer"
+  },
+  "link.title.Project": {
+    "message": "專案",
+    "description": "The title of the footer links column with title=Project in the footer"
+  },
+  "link.title.License": {
+    "message": "授權",
+    "description": "The title of the footer links column with title=License in the footer"
+  },
+  "link.item.label.Introduction": {
+    "message": "簡介",
+    "description": "The label of footer link with label=Introduction linking to /"
+  },
+  "link.item.label.Installation": {
+    "message": "安裝",
+    "description": "The label of footer link with label=Installation linking to /getting-started/installation"
+  },
+  "link.item.label.Teaching Inspector": {
+    "message": "教學檢視器",
+    "description": "The label of footer link with label=Teaching Inspector linking to /usage/teaching-inspector"
+  },
+  "link.item.label.Plugins": {
+    "message": "外掛",
+    "description": "The label of footer link with label=Plugins linking to /advanced/plugins"
+  },
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/treeleaves30760/CodefyUI"
+  },
+  "link.item.label.Issues": {
+    "message": "問題回報",
+    "description": "The label of footer link with label=Issues linking to https://github.com/treeleaves30760/CodefyUI/issues"
+  },
+  "link.item.label.Plugin Template": {
+    "message": "外掛範本",
+    "description": "The label of footer link with label=Plugin Template linking to https://github.com/treeleaves30760/CodefyUI-Plugin-Official"
+  },
+  "link.item.label.AGPL-3.0": {
+    "message": "AGPL-3.0",
+    "description": "The label of footer link with label=AGPL-3.0 linking to https://github.com/treeleaves30760/CodefyUI/blob/main/LICENSE"
+  },
+  "link.item.label.Commercial": {
+    "message": "商業授權",
+    "description": "The label of footer link with label=Commercial linking to https://github.com/treeleaves30760/CodefyUI/blob/main/COMMERCIAL-LICENSE.md"
+  },
+  "copyright": {
+    "message": "Copyright © 2026 CodefyUI. 以 Docusaurus 建置。",
+    "description": "The footer copyright"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "version.label": {
+    "message": "最新版",
+    "description": "The label for version current"
+  },
+  "sidebar.docsSidebar.category.Getting Started": {
+    "message": "開始使用",
+    "description": "The label for category 'Getting Started' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Getting Started.link.generated-index.title": {
+    "message": "開始使用",
+    "description": "The generated-index page title for category 'Getting Started' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Getting Started.link.generated-index.description": {
+    "message": "安裝 CodefyUI、為你的硬體選擇正確的 PyTorch 版本，並啟動應用程式。",
+    "description": "The generated-index page description for category 'Getting Started' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Usage": {
+    "message": "使用方式",
+    "description": "The label for category 'Usage' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Usage.link.generated-index.title": {
+    "message": "使用方式",
+    "description": "The generated-index page title for category 'Usage' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Usage.link.generated-index.description": {
+    "message": "建立、執行並檢視節點圖 —— 從你的第一條管線到教學檢視器、節點參考與 CLI 執行器。",
+    "description": "The generated-index page description for category 'Usage' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Advanced": {
+    "message": "進階",
+    "description": "The label for category 'Advanced' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Advanced.link.generated-index.title": {
+    "message": "進階",
+    "description": "The generated-index page title for category 'Advanced' in sidebar 'docsSidebar'"
+  },
+  "sidebar.docsSidebar.category.Advanced.link.generated-index.description": {
+    "message": "用預設模組、自訂節點與外掛包擴充 CodefyUI；理解裝置後端、REST API 與執行架構。",
+    "description": "The generated-index page description for category 'Advanced' in sidebar 'docsSidebar'"
+  }
+}
