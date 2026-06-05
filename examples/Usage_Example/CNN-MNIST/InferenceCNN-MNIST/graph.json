@@ -37,7 +37,7 @@
         "params": {
           "path": "model_weights.pt",
           "load_mode": "state_dict",
-          "device": "cpu",
+          "device": "auto",
           "strict": true
         }
       }
@@ -79,7 +79,7 @@
       },
       "data": {
         "params": {
-          "device": "cpu"
+          "device": "auto"
         }
       }
     },

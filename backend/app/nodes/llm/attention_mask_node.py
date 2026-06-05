@@ -95,6 +95,8 @@ class AttentionMaskNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        from ...core.device_utils import context_device, to_device
+
         mode = str(params.get("mode", "causal"))
         pad_token = str(params.get("pad_token", "<pad>"))
 
@@ -104,12 +106,16 @@ class AttentionMaskNode(BaseNode):
         if tensor is None and tokens is None:
             raise ValueError("AttentionMask requires either `tensor` or `tokens` input.")
 
+        # The mask feeds attention ops on the global device; build on CPU then
+        # move so it matches the (possibly on-device) attention scores.
+        dev = tensor.device if isinstance(tensor, torch.Tensor) else context_device(context)
+
         if mode == "causal":
             seq = self._infer_seq_len(tensor, tokens)
             # Upper-triangular True (diagonal=1 means strictly above the main diagonal)
             # so each position can still attend to itself.
             mask = torch.triu(torch.ones(seq, seq, dtype=torch.bool), diagonal=1)
-            return {"mask": mask}
+            return {"mask": to_device(mask, dev)}
 
         if mode == "padding":
             if tokens is None:
@@ -122,7 +128,7 @@ class AttentionMaskNode(BaseNode):
             # Block whole columns where the key is padding — every query is
             # forbidden from attending to a pad slot.
             mask = is_pad.unsqueeze(0).expand(seq, seq).clone()
-            return {"mask": mask}
+            return {"mask": to_device(mask, dev)}
 
         raise ValueError(f"Unknown AttentionMask mode: {mode!r}")
 

@@ -53,6 +53,16 @@ def test_cache_different_params_different_key():
     assert k1 != k2
 
 
+def test_cache_key_includes_device():
+    # A device switch must miss the cache so a CPU tensor isn't served for an
+    # MPS run (and vice-versa).
+    cpu = ExecutionCache.compute_key("TensorCreate", {"shape": "2"}, [], device="cpu")
+    mps = ExecutionCache.compute_key("TensorCreate", {"shape": "2"}, [], device="mps")
+    assert cpu != mps
+    # Default device keeps backward-compatible keys (device defaults to "cpu").
+    assert cpu == ExecutionCache.compute_key("TensorCreate", {"shape": "2"}, [])
+
+
 def test_cache_put_and_get():
     cache = ExecutionCache()
     cache.put("key1", {"output": 42})

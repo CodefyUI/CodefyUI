@@ -31,28 +31,25 @@ class InferenceNode(BaseNode):
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                description="Device to run inference on",
-                options=["cpu", "cuda", "mps"],
+                default="auto",
+                description="Device to run inference on ('auto' follows the global device)",
+                options=["auto", "cpu", "cuda", "mps"],
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
+
+        from ...core.device_utils import resolve_node_device, to_device
 
         model = inputs["model"]
         input_tensor = inputs["input"]
-        device = params.get("device", "cpu")
+        device = resolve_node_device(params.get("device"), context)
 
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
-        elif device == "mps" and not torch.backends.mps.is_available():
-            logger.warning("MPS not available, falling back to CPU")
-            device = "cpu"
-
-        model = model.to(device)
-        input_tensor = input_tensor.to(device)
+        # to_device downcasts float64 → float32 when targeting MPS (MPS has no
+        # float64), so a TensorInput(dtype=float64) feeding inference won't crash.
+        model = to_device(model, device)
+        input_tensor = to_device(input_tensor, device)
 
         model.eval()
         with torch.no_grad():

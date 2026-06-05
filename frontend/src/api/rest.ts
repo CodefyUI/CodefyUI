@@ -15,6 +15,27 @@ export async function fetchPresetDefinitions(): Promise<PresetDefinition[]> {
   return res.json();
 }
 
+export interface DeviceInfo {
+  value: string;
+  label: string;
+  detail: string;
+  available: boolean;
+}
+
+export interface DevicesResponse {
+  default: string;
+  devices: DeviceInfo[];
+}
+
+/** Compute devices available for graph execution (CPU + any GPU backend,
+ * with NVIDIA-CUDA / AMD-ROCm / Apple-MPS labels). Powers the global device
+ * selector. */
+export async function fetchDevices(): Promise<DevicesResponse> {
+  const res = await fetch(`${BASE_URL}/system/devices`);
+  if (!res.ok) throw new Error(`Failed to fetch devices: ${res.statusText}`);
+  return res.json();
+}
+
 export async function validateGraph(nodes: any[], edges: any[]) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',

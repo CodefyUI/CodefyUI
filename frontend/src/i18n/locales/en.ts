@@ -323,9 +323,12 @@ const en = {
   'toolbar.settings': 'Settings',
   'toolbar.settings.title': 'Open settings',
   'toolbar.settings.search': 'Search settings…',
+  'toolbar.settings.section.execution': 'Execution',
   'toolbar.settings.section.recording': 'Recording & Inspection',
   'toolbar.settings.section.training': 'Training Behavior',
   'toolbar.settings.section.editor': 'Editor',
+  'settings.device.name': 'Compute device',
+  'settings.device.desc': 'Run the graph on this device. Nodes set to "auto" follow it.',
 
   // Font-size menu
   'toolbar.fontSize.title': 'Font size',

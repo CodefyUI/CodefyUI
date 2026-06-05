@@ -105,6 +105,9 @@ class RewardModelNode(BaseNode):
         else:
             if not isinstance(h, torch.Tensor):
                 h = torch.as_tensor(h, dtype=torch.float32)
+            # Match the head to the input's (global) device before applying.
+            from ...core.device_utils import to_device
+            model = to_device(model, h.device)
             with torch.no_grad():
                 rewards = model(h.float())
 

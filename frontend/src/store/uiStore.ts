@@ -19,6 +19,10 @@ interface UIState {
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
+  /** Global compute device sent with every graph run ('cpu' | 'cuda' | 'mps').
+   * Nodes whose own device param is 'auto' follow this. */
+  globalDevice: string;
+  setGlobalDevice: (device: string) => void;
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
@@ -26,6 +30,9 @@ const GRIDSNAP_KEY = 'codefyui-gridsnap';
 const BEGINNER_KEY = 'codefyui-beginner-mode';
 const LAYOUT_MODE_KEY = 'codefyui-last-layout-mode';
 const FONT_SIZE_KEY = 'codefyui-font-size';
+const GLOBAL_DEVICE_KEY = 'codefyui-global-device';
+
+const loadGlobalDevice = (): string => localStorage.getItem(GLOBAL_DEVICE_KEY) || 'cpu';
 
 const loadLayoutMode = (): 'experiments' | 'all' | 'selected' => {
   const saved = localStorage.getItem(LAYOUT_MODE_KEY);
@@ -76,5 +83,10 @@ export const useUIStore = create<UIState>((set) => ({
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);
     set({ fontSize: size });
+  },
+  globalDevice: loadGlobalDevice(),
+  setGlobalDevice: (device) => {
+    localStorage.setItem(GLOBAL_DEVICE_KEY, device);
+    set({ globalDevice: device });
   },
 }));

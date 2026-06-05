@@ -49,6 +49,7 @@ from .api import (
     routes_nodes,
     routes_plugins,
     routes_presets,
+    routes_system,
     ws_execution,
 )
 from .config import settings
@@ -243,6 +244,7 @@ app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
+app.include_router(routes_system.router)
 app.include_router(ws_execution.router)
 
 

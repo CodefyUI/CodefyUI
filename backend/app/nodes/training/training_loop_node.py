@@ -41,9 +41,9 @@ class TrainingLoopNode(BaseNode):
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                description="Device to train on",
-                options=["cpu", "cuda", "mps"],
+                default="auto",
+                description="Device to train on ('auto' follows the global device)",
+                options=["auto", "cpu", "cuda", "mps"],
             ),
             ParamDefinition(
                 name="early_stopping_patience",
@@ -66,8 +66,12 @@ class TrainingLoopNode(BaseNode):
         inputs: dict[str, Any],
         params: dict[str, Any],
         progress_callback: Any | None = None,
+        *,
+        context: Any = None,
     ) -> dict[str, Any]:
         import torch
+
+        from ...core.device_utils import resolve_node_device, to_device
 
         model = inputs["model"]
         dataloader = inputs["dataloader"]
@@ -77,19 +81,12 @@ class TrainingLoopNode(BaseNode):
         lr_scheduler = inputs.get("lr_scheduler")
 
         epochs = params.get("epochs", 5)
-        device = params.get("device", "cpu")
+        device = resolve_node_device(params.get("device"), context)
         patience = params.get("early_stopping_patience", 0)
         grad_clip = params.get("grad_clip_norm", 0.0)
 
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
-        elif device == "mps" and not torch.backends.mps.is_available():
-            logger.warning("MPS not available, falling back to CPU")
-            device = "cpu"
-
-        model = model.to(device)
-        loss_fn = loss_fn.to(device)
+        model = to_device(model, device)
+        loss_fn = to_device(loss_fn, device)
 
         # Recreate the optimizer so its param list, momentum buffers and state are
         # freshly bound to the moved model parameters. The Optimizer node runs before
@@ -171,10 +168,10 @@ class TrainingLoopNode(BaseNode):
             for batch_data in dataloader:
                 if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
                     data, targets = batch_data
-                    data = data.to(device)
-                    targets = targets.to(device)
+                    data = to_device(data, device)
+                    targets = to_device(targets, device)
                 else:
-                    data = batch_data.to(device) if hasattr(batch_data, "to") else batch_data
+                    data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                     targets = None
 
                 optimizer.zero_grad()
@@ -211,10 +208,10 @@ class TrainingLoopNode(BaseNode):
                     for batch_data in val_dataloader:
                         if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
                             data, targets = batch_data
-                            data = data.to(device)
-                            targets = targets.to(device)
+                            data = to_device(data, device)
+                            targets = to_device(targets, device)
                         else:
-                            data = batch_data.to(device) if hasattr(batch_data, "to") else batch_data
+                            data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                             targets = None
 
                         outputs = model(data)

@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import { useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
+import { useUIStore } from '../store/uiStore';
 import { validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
 import { useI18n } from '../i18n';
@@ -227,6 +228,8 @@ export function useGraphExecution() {
       // A3: gradient capture
       backward_mode: tab.backwardMode,
       auto_backward: tab.autoBackward,
+      // Global compute device (nodes with device='auto' follow this).
+      device: useUIStore.getState().globalDevice,
       ...(changedNodes.length > 0 ? { changed_nodes: changedNodes } : {}),
     });
   }, [getActiveTab, getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);

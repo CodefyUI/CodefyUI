@@ -140,6 +140,9 @@ class PositionalEncodingNode(BaseNode):
         else:
             raise ValueError(f"Unknown PositionalEncoding mode: {mode!r}")
 
+        # PE is built on CPU; match it to the input's device before adding.
+        pe = pe.to(x.device)
+
         if x.ndim == 2:
             out = x + pe
         else:  # [seq, batch, d]: broadcast over batch dim

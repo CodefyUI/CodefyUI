@@ -47,9 +47,9 @@ class ModelLoaderNode(BaseNode):
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                description="Device to load weights onto",
-                options=["cpu", "cuda", "mps"],
+                default="auto",
+                description="Device to load weights onto ('auto' follows the global device)",
+                options=["auto", "cpu", "cuda", "mps"],
             ),
             ParamDefinition(
                 name="strict",
@@ -59,23 +59,22 @@ class ModelLoaderNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
         from pathlib import Path
 
         from ...config import settings
 
+        from ...core.device_utils import is_mps_device, resolve_node_device, to_device
+
         path = params.get("path", "model_weights.pt")
         load_mode = params.get("load_mode", "state_dict")
-        device = params.get("device", "cpu")
+        device = resolve_node_device(params.get("device"), context)
         strict = params.get("strict", True)
 
-        if device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
-        elif device == "mps" and not torch.backends.mps.is_available():
-            logger.warning("MPS not available, falling back to CPU")
-            device = "cpu"
+        # MPS can't receive float64 via map_location, so stage doubles on CPU
+        # and let to_device downcast them on the way to the device.
+        load_device = "cpu" if is_mps_device(device) else device
 
         p = Path(path)
         if not p.is_absolute():
@@ -101,11 +100,11 @@ class ModelLoaderNode(BaseNode):
                 )
             if is_safetensors:
                 from safetensors.torch import load_file
-                state_dict = load_file(str(p), device=device)
+                state_dict = load_file(str(p), device=load_device)
             else:
-                state_dict = torch.load(str(p), map_location=device, weights_only=True)
+                state_dict = torch.load(str(p), map_location=load_device, weights_only=True)
             model.load_state_dict(state_dict, strict=strict)
-            model = model.to(device)
+            model = to_device(model, device)
             param_count = sum(p_.numel() for p_ in model.parameters())
             logger.info("Loaded state_dict from %s (%s parameters, strict=%s)", p, f"{param_count:,}", strict)
         else:
@@ -115,8 +114,8 @@ class ModelLoaderNode(BaseNode):
                 "full_model mode uses weights_only=True for safety. "
                 "If loading fails, re-save the model as state_dict."
             )
-            model = torch.load(str(p), map_location=device, weights_only=True)
-            model = model.to(device)
+            model = torch.load(str(p), map_location=load_device, weights_only=True)
+            model = to_device(model, device)
             logger.info("Loaded full model from %s", p)
 
         return {"model": model}

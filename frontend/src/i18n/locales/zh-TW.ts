@@ -325,9 +325,12 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings': '設定',
   'toolbar.settings.title': '開啟設定',
   'toolbar.settings.search': '搜尋設定…',
+  'toolbar.settings.section.execution': '執行',
   'toolbar.settings.section.recording': '錄製與檢視',
   'toolbar.settings.section.training': '訓練行為',
   'toolbar.settings.section.editor': '編輯器',
+  'settings.device.name': '運算裝置',
+  'settings.device.desc': '在此裝置上執行圖。設為「auto」的節點會跟隨此設定。',
 
   // 字級選單
   'toolbar.fontSize.title': '字級',

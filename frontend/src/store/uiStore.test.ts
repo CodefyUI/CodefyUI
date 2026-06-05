@@ -7,6 +7,7 @@ const KEYS = {
   BEGINNER: 'codefyui-beginner-mode',
   LAYOUT_MODE: 'codefyui-last-layout-mode',
   FONT_SIZE: 'codefyui-font-size',
+  GLOBAL_DEVICE: 'codefyui-global-device',
 };
 
 describe('useUIStore', () => {
@@ -23,6 +24,7 @@ describe('useUIStore', () => {
       beginnerMode: false,
       lastLayoutMode: 'experiments',
       fontSize: 'default',
+      globalDevice: 'cpu',
     });
   });
 
@@ -135,6 +137,18 @@ describe('useUIStore', () => {
     });
   });
 
+  describe('setGlobalDevice', () => {
+    it('updates the device and persists it', () => {
+      useUIStore.getState().setGlobalDevice('mps');
+      expect(useUIStore.getState().globalDevice).toBe('mps');
+      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBe('mps');
+
+      useUIStore.getState().setGlobalDevice('cuda');
+      expect(useUIStore.getState().globalDevice).toBe('cuda');
+      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBe('cuda');
+    });
+  });
+
   // ── module-load loaders (loadLayoutMode / loadFontSize) ──────────────────────
   // These run once at import time. To exercise every branch we reset the module
   // registry with localStorage pre-seeded and re-import, observing the initial
@@ -187,6 +201,19 @@ describe('useUIStore', () => {
       const mod = await import('./uiStore');
       expect(mod.useUIStore.getState().gridSnapEnabled).toBe(true);
       expect(mod.useUIStore.getState().beginnerMode).toBe(true);
+    });
+
+    it('globalDevice defaults to cpu when nothing is persisted', async () => {
+      vi.resetModules();
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().globalDevice).toBe('cpu');
+    });
+
+    it('globalDevice loads the persisted value', async () => {
+      vi.resetModules();
+      localStorage.setItem(KEYS.GLOBAL_DEVICE, 'mps');
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().globalDevice).toBe('mps');
     });
   });
 });

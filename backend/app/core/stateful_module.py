@@ -76,6 +76,12 @@ class StatefulModuleMixin:
 
         Falls back to a fresh build when persistence isn't wired up — keeps
         stateless behaviour for tests / CLI / direct ``execute()`` calls.
+
+        The returned module is moved to ``context.device`` (the global run
+        device), so every layer node runs on the chosen accelerator without
+        each node needing its own device handling. Moving is idempotent and,
+        for a persisted module, carries its trained weights across a
+        device switch.
         """
         if (
             context is None
@@ -83,12 +89,18 @@ class StatefulModuleMixin:
             or context.node_state_store is None
             or not context.current_node_id
         ):
-            return self.build_module(params)
+            module = self.build_module(params)
+        else:
+            h = self._structure_hash(params)
+            module = context.node_state_store.get_or_create(
+                context.graph_id,
+                context.current_node_id,
+                h,
+                lambda: self.build_module(params),
+            )
 
-        h = self._structure_hash(params)
-        return context.node_state_store.get_or_create(
-            context.graph_id,
-            context.current_node_id,
-            h,
-            lambda: self.build_module(params),
-        )
+        if context is not None and getattr(context, "device", None):
+            from .device_utils import to_device
+
+            module = to_device(module, context.device)
+        return module

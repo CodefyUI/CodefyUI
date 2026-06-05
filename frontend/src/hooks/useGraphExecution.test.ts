@@ -3,6 +3,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { useGraphExecution } from './useGraphExecution';
 import { useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
+import { useUIStore } from '../store/uiStore';
 
 // Mock the REST validation endpoint — the hook calls validateGraph() before
 // sending. Each test drives its resolved/rejected value.
@@ -464,6 +465,19 @@ describe('useGraphExecution - execute', () => {
     });
 
     expect('changed_nodes' in ws.send.mock.calls[0][0]).toBe(false);
+  });
+
+  it('sends the global device from the UI store in the execute payload', async () => {
+    useUIStore.getState().setGlobalDevice('mps');
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect(ws.send.mock.calls[0][0].device).toBe('mps');
+    useUIStore.getState().setGlobalDevice('cpu'); // reset for other tests
   });
 
   it('uses the crypto.randomUUID run id when available', async () => {

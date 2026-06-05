@@ -129,4 +129,10 @@ class GaussianNoiseNode(BaseNode):
             noise = noise * std
         if mean != 0.0:
             noise = noise + mean
-        return {"noise": noise}
+
+        # CPU generator above keeps the seed reproducible; move the result to
+        # the reference tensor's device (if any) or the global run device so it
+        # composes with on-device tensors downstream (e.g. Lerp, DDPMSampler).
+        from ...core.device_utils import context_device, to_device
+        dev = ref.device if (ref is not None and isinstance(ref, torch.Tensor)) else context_device(context)
+        return {"noise": to_device(noise, dev)}

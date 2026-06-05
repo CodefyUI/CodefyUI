@@ -619,7 +619,10 @@ async def execute_graph(
                 node_cache_keys[src_id]
                 for src_id, _, _ in incoming.get(node_id, [])
             ]
-            cache_key = cache.compute_key(node_type, params, upstream_keys)
+            cache_key = cache.compute_key(
+                node_type, params, upstream_keys,
+                device=context.device if context is not None else "cpu",
+            )
             node_cache_keys[node_id] = cache_key
             if node_id not in force_rerun:
                 cached = cache.get(cache_key)

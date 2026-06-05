@@ -19,10 +19,25 @@ class ExecutionCache:
         self._max_entries = max_entries
 
     @staticmethod
-    def compute_key(node_type: str, params: dict[str, Any], upstream_keys: list[str]) -> str:
-        """Compute a deterministic SHA-256 cache key."""
+    def compute_key(
+        node_type: str,
+        params: dict[str, Any],
+        upstream_keys: list[str],
+        device: str = "cpu",
+    ) -> str:
+        """Compute a deterministic SHA-256 cache key.
+
+        ``device`` is part of the key: a device-aware source node (e.g.
+        TensorCreate) produces tensors on the run's global device, so a CPU
+        result must not be served for a later MPS run.
+        """
         payload = json.dumps(
-            {"type": node_type, "params": params, "upstream": sorted(upstream_keys)},
+            {
+                "type": node_type,
+                "params": params,
+                "upstream": sorted(upstream_keys),
+                "device": device,
+            },
             sort_keys=True,
             default=str,
         )

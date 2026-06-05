@@ -38,8 +38,16 @@ class TensorCreateNode(BaseNode):
             ParamDefinition(name="requires_grad", param_type=ParamType.BOOL, default=False, description="Whether the tensor requires gradient"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
         import torch
+
+        from ...core.device_utils import context_device, to_device
 
         shape_str = params.get("shape", "1,3,224,224")
         shape = tuple(int(s.strip()) for s in shape_str.split(","))
@@ -60,7 +68,9 @@ class TensorCreateNode(BaseNode):
         if create_fn is None:
             raise ValueError(f"Unsupported fill method: {fill}")
 
-        tensor = create_fn()
+        # Build on CPU then move to the run's global device — keeps the leaf
+        # tensor on-device so requires_grad_ marks an on-device autograd leaf.
+        tensor = to_device(create_fn(), context_device(context))
         if requires_grad:
             tensor = tensor.requires_grad_(True)
         return {"tensor": tensor}

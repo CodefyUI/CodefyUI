@@ -47,6 +47,9 @@ class DQNNode(BaseNode):
 
         state = inputs.get("state")
         if state is not None:
+            # Match the network to the input's (global) device before applying.
+            from ...core.device_utils import to_device
+            model = to_device(model, state.device)
             with torch.no_grad():
                 q_values = model(state)
         else:
