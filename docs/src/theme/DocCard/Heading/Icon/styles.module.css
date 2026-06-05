@@ -1,0 +1,12 @@
+.cardTitleIcon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.55rem;
+  color: var(--ifm-color-primary);
+}
+
+.cardTitleIcon svg {
+  width: 1.3rem;
+  height: 1.3rem;
+  flex-shrink: 0;
+}

@@ -1,0 +1,9 @@
+{
+  "label": "Usage",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "title": "Usage",
+    "description": "Build, run, and inspect node graphs — from your first pipeline to the Teaching Inspector, the node reference, and the CLI runner."
+  }
+}

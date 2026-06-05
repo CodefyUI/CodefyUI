@@ -1,0 +1,49 @@
+/**
+ * CodefyUI documentation theme.
+ * Brand: Material Blue (#2196F3) accent on a dark, color-coded UI — mirrors the
+ * app's own palette (backgrounds #121212–#1e1e1e, text #eeeeee).
+ */
+
+:root {
+  --ifm-color-primary: #1a82e2;
+  --ifm-color-primary-dark: #1576cc;
+  --ifm-color-primary-darker: #146fc1;
+  --ifm-color-primary-darkest: #105b9f;
+  --ifm-color-primary-light: #2f90e8;
+  --ifm-color-primary-lighter: #3b97e9;
+  --ifm-color-primary-lightest: #5fabed;
+
+  --ifm-code-font-size: 95%;
+  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono', Menlo,
+    Consolas, 'Liberation Mono', monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode — the CodefyUI default look. */
+[data-theme='dark'] {
+  --ifm-color-primary: #4dabf7;
+  --ifm-color-primary-dark: #2f9bf5;
+  --ifm-color-primary-darker: #2093f4;
+  --ifm-color-primary-darkest: #0c79d6;
+  --ifm-color-primary-light: #6bbbf9;
+  --ifm-color-primary-lighter: #7ac3fa;
+  --ifm-color-primary-lightest: #a6d7fc;
+
+  --ifm-background-color: #121212;
+  --ifm-background-surface-color: #1e1e1e;
+  --ifm-navbar-background-color: #181818;
+  --ifm-footer-background-color: #0a0a0a;
+  --ifm-card-background-color: #1a1a1a;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
+}
+
+/* Slightly tighter, more technical heading rhythm. */
+.markdown h1:first-child {
+  --ifm-h1-font-size: 2.4rem;
+}
+
+/* Inline code reads better with a subtle surface in dark mode. */
+[data-theme='dark'] code {
+  background-color: rgba(110, 118, 129, 0.18);
+  border: 1px solid rgba(110, 118, 129, 0.2);
+}
