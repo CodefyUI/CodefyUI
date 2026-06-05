@@ -5,7 +5,7 @@
 
 A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transformer, and RL architectures by dragging nodes onto a canvas, connecting them into a DAG, and executing the pipeline — all from the browser.
 
-📖 **Full documentation: [docs.codefyui.com](https://docs.codefyui.com/)** — installation, usage, and advanced guides (English / 繁體中文).
+**Full documentation: [docs.codefyui.com](https://docs.codefyui.com/)** — installation, usage, and advanced guides (English / 繁體中文).
 
 ![CodefyUI Screenshot](Assets/UI.png)
 
@@ -146,16 +146,16 @@ CodefyUI can be used as an interactive lesson — students see the exact tensor 
 1. Drag a **TensorInput** node onto the canvas (Data category). Set `value_mode: explicit` and fill the inline grid with the numbers you want the pipeline to see.
 2. Wire it through any chain of tensor-op nodes (e.g. `Reshape → Softmax → Print`).
 3. **Drag a `Start` node onto the canvas and connect its trigger output (the diamond handle on the right side of the Start node) to the first node you want executed — typically the `TensorInput`.** Without a Start → first-node trigger edge the graph is a draft and `Run` will reject it with a *"No start node defined"* toast. Only nodes reachable from a Start are executed.
-4. Open the toolbar **Settings** (⚙) popover and switch **Record outputs** ON, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
+4. Open the toolbar **Settings** popover and switch **Record outputs** ON, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
 5. Click any node — the right-hand **Inspector** panel fetches that node's input and output, showing shape, dtype, min/max/mean and the actual values stacked top-to-bottom. Cells that changed are heat-coloured.
-6. Shift-select two nodes and use **Compare Segment** (also under ⚙ Settings → Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges so the scope is obvious.
+6. Shift-select two nodes and use **Compare Segment** (also under Settings → Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges so the scope is obvious.
 7. Switch **Record outputs** OFF before a heavy training run if you don't want each epoch captured — previously captured runs stay fetchable until the server restarts.
 
 Captured data is per-session RAM (LRU, last 20 runs). Segment markers are saved with the graph JSON.
 
 ### Settings popover toggles
 
-The toolbar **⚙ Settings** popover groups every per-tab teaching/training switch in one place — same idea as VS Code's Settings UI:
+The toolbar **Settings** popover groups every per-tab teaching/training switch in one place — same idea as VS Code's Settings UI:
 
 | Toggle | What it does |
 |--------|---|
@@ -202,7 +202,7 @@ that the Teaching Inspector renders one row at a time — `Edu-ColumnStats`
 shows the population-std formula as `sum → divide → deviations² → variance
 → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline →
 loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch
-**Verbose mode** in the toolbar ⚙ Settings popover to capture them.
+**Verbose mode** in the toolbar Settings popover to capture them.
 
 ### Writing your own plugin
 

@@ -13,9 +13,9 @@ CodefyUI can be used as an **interactive lesson** — students see the exact ten
 1. Drag a **`TensorInput`** node onto the canvas (Data category). Set `value_mode: explicit` and fill the inline grid with the numbers you want the pipeline to see.
 2. Wire it through any chain of tensor-op nodes (e.g. `Reshape → Softmax → Print`).
 3. **Add a `Start` node** and connect its trigger output to the first node you want executed — typically the `TensorInput`. Without this, the graph is a draft and **Run** is rejected (see [Your First Graph](./first-graph)).
-4. Open the toolbar **⚙ Settings** popover and switch **Record outputs** ON, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
+4. Open the toolbar **Settings** popover and switch **Record outputs** ON, then click **Run**. Every completed node's full output is captured in server memory, keyed by the run.
 5. Click any node — the **Inspector** panel fetches that node's input and output, showing **shape, dtype, min/max/mean** and the actual values stacked top-to-bottom. Cells that changed are **heat-coloured**.
-6. **Shift-select two nodes** and use **Compare Segment** (under ⚙ Settings → Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges.
+6. **Shift-select two nodes** and use **Compare Segment** (under Settings → Inspection) to focus on just the head-input and tail-output; the canvas wraps them in a light-orange bubble with **HEAD** / **TAIL** badges.
 7. Switch **Record outputs** OFF before a heavy training run if you don't want each epoch captured — previously captured runs stay fetchable until the server restarts.
 
 :::note
@@ -24,7 +24,7 @@ Captured data lives in per-session RAM (LRU, last 20 runs). Segment markers are 
 
 ## Settings popover toggles
 
-The toolbar **⚙ Settings** popover groups every per-tab teaching/training switch in one place — same idea as VS Code's Settings UI:
+The toolbar **Settings** popover groups every per-tab teaching/training switch in one place — same idea as VS Code's Settings UI:
 
 | Toggle | What it does |
 |--------|---|

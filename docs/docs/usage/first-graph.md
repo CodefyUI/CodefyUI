@@ -38,7 +38,7 @@ Click **Run**. Watch per-node progress stream into the **Execution Log**, and th
 
 ## 5. Inspect what flowed
 
-Open the **⚙ Settings** popover, switch **Record outputs** ON, and run again. Now click any node to open the **[Teaching Inspector](./teaching-inspector)** and see the exact tensor — shape, dtype, min/max/mean, and values — at every step.
+Open the **Settings** popover, switch **Record outputs** ON, and run again. Now click any node to open the **[Teaching Inspector](./teaching-inspector)** and see the exact tensor — shape, dtype, min/max/mean, and values — at every step.
 
 ## Next steps
 

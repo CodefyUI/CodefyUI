@@ -30,7 +30,7 @@ The repository also groups examples by topic on disk: `Classical/`, `Diffusion/`
 
 Load **Train CNN on MNIST**, then:
 
-1. Turn on **Record outputs** and **Persist weights between runs** in the ⚙ Settings popover.
+1. Turn on **Record outputs** and **Persist weights between runs** in the Settings popover.
 2. Click **Run** and watch the live loss chart in the **Training** tab.
 3. Click a `Conv2d` node to inspect its kernels and activations in the **[Teaching Inspector](./teaching-inspector)**.
 4. Run again — with weights persisted, the model keeps learning across runs.

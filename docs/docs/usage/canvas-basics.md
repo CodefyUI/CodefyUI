@@ -43,4 +43,4 @@ Every runnable graph needs at least one **`Start`** node: connect its trigger ou
 
 ## Settings popover
 
-The toolbar **⚙ Settings** popover groups every per-tab teaching/training toggle in one place (record outputs, verbose mode, persist weights, capture gradients, grid snap, and more). These power the **[Teaching Inspector](./teaching-inspector)**.
+The toolbar **Settings** popover groups every per-tab teaching/training toggle in one place (record outputs, verbose mode, persist weights, capture gradients, grid snap, and more). These power the **[Teaching Inspector](./teaching-inspector)**.

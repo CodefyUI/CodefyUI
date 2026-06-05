@@ -38,7 +38,7 @@ TensorInput → Reshape → Softmax → Print
 
 ## 5. 檢視流過的資料
 
-開啟 **⚙ 設定** popover，把 **記錄輸出** 切到 ON，然後再執行一次。現在點任何一個節點來開啟 **[教學檢視器](./teaching-inspector)**，看到每一步確切的張量 — shape、dtype、min/max/mean 與數值。
+開啟 **設定** popover，把 **記錄輸出** 切到 ON，然後再執行一次。現在點任何一個節點來開啟 **[教學檢視器](./teaching-inspector)**，看到每一步確切的張量 — shape、dtype、min/max/mean 與數值。
 
 ## 下一步
 

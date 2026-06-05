@@ -25,7 +25,7 @@ cdui plugin uninstall deep
 | `deep` | I3 Vision · I4 Sequences | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
 
-Each Edu node decomposes a single lesson concept into a chain of named steps that the [Teaching Inspector](/usage/teaching-inspector) renders one row at a time — `Edu-ColumnStats` shows the population-std formula as `sum → divide → deviations² → variance → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline → loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch on **Verbose mode** in the ⚙ Settings popover to capture them.
+Each Edu node decomposes a single lesson concept into a chain of named steps that the [Teaching Inspector](/usage/teaching-inspector) renders one row at a time — `Edu-ColumnStats` shows the population-std formula as `sum → divide → deviations² → variance → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline → loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch on **Verbose mode** in the Settings popover to capture them.
 
 ## How packs are stored
 
