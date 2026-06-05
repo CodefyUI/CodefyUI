@@ -13,14 +13,11 @@ const config: Config = {
     v4: true, // Improve compatibility with the upcoming Docusaurus v4
   },
 
-  // Deployed to the GitHub Pages project URL:
-  //   https://treeleaves30760.github.io/CodefyUI/
-  // To switch to a custom subdomain later:
-  //   1. set `url` to 'https://your-subdomain' and `baseUrl` to '/'
-  //   2. add a `static/CNAME` file containing your subdomain (one line)
-  //   3. set the custom domain in repo Settings → Pages
-  url: 'https://treeleaves30760.github.io',
-  baseUrl: '/CodefyUI/',
+  // Production URL: served at the root of the custom subdomain (see static/CNAME).
+  // (To revert to the GitHub Pages project URL, set url to
+  //  'https://treeleaves30760.github.io' + baseUrl '/CodefyUI/' and drop static/CNAME.)
+  url: 'https://docs.codefyui.com',
+  baseUrl: '/',
 
   // GitHub Pages deployment config.
   organizationName: 'treeleaves30760',

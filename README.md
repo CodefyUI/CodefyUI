@@ -1,11 +1,11 @@
 # CodefyUI
 
-[![Documentation](https://img.shields.io/badge/docs-CodefyUI-1a82e2)](https://treeleaves30760.github.io/CodefyUI/)
-[![zh-TW](https://img.shields.io/badge/語言-繁體中文-blue)](https://treeleaves30760.github.io/CodefyUI/zh-TW/)
+[![Documentation](https://img.shields.io/badge/docs-CodefyUI-1a82e2)](https://docs.codefyui.com/)
+[![zh-TW](https://img.shields.io/badge/語言-繁體中文-blue)](https://docs.codefyui.com/zh-TW/)
 
 A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transformer, and RL architectures by dragging nodes onto a canvas, connecting them into a DAG, and executing the pipeline — all from the browser.
 
-📖 **Full documentation: [treeleaves30760.github.io/CodefyUI](https://treeleaves30760.github.io/CodefyUI/)** — installation, usage, and advanced guides (English / 繁體中文).
+📖 **Full documentation: [docs.codefyui.com](https://docs.codefyui.com/)** — installation, usage, and advanced guides (English / 繁體中文).
 
 ![CodefyUI Screenshot](Assets/UI.png)
 
@@ -83,7 +83,7 @@ Both `install.sh`/`install.ps1` and `cdui install` (after first install) accept 
 | — | `CODEFYUI_RELEASE_TAG` | tag | Pin the frontend bundle to a specific release (default: `latest`). |
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm. |
 
-> This quick start assumes an **NVIDIA GPU with CUDA 12.4**. For CPU, Apple Silicon, AMD, or detailed troubleshooting, see the [GPU & Device Setup guide](https://treeleaves30760.github.io/CodefyUI/getting-started/gpu-device).
+> This quick start assumes an **NVIDIA GPU with CUDA 12.4**. For CPU, Apple Silicon, AMD, or detailed troubleshooting, see the [GPU & Device Setup guide](https://docs.codefyui.com/getting-started/gpu-device).
 
 ### CLI Execution
 

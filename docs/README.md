@@ -1,7 +1,7 @@
 # CodefyUI Documentation Site
 
 This folder is the [Docusaurus 3](https://docusaurus.io/) site published to GitHub Pages at
-**https://treeleaves30760.github.io/CodefyUI/**.
+**https://docs.codefyui.com/**.
 
 ## Local development
 
@@ -28,10 +28,8 @@ Search is offline/local via `@easyops-cn/docusaurus-search-local` — no externa
 `.github/workflows/docs-deploy.yml` builds and deploys to GitHub Pages on every push to `main` that
 touches `docs/`. Set the Pages source to **GitHub Actions** in repo Settings → Pages.
 
-## Switching to a custom subdomain
+## Custom domain
 
-The site currently builds for the project URL `https://treeleaves30760.github.io/CodefyUI/`. To move it to your own subdomain:
+The site is served at **https://docs.codefyui.com/** — `url: 'https://docs.codefyui.com'`, `baseUrl: '/'`, with a one-line `static/CNAME`. The subdomain's DNS (a `CNAME` record) points at GitHub Pages.
 
-1. In `docusaurus.config.ts`, set `url` to `https://your-subdomain` and `baseUrl` to `'/'`.
-2. Add a `static/CNAME` file containing just your subdomain (e.g. `docs.codefyui.com`).
-3. Set the custom domain in repo Settings → Pages, then point your DNS at GitHub Pages.
+To revert to the GitHub Pages project URL, set `url` to `https://treeleaves30760.github.io` and `baseUrl` to `'/CodefyUI/'`, and remove `static/CNAME`.
