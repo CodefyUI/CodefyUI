@@ -22,8 +22,10 @@ from fastapi import APIRouter, HTTPException
 
 from ..config import settings
 from ..core.node_registry import registry
+from ..core import plugin_loader
 from ..core.plugin_loader import (
     MANIFEST_FILENAME,
+    frontend_entry_rel,
     is_enabled,
     iter_plugin_dirs,
     load_lockfile,
@@ -71,8 +73,8 @@ async def list_plugins() -> list[dict[str, Any]]:
     lockfile = load_lockfile()
     out: list[dict[str, Any]] = []
     for plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR,
-        settings.PLUGINS_USER_DIR,
+        plugin_loader.plugins_builtin_root(),
+        plugin_loader.plugins_user_root(),
         lockfile,
         include_disabled=True,
     ):
@@ -80,6 +82,11 @@ async def list_plugins() -> list[dict[str, Any]]:
         manifest = _read_manifest(plugin_dir)
         plugin_meta = manifest.get("plugin", {})
         lessons_meta = manifest.get("lessons", {})
+        enabled = is_enabled(entry)
+        entry_rel = frontend_entry_rel(manifest)
+        frontend_entry = None
+        if enabled and entry_rel and (plugin_dir / entry_rel).is_file():
+            frontend_entry = f"/plugins/{plugin_id}/{entry_rel}"
         out.append({
             "id": plugin_id,
             "name": plugin_meta.get("name", plugin_id),
@@ -90,11 +97,12 @@ async def list_plugins() -> list[dict[str, Any]]:
             "sha": entry.get("sha", ""),
             "ref": entry.get("ref", ""),
             "installed_at": entry.get("installed_at", ""),
-            "enabled": is_enabled(entry),
+            "enabled": enabled,
             "homepage": plugin_meta.get("homepage", ""),
             "chapters": lessons_meta.get("chapters", []),
             "lessons": lessons_meta.get("lessons", []),
             "nodes": _nodes_for_plugin(plugin_id),
+            "frontend_entry": frontend_entry,
         })
     return out
 
