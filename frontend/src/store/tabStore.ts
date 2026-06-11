@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
-import { generateId, VIZ_NODE_TYPES } from '../utils';
+import { generateId, buildFlowNode } from '../utils';
 import { autoLayout, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup } from '../types';
 import { ExecutionWebSocket } from '../api/ws';
@@ -469,25 +469,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   addNode: (definition, position) => {
     get().pushUndoSnapshot();
-    const defaultParams: Record<string, any> = {};
-    for (const p of definition.params) {
-      defaultParams[p.name] = p.default;
-    }
-    const node: Node<NodeData> = {
-      id: generateId(),
-      type:
-        definition.node_name === 'Start'
-          ? 'start'
-          : (VIZ_NODE_TYPES[definition.node_name] ?? 'baseNode'),
-      position,
-      data: {
-        label: definition.node_name,
-        type: definition.node_name,
-        params: defaultParams,
-        definition,
-        executionStatus: 'idle',
-      },
-    };
+    const node = buildFlowNode(definition, position);
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [...tab.nodes, node],
