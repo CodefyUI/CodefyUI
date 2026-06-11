@@ -178,6 +178,8 @@ class _LoginFlow:
         self.timeout_task: asyncio.Task | None = None
 
 
+# The flow singleton is mutated only from the server's single event loop
+# (route handlers + the callback connection handler); no threads.
 _flow: _LoginFlow | None = None
 
 
@@ -303,12 +305,10 @@ def _settle() -> None:
             pass
     if flow.exchange_client is not None:
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(flow.exchange_client.aclose())
-            # else: no running loop; client will be GC'd
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(flow.exchange_client.aclose())
         except RuntimeError:
-            pass
+            pass  # no running loop -> client transport is GC-closed
 
 
 def cancel_login() -> None:
