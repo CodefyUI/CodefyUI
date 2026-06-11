@@ -19,7 +19,16 @@ interface PluginListItem {
   frontend_entry: string | null;
 }
 
+/** PluginListItem narrowed to entries that are ready to activate. */
+interface ActivatablePlugin {
+  id: string;
+  enabled: true;
+  frontend_entry: string;
+}
+
 type Importer = (url: string) => Promise<{ default?: unknown }>;
+
+const IMPORT_TIMEOUT_MS = 10000;
 
 let hostStarted = false;
 let stackEl: HTMLElement | null = null;
@@ -49,7 +58,7 @@ export async function loadPluginFrontends(
     = widgetContainer,
   importer: Importer = (url) => import(/* @vite-ignore */ url),
 ): Promise<string[]> {
-  let plugins: PluginListItem[];
+  let plugins: unknown;
   try {
     const res = await fetch('/api/plugins');
     if (!res.ok) return [];
@@ -58,13 +67,31 @@ export async function loadPluginFrontends(
     return [];
   }
 
+  if (!Array.isArray(plugins)) return [];
+
+  const activatable = plugins.filter(
+    (p): p is ActivatablePlugin =>
+      !!p && typeof p === 'object'
+      && typeof (p as PluginListItem).id === 'string'
+      && (p as PluginListItem).enabled === true
+      && typeof (p as PluginListItem).frontend_entry === 'string',
+  );
+  if (activatable.length === 0) return [];
+
   await waitForNodeDefinitions();
 
   const activated: string[] = [];
-  for (const p of plugins) {
-    if (!p.enabled || !p.frontend_entry) continue;
+  for (const p of activatable) {
     try {
-      const mod = await importer(p.frontend_entry);
+      const mod = await Promise.race([
+        importer(p.frontend_entry),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`import timed out after ${IMPORT_TIMEOUT_MS}ms`)),
+            IMPORT_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       if (typeof mod.default !== 'function') {
         throw new Error('frontend entry has no default export function');
       }
@@ -88,6 +115,7 @@ export function PluginHost() {
     if (hostStarted) return;
     hostStarted = true;
     void loadPluginFrontends();
+    return () => { stackEl = null; };
   }, []);
 
   return <div ref={ref} className={styles.stack} data-testid="plugin-widget-stack" />;

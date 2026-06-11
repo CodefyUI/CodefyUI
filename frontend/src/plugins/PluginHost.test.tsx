@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { loadPluginFrontends } from './PluginHost';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import { useToastStore } from '../store/toastStore';
 
 beforeEach(() => {
   useNodeDefStore.setState({
@@ -13,9 +14,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  useToastStore.setState({ toasts: [] });
 });
 
-function mockPluginsResponse(plugins: unknown[]) {
+function mockPluginsResponse(plugins: unknown) {
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
     json: async () => plugins,
@@ -67,5 +69,53 @@ describe('loadPluginFrontends', () => {
       () => document.createElement('div'), importer,
     );
     expect(loaded).toEqual([]);
+  });
+
+  it('returns [] for non-array payloads', async () => {
+    mockPluginsResponse({ not: 'an array' } as unknown as unknown[]);
+    const importer = vi.fn();
+    expect(await loadPluginFrontends(() => document.createElement('div'), importer)).toEqual([]);
+    expect(importer).not.toHaveBeenCalled();
+  });
+
+  it('skips malformed array elements without aborting the rest', async () => {
+    mockPluginsResponse([
+      null,
+      'garbage',
+      { id: 42, enabled: true, frontend_entry: '/x.js' },
+      { id: 'ok', enabled: true, frontend_entry: '/plugins/ok/frontend/index.js' },
+    ]);
+    const activate = vi.fn();
+    const importer = vi.fn(async () => ({ default: activate }));
+    expect(await loadPluginFrontends(() => document.createElement('div'), importer)).toEqual(['ok']);
+  });
+
+  it('returns [] when fetch fails or response not ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false })) as unknown as typeof fetch);
+    expect(await loadPluginFrontends(() => document.createElement('div'), vi.fn())).toEqual([]);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('net'); }) as unknown as typeof fetch);
+    expect(await loadPluginFrontends(() => document.createElement('div'), vi.fn())).toEqual([]);
+  });
+
+  it('a hanging import times out and later plugins still activate', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPluginsResponse([
+        { id: 'hang', enabled: true, frontend_entry: '/plugins/hang/frontend/index.js' },
+        { id: 'ok', enabled: true, frontend_entry: '/plugins/ok/frontend/index.js' },
+      ]);
+      const activate = vi.fn();
+      const importer = vi.fn((url: string) =>
+        url.includes('hang')
+          ? new Promise<never>(() => {})
+          : Promise.resolve({ default: activate }),
+      );
+      const resultP = loadPluginFrontends(() => document.createElement('div'), importer);
+      await vi.advanceTimersByTimeAsync(11000);
+      expect(await resultP).toEqual(['ok']);
+      expect(activate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
