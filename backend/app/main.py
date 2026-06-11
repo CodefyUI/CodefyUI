@@ -47,6 +47,7 @@ from .api import (
     routes_images,
     routes_models,
     routes_nodes,
+    routes_plugin_frontend,
     routes_plugins,
     routes_presets,
     routes_system,
@@ -240,6 +241,7 @@ app.include_router(routes_graph.router)
 app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
+app.include_router(routes_plugin_frontend.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
