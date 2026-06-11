@@ -305,7 +305,7 @@ def _settle() -> None:
             pass
     if flow.exchange_client is not None:
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
             asyncio.ensure_future(flow.exchange_client.aclose())
         except RuntimeError:
             pass  # no running loop -> client transport is GC-closed

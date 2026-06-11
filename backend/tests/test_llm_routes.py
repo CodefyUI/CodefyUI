@@ -117,3 +117,19 @@ def test_codex_status_and_logout(client):
     assert r.json() == {"status": "logged_out"}
     r = client.post("/api/llm/codex/logout")
     assert r.json() == {"status": "logged_out"}
+
+
+def test_chat_adapter_crash_becomes_terminal_error_event(client, monkeypatch):
+    async def exploding_adapter(req, http_client):
+        yield {"type": "text_delta", "text": "partial"}
+        raise RuntimeError("adapter bug")
+
+    monkeypatch.setitem(routes_llm._ADAPTERS, "openai", exploding_adapter)
+
+    with client.stream("POST", "/api/llm/chat", json=chat_body()) as r:
+        assert r.status_code == 200
+        events = sse_events_from(r.read().decode())
+    assert events[0] == {"type": "text_delta", "text": "partial"}
+    assert events[-1]["type"] == "error"
+    assert "proxy error" in events[-1]["message"]
+    assert "adapter bug" in events[-1]["message"]
