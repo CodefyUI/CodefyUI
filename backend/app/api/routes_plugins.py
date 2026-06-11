@@ -114,7 +114,7 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not installed")
 
     for pid, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     ):
         if pid != plugin_id:
             continue
@@ -149,8 +149,8 @@ async def reload_plugins() -> dict[str, int]:
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
 
 
@@ -178,8 +178,8 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
     return {"id": plugin_id, "enabled": enabled}
 
