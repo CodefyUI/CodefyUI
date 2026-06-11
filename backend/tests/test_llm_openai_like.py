@@ -164,3 +164,17 @@ async def test_custom_provider_hits_custom_base():
     events = await collect(req, handler)
     assert seen["url"] == "http://127.0.0.1:11434/v1/chat/completions"
     assert events[-1]["type"] == "done"
+
+
+def test_custom_payload_has_no_stream_options():
+    req = make_req(provider="custom", base_url="http://127.0.0.1:11434/v1", api_key=None)
+    p = build_payload(req)
+    assert "stream_options" not in p
+
+
+@pytest.mark.asyncio
+async def test_bad_base_url_yields_error_event():
+    req = make_req(provider="custom", base_url="ftp://nope", api_key=None)
+    events = await collect(req, lambda r: httpx.Response(500))
+    assert events == [{"type": "error",
+                       "message": "custom provider requires an http(s) base_url"}]

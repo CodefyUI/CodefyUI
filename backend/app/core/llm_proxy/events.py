@@ -3,6 +3,9 @@
 Contract (spec Part B): text streams as it arrives; tool calls are delivered
 complete in the terminal "done" event so the four providers' incompatible
 tool-call streaming dialects never leak past this module.
+
+Terminal-event contract: an "error" event is terminal -- no "done" event
+follows it, and the adapter returns immediately after yielding it.
 """
 
 from __future__ import annotations

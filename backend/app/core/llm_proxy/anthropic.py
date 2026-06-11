@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
+from ._common import TIMEOUT, parse_tool_args
 from .events import done_event, error_event, text_delta
-from .openai_like import TIMEOUT, _parse_args
 from .schema import ChatRequest, ToolCall
 
 _BASE = "https://api.anthropic.com/v1"
@@ -121,7 +121,7 @@ async def stream_chat(
 
     tool_calls = [
         ToolCall(id=b["id"] or f"toolu_{i}", name=b["name"],
-                 arguments=_parse_args(b["partial_json"]) if b["partial_json"] else {})
+                 arguments=parse_tool_args(b["partial_json"]) if b["partial_json"] else {})
         for i, b in sorted(blocks.items())
     ]
     yield done_event(

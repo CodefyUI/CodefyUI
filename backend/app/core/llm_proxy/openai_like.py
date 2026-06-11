@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from ._common import TIMEOUT, parse_tool_args
 from .events import done_event, error_event, text_delta
 from .schema import ChatRequest, ToolCall
 
@@ -22,9 +23,9 @@ _BASES = {
     "openrouter": "https://openrouter.ai/api/v1",
 }
 
-# Upstream connect/read timeout. Reads are long (model thinking time between
-# SSE chunks) -- 120s idle gap tolerated, 10s to connect.
-TIMEOUT = httpx.Timeout(10.0, read=120.0)
+# Back-compat alias -- internal callers that imported _parse_args directly
+# (e.g. anthropic.py before its own refactor) continue to work.
+_parse_args = parse_tool_args
 
 
 def resolve_base_url(req: ChatRequest) -> str:
@@ -61,9 +62,12 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
         "model": req.model,
         "messages": messages,
         "stream": True,
-        "stream_options": {"include_usage": True},
         "max_tokens": req.max_tokens,
     }
+    # Older OpenAI-compatible servers (Ollama, LM Studio, etc.) reject unknown
+    # fields -- only send stream_options for first-party providers.
+    if req.provider != "custom":
+        payload["stream_options"] = {"include_usage": True}
     if req.temperature is not None:
         payload["temperature"] = req.temperature
     if req.tools:
@@ -75,20 +79,9 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
     return payload
 
 
-def _parse_args(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {"__parse_error__": raw}
-    except json.JSONDecodeError:
-        return {"__parse_error__": raw}
-
-
 async def stream_chat(
     req: ChatRequest, client: httpx.AsyncClient
 ) -> AsyncIterator[dict[str, Any]]:
-    url = f"{resolve_base_url(req)}/chat/completions"
     headers = {"content-type": "application/json"}
     if req.api_key:
         headers["authorization"] = f"Bearer {req.api_key}"
@@ -100,6 +93,14 @@ async def stream_chat(
     usage: dict[str, int] = {}
 
     try:
+        # Resolve inside the try so an invalid custom base_url surfaces as an
+        # error_event rather than raising synchronously to the caller.
+        try:
+            url = f"{resolve_base_url(req)}/chat/completions"
+        except ValueError as exc:
+            yield error_event(str(exc))
+            return
+
         async with client.stream("POST", url, json=build_payload(req),
                                  headers=headers, timeout=TIMEOUT) as resp:
             if resp.status_code != 200:
@@ -146,7 +147,7 @@ async def stream_chat(
 
     tool_calls = [
         ToolCall(id=slot["id"] or f"call_{i}", name=slot["name"],
-                 arguments=_parse_args(slot["arguments"]))
+                 arguments=parse_tool_args(slot["arguments"]))
         for i, slot in sorted(pending.items())
     ]
     stop_reason = "tool_use" if (tool_calls or finish_reason == "tool_calls") else "end"
