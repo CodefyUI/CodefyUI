@@ -24,6 +24,11 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport — same API.
+
 from platformdirs import user_data_dir
 
 LOCKFILE_SCHEMA = 1
@@ -78,6 +83,16 @@ def save_lockfile(data: dict[str, Any]) -> None:
     p = lockfile_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def read_manifest_safe(plugin_dir: Path) -> dict[str, Any]:
+    """Parse a plugin's manifest, returning {} on any read/parse failure."""
+    try:
+        return tomllib.loads(
+            (plugin_dir / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
 
 
 def _py_id(plugin_id: str) -> str:

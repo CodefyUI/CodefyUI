@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from ..config import settings
 from ..core.node_base import BaseNode
 from ..core.node_registry import registry
+from ..core import plugin_loader
 from ..core.plugin_loader import rediscover_all
 from ..core.plugin_validator import PluginValidationError, validate_python_source
 from ..core.preset_registry import preset_registry
@@ -148,6 +149,6 @@ def _reload_all():
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
