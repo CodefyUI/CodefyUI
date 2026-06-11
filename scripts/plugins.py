@@ -491,6 +491,11 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     return 0
 
 
+def _manifest_has_frontend(manifest: dict) -> bool:
+    fe = manifest.get("frontend")
+    return isinstance(fe, dict) and isinstance(fe.get("entry"), str) and bool(fe.get("entry"))
+
+
 def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
@@ -544,6 +549,11 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
         except (ValueError, FileNotFoundError) as e:
             err(str(e), str(e))
             return 1
+
+        if _manifest_has_frontend(manifest):
+            print("NOTE: this plugin ships frontend UI code (JavaScript).")
+            print("      After install it runs in your browser inside CodefyUI with")
+            print("      full access to the editor UI. Only install plugins you trust.")
 
         plugin_id = manifest["plugin"]["id"]
         allowed = manifest.get("security", {}).get("allowed_modules") or []
