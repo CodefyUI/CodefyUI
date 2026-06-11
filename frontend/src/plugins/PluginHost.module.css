@@ -1,0 +1,19 @@
+/* Floating widget stack: bottom-right, above the React Flow MiniMap
+   (which sits inside the canvas at the viewport's bottom-right corner).
+   z-index 300 floats over canvas chrome and popovers but under modals
+   (which start at 9000). */
+.stack {
+  position: fixed;
+  right: 16px;
+  bottom: 188px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.stack > * {
+  pointer-events: auto;
+}

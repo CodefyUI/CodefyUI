@@ -12,6 +12,7 @@ import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorM
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
+import { PluginHost } from './plugins/PluginHost';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -93,6 +94,7 @@ function App() {
       <ToastContainer />
       <ShortcutsModal />
       <DialogContainer />
+      <PluginHost />
     </div>
   );
 }
