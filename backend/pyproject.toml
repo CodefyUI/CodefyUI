@@ -43,6 +43,9 @@ dependencies = [
     # Cross-platform system metrics for `cdui status` (CPU / memory / disk /
     # process table). dev.py falls back to a stdlib-only view when it's absent.
     "psutil>=5.9.0",
+    # LLM provider proxy (/api/llm/*) upstream HTTP + SSE streaming. Also in
+    # the dev extra for tests; listed here because the proxy is runtime code.
+    "httpx>=0.27.0",
     # tomllib is stdlib on 3.11+; pull the backport for the 3.10 floor so
     # `routes_plugins.py` and `scripts/plugins.py` import cleanly.
     'tomli>=2.0.0; python_version < "3.11"',
