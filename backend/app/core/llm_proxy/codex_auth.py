@@ -303,9 +303,12 @@ def _settle() -> None:
             pass
     if flow.exchange_client is not None:
         try:
-            asyncio.ensure_future(flow.exchange_client.aclose())
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(flow.exchange_client.aclose())
+            # else: no running loop; client will be GC'd
         except RuntimeError:
-            pass  # no running loop; client will be GC'd
+            pass
 
 
 def cancel_login() -> None:
