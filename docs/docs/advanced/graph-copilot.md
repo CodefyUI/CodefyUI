@@ -9,7 +9,7 @@ description: Chat with an AI assistant to generate, tune, and improve your node 
 Graph Copilot is a CodefyUI plugin that adds a chat panel to the editor. You describe what you want in plain language and the AI generates a sequence of graph operations (add nodes, connect ports, set parameters) that are applied atomically — one undo step per AI edit. You can stop mid-stream, retry failed requests, and resume a conversation across sessions.
 
 :::note Availability
-Graph Copilot requires **PR #55** (plugin frontend extension API) and **PR #56** (LLM proxy endpoint `/api/llm/chat`). Both must be present in your CodefyUI build.
+Graph Copilot is built on two CodefyUI features: the [plugin frontend extension API](/advanced/plugin-frontend-extensions) and the unified LLM proxy endpoint (`/api/llm/chat`). Both are in CodefyUI from the first release after **1.2.1**. If `cdui --version` reports 1.2.1 or earlier, update to the latest release (or run from `main`) before installing.
 :::
 
 ## Installation
@@ -21,6 +21,16 @@ cdui plugin install treeleaves30760/CodefyUI-Plugin-Graph-Copilot
 Then reload the editor (press F5 or close and reopen the tab). The Graph Copilot panel appears as a floating widget in the editor.
 
 Plugin source and issues: [github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot](https://github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot)
+
+## Quick start
+
+1. Install the plugin (above) and reload the editor.
+2. Click the round **Graph Copilot** button in the bottom-right corner of the canvas to open the chat panel.
+3. Click the **settings** (gear) icon, choose a provider, and paste your API key — or, for **OpenAI Codex**, click **Sign in** and approve in the tab that opens. Pick a model (use **Load list** to fetch the provider's models).
+4. Type a request such as `Build a small MLP classifier` and press **Enter**.
+5. Watch the nodes appear and wire up on the canvas as the AI streams its plan. Press **Ctrl+Z** once to undo the whole edit, or keep chatting to refine it.
+
+The provider and key only need to be set once — they persist in your browser. The rest of this page covers each part in detail.
 
 ## Choosing an LLM provider
 
@@ -72,4 +82,4 @@ Every AI edit is a single undo snapshot. Press **Ctrl+Z** (or Cmd+Z on macOS) on
 
 - [Plugin Frontend Extensions](/advanced/plugin-frontend-extensions) — the JS API that Graph Copilot is built on.
 - [Plugins](/advanced/plugins) — the plugin pack system.
-- [API Reference](/advanced/api-reference) — the `/api/llm/chat` streaming endpoint (PR #56).
+- [API Reference](/advanced/api-reference) — the `/api/llm/chat` streaming endpoint.
