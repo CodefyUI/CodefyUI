@@ -9,7 +9,7 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 外掛包可以在 Python 節點之外，附上一個 JavaScript bundle。CodefyUI 編輯器載入時，會探索並以 ES 模組形式匯入該 bundle，讓外掛取得一個穩定的 JavaScript API，用於操作 UI、圖表及代理 HTTP 請求。
 
 :::note 可用性
-前端擴充功能自 **1.2.1** 之後的首個版本起內建於 CodefyUI。請執行 `cdui --version` 確認；若顯示 1.2.1 或更早，請更新到最新版本（或直接從 `main` 執行）。
+前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 :::
 
 ## 宣告前端進入點
@@ -21,13 +21,13 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 id = "my-plugin"
 name = "My Plugin"
 version = "0.1.0"
-requires_codefyui = ">=1.3"
+requires_codefyui = ">=1.3.0"
 
 [frontend]
 entry = "frontend/index.js"
 ```
 
-`requires_codefyui` 為提示性中繼資料（會被記錄，但目前安裝時並不強制檢查）；請將它設為首個內建你外掛所需功能的 CodefyUI 版本——前端擴充功能於 1.2.1 之後的版本登場。
+`requires_codefyui` 為提示性中繼資料（會被記錄，但目前安裝時並不強制檢查）；請將它設為首個內建你外掛所需功能的 CodefyUI 版本——前端擴充功能於 1.3.0 登場。
 
 `entry` 路徑必須**相對於外掛根目錄**，且必須位於 `frontend/` 之下。該檔案必須是合法的 ES 模組，並包含一個預設匯出（參見下方的[activate 合約](#activate-合約)）。
 

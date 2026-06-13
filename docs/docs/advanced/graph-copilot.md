@@ -9,7 +9,7 @@ description: Chat with an AI assistant to generate, tune, and improve your node 
 Graph Copilot is a CodefyUI plugin that adds a chat panel to the editor. You describe what you want in plain language and the AI generates a sequence of graph operations (add nodes, connect ports, set parameters) that are applied atomically — one undo step per AI edit. You can stop mid-stream, retry failed requests, and resume a conversation across sessions.
 
 :::note Availability
-Graph Copilot is built on two CodefyUI features: the [plugin frontend extension API](/advanced/plugin-frontend-extensions) and the unified LLM proxy endpoint (`/api/llm/chat`). Both are in CodefyUI from the first release after **1.2.1**. If `cdui --version` reports 1.2.1 or earlier, update to the latest release (or run from `main`) before installing.
+Graph Copilot is built on two CodefyUI features: the [plugin frontend extension API](/advanced/plugin-frontend-extensions) and the unified LLM proxy endpoint (`/api/llm/chat`). Both are in CodefyUI **1.3.0** and later. If `cdui --version` reports an older version, run `cdui update` before installing.
 :::
 
 ## Installation

@@ -9,7 +9,7 @@ description: Ship a JavaScript bundle with your plugin so it can add UI widgets,
 A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the CodefyUI editor loads, it discovers and imports that bundle as an ES module, giving the plugin access to a stable JavaScript API for UI, graph manipulation, and proxied HTTP.
 
 :::note Availability
-Frontend extensions are in CodefyUI from the first release after **1.2.1**. Check `cdui --version`; if it reports 1.2.1 or earlier, update to the latest release (or run from `main`).
+Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
 :::
 
 ## Declaring a frontend entry point
@@ -21,13 +21,13 @@ Add a `[frontend]` section to `cdui.plugin.toml`:
 id = "my-plugin"
 name = "My Plugin"
 version = "0.1.0"
-requires_codefyui = ">=1.3"
+requires_codefyui = ">=1.3.0"
 
 [frontend]
 entry = "frontend/index.js"
 ```
 
-`requires_codefyui` is advisory metadata (it is recorded but not currently enforced at install time); set it to the first CodefyUI release that ships the features your plugin depends on — frontend extensions landed in the release after 1.2.1.
+`requires_codefyui` is advisory metadata (it is recorded but not currently enforced at install time); set it to the first CodefyUI release that ships the features your plugin depends on — frontend extensions landed in 1.3.0.
 
 The `entry` path must be **relative to the plugin root** and must live under `frontend/`. The file must be a valid ES module with a default export (see [The activate contract](#the-activate-contract) below).
 

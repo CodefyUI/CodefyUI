@@ -9,7 +9,7 @@ description: 以對話方式讓 AI 助理生成、調整並改善你的節點圖
 Graph Copilot 是一個 CodefyUI 外掛，在編輯器中新增一個聊天面板。你用自然語言描述需求，AI 就會產生一系列圖表操作（新增節點、連接連接埠、設定參數），並以原子方式套用——每次 AI 編輯只佔用一個撤銷步驟。你可以在串流過程中中止、重試失敗的請求，並在不同 session 中繼續對話。
 
 :::note 可用性
-Graph Copilot 建構於兩項 CodefyUI 功能之上：[外掛前端擴充 API](/advanced/plugin-frontend-extensions) 與統一的 LLM 代理端點（`/api/llm/chat`）。兩者皆自 **1.2.1** 之後的首個版本起內建於 CodefyUI。若 `cdui --version` 顯示 1.2.1 或更早，請先更新到最新版本（或直接從 `main` 執行）再安裝。
+Graph Copilot 建構於兩項 CodefyUI 功能之上：[外掛前端擴充 API](/advanced/plugin-frontend-extensions) 與統一的 LLM 代理端點（`/api/llm/chat`）。兩者皆自 CodefyUI **1.3.0** 起內建。若 `cdui --version` 顯示更舊的版本，請先執行 `cdui update` 再安裝。
 :::
 
 ## 安裝
