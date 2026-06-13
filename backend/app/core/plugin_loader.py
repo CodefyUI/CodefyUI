@@ -21,8 +21,13 @@ import os
 import sys
 import types
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport — same API.
 
 from platformdirs import user_data_dir
 
@@ -80,6 +85,16 @@ def save_lockfile(data: dict[str, Any]) -> None:
     p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def read_manifest_safe(plugin_dir: Path) -> dict[str, Any]:
+    """Parse a plugin's manifest, returning {} on any read/parse failure."""
+    try:
+        return tomllib.loads(
+            (plugin_dir / MANIFEST_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
 def _py_id(plugin_id: str) -> str:
     """Convert kebab-case plugin id to a valid Python module identifier."""
     return plugin_id.replace("-", "_")
@@ -104,6 +119,28 @@ def is_enabled(entry: dict[str, Any]) -> bool:
     written by ``cmd_install`` always set the field explicitly.
     """
     return bool(entry.get("enabled", True))
+
+
+def frontend_entry_rel(manifest: dict[str, Any]) -> str | None:
+    """Validated ``[frontend].entry`` path from a plugin manifest, or ``None``.
+
+    The entry must be a relative POSIX-style path that stays inside the
+    plugin's ``frontend/`` directory -- anything else (traversal, absolute
+    paths, other directories) is treated as "no frontend" rather than an
+    error, so a malformed third-party manifest can't break startup.
+    """
+    fe = manifest.get("frontend")
+    if not isinstance(fe, dict):
+        return None
+    entry = fe.get("entry")
+    if not isinstance(entry, str) or not entry:
+        return None
+    p = PurePosixPath(entry.replace("\\", "/"))
+    if p.is_absolute() or ".." in p.parts:
+        return None
+    if p.parts[:1] != ("frontend",) or len(p.parts) < 2:
+        return None
+    return str(p)
 
 
 def install_plugin_finder(

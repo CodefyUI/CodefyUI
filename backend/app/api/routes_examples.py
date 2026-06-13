@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from ..config import settings
+from ..core import plugin_loader
 from ..core.plugin_loader import iter_plugin_dirs, load_lockfile
 
 router = APIRouter(prefix="/api/examples", tags=["examples"])
@@ -46,7 +47,7 @@ def _scan_examples(base: Path, source: str, path_prefix: str = "") -> list[dict]
 async def list_examples():
     results = _scan_examples(settings.EXAMPLES_DIR, source="builtin")
     for plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, load_lockfile()
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), load_lockfile()
     ):
         results.extend(
             _scan_examples(
@@ -81,7 +82,7 @@ async def load_example(path: str = Query(..., description="Relative path to the 
         head, _, rest = path.partition("/")
         plugin_id = head.split(":", 1)[1]
         for pid, plugin_dir in iter_plugin_dirs(
-            settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, load_lockfile()
+            plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), load_lockfile()
         ):
             if pid == plugin_id:
                 examples_root = plugin_dir / "examples"

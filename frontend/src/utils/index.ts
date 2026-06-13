@@ -1,3 +1,6 @@
+import type { Node } from '@xyflow/react';
+import type { NodeData, NodeDefinition } from '../types';
+
 export function generateId(): string {
   return crypto.randomUUID();
 }
@@ -236,6 +239,30 @@ export function resolveSerializedEdges(rawEdges: any[]): import('@xyflow/react')
         : { style: { stroke: '#555', strokeWidth: 2 } }),
     };
   });
+}
+
+export function buildFlowNode(
+  definition: NodeDefinition,
+  position: { x: number; y: number },
+): Node<NodeData> {
+  const defaultParams: Record<string, unknown> = {};
+  for (const p of definition.params) {
+    defaultParams[p.name] = p.default;
+  }
+  const name = definition.node_name;
+  const bare = name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;
+  return {
+    id: generateId(),
+    type: name === 'Start' ? 'start' : (VIZ_NODE_TYPES[bare] ?? 'baseNode'),
+    position,
+    data: {
+      label: name,
+      type: name,
+      params: defaultParams,
+      definition,
+      executionStatus: 'idle',
+    },
+  };
 }
 
 export function isValidConnection(sourceType: string, targetType: string): boolean {

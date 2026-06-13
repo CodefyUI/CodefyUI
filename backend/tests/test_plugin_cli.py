@@ -185,3 +185,12 @@ def test_install_deps_builds_correct_pip_specs(monkeypatch):
     assert "bar==2.3.4" in specs
     assert "baz==1.0.0" in specs
     assert "qux" in specs
+
+
+# ── _manifest_has_frontend ────────────────────────────────────────────────
+
+def test_manifest_has_frontend_detection():
+    assert plugin_cli._manifest_has_frontend({"frontend": {"entry": "frontend/index.js"}}) is True
+    assert plugin_cli._manifest_has_frontend({}) is False
+    assert plugin_cli._manifest_has_frontend({"frontend": {}}) is False
+    assert plugin_cli._manifest_has_frontend({"frontend": {"entry": ""}}) is False

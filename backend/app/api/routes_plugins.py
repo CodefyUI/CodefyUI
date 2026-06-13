@@ -9,21 +9,15 @@ to ``/api/plugins/reload``).
 from __future__ import annotations
 
 import logging
-import sys
-from pathlib import Path
 from typing import Any
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # 3.10 backport — same API.
 
 from fastapi import APIRouter, HTTPException
 
 from ..config import settings
 from ..core.node_registry import registry
+from ..core import plugin_loader
 from ..core.plugin_loader import (
-    MANIFEST_FILENAME,
+    frontend_entry_rel,
     is_enabled,
     iter_plugin_dirs,
     load_lockfile,
@@ -35,13 +29,6 @@ from ..core.preset_registry import preset_registry
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
-
-
-def _read_manifest(plugin_dir: Path) -> dict[str, Any]:
-    try:
-        return tomllib.loads((plugin_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
 
 
 def _provider_token(plugin_id: str) -> str:
@@ -71,15 +58,20 @@ async def list_plugins() -> list[dict[str, Any]]:
     lockfile = load_lockfile()
     out: list[dict[str, Any]] = []
     for plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR,
-        settings.PLUGINS_USER_DIR,
+        plugin_loader.plugins_builtin_root(),
+        plugin_loader.plugins_user_root(),
         lockfile,
         include_disabled=True,
     ):
         entry = lockfile["plugins"][plugin_id]
-        manifest = _read_manifest(plugin_dir)
+        manifest = plugin_loader.read_manifest_safe(plugin_dir)
         plugin_meta = manifest.get("plugin", {})
         lessons_meta = manifest.get("lessons", {})
+        enabled = is_enabled(entry)
+        entry_rel = frontend_entry_rel(manifest)
+        frontend_entry = None
+        if enabled and entry_rel and (plugin_dir / entry_rel).is_file():
+            frontend_entry = f"/plugins/{plugin_id}/{entry_rel}"
         out.append({
             "id": plugin_id,
             "name": plugin_meta.get("name", plugin_id),
@@ -90,11 +82,12 @@ async def list_plugins() -> list[dict[str, Any]]:
             "sha": entry.get("sha", ""),
             "ref": entry.get("ref", ""),
             "installed_at": entry.get("installed_at", ""),
-            "enabled": is_enabled(entry),
+            "enabled": enabled,
             "homepage": plugin_meta.get("homepage", ""),
             "chapters": lessons_meta.get("chapters", []),
             "lessons": lessons_meta.get("lessons", []),
             "nodes": _nodes_for_plugin(plugin_id),
+            "frontend_entry": frontend_entry,
         })
     return out
 
@@ -106,11 +99,11 @@ async def get_plugin(plugin_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not installed")
 
     for pid, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     ):
         if pid != plugin_id:
             continue
-        manifest = _read_manifest(plugin_dir)
+        manifest = plugin_loader.read_manifest_safe(plugin_dir)
         readme_path = plugin_dir / "README.md"
         readme = ""
         if readme_path.exists():
@@ -141,8 +134,8 @@ async def reload_plugins() -> dict[str, int]:
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
 
 
@@ -170,8 +163,8 @@ def _set_plugin_enabled(plugin_id: str, enabled: bool) -> dict[str, Any]:
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
     return {"id": plugin_id, "enabled": enabled}
 

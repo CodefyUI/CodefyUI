@@ -9,6 +9,7 @@ import {
   resolveSerializedNodes,
   resolveSerializedEdges,
   resolveDynamicOutputs,
+  buildFlowNode,
 } from './index';
 import type { NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
 
@@ -422,5 +423,41 @@ describe('resolveDynamicOutputs', () => {
   it('strips a plugin prefix before matching the Split node name', () => {
     const ports = resolveDynamicOutputs(buildDef({ node_name: 'foundations:Split' }), { chunks: 2 });
     expect(ports.map((p) => p.name)).toEqual(['chunk_0', 'chunk_1']);
+  });
+});
+
+describe('buildFlowNode', () => {
+  const def: NodeDefinition = {
+    node_name: 'Conv2d',
+    category: 'Layer',
+    description: '',
+    inputs: [],
+    outputs: [],
+    params: [
+      { name: 'out_channels', param_type: 'int' as const, default: 32, description: '', options: [], min_value: 1, max_value: null },
+    ],
+  };
+
+  it('builds a baseNode with default params and idle status', () => {
+    const n = buildFlowNode(def, { x: 10, y: 20 });
+    expect(n.type).toBe('baseNode');
+    expect(n.position).toEqual({ x: 10, y: 20 });
+    expect(n.data.type).toBe('Conv2d');
+    expect(n.data.label).toBe('Conv2d');
+    expect(n.data.params).toEqual({ out_channels: 32 });
+    expect(n.data.definition).toBe(def);
+    expect(n.data.executionStatus).toBe('idle');
+    expect(n.id).toBeTruthy();
+  });
+
+  it('maps Start to the start renderer', () => {
+    const n = buildFlowNode({ ...def, node_name: 'Start' }, { x: 0, y: 0 });
+    expect(n.type).toBe('start');
+  });
+
+  it('strips plugin namespace when resolving the viz renderer', () => {
+    const n = buildFlowNode({ ...def, node_name: 'somepack:FancyNode' }, { x: 0, y: 0 });
+    expect(n.type).toBe('baseNode');
+    expect(n.data.type).toBe('somepack:FancyNode');
   });
 });

@@ -47,6 +47,7 @@ from .api import (
     routes_images,
     routes_models,
     routes_nodes,
+    routes_plugin_frontend,
     routes_plugins,
     routes_presets,
     routes_system,
@@ -64,6 +65,7 @@ from .core.auth import (
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
+from .core import plugin_loader
 from .core.plugin_loader import (
     MANIFEST_FILENAME,
     install_plugin_finder,
@@ -119,7 +121,7 @@ async def lifespan(app: FastAPI):
     # Discover plugin nodes (per-user installed packs + built-in direction packs)
     lockfile = load_lockfile()
     pairs = install_plugin_finder(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     )
     plugin_count = 0
     for nodes_dir, pkg_name in pairs:
@@ -134,7 +136,7 @@ async def lifespan(app: FastAPI):
     # Discover presets (built-in + per-plugin)
     preset_count = preset_registry.discover(settings.PRESETS_DIR, registry)
     for _plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     ):
         preset_count += preset_registry.discover(plugin_dir / "presets", registry)
     logger.info("Discovered %d presets", preset_count)
@@ -144,7 +146,7 @@ async def lifespan(app: FastAPI):
     # Mount each installed plugin's assets/ dir so the frontend can fetch
     # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
     for plugin_id, plugin_dir in iter_plugin_dirs(
-        settings.PLUGINS_BUILTIN_DIR, settings.PLUGINS_USER_DIR, lockfile
+        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
     ):
         assets = plugin_dir / "assets"
         if assets.is_dir():
@@ -240,6 +242,7 @@ app.include_router(routes_graph.router)
 app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
+app.include_router(routes_plugin_frontend.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
@@ -282,8 +285,8 @@ async def reload_nodes():
         nodes_dir=settings.NODES_DIR,
         custom_nodes_dir=settings.CUSTOM_NODES_DIR,
         presets_dir=settings.PRESETS_DIR,
-        builtin_root=settings.PLUGINS_BUILTIN_DIR,
-        user_root=settings.PLUGINS_USER_DIR,
+        builtin_root=plugin_loader.plugins_builtin_root(),
+        user_root=plugin_loader.plugins_user_root(),
     )
 
 
