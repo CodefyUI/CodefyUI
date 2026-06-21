@@ -120,6 +120,15 @@ def test_serves_frontend_js_with_module_mime(fe_client):
     assert r.headers["content-type"].startswith("text/javascript")
 
 
+def test_frontend_bundle_sets_revalidation_cache_control(fe_client):
+    # Plugin bundles ship under a fixed filename and change on
+    # `cdui plugin update`, so the route must force revalidation — otherwise
+    # browsers heuristically cache the JS and keep serving stale plugin code.
+    r = fe_client.get("/plugins/fe-pack/frontend/index.js")
+    assert r.status_code == 200
+    assert "no-cache" in r.headers.get("cache-control", "")
+
+
 def test_serves_css(fe_client):
     r = fe_client.get("/plugins/fe-pack/frontend/style.css")
     assert r.status_code == 200

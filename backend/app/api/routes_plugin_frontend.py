@@ -48,7 +48,15 @@ async def serve_plugin_frontend(plugin_id: str, resource_path: str) -> FileRespo
         target = (base / resource_path).resolve()
         if not target.is_relative_to(base) or not target.is_file():
             break
+        # Plugin bundles ship under a fixed filename (e.g. frontend/index.js)
+        # and change on `cdui plugin update`, so they must be revalidated --
+        # without this header browsers heuristically cache (ETag/Last-Modified
+        # only) and keep serving stale plugin code after an update. "no-cache"
+        # still allows caching but forces revalidation; FileResponse answers
+        # conditional requests with 304 when the file is unchanged.
         return FileResponse(
-            target, media_type=_MEDIA_TYPES.get(target.suffix.lower())
+            target,
+            media_type=_MEDIA_TYPES.get(target.suffix.lower()),
+            headers={"Cache-Control": "no-cache"},
         )
     raise HTTPException(status_code=404, detail="Plugin frontend resource not found")
