@@ -231,6 +231,28 @@ RELEASE_ASSET = "frontend-dist.tar.gz"
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
+def _reexec(executable: str, argv: list) -> None:
+    """Replace the current process with ``executable argv...`` (cross-platform).
+
+    POSIX ``os.execv`` is a true in-place replace: the launching shell keeps
+    waiting on the same PID and the console (stdin/stdout) stays attached, so an
+    interactive ``input()`` later in the run still reads the terminal.
+
+    Windows has no real ``exec`` — there ``os.execv`` *spawns* a new process and
+    immediately exits the current one. The shell waiting on us (``cdui.cmd`` ->
+    python) then sees its child exit and returns to its prompt, while the
+    re-exec'd child runs orphaned and races the shell for the console. Any later
+    ``input()`` in the child reads EOF — which is exactly why
+    ``cdui plugin install <owner/repo>`` silently "cancelled" at the [y/N]
+    prompt and dropped back to the command line. So on Windows we run the child
+    synchronously and forward its exit code: one clean chain, one owner of the
+    console at a time.
+    """
+    if sys.platform == "win32":
+        sys.exit(subprocess.run([executable, *argv]).returncode)
+    os.execv(executable, [executable, *argv])
+
+
 def _exec_into_venv_if_available() -> None:
     """Re-exec into backend/.venv's Python when it exists.
 
@@ -245,8 +267,7 @@ def _exec_into_venv_if_available() -> None:
             return
     except OSError:
         return
-    import os
-    os.execv(str(VENV_PY), [str(VENV_PY)] + sys.argv)
+    _reexec(str(VENV_PY), sys.argv)
 
 
 def _require_venv_tool(tool_name: str) -> str:
@@ -292,8 +313,7 @@ def _ensure_uv() -> None:
             check=True,
         )
     # 安裝後重新啟動自身，讓新 PATH 生效
-    import os
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    _reexec(sys.executable, sys.argv)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
