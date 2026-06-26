@@ -53,6 +53,23 @@ cdui plugin install your-username/your-fork
 章節外掛包 `c1`–`c6` 已重新封裝為三個方向外掛包 `foundations` / `deep` / `rl`，而且每個 Edu 節點的型別 id 都加上了一個破折號（`EduKNN` → `Edu-KNN`）。引用舊有 `cN:EduFoo` 型別的已儲存圖必須更新為 `<pack>:Edu-Foo`，並以 `cdui plugin install foundations deep rl` 重新安裝這些外掛包。
 :::
 
+## 本地開發
+
+開發外掛時，不必每次迭代都先推上 GitHub。用 **link** 連結你的工作目錄，CodefyUI 會就地載入：
+
+```bash
+cdui plugin link ./my-plugin     # 就地註冊本地目錄（不複製）
+# ...編輯 nodes/ 或 frontend/...
+cdui plugin reload               # 讓執行中的伺服器套用變更
+cdui plugin unlink my-plugin     # 解除連結——你的檔案不會被刪除
+```
+
+`link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或重啟伺服器）即可重載；若變更了前端 bundle，還需重新整理瀏覽器。
+
+:::tip 開發資料隔離
+透過 `scripts/dev.py` 執行外掛指令——或設定 `CODEFYUI_USER_DATA_DIR`——可讓某個 clone 的 lockfile 留在 repo 內（`.codefyui_dev/`），而非全機共用的 user-data 目錄，避免多個 clone 互相覆蓋。
+:::
+
 ## REST API
 
 | 端點 | 方法 | 說明 |
