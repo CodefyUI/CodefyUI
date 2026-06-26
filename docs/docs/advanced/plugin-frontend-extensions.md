@@ -69,7 +69,7 @@ export default function activate(api) {
 }
 ```
 
-`activate` may be `async`. The editor awaits it before marking the plugin as ready. Errors thrown inside `activate` are caught, logged to the browser console, and do not crash other plugins.
+The editor calls `activate` once per page load and does **not** await its return value — do your setup synchronously (you may still start async work; the editor just won't wait for it). Errors thrown synchronously inside `activate` are caught per-plugin, logged to the browser console, and surfaced as a toast; they cannot crash the editor or other plugins. The import is also bounded by a 10-second timeout. (Only the *default export being a function* is required; the name `activate` is convention.)
 
 ## CodefyUIPluginAPI v1 reference
 
@@ -77,7 +77,7 @@ export default function activate(api) {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `addFloatingWidget` | `(id, element, options?) => void` | Mount any DOM element as a floating, draggable panel. `id` must be unique. `options.title` sets the panel header. |
+| `addFloatingWidget` | `({ id }) => HTMLElement` | Create (or reuse) a container `<div>` in the editor's floating-widget stack and return it. `id` must be unique per plugin. You own the returned element — fill it with your own DOM, or mount a React root into it. |
 | `toast` | `(message, level?) => void` | Show a transient notification. `level` is `"info"` (default), `"warning"`, or `"error"`. |
 
 ### `api.graph` — graph read and write
@@ -86,34 +86,42 @@ export default function activate(api) {
 |--------|-----------|-------------|
 | `getGraph` | `() => GraphSnapshot` | Return a deep copy of the current graph state (nodes, edges, params). |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | Return the full node palette: types, port schemas, param schemas. |
-| `applyOperations` | `(ops: GraphOp[]) => Promise<ApplyResult>` | Apply a batch of graph operations. The entire batch is committed as a **single undo snapshot**. |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**. |
 | `onGraphChanged` | `(callback: (snapshot: GraphSnapshot) => void) => () => void` | Subscribe to graph changes. Returns an unsubscribe function. |
 
 #### GraphOp table
 
-All seven operation types share the property `op` (the discriminant string).
+All seven operation types share the property `op` (the discriminant string). Field names below are exact.
 
-| `op` | Required fields | Description |
-|------|-----------------|-------------|
-| `"add_node"` | `type: string`, `id?: string`, `x?: number`, `y?: number` | Add a node of the given type. `id` is auto-generated if omitted. |
-| `"remove_node"` | `id: string` | Remove a node and all edges connected to it. |
-| `"add_edge"` | `from_node: string`, `from_port: string`, `to_node: string`, `to_port: string` | Connect two compatible ports. |
-| `"remove_edge"` | `from_node: string`, `from_port: string`, `to_node: string`, `to_port: string` | Disconnect the specified edge. |
-| `"set_param"` | `node_id: string`, `param: string`, `value: unknown` | Set a node parameter value. |
-| `"move_node"` | `id: string`, `x: number`, `y: number` | Reposition a node on the canvas. |
+| `op` | Fields | Description |
+|------|--------|-------------|
+| `"add_node"` | `node_type: string`, `ref?: string`, `params?: Record<string, unknown>`, `position?: { x: number; y: number }` | Add a node of the given type. `ref` is a caller-chosen alias that later ops in the same batch can use in place of the generated node id. `position` defaults to a staggered layout. |
+| `"connect"` | `source: string`, `source_handle: string`, `target: string`, `target_handle: string` | Connect an output handle to an input handle. `source`/`target` accept a node id or a `ref` from an earlier `add_node`. Use `source_handle: "trigger"` for a trigger edge. |
+| `"set_params"` | `node_id: string`, `params: Record<string, unknown>` | Merge parameter values into a node. |
+| `"remove_node"` | `node_id: string` | Remove a node and all edges connected to it. |
+| `"remove_edge"` | `source: string`, `target: string`, `source_handle?: string`, `target_handle?: string` | Disconnect matching edge(s) between two nodes. |
 | `"clear_graph"` | *(none)* | Remove all nodes and edges. |
+| `"auto_layout"` | *(none)* | Re-run the automatic graph layout. |
 
 #### ApplyResult shape
 
 ```ts
+interface OpResult {
+  index: number;      // the op's position in the batch
+  ok: boolean;        // whether this op applied
+  error?: string;     // failure reason when ok is false
+  node_id?: string;   // resolved node id (add_node / set_params)
+}
+
 interface ApplyResult {
-  ok: boolean;           // true if all ops succeeded
-  applied: string[];     // ids of ops that were applied
-  failed: { op: GraphOp; reason: string }[];  // ops that were skipped
+  results: OpResult[];            // one entry per op, in input order
+  refs: Record<string, string>;  // ref alias -> generated node id
+  node_count: number;            // node count after the batch
+  edge_count: number;            // edge count after the batch
 }
 ```
 
-**Batch semantics:** All ops in a single `applyOperations` call form one undo snapshot — pressing Ctrl+Z after an AI edit undoes the entire batch at once. Ops are applied in order; a failing op is skipped and reported in `failed`, but the remaining ops continue. Node `id` refs created by an earlier `add_node` within the same batch are available to subsequent ops in that batch.
+**Batch semantics:** All ops in a single `applyOperations` call form one undo snapshot — pressing Ctrl+Z after an AI edit undoes the entire batch at once. Ops are applied in order; a failing op is skipped and reported in its `results` entry (`ok: false` plus an `error`), while the remaining ops continue. A `ref` alias created by an earlier `add_node` in the same batch is available to later ops, and is echoed back in `refs`.
 
 ### `api.http` — session-aware fetch
 
@@ -139,7 +147,7 @@ The backend AST security gate applies to plugin Python; there is no sandbox for 
 
 ## Minimal working example
 
-The snippet below is the pattern used by the official Graph Copilot demo. It adds a single toolbar button that inserts two compatible nodes and wires them together.
+The snippet below uses only the raw API — no build step, no framework: a single button that inserts two nodes and wires them together. (For a real React-based panel, see the Graph Copilot plugin source.)
 
 ```js
 // frontend/index.js
@@ -149,20 +157,26 @@ export default function activate(api) {
   btn.style.cssText =
     "padding:6px 12px;background:#0d9488;color:#fff;border:none;border-radius:4px;cursor:pointer";
 
-  btn.addEventListener("click", async () => {
-    const result = await api.graph.applyOperations([
-      { op: "add_node", type: "Linear", id: "lin1", x: 200, y: 200 },
-      { op: "add_node", type: "ReLU",   id: "relu1", x: 440, y: 200 },
-      { op: "add_edge",
-        from_node: "lin1", from_port: "output",
-        to_node: "relu1", to_port: "input" },
+  btn.addEventListener("click", () => {
+    // applyOperations is synchronous — no await.
+    const result = api.graph.applyOperations([
+      { op: "add_node", node_type: "Linear", ref: "lin1", position: { x: 200, y: 200 } },
+      { op: "add_node", node_type: "ReLU",   ref: "relu1", position: { x: 440, y: 200 } },
+      // Handle names ("output"/"input" here) come from each node's port schema —
+      // call api.graph.getNodeDefinitions() to discover them.
+      { op: "connect",
+        source: "lin1", source_handle: "output",
+        target: "relu1", target_handle: "input" },
     ]);
-    if (!result.ok) {
-      api.ui.toast(`Some ops failed: ${result.failed.map(f => f.reason).join(", ")}`, "warning");
+    const failed = result.results.filter((r) => !r.ok);
+    if (failed.length > 0) {
+      api.ui.toast(`Some ops failed: ${failed.map((r) => r.error).join(", ")}`, "warning");
     }
   });
 
-  api.ui.addFloatingWidget("demo-insert-panel", btn, { title: "Demo" });
+  // addFloatingWidget returns a container <div> you fill yourself.
+  const panel = api.ui.addFloatingWidget({ id: "demo-insert-panel" });
+  panel.appendChild(btn);
 }
 ```
 

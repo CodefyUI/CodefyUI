@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: API Reference
-description: The CodefyUI backend REST and WebSocket endpoints — nodes, presets, graphs, plugins, models, images, and execution outputs.
+description: The CodefyUI backend REST and WebSocket endpoints — nodes, presets, graphs, plugins, the LLM proxy, models, images, and execution outputs.
 ---
 
 # API Reference
@@ -31,6 +31,11 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/plugins` | GET | List installed plugin packs. |
 | `/api/plugins/{id}` | GET | Get a plugin's manifest + README. |
 | `/api/plugins/reload` | POST | Hot-reload all node and preset sources. |
+| `/api/llm/chat` | POST | Stream a unified SSE chat completion from the configured provider (OpenAI / OpenRouter / Anthropic / OpenAI-Codex / custom OpenAI-compatible). |
+| `/api/llm/models` | POST | List the models available for a provider. |
+| `/api/llm/codex/login` | POST | Start the OpenAI-Codex (ChatGPT account) OAuth login flow. |
+| `/api/llm/codex/status` | GET | Report OpenAI-Codex OAuth login status. |
+| `/api/llm/codex/logout` | POST | Clear stored OpenAI-Codex OAuth tokens. |
 | `/api/models` | GET | List uploaded model files. |
 | `/api/models/upload` | POST | Upload a model weight file. |
 | `/api/models/download/{filename}` | GET | Download a model weight file (supports nested paths). |
