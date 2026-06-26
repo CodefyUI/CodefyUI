@@ -106,8 +106,17 @@ def _resolve_plugin_dir(
     builtin_root: Path,
     user_root: Path,
 ) -> Path:
-    if entry.get("source_kind") == "builtin":
+    source_kind = entry.get("source_kind")
+    if source_kind == "builtin":
         return builtin_root / plugin_id
+    if source_kind == "local":
+        # Linked dev plugins (`cdui plugin link <path>`) record an absolute
+        # path that lives outside both roots — the author's own checkout, loaded
+        # in place with no copy. A malformed entry without a path falls back to
+        # user_root (where it has no manifest and is skipped) rather than
+        # crashing discovery on a KeyError.
+        path = entry.get("path")
+        return Path(path) if path else user_root / plugin_id
     return user_root / plugin_id
 
 

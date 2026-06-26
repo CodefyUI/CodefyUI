@@ -164,6 +164,48 @@ def test_install_plugin_finder_skips_plugin_without_nodes_dir(tmp_path):
     assert pairs == []
 
 
+def test_install_plugin_finder_resolves_local_path_entries(tmp_path):
+    """A linked (source_kind='local') plugin loads from its recorded ``path``,
+    which may live outside both the builtin and user roots — e.g. the author's
+    own working checkout, the way ``cdui plugin link`` registers it."""
+    builtin = tmp_path / "builtin"
+    user = tmp_path / "user"
+    builtin.mkdir()
+    user.mkdir()
+    work = tmp_path / "work" / "my-plugin"  # outside both roots
+    _write_plugin(work, "my-plugin")
+    lockfile = {
+        "plugins": {
+            "my-plugin": {
+                "source_kind": "local",
+                "source": str(work),
+                "path": str(work),
+            }
+        }
+    }
+
+    pairs = plugin_loader.install_plugin_finder(builtin, user, lockfile)
+
+    assert "cdui_plugins.my_plugin" in sys.modules
+    assert len(pairs) == 1
+    nodes_dir, pkg_name = pairs[0]
+    assert nodes_dir == work / "nodes"
+    assert pkg_name == "cdui_plugins.my_plugin.nodes"
+
+
+def test_install_plugin_finder_local_without_path_is_skipped(tmp_path):
+    """A malformed local entry missing ``path`` must not crash discovery —
+    it falls back to a location with no manifest and is skipped silently."""
+    builtin = tmp_path / "builtin"
+    user = tmp_path / "user"
+    builtin.mkdir()
+    user.mkdir()
+    lockfile = {"plugins": {"broken": {"source_kind": "local"}}}
+
+    pairs = plugin_loader.install_plugin_finder(builtin, user, lockfile)
+    assert pairs == []
+
+
 # ──────────────────────────────────────────────────────────────────────
 # purge_plugin_modules
 # ──────────────────────────────────────────────────────────────────────
@@ -217,3 +259,18 @@ def test_iter_plugin_dirs_yields_only_plugins_with_manifest(tmp_path):
     out = plugin_loader.iter_plugin_dirs(builtin, user, lockfile)
     ids = [pid for pid, _ in out]
     assert ids == ["c2"]
+
+
+def test_iter_plugin_dirs_resolves_local_path_entries(tmp_path):
+    """iter_plugin_dirs (used by examples / assets / presets / the plugin list)
+    resolves a linked plugin from its recorded ``path``."""
+    builtin = tmp_path / "builtin"
+    user = tmp_path / "user"
+    builtin.mkdir()
+    user.mkdir()
+    work = tmp_path / "elsewhere" / "loc"
+    _write_plugin(work, "loc")
+    lockfile = {"plugins": {"loc": {"source_kind": "local", "path": str(work)}}}
+
+    out = plugin_loader.iter_plugin_dirs(builtin, user, lockfile)
+    assert out == [("loc", work)]
