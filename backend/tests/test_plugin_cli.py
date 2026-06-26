@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from textwrap import dedent
@@ -194,3 +195,116 @@ def test_manifest_has_frontend_detection():
     assert plugin_cli._manifest_has_frontend({}) is False
     assert plugin_cli._manifest_has_frontend({"frontend": {}}) is False
     assert plugin_cli._manifest_has_frontend({"frontend": {"entry": ""}}) is False
+
+
+# ── link / unlink / reload (local dev loop) ────────────────────────────────
+
+@pytest.fixture
+def isolated_lockfile(tmp_path, monkeypatch):
+    """Redirect the lockfile to a temp dir and stub the server hot-reload so
+    CLI tests never touch real user data or a running server."""
+    target = tmp_path / "plugins"
+    target.mkdir()
+    monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: target)
+    monkeypatch.setattr(plugin_cli, "_backend_reload", lambda: False)
+    return target
+
+
+def _write_plugin_dir(root: Path, plugin_id: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "cdui.plugin.toml").write_text(
+        dedent(f"""\
+            [plugin]
+            id = "{plugin_id}"
+            name = "Local {plugin_id}"
+            version = "0.1.0"
+            schema_version = 1
+            """),
+        encoding="utf-8",
+    )
+    nodes = root / "nodes"
+    nodes.mkdir(exist_ok=True)
+    (nodes / "__init__.py").write_text("", encoding="utf-8")
+
+
+def test_cmd_link_writes_local_lockfile_entry(isolated_lockfile, tmp_path):
+    work = tmp_path / "work" / "my-dev-plugin"
+    _write_plugin_dir(work, "my-dev-plugin")
+
+    rc = plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False))
+    assert rc == 0
+
+    entry = plugin_loader.load_lockfile()["plugins"]["my-dev-plugin"]
+    assert entry["source_kind"] == "local"
+    assert Path(entry["path"]) == work.resolve()
+    assert entry["enabled"] is True
+
+
+def test_cmd_link_rejects_dir_without_manifest(isolated_lockfile, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc = plugin_cli.cmd_link(argparse.Namespace(path=str(empty), force=False))
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+
+
+def test_cmd_link_rejects_catalog_id_collision(isolated_lockfile, tmp_path):
+    work = tmp_path / "shadow"
+    _write_plugin_dir(work, "foundations")  # a real built-in catalog id
+    rc = plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False))
+    assert rc == 1
+    assert "foundations" not in plugin_loader.load_lockfile()["plugins"]
+
+
+def test_cmd_link_existing_id_requires_force(isolated_lockfile, tmp_path):
+    work = tmp_path / "dup"
+    _write_plugin_dir(work, "dup-plugin")
+    assert plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False)) == 0
+    # Re-linking without --force is rejected; with --force it succeeds.
+    assert plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False)) == 1
+    assert plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=True)) == 0
+
+
+def test_cmd_unlink_removes_entry_without_deleting_files(isolated_lockfile, tmp_path):
+    work = tmp_path / "work" / "linked"
+    _write_plugin_dir(work, "linked")
+    plugin_cli.cmd_link(argparse.Namespace(path=str(work), force=False))
+
+    rc = plugin_cli.cmd_unlink(argparse.Namespace(plugin_id="linked"))
+    assert rc == 0
+    assert "linked" not in plugin_loader.load_lockfile()["plugins"]
+    # The author's working tree is untouched.
+    assert (work / "cdui.plugin.toml").exists()
+
+
+def test_cmd_unlink_refuses_non_local_entry(isolated_lockfile):
+    lockfile = plugin_loader.load_lockfile()
+    lockfile.setdefault("plugins", {})["deep"] = {
+        "source_kind": "builtin", "source": "deep", "enabled": True,
+    }
+    plugin_loader.save_lockfile(lockfile)
+
+    rc = plugin_cli.cmd_unlink(argparse.Namespace(plugin_id="deep"))
+    assert rc == 1
+    assert "deep" in plugin_loader.load_lockfile()["plugins"]  # refused to drop it
+
+
+def test_cmd_unlink_missing_plugin_errors(isolated_lockfile):
+    assert plugin_cli.cmd_unlink(argparse.Namespace(plugin_id="nope")) == 1
+
+
+def test_cmd_reload_no_server_returns_zero(isolated_lockfile):
+    # _backend_reload stubbed to False (no server) — reload is a graceful no-op.
+    assert plugin_cli.cmd_reload(argparse.Namespace()) == 0
+
+
+def test_link_unlink_reload_parser_wired():
+    parser = plugin_cli.build_parser()
+    a = parser.parse_args(["link", "/some/path"])
+    assert a._func is plugin_cli.cmd_link and a.path == "/some/path" and a.force is False
+    a = parser.parse_args(["link", "/p", "--force"])
+    assert a.force is True
+    a = parser.parse_args(["unlink", "foo"])
+    assert a._func is plugin_cli.cmd_unlink and a.plugin_id == "foo"
+    a = parser.parse_args(["reload"])
+    assert a._func is plugin_cli.cmd_reload

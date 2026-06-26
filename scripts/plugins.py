@@ -771,6 +771,151 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_link(args: argparse.Namespace) -> int:
+    """Link a local plugin directory for development — loaded in place, no copy.
+
+    The dev-loop counterpart to ``install``: instead of downloading a tarball,
+    it records ``source_kind="local"`` with the directory's absolute ``path`` in
+    the lockfile, so the loader walks the author's own working tree. Edits are
+    picked up by ``cdui plugin reload`` (or the next ``cdui start``). The AST
+    security gate is skipped — this is your own code — but a warning is printed,
+    matching the built-in/catalog trust model.
+    """
+    root = Path(args.path).expanduser().resolve()
+    section(f"連結本地外掛：{root}", f"Linking local plugin: {root}")
+
+    if not (root / MANIFEST_FILENAME).exists():
+        err(
+            f"目錄缺少 {MANIFEST_FILENAME}：{root}",
+            f"No {MANIFEST_FILENAME} found in {root}",
+        )
+        return 1
+
+    try:
+        manifest = read_manifest(root)
+        validate_manifest(manifest)
+    except (ValueError, FileNotFoundError) as e:
+        err(str(e), str(e))
+        return 1
+
+    plugin_id = manifest["plugin"]["id"]
+
+    if plugin_id in load_catalog().get("plugins", {}):
+        err(
+            f"id '{plugin_id}' 與內建套件衝突，請在 manifest 改用其他 id",
+            f"id '{plugin_id}' collides with a built-in pack — rename it in the manifest",
+        )
+        return 1
+
+    lockfile = load_lockfile()
+    if plugin_id in lockfile.get("plugins", {}) and not args.force:
+        err(
+            f"外掛 {plugin_id} 已安裝/連結。加 --force 覆寫。",
+            f"Plugin '{plugin_id}' is already installed/linked. Use --force to overwrite.",
+        )
+        return 1
+
+    info(f"id：{plugin_id}", f"id: {plugin_id}")
+    warn(
+        "本地連結會跳過 AST 安全檢查（視為你信任的程式碼）",
+        "Local link skips the AST security gate (treated as your own trusted code)",
+    )
+    if _manifest_has_frontend(manifest):
+        warn(
+            "此外掛含前端 JS，會在編輯器中以完整權限執行",
+            "This plugin ships frontend JS that runs in the editor with full access",
+        )
+
+    deps = manifest.get("python_deps", {})
+    if deps:
+        info(
+            f"安裝 python_deps：{', '.join(deps)}",
+            f"Installing python_deps: {', '.join(deps)}",
+        )
+        rc = _install_deps(deps)
+        if rc != 0:
+            return rc
+
+    allowed = manifest.get("security", {}).get("allowed_modules") or []
+    lockfile.setdefault("plugins", {})[plugin_id] = {
+        "source_kind": "local",
+        "source": str(root),
+        "path": str(root),
+        "installed_at": now_iso(),
+        "manifest": manifest.get("plugin", {}),
+        "trusted_modules": list(allowed),
+        "enabled": True,
+    }
+    save_lockfile(lockfile)
+
+    if _backend_reload():
+        ok("熱重載完成", "Hot-reloaded backend")
+    else:
+        info(
+            "伺服器未運行，下次 cdui start 會自動載入",
+            "Server not running; next `cdui start` will pick this up.",
+        )
+    ok(
+        f"已連結：{plugin_id}（編輯後執行 cdui plugin reload 更新）",
+        f"Linked: {plugin_id} (run `cdui plugin reload` after edits to refresh)",
+    )
+    return 0
+
+
+def cmd_unlink(args: argparse.Namespace) -> int:
+    """Remove a linked local plugin — drops the lockfile entry only.
+
+    Unlike ``uninstall``, this never deletes files: a linked plugin's files are
+    the author's own working directory. Refuses non-local entries so a real
+    install isn't silently dropped.
+    """
+    plugin_id = args.plugin_id.lower()
+    section(f"取消連結：{plugin_id}", f"Unlinking plugin: {plugin_id}")
+
+    lockfile = load_lockfile()
+    entry = lockfile.get("plugins", {}).get(plugin_id)
+    if not entry:
+        err(f"找不到外掛 {plugin_id}", f"Plugin '{plugin_id}' is not installed")
+        return 1
+    if entry.get("source_kind") != "local":
+        err(
+            f"{plugin_id} 不是本地連結（請改用 cdui plugin uninstall）",
+            f"'{plugin_id}' is not a local link — use `cdui plugin uninstall` instead",
+        )
+        return 1
+
+    lockfile["plugins"].pop(plugin_id, None)
+    save_lockfile(lockfile)
+
+    if _backend_reload():
+        ok("熱重載完成", "Hot-reloaded backend")
+    else:
+        info("伺服器未運行", "Server not running")
+
+    ok(
+        f"已取消連結 {plugin_id}（你的檔案未被刪除）",
+        f"Unlinked {plugin_id} (your files were not deleted)",
+    )
+    return 0
+
+
+def cmd_reload(args: argparse.Namespace) -> int:
+    """Ask the running server to hot-reload nodes/presets.
+
+    The manual trigger for the dev loop: edit a linked plugin, then
+    ``cdui plugin reload`` to see the change without restarting the server.
+    """
+    section("熱重載外掛", "Reloading plugins")
+    if _backend_reload():
+        ok("熱重載完成", "Hot-reloaded backend")
+        return 0
+    info(
+        "伺服器未運行（啟動後變更會自動載入）",
+        "Server not running (changes load on next start)",
+    )
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     spec = args.source_or_id
     lockfile = load_lockfile()
@@ -1044,6 +1189,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_un = sub.add_parser("uninstall", help="Remove an installed plugin")
     p_un.add_argument("plugin_id")
     p_un.set_defaults(_func=cmd_uninstall)
+
+    p_link = sub.add_parser(
+        "link",
+        help="Link a local plugin directory for development (loaded in place, no copy)",
+    )
+    p_link.add_argument("path", help="path to the local plugin dir (contains cdui.plugin.toml)")
+    p_link.add_argument("--force", action="store_true",
+                        help="overwrite an existing entry with the same id")
+    p_link.set_defaults(_func=cmd_link)
+
+    p_unlink = sub.add_parser(
+        "unlink",
+        help="Remove a linked local plugin (lockfile entry only; your files are untouched)",
+    )
+    p_unlink.add_argument("plugin_id")
+    p_unlink.set_defaults(_func=cmd_unlink)
+
+    p_reload = sub.add_parser(
+        "reload",
+        help="Hot-reload the running server's plugins/nodes (pick up edits to a linked plugin)",
+    )
+    p_reload.set_defaults(_func=cmd_reload)
 
     p_en = sub.add_parser(
         "enable",
