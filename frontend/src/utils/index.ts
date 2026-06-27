@@ -23,6 +23,22 @@ export const VIZ_NODE_TYPES: Record<string, string> = {
   'Edu-KNN': 'eduKNNNode',
 };
 
+/**
+ * Pick the xyflow node component for a (possibly namespaced) node type:
+ * a first-party viz renderer if one is registered for the bare NODE_NAME, else
+ * the plugin bridge for namespaced plugin nodes (`<plugin>:Name`), else the
+ * default card. Routing plugin nodes through the bridge lets a plugin attach a
+ * custom React renderer; with no renderer registered the bridge renders exactly
+ * like `baseNode`.
+ */
+export function resolveNodeComponentType(nodeType: string): string {
+  const bare = nodeType.includes(':')
+    ? nodeType.slice(nodeType.lastIndexOf(':') + 1)
+    : nodeType;
+  if (VIZ_NODE_TYPES[bare]) return VIZ_NODE_TYPES[bare];
+  return nodeType.includes(':') ? 'pluginNode' : 'baseNode';
+}
+
 export const DATA_TYPE_COLORS: Record<string, string> = {
   TENSOR: '#4CAF50',
   MODEL: '#2196F3',
@@ -203,15 +219,12 @@ export function resolveSerializedNodes(
       };
     }
 
-    // Regular node
+    // Regular node. resolveNodeComponentType handles namespaced plugin types
+    // ("foundations:Edu-KNN") — first-party viz, else the plugin bridge, else base.
     const def = defMap.get(nodeType);
-    // VIZ_NODE_TYPES is keyed by the bare NODE_NAME, but a serialized plugin node
-    // carries a namespaced type ("foundations:Edu-KNN"). Strip the "<plugin>:" prefix
-    // so the custom renderer still fires regardless of which pack ships the node.
-    const bareType = nodeType.includes(':') ? nodeType.slice(nodeType.lastIndexOf(':') + 1) : nodeType;
     return {
       id: raw.id,
-      type: VIZ_NODE_TYPES[bareType] ?? 'baseNode',
+      type: resolveNodeComponentType(nodeType),
       position,
       data: {
         label: raw.data?.label ?? nodeType,
@@ -250,10 +263,9 @@ export function buildFlowNode(
     defaultParams[p.name] = p.default;
   }
   const name = definition.node_name;
-  const bare = name.includes(':') ? name.slice(name.lastIndexOf(':') + 1) : name;
   return {
     id: generateId(),
-    type: name === 'Start' ? 'start' : (VIZ_NODE_TYPES[bare] ?? 'baseNode'),
+    type: name === 'Start' ? 'start' : resolveNodeComponentType(name),
     position,
     data: {
       label: name,

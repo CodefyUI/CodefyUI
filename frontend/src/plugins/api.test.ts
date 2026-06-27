@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { buildPluginAPI } from './api';
+import { getNodeRenderer, _clearNodeRenderers, type PluginNodeRenderer } from './nodeRenderers';
 import type { NodeDefinition } from '../types';
 
 const DEFS: NodeDefinition[] = [
@@ -97,7 +98,20 @@ describe('storage surface', () => {
 describe('meta', () => {
   it('exposes apiVersion and pluginId', () => {
     const api = freshApi();
-    expect(api.apiVersion).toBe(1);
+    expect(api.apiVersion).toBe(2);
     expect(api.pluginId).toBe('test-plugin');
+  });
+});
+
+describe('nodes surface', () => {
+  afterEach(() => _clearNodeRenderers());
+
+  it('registerRenderer registers, and the returned fn unregisters', () => {
+    const api = freshApi();
+    const renderer: PluginNodeRenderer = { mount: () => {} };
+    const off = api.nodes.registerRenderer('test-plugin:Foo', renderer);
+    expect(getNodeRenderer('test-plugin:Foo')).toBe(renderer);
+    off();
+    expect(getNodeRenderer('test-plugin:Foo')).toBeUndefined();
   });
 });

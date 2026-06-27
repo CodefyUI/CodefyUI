@@ -455,9 +455,14 @@ describe('buildFlowNode', () => {
     expect(n.type).toBe('start');
   });
 
-  it('strips plugin namespace when resolving the viz renderer', () => {
+  it('routes a namespaced plugin node (no first-party viz) to the plugin bridge', () => {
     const n = buildFlowNode({ ...def, node_name: 'somepack:FancyNode' }, { x: 0, y: 0 });
-    expect(n.type).toBe('baseNode');
+    expect(n.type).toBe('pluginNode');
     expect(n.data.type).toBe('somepack:FancyNode');
+  });
+
+  it('still resolves a first-party viz when a namespaced node\'s bare name has one', () => {
+    const n = buildFlowNode({ ...def, node_name: 'foundations:Edu-KNN' }, { x: 0, y: 0 });
+    expect(n.type).toBe('eduKNNNode');
   });
 });
