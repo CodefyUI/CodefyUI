@@ -771,17 +771,14 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_link(args: argparse.Namespace) -> int:
-    """Link a local plugin directory for development — loaded in place, no copy.
+def _link_local(root: Path, *, force: bool) -> int:
+    """Link a local plugin directory in place — shared by ``link`` and ``dev``.
 
-    The dev-loop counterpart to ``install``: instead of downloading a tarball,
-    it records ``source_kind="local"`` with the directory's absolute ``path`` in
-    the lockfile, so the loader walks the author's own working tree. Edits are
-    picked up by ``cdui plugin reload`` (or the next ``cdui start``). The AST
-    security gate is skipped — this is your own code — but a warning is printed,
-    matching the built-in/catalog trust model.
+    Records ``source_kind="local"`` with the directory's absolute ``path`` in the
+    lockfile, so the loader walks the author's own working tree. The AST security
+    gate is skipped — this is your own code — but a warning is printed, matching
+    the built-in/catalog trust model.
     """
-    root = Path(args.path).expanduser().resolve()
     section(f"連結本地外掛：{root}", f"Linking local plugin: {root}")
 
     if not (root / MANIFEST_FILENAME).exists():
@@ -808,7 +805,7 @@ def cmd_link(args: argparse.Namespace) -> int:
         return 1
 
     lockfile = load_lockfile()
-    if plugin_id in lockfile.get("plugins", {}) and not args.force:
+    if plugin_id in lockfile.get("plugins", {}) and not force:
         err(
             f"外掛 {plugin_id} 已安裝/連結。加 --force 覆寫。",
             f"Plugin '{plugin_id}' is already installed/linked. Use --force to overwrite.",
@@ -862,6 +859,17 @@ def cmd_link(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_link(args: argparse.Namespace) -> int:
+    """Link a local plugin directory for development — loaded in place, no copy.
+
+    The dev-loop counterpart to ``install``: instead of downloading a tarball, it
+    points the lockfile at the author's own working tree. Edits are picked up by
+    ``cdui plugin reload`` (or the next ``cdui start``); ``cdui plugin dev``
+    automates that.
+    """
+    return _link_local(Path(args.path).expanduser().resolve(), force=args.force)
+
+
 def cmd_unlink(args: argparse.Namespace) -> int:
     """Remove a linked local plugin — drops the lockfile entry only.
 
@@ -913,6 +921,79 @@ def cmd_reload(args: argparse.Namespace) -> int:
         "伺服器未運行（啟動後變更會自動載入）",
         "Server not running (changes load on next start)",
     )
+    return 0
+
+
+def _scan_plugin_files(root: Path) -> dict[str, float]:
+    """mtime signature of a plugin's reload-relevant files.
+
+    Covers the manifest plus everything under ``nodes/``, ``presets/`` and
+    ``frontend/`` — the directories whose changes affect a running editor.
+    ``__pycache__`` and other files (README, ``ui/`` source before it is built)
+    are ignored so editor-irrelevant saves don't trigger reloads.
+    """
+    sig: dict[str, float] = {}
+    manifest = root / MANIFEST_FILENAME
+    if manifest.is_file():
+        try:
+            sig[str(manifest)] = manifest.stat().st_mtime
+        except OSError:
+            pass
+    for sub in ("nodes", "presets", "frontend"):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for f in d.rglob("*"):
+            if f.is_file() and "__pycache__" not in f.parts:
+                try:
+                    sig[str(f)] = f.stat().st_mtime
+                except OSError:
+                    pass
+    return sig
+
+
+def cmd_dev(args: argparse.Namespace) -> int:
+    """Link a local plugin and watch it, hot-reloading on every change.
+
+    The one-command dev loop: links the directory (idempotent), then polls its
+    manifest / nodes / presets / frontend for edits and POSTs
+    ``/api/plugins/reload`` whenever something changes. Run the server in another
+    terminal (``cdui start`` / ``cdui dev``). Python edits take effect on the
+    next reload; a changed frontend bundle additionally needs a browser refresh.
+    ``--once`` links + reloads a single time and exits (no watch).
+    """
+    root = Path(args.path).expanduser().resolve()
+    rc = _link_local(root, force=True)
+    if rc != 0:
+        return rc
+    if getattr(args, "once", False):
+        return 0
+
+    interval = max(0.2, float(getattr(args, "interval", 1.0) or 1.0))
+    section("開發監看模式", "Dev watch mode")
+    info(
+        f"監看 {root}（每 {interval:g}s 檢查一次，Ctrl+C 結束）",
+        f"Watching {root} (polling every {interval:g}s; Ctrl+C to stop)",
+    )
+    sig = _scan_plugin_files(root)
+    try:
+        while True:
+            time.sleep(interval)
+            new_sig = _scan_plugin_files(root)
+            if new_sig == sig:
+                continue
+            sig = new_sig
+            info("偵測到變更，重載中…", "Change detected, reloading…")
+            if _backend_reload():
+                ok(
+                    "熱重載完成（前端變更請重新整理瀏覽器）",
+                    "Hot-reloaded (refresh the browser for frontend changes)",
+                )
+            else:
+                warn("伺服器未運行", "Server not running")
+    except KeyboardInterrupt:
+        print()
+        info("已停止監看", "Stopped watching")
     return 0
 
 
@@ -1211,6 +1292,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hot-reload the running server's plugins/nodes (pick up edits to a linked plugin)",
     )
     p_reload.set_defaults(_func=cmd_reload)
+
+    p_dev = sub.add_parser(
+        "dev",
+        help="Link a local plugin and watch it — hot-reload on every change",
+    )
+    p_dev.add_argument("path", help="path to the local plugin dir (contains cdui.plugin.toml)")
+    p_dev.add_argument("--interval", type=float, default=1.0,
+                       help="seconds between change checks (default 1.0)")
+    p_dev.add_argument("--once", action="store_true",
+                       help="link + reload once and exit (no watch)")
+    p_dev.set_defaults(_func=cmd_dev)
 
     p_en = sub.add_parser(
         "enable",
