@@ -69,7 +69,7 @@ export default function activate(api) {
 }
 ```
 
-`activate` 可以是 `async`。編輯器會等待它完成後，才將外掛標記為就緒。在 `activate` 內部拋出的錯誤會被捕獲並記錄至瀏覽器主控台，不會使其他外掛崩潰。
+編輯器每次頁面載入時呼叫 `activate` 一次，且**不會** await 它的回傳值——請以同步方式完成設定（你仍可啟動非同步工作，編輯器只是不會等待）。在 `activate` 內同步拋出的錯誤會被逐一外掛捕獲、記錄至瀏覽器主控台並以 toast 呈現；它們無法使編輯器或其他外掛崩潰。匯入另有 10 秒逾時限制。（只要求*預設匯出是一個函式*；名稱 `activate` 只是慣例。）
 
 ## CodefyUIPluginAPI v1 參考
 
@@ -77,7 +77,7 @@ export default function activate(api) {
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `addFloatingWidget` | `(id, element, options?) => void` | 將任意 DOM 元素掛載為可拖曳的浮動面板。`id` 必須唯一。`options.title` 設定面板標頭。 |
+| `addFloatingWidget` | `({ id }) => HTMLElement` | 在編輯器的浮動元件堆疊中建立（或重用）一個容器 `<div>` 並回傳。`id` 在同一外掛內必須唯一。回傳的元素歸你所有——填入你自己的 DOM，或在其上掛載一個 React root。 |
 | `toast` | `(message, level?) => void` | 顯示一個暫時性通知。`level` 為 `"info"`（預設）、`"warning"` 或 `"error"`。 |
 
 ### `api.graph` — 圖表讀寫
@@ -86,34 +86,42 @@ export default function activate(api) {
 |------|------|------|
 | `getGraph` | `() => GraphSnapshot` | 回傳目前圖表狀態（節點、邊、參數）的深層副本。 |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | 回傳完整的節點面板：型別、連接埠 schema、參數 schema。 |
-| `applyOperations` | `(ops: GraphOp[]) => Promise<ApplyResult>` | 套用一批圖表操作。整個批次以**單一撤銷快照**的形式提交。 |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次以**單一撤銷快照**的形式提交。 |
 | `onGraphChanged` | `(callback: (snapshot: GraphSnapshot) => void) => () => void` | 訂閱圖表變更事件。回傳一個取消訂閱函式。 |
 
 #### GraphOp 表
 
-所有七種操作類型都共用屬性 `op`（判別字串）。
+所有操作類型都共用屬性 `op`（判別字串）。以下欄位名稱為精確值。
 
-| `op` | 必填欄位 | 說明 |
-|------|----------|------|
-| `"add_node"` | `type: string`、`id?: string`、`x?: number`、`y?: number` | 新增指定類型的節點。若省略 `id`，則自動產生。 |
-| `"remove_node"` | `id: string` | 移除節點及所有與其相連的邊。 |
-| `"add_edge"` | `from_node: string`、`from_port: string`、`to_node: string`、`to_port: string` | 連接兩個相容的連接埠。 |
-| `"remove_edge"` | `from_node: string`、`from_port: string`、`to_node: string`、`to_port: string` | 中斷指定的邊。 |
-| `"set_param"` | `node_id: string`、`param: string`、`value: unknown` | 設定節點參數值。 |
-| `"move_node"` | `id: string`、`x: number`、`y: number` | 在畫布上重新定位節點。 |
+| `op` | 欄位 | 說明 |
+|------|------|------|
+| `"add_node"` | `node_type: string`、`ref?: string`、`params?: Record<string, unknown>`、`position?: { x: number; y: number }` | 新增指定類型的節點。`ref` 是呼叫端自選的別名，同一批次中後續操作可用它代替產生的節點 id。`position` 預設為錯落排列。 |
+| `"connect"` | `source: string`、`source_handle: string`、`target: string`、`target_handle: string` | 連接一個輸出 handle 到一個輸入 handle。`source`/`target` 接受節點 id 或先前 `add_node` 的 `ref`。觸發邊請用 `source_handle: "trigger"`。 |
+| `"set_params"` | `node_id: string`、`params: Record<string, unknown>` | 將參數值合併進節點。 |
+| `"remove_node"` | `node_id: string` | 移除節點及所有與其相連的邊。 |
+| `"remove_edge"` | `source: string`、`target: string`、`source_handle?: string`、`target_handle?: string` | 中斷兩節點間相符的邊。 |
 | `"clear_graph"` | *（無）* | 移除所有節點與邊。 |
+| `"auto_layout"` | *（無）* | 重新執行自動圖表佈局。 |
 
 #### ApplyResult 形狀
 
 ```ts
+interface OpResult {
+  index: number;      // 操作在批次中的位置
+  ok: boolean;        // 此操作是否套用成功
+  error?: string;     // ok 為 false 時的失敗原因
+  node_id?: string;   // 解析出的節點 id（add_node / set_params）
+}
+
 interface ApplyResult {
-  ok: boolean;           // 若所有操作均成功則為 true
-  applied: string[];     // 已套用的操作 id
-  failed: { op: GraphOp; reason: string }[];  // 被跳過的操作
+  results: OpResult[];            // 每個操作一筆，依輸入順序
+  refs: Record<string, string>;  // ref 別名 -> 產生的節點 id
+  node_count: number;            // 批次後的節點數
+  edge_count: number;            // 批次後的邊數
 }
 ```
 
-**批次語義：** 單次 `applyOperations` 呼叫中的所有操作形成一個撤銷快照——在 AI 編輯後按 Ctrl+Z 會一次撤銷整個批次。操作依序套用；失敗的操作會被跳過並回報於 `failed`，但其餘操作仍會繼續。同一批次中先前 `add_node` 建立的節點 `id`，可供該批次後續操作引用。
+**批次語義：** 單次 `applyOperations` 呼叫中的所有操作形成一個撤銷快照——在 AI 編輯後按 Ctrl+Z 會一次撤銷整個批次。操作依序套用；失敗的操作會被跳過並回報於其 `results` 條目（`ok: false` 加上 `error`），其餘操作仍會繼續。同一批次中先前 `add_node` 建立的 `ref` 別名可供後續操作使用，並會回傳於 `refs`。
 
 ### `api.http` — 具 session 意識的 fetch
 
@@ -139,7 +147,7 @@ interface ApplyResult {
 
 ## 最小可運作範例
 
-以下片段是官方 Graph Copilot demo 所使用的模式。它新增一個工具列按鈕，插入兩個相容節點並將它們連接起來。
+以下片段僅使用原始 API——不需建置步驟、不需框架：一個按鈕，插入兩個節點並將它們連接起來。（真正的 React 面板請參考 Graph Copilot 外掛原始碼。）
 
 ```js
 // frontend/index.js
@@ -149,20 +157,26 @@ export default function activate(api) {
   btn.style.cssText =
     "padding:6px 12px;background:#0d9488;color:#fff;border:none;border-radius:4px;cursor:pointer";
 
-  btn.addEventListener("click", async () => {
-    const result = await api.graph.applyOperations([
-      { op: "add_node", type: "Linear", id: "lin1", x: 200, y: 200 },
-      { op: "add_node", type: "ReLU",   id: "relu1", x: 440, y: 200 },
-      { op: "add_edge",
-        from_node: "lin1", from_port: "output",
-        to_node: "relu1", to_port: "input" },
+  btn.addEventListener("click", () => {
+    // applyOperations 是同步的——不需 await。
+    const result = api.graph.applyOperations([
+      { op: "add_node", node_type: "Linear", ref: "lin1", position: { x: 200, y: 200 } },
+      { op: "add_node", node_type: "ReLU",   ref: "relu1", position: { x: 440, y: 200 } },
+      // handle 名稱（此處的 "output"/"input"）來自各節點的連接埠 schema——
+      // 呼叫 api.graph.getNodeDefinitions() 來查詢。
+      { op: "connect",
+        source: "lin1", source_handle: "output",
+        target: "relu1", target_handle: "input" },
     ]);
-    if (!result.ok) {
-      api.ui.toast(`部分操作失敗：${result.failed.map(f => f.reason).join(", ")}`, "warning");
+    const failed = result.results.filter((r) => !r.ok);
+    if (failed.length > 0) {
+      api.ui.toast(`部分操作失敗：${failed.map((r) => r.error).join(", ")}`, "warning");
     }
   });
 
-  api.ui.addFloatingWidget("demo-insert-panel", btn, { title: "Demo" });
+  // addFloatingWidget 回傳一個容器 <div>，由你自行填入內容。
+  const panel = api.ui.addFloatingWidget({ id: "demo-insert-panel" });
+  panel.appendChild(btn);
 }
 ```
 

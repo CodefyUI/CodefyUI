@@ -76,6 +76,9 @@ backend/data/cifar-10-python.tar.gz
 
 # Superpowers brainstorming visual companion
 .superpowers/
+# Superpowers plan/spec scratch — working files only, never committed.
+# On feature completion, fold content into docs/docs/ and delete the plan.
+docs/superpowers/
 
 # Dev-mode plugin lockfile + downloaded packs (cdui dev-install target)
 .codefyui_dev/
