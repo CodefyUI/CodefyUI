@@ -308,3 +308,56 @@ def test_link_unlink_reload_parser_wired():
     assert a._func is plugin_cli.cmd_unlink and a.plugin_id == "foo"
     a = parser.parse_args(["reload"])
     assert a._func is plugin_cli.cmd_reload
+
+
+# ── dev (watch mode) ───────────────────────────────────────────────────────
+
+def test_scan_plugin_files_covers_relevant_dirs(tmp_path):
+    root = tmp_path / "p"
+    _write_plugin_dir(root, "p")  # manifest + nodes/__init__.py
+    (root / "frontend").mkdir()
+    (root / "frontend" / "index.js").write_text("export default function(){}", encoding="utf-8")
+    (root / "README.md").write_text("ignored", encoding="utf-8")
+    (root / "nodes" / "__pycache__").mkdir()
+    (root / "nodes" / "__pycache__" / "x.pyc").write_text("x", encoding="utf-8")
+
+    keys = {Path(k).name for k in plugin_cli._scan_plugin_files(root)}
+    assert {"cdui.plugin.toml", "__init__.py", "index.js"} <= keys
+    assert "README.md" not in keys   # not a reload-relevant dir
+    assert "x.pyc" not in keys       # __pycache__ ignored
+
+
+def test_scan_plugin_files_detects_new_file(tmp_path):
+    root = tmp_path / "p"
+    _write_plugin_dir(root, "p")
+    before = plugin_cli._scan_plugin_files(root)
+    (root / "nodes" / "extra.py").write_text("# new node", encoding="utf-8")
+    after = plugin_cli._scan_plugin_files(root)
+    assert after != before
+    assert any(Path(k).name == "extra.py" for k in after)
+
+
+def test_cmd_dev_once_links_and_returns_zero(isolated_lockfile, tmp_path):
+    root = tmp_path / "devplug"
+    _write_plugin_dir(root, "devplug")
+    rc = plugin_cli.cmd_dev(argparse.Namespace(path=str(root), once=True, interval=1.0))
+    assert rc == 0
+    entry = plugin_loader.load_lockfile()["plugins"]["devplug"]
+    assert entry["source_kind"] == "local"
+    assert Path(entry["path"]) == root.resolve()
+
+
+def test_cmd_dev_once_bad_dir_returns_one(isolated_lockfile, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc = plugin_cli.cmd_dev(argparse.Namespace(path=str(empty), once=True, interval=1.0))
+    assert rc == 1
+    assert plugin_loader.load_lockfile()["plugins"] == {}
+
+
+def test_dev_parser_wired():
+    parser = plugin_cli.build_parser()
+    a = parser.parse_args(["dev", "/p"])
+    assert a._func is plugin_cli.cmd_dev and a.path == "/p" and a.once is False
+    a = parser.parse_args(["dev", "/p", "--once", "--interval", "0.5"])
+    assert a.once is True and a.interval == 0.5
