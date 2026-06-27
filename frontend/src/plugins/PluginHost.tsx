@@ -6,6 +6,12 @@
  * double-mounts effects in dev). A plugin that throws during import or
  * activate() is reported and skipped; it cannot break the app or other
  * plugins.
+ *
+ * Dev hot-reload: when a linked (source_kind="local") plugin is present, the
+ * host polls /api/plugins/generation and, on a bump, tears down and
+ * re-activates plugin frontends with a cache-busted import — so a linked
+ * plugin's frontend edits appear without a manual browser refresh. Production
+ * installs (no linked plugin) never poll.
  */
 import { useEffect, useRef } from 'react';
 import { useNodeDefStore } from '../store/nodeDefStore';
@@ -16,6 +22,7 @@ import styles from './PluginHost.module.css';
 interface PluginListItem {
   id: string;
   enabled: boolean;
+  source_kind?: string;
   frontend_entry: string | null;
 }
 
@@ -29,9 +36,12 @@ interface ActivatablePlugin {
 type Importer = (url: string) => Promise<{ default?: unknown }>;
 
 const IMPORT_TIMEOUT_MS = 10000;
+const DEV_POLL_MS = 1500;
 
 let hostStarted = false;
 let stackEl: HTMLElement | null = null;
+let cleanups: Array<() => void> = [];
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 function widgetContainer(pluginId: string, widgetId: string): HTMLElement {
   const host = stackEl ?? document.body;
@@ -42,6 +52,25 @@ function widgetContainer(pluginId: string, widgetId: string): HTMLElement {
   el.id = domId;
   host.appendChild(el);
   return el;
+}
+
+/**
+ * Run tracked cleanups and remove plugin-created widget DOM. Called before a
+ * dev re-activation so subscriptions don't accumulate and a plugin's
+ * createRoot() isn't invoked twice on the same (already-rooted) node.
+ */
+function teardownPlugins(): void {
+  for (const fn of cleanups) {
+    try {
+      fn();
+    } catch (err) {
+      console.warn('[plugins] cleanup failed:', err);
+    }
+  }
+  cleanups = [];
+  if (stackEl) {
+    while (stackEl.firstChild) stackEl.removeChild(stackEl.firstChild);
+  }
 }
 
 /** Wait (bounded) for node definitions so plugins see a usable catalog. */
@@ -95,7 +124,11 @@ export async function loadPluginFrontends(
       if (typeof mod.default !== 'function') {
         throw new Error('frontend entry has no default export function');
       }
-      mod.default(buildPluginAPI(p.id, (widgetId) => getContainer(p.id, widgetId)));
+      mod.default(buildPluginAPI(
+        p.id,
+        (widgetId) => getContainer(p.id, widgetId),
+        (fn) => cleanups.push(fn),
+      ));
       activated.push(p.id);
     } catch (err) {
       console.warn(`[plugins] failed to activate '${p.id}' frontend:`, err);
@@ -107,6 +140,61 @@ export async function loadPluginFrontends(
   return activated;
 }
 
+async function fetchGeneration(): Promise<number | null> {
+  try {
+    const res = await fetch('/api/plugins/generation');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.generation === 'number' ? data.generation : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Dev-only: if a linked (local) plugin is installed, poll the reload
+ * generation and re-activate plugin frontends whenever it bumps. The bundle is
+ * re-imported with a `?v=<generation>` cache-buster (the browser keeps the ESM
+ * module registry keyed by URL, so the query bump is required even though the
+ * server already sends Cache-Control: no-cache). No-ops in production.
+ */
+async function maybeStartDevHotReload(): Promise<void> {
+  if (pollTimer !== null) return;
+
+  let plugins: PluginListItem[];
+  try {
+    const res = await fetch('/api/plugins');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!Array.isArray(data)) return;
+    plugins = data;
+  } catch {
+    return;
+  }
+
+  const hasLocal = plugins.some(
+    (p) => p && p.source_kind === 'local' && p.enabled === true,
+  );
+  if (!hasLocal) return;
+
+  let lastGen = await fetchGeneration();
+  if (lastGen === null) return;
+
+  pollTimer = setInterval(() => {
+    void (async () => {
+      const gen = await fetchGeneration();
+      if (gen === null || gen === lastGen) return;
+      lastGen = gen;
+      teardownPlugins();
+      await loadPluginFrontends(
+        widgetContainer,
+        (url) => import(/* @vite-ignore */ `${url}?v=${gen}`),
+      );
+      useToastStore.getState().addToast('Plugin frontends reloaded', 'info');
+    })();
+  }, DEV_POLL_MS);
+}
+
 export function PluginHost() {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -114,7 +202,7 @@ export function PluginHost() {
     stackEl = ref.current;
     if (hostStarted) return;
     hostStarted = true;
-    void loadPluginFrontends();
+    void loadPluginFrontends().then(() => maybeStartDevHotReload());
     return () => { stackEl = null; };
   }, []);
 

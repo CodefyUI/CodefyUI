@@ -81,6 +81,23 @@ describe('graph surface', () => {
     api.graph.applyOperations([{ op: 'add_node', node_type: 'Sink' }]);
     expect(calls).toBe(seen);
   });
+
+  it('onGraphChanged registers its unsubscribe with trackCleanup', () => {
+    const tracked: Array<() => void> = [];
+    const api = buildPluginAPI(
+      'test-plugin',
+      () => document.createElement('div'),
+      (fn) => tracked.push(fn),
+    );
+    let calls = 0;
+    api.graph.onGraphChanged(() => { calls += 1; });
+    expect(tracked).toHaveLength(1);
+
+    // Running the tracked cleanup unsubscribes — later mutations don't fire it.
+    tracked[0]();
+    api.graph.applyOperations([{ op: 'add_node', node_type: 'Source' }]);
+    expect(calls).toBe(0);
+  });
 });
 
 describe('storage surface', () => {

@@ -35,6 +35,16 @@ LOCKFILE_SCHEMA = 1
 MANIFEST_FILENAME = "cdui.plugin.toml"
 NAMESPACE_PACKAGE = "cdui_plugins"
 
+# Bumped on every full re-discovery (plugin/node reload, enable/disable). The
+# editor polls this in dev mode — when a linked plugin is present — to know when
+# to re-activate plugin frontends without a manual browser refresh.
+_reload_generation = 0
+
+
+def reload_generation() -> int:
+    """Current reload generation; increases by one on each ``rediscover_all``."""
+    return _reload_generation
+
 
 def plugins_builtin_root() -> Path:
     """``<REPO>/plugins/`` — packs shipped with the CodefyUI distribution.
@@ -273,6 +283,9 @@ def rediscover_all(
     preset_count = preset_registry.discover(presets_dir, registry)
     for _plugin_id, plugin_dir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_count += preset_registry.discover(plugin_dir / "presets", registry)
+
+    global _reload_generation
+    _reload_generation += 1
 
     return {
         "builtin": builtin,

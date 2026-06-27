@@ -122,6 +122,30 @@ def test_reload_plugins_returns_counts(client):
     assert data["total"] == data["builtin"] + data["custom"] + data["plugins"]
 
 
+def test_generation_increments_on_reload(client):
+    """The reload-generation counter (polled by the dev frontend hot-reload)
+    is a token-free GET that bumps on every reload/toggle."""
+    g0 = client.get("/api/plugins/generation").json()["generation"]
+    assert isinstance(g0, int)
+
+    client.post("/api/plugins/reload")
+    g1 = client.get("/api/plugins/generation").json()["generation"]
+    assert g1 == g0 + 1
+
+    # enable/disable also re-discovers, so it bumps too
+    client.post("/api/plugins/foundations/disable")
+    g2 = client.get("/api/plugins/generation").json()["generation"]
+    assert g2 == g1 + 1
+    client.post("/api/plugins/foundations/enable")  # restore for other tests
+
+
+def test_generation_route_not_shadowed_by_plugin_id(client):
+    """`/generation` must resolve to the counter, not the {plugin_id} route."""
+    r = client.get("/api/plugins/generation")
+    assert r.status_code == 200
+    assert set(r.json().keys()) == {"generation"}
+
+
 # ── /api/plugins/{id}/enable|disable ───────────────────────────────────────
 
 def test_list_plugins_includes_enabled_flag(client):

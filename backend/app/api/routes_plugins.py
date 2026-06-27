@@ -92,6 +92,18 @@ async def list_plugins() -> list[dict[str, Any]]:
     return out
 
 
+@router.get("/generation")
+async def plugins_generation() -> dict[str, int]:
+    """Monotonic counter bumped on every reload (plugin/node/enable-disable).
+
+    The editor polls this in dev mode (when a linked plugin is present) to learn
+    when to re-activate plugin frontends without a manual refresh. Declared
+    before ``/{plugin_id}`` so it isn't swallowed by the dynamic route; a GET, so
+    it needs no session token.
+    """
+    return {"generation": plugin_loader.reload_generation()}
+
+
 @router.get("/{plugin_id}")
 async def get_plugin(plugin_id: str) -> dict[str, Any]:
     lockfile = load_lockfile()
