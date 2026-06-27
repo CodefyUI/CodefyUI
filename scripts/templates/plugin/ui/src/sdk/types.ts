@@ -1,5 +1,6 @@
-// AUTO-GENERATED from frontend/src/plugins/contract.ts — DO NOT EDIT.
-// Refresh with:  python scripts/sync_plugin_sdk.py
+// CodefyUI plugin SDK — type contract (mirrors the host's plugin API).
+// Generated from CodefyUI's frontend/src/plugins/contract.ts — do not edit
+// by hand; refresh it when you target a newer CodefyUI release.
 
 /**
  * CodefyUI plugin frontend API — the CANONICAL, self-contained type contract.

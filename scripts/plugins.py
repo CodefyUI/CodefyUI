@@ -1273,6 +1273,123 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── scaffolding (cdui plugin new) ────────────────────────────────────────────
+
+# The scaffold payload ships next to this module (scripts/templates/plugin/),
+# so `cdui plugin new` works from any repo checkout the CLI runs from. types.ts
+# under ui/src/sdk/ is generated from the canonical contract by
+# scripts/sync_plugin_sdk.py (guarded by tests/test_plugin_dx.py).
+_TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates" / "plugin"
+
+# Appended to the manifest only with --ui, so backend-only plugins don't carry a
+# [frontend] entry pointing at a bundle they will never build.
+_FRONTEND_STANZA = (
+    "\n[frontend]\n"
+    "# Built bundle the editor imports; `cd ui && pnpm install && pnpm build`\n"
+    "# emits it. Commit the built frontend/index.js.\n"
+    'entry = "frontend/index.js"\n'
+)
+
+
+def _titleize(plugin_id: str) -> str:
+    """`my-cool-plugin` -> `My Cool Plugin` (default display name)."""
+    return " ".join(word.capitalize() for word in plugin_id.split("-") if word)
+
+
+def _render(text: str, ctx: dict[str, str]) -> str:
+    """Substitute ``{{token}}`` placeholders. Tokens absent from a file are a
+    no-op, so the same renderer runs over every payload file uniformly."""
+    for key, value in ctx.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    """Scaffold a new plugin directory from the built-in template.
+
+    Generates a ready-to-edit plugin: manifest, an example node, a test + the
+    ``cdui_plugins.<id>`` namespace shim, and (with ``--ui``) a React frontend
+    wired to the typed SDK. Link it immediately with ``cdui plugin dev``.
+    """
+    plugin_id = args.id.lower()
+    section(f"建立新外掛：{plugin_id}", f"Creating new plugin: {plugin_id}")
+
+    if not PLUGIN_ID_RE.match(plugin_id):
+        err(
+            f"無效的 id：{plugin_id!r}（需符合 {PLUGIN_ID_RE.pattern}）",
+            f"Invalid plugin id {plugin_id!r} (must match {PLUGIN_ID_RE.pattern})",
+        )
+        return 2
+    if plugin_id in load_catalog().get("plugins", {}):
+        err(
+            f"id '{plugin_id}' 與內建套件保留名稱衝突，請換一個",
+            f"id '{plugin_id}' is reserved by the built-in catalog — pick another",
+        )
+        return 2
+    if not _TEMPLATE_ROOT.is_dir():
+        err(
+            f"找不到範本目錄：{_TEMPLATE_ROOT}",
+            f"Scaffold template not found at {_TEMPLATE_ROOT}",
+        )
+        return 1
+
+    base = Path(args.dir).expanduser().resolve() if args.dir else Path.cwd()
+    dest = base / plugin_id
+    if dest.exists() and any(dest.iterdir()) and not args.force:
+        err(
+            f"目標目錄已存在且非空：{dest}（加 --force 覆寫）",
+            f"Destination exists and is not empty: {dest} (use --force to write into it)",
+        )
+        return 1
+
+    snake = plugin_id.replace("-", "_")
+    name = args.name or _titleize(plugin_id)
+    ctx = {"plugin_id": plugin_id, "plugin_snake": snake, "plugin_name": name}
+    include_ui = bool(args.ui)
+
+    created = 0
+    for src in sorted(_TEMPLATE_ROOT.rglob("*")):
+        rel = src.relative_to(_TEMPLATE_ROOT)
+        # The ui/ subtree ships only when the author opts in with --ui.
+        if not include_ui and rel.parts and rel.parts[0] == "ui":
+            continue
+        target = dest / rel
+        if src.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            _render(src.read_text(encoding="utf-8"), ctx),
+            encoding="utf-8",
+            newline="\n",
+        )
+        created += 1
+
+    if include_ui:
+        manifest = dest / MANIFEST_FILENAME
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8") + _FRONTEND_STANZA,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    ok(f"已建立 {created} 個檔案於 {dest}", f"Created {created} files in {dest}")
+    section("後續步驟", "Next steps")
+    info(
+        "1. 編輯 nodes/example_node.py，換成你的節點",
+        "1. Edit nodes/example_node.py — replace it with your node",
+    )
+    step = 2
+    if include_ui:
+        info("2. cd ui && pnpm install && pnpm build", "2. cd ui && pnpm install && pnpm build")
+        step = 3
+    info(
+        f"{step}. cdui plugin dev \"{dest}\"（連結 + 監看 + 熱重載）",
+        f"{step}. cdui plugin dev \"{dest}\"  (link + watch + hot-reload)",
+    )
+    return 0
+
+
 # ── argparse routing ───────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1332,6 +1449,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_dev.add_argument("--once", action="store_true",
                        help="link + reload once and exit (no watch)")
     p_dev.set_defaults(_func=cmd_dev)
+
+    p_new = sub.add_parser(
+        "new",
+        help="Scaffold a new plugin directory from the built-in template",
+    )
+    p_new.add_argument("id", help="new plugin id (lowercase kebab-case)")
+    p_new.add_argument("--name", default=None,
+                       help="display name (default: derived from the id)")
+    p_new.add_argument("--ui", action="store_true",
+                       help="include a React frontend (ui/) wired to the SDK")
+    p_new.add_argument("--dir", default=None,
+                       help="parent directory to create the plugin in (default: cwd)")
+    p_new.add_argument("--force", action="store_true",
+                       help="write into an existing non-empty directory")
+    p_new.set_defaults(_func=cmd_new)
 
     p_en = sub.add_parser(
         "enable",

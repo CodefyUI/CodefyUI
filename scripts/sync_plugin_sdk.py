@@ -34,8 +34,9 @@ TARGETS = [
 ]
 
 BANNER = (
-    "// AUTO-GENERATED from frontend/src/plugins/contract.ts — DO NOT EDIT.\n"
-    "// Refresh with:  python scripts/sync_plugin_sdk.py\n\n"
+    "// CodefyUI plugin SDK — type contract (mirrors the host's plugin API).\n"
+    "// Generated from CodefyUI's frontend/src/plugins/contract.ts — do not edit\n"
+    "// by hand; refresh it when you target a newer CodefyUI release.\n\n"
 )
 
 

@@ -1,0 +1,33 @@
+.cdui-panel {
+  width: 220px;
+  padding: 12px 14px;
+  background: #1e1e1e;
+  color: #e6e6e6;
+  border: 1px solid #333;
+  border-radius: 8px;
+  font: 13px/1.5 system-ui, -apple-system, sans-serif;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+
+.cdui-panel__title { font-weight: 600; margin-bottom: 8px; color: #2dd4bf; }
+.cdui-panel__row { margin: 2px 0; color: #b8b8b8; }
+.cdui-panel__row b { color: #e6e6e6; }
+
+.cdui-panel__btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  background: #0d9488;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.cdui-panel__btn:hover { background: #0f766e; }
+
+/* Custom node body (api.nodes.registerRenderer) */
+.cdui-node-body { padding: 6px 8px; font: 12px/1.4 system-ui, -apple-system, sans-serif; color: #cde9e4; }
+.cdui-node-body__title { font-weight: 600; color: #2dd4bf; margin-bottom: 4px; }
+.cdui-node-body__row { display: flex; justify-content: space-between; gap: 12px; }
+.cdui-node-body__row b { color: #fff; }
