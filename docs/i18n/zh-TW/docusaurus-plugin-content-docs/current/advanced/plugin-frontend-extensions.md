@@ -123,6 +123,38 @@ interface ApplyResult {
 
 **批次語義：** 單次 `applyOperations` 呼叫中的所有操作形成一個撤銷快照——在 AI 編輯後按 Ctrl+Z 會一次撤銷整個批次。操作依序套用；失敗的操作會被跳過並回報於其 `results` 條目（`ok: false` 加上 `error`），其餘操作仍會繼續。同一批次中先前 `add_node` 建立的 `ref` 別名可供後續操作使用，並會回傳於 `refs`。
 
+### `api.nodes` — 自訂 node 渲染
+
+需要 `api.apiVersion >= 2`。
+
+| 方法 | 簽名 | 說明 |
+|------|------|------|
+| `registerRenderer` | `(nodeType, renderer) => () => void` | 用你自己的 UI 繪製某個外掛 node 型別的卡片內容。回傳一個取消註冊函式。 |
+
+`nodeType` 是該 node 在 `getNodeDefinitions()` 中的**命名空間化**型別。注意命名空間是你外掛 id 的 snake_case 形式——外掛 `my-plugin` 對應 node 型別 `my_plugin:MyNode`。renderer 採命令式介面，讓宿主與框架無關：
+
+```ts
+interface NodeRenderContext {
+  node: { id: string; type: string; params: Record<string, unknown> };
+}
+interface PluginNodeRenderer {
+  mount(container: HTMLElement, ctx: NodeRenderContext): void;
+  update?(container: HTMLElement, ctx: NodeRenderContext): void; // 參數變更時
+  unmount?(container: HTMLElement): void;
+}
+```
+
+編輯器仍會渲染標準的 node 卡片（標題、連接埠、參數列），並把一個 `<div>` 交給你的 renderer 當作**內容區**——位於連接埠與參數之間。沒有註冊 renderer 的 node 型別，渲染結果與預設 node 完全相同。
+
+```js
+api.nodes.registerRenderer('my_plugin:MyNode', {
+  mount(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
+  update(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
+});
+```
+
+[外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝它，讓你能以 React 元件撰寫內容區。
+
 ### `api.http` — 具 session 意識的 fetch
 
 | 方法 | 簽名 | 說明 |

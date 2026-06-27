@@ -17,6 +17,7 @@ import '@xyflow/react/dist/style.css';
 import { CATEGORY_COLORS } from '../../styles/theme';
 
 import BaseNode from '../Nodes/BaseNode';
+import PluginNodeBridge from '../Nodes/PluginNodeBridge';
 import PresetNode from '../Nodes/PresetNode';
 import { StartNode } from '../Nodes/StartNode';
 import NoteNode from '../Nodes/NoteNode';
@@ -56,6 +57,7 @@ import styles from './FlowCanvas.module.css';
 
 const nodeTypes: NodeTypes = {
   baseNode: BaseNode,
+  pluginNode: PluginNodeBridge,
   presetNode: PresetNode,
   start: StartNode,
   noteNode: NoteNode,

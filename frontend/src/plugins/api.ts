@@ -12,6 +12,7 @@ import type { ToastType } from '../store/toastStore';
 import { apiFetch } from '../api/_auth';
 import type { NodeDefinition } from '../types';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
+import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 
 export interface ApplyResult {
   results: OpResult[];
@@ -25,7 +26,7 @@ export type SerializedGraph = ReturnType<
 >;
 
 export interface CodefyUIPluginAPI {
-  apiVersion: 1;
+  apiVersion: 2;
   pluginId: string;
   ui: {
     addFloatingWidget(opts: { id: string }): HTMLElement;
@@ -36,6 +37,10 @@ export interface CodefyUIPluginAPI {
     getNodeDefinitions(): NodeDefinition[];
     applyOperations(ops: GraphOp[]): ApplyResult;
     onGraphChanged(cb: () => void): () => void;
+  };
+  nodes: {
+    /** Register a custom renderer for a node type's card body. Returns an unregister fn. */
+    registerRenderer(nodeType: string, renderer: PluginNodeRenderer): () => void;
   };
   http: {
     fetch(url: string, init?: RequestInit): Promise<Response>;
@@ -94,7 +99,7 @@ export function buildPluginAPI(
 ): CodefyUIPluginAPI {
   const ns = (key: string) => `plugin:${pluginId}:${key}`;
   return {
-    apiVersion: 1,
+    apiVersion: 2,
     pluginId,
     ui: {
       addFloatingWidget: ({ id }) => getWidgetContainer(id),
@@ -112,6 +117,9 @@ export function buildPluginAPI(
         trackCleanup?.(unsubscribe);
         return unsubscribe;
       },
+    },
+    nodes: {
+      registerRenderer: (nodeType, renderer) => registerNodeRenderer(nodeType, renderer),
     },
     http: {
       fetch: (url, init) => apiFetch(url, init),
