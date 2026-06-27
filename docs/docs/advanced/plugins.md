@@ -53,6 +53,23 @@ A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` direct
 The chapter packs `c1`–`c6` were repackaged into three direction packs `foundations` / `deep` / `rl`, and every Edu node's type id gained a dash (`EduKNN` → `Edu-KNN`). Saved graphs referencing the old `cN:EduFoo` types must be updated to `<pack>:Edu-Foo` and the packs reinstalled with `cdui plugin install foundations deep rl`.
 :::
 
+## Local development
+
+You don't need to push to GitHub between iterations while building a plugin. **Link** your working directory and CodefyUI loads it in place:
+
+```bash
+cdui plugin link ./my-plugin     # register the local dir in place (no copy)
+# ...edit nodes/ or frontend/...
+cdui plugin reload               # pick up changes in a running server
+cdui plugin unlink my-plugin     # remove the link — your files are untouched
+```
+
+`link` reads the id from your `cdui.plugin.toml` and records the directory's absolute path in the lockfile as `source_kind = "local"`, so discovery walks your working tree directly. The AST security gate is skipped for linked plugins (it's your own code, and a warning says so); `unlink` drops only the lockfile entry, never your files. After editing Python nodes, `cdui plugin reload` (or a server restart) reloads them; a changed frontend bundle additionally needs a browser refresh.
+
+:::tip Dev data isolation
+Running plugin commands through `scripts/dev.py` — or setting `CODEFYUI_USER_DATA_DIR` — keeps a clone's lockfile inside the repo (`.codefyui_dev/`) instead of the machine-wide user-data dir, so multiple clones don't clobber each other.
+:::
+
 ## REST API
 
 | Endpoint | Method | Description |
