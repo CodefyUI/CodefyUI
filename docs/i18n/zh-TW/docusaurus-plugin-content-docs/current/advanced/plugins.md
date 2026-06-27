@@ -64,6 +64,14 @@ cdui plugin reload               # 讓執行中的伺服器套用變更
 cdui plugin unlink my-plugin     # 解除連結——你的檔案不會被刪除
 ```
 
+更簡單的方式是用 **`dev`**，一個指令完成連結＋監看，每次存檔都自動熱重載：
+
+```bash
+cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
+```
+
+請在另一個終端機執行伺服器（`cdui start` 或 `cdui dev`）。`dev` 會輪詢外掛的 manifest、`nodes/`、`presets/` 與 `frontend/`；`--once` 只連結並重載一次（不監看），`--interval` 可調整輪詢間隔。
+
 `link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或重啟伺服器）即可重載；若變更了前端 bundle，還需重新整理瀏覽器。
 
 :::tip 開發資料隔離
