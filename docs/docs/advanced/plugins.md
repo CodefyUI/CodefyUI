@@ -72,7 +72,7 @@ cdui plugin dev ./my-plugin      # link + watch; reloads on every change
 
 Run the server in another terminal (`cdui start` or `cdui dev`). `dev` polls the plugin's manifest, `nodes/`, `presets/`, and `frontend/`; `--once` links and reloads a single time (no watch), and `--interval` tunes the poll frequency.
 
-`link` reads the id from your `cdui.plugin.toml` and records the directory's absolute path in the lockfile as `source_kind = "local"`, so discovery walks your working tree directly. The AST security gate is skipped for linked plugins (it's your own code, and a warning says so); `unlink` drops only the lockfile entry, never your files. After editing Python nodes, `cdui plugin reload` (or a server restart) reloads them; a changed frontend bundle additionally needs a browser refresh.
+`link` reads the id from your `cdui.plugin.toml` and records the directory's absolute path in the lockfile as `source_kind = "local"`, so discovery walks your working tree directly. The AST security gate is skipped for linked plugins (it's your own code, and a warning says so); `unlink` drops only the lockfile entry, never your files. After editing Python nodes, `cdui plugin reload` (or `cdui plugin dev`) reloads them. **Frontend edits to a linked plugin reload automatically too** — while a linked plugin is installed the editor watches for reloads and re-mounts the plugin's UI in place, no browser refresh needed.
 
 :::tip Dev data isolation
 Running plugin commands through `scripts/dev.py` — or setting `CODEFYUI_USER_DATA_DIR` — keeps a clone's lockfile inside the repo (`.codefyui_dev/`) instead of the machine-wide user-data dir, so multiple clones don't clobber each other.

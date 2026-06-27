@@ -90,6 +90,7 @@ function subscribeGraphChanged(cb: () => void): () => void {
 export function buildPluginAPI(
   pluginId: string,
   getWidgetContainer: (id: string) => HTMLElement,
+  trackCleanup?: (fn: () => void) => void,
 ): CodefyUIPluginAPI {
   const ns = (key: string) => `plugin:${pluginId}:${key}`;
   return {
@@ -104,7 +105,13 @@ export function buildPluginAPI(
       getGraph: () => useTabStore.getState().getSerializedGraph(),
       getNodeDefinitions: () => useNodeDefStore.getState().definitions,
       applyOperations: (ops) => commitGraphOperations(ops),
-      onGraphChanged: (cb) => subscribeGraphChanged(cb),
+      onGraphChanged: (cb) => {
+        // Track the unsubscribe so the host can tear it down on a dev
+        // hot-reload — otherwise re-activation would stack subscriptions.
+        const unsubscribe = subscribeGraphChanged(cb);
+        trackCleanup?.(unsubscribe);
+        return unsubscribe;
+      },
     },
     http: {
       fetch: (url, init) => apiFetch(url, init),
