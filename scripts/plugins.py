@@ -291,6 +291,34 @@ def _read_session_token() -> str | None:
         return None
 
 
+def _reload_target() -> tuple[str, str]:
+    """``(url, host_header)`` for ``POST /api/plugins/reload``.
+
+    Targets the port the server is actually configured to bind rather than a
+    hardcoded ``:8000``, so ``link`` / ``dev`` / ``reload`` keep working when the
+    user runs the server elsewhere (``CODEFYUI_PORT`` env or a ``.env`` file).
+    Resolution order: the ``CODEFYUI_PORT`` env override (explicit + easy to test),
+    then ``settings.PORT`` (which also honors ``.env``), then the ``8000`` default.
+
+    The client always connects over the loopback address; ``auth.init_allowed_hosts``
+    always whitelists ``127.0.0.1:<port>``, so a matching ``Host`` header passes the
+    guard even when the server binds ``HOST=0.0.0.0``.
+    """
+    port = 8000
+    env = os.environ.get("CODEFYUI_PORT", "").strip()
+    if env.isdigit():
+        port = int(env)
+    else:
+        try:
+            from app.config import settings
+
+            port = int(settings.PORT)
+        except Exception:
+            port = 8000
+    netloc = f"127.0.0.1:{port}"
+    return (f"http://{netloc}/api/plugins/reload", netloc)
+
+
 def _backend_reload() -> bool:
     """POST /api/plugins/reload — best-effort hot reload.
 
@@ -302,15 +330,16 @@ def _backend_reload() -> bool:
     token = _read_session_token()
     if token is None:
         return False
+    url, host = _reload_target()
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:8000/api/plugins/reload",
+            url,
             method="POST",
             headers={
                 "User-Agent": USER_AGENT,
                 "Content-Length": "0",
                 "X-CodefyUI-Token": token,
-                "Host": "127.0.0.1:8000",  # Match the Host whitelist.
+                "Host": host,  # Match the Host whitelist.
             },
             data=b"",
         )
