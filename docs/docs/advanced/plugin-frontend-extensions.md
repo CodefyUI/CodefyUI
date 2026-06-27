@@ -123,6 +123,38 @@ interface ApplyResult {
 
 **Batch semantics:** All ops in a single `applyOperations` call form one undo snapshot — pressing Ctrl+Z after an AI edit undoes the entire batch at once. Ops are applied in order; a failing op is skipped and reported in its `results` entry (`ok: false` plus an `error`), while the remaining ops continue. A `ref` alias created by an earlier `add_node` in the same batch is available to later ops, and is echoed back in `refs`.
 
+### `api.nodes` — custom node renderers
+
+Requires `api.apiVersion >= 2`.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `registerRenderer` | `(nodeType, renderer) => () => void` | Draw a plugin node type's card body with your own UI. Returns an unregister function. |
+
+`nodeType` is the node's **namespaced** type as it appears in `getNodeDefinitions()`. Note the namespace is the snake_case form of your plugin id — plugin `my-plugin` exposes node type `my_plugin:MyNode`. The renderer is imperative, so the host stays framework-agnostic:
+
+```ts
+interface NodeRenderContext {
+  node: { id: string; type: string; params: Record<string, unknown> };
+}
+interface PluginNodeRenderer {
+  mount(container: HTMLElement, ctx: NodeRenderContext): void;
+  update?(container: HTMLElement, ctx: NodeRenderContext): void; // on param change
+  unmount?(container: HTMLElement): void;
+}
+```
+
+The editor still renders the standard node card (title, ports, param list) and hands your renderer a `<div>` for the **body** — slotted between the ports and the params. A node type with no registered renderer renders exactly like a default node.
+
+```js
+api.nodes.registerRenderer('my_plugin:MyNode', {
+  mount(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
+  update(el, ctx) { el.textContent = `value: ${ctx.node.params.value}`; },
+});
+```
+
+The [plugin template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)'s SDK wraps this with `createRoot`, so you can write the body as a React component.
+
 ### `api.http` — session-aware fetch
 
 | Method | Signature | Description |
