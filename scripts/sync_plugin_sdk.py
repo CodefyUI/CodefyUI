@@ -22,6 +22,7 @@ lives in a separate repo this script can't see; refresh it from the same
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -47,7 +48,13 @@ def _norm(text: str) -> str:
 
 
 def rendered() -> str:
-    return _norm(BANNER + CONTRACT.read_text(encoding="utf-8"))
+    """The vendored copy: the plugin-facing BANNER plus the contract body, with
+    the canonical file's host-internal header comment (which references
+    contract.assert.ts / this script) stripped — a plugin author shouldn't see
+    files they don't have."""
+    body = CONTRACT.read_text(encoding="utf-8")
+    body = re.sub(r"\A\s*/\*\*.*?\*/\s*", "", body, count=1, flags=re.DOTALL)
+    return _norm(BANNER + body)
 
 
 def check() -> int:

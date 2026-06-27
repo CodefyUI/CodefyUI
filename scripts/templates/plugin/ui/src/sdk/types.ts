@@ -2,26 +2,6 @@
 // Generated from CodefyUI's frontend/src/plugins/contract.ts — do not edit
 // by hand; refresh it when you target a newer CodefyUI release.
 
-/**
- * CodefyUI plugin frontend API — the CANONICAL, self-contained type contract.
- *
- * This is the single source of truth for the public plugin surface. It has NO
- * imports, so it drops verbatim into any plugin's `ui/src/sdk/types.ts`:
- *
- *   - `scripts/sync_plugin_sdk.py` copies it into the `cdui plugin new` scaffold
- *     payload (`scripts/templates/plugin/ui/src/sdk/types.ts`); a backend test
- *     (`tests/test_plugin_dx.py`) fails if that copy drifts.
- *   - The clone-and-own template `CodefyUI-Plugin-Official/ui/src/sdk/types.ts`
- *     is refreshed from this file too.
- *
- * `contract.assert.ts` (next to this file) statically asserts that the host's
- * real implementation types (`./api`, `./ops`, `../types`, `./nodeRenderers`)
- * stay structurally compatible with the declarations here, so `tsc -b` fails the
- * moment the host drifts from the published contract. A future hardening step
- * could have the host import these types directly to make drift impossible
- * rather than merely detected.
- */
-
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
 export interface PortDefinition {
