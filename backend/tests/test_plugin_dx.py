@@ -140,3 +140,38 @@ def test_new_scaffold_refuses_existing_nonempty(tmp_path):
     assert plugin_cli.main(["new", "dupe", "--dir", str(tmp_path)]) == 1
     # The pre-existing file is untouched.
     assert (existing / "keep.txt").read_text(encoding="utf-8") == "do not clobber"
+
+
+# ── cp950: status glyphs must degrade to ASCII, never crash ───────────────────
+
+def test_cli_output_survives_cp950_console(tmp_path):
+    """On a console whose encoding can't represent ▶/✓ (legacy Windows cp950, or
+    a redirected pipe), the CLI must print ASCII markers instead of raising
+    UnicodeEncodeError. Runs the real entry point in a subprocess with stdout
+    forced to cp950."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    scripts = Path(plugin_cli.__file__).resolve().parent
+    backend = scripts.parent / "backend"
+
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "cp950"   # reproduce the crashing encoding
+    env["PYTHONPATH"] = str(backend)    # so the subprocess can import `app`
+    env["CODEFYUI_LANG"] = "en"         # deterministic ASCII messages
+    env["NO_COLOR"] = "1"
+
+    proc = subprocess.run(
+        [sys.executable, str(scripts / "plugins.py"), "new", "cp-probe", "--dir", str(tmp_path)],
+        capture_output=True,
+        env=env,
+    )
+    out = proc.stdout.decode("cp950", "replace")
+    assert proc.returncode == 0, proc.stderr.decode("cp950", "replace")
+    assert "Traceback" not in proc.stderr.decode("cp950", "replace")
+    assert "Creating new plugin" in out
+    assert "▶" not in out and "✓" not in out      # glyphs fell back
+    assert "> Creating new plugin" in out          # ASCII section marker
+    assert "+ Created" in out                       # ASCII ok marker

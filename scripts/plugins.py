@@ -62,6 +62,47 @@ YELLOW = "\033[33m" if _USE_COLOR else ""
 CYAN = "\033[36m" if _USE_COLOR else ""
 
 
+def _supports_unicode() -> bool:
+    """Whether stdout can encode our status glyphs.
+
+    On a legacy Windows console (cp950 / cp1252) or a pipe whose encoding is the
+    locale codepage, glyphs like ``▶`` / ``✓`` aren't encodable and ``print``
+    raises UnicodeEncodeError, taking the whole command down. When that's the
+    case we fall back to ASCII markers instead.
+    """
+    enc = getattr(sys.stdout, "encoding", None)
+    if not enc:
+        return False
+    try:
+        "▶✓✗●→".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+_UNICODE = _supports_unicode()
+MARK_SECTION = "▶" if _UNICODE else ">"
+MARK_OK = "✓" if _UNICODE else "+"
+MARK_ERR = "✗" if _UNICODE else "x"
+MARK_INSTALLED = "●" if _UNICODE else "*"
+ARROW = "→" if _UNICODE else "->"
+
+
+def _reconfigure_stdio() -> None:
+    """Best-effort safety net so output never crashes on an unencodable char.
+
+    Keeps the console's native encoding — so Traditional Chinese still renders on
+    a cp950 console — but replaces anything it can't encode rather than raising.
+    Called from ``main`` so importing this module (e.g. in tests) leaves the
+    captured stdio untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _lang() -> str:
     forced = os.environ.get("CODEFYUI_LANG")
     if forced:
@@ -75,7 +116,7 @@ def t(zh: str, en: str) -> str:
 
 
 def section(zh: str, en: str) -> None:
-    print(f"\n{BOLD}{CYAN}▶ {t(zh, en)}{RESET}")
+    print(f"\n{BOLD}{CYAN}{MARK_SECTION} {t(zh, en)}{RESET}")
 
 
 def info(zh: str, en: str) -> None:
@@ -87,11 +128,11 @@ def warn(zh: str, en: str) -> None:
 
 
 def err(zh: str, en: str) -> None:
-    print(f"  {RED}✗ {t(zh, en)}{RESET}", file=sys.stderr)
+    print(f"  {RED}{MARK_ERR} {t(zh, en)}{RESET}", file=sys.stderr)
 
 
 def ok(zh: str, en: str) -> None:
-    print(f"  {GREEN}✓ {t(zh, en)}{RESET}")
+    print(f"  {GREEN}{MARK_OK} {t(zh, en)}{RESET}")
 
 
 # ── catalog ────────────────────────────────────────────────────────────────
@@ -1207,8 +1248,8 @@ def cmd_update(args: argparse.Namespace) -> int:
             continue
 
         section(
-            f"更新 {plugin_id}: {entry.get('sha', '')[:7]} → {new_sha[:7]}",
-            f"Updating {plugin_id}: {entry.get('sha', '')[:7]} → {new_sha[:7]}",
+            f"更新 {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
+            f"Updating {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
         )
         synthetic_args = argparse.Namespace(
             force=True,
@@ -1261,7 +1302,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     section(f"目錄 ({len(matches)})", f"Catalog ({len(matches)} entries)")
     width = max(len(pid) for pid, _ in matches) + 2
     for plugin_id, entry in sorted(matches):
-        marker = f"{GREEN}●{RESET}" if plugin_id in lockfile_ids else " "
+        marker = f"{GREEN}{MARK_INSTALLED}{RESET}" if plugin_id in lockfile_ids else " "
         print(
             f"  {marker} {BOLD}{plugin_id.ljust(width)}{RESET}"
             f"{entry.get('name', plugin_id)}"
@@ -1269,7 +1310,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         desc = entry.get("description", "")
         if desc:
             print(f"    {' ' * width}{DIM}{desc}{RESET}")
-    print(f"\n  {DIM}{t('● = 已安裝', '● = installed')}{RESET}")
+    print(f"\n  {DIM}{t(f'{MARK_INSTALLED} = 已安裝', f'{MARK_INSTALLED} = installed')}{RESET}")
     return 0
 
 
@@ -1498,6 +1539,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _reconfigure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args._func(args)
