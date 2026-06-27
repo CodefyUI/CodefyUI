@@ -34,3 +34,14 @@ def test_reload_target_ignores_non_numeric_port(monkeypatch):
     assert url.startswith("http://127.0.0.1:")
     assert url.endswith("/api/plugins/reload")
     assert host == url[len("http://"):-len("/api/plugins/reload")]
+
+
+# ── item 3: vendored SDK types stay in sync with the canonical contract ───────
+
+def test_plugin_sdk_types_in_sync():
+    """The scaffold's vendored ``ui/src/sdk/types.ts`` must match the canonical
+    ``frontend/src/plugins/contract.ts``. If this fails, run:
+    ``python scripts/sync_plugin_sdk.py``."""
+    import sync_plugin_sdk
+
+    assert sync_plugin_sdk.check() == 0
