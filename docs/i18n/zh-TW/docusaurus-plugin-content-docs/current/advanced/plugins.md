@@ -37,7 +37,16 @@ cdui plugin uninstall deep
 
 ## 撰寫你自己的外掛
 
-Fork **[官方外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。
+最快的起手式是 **`cdui plugin new`**，一個指令就能產生可直接編輯的外掛骨架：
+
+```bash
+cdui plugin new my-plugin          # 純後端骨架
+cdui plugin new my-plugin --ui     # 另含一個接好 SDK 的 React 前端
+```
+
+它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。
+
+若需更完整的參考，可 Fork **[官方外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。
 
 ```bash
 # Install the template itself to see the pattern live
@@ -70,7 +79,7 @@ cdui plugin unlink my-plugin     # 解除連結——你的檔案不會被刪除
 cdui plugin dev ./my-plugin      # 連結＋監看；每次變更自動重載
 ```
 
-請在另一個終端機執行伺服器（`cdui start` 或 `cdui dev`）。`dev` 會輪詢外掛的 manifest、`nodes/`、`presets/` 與 `frontend/`；`--once` 只連結並重載一次（不監看），`--interval` 可調整輪詢間隔。
+請在另一個終端機執行伺服器（`cdui start` 或 `cdui dev`）。`dev` 會輪詢外掛的 manifest、`nodes/`、`presets/` 與 `frontend/`；`--once` 只連結並重載一次（不監看），`--interval` 可調整輪詢間隔。`link`、`dev`、`reload` 會連到伺服器設定的連接埠（`CODEFYUI_PORT`，預設 `8000`），因此跑在非預設埠時不需額外旗標。
 
 `link` 會從你的 `cdui.plugin.toml` 讀取 id，並把該目錄的絕對路徑以 `source_kind = "local"` 記入 lockfile，因此探索會直接走訪你的工作目錄。連結的外掛會跳過 AST 安全閘門（這是你自己的程式碼，並會印出警告）；`unlink` 只移除 lockfile 條目，絕不刪除你的檔案。編輯 Python 節點後，執行 `cdui plugin reload`（或 `cdui plugin dev`）即可重載。**連結中的外掛，前端變更也會自動重載**——只要安裝著連結的外掛，編輯器就會偵測重載並就地重新掛載外掛 UI，不需手動重新整理瀏覽器。
 

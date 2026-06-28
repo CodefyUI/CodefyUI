@@ -62,6 +62,47 @@ YELLOW = "\033[33m" if _USE_COLOR else ""
 CYAN = "\033[36m" if _USE_COLOR else ""
 
 
+def _supports_unicode() -> bool:
+    """Whether stdout can encode our status glyphs.
+
+    On a legacy Windows console (cp950 / cp1252) or a pipe whose encoding is the
+    locale codepage, glyphs like ``▶`` / ``✓`` aren't encodable and ``print``
+    raises UnicodeEncodeError, taking the whole command down. When that's the
+    case we fall back to ASCII markers instead.
+    """
+    enc = getattr(sys.stdout, "encoding", None)
+    if not enc:
+        return False
+    try:
+        "▶✓✗●→".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+_UNICODE = _supports_unicode()
+MARK_SECTION = "▶" if _UNICODE else ">"
+MARK_OK = "✓" if _UNICODE else "+"
+MARK_ERR = "✗" if _UNICODE else "x"
+MARK_INSTALLED = "●" if _UNICODE else "*"
+ARROW = "→" if _UNICODE else "->"
+
+
+def _reconfigure_stdio() -> None:
+    """Best-effort safety net so output never crashes on an unencodable char.
+
+    Keeps the console's native encoding — so Traditional Chinese still renders on
+    a cp950 console — but replaces anything it can't encode rather than raising.
+    Called from ``main`` so importing this module (e.g. in tests) leaves the
+    captured stdio untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _lang() -> str:
     forced = os.environ.get("CODEFYUI_LANG")
     if forced:
@@ -75,7 +116,7 @@ def t(zh: str, en: str) -> str:
 
 
 def section(zh: str, en: str) -> None:
-    print(f"\n{BOLD}{CYAN}▶ {t(zh, en)}{RESET}")
+    print(f"\n{BOLD}{CYAN}{MARK_SECTION} {t(zh, en)}{RESET}")
 
 
 def info(zh: str, en: str) -> None:
@@ -87,11 +128,11 @@ def warn(zh: str, en: str) -> None:
 
 
 def err(zh: str, en: str) -> None:
-    print(f"  {RED}✗ {t(zh, en)}{RESET}", file=sys.stderr)
+    print(f"  {RED}{MARK_ERR} {t(zh, en)}{RESET}", file=sys.stderr)
 
 
 def ok(zh: str, en: str) -> None:
-    print(f"  {GREEN}✓ {t(zh, en)}{RESET}")
+    print(f"  {GREEN}{MARK_OK} {t(zh, en)}{RESET}")
 
 
 # ── catalog ────────────────────────────────────────────────────────────────
@@ -291,6 +332,34 @@ def _read_session_token() -> str | None:
         return None
 
 
+def _reload_target() -> tuple[str, str]:
+    """``(url, host_header)`` for ``POST /api/plugins/reload``.
+
+    Targets the port the server is actually configured to bind rather than a
+    hardcoded ``:8000``, so ``link`` / ``dev`` / ``reload`` keep working when the
+    user runs the server elsewhere (``CODEFYUI_PORT`` env or a ``.env`` file).
+    Resolution order: the ``CODEFYUI_PORT`` env override (explicit + easy to test),
+    then ``settings.PORT`` (which also honors ``.env``), then the ``8000`` default.
+
+    The client always connects over the loopback address; ``auth.init_allowed_hosts``
+    always whitelists ``127.0.0.1:<port>``, so a matching ``Host`` header passes the
+    guard even when the server binds ``HOST=0.0.0.0``.
+    """
+    port = 8000
+    env = os.environ.get("CODEFYUI_PORT", "").strip()
+    if env.isdigit():
+        port = int(env)
+    else:
+        try:
+            from app.config import settings
+
+            port = int(settings.PORT)
+        except Exception:
+            port = 8000
+    netloc = f"127.0.0.1:{port}"
+    return (f"http://{netloc}/api/plugins/reload", netloc)
+
+
 def _backend_reload() -> bool:
     """POST /api/plugins/reload — best-effort hot reload.
 
@@ -302,15 +371,16 @@ def _backend_reload() -> bool:
     token = _read_session_token()
     if token is None:
         return False
+    url, host = _reload_target()
     try:
         req = urllib.request.Request(
-            "http://127.0.0.1:8000/api/plugins/reload",
+            url,
             method="POST",
             headers={
                 "User-Agent": USER_AGENT,
                 "Content-Length": "0",
                 "X-CodefyUI-Token": token,
-                "Host": "127.0.0.1:8000",  # Match the Host whitelist.
+                "Host": host,  # Match the Host whitelist.
             },
             data=b"",
         )
@@ -1178,8 +1248,8 @@ def cmd_update(args: argparse.Namespace) -> int:
             continue
 
         section(
-            f"更新 {plugin_id}: {entry.get('sha', '')[:7]} → {new_sha[:7]}",
-            f"Updating {plugin_id}: {entry.get('sha', '')[:7]} → {new_sha[:7]}",
+            f"更新 {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
+            f"Updating {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
         )
         synthetic_args = argparse.Namespace(
             force=True,
@@ -1232,7 +1302,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     section(f"目錄 ({len(matches)})", f"Catalog ({len(matches)} entries)")
     width = max(len(pid) for pid, _ in matches) + 2
     for plugin_id, entry in sorted(matches):
-        marker = f"{GREEN}●{RESET}" if plugin_id in lockfile_ids else " "
+        marker = f"{GREEN}{MARK_INSTALLED}{RESET}" if plugin_id in lockfile_ids else " "
         print(
             f"  {marker} {BOLD}{plugin_id.ljust(width)}{RESET}"
             f"{entry.get('name', plugin_id)}"
@@ -1240,7 +1310,124 @@ def cmd_search(args: argparse.Namespace) -> int:
         desc = entry.get("description", "")
         if desc:
             print(f"    {' ' * width}{DIM}{desc}{RESET}")
-    print(f"\n  {DIM}{t('● = 已安裝', '● = installed')}{RESET}")
+    print(f"\n  {DIM}{t(f'{MARK_INSTALLED} = 已安裝', f'{MARK_INSTALLED} = installed')}{RESET}")
+    return 0
+
+
+# ── scaffolding (cdui plugin new) ────────────────────────────────────────────
+
+# The scaffold payload ships next to this module (scripts/templates/plugin/),
+# so `cdui plugin new` works from any repo checkout the CLI runs from. types.ts
+# under ui/src/sdk/ is generated from the canonical contract by
+# scripts/sync_plugin_sdk.py (guarded by tests/test_plugin_dx.py).
+_TEMPLATE_ROOT = Path(__file__).resolve().parent / "templates" / "plugin"
+
+# Appended to the manifest only with --ui, so backend-only plugins don't carry a
+# [frontend] entry pointing at a bundle they will never build.
+_FRONTEND_STANZA = (
+    "\n[frontend]\n"
+    "# Built bundle the editor imports; `cd ui && pnpm install && pnpm build`\n"
+    "# emits it. Commit the built frontend/index.js.\n"
+    'entry = "frontend/index.js"\n'
+)
+
+
+def _titleize(plugin_id: str) -> str:
+    """`my-cool-plugin` -> `My Cool Plugin` (default display name)."""
+    return " ".join(word.capitalize() for word in plugin_id.split("-") if word)
+
+
+def _render(text: str, ctx: dict[str, str]) -> str:
+    """Substitute ``{{token}}`` placeholders. Tokens absent from a file are a
+    no-op, so the same renderer runs over every payload file uniformly."""
+    for key, value in ctx.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    """Scaffold a new plugin directory from the built-in template.
+
+    Generates a ready-to-edit plugin: manifest, an example node, a test + the
+    ``cdui_plugins.<id>`` namespace shim, and (with ``--ui``) a React frontend
+    wired to the typed SDK. Link it immediately with ``cdui plugin dev``.
+    """
+    plugin_id = args.id.lower()
+    section(f"建立新外掛：{plugin_id}", f"Creating new plugin: {plugin_id}")
+
+    if not PLUGIN_ID_RE.match(plugin_id):
+        err(
+            f"無效的 id：{plugin_id!r}（需符合 {PLUGIN_ID_RE.pattern}）",
+            f"Invalid plugin id {plugin_id!r} (must match {PLUGIN_ID_RE.pattern})",
+        )
+        return 2
+    if plugin_id in load_catalog().get("plugins", {}):
+        err(
+            f"id '{plugin_id}' 與內建套件保留名稱衝突，請換一個",
+            f"id '{plugin_id}' is reserved by the built-in catalog — pick another",
+        )
+        return 2
+    if not _TEMPLATE_ROOT.is_dir():
+        err(
+            f"找不到範本目錄：{_TEMPLATE_ROOT}",
+            f"Scaffold template not found at {_TEMPLATE_ROOT}",
+        )
+        return 1
+
+    base = Path(args.dir).expanduser().resolve() if args.dir else Path.cwd()
+    dest = base / plugin_id
+    if dest.exists() and any(dest.iterdir()) and not args.force:
+        err(
+            f"目標目錄已存在且非空：{dest}（加 --force 覆寫）",
+            f"Destination exists and is not empty: {dest} (use --force to write into it)",
+        )
+        return 1
+
+    snake = plugin_id.replace("-", "_")
+    name = args.name or _titleize(plugin_id)
+    ctx = {"plugin_id": plugin_id, "plugin_snake": snake, "plugin_name": name}
+    include_ui = bool(args.ui)
+
+    created = 0
+    for src in sorted(_TEMPLATE_ROOT.rglob("*")):
+        rel = src.relative_to(_TEMPLATE_ROOT)
+        # The ui/ subtree ships only when the author opts in with --ui.
+        if not include_ui and rel.parts and rel.parts[0] == "ui":
+            continue
+        target = dest / rel
+        if src.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            _render(src.read_text(encoding="utf-8"), ctx),
+            encoding="utf-8",
+            newline="\n",
+        )
+        created += 1
+
+    if include_ui:
+        manifest = dest / MANIFEST_FILENAME
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8") + _FRONTEND_STANZA,
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    ok(f"已建立 {created} 個檔案於 {dest}", f"Created {created} files in {dest}")
+    section("後續步驟", "Next steps")
+    info(
+        "1. 編輯 nodes/example_node.py，換成你的節點",
+        "1. Edit nodes/example_node.py — replace it with your node",
+    )
+    step = 2
+    if include_ui:
+        info("2. cd ui && pnpm install && pnpm build", "2. cd ui && pnpm install && pnpm build")
+        step = 3
+    info(
+        f"{step}. cdui plugin dev \"{dest}\"（連結 + 監看 + 熱重載）",
+        f"{step}. cdui plugin dev \"{dest}\"  (link + watch + hot-reload)",
+    )
     return 0
 
 
@@ -1304,6 +1491,21 @@ def build_parser() -> argparse.ArgumentParser:
                        help="link + reload once and exit (no watch)")
     p_dev.set_defaults(_func=cmd_dev)
 
+    p_new = sub.add_parser(
+        "new",
+        help="Scaffold a new plugin directory from the built-in template",
+    )
+    p_new.add_argument("id", help="new plugin id (lowercase kebab-case)")
+    p_new.add_argument("--name", default=None,
+                       help="display name (default: derived from the id)")
+    p_new.add_argument("--ui", action="store_true",
+                       help="include a React frontend (ui/) wired to the SDK")
+    p_new.add_argument("--dir", default=None,
+                       help="parent directory to create the plugin in (default: cwd)")
+    p_new.add_argument("--force", action="store_true",
+                       help="write into an existing non-empty directory")
+    p_new.set_defaults(_func=cmd_new)
+
     p_en = sub.add_parser(
         "enable",
         help="Activate an installed plugin (write enabled=true to lockfile)",
@@ -1337,6 +1539,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _reconfigure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args._func(args)

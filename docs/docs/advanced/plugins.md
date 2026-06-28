@@ -37,7 +37,16 @@ Plugin nodes are namespaced to avoid collisions and to self-document graphs — 
 
 ## Writing your own plugin
 
-Fork the **[Official Plugin Template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate.
+The fastest start is **`cdui plugin new`**, which scaffolds a ready-to-edit plugin in one command:
+
+```bash
+cdui plugin new my-plugin          # backend-only skeleton
+cdui plugin new my-plugin --ui     # also a React frontend wired to the SDK
+```
+
+It generates a manifest, an example node, a test (with the `cdui_plugins.<id>` namespace shim so `pytest` works locally), and — with `--ui` — a Vite + React `ui/` whose `src/sdk/` is the typed plugin SDK. The plugin lands in `./my-plugin/`; link it with `cdui plugin dev` (below) and start editing.
+
+For a richer reference, fork the **[Official Plugin Template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate.
 
 ```bash
 # Install the template itself to see the pattern live
@@ -70,7 +79,7 @@ Even simpler, **`dev`** links and watches in one command, hot-reloading on every
 cdui plugin dev ./my-plugin      # link + watch; reloads on every change
 ```
 
-Run the server in another terminal (`cdui start` or `cdui dev`). `dev` polls the plugin's manifest, `nodes/`, `presets/`, and `frontend/`; `--once` links and reloads a single time (no watch), and `--interval` tunes the poll frequency.
+Run the server in another terminal (`cdui start` or `cdui dev`). `dev` polls the plugin's manifest, `nodes/`, `presets/`, and `frontend/`; `--once` links and reloads a single time (no watch), and `--interval` tunes the poll frequency. `link`, `dev`, and `reload` reach the server on its configured port (`CODEFYUI_PORT`, default `8000`), so running on a non-default port needs no extra flags.
 
 `link` reads the id from your `cdui.plugin.toml` and records the directory's absolute path in the lockfile as `source_kind = "local"`, so discovery walks your working tree directly. The AST security gate is skipped for linked plugins (it's your own code, and a warning says so); `unlink` drops only the lockfile entry, never your files. After editing Python nodes, `cdui plugin reload` (or `cdui plugin dev`) reloads them. **Frontend edits to a linked plugin reload automatically too** — while a linked plugin is installed the editor watches for reloads and re-mounts the plugin's UI in place, no browser refresh needed.
 

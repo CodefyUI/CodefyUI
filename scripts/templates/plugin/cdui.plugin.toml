@@ -1,0 +1,44 @@
+# cdui.plugin.toml — manifest for your CodefyUI plugin.
+# Scaffolded by `cdui plugin new`. Edit the fields below to describe your plugin.
+
+[plugin]
+# REQUIRED. Globally-unique lowercase kebab-case id. Also the install-dir name
+# and part of the Python import path (cdui_plugins.<id_with_underscores>).
+id              = "{{plugin_id}}"
+
+# REQUIRED. Display name shown in `cdui plugin list` and the plugin manager.
+name            = "{{plugin_name}}"
+
+# REQUIRED. Semantic version. Bump on every release.
+version         = "0.1.0"
+
+# REQUIRED. One-paragraph description — shown by `cdui plugin info` / `search`.
+description     = "A CodefyUI plugin. Replace this description and the example node with your own."
+
+# REQUIRED. Manifest format version (currently 1).
+schema_version  = 1
+
+# REQUIRED. Lowest CodefyUI version you've tested against (PEP 440 specifier).
+# The ui/ React extension ([frontend] section) needs >= 1.3.0.
+requires_codefyui = ">=1.3.0"
+
+# OPTIONAL metadata, surfaced by `cdui plugin info`.
+authors         = []
+license         = "MIT"
+
+[content]
+# Where the plugin's content lives, relative to this manifest. Defaults shown.
+nodes_dir       = "nodes"
+presets_dir     = "presets"
+examples_dir    = "examples"
+assets_dir      = "assets"
+
+# OPTIONAL. Extra Python packages installed via `uv pip install` on install:
+#   [python_deps]
+#   numpy = ">=1.24"
+
+# OPTIONAL. The AST validator blocks dangerous imports (os, subprocess, …) on
+# install. If your nodes legitimately need one, list it here; users then have to
+# install with --trust-author.
+[security]
+allowed_modules = []
