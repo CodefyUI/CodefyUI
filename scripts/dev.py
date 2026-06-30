@@ -262,8 +262,17 @@ def _exec_into_venv_if_available() -> None:
     """
     if not VENV_PY.exists():
         return
+    # Are we already running *inside* this venv? Discriminate on sys.prefix
+    # (the venv root), NOT the executable path. `uv venv` symlinks
+    # .venv/bin/python straight to the uv-managed base interpreter, so
+    # Path(sys.executable).resolve() collapses the venv python and that base
+    # interpreter to the *same* real binary — a genuine outer interpreter then
+    # compares equal to VENV_PY and the hop is wrongly skipped, leaving the run
+    # on the outer interpreter where `app` is not importable (cdui plugin <cmd>
+    # then dies with "ModuleNotFoundError: No module named 'app'"). sys.prefix
+    # points at the venv only when its python is actually the running one.
     try:
-        if Path(sys.executable).resolve() == VENV_PY.resolve():
+        if Path(sys.prefix).resolve() == VENV.resolve():
             return
     except OSError:
         return
