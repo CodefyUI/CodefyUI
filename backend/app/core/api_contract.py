@@ -11,6 +11,8 @@ pure-JSON split); the endpoints in ``app.api.routes_graph_run`` stay thin.
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass, field
 from typing import Any
 
 # Input `type` values (v1, frozen). `json` stays `json` — it describes
@@ -161,3 +163,107 @@ def _decode_image(value: Any) -> Any:
         raise InputCoercionError("base64 payload does not decode to an image")
     img = img.convert("RGB")
     return transforms.ToTensor()(img)
+
+
+# Registry type strings of the contract nodes (frozen — they serialize into
+# saved graphs forever).
+GRAPH_INPUT_TYPE = "GraphInput"
+GRAPH_OUTPUT_TYPE = "GraphOutput"
+
+# Frozen contract-name charset: tightening later breaks saved graphs,
+# loosening never does. Stage 2 OpenAPI and the future `cdui call
+# --input k=v` need identifier-safe names.
+NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
+
+
+@dataclass
+class Contract:
+    """The graph-level I/O contract derived from GraphInput / GraphOutput nodes.
+
+    ``problems`` is reported non-fatally by ``GET /api/graph/contract`` and
+    blocks ``POST /api/graph/run`` with 409 ``invalid_contract``.
+    """
+
+    inputs: list[dict[str, Any]] = field(default_factory=list)
+    outputs: list[dict[str, Any]] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+
+def derive_contract(nodes: list[dict]) -> Contract:
+    """Scan top-level nodes for GraphInput / GraphOutput declarations.
+
+    Presets are NOT expanded — contract derivation scans top-level nodes
+    only (GraphInput/GraphOutput inside presets are a non-goal).
+    """
+    contract = Contract()
+    for node in nodes:
+        node_type = node.get("type", "")
+        if node_type not in (GRAPH_INPUT_TYPE, GRAPH_OUTPUT_TYPE):
+            continue
+        data = node.get("data")
+        params = data.get("params", {}) if isinstance(data, dict) else {}
+        if node_type == GRAPH_INPUT_TYPE:
+            contract.inputs.append({
+                "name": str(params.get("name", "input")),
+                "type": str(params.get("type", "string")),
+                "required": bool(params.get("required", True)),
+                "default": params.get("default", ""),
+                "description": str(params.get("description", "")),
+                "node_id": node.get("id", ""),
+            })
+        else:
+            contract.outputs.append({
+                "name": str(params.get("name", "output")),
+                "description": str(params.get("description", "")),
+                "node_id": node.get("id", ""),
+            })
+
+    if not contract.outputs:
+        contract.problems.append(
+            "graph has no GraphOutput node — declare at least one output"
+        )
+
+    _check_names(contract.inputs, "input", contract.problems)
+    _check_names(contract.outputs, "output", contract.problems)
+
+    for inp in contract.inputs:
+        if inp["type"] == "image":
+            if not inp["required"]:
+                contract.problems.append(
+                    f"image input '{inp['name']}' must be required=true "
+                    "(base64 has no sensible API-side default)"
+                )
+            # The image default is a canvas-only file path, validated at
+            # canvas run time — exempt from default parsing.
+            continue
+        if not inp["required"]:
+            # The API applies only optional inputs' defaults; a required
+            # input's default is a canvas-only test value and must NOT
+            # 409-block API calls.
+            try:
+                coerce_input(inp["default"], inp["type"], from_string=True)
+            except InputCoercionError as exc:
+                contract.problems.append(
+                    f"optional input '{inp['name']}': default does not parse "
+                    f"as {inp['type']} ({exc.reason})"
+                )
+    return contract
+
+
+def _check_names(
+    entries: list[dict[str, Any]], kind: str, problems: list[str]
+) -> None:
+    """Empty-name, charset, and duplicate checks shared by inputs and outputs."""
+    seen: set[str] = set()
+    for entry in entries:
+        name = entry["name"]
+        if name == "":
+            problems.append(f"{kind} node '{entry['node_id']}' has an empty name")
+        elif not NAME_PATTERN.match(name):
+            problems.append(
+                f"{kind} name '{name}' is invalid — must match "
+                "^[a-zA-Z_][a-zA-Z0-9_]{0,63}$"
+            )
+        if name in seen:
+            problems.append(f"duplicate {kind} name '{name}'")
+        seen.add(name)

@@ -163,3 +163,129 @@ def test_json_type_name_labels():
     assert json_type_name("s") == "string"
     assert json_type_name([1]) == "array"
     assert json_type_name({}) == "object"
+
+
+# ── derive_contract ──────────────────────────────────────────────────────
+
+from app.core.api_contract import derive_contract  # noqa: E402
+
+
+def _gi(node_id: str, **params) -> dict:
+    merged = {
+        "name": "input", "type": "string", "required": True,
+        "default": "", "description": "",
+    }
+    merged.update(params)
+    return {
+        "id": node_id, "type": "GraphInput",
+        "position": {"x": 0, "y": 0}, "data": {"params": merged},
+    }
+
+
+def _go(node_id: str, **params) -> dict:
+    merged = {"name": "output", "description": ""}
+    merged.update(params)
+    return {
+        "id": node_id, "type": "GraphOutput",
+        "position": {"x": 0, "y": 0}, "data": {"params": merged},
+    }
+
+
+def _other(node_id: str, node_type: str = "_TestSource") -> dict:
+    return {
+        "id": node_id, "type": node_type,
+        "position": {"x": 0, "y": 0}, "data": {"params": {}},
+    }
+
+
+def test_derive_contract_collects_inputs_and_outputs():
+    nodes = [
+        _other("s", "Start"),
+        _gi("i1", name="prompt", type="string"),
+        _go("o1", name="answer", description="the answer"),
+    ]
+    contract = derive_contract(nodes)
+    assert contract.problems == []
+    assert contract.inputs == [{
+        "name": "prompt", "type": "string", "required": True,
+        "default": "", "description": "", "node_id": "i1",
+    }]
+    assert contract.outputs == [
+        {"name": "answer", "description": "the answer", "node_id": "o1"},
+    ]
+
+
+def test_derive_contract_no_graph_output_is_problem():
+    contract = derive_contract([_gi("i1", name="x")])
+    assert any("GraphOutput" in p for p in contract.problems)
+
+
+def test_derive_contract_empty_and_bad_charset_names():
+    contract = derive_contract([
+        _gi("i1", name=""),
+        _gi("i2", name="9lives"),
+        _gi("i3", name="has space"),
+        _go("o1", name="ok_name"),
+    ])
+    assert any("empty name" in p for p in contract.problems)
+    assert sum("is invalid" in p for p in contract.problems) == 2
+
+
+def test_derive_contract_name_at_charset_limits():
+    contract = derive_contract([
+        _gi("i1", name="_x" + "a" * 62),   # 64 chars total: OK
+        _gi("i2", name="b" * 65),          # 65 chars: too long
+        _go("o1", name="y"),
+    ])
+    assert sum("is invalid" in p for p in contract.problems) == 1
+
+
+def test_derive_contract_duplicate_names():
+    contract = derive_contract([
+        _gi("i1", name="x"), _gi("i2", name="x"),
+        _go("o1", name="y"), _go("o2", name="y"),
+    ])
+    assert any(p == "duplicate input name 'x'" for p in contract.problems)
+    assert any(p == "duplicate output name 'y'" for p in contract.problems)
+
+
+def test_derive_contract_optional_default_must_parse():
+    contract = derive_contract([
+        _gi("i1", name="n", type="number", required=False, default="abc"),
+        _go("o1", name="y"),
+    ])
+    assert any("default does not parse" in p for p in contract.problems)
+
+
+def test_derive_contract_required_bad_default_is_not_a_problem():
+    # A required input's default is a canvas-only test value: its failure
+    # surfaces on canvas runs and must NOT 409-block API calls.
+    contract = derive_contract([
+        _gi("i1", name="n", type="number", required=True, default="abc"),
+        _go("o1", name="y"),
+    ])
+    assert contract.problems == []
+
+
+def test_derive_contract_image_default_exempt_from_parsing():
+    # An image default is a canvas-only file path, validated at canvas run time.
+    contract = derive_contract([
+        _gi("i1", name="img", type="image", required=True, default="photo.png"),
+        _go("o1", name="y"),
+    ])
+    assert contract.problems == []
+
+
+def test_derive_contract_optional_image_is_problem():
+    contract = derive_contract([
+        _gi("i1", name="img", type="image", required=False),
+        _go("o1", name="y"),
+    ])
+    assert any("must be required" in p for p in contract.problems)
+
+
+def test_derive_contract_ignores_preset_and_other_nodes():
+    nodes = [_other("p1", "preset:TrainLoop"), _other("t1"), _go("o1", name="y")]
+    contract = derive_contract(nodes)
+    assert contract.inputs == []
+    assert len(contract.outputs) == 1
