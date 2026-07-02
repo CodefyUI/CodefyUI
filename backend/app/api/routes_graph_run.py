@@ -28,7 +28,12 @@ from ..core import api_contract
 from ..core.api_contract import InputCoercionError, OutputSerializationError
 from ..core.device_utils import resolve_device
 from ..core.execution_context import ExecutionContext
-from ..core.graph_engine import execute_graph, find_entry_points, validate_graph
+from ..core.graph_engine import (
+    GraphValidationError,
+    execute_graph,
+    find_entry_points,
+    validate_graph,
+)
 from ..core.node_registry import registry
 from ..schemas import (
     ContractInputSchema,
@@ -425,18 +430,56 @@ async def run_graph_as_function(name: str, request: Request):
     # 8. Launch as an INDEPENDENT task and await it under a shielded
     #    timeout. The shield means handler cancellation (client disconnect)
     #    never propagates into the run — only the timeout stops a run.
+    # Minimal error capture: remember the last node that reported an error
+    # so execution_error envelopes carry a node_id.
+    last_error_node_id: dict[str, str | None] = {"value": None}
+
+    async def _on_progress(
+        node_id: str, status: str, data: dict[str, Any] | None
+    ) -> None:
+        if status == "error":
+            last_error_node_id["value"] = node_id
+
     t0 = time.monotonic()
     task = asyncio.create_task(execute_graph(
         patched_nodes,
         edges,
+        on_progress=_on_progress,
         context=ctx,
         error_mode="fail_fast",
         run_id=run_id,
     ))
     task.add_done_callback(_retrieve_background_exception)
-    engine_result = await asyncio.wait_for(
-        asyncio.shield(task), timeout=run_req.timeout_s,
-    )
+    try:
+        engine_result = await asyncio.wait_for(
+            asyncio.shield(task), timeout=run_req.timeout_s,
+        )
+    except asyncio.TimeoutError:
+        # 10. Cooperative cancellation: observed at node boundaries only —
+        # the node currently inside run_in_executor finishes in its thread
+        # after this 500 is sent (documented limitation).
+        ctx.cancel()
+        return error_response(500, run_id=run_id, graph=name, code="timeout",
+                              message=f"run exceeded timeout_s={run_req.timeout_s}",
+                              device=device,
+                              timing={"total_s": round(time.monotonic() - t0, 3)})
+    except GraphValidationError as exc:
+        # 9. Runtime safety net: preset expansion can invalidate a
+        # pre-flight-clean graph (pruning-induced missing required input;
+        # trigger-edges-into-preset-nodes dangling after expand_presets).
+        return error_response(409, run_id=run_id, graph=name,
+                              code="invalid_graph",
+                              message="graph failed validation at runtime",
+                              device=device, details=[str(exc)],
+                              timing={"total_s": round(time.monotonic() - t0, 3)})
+    except Exception as exc:  # noqa: BLE001 — never a raw, unenveloped 500
+        # 11. asyncio.CancelledError (client disconnect) is BaseException,
+        # not Exception — it passes through and the shielded run continues.
+        return error_response(500, run_id=run_id, graph=name,
+                              code="execution_error",
+                              message=str(exc), device=device,
+                              node_id=last_error_node_id["value"],
+                              timing={"total_s": round(time.monotonic() - t0, 3)})
     total_s = round(time.monotonic() - t0, 3)
 
     # 12. Collect + serialize declared outputs.

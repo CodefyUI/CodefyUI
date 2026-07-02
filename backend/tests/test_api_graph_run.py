@@ -290,3 +290,390 @@ async def test_run_content_type_not_used_for_dispatch(test_client):
     )
     assert resp.status_code == 200
     assert resp.json()["outputs"] == {"y": "hi"}
+
+
+# ── test-support nodes (registered directly, conftest _TestSource pattern) ─
+
+
+class _SlowPassNode(BaseNode):
+    """Sleeps `seconds` in the executor thread, then passes value through."""
+
+    NODE_NAME = "_SlowPass"
+    CATEGORY = "Test"
+    DESCRIPTION = "Sleeps, then passes through"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        time.sleep(float(params.get("seconds", 2.0)))
+        return {"value": inputs.get("value")}
+
+
+class _BoomNode(BaseNode):
+    """Raises on execute — drives the execution_error taxonomy row."""
+
+    NODE_NAME = "_Boom"
+    CATEGORY = "Test"
+    DESCRIPTION = "Raises RuntimeError"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("boom: intentional test failure")
+
+
+class _OpaqueNode(BaseNode):
+    """Emits a non-serializable object — drives unserializable_output."""
+
+    NODE_NAME = "_Opaque"
+    CATEGORY = "Test"
+    DESCRIPTION = "Emits object()"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": object()}
+
+
+class _BigTensorNode(BaseNode):
+    """Emits a 65,537-element tensor — drives output_too_large."""
+
+    NODE_NAME = "_BigTensor"
+    CATEGORY = "Test"
+    DESCRIPTION = "Emits a tensor over the serialization cap"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        import torch
+
+        return {"value": torch.zeros(65537)}
+
+
+@pytest.fixture(autouse=True)
+def _register_test_nodes():
+    """Same direct-injection pattern conftest uses for _TestSource."""
+    from app.core.node_registry import registry
+
+    registry._nodes["_SlowPass"] = _SlowPassNode
+    registry._nodes["_Boom"] = _BoomNode
+    registry._nodes["_Opaque"] = _OpaqueNode
+    registry._nodes["_BigTensor"] = _BigTensorNode
+    yield
+
+
+def _chain_graph(name: str, middle_type: str,
+                 middle_params: dict | None = None) -> dict:
+    """Start -> GraphInput -> <middle> -> GraphOutput."""
+    g = _echo_graph(name=name)
+    g["nodes"].insert(2, {"id": "mid", "type": middle_type,
+                          "position": {"x": 300, "y": 0},
+                          "data": {"params": middle_params or {}}})
+    g["edges"] = [
+        {"id": "t1", "source": "start", "target": "gi",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "d1", "source": "gi", "target": "mid",
+         "sourceHandle": "value", "targetHandle": "value", "type": "data"},
+        {"id": "d2", "source": "mid", "target": "out",
+         "sourceHandle": "value", "targetHandle": "value", "type": "data"},
+    ]
+    return g
+
+
+# ── POST /run error taxonomy ─────────────────────────────────────────────
+
+from app.core.graph_engine import GraphValidationError  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_run_404_missing_graph(test_client):
+    resp = await test_client.post("/api/graph/run/never-saved", json={})
+    assert resp.status_code == 404
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["status"] == "error"
+    assert body["error"]["code"] == "graph_not_found"
+    assert body["run_id"]                    # never null, even on rejections
+    assert body["device"] is None            # rejected before device resolution
+    assert body["timing"] is None            # execution never attempted
+
+
+@pytest.mark.asyncio
+async def test_run_404_strict_name(test_client, _graphs_dir):
+    # The file exists under the SANITIZED name; the raw name mismatches.
+    await _save_graph(test_client, _echo_graph(name="strict.run"))
+    assert (_graphs_dir / "strict_run.json").exists()
+    resp = await test_client.post("/api/graph/run/strict.run",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "graph_not_found"
+
+
+@pytest.mark.asyncio
+async def test_run_500_graph_unreadable(test_client, _graphs_dir):
+    (_graphs_dir / "corrupt.json").write_text("{not json")
+    resp = await test_client.post("/api/graph/run/corrupt", json={})
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "graph_unreadable"
+
+
+@pytest.mark.asyncio
+async def test_run_409_invalid_contract(test_client):
+    await test_client.post("/api/graph/save",
+                           json=_echo_graph(name="bad-contract",
+                                            input_name="has space"))
+    resp = await test_client.post("/api/graph/run/bad-contract", json={})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_contract"
+    assert any("is invalid" in d for d in body["error"]["details"])
+
+
+@pytest.mark.asyncio
+async def test_run_409_no_entry_points(test_client):
+    graph = _echo_graph(name="no-entry")
+    graph["nodes"] = [n for n in graph["nodes"] if n["type"] != "Start"]
+    graph["edges"] = [e for e in graph["edges"] if e["type"] != "trigger"]
+    await _save_graph(test_client, graph)
+    resp = await test_client.post("/api/graph/run/no-entry", json={})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "no_entry_points"
+
+
+@pytest.mark.asyncio
+async def test_run_409_untriggered_input(test_client):
+    graph = _echo_graph(name="untriggered")
+    # Retarget the trigger away from the GraphInput to a bystander node.
+    graph["nodes"].append({"id": "src", "type": "_TestSource",
+                           "position": {"x": 0, "y": 200},
+                           "data": {"params": {}}})
+    graph["edges"][0]["target"] = "src"
+    await _save_graph(test_client, graph)
+    resp = await test_client.post("/api/graph/run/untriggered",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "untriggered_input"
+    assert body["error"]["details"] == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_run_409_unreachable_output(test_client):
+    graph = _echo_graph(name="unreachable")
+    graph["nodes"].append({"id": "src2", "type": "_TestSource",
+                           "position": {"x": 0, "y": 200},
+                           "data": {"params": {}}})
+    graph["nodes"].append({"id": "out2", "type": "GraphOutput",
+                           "position": {"x": 400, "y": 200},
+                           "data": {"params": {"name": "y2", "description": ""}}})
+    graph["edges"].append({"id": "d9", "source": "src2", "target": "out2",
+                           "sourceHandle": "value", "targetHandle": "value",
+                           "type": "data"})
+    await _save_graph(test_client, graph)
+    resp = await test_client.post("/api/graph/run/unreachable",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "unreachable_output"
+    assert body["error"]["details"] == ["y2"]
+
+
+@pytest.mark.asyncio
+async def test_run_409_invalid_graph_static(test_client):
+    graph = _echo_graph(name="bad-port")
+    graph["nodes"].append({"id": "pr", "type": "Print",
+                           "position": {"x": 300, "y": 200},
+                           "data": {"params": {}}})
+    graph["edges"].append({"id": "d8", "source": "gi", "target": "pr",
+                           "sourceHandle": "value", "targetHandle": "bogus",
+                           "type": "data"})
+    await _save_graph(test_client, graph)
+    resp = await test_client.post("/api/graph/run/bad-port",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_graph"
+    assert any("bogus" in d for d in body["error"]["details"])
+
+
+@pytest.mark.asyncio
+async def test_run_409_runtime_graph_validation_error_safety_net(
+    test_client, monkeypatch,
+):
+    await _save_graph(test_client, _echo_graph(name="runtime-gve"))
+
+    async def _boom(*args, **kwargs):
+        raise GraphValidationError("preset trigger edge dangling after expansion")
+
+    monkeypatch.setattr("app.api.routes_graph_run.execute_graph", _boom)
+    resp = await test_client.post("/api/graph/run/runtime-gve",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_graph"
+    assert body["error"]["details"] == [
+        "preset trigger edge dangling after expansion",
+    ]
+    assert body["timing"] is not None  # execution WAS attempted
+
+
+@pytest.mark.asyncio
+async def test_run_422_input_errors_aggregated(test_client):
+    await _save_graph(test_client, _echo_graph(name="agg-errors",
+                                               input_type="number"))
+    resp = await test_client.post("/api/graph/run/agg-errors",
+                                  json={"inputs": {"x": "NaN-ish", "typo": 1}})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_input"
+    by_input = {d["input"]: d["reason"] for d in body["error"]["details"]}
+    assert by_input["typo"] == "unknown input name"
+    assert "expected number" in by_input["x"]
+
+
+@pytest.mark.asyncio
+async def test_run_422_missing_required(test_client):
+    await _save_graph(test_client, _echo_graph(name="missing-req"))
+    resp = await test_client.post("/api/graph/run/missing-req", json={})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["details"] == [
+        {"input": "x", "reason": "missing required input"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_422_malformed_bodies(test_client):
+    await _save_graph(test_client, _echo_graph(name="malformed"))
+    # Bad JSON.
+    resp = await test_client.post("/api/graph/run/malformed",
+                                  content=b"{not json",
+                                  headers={"Content-Type": "application/json"})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "invalid_input"
+    # Non-dict body.
+    resp = await test_client.post("/api/graph/run/malformed", json=[1, 2])
+    assert resp.status_code == 422
+    assert any(d["field"] == "body" for d in resp.json()["error"]["details"])
+    # Non-dict inputs.
+    resp = await test_client.post("/api/graph/run/malformed",
+                                  json={"inputs": [1]})
+    assert resp.status_code == 422
+    assert any(d["field"] == "inputs" for d in resp.json()["error"]["details"])
+    # Wrong-typed / out-of-range fields.
+    for bad in ({"timeout_s": "fast"}, {"timeout_s": 0}, {"timeout_s": 5000},
+                {"timeout_s": True}, {"device": 3}, {"record_outputs": "yes"}):
+        resp = await test_client.post("/api/graph/run/malformed", json=bad)
+        assert resp.status_code == 422, bad
+        assert resp.json()["error"]["code"] == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_run_413_payload_too_large(test_client, monkeypatch):
+    await _save_graph(test_client, _echo_graph(name="too-big"))
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 16)
+    resp = await test_client.post("/api/graph/run/too-big",
+                                  json={"inputs": {"x": "0123456789abcdef0123"}})
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "payload_too_large"
+
+
+@pytest.mark.asyncio
+async def test_run_500_execution_error_carries_node_id(test_client):
+    await _save_graph(test_client, _chain_graph("boom-graph", "_Boom"))
+    resp = await test_client.post("/api/graph/run/boom-graph",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error"]["code"] == "execution_error"
+    assert body["error"]["node_id"] == "mid"
+    assert "boom: intentional test failure" in body["error"]["message"]
+    assert body["timing"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_500_timeout(test_client):
+    await _save_graph(test_client, _chain_graph("slow-graph", "_SlowPass",
+                                                {"seconds": 3.0}))
+    resp = await test_client.post("/api/graph/run/slow-graph",
+                                  json={"inputs": {"x": "hi"}, "timeout_s": 1})
+    assert resp.status_code == 500  # never 504 — 504 belongs to intermediaries
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["status"] == "error"
+    assert body["error"]["code"] == "timeout"
+    assert body["timing"]["total_s"] >= 0.9
+    # The in-flight executor thread finishes in the background (documented
+    # limitation); nothing further to assert here.
+
+
+@pytest.mark.asyncio
+async def test_run_500_output_not_produced_safety_net(test_client, monkeypatch):
+    await _save_graph(test_client, _echo_graph(name="net-missing"))
+    monkeypatch.setattr("app.core.api_contract.collect_outputs",
+                        lambda contract, result: ({}, ["y"]))
+    resp = await test_client.post("/api/graph/run/net-missing",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error"]["code"] == "output_not_produced"
+    assert body["error"]["details"] == ["y"]
+
+
+@pytest.mark.asyncio
+async def test_run_500_unserializable_output(test_client):
+    await _save_graph(test_client, _chain_graph("opaque-graph", "_Opaque"))
+    resp = await test_client.post("/api/graph/run/opaque-graph",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error"]["code"] == "unserializable_output"
+    assert body["error"]["details"][0]["output"] == "y"
+
+
+@pytest.mark.asyncio
+async def test_run_500_output_too_large(test_client):
+    await _save_graph(test_client, _chain_graph("big-graph", "_BigTensor"))
+    resp = await test_client.post("/api/graph/run/big-graph",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["error"]["code"] == "output_too_large"
+    assert "65537" in body["error"]["details"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_run_403_without_token_is_out_of_envelope():
+    # The auth middleware fires before the route; its 403 does NOT carry
+    # the envelope (documented out-of-envelope response).
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport,
+                           base_url=f"http://127.0.0.1:{settings.PORT}") as anon:
+        resp = await anon.post("/api/graph/run/anything", json={})
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body == {"detail": "Missing or invalid X-CodefyUI-Token header"}
+    assert "run_id" not in body
