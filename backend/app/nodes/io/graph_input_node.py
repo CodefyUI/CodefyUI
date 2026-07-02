@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...core.api_contract import coerce_input
+from ...core.api_contract import INPUT_TYPES, coerce_input
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -104,7 +104,7 @@ class GraphInputNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="string",
                 description="JSON type API callers must send for this input.",
-                options=["string", "number", "integer", "boolean", "json", "image"],
+                options=list(INPUT_TYPES),
             ),
             ParamDefinition(
                 name="required",

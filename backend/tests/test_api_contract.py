@@ -152,6 +152,21 @@ def test_image_rejects_non_string_and_garbage():
         coerce_input("aGVsbG8gd29ybGQ=", "image")  # base64("hello world")
 
 
+def test_image_decompression_bomb_becomes_input_coercion_error(monkeypatch):
+    # PIL.Image.DecompressionBombError subclasses Exception directly (not
+    # OSError), so it must still be caught and enveloped — never escape as
+    # a raw, unenveloped exception through the API layer.
+    import PIL.Image
+
+    def _boom(*_args, **_kwargs):
+        raise PIL.Image.DecompressionBombError("boom")
+
+    monkeypatch.setattr(PIL.Image, "open", _boom)
+    with pytest.raises(InputCoercionError, match="does not decode to an image") as exc_info:
+        coerce_input(_tiny_png_base64(), "image")
+    assert not isinstance(exc_info.value, PIL.Image.DecompressionBombError)
+
+
 # ── json_type_name ───────────────────────────────────────────────────────
 
 
@@ -282,6 +297,24 @@ def test_derive_contract_optional_image_is_problem():
         _go("o1", name="y"),
     ])
     assert any("must be required" in p for p in contract.problems)
+
+
+def test_derive_contract_unknown_type_required_is_problem():
+    # A hand-edited graph with a bogus `type` must 409 (fix the graph) at
+    # GET /contract time, not surface as a per-caller 422 at run time.
+    contract = derive_contract([
+        _gi("i1", name="n", type="tensor", required=True),
+        _go("o1", name="y"),
+    ])
+    assert any("unknown type" in p and "tensor" in p for p in contract.problems)
+
+
+def test_derive_contract_unknown_type_optional_is_problem():
+    contract = derive_contract([
+        _gi("i1", name="n", type="tensor", required=False, default="x"),
+        _go("o1", name="y"),
+    ])
+    assert any("unknown type" in p and "tensor" in p for p in contract.problems)
 
 
 def test_derive_contract_ignores_preset_and_other_nodes():

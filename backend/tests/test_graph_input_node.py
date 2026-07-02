@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.api_contract import InputCoercionError
+from app.core.api_contract import INPUT_TYPES, InputCoercionError
 from app.core.node_base import DataType, ParamType
 from app.nodes.io.graph_input_node import GraphInputNode
 
@@ -32,6 +32,9 @@ def test_declared_params_exclude_value():
     by_name = {p.name: p for p in params}
     assert by_name["name"].default == "input"
     assert by_name["type"].param_type == ParamType.SELECT
+    # Options must track INPUT_TYPES exactly — no hand-maintained duplicate
+    # list that can drift from the contract's source of truth.
+    assert by_name["type"].options == list(INPUT_TYPES)
     assert by_name["type"].options == [
         "string", "number", "integer", "boolean", "json", "image",
     ]
