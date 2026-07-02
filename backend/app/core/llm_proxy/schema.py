@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 Provider = Literal["openai", "openai-codex", "openrouter", "anthropic", "custom"]
+MessageContent = str | list[dict[str, Any]]
 
 
 class ToolSpec(BaseModel):
@@ -25,7 +26,7 @@ class ToolCall(BaseModel):
 
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: str = ""
+    content: MessageContent = ""
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
 

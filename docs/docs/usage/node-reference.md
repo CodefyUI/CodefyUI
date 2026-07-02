@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 94 nodes across 15 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 95 nodes across 15 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **94 built-in nodes** across **15 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **95 built-in nodes** across **15 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This list is the source of truth at the time of writing, but the backend is authoritative: the live palette and `GET /api/nodes` always reflect exactly what your install has. Use the in-app search (double-click the canvas) to find a node fast.
@@ -26,7 +26,7 @@ This list is the source of truth at the time of writing, but the backend is auth
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding | 7 |
 | **Normalization** | BatchNorm1d, LayerNorm, GroupNorm, InstanceNorm2d | 4 |
 | **Tensor Operations** | Add, MatMul, Mean, Multiply, Permute, Softmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze | 11 |
-| **LLM** | Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding | 7 |
+| **LLM** | LLMChat, Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding | 8 |
 | **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, SVMClassifier, MLPClassifier, Accuracy | 7 |
 | **Diffusion** | Upsample, TimestepEmbedding, Lerp, GaussianNoise, DDPMSampler, DiffusionUNet | 6 |
 

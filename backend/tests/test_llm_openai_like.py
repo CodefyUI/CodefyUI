@@ -178,3 +178,12 @@ async def test_bad_base_url_yields_error_event():
     events = await collect(req, lambda r: httpx.Response(500))
     assert events == [{"type": "error",
                        "message": "custom provider requires an http(s) base_url"}]
+
+def test_payload_preserves_user_multimodal_content():
+    content = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    req = make_req(messages=[ChatMessage(role="user", content=content)])
+    p = build_payload(req)
+    assert p["messages"][0]["content"] == content

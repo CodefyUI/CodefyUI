@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 
 from . import codex_auth
-from ._common import TIMEOUT, parse_tool_args
+from ._common import TIMEOUT, content_to_text, parse_tool_args
 from .events import done_event, error_event, text_delta
 from .schema import ChatRequest, ToolCall
 
@@ -28,25 +28,31 @@ STATIC_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 
 
 def build_payload(req: ChatRequest) -> dict[str, Any]:
-    system_parts = [m.content for m in req.messages if m.role == "system" and m.content]
+    system_parts = [
+        content_to_text(m.content)
+        for m in req.messages
+        if m.role == "system" and content_to_text(m.content)
+    ]
     items: list[dict[str, Any]] = []
     for m in req.messages:
         if m.role == "system":
             continue
         if m.role == "tool":
             items.append({"type": "function_call_output",
-                          "call_id": m.tool_call_id or "", "output": m.content})
+                          "call_id": m.tool_call_id or "",
+                          "output": content_to_text(m.content)})
             continue
         if m.role == "assistant":
-            if m.content:
+            text_content = content_to_text(m.content)
+            if text_content:
                 items.append({"type": "message", "role": "assistant",
-                              "content": [{"type": "output_text", "text": m.content}]})
+                              "content": [{"type": "output_text", "text": text_content}]})
             for tc in m.tool_calls or []:
                 items.append({"type": "function_call", "call_id": tc.id,
                               "name": tc.name, "arguments": json.dumps(tc.arguments)})
             continue
         items.append({"type": "message", "role": m.role,
-                      "content": [{"type": "input_text", "text": m.content}]})
+                      "content": [{"type": "input_text", "text": content_to_text(m.content)}]})
 
     payload: dict[str, Any] = {
         "model": req.model,

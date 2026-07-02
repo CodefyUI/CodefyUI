@@ -55,3 +55,11 @@ def test_sse_format_is_data_line_json():
     assert line.startswith("data: ")
     assert line.endswith("\n\n")
     assert json.loads(line[len("data: "):]) == {"type": "text_delta", "text": "x"}
+
+def test_chat_message_accepts_multimodal_content():
+    content = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    msg = ChatMessage(role="user", content=content)
+    assert msg.content == content

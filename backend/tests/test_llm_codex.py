@@ -146,3 +146,14 @@ async def test_response_failed_becomes_error():
 
 def test_static_models_list():
     assert "gpt-5.5" in codex.STATIC_MODELS
+
+def test_payload_flattens_multimodal_content_to_text():
+    content = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    req = make_req(messages=[ChatMessage(role="user", content=content)])
+    p = codex.build_payload(req)
+    text = p["input"][0]["content"][0]["text"]
+    assert "look" in text
+    assert "[image]" in text

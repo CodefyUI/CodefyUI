@@ -327,6 +327,7 @@ const en = {
   'toolbar.settings.section.recording': 'Recording & Inspection',
   'toolbar.settings.section.training': 'Training Behavior',
   'toolbar.settings.section.editor': 'Editor',
+  'toolbar.settings.section.llm': 'LLM Providers',
   'settings.device.name': 'Compute device',
   'settings.device.desc': 'Run the graph on this device. Nodes set to "auto" follow it.',
 
@@ -363,7 +364,17 @@ const en = {
   'settings.nodeMode.desc': 'Basic shows only the essential categories in the sidebar; All shows every category.',
   'settings.nodeMode.basic': 'Basic',
   'settings.nodeMode.all': 'All',
-
+  'settings.codex.name': 'ChatGPT Codex account',
+  'settings.codex.descLoggedOut': 'Sign in to use the Codex provider in LLMChat. This uses your ChatGPT account session.',
+  'settings.codex.descPending': 'Sign-in is in progress. Complete it in the browser tab, then return here.',
+  'settings.codex.descLoggedIn': 'Signed in as {email}. Codex nodes can use your ChatGPT session.',
+  'settings.codex.actionSignIn': 'Sign in',
+  'settings.codex.actionSignOut': 'Sign out',
+  'settings.codex.actionRefresh': 'Refresh',
+  'settings.codex.signInOpened': 'Opened ChatGPT sign-in in a new tab.',
+  'settings.codex.signInFailed': 'Codex sign-in failed',
+  'settings.codex.logoutFailed': 'Codex sign-out failed',
+  'settings.codex.statusFailed': 'Codex status check failed',
   // LLM
   'tokenizer.tokenCount': '{count} tokens',
   'tokenizer.emptyOutput': 'No tokens — input text was empty.',

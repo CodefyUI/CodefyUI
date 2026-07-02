@@ -129,3 +129,17 @@ async def test_upstream_error_becomes_error_event():
     events = await collect(make_req(), handler)
     assert events[-1]["type"] == "error"
     assert "529" in events[-1]["message"]
+
+def test_payload_maps_multimodal_content_blocks():
+    content = [
+        {"type": "text", "text": "look"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+    req = make_req(messages=[ChatMessage(role="user", content=content)])
+    p = build_payload(req)
+    blocks = p["messages"][0]["content"]
+    assert blocks[0] == {"type": "text", "text": "look"}
+    assert blocks[1] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+    }

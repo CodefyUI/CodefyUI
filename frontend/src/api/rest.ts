@@ -146,6 +146,31 @@ export async function reloadNodes() {
   return res.json();
 }
 
+
+// LLM / Codex auth
+
+export type CodexAuthStatus =
+  | { status: 'logged_out' }
+  | { status: 'pending' }
+  | { status: 'logged_in'; email?: string };
+
+export async function fetchCodexStatus(): Promise<CodexAuthStatus> {
+  const res = await fetch(`${BASE_URL}/llm/codex/status`);
+  if (!res.ok) throw new Error(`Codex status failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function startCodexLogin(): Promise<{ auth_url: string }> {
+  const res = await apiFetch(`${BASE_URL}/llm/codex/login`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Codex login failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function logoutCodex(): Promise<{ status: 'logged_out' }> {
+  const res = await apiFetch(`${BASE_URL}/llm/codex/logout`, { method: 'POST' });
+  if (!res.ok) throw new Error(`Codex logout failed: ${res.statusText}`);
+  return res.json();
+}
 // ── Custom Node Manager ──
 
 export interface CustomNodeInfo {

@@ -25,6 +25,9 @@ import {
   uploadImageFile,
   deleteImageFile,
   downloadImageFile,
+  fetchCodexStatus,
+  startCodexLogin,
+  logoutCodex,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -297,6 +300,40 @@ describe('createPreset', () => {
   });
 });
 
+
+describe('Codex auth endpoints', () => {
+  it('fetchCodexStatus GETs the status endpoint', async () => {
+    const fetchMock = mockFetch(200, { status: 'logged_in', email: 'me@example.com' });
+    await expect(fetchCodexStatus()).resolves.toEqual({
+      status: 'logged_in',
+      email: 'me@example.com',
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/llm/codex/status');
+  });
+
+  it('fetchCodexStatus throws on failure', async () => {
+    mockFetch(500, {});
+    await expect(fetchCodexStatus()).rejects.toThrow(/Codex status failed/);
+  });
+
+  it('startCodexLogin POSTs with the auth token and returns auth_url', async () => {
+    const fetchMock = mockFetch(200, { auth_url: 'https://auth.example' });
+    await expect(startCodexLogin()).resolves.toEqual({ auth_url: 'https://auth.example' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/llm/codex/login');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('logoutCodex POSTs with the auth token', async () => {
+    const fetchMock = mockFetch(200, { status: 'logged_out' });
+    await expect(logoutCodex()).resolves.toEqual({ status: 'logged_out' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/llm/codex/logout');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+});
 describe('reloadNodes', () => {
   it('POSTs to /api/nodes/reload and returns the body', async () => {
     const fetchMock = mockFetch(200, { reloaded: true });

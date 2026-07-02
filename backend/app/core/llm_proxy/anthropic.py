@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from ._common import TIMEOUT, parse_tool_args
+from ._common import TIMEOUT, content_to_anthropic_blocks, content_to_text, parse_tool_args
 from .events import done_event, error_event, text_delta
 from .schema import ChatRequest, ToolCall
 
@@ -17,7 +17,11 @@ _VERSION = "2023-06-01"
 
 
 def build_payload(req: ChatRequest) -> dict[str, Any]:
-    system_parts = [m.content for m in req.messages if m.role == "system" and m.content]
+    system_parts = [
+        content_to_text(m.content)
+        for m in req.messages
+        if m.role == "system" and content_to_text(m.content)
+    ]
     messages: list[dict[str, Any]] = []
     for m in req.messages:
         if m.role == "system":
@@ -26,18 +30,19 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
             messages.append({"role": "user", "content": [{
                 "type": "tool_result",
                 "tool_use_id": m.tool_call_id or "",
-                "content": m.content,
+                "content": content_to_text(m.content),
             }]})
         elif m.role == "assistant" and m.tool_calls:
             blocks: list[dict[str, Any]] = []
-            if m.content:
-                blocks.append({"type": "text", "text": m.content})
+            text_content = content_to_text(m.content)
+            if text_content:
+                blocks.append({"type": "text", "text": text_content})
             blocks.extend({
                 "type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments,
             } for tc in m.tool_calls)
             messages.append({"role": "assistant", "content": blocks})
         else:
-            messages.append({"role": m.role, "content": m.content})
+            messages.append({"role": m.role, "content": content_to_anthropic_blocks(m.content)})
 
     payload: dict[str, Any] = {
         "model": req.model,

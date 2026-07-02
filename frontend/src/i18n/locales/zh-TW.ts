@@ -329,6 +329,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.recording': '錄製與檢視',
   'toolbar.settings.section.training': '訓練行為',
   'toolbar.settings.section.editor': '編輯器',
+  'toolbar.settings.section.llm': 'LLM 提供者',
   'settings.device.name': '運算裝置',
   'settings.device.desc': '在此裝置上執行圖。設為「auto」的節點會跟隨此設定。',
 
@@ -365,7 +366,17 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.nodeMode.desc': 'Basic 只在側欄顯示新手會用到的基礎類別；All 則顯示全部類別。',
   'settings.nodeMode.basic': '入門',
   'settings.nodeMode.all': '全部',
-
+  'settings.codex.name': 'ChatGPT Codex 帳號',
+  'settings.codex.descLoggedOut': '登入後即可在 LLMChat 使用 Codex provider。這會使用你的 ChatGPT 帳號 session。',
+  'settings.codex.descPending': '登入流程進行中。請在瀏覽器分頁完成登入，再回到這裡。',
+  'settings.codex.descLoggedIn': '已登入為 {email}。Codex 節點可以使用你的 ChatGPT session。',
+  'settings.codex.actionSignIn': '登入',
+  'settings.codex.actionSignOut': '登出',
+  'settings.codex.actionRefresh': '重新檢查',
+  'settings.codex.signInOpened': '已在新分頁開啟 ChatGPT 登入。',
+  'settings.codex.signInFailed': 'Codex 登入失敗',
+  'settings.codex.logoutFailed': 'Codex 登出失敗',
+  'settings.codex.statusFailed': 'Codex 狀態檢查失敗',
   // LLM
   'tokenizer.tokenCount': '{count} 個 token',
   'tokenizer.emptyOutput': '沒有 token — 輸入文字為空。',

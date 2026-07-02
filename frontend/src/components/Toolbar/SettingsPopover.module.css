@@ -215,6 +215,14 @@
   color: #cbd5e1;
 }
 
+
+.buttonGroup {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
 /* ----- Action button (Compare, Reset) ----- */
 .action {
   background: transparent;
