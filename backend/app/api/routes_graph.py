@@ -11,6 +11,16 @@ from ..schemas import GraphData, GraphValidationResponse
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 
 
+def _sanitize_name(name: str) -> str:
+    """Filesystem-safe graph name: every char outside [alnum, '-', '_'] -> '_'."""
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+
+
+def _graph_path(name: str) -> Path:
+    """Resolve a graph name to its on-disk JSON path under GRAPHS_DIR."""
+    return settings.GRAPHS_DIR / f"{_sanitize_name(name)}.json"
+
+
 @router.post("/validate", response_model=GraphValidationResponse)
 async def validate(graph: GraphData):
     nodes = [n.model_dump() for n in graph.nodes]
@@ -22,16 +32,14 @@ async def validate(graph: GraphData):
 @router.post("/save")
 async def save_graph(graph: GraphData):
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in graph.name)
-    path = settings.GRAPHS_DIR / f"{safe_name}.json"
+    path = _graph_path(graph.name)
     path.write_text(json.dumps(graph.model_dump(), indent=2))
     return {"message": "Graph saved", "path": str(path)}
 
 
 @router.get("/load/{name}")
 async def load_graph(name: str):
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    path = settings.GRAPHS_DIR / f"{safe_name}.json"
+    path = _graph_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     data = json.loads(path.read_text())

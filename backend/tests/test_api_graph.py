@@ -60,3 +60,18 @@ async def test_save_and_load_roundtrip(test_client, sample_graph, tmp_path, monk
     assert resp.status_code == 200
     graphs = resp.json()
     assert any(g["name"] == "test-graph" for g in graphs)
+
+
+def test_sanitize_name_helper():
+    from app.api.routes_graph import _sanitize_name
+
+    assert _sanitize_name("my-graph_2") == "my-graph_2"
+    assert _sanitize_name("a b.c/d") == "a_b_c_d"
+
+
+def test_graph_path_helper(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    from app.api.routes_graph import _graph_path
+
+    p = _graph_path("weird name")
+    assert p == tmp_path / "weird_name.json"
