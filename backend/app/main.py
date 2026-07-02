@@ -44,6 +44,7 @@ from .api import (
     routes_execution_outputs,
     routes_execution_state,
     routes_graph,
+    routes_graph_run,
     routes_images,
     routes_llm,
     routes_models,
@@ -240,6 +241,7 @@ async def host_guard(request: Request, call_next):
 app.include_router(routes_nodes.router)
 app.include_router(routes_examples.router)
 app.include_router(routes_graph.router)
+app.include_router(routes_graph_run.router)
 app.include_router(routes_presets.router)
 app.include_router(routes_custom_nodes.router)
 app.include_router(routes_plugins.router)
