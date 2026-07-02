@@ -1,8 +1,11 @@
 from .models import (
+    ContractInputSchema,
+    ContractOutputSchema,
     CreatePresetRequest,
     EdgeData,
     ExposedParamSchema,
     ExposedPortSchema,
+    GraphContractResponse,
     GraphData,
     GraphValidationResponse,
     InternalEdgeSchema,
@@ -13,13 +16,19 @@ from .models import (
     ParamDefinitionSchema,
     PortDefinitionSchema,
     PresetDefinition,
+    RunEnvelope,
+    RunError,
+    RunTiming,
 )
 
 __all__ = [
+    "ContractInputSchema",
+    "ContractOutputSchema",
     "CreatePresetRequest",
     "EdgeData",
     "ExposedParamSchema",
     "ExposedPortSchema",
+    "GraphContractResponse",
     "GraphData",
     "GraphValidationResponse",
     "InternalEdgeSchema",
@@ -30,4 +39,7 @@ __all__ = [
     "ParamDefinitionSchema",
     "PortDefinitionSchema",
     "PresetDefinition",
+    "RunEnvelope",
+    "RunError",
+    "RunTiming",
 ]
