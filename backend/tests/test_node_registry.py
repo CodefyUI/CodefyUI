@@ -2,6 +2,7 @@
 
 from app.config import settings
 from app.core.node_base import BaseNode, DataType, PortDefinition
+from app.core import node_registry as node_registry_module
 from app.core.node_registry import NodeRegistry
 
 
@@ -45,15 +46,18 @@ def test_discover_skips_non_issubclassable_members(monkeypatch, tmp_path):
     marker = object()
 
     monkeypatch.setattr(
-        "app.core.node_registry.pkgutil.walk_packages",
+        node_registry_module.pkgutil,
+        "walk_packages",
         lambda *args, **kwargs: [(None, "fake_nodes.good", False)],
     )
     monkeypatch.setattr(
-        "app.core.node_registry.importlib.import_module",
+        node_registry_module.importlib,
+        "import_module",
         lambda name: object(),
     )
     monkeypatch.setattr(
-        "app.core.node_registry.inspect.getmembers",
+        node_registry_module.inspect,
+        "getmembers",
         lambda module, predicate: [("bad", marker), ("good", GoodNode)],
     )
 
