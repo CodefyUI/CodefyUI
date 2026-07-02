@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from ._common import TIMEOUT, parse_tool_args
+from ._common import TIMEOUT, content_to_text, parse_tool_args
 from .events import done_event, error_event, text_delta
 from .schema import ChatRequest, ToolCall
 
@@ -44,17 +44,20 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
     for m in req.messages:
         if m.role == "tool":
             messages.append({"role": "tool", "tool_call_id": m.tool_call_id or "",
-                             "content": m.content})
+                             "content": content_to_text(m.content)})
         elif m.role == "assistant" and m.tool_calls:
+            text_content = content_to_text(m.content)
             messages.append({
                 "role": "assistant",
-                "content": m.content or None,
+                "content": text_content or None,
                 "tool_calls": [{
                     "id": tc.id,
                     "type": "function",
                     "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
                 } for tc in m.tool_calls],
             })
+        elif m.role in {"system", "assistant"}:
+            messages.append({"role": m.role, "content": content_to_text(m.content)})
         else:
             messages.append({"role": m.role, "content": m.content})
 

@@ -2,6 +2,7 @@
 
 from app.config import settings
 from app.core.node_base import BaseNode, DataType, PortDefinition
+from app.core import node_registry as node_registry_module
 from app.core.node_registry import NodeRegistry
 
 
@@ -37,6 +38,32 @@ def test_discover_builtin_nodes():
     assert reg.get("Print") is not None
     assert reg.get("TrainingLoop") is not None
 
+
+def test_discover_skips_non_issubclassable_members(monkeypatch, tmp_path):
+    class GoodNode(DummyNode):
+        NODE_NAME = "Good"
+
+    marker = object()
+
+    monkeypatch.setattr(
+        node_registry_module.pkgutil,
+        "walk_packages",
+        lambda *args, **kwargs: [(None, "fake_nodes.good", False)],
+    )
+    monkeypatch.setattr(
+        node_registry_module.importlib,
+        "import_module",
+        lambda name: object(),
+    )
+    monkeypatch.setattr(
+        node_registry_module.inspect,
+        "getmembers",
+        lambda module, predicate: [("bad", marker), ("good", GoodNode)],
+    )
+
+    reg = NodeRegistry()
+    assert reg.discover(tmp_path, "fake_nodes") == 1
+    assert reg.get("Good") is GoodNode
 
 def test_clear():
     reg = NodeRegistry()

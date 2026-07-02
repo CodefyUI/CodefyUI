@@ -3,7 +3,15 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
-import { resetWeights, fetchDevices, type DeviceInfo } from '../../api/rest';
+import {
+  resetWeights,
+  fetchDevices,
+  fetchCodexStatus,
+  startCodexLogin,
+  logoutCodex,
+  type CodexAuthStatus,
+  type DeviceInfo,
+} from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
@@ -69,6 +77,32 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
 
   const addToast = useToastStore((s) => s.addToast);
 
+  const [codexStatus, setCodexStatus] = useState<CodexAuthStatus>({ status: 'logged_out' });
+  const [codexBusy, setCodexBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCodexStatus()
+      .then((status) => {
+        if (!cancelled) setCodexStatus(status);
+      })
+      .catch(() => {
+        /* keep logged_out fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (codexStatus.status !== 'pending') return undefined;
+    const id = window.setInterval(() => {
+      fetchCodexStatus()
+        .then((status) => setCodexStatus(status))
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [codexStatus.status]);
+
   // Compare segment selection state
   const selected = activeTab.nodes.filter((n) => n.selected);
   const canCreateSegment = selected.length === 2;
@@ -115,6 +149,42 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
     }
   };
 
+  const handleCodexRefresh = async () => {
+    setCodexBusy(true);
+    try {
+      setCodexStatus(await fetchCodexStatus());
+    } catch (e) {
+      addToast(`${t('settings.codex.statusFailed')}: ${(e as Error).message}`, 'error');
+    } finally {
+      setCodexBusy(false);
+    }
+  };
+
+  const handleCodexLogin = async () => {
+    setCodexBusy(true);
+    try {
+      const { auth_url } = await startCodexLogin();
+      window.open(auth_url, '_blank', 'noopener,noreferrer');
+      setCodexStatus({ status: 'pending' });
+      addToast(t('settings.codex.signInOpened'), 'success');
+    } catch (e) {
+      addToast(`${t('settings.codex.signInFailed')}: ${(e as Error).message}`, 'error');
+    } finally {
+      setCodexBusy(false);
+    }
+  };
+
+  const handleCodexLogout = async () => {
+    setCodexBusy(true);
+    try {
+      await logoutCodex();
+      setCodexStatus({ status: 'logged_out' });
+    } catch (e) {
+      addToast(`${t('settings.codex.logoutFailed')}: ${(e as Error).message}`, 'error');
+    } finally {
+      setCodexBusy(false);
+    }
+  };
   const handleCompare = () => {
     if (canCreateSegment) {
       const [left, right] =
@@ -145,6 +215,12 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
     /* v8 ignore stop */
   };
 
+  const codexDesc =
+    codexStatus.status === 'logged_in'
+      ? t('settings.codex.descLoggedIn', { email: codexStatus.email ?? 'ChatGPT' })
+      : codexStatus.status === 'pending'
+        ? t('settings.codex.descPending')
+        : t('settings.codex.descLoggedOut');
   const compareLabel = canCreateSegment
     ? t('settings.compare.actionCreate')
     : canClearSegment
@@ -189,6 +265,58 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
           />
         </section>
 
+        <section className={styles.section}>
+          <div className={styles.sectionTitle}>
+            {t('toolbar.settings.section.llm')}
+          </div>
+
+          <Row
+            name={t('settings.codex.name')}
+            desc={codexDesc}
+            ctrl={
+              <div className={styles.buttonGroup}>
+                {codexStatus.status === 'logged_in' ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCodexLogout();
+                    }}
+                    className={styles.action}
+                    disabled={codexBusy}
+                  >
+                    {t('settings.codex.actionSignOut')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCodexLogin();
+                    }}
+                    className={styles.action}
+                    disabled={codexBusy || codexStatus.status === 'pending'}
+                  >
+                    {t('settings.codex.actionSignIn')}
+                  </button>
+                )}
+                {codexStatus.status !== 'logged_out' && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCodexRefresh();
+                    }}
+                    className={styles.action}
+                    disabled={codexBusy}
+                  >
+                    {t('settings.codex.actionRefresh')}
+                  </button>
+                )}
+              </div>
+            }
+          />
+        </section>
         {/* ── Recording & Inspection ─────────────────────────────── */}
         <section className={styles.section}>
           <div className={styles.sectionTitle}>

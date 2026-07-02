@@ -36,6 +36,9 @@ vi.mock('../../api/rest', () => ({
   fetchDevices: vi.fn(() =>
     Promise.resolve({ default: 'cpu', devices: [{ value: 'cpu', label: 'CPU', detail: '', available: true }] }),
   ),
+  fetchCodexStatus: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
+  startCodexLogin: vi.fn(() => Promise.resolve({ auth_url: 'https://auth.example' })),
+  logoutCodex: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
 }));
 
 const mockedRest = vi.mocked(rest);

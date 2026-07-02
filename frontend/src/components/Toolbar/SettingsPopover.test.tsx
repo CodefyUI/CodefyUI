@@ -7,11 +7,20 @@ import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useI18n } from '../../i18n';
-import { resetWeights, fetchDevices } from '../../api/rest';
+import {
+  resetWeights,
+  fetchDevices,
+  fetchCodexStatus,
+  startCodexLogin,
+  logoutCodex,
+} from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
 vi.mock('../../api/rest', () => ({
   resetWeights: vi.fn(),
+  fetchCodexStatus: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
+  startCodexLogin: vi.fn(() => Promise.resolve({ auth_url: 'https://auth.example' })),
+  logoutCodex: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
   fetchDevices: vi.fn(() =>
     Promise.resolve({
       default: 'cpu',
@@ -28,6 +37,9 @@ vi.mock('../../utils/segmentPath', () => ({
 }));
 
 const mockedResetWeights = vi.mocked(resetWeights);
+const mockedFetchCodexStatus = vi.mocked(fetchCodexStatus);
+const mockedStartCodexLogin = vi.mocked(startCodexLogin);
+const mockedLogoutCodex = vi.mocked(logoutCodex);
 const mockedComputeSegment = vi.mocked(computeSegmentNodes);
 
 function makeTriggerRef() {
@@ -70,6 +82,9 @@ describe('SettingsPopover', () => {
       beginnerMode: false,
       globalDevice: 'cpu',
     });
+    mockedFetchCodexStatus.mockResolvedValue({ status: 'logged_out' });
+    mockedStartCodexLogin.mockResolvedValue({ auth_url: 'https://auth.example' });
+    mockedLogoutCodex.mockResolvedValue({ status: 'logged_out' });
     vi.mocked(fetchDevices).mockResolvedValue({
       default: 'cpu',
       devices: [
@@ -101,6 +116,41 @@ describe('SettingsPopover', () => {
     expect(screen.getByText('Training Behavior')).toBeInTheDocument();
     expect(screen.getByText('Editor')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+
+  it('renders Codex auth controls and starts login in a new tab', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('LLM Providers')).toBeInTheDocument();
+    expect(screen.getByText('ChatGPT Codex account')).toBeInTheDocument();
+    await waitFor(() => expect(mockedFetchCodexStatus).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await waitFor(() => expect(mockedStartCodexLogin).toHaveBeenCalledTimes(1));
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://auth.example',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument());
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'success')).toBe(true);
+  });
+
+  it('shows logged-in Codex state and signs out', async () => {
+    mockedFetchCodexStatus.mockResolvedValueOnce({
+      status: 'logged_in',
+      email: 'me@example.com',
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    await screen.findByText(/me@example.com/);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    await waitFor(() => expect(mockedLogoutCodex).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 
   // ── Execution: global device selector ─────────────────────────────
