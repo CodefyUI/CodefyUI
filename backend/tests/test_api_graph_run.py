@@ -209,3 +209,84 @@ async def test_contract_404_missing_and_strict_name(test_client, _graphs_dir):
     resp = await test_client.get("/api/graph/contract/strict.name")
     assert resp.status_code == 404
     assert resp.json() == {"detail": "Graph 'strict.name' not found"}
+
+
+# ── POST /api/graph/run/{name}: happy path ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_happy_path_all_envelope_keys(test_client):
+    await _save_graph(test_client, _echo_graph(name="run-echo"))
+    resp = await test_client.post("/api/graph/run/run-echo",
+                                  json={"inputs": {"x": "hello"}})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["status"] == "ok"
+    assert body["run_id"]  # non-null, non-empty
+    assert body["graph"] == "run-echo"
+    assert body["device"] == "cpu"  # resolve_device(None) echo
+    assert body["outputs"] == {"y": "hello"}
+    assert body["error"] is None
+    assert body["timing"]["total_s"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_body_optional_uses_default(test_client):
+    await _save_graph(test_client, _echo_graph(
+        name="run-default", required=False, default="fallback",
+    ))
+    resp = await test_client.post("/api/graph/run/run-default")  # no body at all
+    assert resp.status_code == 200
+    assert resp.json()["outputs"] == {"y": "fallback"}
+
+
+@pytest.mark.asyncio
+async def test_run_empty_json_body_equals_absent_body(test_client):
+    await _save_graph(test_client, _echo_graph(
+        name="run-empty", required=False, default="fallback",
+    ))
+    resp = await test_client.post("/api/graph/run/run-empty", json={})
+    assert resp.status_code == 200
+    assert resp.json()["outputs"] == {"y": "fallback"}
+
+
+@pytest.mark.asyncio
+async def test_run_device_echo(test_client):
+    await _save_graph(test_client, _echo_graph(name="run-device"))
+    resp = await test_client.post("/api/graph/run/run-device",
+                                  json={"inputs": {"x": "hi"}, "device": "cpu"})
+    assert resp.status_code == 200
+    assert resp.json()["device"] == "cpu"
+
+
+@pytest.mark.asyncio
+async def test_run_typed_inputs_roundtrip(test_client):
+    cases = [
+        ("run-num", "number", 3, 3.0),
+        ("run-int", "integer", 3.0, 3),
+        ("run-bool", "boolean", True, True),
+        ("run-json", "json", {"k": [1, 2]}, {"k": [1, 2]}),
+    ]
+    for graph_name, input_type, sent, expected in cases:
+        await _save_graph(test_client, _echo_graph(
+            name=graph_name, input_type=input_type,
+        ))
+        resp = await test_client.post(f"/api/graph/run/{graph_name}",
+                                      json={"inputs": {"x": sent}})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outputs"] == {"y": expected}
+
+
+@pytest.mark.asyncio
+async def test_run_content_type_not_used_for_dispatch(test_client):
+    # A valid JSON body with a wrong Content-Type header still parses
+    # (behavior pinned by the spec).
+    await _save_graph(test_client, _echo_graph(name="run-ctype"))
+    resp = await test_client.post(
+        "/api/graph/run/run-ctype",
+        content=b'{"inputs": {"x": "hi"}}',
+        headers={"Content-Type": "text/plain"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["outputs"] == {"y": "hi"}
