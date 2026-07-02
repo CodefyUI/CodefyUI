@@ -374,6 +374,29 @@ class _BigTensorNode(BaseNode):
         return {"value": torch.zeros(65537)}
 
 
+class _NodeTimeoutNode(BaseNode):
+    """Raises a builtin TimeoutError — e.g. a node-level socket timeout.
+
+    On py3.11+ asyncio.TimeoutError IS builtins.TimeoutError, so this must
+    NOT be misrouted to the run's own "timeout" taxonomy row.
+    """
+
+    NODE_NAME = "_NodeTimeout"
+    CATEGORY = "Test"
+    DESCRIPTION = "Raises TimeoutError"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        raise TimeoutError("node-level timeout")
+
+
 @pytest.fixture(autouse=True)
 def _register_test_nodes():
     """Same direct-injection pattern conftest uses for _TestSource."""
@@ -383,6 +406,7 @@ def _register_test_nodes():
     registry._nodes["_Boom"] = _BoomNode
     registry._nodes["_Opaque"] = _OpaqueNode
     registry._nodes["_BigTensor"] = _BigTensorNode
+    registry._nodes["_NodeTimeout"] = _NodeTimeoutNode
     yield
 
 
@@ -555,6 +579,51 @@ async def test_run_422_input_errors_aggregated(test_client):
     assert "expected number" in by_input["x"]
 
 
+def _tiny_png_base64() -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (4, 2), color=(255, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_run_422_image_decode_failure_is_enveloped_not_raw_500(
+    test_client, monkeypatch,
+):
+    # Regression guard for app.core.api_contract._decode_image: PIL's
+    # DecompressionBombError subclasses Exception directly (not OSError),
+    # so it used to escape inject_inputs as a raw, unenveloped 500. It must
+    # come back as a normal enveloped 422 invalid_input, like any other
+    # image decode failure.
+    import PIL.Image
+
+    await _save_graph(test_client, _echo_graph(
+        name="image-bomb", input_type="image", required=True,
+    ))
+
+    def _boom(*_args, **_kwargs):
+        raise PIL.Image.DecompressionBombError("boom")
+
+    monkeypatch.setattr(PIL.Image, "open", _boom)
+    resp = await test_client.post(
+        "/api/graph/run/image-bomb",
+        json={"inputs": {"x": _tiny_png_base64()}},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["error"]["code"] == "invalid_input"
+    assert any(
+        "does not decode to an image" in d["reason"]
+        for d in body["error"]["details"]
+    )
+
+
 @pytest.mark.asyncio
 async def test_run_422_missing_required(test_client):
     await _save_graph(test_client, _echo_graph(name="missing-req"))
@@ -628,6 +697,28 @@ async def test_run_500_timeout(test_client):
     assert body["timing"]["total_s"] >= 0.9
     # The in-flight executor thread finishes in the background (documented
     # limitation); nothing further to assert here.
+
+
+@pytest.mark.asyncio
+async def test_run_500_node_raised_timeouterror_is_execution_error(test_client):
+    # asyncio.TimeoutError IS builtins.TimeoutError on py3.11+: a NODE
+    # raising TimeoutError (e.g. a socket timeout) must be reported as
+    # execution_error with the node's own message — never misrouted to the
+    # run's "timeout" code, which would fabricate a run-exceeded message
+    # and spuriously cancel the context.
+    await _save_graph(
+        test_client, _chain_graph("node-timeout-graph", "_NodeTimeout"),
+    )
+    resp = await test_client.post(
+        "/api/graph/run/node-timeout-graph",
+        json={"inputs": {"x": "hi"}, "timeout_s": 300},  # generous
+    )
+    assert resp.status_code == 500
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["error"]["code"] == "execution_error"
+    assert body["error"]["node_id"] == "mid"
+    assert "node-level timeout" in body["error"]["message"]
 
 
 @pytest.mark.asyncio
