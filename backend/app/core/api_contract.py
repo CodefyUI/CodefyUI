@@ -154,17 +154,24 @@ def _decode_image(value: Any) -> Any:
     payload = "".join(payload.split())  # tolerate wrapped base64
     try:
         raw = base64.b64decode(payload, validate=True)
-    except (binascii.Error, ValueError):
-        raise InputCoercionError("image value is not valid base64")
-    from PIL import Image, UnidentifiedImageError
+    except (binascii.Error, ValueError) as exc:
+        raise InputCoercionError("image value is not valid base64") from exc
+    from PIL import Image
     from torchvision import transforms
 
+    # Decode AND convert inside one try: PIL can raise a wide range of
+    # exceptions here (UnidentifiedImageError, OSError, and — for crafted
+    # bomb payloads — DecompressionBombError, which subclasses Exception
+    # directly rather than OSError). Any of them must become an enveloped
+    # InputCoercionError, never escape as a raw unenveloped 500.
     try:
         img = Image.open(io.BytesIO(raw))
         img.load()
-    except (UnidentifiedImageError, OSError):
-        raise InputCoercionError("base64 payload does not decode to an image")
-    img = img.convert("RGB")
+        img = img.convert("RGB")
+    except Exception as exc:
+        raise InputCoercionError(
+            f"value does not decode to an image: {exc}"
+        ) from exc
     return transforms.ToTensor()(img)
 
 
@@ -230,6 +237,15 @@ def derive_contract(nodes: list[dict]) -> Contract:
     _check_names(contract.outputs, "output", contract.problems)
 
     for inp in contract.inputs:
+        if inp["type"] not in INPUT_TYPES:
+            # A hand-edited graph JSON with a bogus `type` is a graph
+            # problem (409, fix the graph) — not something to defer to a
+            # per-caller coerce_input failure at run time (422, blaming
+            # the caller).
+            contract.problems.append(
+                f"input node '{inp['node_id']}': unknown type '{inp['type']}'"
+            )
+            continue
         if inp["type"] == "image":
             if not inp["required"]:
                 contract.problems.append(

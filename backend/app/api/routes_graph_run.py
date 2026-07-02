@@ -13,6 +13,7 @@ file. POST is auto-covered by the X-CodefyUI-Token middleware.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -407,8 +408,13 @@ async def run_graph_as_function(name: str, request: Request):
                               details=validation_errors)
 
     # 6. Inject the RAW request values; each GraphInput's execute() coerces.
-    patched_nodes, input_errors = api_contract.inject_inputs(
-        nodes, contract, run_req.inputs,
+    # inject_inputs does synchronous base64+PIL+ToTensor validation for
+    # image inputs — offload to the default executor so a large/slow image
+    # decode never blocks the event loop. inject_inputs is pure, so running
+    # it off-thread is safe.
+    patched_nodes, input_errors = await asyncio.get_running_loop().run_in_executor(
+        None,
+        functools.partial(api_contract.inject_inputs, nodes, contract, run_req.inputs),
     )
     if input_errors:
         return error_response(422, run_id=run_id, graph=name,
@@ -463,6 +469,23 @@ async def run_graph_as_function(name: str, request: Request):
             asyncio.shield(task), timeout=run_req.timeout_s,
         )
     except asyncio.TimeoutError:
+        # On py3.11+ asyncio.TimeoutError IS builtins.TimeoutError, so a
+        # NODE raising TimeoutError (e.g. a socket timeout) completes the
+        # shielded task with that exact exception before wait_for's own
+        # deadline ever fires — indistinguishable from a genuine timeout by
+        # exception type alone. Disambiguate with task.done(): if the task
+        # already finished, the exception came from graph execution and
+        # must be reported like any other execution_error (with node_id);
+        # only an incomplete task means wait_for's deadline itself expired.
+        if task.done() and not task.cancelled():
+            task_exc = task.exception()
+            if task_exc is not None:
+                return error_response(
+                    500, run_id=run_id, graph=name, code="execution_error",
+                    message=str(task_exc), device=device,
+                    node_id=last_error_node_id["value"],
+                    timing={"total_s": round(time.monotonic() - t0, 3)},
+                )
         # 10. Cooperative cancellation: observed at node boundaries only —
         # the node currently inside run_in_executor finishes in its thread
         # after this 500 is sent (documented limitation).
