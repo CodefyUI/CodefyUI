@@ -137,8 +137,12 @@ class NodeRegistry:
                 logger.warning("Failed to import %s: %s", modname, e)
                 continue
             for _, obj in inspect.getmembers(module, inspect.isclass):
+                try:
+                    is_node_cls = issubclass(obj, BaseNode)
+                except TypeError:
+                    continue
                 if (
-                    issubclass(obj, BaseNode)
+                    is_node_cls
                     and obj is not BaseNode
                     and obj.NODE_NAME
                 ):

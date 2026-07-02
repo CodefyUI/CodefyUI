@@ -38,6 +38,29 @@ def test_discover_builtin_nodes():
     assert reg.get("TrainingLoop") is not None
 
 
+def test_discover_skips_non_issubclassable_members(monkeypatch, tmp_path):
+    class GoodNode(DummyNode):
+        NODE_NAME = "Good"
+
+    marker = object()
+
+    monkeypatch.setattr(
+        "app.core.node_registry.pkgutil.walk_packages",
+        lambda *args, **kwargs: [(None, "fake_nodes.good", False)],
+    )
+    monkeypatch.setattr(
+        "app.core.node_registry.importlib.import_module",
+        lambda name: object(),
+    )
+    monkeypatch.setattr(
+        "app.core.node_registry.inspect.getmembers",
+        lambda module, predicate: [("bad", marker), ("good", GoodNode)],
+    )
+
+    reg = NodeRegistry()
+    assert reg.discover(tmp_path, "fake_nodes") == 1
+    assert reg.get("Good") is GoodNode
+
 def test_clear():
     reg = NodeRegistry()
     reg.register(DummyNode)
