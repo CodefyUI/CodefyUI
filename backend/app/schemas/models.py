@@ -73,6 +73,60 @@ class NodeExecutionStatus(BaseModel):
     data: dict[str, Any] | None = None
 
 
+# ── Graph-as-a-function schemas ─────────────────────────────────
+
+
+class RunError(BaseModel):
+    code: str
+    message: str
+    node_id: str | None = None
+    details: list[Any] | None = None
+
+
+class RunTiming(BaseModel):
+    total_s: float
+
+
+class RunEnvelope(BaseModel):
+    """Response envelope for POST /api/graph/run/{name}.
+
+    Every key is ALWAYS present (null when not applicable); HTTP status
+    mirrors ``status``/``error.code``. Forward compatibility (also stated
+    on the docs page): clients MUST ignore unknown envelope fields, and
+    ``error.code`` is an open enum — treat unknown codes as generic
+    errors. The ``job`` key is reserved by name for the future async mode.
+    """
+
+    status: Literal["ok", "error"]
+    run_id: str
+    graph: str
+    device: str | None = None
+    outputs: dict[str, Any] | None = None
+    error: RunError | None = None
+    timing: RunTiming | None = None
+
+
+class ContractInputSchema(BaseModel):
+    name: str
+    type: str
+    required: bool
+    default: Any = None
+    description: str = ""
+
+
+class ContractOutputSchema(BaseModel):
+    name: str
+    type: str = "ANY"
+    description: str = ""
+
+
+class GraphContractResponse(BaseModel):
+    graph: str
+    inputs: list[ContractInputSchema]
+    outputs: list[ContractOutputSchema]
+    problems: list[str] = []
+
+
 # ── Preset schemas ──────────────────────────────────────────────
 
 class InternalNodeSchema(BaseModel):

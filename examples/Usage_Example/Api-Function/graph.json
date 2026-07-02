@@ -1,0 +1,69 @@
+{
+  "name": "Api-Function",
+  "description": "Graph-as-a-Function demo: Start -> GraphInput -> Print -> GraphOutput. Run it on the canvas (uses the input's default) or save it and call POST /api/graph/run/Api-Function with {\"inputs\": {\"message\": \"...\"}} to get {\"outputs\": {\"echo\": \"...\"}} back. See docs: Usage -> Graph as a Function.",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": { "x": -150, "y": 100 },
+      "data": { "params": {} }
+    },
+    {
+      "id": "input-message",
+      "type": "GraphInput",
+      "position": { "x": 80, "y": 100 },
+      "data": {
+        "params": {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "default": "hello from the canvas",
+          "description": "Text to echo back"
+        }
+      }
+    },
+    {
+      "id": "print-1",
+      "type": "Print",
+      "position": { "x": 340, "y": 100 },
+      "data": { "params": { "label": "Api-Function" } }
+    },
+    {
+      "id": "output-echo",
+      "type": "GraphOutput",
+      "position": { "x": 600, "y": 100 },
+      "data": {
+        "params": {
+          "name": "echo",
+          "description": "The message, passed through Print"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger",
+      "source": "start-1",
+      "target": "input-message",
+      "sourceHandle": "trigger",
+      "targetHandle": "",
+      "type": "trigger"
+    },
+    {
+      "id": "e-data-1",
+      "source": "input-message",
+      "target": "print-1",
+      "sourceHandle": "value",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e-data-2",
+      "source": "print-1",
+      "target": "output-echo",
+      "sourceHandle": "value",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

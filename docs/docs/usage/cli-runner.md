@@ -8,6 +8,8 @@ description: Execute a saved graph.json directly from the command line with run_
 
 You can execute any graph directly from the command line without starting the server. This is handy for batch runs, CI, or reproducing a pipeline headlessly.
 
+If you want to call a *saved* graph on a *running* server instead — declared inputs in, declared outputs out, over HTTP — see **[Graph as a Function](./graph-as-a-function)**.
+
 ```bash
 cd backend
 python run_graph.py ../examples/Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json
