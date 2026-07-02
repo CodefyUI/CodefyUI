@@ -289,3 +289,66 @@ def test_derive_contract_ignores_preset_and_other_nodes():
     contract = derive_contract(nodes)
     assert contract.inputs == []
     assert len(contract.outputs) == 1
+
+
+# ── check_wiring ─────────────────────────────────────────────────────────
+
+from app.core.api_contract import check_wiring  # noqa: E402
+
+
+def _trigger_edge(eid: str, src: str, tgt: str) -> dict:
+    return {
+        "id": eid, "source": src, "target": tgt,
+        "sourceHandle": "trigger", "targetHandle": "", "type": "trigger",
+    }
+
+
+def _data_edge(eid: str, src: str, tgt: str,
+               src_handle: str = "value", tgt_handle: str = "value") -> dict:
+    return {
+        "id": eid, "source": src, "target": tgt,
+        "sourceHandle": src_handle, "targetHandle": tgt_handle, "type": "data",
+    }
+
+
+def test_check_wiring_clean_graph():
+    nodes = [_other("s", "Start"), _gi("i1", name="x"), _go("o1", name="y")]
+    edges = [_trigger_edge("t1", "s", "i1"), _data_edge("d1", "i1", "o1")]
+    report = check_wiring(nodes, edges, derive_contract(nodes))
+    assert report.untriggered == []
+    assert report.unreachable == []
+
+
+def test_check_wiring_untriggered_input():
+    # i1 feeds o1 but has no trigger; a *different* node is triggered, so the
+    # engine would silently prune i1 and run "successfully" without the
+    # caller's input — exactly what the 409 pre-flight must prevent.
+    nodes = [_other("s", "Start"), _other("src"), _gi("i1", name="x"), _go("o1", name="y")]
+    edges = [_trigger_edge("t1", "s", "src"), _data_edge("d1", "i1", "o1")]
+    report = check_wiring(nodes, edges, derive_contract(nodes))
+    assert report.untriggered == ["x"]
+    # o1 is fed only through the untriggered i1, so it is also unreachable.
+    assert report.unreachable == ["y"]
+
+
+def test_check_wiring_unreachable_output():
+    nodes = [
+        _other("s", "Start"), _gi("i1", name="x"),
+        _go("o1", name="y1"), _go("o2", name="y2"), _other("src2"),
+    ]
+    edges = [
+        _trigger_edge("t1", "s", "i1"),
+        _data_edge("d1", "i1", "o1"),
+        _data_edge("d2", "src2", "o2"),  # src2 untriggered -> pruned at run time
+    ]
+    report = check_wiring(nodes, edges, derive_contract(nodes))
+    assert report.untriggered == []
+    assert report.unreachable == ["y2"]
+
+
+def test_check_wiring_no_entry_points_marks_everything():
+    nodes = [_gi("i1", name="x"), _go("o1", name="y")]
+    edges = [_data_edge("d1", "i1", "o1")]
+    report = check_wiring(nodes, edges, derive_contract(nodes))
+    assert report.untriggered == ["x"]
+    assert report.unreachable == ["y"]

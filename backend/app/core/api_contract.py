@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .graph_engine import find_entry_points, reachable_from_entry_points
+
 # Input `type` values (v1, frozen). `json` stays `json` — it describes
 # exactly what a caller can send; no new DataType is needed.
 INPUT_TYPES = ("string", "number", "integer", "boolean", "json", "image")
@@ -267,3 +269,37 @@ def _check_names(
         if name in seen:
             problems.append(f"duplicate {kind} name '{name}'")
         seen.add(name)
+
+
+@dataclass
+class WiringReport:
+    """Static pre-flight wiring findings on the raw (unexpanded) graph."""
+
+    untriggered: list[str] = field(default_factory=list)  # GraphInput names
+    unreachable: list[str] = field(default_factory=list)  # GraphOutput names
+
+
+def check_wiring(
+    nodes: list[dict], edges: list[dict], contract: Contract
+) -> WiringReport:
+    """Flag untriggered GraphInputs and unreachable GraphOutputs.
+
+    Uses the exact traversal the engine prunes with (``find_entry_points``
+    + ``reachable_from_entry_points``), applied statically to the raw
+    graph: verified engine behaviour silently prunes untriggered data
+    roots, so a clean report is what makes a run's declared I/O real.
+    """
+    report = WiringReport()
+    triggered = {
+        e["target"] for e in edges if e.get("type", "data") == "trigger"
+    }
+    for inp in contract.inputs:
+        if inp["node_id"] not in triggered:
+            report.untriggered.append(inp["name"])
+
+    entry_ids = find_entry_points(nodes, edges)
+    reachable = reachable_from_entry_points(entry_ids, edges)
+    for out in contract.outputs:
+        if out["node_id"] not in reachable:
+            report.unreachable.append(out["name"])
+    return report
