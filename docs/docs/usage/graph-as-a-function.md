@@ -93,7 +93,7 @@ Forward compatibility: **Clients MUST ignore unknown envelope fields.** **`error
 
 ### Error taxonomy
 
-Triage rule: **404 = wrong name; 409 = fix the graph; 413 = shrink your payload; 422 = fix your payload; 500 = run failed.**
+Triage rule: **404 = wrong name; 409 = fix the graph; 413 = shrink your payload; 422 = fix your payload; 500 = run failed (or the graph file was unreadable).**
 
 | `error.code` | HTTP | Trigger |
 | --- | --- | --- |
@@ -194,12 +194,12 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 
 - 403 (missing/invalid token) and 421 (Host guard) arrive WITHOUT the envelope — they fire before the route.
 - This server never emits 504; a 504 always came from an intermediary.
-- `record_outputs=true` makes results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP) — auth on read endpoints is a hard Stage 2 requirement.
+- `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP) — auth on read endpoints is a hard Stage 2 requirement.
 - Do not put secrets in `default` values — `GET /contract` and `/load` are unauthenticated.
 - `device: "auto"` (or an unavailable device) silently resolves to CPU; the envelope's `device` field shows what you actually got.
 - A single >65,536-element tensor output fails the whole call — remove that GraphOutput or use `record_outputs` + the slicing outputs API (`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`); an outputs filter is deferred.
 - Concurrent runs share the process default thread pool (the per-run parallelism limit of 4 is not a global limit) — heavy runs contend for CPU/GPU.
-- After a timeout, cancellation is cooperative: only nodes that poll `context.cancelled` stop; the node already in flight finishes in the background, including its side effects.
+- After a timeout, no new node starts after a cancel; the in-flight node finishes in the background (nodes may poll `context.cancelled` to stop sooner).
 - Client disconnects do not stop a run; only the timeout does. Results of a disconnected run are discarded unless `record_outputs=true`.
 
 ## 9. Roadmap
