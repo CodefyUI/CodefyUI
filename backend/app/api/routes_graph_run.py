@@ -426,6 +426,12 @@ async def run_graph_as_function(name: str, request: Request):
         node_state_store=None,
         graph_id=f"api:{name}",
     )
+    output_store = None
+    if run_req.record_outputs:
+        # The lifespan does not run under httpx ASGITransport, so the
+        # attribute may be absent — recording is then silently skipped
+        # (ws_execution.py getattr precedent).
+        output_store = getattr(request.app.state, "run_output_store", None)
 
     # 8. Launch as an INDEPENDENT task and await it under a shielded
     #    timeout. The shield means handler cancellation (client disconnect)
@@ -448,6 +454,8 @@ async def run_graph_as_function(name: str, request: Request):
         context=ctx,
         error_mode="fail_fast",
         run_id=run_id,
+        output_store=output_store,
+        record_outputs=run_req.record_outputs and output_store is not None,
     ))
     task.add_done_callback(_retrieve_background_exception)
     try:

@@ -677,3 +677,108 @@ async def test_run_403_without_token_is_out_of_envelope():
     body = resp.json()
     assert body == {"detail": "Missing or invalid X-CodefyUI-Token header"}
     assert "run_id" not in body
+
+
+# ── record_outputs + concurrency + disconnect policy ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_outputs_retrievable_by_run_id(test_client):
+    # Store set explicitly — the lifespan does not run under ASGITransport
+    # (pattern: test_routes_execution_outputs.py).
+    app.state.run_output_store = RunOutputStore(max_runs=5)
+    await _save_graph(test_client, _echo_graph(name="recorded"))
+    resp = await test_client.post(
+        "/api/graph/run/recorded",
+        json={"inputs": {"x": "keep me"}, "record_outputs": True},
+    )
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+
+    listing = await test_client.get(f"/api/execution/outputs/{run_id}")
+    assert listing.status_code == 200
+    entries = listing.json()
+    assert any(e["node_id"] == "out" and e["port"] == "value" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_record_outputs_without_store_still_succeeds(test_client):
+    # getattr fallback: absent attribute means recording is skipped, not a 500.
+    had_store = hasattr(app.state, "run_output_store")
+    saved = getattr(app.state, "run_output_store", None)
+    if had_store:
+        delattr(app.state, "run_output_store")
+    try:
+        await _save_graph(test_client, _echo_graph(name="no-store"))
+        resp = await test_client.post(
+            "/api/graph/run/no-store",
+            json={"inputs": {"x": "hi"}, "record_outputs": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["outputs"] == {"y": "hi"}
+    finally:
+        if had_store:
+            app.state.run_output_store = saved
+
+
+@pytest.mark.asyncio
+async def test_record_outputs_default_off(test_client):
+    app.state.run_output_store = RunOutputStore(max_runs=5)
+    await _save_graph(test_client, _echo_graph(name="not-recorded"))
+    resp = await test_client.post("/api/graph/run/not-recorded",
+                                  json={"inputs": {"x": "hi"}})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+    listing = await test_client.get(f"/api/execution/outputs/{run_id}")
+    assert listing.status_code == 404  # nothing recorded by default
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_are_independent(test_client):
+    await _save_graph(test_client, _echo_graph(name="concurrent"))
+    resp_a, resp_b = await asyncio.gather(
+        test_client.post("/api/graph/run/concurrent",
+                         json={"inputs": {"x": "alpha"}}),
+        test_client.post("/api/graph/run/concurrent",
+                         json={"inputs": {"x": "beta"}}),
+    )
+    assert resp_a.status_code == 200 and resp_b.status_code == 200
+    assert resp_a.json()["outputs"] == {"y": "alpha"}
+    assert resp_b.json()["outputs"] == {"y": "beta"}
+    assert resp_a.json()["run_id"] != resp_b.json()["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_cancel_run(test_client):
+    """Spec-normative disconnect policy: a client disconnect never cancels
+    the run; only the timeout stops a run. Cancelling the client request
+    task mid-run simulates the disconnect; the surviving run is observable
+    through the record_outputs store."""
+    store = RunOutputStore(max_runs=5)
+    app.state.run_output_store = store
+    await _save_graph(test_client, _chain_graph("survives", "_SlowPass",
+                                                {"seconds": 1.0}))
+
+    request_task = asyncio.create_task(test_client.post(
+        "/api/graph/run/survives",
+        json={"inputs": {"x": "still here"}, "record_outputs": True},
+    ))
+    await asyncio.sleep(0.3)   # let the run reach the _SlowPass node
+    request_task.cancel()      # the client drops the connection
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    # The shielded run keeps going: poll the store until the GraphOutput
+    # node's value lands (written only when the run reaches the end).
+    deadline = time.monotonic() + 10.0
+    recorded = None
+    while time.monotonic() < deadline:
+        for run_id in await store.list_runs():
+            value = await store.get(run_id, "out", "value")
+            if value is not None:
+                recorded = value
+                break
+        if recorded is not None:
+            break
+        await asyncio.sleep(0.1)
+    assert recorded == "still here"
