@@ -430,3 +430,120 @@ def test_collect_outputs_none_value_is_present_not_missing():
     outputs, missing = collect_outputs(contract, {"o1": {"value": None}})
     assert outputs == {"y": None}
     assert missing == []
+
+
+# ── serialize_output ─────────────────────────────────────────────────────
+
+from app.core.api_contract import (  # noqa: E402
+    MAX_TENSOR_ELEMENTS,
+    OutputSerializationError,
+    serialize_output,
+)
+
+
+def test_serialize_primitives_pass_through():
+    for val in (None, True, 3, 2.5, "s"):
+        assert serialize_output(val) == val
+
+
+def test_serialize_containers_recurse_tuple_becomes_list():
+    assert serialize_output({"a": (1, 2), "b": [3.5, "x"]}) == {
+        "a": [1, 2], "b": [3.5, "x"],
+    }
+
+
+def test_serialize_numpy_scalar_item():
+    import numpy as np
+
+    assert serialize_output(np.float32(2.5)) == 2.5
+    assert isinstance(serialize_output(np.int64(7)), int)
+
+
+def test_serialize_ndarray_tagged():
+    import numpy as np
+
+    out = serialize_output(np.zeros((2, 3), dtype=np.float32))
+    assert out["__type__"] == "tensor"
+    assert out["shape"] == [2, 3]
+    assert out["dtype"] == "float32"
+    assert out["values"] == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+
+def test_serialize_tensor_tagged_and_zero_dim():
+    import torch
+
+    out = serialize_output(torch.tensor([[1.0, 2.0]]))
+    assert out == {
+        "__type__": "tensor", "shape": [1, 2],
+        "dtype": "torch.float32", "values": [[1.0, 2.0]],
+    }
+    # 0-dim tensors serialize with shape [] rather than unwrapping.
+    zero_dim = serialize_output(torch.tensor(5.0))
+    assert zero_dim["shape"] == []
+    assert zero_dim["values"] == 5.0
+
+
+def test_serialize_tensor_cap_65536():
+    import torch
+
+    assert MAX_TENSOR_ELEMENTS == 65536
+    ok = serialize_output(torch.zeros(65536))
+    assert len(ok["values"]) == 65536
+    with pytest.raises(OutputSerializationError) as exc_info:
+        serialize_output(torch.zeros(65537))
+    assert exc_info.value.code == "output_too_large"
+    assert "record_outputs" in exc_info.value.reason
+
+
+def test_serialize_ndarray_cap_65536():
+    import numpy as np
+
+    with pytest.raises(OutputSerializationError) as exc_info:
+        serialize_output(np.zeros(65537))
+    assert exc_info.value.code == "output_too_large"
+
+
+def test_serialize_module_rejected_with_modelsaver_hint():
+    import torch
+
+    with pytest.raises(OutputSerializationError) as exc_info:
+        serialize_output(torch.nn.Linear(2, 2))
+    assert exc_info.value.code == "unserializable_output"
+    assert "ModelSaver" in exc_info.value.reason
+
+
+def test_serialize_pil_image_base64_roundtrip():
+    import base64
+    import io
+
+    from PIL import Image
+
+    out = serialize_output(Image.new("RGB", (4, 2), color=(0, 0, 255)))
+    assert out["__type__"] == "image"
+    assert out["format"] == "png"
+    round_tripped = Image.open(io.BytesIO(base64.b64decode(out["base64"])))
+    assert round_tripped.size == (4, 2)
+
+
+def test_serialize_unknown_type_rejected_with_type_name():
+    class Widget:
+        pass
+
+    with pytest.raises(OutputSerializationError) as exc_info:
+        serialize_output(Widget())
+    assert exc_info.value.code == "unserializable_output"
+    assert "Widget" in exc_info.value.reason
+
+
+def test_serialize_base64_plot_string_passes_through():
+    # Base64-string plots (e.g. Visualize node output) are plain strings.
+    assert serialize_output("iVBORw0KGgo=") == "iVBORw0KGgo="
+
+
+def test_image_base64_roundtrip_to_tensor():
+    # Input side of the same story: base64 -> coerce_input -> tensor.
+    import torch
+
+    tensor = coerce_input(_tiny_png_base64(), "image")
+    assert tensor.shape == (3, 2, 4)
+    assert tensor.dtype == torch.float32

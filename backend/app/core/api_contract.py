@@ -374,3 +374,105 @@ def collect_outputs(
         else:
             missing.append(out["name"])
     return outputs, missing
+
+
+# A single tensor/ndarray output above this many elements fails
+# serialization with ``output_too_large`` — callers should use
+# ``record_outputs=true`` + the slicing outputs API instead.
+MAX_TENSOR_ELEMENTS = 65536
+
+
+class OutputSerializationError(Exception):
+    """A value reaching a GraphOutput cannot be returned as JSON."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code  # "output_too_large" | "unserializable_output"
+        self.reason = reason
+
+
+def serialize_output(value: Any) -> Any:
+    """Convert a value reaching a GraphOutput into a JSON-compatible form.
+
+    Full values, not summaries (contrast the inspector wire shapes in
+    ``routes_execution_outputs`` / ``ws_execution``). Tagged objects use
+    the ``__type__`` key — intentionally diverging from the internal
+    ``"type"``-keyed shapes so they can never collide with a user dict
+    output that happens to contain a ``"type"`` key.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {key: serialize_output(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [serialize_output(item) for item in value]
+
+    import numpy as np
+
+    if isinstance(value, np.generic):
+        # numpy scalar (sklearn nodes emit these)
+        return value.item()
+    if isinstance(value, np.ndarray):
+        if value.size > MAX_TENSOR_ELEMENTS:
+            raise OutputSerializationError(
+                "output_too_large",
+                f"array has {value.size} elements (max {MAX_TENSOR_ELEMENTS}); "
+                "use record_outputs=true and the slicing outputs API "
+                "(GET /api/execution/outputs/{run_id}/...) instead",
+            )
+        return {
+            "__type__": "tensor",
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+            "values": value.tolist(),
+        }
+
+    try:
+        import torch
+    except ImportError:
+        torch = None
+    if torch is not None:
+        if isinstance(value, torch.Tensor):
+            if value.numel() > MAX_TENSOR_ELEMENTS:
+                raise OutputSerializationError(
+                    "output_too_large",
+                    f"tensor has {value.numel()} elements "
+                    f"(max {MAX_TENSOR_ELEMENTS}); use record_outputs=true and "
+                    "the slicing outputs API "
+                    "(GET /api/execution/outputs/{run_id}/...) instead",
+                )
+            # 0-dim tensors keep shape [] rather than unwrapping — one rule,
+            # no surprises.
+            return {
+                "__type__": "tensor",
+                "shape": list(value.shape),
+                "dtype": str(value.dtype),
+                "values": value.detach().cpu().tolist(),
+            }
+        if isinstance(value, torch.nn.Module):
+            raise OutputSerializationError(
+                "unserializable_output",
+                "torch.nn.Module cannot be returned as JSON — save it with a "
+                "ModelSaver node in-graph and return its path string instead",
+            )
+
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+    if Image is not None and isinstance(value, Image.Image):
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        value.save(buf, format="PNG")
+        return {
+            "__type__": "image",
+            "format": "png",
+            "base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+        }
+
+    raise OutputSerializationError(
+        "unserializable_output",
+        f"value of type {type(value).__name__} is not JSON-serializable",
+    )
