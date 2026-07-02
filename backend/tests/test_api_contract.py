@@ -352,3 +352,81 @@ def test_check_wiring_no_entry_points_marks_everything():
     report = check_wiring(nodes, edges, derive_contract(nodes))
     assert report.untriggered == ["x"]
     assert report.unreachable == ["y"]
+
+
+# ── inject_inputs / collect_outputs ──────────────────────────────────────
+
+from app.core.api_contract import collect_outputs, inject_inputs  # noqa: E402
+
+
+def test_inject_inputs_writes_raw_value_and_preserves_original():
+    nodes = [_other("s", "Start"), _gi("i1", name="x", type="integer"), _go("o1", name="y")]
+    contract = derive_contract(nodes)
+    patched, errors = inject_inputs(nodes, contract, {"x": 3.0})
+    assert errors == []
+    patched_params = patched[1]["data"]["params"]
+    assert patched_params["value"] == 3.0            # RAW value, not int(3)
+    assert isinstance(patched_params["value"], float)
+    assert "value" not in nodes[1]["data"]["params"]  # deep-copy: original untouched
+
+
+def test_inject_inputs_image_stays_base64_string():
+    import json as _json
+
+    nodes = [_gi("i1", name="img", type="image"), _go("o1", name="y")]
+    contract = derive_contract(nodes)
+    b64 = _tiny_png_base64()
+    patched, errors = inject_inputs(nodes, contract, {"img": b64})
+    assert errors == []
+    injected = patched[0]["data"]["params"]["value"]
+    assert injected == b64        # decoded once, in the node — not here
+    _json.dumps(injected)         # injected params stay JSON-serializable
+
+
+def test_inject_inputs_aggregates_all_errors():
+    nodes = [
+        _gi("i1", name="a", type="number"),
+        _gi("i2", name="b", type="string"),
+        _go("o1", name="y"),
+    ]
+    contract = derive_contract(nodes)
+    _, errors = inject_inputs(nodes, contract, {"a": "not-a-number", "typo": 1})
+    reasons = {e["input"]: e["reason"] for e in errors}
+    assert set(reasons) == {"a", "typo", "b"}
+    assert reasons["typo"] == "unknown input name"
+    assert reasons["b"] == "missing required input"
+    assert "expected number" in reasons["a"]
+
+
+def test_inject_inputs_is_case_sensitive_exact_match():
+    nodes = [_gi("i1", name="x"), _go("o1", name="y")]
+    contract = derive_contract(nodes)
+    _, errors = inject_inputs(nodes, contract, {"X": "hi"})
+    reasons = {e["input"]: e["reason"] for e in errors}
+    assert reasons == {"X": "unknown input name", "x": "missing required input"}
+
+
+def test_inject_inputs_optional_omitted_not_injected():
+    nodes = [_gi("i1", name="x", required=False, default="fallback"), _go("o1", name="y")]
+    contract = derive_contract(nodes)
+    patched, errors = inject_inputs(nodes, contract, {})
+    assert errors == []
+    # No injection: the node's execute() falls back to `default`, identical
+    # to a canvas run.
+    assert "value" not in patched[0]["data"]["params"]
+
+
+def test_collect_outputs_reads_value_ports_and_reports_missing():
+    nodes = [_go("o1", name="y1"), _go("o2", name="y2")]
+    contract = derive_contract(nodes)
+    outputs, missing = collect_outputs(contract, {"o1": {"value": 42}})
+    assert outputs == {"y1": 42}
+    assert missing == ["y2"]
+
+
+def test_collect_outputs_none_value_is_present_not_missing():
+    nodes = [_go("o1", name="y")]
+    contract = derive_contract(nodes)
+    outputs, missing = collect_outputs(contract, {"o1": {"value": None}})
+    assert outputs == {"y": None}
+    assert missing == []

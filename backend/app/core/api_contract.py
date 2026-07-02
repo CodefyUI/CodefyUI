@@ -10,6 +10,7 @@ pure-JSON split); the endpoints in ``app.api.routes_graph_run`` stay thin.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass, field
@@ -303,3 +304,73 @@ def check_wiring(
         if out["node_id"] not in reachable:
             report.unreachable.append(out["name"])
     return report
+
+
+def inject_inputs(
+    nodes: list[dict],
+    contract: Contract,
+    request_inputs: dict[str, Any],
+) -> tuple[list[dict], list[dict[str, str]]]:
+    """Deep-copy *nodes* and write each request value into its GraphInput.
+
+    The RAW JSON value — not the coerced result — lands in
+    ``data.params["value"]``: the node's ``execute()`` performs the actual
+    coercion, which avoids double coercion (an endpoint-coerced image
+    tensor would fail the node's own base64 check), keeps injected params
+    JSON-serializable, and decodes images exactly once (in the node);
+    primitive types re-coerce idempotently. ``coerce_input`` is still
+    called here — result discarded — to validate coercibility up front.
+    Unknown names are rejected by case-sensitive exact match. All
+    per-input errors (unknown name, missing required, coercion failure)
+    are aggregated so the 422 reports everything at once.
+    """
+    errors: list[dict[str, str]] = []
+    by_name = {inp["name"]: inp for inp in contract.inputs}
+
+    for key in request_inputs:
+        if key not in by_name:  # case-sensitive exact match
+            errors.append({"input": key, "reason": "unknown input name"})
+
+    to_inject: dict[str, Any] = {}  # node_id -> raw value
+    for inp in contract.inputs:
+        name = inp["name"]
+        if name in request_inputs:
+            raw = request_inputs[name]
+            try:
+                coerce_input(raw, inp["type"])  # validate only; inject raw
+            except InputCoercionError as exc:
+                errors.append({"input": name, "reason": exc.reason})
+                continue
+            to_inject[inp["node_id"]] = raw
+        elif inp["required"]:
+            errors.append({"input": name, "reason": "missing required input"})
+        # Optional + omitted: no injection — the node's execute() falls
+        # back to its parsed `default` param, identical to a canvas run.
+
+    patched = copy.deepcopy(nodes)
+    for node in patched:
+        if node.get("id") in to_inject:
+            data = node.setdefault("data", {})
+            params = data.setdefault("params", {})
+            params["value"] = to_inject[node["id"]]
+    return patched, errors
+
+
+def collect_outputs(
+    contract: Contract,
+    engine_result: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Read each declared output's ``value`` port from the engine result.
+
+    ``missing`` survives only as a safety net behind the
+    ``unreachable_output`` pre-flight check.
+    """
+    outputs: dict[str, Any] = {}
+    missing: list[str] = []
+    for out in contract.outputs:
+        node_result = engine_result.get(out["node_id"])
+        if isinstance(node_result, dict) and "value" in node_result:
+            outputs[out["name"]] = node_result["value"]
+        else:
+            missing.append(out["name"])
+    return outputs, missing
