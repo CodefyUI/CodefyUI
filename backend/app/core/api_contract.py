@@ -400,6 +400,14 @@ def serialize_output(value: Any) -> Any:
     ``"type"``-keyed shapes so they can never collide with a user dict
     output that happens to contain a ``"type"`` key.
     """
+    try:  # numpy scalars can subclass Python builtins (np.float64 -> float)
+        import numpy as np
+    except ImportError:
+        np = None
+    if np is not None and isinstance(value, np.generic):
+        # numpy scalar (sklearn nodes emit these)
+        return serialize_output(value.item())
+
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, dict):
@@ -407,12 +415,7 @@ def serialize_output(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [serialize_output(item) for item in value]
 
-    import numpy as np
-
-    if isinstance(value, np.generic):
-        # numpy scalar (sklearn nodes emit these)
-        return value.item()
-    if isinstance(value, np.ndarray):
+    if np is not None and isinstance(value, np.ndarray):
         if value.size > MAX_TENSOR_ELEMENTS:
             raise OutputSerializationError(
                 "output_too_large",

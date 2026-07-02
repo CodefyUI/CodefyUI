@@ -547,3 +547,30 @@ def test_image_base64_roundtrip_to_tensor():
     tensor = coerce_input(_tiny_png_base64(), "image")
     assert tensor.shape == (3, 2, 4)
     assert tensor.dtype == torch.float32
+
+
+def test_serialize_numpy_builtin_subclass_scalars_normalize():
+    import numpy as np
+
+    out = serialize_output(np.float64(2.5))
+    assert out == 2.5 and type(out) is float
+    s = serialize_output(np.str_("hi"))
+    assert s == "hi" and type(s) is str
+    b = serialize_output(np.bool_(True))
+    assert b is True
+
+
+def test_serialize_numpy_complex_hits_catch_all():
+    import numpy as np
+
+    with pytest.raises(OutputSerializationError):
+        serialize_output(np.complex128(1 + 2j))
+
+
+def test_serialize_ndarray_zero_dim_keeps_empty_shape():
+    import numpy as np
+
+    tagged = serialize_output(np.array(7.5))
+    assert tagged["__type__"] == "tensor"
+    assert tagged["shape"] == []
+    assert tagged["values"] == 7.5
