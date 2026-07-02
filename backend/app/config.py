@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     PORT: int = 8000
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
     MAX_UPLOAD_SIZE: int = 500 * 1024 * 1024  # 500 MB
+    # Cap for POST /api/graph/run/{name} request bodies, checked against
+    # Content-Length before the body is read (-> 413 payload_too_large).
+    # 64 MB comfortably covers a handful of base64 image inputs.
+    # Env-overridable as CODEFYUI_MAX_RUN_BODY_BYTES.
+    MAX_RUN_BODY_BYTES: int = 64 * 1024 * 1024  # 64 MB
 
     NODES_DIR: Path = Path(__file__).parent / "nodes"
     CUSTOM_NODES_DIR: Path = Path(__file__).parent / "custom_nodes"
