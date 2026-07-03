@@ -651,6 +651,230 @@ async def invoke_app(
     return await _finish(http_status, envelope, node_timings, run_req.inputs)
 
 
+# ── per-app OpenAPI document (spec Section 6.1) ─────────────────────────
+
+# Contract type -> JSON Schema fragment (api_contract.INPUT_TYPES table).
+_CONTRACT_TYPE_TO_SCHEMA: dict[str, dict[str, Any]] = {
+    "string": {"type": "string"},
+    "number": {"type": "number"},
+    "integer": {"type": "integer"},
+    "boolean": {"type": "boolean"},
+    "json": {},  # any JSON value
+    "image": {"type": "string", "contentEncoding": "base64"},
+}
+
+
+def _openapi_document(
+    slug: str, version: int, contract_doc: dict[str, Any], host: str,
+) -> dict[str, Any]:
+    """A COMPLETE standalone OpenAPI 3.1 document for the active version.
+
+    Top-level ``openapi``/``info``/``paths``/``components``/``security``
+    are all always present — never a fragment (openapi-generator chokes on
+    partials). Generated from the version's stored ``contract_json``;
+    ``servers`` derives from the validated request Host (host_guard
+    already vetted it). JSON only — no HTML (Stage-5 veto).
+    """
+    input_properties: dict[str, Any] = {}
+    required_inputs: list[str] = []
+    for inp in contract_doc.get("inputs", []):
+        schema = dict(_CONTRACT_TYPE_TO_SCHEMA.get(inp.get("type", "json"),
+                                                   {}))
+        if inp.get("description"):
+            schema["description"] = inp["description"]
+        if inp.get("default") is not None:
+            schema["default"] = inp["default"]
+        input_properties[inp["name"]] = schema
+        if inp.get("required"):
+            required_inputs.append(inp["name"])
+    inputs_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": input_properties,
+        # Unknown input names are rejected 422 by the API — say so.
+        "additionalProperties": False,
+    }
+    if required_inputs:
+        inputs_schema["required"] = required_inputs
+
+    envelope_schema: dict[str, Any] = {
+        "type": "object",
+        "description": (
+            "The one run envelope: all nine keys always present (null when "
+            "not applicable); the HTTP status mirrors status/error.code. "
+            "Clients MUST ignore unknown envelope fields; error.code is an "
+            "open enum — treat unknown codes as generic errors."
+        ),
+        "required": ["status", "run_id", "graph", "app", "version",
+                     "device", "outputs", "error", "timing"],
+        "properties": {
+            "status": {"type": "string", "enum": ["ok", "error"]},
+            "run_id": {"type": "string"},
+            "graph": {"type": "string"},
+            "app": {"type": ["string", "null"]},
+            "version": {"type": ["integer", "null"]},
+            "device": {"type": ["string", "null"]},
+            "outputs": {"type": ["object", "null"]},
+            "error": {
+                "type": ["object", "null"],
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "node_id": {"type": ["string", "null"]},
+                    "details": {"type": ["array", "null"]},
+                },
+            },
+            "timing": {
+                "type": ["object", "null"],
+                "properties": {"total_s": {"type": "number"}},
+            },
+        },
+    }
+
+    base_url = f"http://{host}/api/apps/{slug}"
+    bash_curl = (
+        f'curl -s -X POST "{base_url}/invoke" \\\n'
+        '  -H "Authorization: Bearer cdui_YOUR_KEY" \\\n'
+        '  -H "Content-Type: application/json" \\\n'
+        '  --data "@payload.json"'
+    )
+    powershell_curl = (
+        f'curl.exe -s -X POST "{base_url}/invoke" `\n'
+        '  -H "Authorization: Bearer cdui_YOUR_KEY" `\n'
+        '  -H "Content-Type: application/json" `\n'
+        '  --data "@payload.json"'
+    )
+
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": f"CodefyUI app: {slug}",
+            "version": str(version),
+            "description": (
+                f"Published CodefyUI graph behind the stable slug '{slug}' "
+                f"(active version {version}). Auth: an API key in "
+                "'Authorization: Bearer cdui_...'. The request body is "
+                "optional; record_outputs is accepted and ignored on "
+                "published invokes (run records live in SQLite)."
+            ),
+        },
+        "servers": [{"url": base_url}],
+        "security": [{"bearerAuth": []}],
+        "paths": {
+            "/invoke": {
+                "post": {
+                    "operationId": "invoke_" + slug.replace("-", "_"),
+                    "summary": f"Invoke the active version of '{slug}'",
+                    "requestBody": {
+                        "required": False,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "inputs": inputs_schema,
+                                        "timeout_s": {
+                                            "type": "number",
+                                            "minimum": 1,
+                                            "maximum": 3600,
+                                            "default": 300,
+                                            "description": (
+                                                "Total budget in seconds, "
+                                                "INCLUDING queue wait "
+                                                "behind other invokes of "
+                                                "this app."
+                                            ),
+                                        },
+                                        "device": {
+                                            "type": ["string", "null"],
+                                            "description": (
+                                                "cpu / cuda / mps; an "
+                                                "unavailable device falls "
+                                                "back to cpu."
+                                            ),
+                                        },
+                                        "record_outputs": {
+                                            "type": "boolean",
+                                            "description": (
+                                                "Accepted and ignored on "
+                                                "published invokes."
+                                            ),
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    "responses": {
+                        "200": {
+                            "description": 'Run succeeded (status == "ok").',
+                            "content": {"application/json": {"schema": {
+                                "$ref": "#/components/schemas/RunEnvelope",
+                            }}},
+                        },
+                        "default": {
+                            "description": (
+                                "Enveloped error — the HTTP status mirrors "
+                                "error.code (401 invalid_key, 404 "
+                                "app_not_found, 409 app_unpublished, plus "
+                                "all Stage-1 codes)."
+                            ),
+                            "content": {"application/json": {"schema": {
+                                "$ref": "#/components/schemas/RunEnvelope",
+                            }}},
+                        },
+                    },
+                },
+            },
+        },
+        "components": {
+            "schemas": {"RunEnvelope": envelope_schema},
+            "securitySchemes": {
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "CodefyUI API key (cdui_...)",
+                },
+            },
+        },
+        "x-codefyui-curl": {
+            "powershell": powershell_curl,
+            "bash": bash_curl,
+        },
+    }
+
+
+@router.get("/{slug}/openapi.json",
+            dependencies=[Depends(require_api_key_or_session)])
+async def get_app_openapi(slug: str, request: Request):
+    """The per-app OpenAPI 3.1 document for the ACTIVE version, generated
+    from the stored contract_json. Either-credential read."""
+    db = get_db(request)
+
+    def _resolve(conn: sqlite3.Connection) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT a.active_version, v.contract_json "
+            "FROM apps a "
+            "LEFT JOIN app_versions v "
+            "  ON v.app_id = a.id AND v.version = a.active_version "
+            "WHERE a.slug = ?",
+            (slug,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    resolved = await db.run(_resolve)
+    if resolved is None:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    if resolved["active_version"] is None or resolved["contract_json"] is None:
+        raise _manage_error(409, "app_unpublished",
+                            f"app '{slug}' has no active version — "
+                            "publish or activate one first")
+    contract_doc = json.loads(resolved["contract_json"])
+    host = request.headers.get("host", f"{settings.HOST}:{settings.PORT}")
+    return _openapi_document(
+        slug, int(resolved["active_version"]), contract_doc, host,
+    )
+
+
 @router.get("/{slug}/runs",
             dependencies=[Depends(require_api_key_or_session)])
 async def list_runs(
