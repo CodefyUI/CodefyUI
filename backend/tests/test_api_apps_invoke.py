@@ -788,3 +788,45 @@ async def test_runs_reads_accept_either_credential_reject_neither(
     # Session token alone (test_client default headers) works.
     assert (await test_client.get(
         f"/api/apps/{SLUG}/runs")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_run_detail_cross_app_isolation(
+    test_client, app_db, api_key,
+):
+    """Verify that a run from app A cannot be accessed via app B's run-detail
+    endpoint. The run must be structurally isolated by app_id, so fetching
+    a valid run_id with a different app slug returns 404 with
+    detail.code == 'run_not_found', indistinguishable from a nonexistent run.
+    Positive control: the same run_id is accessible via app A's slug."""
+    # Publish two apps.
+    await _publish(test_client, SLUG, _echo_graph())
+    other_slug = "other-app"
+    await _publish(test_client, other_slug, _echo_graph(name="other-src"))
+    key_headers = _bearer(api_key["token"])
+
+    # Invoke app A once to create a runs row.
+    invoke_resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "test"}},
+        headers=key_headers,
+    )
+    assert invoke_resp.status_code == 200
+    run_id = invoke_resp.json()["run_id"]
+
+    # Attempt to access the run from app B -> 404 with run_not_found code.
+    cross_app_resp = await test_client.get(
+        f"/api/apps/{other_slug}/runs/{run_id}",
+        headers=key_headers,
+    )
+    assert cross_app_resp.status_code == 404
+    detail = cross_app_resp.json()["detail"]
+    assert detail["code"] == "run_not_found"
+
+    # Positive control: the same run_id is accessible via app A's slug.
+    same_app_resp = await test_client.get(
+        f"/api/apps/{SLUG}/runs/{run_id}",
+        headers=key_headers,
+    )
+    assert same_app_resp.status_code == 200
+    assert same_app_resp.json()["run_id"] == run_id
