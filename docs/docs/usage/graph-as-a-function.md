@@ -6,7 +6,7 @@ description: Call any saved graph headlessly over HTTP as a named function — d
 
 # Graph as a Function
 
-Any graph you can run on the canvas can also be called over HTTP as a named function: you declare its inputs and outputs with two nodes, save it, and `POST /api/graph/run/{name}` executes it and returns JSON.
+Any graph you can run on the canvas can also be called over HTTP as a named function: you declare its inputs and outputs with two nodes, save it, and `POST /api/graph/run/{name}` executes it and returns JSON. This endpoint always runs the **latest saved file** under the restart-rotating session token — to make it stable: [publish it](./publish) as a versioned app behind a durable API key.
 
 **When to use this vs the [CLI runner](./cli-runner):** the CLI runner executes a `graph.json` file in a fresh Python process with no server — good for batch jobs and CI. The run API calls a *saved* graph on a *running* CodefyUI server — good for scripts, notebooks, and automations that want a function call with typed inputs and outputs instead of a process launch.
 
@@ -80,12 +80,16 @@ Every `/run` response — success or failure — is this one shape, with ALL key
   "status": "ok",                 // "ok" | "error"
   "run_id": "9f2c...",            // assigned at request entry; NEVER null
   "graph": "my-graph",
+  "app": null,                    // published-app slug; always null on this editor route
+  "version": null,                // published version; always null on this editor route
   "device": "cuda",               // what you actually got; null on early rejections
   "outputs": {"answer": 0.93},    // null unless status == "ok"
   "error": null,                  // null on success, else {"code", "message", "node_id", "details"}
   "timing": {"total_s": 1.234}    // null when execution was never attempted
 }
 ```
+
+`app` and `version` identify the published app on [`POST /api/apps/{slug}/invoke`](./publish) — the invoke route fills them (slug on every outcome; version once resolved), while this editor route always emits `null` for both.
 
 The HTTP status mirrors `status`/`error.code`, so `raise_for_status()` works.
 
@@ -194,7 +198,7 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 
 - 403 (missing/invalid token) and 421 (Host guard) arrive WITHOUT the envelope — they fire before the route.
 - This server never emits 504; a 504 always came from an intermediary.
-- `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP) — auth on read endpoints is a hard Stage 2 requirement.
+- `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP). Published apps: run records are key-protected in SQLite; the inspector store is editor-only — invokes never write to it. To make a graph stable and key-protected: [publish it](./publish).
 - Do not put secrets in `default` values — `GET /contract` and `/load` are unauthenticated.
 - `device: "auto"` (or an unavailable device) silently resolves to CPU; the envelope's `device` field shows what you actually got.
 - A single >65,536-element tensor output fails the whole call — remove that GraphOutput or use `record_outputs` + the slicing outputs API (`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`); an outputs filter is deferred.
@@ -204,6 +208,6 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 
 ## 9. Roadmap
 
-- `cdui call <graph> --input k=v` — CLI wrapper over this API (fast-follow DX item).
+- **Stage 2 (shipped): [Publish](./publish)** — versioned apps behind `POST /api/apps/{slug}/invoke` with durable API keys, key-protected SQLite run records, a per-image pixel budget, per-app OpenAPI documents, and `cdui start --host/--port` for LAN serving.
+- `cdui call <graph> --input k=v` / `cdui publish` / `cdui keys` — CLI wrappers over these APIs (fast-follow DX items).
 - Async job mode (202 + `job.status_url`) reusing the same envelope.
-- Stage 2: SQLite run history, publishing, auth on read endpoints.
