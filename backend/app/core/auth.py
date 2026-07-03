@@ -147,3 +147,36 @@ def host_is_allowed(host_header: str) -> bool:
 def allowed_hosts() -> frozenset[str]:
     """Snapshot of the current whitelist (mostly for tests / error messages)."""
     return frozenset(_ALLOWED_HOSTS)
+
+
+def local_interface_ips() -> list[str]:
+    """Best-effort enumeration of this machine's IPv4 addresses.
+
+    Used when binding 0.0.0.0: ``init_allowed_hosts`` deliberately skips
+    the wildcard itself, so each concrete interface IP gets whitelisted as
+    ``{ip}:{port}`` instead. This does NOT weaken the DNS-rebinding
+    defense — a rebound browser still sends the attacker's hostname in
+    ``Host``, which stays unlisted.
+    """
+    import socket
+
+    ips: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    # UDP-connect trick: finds the outbound-default interface without
+    # sending a packet (helps when the hostname resolves to 127.0.1.1).
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 80))  # TEST-NET-1, never routed
+            ips.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    ips.discard("127.0.0.1")
+    return sorted(ips)

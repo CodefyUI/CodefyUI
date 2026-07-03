@@ -18,6 +18,10 @@
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
                 預設在背景執行（關掉 terminal 也會繼續跑），用 cdui status /
                 cdui stop 管理。加 --foreground / -f 則在前景執行（Ctrl+C 停止）。
+                旗標：--host <addr>   綁定位址（預設 127.0.0.1）。0.0.0.0 或
+                                      區網 IP 可讓其他裝置存取 — 任何能連到該埠
+                                      的人都能控制此實例，只在信任的網路使用。
+                      --port <n>      埠號（預設 8000）
     status      顯示系統與伺服器狀態儀表板（像 btop / k9s：CPU、記憶體、
                 磁碟、GPU、行程、伺服器 PID 與健康檢查）
                 預設持續刷新（每 2 秒，Ctrl+C 離開）；輸出被導向管線或非互動
@@ -925,7 +929,83 @@ def build() -> None:
 # + log live under the repo-local dev data dir alongside the session token.
 SERVER_PIDFILE = DEV_USER_DATA_DIR / "server.pid"
 SERVER_LOG = DEV_USER_DATA_DIR / "server.log"
-SERVER_HEALTH_URL = "http://127.0.0.1:8000/api/health"
+# host:port of the last-started server, so status/stop report real URLs.
+SERVER_ADDRFILE = DEV_USER_DATA_DIR / "server.addr"
+
+
+def _parse_host_port(argv: list) -> "tuple[str, int]":
+    """Read --host/--port from start's argv (same lightweight style as
+    --foreground). Defaults unchanged: 127.0.0.1:8000."""
+    host, port = "127.0.0.1", 8000
+    for i, a in enumerate(argv):
+        if a == "--host" and i + 1 < len(argv):
+            host = argv[i + 1]
+        elif a.startswith("--host="):
+            host = a.split("=", 1)[1]
+        elif a == "--port" and i + 1 < len(argv):
+            try:
+                port = int(argv[i + 1])
+            except ValueError:
+                pass
+        elif a.startswith("--port="):
+            try:
+                port = int(a.split("=", 1)[1])
+            except ValueError:
+                pass
+    return host, port
+
+
+def _probe_host(host: str) -> str:
+    """The address to PROBE for a bind host: 0.0.0.0/:: listen everywhere
+    but answer on loopback; a concrete LAN IP answers only on itself."""
+    return "127.0.0.1" if host in ("0.0.0.0", "::") else host
+
+
+def _display_url(host: str, port: int) -> str:
+    """Clickable URL for a bind host: wildcard/loopback render as
+    localhost; a concrete LAN IP renders as itself."""
+    shown = "localhost" if host in (
+        "127.0.0.1", "0.0.0.0", "::", "::1", "localhost") else host
+    return f"http://{shown}:{port}"
+
+
+def _local_ips() -> "list[str]":
+    """Best-effort local IPv4 addresses. Stdlib-only duplicate of
+    app.core.auth.local_interface_ips — dev.py must run without the venv."""
+    import socket
+    ips: "set[str]" = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None,
+                                       socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("192.0.2.1", 80))  # TEST-NET-1: never routed
+            ips.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
+        pass
+    ips.discard("127.0.0.1")
+    return sorted(ips)
+
+
+def _server_addr() -> "tuple[str, int]":
+    """The last-started server's (host, port) from server.addr; defaults
+    for pre-Stage-2 servers or when never started."""
+    try:
+        raw = SERVER_ADDRFILE.read_text().strip()
+        host, _, port = raw.rpartition(":")
+        return (host or "127.0.0.1"), int(port)
+    except (OSError, ValueError):
+        return "127.0.0.1", 8000
+
+
+def _server_health_url(host: str, port: int) -> str:
+    return f"http://{_probe_host(host)}:{port}/api/health"
 
 
 def _read_server_pid() -> "int | None":
@@ -952,15 +1032,23 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _server_healthy(timeout: float = 1.0) -> bool:
-    return _server_health_info(timeout) is not None
+def _server_healthy(host: "str | None" = None, port: "int | None" = None,
+                    timeout: float = 1.0) -> bool:
+    return _server_health_info(host, port, timeout) is not None
 
 
-def _server_health_info(timeout: float = 1.0) -> "dict | None":
+def _server_health_info(host: "str | None" = None,
+                        port: "int | None" = None,
+                        timeout: float = 1.0) -> "dict | None":
     """Fetch and parse /api/health. Returns the JSON dict, or None if the
-    server isn't responding (or returned a non-200 / unparseable body)."""
+    server isn't responding (or returned a non-200 / unparseable body).
+    Host/port default to the recorded server.addr of the last start."""
+    if host is None or port is None:
+        addr_host, addr_port = _server_addr()
+        host = host if host is not None else addr_host
+        port = port if port is not None else addr_port
     try:
-        with urlopen(SERVER_HEALTH_URL, timeout=timeout) as resp:
+        with urlopen(_server_health_url(host, port), timeout=timeout) as resp:
             if resp.status != 200:
                 return None
             import json  # noqa: PLC0415 — only needed here
@@ -997,6 +1085,7 @@ def start() -> None:
         sys.exit(1)
 
     foreground = any(a in ("-f", "--foreground") for a in sys.argv[2:])
+    host, port = _parse_host_port(sys.argv[2:])
 
     existing = _running_server_pid()
     if existing is not None:
@@ -1006,12 +1095,31 @@ def start() -> None:
 
     _warn_if_dist_stale()
     _apply_dev_env()
+    # settings.HOST/PORT (and therefore init_allowed_hosts) must agree
+    # with the actual bind — binding a concrete LAN IP whitelists it
+    # automatically (app.core.auth.init_allowed_hosts).
+    os.environ["CODEFYUI_HOST"] = host
+    os.environ["CODEFYUI_PORT"] = str(port)
     uvicorn = _require_venv_tool("uvicorn")
-    cmd = [uvicorn, "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+    cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port)]
+    SERVER_ADDRFILE.parent.mkdir(parents=True, exist_ok=True)
+    SERVER_ADDRFILE.write_text(f"{host}:{port}")
+
+    def _print_reach_lines() -> None:
+        print(f"    開啟 → {_display_url(host, port)}")
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            lan_ips = _local_ips() if host in ("0.0.0.0", "::") else [host]
+            for ip in lan_ips:
+                print(f"    LAN  → http://{ip}:{port}")
+            print(t(
+                "    注意：任何能連到這個埠的人都能控制此實例；只在信任的網路使用。",
+                "    NOTE: anyone who can reach this port controls the "
+                "instance; use only on trusted networks.",
+            ))
 
     if foreground:
         print("=== CodefyUI 啟動（前景；Ctrl+C 停止）===")
-        print("    開啟 → http://localhost:8000")
+        _print_reach_lines()
         print(f"    dev lockfile → {DEV_LOCKFILE}")
         print("")
         run(cmd, cwd=BACKEND_DIR)
@@ -1048,7 +1156,7 @@ def start() -> None:
             print("錯誤：伺服器啟動後隨即結束。最後的日誌：", file=sys.stderr)
             _print_log_tail(20)
             sys.exit(1)
-        if _server_healthy():
+        if _server_healthy(host, port):
             break
         time.sleep(0.5)
     else:
@@ -1056,7 +1164,7 @@ def start() -> None:
 
     print("=== CodefyUI 已在背景啟動 ===")
     print(f"    PID         → {proc.pid}")
-    print("    開啟        → http://localhost:8000")
+    _print_reach_lines()
     print(f"    日誌        → {SERVER_LOG}")
     print(f"    dev lockfile → {DEV_LOCKFILE}")
     print("")
@@ -1315,13 +1423,13 @@ def _render_dashboard(interval: float, first: bool) -> None:
         if info:
             _kv(t("節點 / 預設", "Nodes / Presets"),
                 f"{info.get('nodes_loaded', '?')} / {info.get('presets_loaded', '?')}")
-        _kv("URL", "http://localhost:8000")
+        _kv("URL", _display_url(*_server_addr()))
         _kv(t("日誌", "Log"), str(SERVER_LOG))
     elif healthy:
         orphan = t("有伺服器回應，但非 cdui 背景啟動（無 PID 檔）",
                    "responding, but not a cdui background server (no PID file)")
         _kv(t("狀態", "State"), f"{YELLOW}● {orphan}{RESET}")
-        _kv("URL", "http://localhost:8000")
+        _kv("URL", _display_url(*_server_addr()))
         if info:
             _kv(t("節點 / 預設", "Nodes / Presets"),
                 f"{info.get('nodes_loaded', '?')} / {info.get('presets_loaded', '?')}")
@@ -1520,13 +1628,16 @@ def stop() -> None:
     # process-group leader — kill the whole group to catch any children.
     pid = _read_server_pid()
     if pid is not None and _pid_alive(pid):
-        print(f"  停止背景伺服器（PID {pid}）...")
+        # Printing the stopped URL is a small NEW feature (stop printed no
+        # URL before Stage 2), so later shells know what just went away.
+        print(f"  停止背景伺服器（PID {pid}，{_display_url(*_server_addr())}）...")
         if sys.platform == "win32":
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
                            capture_output=True)
         else:
             _terminate_posix(pid)
     SERVER_PIDFILE.unlink(missing_ok=True)
+    SERVER_ADDRFILE.unlink(missing_ok=True)
 
     # Sweep up anything else (foreground starts, dev-mode vite, stray workers).
     if sys.platform == "win32":
