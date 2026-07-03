@@ -1,6 +1,7 @@
 """Shared pytest fixtures for CodefyUI backend tests."""
 
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,17 @@ from app.core.node_registry import NodeRegistry, registry
 from app.core.plugin_loader import install_plugin_finder, purge_all_plugin_modules
 from app.core.preset_registry import preset_registry
 from app.main import app
+
+# Captured before the redirect below -- test_config_stage2.py asserts
+# against this exact production value (see the fixture near the bottom of
+# this file that hands it back for the duration of those tests only).
+_DEFAULT_DB_PATH = settings.DB_PATH
+
+# DB isolation: every test run's SQLite DB lives in a temp dir, never in
+# backend/data/ (lifespan-driving TestClient tests would otherwise create a
+# real codefyui.db there). Module-level on purpose: conftest import runs
+# before any hook or fixture, so there is no ordering race.
+settings.DB_PATH = Path(tempfile.mkdtemp(prefix="codefyui-test-db-")) / "codefyui-test.db"
 
 # Tests use ``base_url="http://127.0.0.1:8000"`` which the production Host
 # whitelist already accepts, but seed it explicitly here so tests don't rely
@@ -45,6 +57,22 @@ install_plugin_finder(
         },
     },
 )
+
+
+@pytest.fixture(autouse=True)
+def _config_tests_see_default_db_path(request, monkeypatch):
+    """test_config_stage2.py asserts the untouched production DB_PATH; hand
+    it back for the duration of those tests only.
+
+    A plain fixture, not a ``pytest_runtest_setup``/``teardown`` hook -- it
+    only ever runs as part of normal per-item fixture resolution, which
+    pytest guarantees happens before that item's test body regardless of
+    collection order. ``monkeypatch`` restores the isolated path afterward,
+    so no hand-rolled restore bookkeeping is needed.
+    """
+    if "test_config_stage2" in str(request.node.fspath):
+        monkeypatch.setattr(settings, "DB_PATH", _DEFAULT_DB_PATH)
+    yield
 
 
 class _TestSourceNode(BaseNode):
@@ -137,3 +165,28 @@ def sample_graph():
         "name": "test-graph",
         "description": "A test graph",
     }
+
+
+@pytest.fixture
+async def app_db(tmp_path):
+    """Per-test Stage-2 Database on app.state (+ empty app_locks).
+
+    PER TEST, never module/session-scoped: asyncio locks bind to the
+    running event loop on first use. The lifespan does not run under
+    httpx ASGITransport, so tests set app.state directly (the
+    run_output_store precedent in test_api_graph_run.py).
+    """
+    from app.core.db import Database
+
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    app.state.db = db
+    app.state.app_locks = {}
+    try:
+        yield db
+    finally:
+        db.close()
+        if hasattr(app.state, "db"):
+            delattr(app.state, "db")
+        if hasattr(app.state, "app_locks"):
+            delattr(app.state, "app_locks")

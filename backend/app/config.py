@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     # Env-overridable as CODEFYUI_MAX_RUN_BODY_BYTES.
     MAX_RUN_BODY_BYTES: int = 64 * 1024 * 1024  # 64 MB
 
+    # ── Stage-2 publish storage + limits (spec Section 8) ──────────────
+    # All env-overridable via the CODEFYUI_ prefix like everything else.
+    # SQLite file for published apps / API keys / run records; sibling of
+    # GRAPHS_DIR so a dev clone and a global install stay isolated.
+    DB_PATH: Path = Path(__file__).parent.parent / "data" / "codefyui.db"
+    MAX_IMAGE_PIXELS: int = 25_000_000  # per-image decode budget (Decision H2)
+    RUN_IO_CAP_BYTES: int = 64 * 1024   # per-field runs.inputs_json/outputs_json cap
+    RUNS_RETENTION_DAYS: int = 0        # 0 = keep forever (default); >0 prunes loudly
+    # Comma-separated extra Host-whitelist entries, e.g.
+    # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
+    # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
+    EXTRA_ALLOWED_HOSTS: str = ""
+
     NODES_DIR: Path = Path(__file__).parent / "nodes"
     CUSTOM_NODES_DIR: Path = Path(__file__).parent / "custom_nodes"
     GRAPHS_DIR: Path = Path(__file__).parent.parent / "data" / "graphs"

@@ -1,9 +1,4 @@
-import logging
-import mimetypes
-from contextlib import asynccontextmanager
-from pathlib import Path
-from urllib.parse import urlparse
-
+import asyncio
 import logging
 import mimetypes
 import sys
@@ -46,6 +41,7 @@ from .api import (
     routes_graph,
     routes_graph_run,
     routes_images,
+    routes_keys,
     routes_llm,
     routes_models,
     routes_nodes,
@@ -64,6 +60,7 @@ from .core.auth import (
     session_token,
     write_token_file,
 )
+from .core.db import Database
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
@@ -92,6 +89,23 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _AUTH_EXEMPT_PATHS = frozenset({
     "/api/auth/bootstrap",
 })
+
+# Router prefixes whose routes carry their OWN route-level auth dependency
+# (exactly one each — enforced by tests/test_auth_drift.py). auth_guard
+# skips them entirely; host_guard still applies to everything.
+_AUTH_EXEMPT_PREFIXES = ("/api/apps", "/api/keys")
+
+
+def _prefix_exempt(path: str) -> bool:
+    """Exact-or-slash prefix match: '/api/apps' and '/api/apps/x' are
+    exempt, '/api/appsfoo' is not. Footgun (spec Section 8): a future
+    bare route at an exempt prefix matches ``path == p`` and is ALSO
+    exempt — the drift test, not this middleware, is the guarantee.
+    """
+    return any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in _AUTH_EXEMPT_PREFIXES
+    )
 
 
 @asynccontextmanager
@@ -165,7 +179,27 @@ async def lifespan(app: FastAPI):
     # Lifetime: server process. Survives Run clicks; lost on restart.
     app.state.node_state_store = NodeStateStore(max_modules=200)
 
+    # ── Stage-2 storage: published apps, API keys, run records ─────────
+    # Routes access it via getattr(app.state, "db", None) and 503 when
+    # absent (routes_execution_outputs precedent) — the lifespan does not
+    # run under httpx ASGITransport, so tests set app.state.db directly.
+    db = Database(settings.DB_PATH)
+    await asyncio.to_thread(db.connect)
+    app.state.db = db
+    logger.info("SQLite storage ready at %s", settings.DB_PATH)
+    # Startup retention prune (no-op at the default RUNS_RETENTION_DAYS=0;
+    # prune_runs itself logs loudly when it deletes anything).
+    await db.prune_runs(settings.RUNS_RETENTION_DAYS, force=True)
+    # Per-slug invoke serialization (spec Decision I); entries are pruned
+    # on app delete.
+    app.state.app_locks = {}
+
     yield
+
+    # Release the SQLite handle so `cdui stop` on Windows frees the DB and
+    # its WAL sidecar files (spec Section 13, Windows file locking).
+    db.close()
+    app.state.db = None
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
@@ -187,7 +221,7 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", TOKEN_HEADER],
+    allow_headers=["Content-Type", TOKEN_HEADER, "Authorization"],
     expose_headers=[],
 )
 
@@ -203,6 +237,11 @@ async def auth_guard(request: Request, call_next):
     """
     path = request.url.path
     if path in _AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+    if _prefix_exempt(path):
+        # /api/apps + /api/keys routes each declare exactly one explicit
+        # auth dependency (require_session_token / require_api_key /
+        # require_api_key_or_session) — enforced by the drift test.
         return await call_next(request)
     if request.method not in _MUTATING_METHODS:
         return await call_next(request)
@@ -252,6 +291,7 @@ app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
+app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
 
 
