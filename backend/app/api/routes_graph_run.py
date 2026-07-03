@@ -56,20 +56,25 @@ def build_envelope(
     status: str,
     run_id: str,
     graph: str,
+    app: str | None = None,
+    version: int | None = None,
     device: str | None = None,
     outputs: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
     timing: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Construct the one true /run envelope: all seven keys, always present.
+    """Construct the one true run envelope: all nine keys, always present.
 
     ``run_id`` is never null — it is assigned at request entry, before any
-    rejection can happen.
+    rejection can happen. ``app``/``version`` stay None on the editor
+    route; the invoke route fills them per the spec value rules.
     """
     return RunEnvelope(
         status=status,
         run_id=run_id,
         graph=graph,
+        app=app,
+        version=version,
         device=device,
         outputs=outputs,
         error=RunError(**error) if error is not None else None,
@@ -84,18 +89,27 @@ def error_response(
     graph: str,
     code: str,
     message: str,
+    app: str | None = None,
+    version: int | None = None,
     device: str | None = None,
     node_id: str | None = None,
     details: list[Any] | None = None,
     timing: dict[str, float] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    """An enveloped error; the HTTP status mirrors ``error.code``."""
+    """An enveloped error; the HTTP status mirrors ``error.code``.
+
+    ``headers`` lets the invoke 401 carry ``WWW-Authenticate: Bearer``.
+    """
     return JSONResponse(
         status_code=http_status,
+        headers=headers,
         content=build_envelope(
             status="error",
             run_id=run_id,
             graph=graph,
+            app=app,
+            version=version,
             device=device,
             outputs=None,
             error={
@@ -313,10 +327,248 @@ def _retrieve_background_exception(task: asyncio.Task) -> None:
         logger.debug("background graph run ended with error after response: %s", exc)
 
 
+async def execute_contract_run(
+    graph_label: str,
+    nodes: list[dict],
+    edges: list[dict],
+    run_req: _RunRequest,
+    run_id: str,
+    output_store: Any,
+) -> tuple[int, dict[str, Any], dict[str, float]]:
+    """Steps 5-12 of a contract run: pre-flight, inject, execute, collect,
+    serialize. Shared by the editor route below and Stage-2 invoke
+    (``routes_apps`` imports it — cross-route import precedent: this
+    module already imports from ``routes_graph``).
+
+    Structured return ``(http_status, envelope_dict, node_timings)`` — no
+    Response objects inside, so each route wraps it in its own transport
+    shape while staying WIRE-IDENTICAL to the pre-extraction handler.
+
+    - ``graph_label`` fills the envelope's ``graph`` key ("the name you
+      addressed"): graph name on the editor route, slug on invoke.
+    - ``run_req.timeout_s`` is read internally — the invoke route passes
+      a COPY holding only the remaining post-queue budget (Decision I).
+    - ``output_store`` is the hoisted app.state getattr; invoke passes
+      None so published runs can NEVER reach the unauthenticated
+      inspector store (Decision H1 — structural isolation).
+    - ``node_timings`` maps node_id -> seconds (Decision F2); ``cached``/
+      ``skipped`` arrive without a prior "running" and record 0.0. It
+      rides the return value for runs-row persistence; the envelope
+      ``timing`` stays ``{"total_s": ...}``.
+    """
+
+    def _error(
+        http_status: int,
+        *,
+        code: str,
+        message: str,
+        device: str | None = None,
+        node_id: str | None = None,
+        details: list[Any] | None = None,
+        timing: dict[str, float] | None = None,
+        node_timings: dict[str, float] | None = None,
+    ) -> tuple[int, dict[str, Any], dict[str, float]]:
+        return (
+            http_status,
+            build_envelope(
+                status="error", run_id=run_id, graph=graph_label,
+                device=device, outputs=None,
+                error={"code": code, "message": message,
+                       "node_id": node_id, "details": details},
+                timing=timing,
+            ),
+            node_timings or {},
+        )
+
+    # 5. Pre-flight on the raw graph — nobody pays for a full execution to
+    #    learn about mis-wiring. On invoke this also catches STALE
+    #    snapshots (e.g. a plugin-provided node type uninstalled after
+    #    publish) as 409 invalid_graph instead of a raw 500.
+    contract = api_contract.derive_contract(nodes)
+    if contract.problems:
+        return _error(409, code="invalid_contract",
+                      message="graph I/O contract has problems",
+                      details=contract.problems)
+    if not find_entry_points(nodes, edges):
+        return _error(409, code="no_entry_points",
+                      message=(
+                          "graph has no entry points — wire a Start "
+                          "node into every GraphInput"
+                      ))
+    wiring = api_contract.check_wiring(nodes, edges, contract)
+    if wiring.untriggered:
+        return _error(409, code="untriggered_input",
+                      message=(
+                          "GraphInput node(s) have no incoming trigger "
+                          "edge — wire Start into every GraphInput"
+                      ),
+                      details=wiring.untriggered)
+    if wiring.unreachable:
+        return _error(409, code="unreachable_output",
+                      message=(
+                          "GraphOutput node(s) are not reachable from "
+                          "any entry point"
+                      ),
+                      details=wiring.unreachable)
+    validation_errors = validate_graph(nodes, edges)
+    if validation_errors:
+        return _error(409, code="invalid_graph",
+                      message="graph failed validation",
+                      details=validation_errors)
+
+    # 6. Inject the RAW request values; each GraphInput's execute() coerces.
+    # inject_inputs does synchronous base64+PIL+ToTensor validation for
+    # image inputs — offload to the default executor so a large/slow image
+    # decode never blocks the event loop. inject_inputs is pure, so running
+    # it off-thread is safe.
+    patched_nodes, input_errors = await asyncio.get_running_loop().run_in_executor(
+        None,
+        functools.partial(api_contract.inject_inputs, nodes, contract, run_req.inputs),
+    )
+    if input_errors:
+        return _error(422, code="invalid_input", message="invalid inputs",
+                      details=input_errors)
+
+    # 7. Fresh per-request context: with persistence off the stateful mixin
+    #    rebuilds modules per call, so concurrent requests share no mutable
+    #    state; the app-global stores are simply not used.
+    device = resolve_device(run_req.device)
+    ctx = ExecutionContext(
+        device=device,
+        weights_persistent=False,
+        node_state_store=None,
+        graph_id=f"api:{graph_label}",
+    )
+
+    # 8. Launch as an INDEPENDENT task and await it under a shielded
+    #    timeout. The shield means handler cancellation (client disconnect)
+    #    never propagates into the run — only the timeout stops a run.
+    # Minimal error capture: remember the last node that reported an error
+    # so execution_error envelopes carry a node_id. Per-node timings stamp
+    # on "running" and close on completed/cached/skipped/error (F2).
+    last_error_node_id: dict[str, str | None] = {"value": None}
+    node_started: dict[str, float] = {}
+    node_timings: dict[str, float] = {}
+
+    async def _on_progress(
+        node_id: str, status: str, data: dict[str, Any] | None
+    ) -> None:
+        if status == "running":
+            node_started[node_id] = time.monotonic()
+            return
+        if status in ("completed", "cached", "skipped", "error"):
+            # cached/skipped arrive WITHOUT a prior "running" (the engine
+            # emits them directly): the dict.get guard records 0.0.
+            started = node_started.get(node_id)
+            node_timings[node_id] = (
+                round(time.monotonic() - started, 3)
+                if started is not None else 0.0
+            )
+        if status == "error":
+            last_error_node_id["value"] = node_id
+
+    t0 = time.monotonic()
+    task = asyncio.create_task(execute_graph(
+        patched_nodes,
+        edges,
+        on_progress=_on_progress,
+        context=ctx,
+        error_mode="fail_fast",
+        run_id=run_id,
+        output_store=output_store,
+        record_outputs=run_req.record_outputs and output_store is not None,
+    ))
+    task.add_done_callback(_retrieve_background_exception)
+    try:
+        engine_result = await asyncio.wait_for(
+            asyncio.shield(task), timeout=run_req.timeout_s,
+        )
+    except asyncio.TimeoutError:
+        # On py3.11+ asyncio.TimeoutError IS builtins.TimeoutError, so a
+        # NODE raising TimeoutError (e.g. a socket timeout) completes the
+        # shielded task with that exact exception before wait_for's own
+        # deadline ever fires — indistinguishable from a genuine timeout by
+        # exception type alone. Disambiguate with task.done(): if the task
+        # already finished, the exception came from graph execution and
+        # must be reported like any other execution_error (with node_id);
+        # only an incomplete task means wait_for's deadline itself expired.
+        if task.done() and not task.cancelled():
+            task_exc = task.exception()
+            if task_exc is not None:
+                return _error(
+                    500, code="execution_error", message=str(task_exc),
+                    device=device, node_id=last_error_node_id["value"],
+                    timing={"total_s": round(time.monotonic() - t0, 3)},
+                    node_timings=node_timings,
+                )
+        # 10. Cooperative cancellation: observed at node boundaries only —
+        # the node currently inside run_in_executor finishes in its thread
+        # after this 500 is sent (documented limitation).
+        ctx.cancel()
+        return _error(500, code="timeout",
+                      message=f"run exceeded timeout_s={run_req.timeout_s}",
+                      device=device,
+                      timing={"total_s": round(time.monotonic() - t0, 3)},
+                      node_timings=node_timings)
+    except GraphValidationError as exc:
+        # 9. Runtime safety net: preset expansion can invalidate a
+        # pre-flight-clean graph (pruning-induced missing required input;
+        # trigger-edges-into-preset-nodes dangling after expand_presets).
+        return _error(409, code="invalid_graph",
+                      message="graph failed validation at runtime",
+                      device=device, details=[str(exc)],
+                      timing={"total_s": round(time.monotonic() - t0, 3)},
+                      node_timings=node_timings)
+    except Exception as exc:  # noqa: BLE001 — never a raw, unenveloped 500
+        # 11. asyncio.CancelledError (client disconnect) is BaseException,
+        # not Exception — it passes through and the shielded run continues.
+        return _error(500, code="execution_error", message=str(exc),
+                      device=device, node_id=last_error_node_id["value"],
+                      timing={"total_s": round(time.monotonic() - t0, 3)},
+                      node_timings=node_timings)
+    total_s = round(time.monotonic() - t0, 3)
+
+    # 12. Collect + serialize declared outputs.
+    collected, missing = api_contract.collect_outputs(contract, engine_result)
+    if missing:
+        return _error(500, code="output_not_produced",
+                      message=(
+                          "declared output(s) missing from the engine "
+                          "result: " + ", ".join(missing)
+                      ),
+                      device=device, details=missing,
+                      timing={"total_s": total_s}, node_timings=node_timings)
+    outputs_json: dict[str, Any] = {}
+    serialization_errors: list[dict[str, str]] = []
+    serialization_code = "unserializable_output"
+    for output_name, value in collected.items():
+        try:
+            outputs_json[output_name] = api_contract.serialize_output(value)
+        except OutputSerializationError as exc:
+            serialization_errors.append(
+                {"output": output_name, "reason": exc.reason}
+            )
+            if exc.code == "output_too_large":
+                # When both kinds occur, the size violation names the code —
+                # deterministic and the more actionable of the two.
+                serialization_code = "output_too_large"
+    if serialization_errors:
+        return _error(500, code=serialization_code,
+                      message="output serialization failed",
+                      device=device, details=serialization_errors,
+                      timing={"total_s": total_s}, node_timings=node_timings)
+
+    return 200, build_envelope(
+        status="ok", run_id=run_id, graph=graph_label, device=device,
+        outputs=outputs_json, error=None, timing={"total_s": total_s},
+    ), node_timings
+
+
 @router.post("/run/{name}")
 async def run_graph_as_function(name: str, request: Request):
     """Execute a saved graph as a named function: declared inputs in,
-    declared outputs out. Every response uses the 7-key envelope."""
+    declared outputs out. Every response uses the 9-key envelope
+    (``app``/``version`` stay null on this editor route)."""
     # 1. run_id at request entry — every envelope carries it, including
     #    pre-flight rejections.
     run_id = uuid4().hex
@@ -368,70 +620,8 @@ async def run_graph_as_function(name: str, request: Request):
                               message="invalid request body",
                               details=field_errors)
 
-    # 5. Pre-flight on the raw graph — nobody pays for a full execution to
-    #    learn about mis-wiring.
-    contract = api_contract.derive_contract(nodes)
-    if contract.problems:
-        return error_response(409, run_id=run_id, graph=name,
-                              code="invalid_contract",
-                              message="graph I/O contract has problems",
-                              details=contract.problems)
-    if not find_entry_points(nodes, edges):
-        return error_response(409, run_id=run_id, graph=name,
-                              code="no_entry_points",
-                              message=(
-                                  "graph has no entry points — wire a Start "
-                                  "node into every GraphInput"
-                              ))
-    wiring = api_contract.check_wiring(nodes, edges, contract)
-    if wiring.untriggered:
-        return error_response(409, run_id=run_id, graph=name,
-                              code="untriggered_input",
-                              message=(
-                                  "GraphInput node(s) have no incoming trigger "
-                                  "edge — wire Start into every GraphInput"
-                              ),
-                              details=wiring.untriggered)
-    if wiring.unreachable:
-        return error_response(409, run_id=run_id, graph=name,
-                              code="unreachable_output",
-                              message=(
-                                  "GraphOutput node(s) are not reachable from "
-                                  "any entry point"
-                              ),
-                              details=wiring.unreachable)
-    validation_errors = validate_graph(nodes, edges)
-    if validation_errors:
-        return error_response(409, run_id=run_id, graph=name,
-                              code="invalid_graph",
-                              message="graph failed validation",
-                              details=validation_errors)
-
-    # 6. Inject the RAW request values; each GraphInput's execute() coerces.
-    # inject_inputs does synchronous base64+PIL+ToTensor validation for
-    # image inputs — offload to the default executor so a large/slow image
-    # decode never blocks the event loop. inject_inputs is pure, so running
-    # it off-thread is safe.
-    patched_nodes, input_errors = await asyncio.get_running_loop().run_in_executor(
-        None,
-        functools.partial(api_contract.inject_inputs, nodes, contract, run_req.inputs),
-    )
-    if input_errors:
-        return error_response(422, run_id=run_id, graph=name,
-                              code="invalid_input",
-                              message="invalid inputs",
-                              details=input_errors)
-
-    # 7. Fresh per-request context: with persistence off the stateful mixin
-    #    rebuilds modules per call, so concurrent requests share no mutable
-    #    state; the app-global stores are simply not used.
-    device = resolve_device(run_req.device)
-    ctx = ExecutionContext(
-        device=device,
-        weights_persistent=False,
-        node_state_store=None,
-        graph_id=f"api:{name}",
-    )
+    # Steps 5-12 live in execute_contract_run. The output_store getattr is
+    # hoisted HERE (editor-only surface); the invoke route passes None.
     output_store = None
     if run_req.record_outputs:
         # The lifespan does not run under httpx ASGITransport, so the
@@ -439,112 +629,9 @@ async def run_graph_as_function(name: str, request: Request):
         # (ws_execution.py getattr precedent).
         output_store = getattr(request.app.state, "run_output_store", None)
 
-    # 8. Launch as an INDEPENDENT task and await it under a shielded
-    #    timeout. The shield means handler cancellation (client disconnect)
-    #    never propagates into the run — only the timeout stops a run.
-    # Minimal error capture: remember the last node that reported an error
-    # so execution_error envelopes carry a node_id.
-    last_error_node_id: dict[str, str | None] = {"value": None}
-
-    async def _on_progress(
-        node_id: str, status: str, data: dict[str, Any] | None
-    ) -> None:
-        if status == "error":
-            last_error_node_id["value"] = node_id
-
-    t0 = time.monotonic()
-    task = asyncio.create_task(execute_graph(
-        patched_nodes,
-        edges,
-        on_progress=_on_progress,
-        context=ctx,
-        error_mode="fail_fast",
-        run_id=run_id,
-        output_store=output_store,
-        record_outputs=run_req.record_outputs and output_store is not None,
-    ))
-    task.add_done_callback(_retrieve_background_exception)
-    try:
-        engine_result = await asyncio.wait_for(
-            asyncio.shield(task), timeout=run_req.timeout_s,
-        )
-    except asyncio.TimeoutError:
-        # On py3.11+ asyncio.TimeoutError IS builtins.TimeoutError, so a
-        # NODE raising TimeoutError (e.g. a socket timeout) completes the
-        # shielded task with that exact exception before wait_for's own
-        # deadline ever fires — indistinguishable from a genuine timeout by
-        # exception type alone. Disambiguate with task.done(): if the task
-        # already finished, the exception came from graph execution and
-        # must be reported like any other execution_error (with node_id);
-        # only an incomplete task means wait_for's deadline itself expired.
-        if task.done() and not task.cancelled():
-            task_exc = task.exception()
-            if task_exc is not None:
-                return error_response(
-                    500, run_id=run_id, graph=name, code="execution_error",
-                    message=str(task_exc), device=device,
-                    node_id=last_error_node_id["value"],
-                    timing={"total_s": round(time.monotonic() - t0, 3)},
-                )
-        # 10. Cooperative cancellation: observed at node boundaries only —
-        # the node currently inside run_in_executor finishes in its thread
-        # after this 500 is sent (documented limitation).
-        ctx.cancel()
-        return error_response(500, run_id=run_id, graph=name, code="timeout",
-                              message=f"run exceeded timeout_s={run_req.timeout_s}",
-                              device=device,
-                              timing={"total_s": round(time.monotonic() - t0, 3)})
-    except GraphValidationError as exc:
-        # 9. Runtime safety net: preset expansion can invalidate a
-        # pre-flight-clean graph (pruning-induced missing required input;
-        # trigger-edges-into-preset-nodes dangling after expand_presets).
-        return error_response(409, run_id=run_id, graph=name,
-                              code="invalid_graph",
-                              message="graph failed validation at runtime",
-                              device=device, details=[str(exc)],
-                              timing={"total_s": round(time.monotonic() - t0, 3)})
-    except Exception as exc:  # noqa: BLE001 — never a raw, unenveloped 500
-        # 11. asyncio.CancelledError (client disconnect) is BaseException,
-        # not Exception — it passes through and the shielded run continues.
-        return error_response(500, run_id=run_id, graph=name,
-                              code="execution_error",
-                              message=str(exc), device=device,
-                              node_id=last_error_node_id["value"],
-                              timing={"total_s": round(time.monotonic() - t0, 3)})
-    total_s = round(time.monotonic() - t0, 3)
-
-    # 12. Collect + serialize declared outputs.
-    collected, missing = api_contract.collect_outputs(contract, engine_result)
-    if missing:
-        return error_response(500, run_id=run_id, graph=name,
-                              code="output_not_produced",
-                              message=(
-                                  "declared output(s) missing from the engine "
-                                  "result: " + ", ".join(missing)
-                              ),
-                              device=device, details=missing,
-                              timing={"total_s": total_s})
-    outputs_json: dict[str, Any] = {}
-    serialization_errors: list[dict[str, str]] = []
-    serialization_code = "unserializable_output"
-    for output_name, value in collected.items():
-        try:
-            outputs_json[output_name] = api_contract.serialize_output(value)
-        except OutputSerializationError as exc:
-            serialization_errors.append(
-                {"output": output_name, "reason": exc.reason}
-            )
-            if exc.code == "output_too_large":
-                # When both kinds occur, the size violation names the code —
-                # deterministic and the more actionable of the two.
-                serialization_code = "output_too_large"
-    if serialization_errors:
-        return error_response(500, run_id=run_id, graph=name,
-                              code=serialization_code,
-                              message="output serialization failed",
-                              device=device, details=serialization_errors,
-                              timing={"total_s": total_s})
-
-    return build_envelope(status="ok", run_id=run_id, graph=name, device=device,
-                          outputs=outputs_json, error=None,
-                          timing={"total_s": total_s})
+    http_status, envelope, _node_timings = await execute_contract_run(
+        name, nodes, edges, run_req, run_id, output_store,
+    )
+    if http_status != 200:
+        return JSONResponse(status_code=http_status, content=envelope)
+    return envelope
