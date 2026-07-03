@@ -109,6 +109,14 @@ class PublishRequest(BaseModel):
     create: bool = False
 
 
+class PatchAppRequest(BaseModel):
+    record_io: bool
+
+
+class ActivateRequest(BaseModel):
+    version: int
+
+
 @router.post("/{slug}/publish", dependencies=[Depends(require_session_token)])
 async def publish_app(slug: str, body: PublishRequest, request: Request):
     """Snapshot the saved graph as the next immutable version and activate
@@ -234,3 +242,145 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         "graph_name": body.graph,
         "note": body.note,
     }
+
+
+@router.get("", dependencies=[Depends(require_session_token)])
+async def list_apps(request: Request):
+    db = get_db(request)
+
+    def _select(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT a.slug, a.graph_name, a.active_version, a.record_io, "
+            "       a.created_at, a.updated_at, "
+            "       (SELECT COUNT(*) FROM app_versions v "
+            "        WHERE v.app_id = a.id) AS versions_count "
+            "FROM apps a ORDER BY a.slug",
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    rows = await db.run(_select)
+    for row in rows:
+        row["record_io"] = bool(row["record_io"])
+    return rows
+
+
+@router.get("/{slug}/versions", dependencies=[Depends(require_session_token)])
+async def list_versions(slug: str, request: Request):
+    db = get_db(request)
+
+    def _select(conn: sqlite3.Connection) -> list[dict[str, Any]] | None:
+        app_row = conn.execute(
+            "SELECT id, active_version FROM apps WHERE slug = ?", (slug,),
+        ).fetchone()
+        if app_row is None:
+            return None
+        rows = conn.execute(
+            "SELECT version, source_graph_name, note, created_at "
+            "FROM app_versions WHERE app_id = ? ORDER BY version DESC",
+            (app_row["id"],),
+        ).fetchall()
+        return [
+            {**dict(r), "active": r["version"] == app_row["active_version"]}
+            for r in rows
+        ]
+
+    rows = await db.run(_select)
+    if rows is None:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    return rows
+
+
+@router.patch("/{slug}", dependencies=[Depends(require_session_token)])
+async def patch_app(slug: str, body: PatchAppRequest, request: Request):
+    """Recording is app state, not version state — flipping it never
+    creates a version."""
+    db = get_db(request)
+    now = utc_now_iso()
+
+    def _patch(conn: sqlite3.Connection) -> int:
+        return conn.execute(
+            "UPDATE apps SET record_io = ?, updated_at = ? WHERE slug = ?",
+            (int(body.record_io), now, slug),
+        ).rowcount
+
+    if await db.run(_patch) == 0:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    return {"slug": slug, "record_io": body.record_io}
+
+
+@router.post("/{slug}/activate", dependencies=[Depends(require_session_token)])
+async def activate_version(slug: str, body: ActivateRequest, request: Request):
+    """Set ``active_version`` to ANY existing version — including from the
+    unpublished state (activate-after-unpublish restores service at that
+    version). Subsumes rollback; there is no separate rollback route."""
+    db = get_db(request)
+    now = utc_now_iso()
+
+    def _activate(conn: sqlite3.Connection) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            app_row = conn.execute(
+                "SELECT id FROM apps WHERE slug = ?", (slug,),
+            ).fetchone()
+            if app_row is None:
+                raise _manage_error(404, "app_not_found",
+                                    f"app '{slug}' not found")
+            exists = conn.execute(
+                "SELECT 1 FROM app_versions WHERE app_id = ? AND version = ?",
+                (app_row["id"], body.version),
+            ).fetchone()
+            if exists is None:
+                raise _manage_error(
+                    404, "version_not_found",
+                    f"app '{slug}' has no version {body.version}",
+                )
+            conn.execute(
+                "UPDATE apps SET active_version = ?, updated_at = ? "
+                "WHERE id = ?",
+                (body.version, now, app_row["id"]),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+
+    await db.run(_activate)
+    return {"slug": slug, "active_version": body.version}
+
+
+@router.post("/{slug}/unpublish",
+             dependencies=[Depends(require_session_token)])
+async def unpublish_app(slug: str, request: Request):
+    """``active_version = NULL``; versions and runs are retained."""
+    db = get_db(request)
+    now = utc_now_iso()
+
+    def _unpublish(conn: sqlite3.Connection) -> int:
+        return conn.execute(
+            "UPDATE apps SET active_version = NULL, updated_at = ? "
+            "WHERE slug = ?",
+            (now, slug),
+        ).rowcount
+
+    if await db.run(_unpublish) == 0:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    return {"slug": slug, "active_version": None}
+
+
+@router.delete("/{slug}", dependencies=[Depends(require_session_token)])
+async def delete_app(slug: str, request: Request):
+    """IRREVOCABLY removes the app, ALL its versions AND all its run
+    records (FK cascade); also prunes the slug's app_locks entry."""
+    db = get_db(request)
+
+    def _delete(conn: sqlite3.Connection) -> int:
+        return conn.execute(
+            "DELETE FROM apps WHERE slug = ?", (slug,),
+        ).rowcount
+
+    if await db.run(_delete) == 0:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    locks = getattr(request.app.state, "app_locks", None)
+    if locks is not None:
+        locks.pop(slug, None)
+    return {"slug": slug, "deleted": True}

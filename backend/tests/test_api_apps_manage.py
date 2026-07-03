@@ -257,3 +257,188 @@ async def test_publish_requires_session_token(app_db):
         resp = await anon.post(f"/api/apps/{SLUG}/publish",
                                json={"graph": "pub-src", "create": True})
     assert resp.status_code == 403
+
+
+# ── management: list / versions / record_io / activate / unpublish /
+#    delete (Task 7) ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_apps_fields(test_client, app_db):
+    await _save_graph(test_client, _echo_graph())
+    await _publish(test_client, "app-one", "pub-src")
+    await _publish(test_client, "app-one", "pub-src")
+    await _publish(test_client, "app-two", "pub-src", record_io=False)
+
+    resp = await test_client.get("/api/apps")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["slug"] for r in rows] == ["app-one", "app-two"]
+    one = rows[0]
+    assert set(one.keys()) == {
+        "slug", "graph_name", "active_version", "versions_count",
+        "record_io", "created_at", "updated_at",
+    }
+    assert one["active_version"] == 2
+    assert one["versions_count"] == 2
+    assert one["record_io"] is True
+    assert rows[1]["record_io"] is False
+
+
+@pytest.mark.asyncio
+async def test_versions_list_marks_active_and_echoes_note(test_client, app_db):
+    await _save_graph(test_client, _echo_graph())
+    await _publish(test_client, SLUG, "pub-src", note="v1 note")
+    await _publish(test_client, SLUG, "pub-src")
+
+    resp = await test_client.get(f"/api/apps/{SLUG}/versions")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [(r["version"], r["active"], r["note"]) for r in rows] == [
+        (2, True, None), (1, False, "v1 note"),
+    ]
+    assert all(set(r.keys()) == {
+        "version", "source_graph_name", "note", "created_at", "active",
+    } for r in rows)
+
+    resp = await test_client.get("/api/apps/nope/versions")
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_patch_record_io_flips_without_new_version(test_client, app_db):
+    await _save_graph(test_client, _echo_graph())
+    await _publish(test_client, SLUG, "pub-src")
+    resp = await test_client.patch(f"/api/apps/{SLUG}",
+                                   json={"record_io": False})
+    assert resp.status_code == 200
+    assert resp.json() == {"slug": SLUG, "record_io": False}
+
+    rows = (await test_client.get("/api/apps")).json()
+    assert rows[0]["record_io"] is False
+    assert rows[0]["versions_count"] == 1   # app state, not version state
+
+    resp = await test_client.patch("/api/apps/nope",
+                                   json={"record_io": True})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_activate_any_version_including_from_unpublished(
+    test_client, app_db,
+):
+    await _save_graph(test_client, _echo_graph())
+    await _publish(test_client, SLUG, "pub-src")
+    await _publish(test_client, SLUG, "pub-src")
+
+    # Activate subsumes rollback — no separate rollback route.
+    resp = await test_client.post(f"/api/apps/{SLUG}/activate",
+                                  json={"version": 1})
+    assert resp.status_code == 200
+    assert resp.json() == {"slug": SLUG, "active_version": 1}
+
+    # Unpublish keeps versions; activate-after-unpublish restores service.
+    resp = await test_client.post(f"/api/apps/{SLUG}/unpublish")
+    assert resp.status_code == 200
+    assert resp.json() == {"slug": SLUG, "active_version": None}
+    rows = (await test_client.get(f"/api/apps/{SLUG}/versions")).json()
+    assert len(rows) == 2 and not any(r["active"] for r in rows)
+
+    resp = await test_client.post(f"/api/apps/{SLUG}/activate",
+                                  json={"version": 2})
+    assert resp.status_code == 200
+    rows = (await test_client.get(f"/api/apps/{SLUG}/versions")).json()
+    assert [(r["version"], r["active"]) for r in rows] == [
+        (2, True), (1, False),
+    ]
+
+    resp = await test_client.post(f"/api/apps/{SLUG}/activate",
+                                  json={"version": 99})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "version_not_found"
+
+    resp = await test_client.post("/api/apps/nope/activate",
+                                  json={"version": 1})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_delete_cascades_versions_and_runs_and_prunes_lock(
+    test_client, app_db,
+):
+    import asyncio as aio
+
+    await _save_graph(test_client, _echo_graph())
+    await _publish(test_client, SLUG, "pub-src")
+
+    # Seed a runs row directly (the invoke route arrives in PR3).
+    def _seed_run(conn: sqlite3.Connection) -> None:
+        app_id = conn.execute("SELECT id FROM apps WHERE slug = ?",
+                              (SLUG,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO runs (run_id, app_id, version, api_key_id, status, "
+            "node_timings_json, inputs_json, outputs_json, created_at) "
+            "VALUES ('seed-run', ?, 1, NULL, 'ok', '{}', '{}', '{}', "
+            "'2026-01-01T00:00:00.000000Z')",
+            (app_id,),
+        )
+
+    await app_db.run(_seed_run)
+    app.state.app_locks[SLUG] = aio.Lock()
+
+    resp = await test_client.delete(f"/api/apps/{SLUG}")
+    assert resp.status_code == 200
+    assert resp.json() == {"slug": SLUG, "deleted": True}
+
+    def _counts(conn: sqlite3.Connection) -> tuple[int, int, int]:
+        return (
+            conn.execute("SELECT COUNT(*) FROM apps").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM app_versions").fetchone()[0],
+            conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+        )
+
+    assert await app_db.run(_counts) == (0, 0, 0)   # FK cascade
+    assert SLUG not in app.state.app_locks           # lock entry pruned
+
+    resp = await test_client.delete(f"/api/apps/{SLUG}")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_snapshot_immutable_after_canvas_resave(
+    test_client, app_db, _graphs_dir,
+):
+    graph = _echo_graph()
+    await _save_graph(test_client, graph)
+    original_bytes = (_graphs_dir / "pub-src.json").read_text()
+    await _publish(test_client, SLUG, "pub-src")
+
+    # Canvas re-save with different content (renamed output).
+    graph["nodes"][2]["data"]["params"]["name"] = "renamed"
+    await _save_graph(test_client, graph)
+    assert (_graphs_dir / "pub-src.json").read_text() != original_bytes
+
+    def _snapshot(conn: sqlite3.Connection) -> str:
+        return conn.execute(
+            "SELECT graph_json FROM app_versions WHERE version = 1",
+        ).fetchone()[0]
+
+    # The stored snapshot is the EXACT pre-edit file bytes (Decision B).
+    # Invoke-behavior pinning of the same property lands with the invoke
+    # route in PR3 (test_api_apps_invoke.py).
+    assert await app_db.run(_snapshot) == original_bytes
+
+
+@pytest.mark.asyncio
+async def test_management_get_routes_reject_anonymous(app_db):
+    # The auth_guard GET gap, closed at route level.
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url=f"http://127.0.0.1:{settings.PORT}",
+    ) as anon:
+        assert (await anon.get("/api/apps")).status_code == 403
+        assert (await anon.get("/api/apps/x/versions")).status_code == 403
+        assert (await anon.delete("/api/apps/x")).status_code == 403
