@@ -558,3 +558,132 @@ async def test_queue_timeout_expires_while_queued(
     rows = await _run_rows(app_db)
     assert len(rows) == 2          # one ok row + one queue-timeout row
     assert {r["error_code"] for r in rows} == {None, "timeout"}
+
+
+# ── coverage pins: 413 body-cap, route-level 422, post-timeout recovery ────
+
+
+@pytest.mark.asyncio
+async def test_invoke_413_body_cap_writes_no_row(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """POST with Content-Length > MAX_RUN_BODY_BYTES returns 413 with no
+    runs row. The cap is checked against the header before the body is
+    read; the envelope has all 9 keys, error.code == "payload_too_large",
+    and version is None (pre-resolution failure)."""
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 10)
+    await _publish(test_client, SLUG, _echo_graph())
+    key_headers = _bearer(api_key["token"])
+
+    # Send a body larger than the tiny cap (10 bytes). The actual body
+    # content is small, but Content-Length header declares the size.
+    big_body = {"inputs": {"x": "hello world this is larger than 10"}}
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json=big_body,
+        headers=key_headers,
+    )
+    assert resp.status_code == 413
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["error"]["code"] == "payload_too_large"
+    assert body["app"] == SLUG
+    assert body["version"] is None        # pre-resolution (413 happens early)
+    assert "payload_too_large" in body["error"]["message"] or "max" in body["error"]["message"]
+
+    # No rows written for pre-resolution failures.
+    rows = await _run_rows(app_db)
+    assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_invoke_route_level_422_malformed_body_writes_row(
+    test_client, app_db, api_key,
+):
+    """POST with malformed body (e.g. 'inputs' is a list instead of dict)
+    fails at the _parse_run_body route level. Returns 422 envelope with
+    error.code == "invalid_input", version == resolved version (not None),
+    and EXACTLY ONE runs row with status "error" and error_code "invalid_input".
+
+    This test exercises the case where the body is valid JSON and passes
+    app resolution, but the 'inputs' field is not a dict — causing
+    _parse_run_body to return field_errors."""
+    await _publish(test_client, SLUG, _echo_graph())
+    key_headers = _bearer(api_key["token"])
+
+    # Send a body where 'inputs' is a list instead of a dict.
+    # This passes JSON parsing and reaches _parse_run_body, which rejects it.
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": ["not", "a", "dict"]},  # inputs must be dict, not list
+        headers=key_headers,
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["error"]["code"] == "invalid_input"
+    assert body["app"] == SLUG
+    assert body["version"] == 1    # resolved after app lookup -> version is set
+    assert body["run_id"]
+
+    # Exactly one row written with error status.
+    rows = await _run_rows(app_db)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error_code"] == "invalid_input"
+    assert rows[0]["version"] == 1
+    assert rows[0]["run_id"] == body["run_id"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_succeeds_after_queued_timeout(
+    test_client, app_db, api_key,
+):
+    """Lock recovery after a queued timeout:
+    - Invoke A: slow graph (1.5s), holds the lock
+    - Invoke B: timeout_s=1 (dies waiting in queue with timeout message)
+    - Await A: succeeds (lock released cleanly)
+    - Invoke C: fresh invoke succeeds (lock available again)
+
+    Proves the lock is healthy post-timeout: the lock releases in the
+    finally block even when a queued request times out."""
+    await _publish(test_client, SLUG,
+                   _chain_graph("slow-recovery", "_SlowPass", {"seconds": 1.5}))
+    key_headers = _bearer(api_key["token"])
+
+    # Start invoke A (will hold the lock for ~1.5s)
+    task_a = asyncio.create_task(test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "a"}}, headers=key_headers))
+    await asyncio.sleep(0.2)  # let A acquire the lock
+
+    # Invoke B with a short timeout (will queue and time out)
+    resp_b = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "b"}, "timeout_s": 1},
+        headers=key_headers,
+    )
+    assert resp_b.status_code == 500
+    assert resp_b.json()["error"]["code"] == "timeout"
+    assert "expired while queued" in resp_b.json()["error"]["message"]
+
+    # Await A to complete (should succeed after ~1.5s total)
+    resp_a = await task_a
+    assert resp_a.status_code == 200
+    assert resp_a.json()["outputs"] == {"y": "a"}
+
+    # Invoke C fresh (lock should be free now)
+    resp_c = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "c"}}, headers=key_headers)
+    assert resp_c.status_code == 200
+    assert resp_c.json()["outputs"] == {"y": "c"}
+
+    # Three rows: A ok, B timeout error, C ok
+    rows = await _run_rows(app_db)
+    assert len(rows) == 3
+    by_run_id = {r["run_id"]: r for r in rows}
+    assert by_run_id[resp_a.json()["run_id"]]["status"] == "ok"
+    assert by_run_id[resp_b.json()["run_id"]]["status"] == "error"
+    assert by_run_id[resp_b.json()["run_id"]]["error_code"] == "timeout"
+    assert by_run_id[resp_c.json()["run_id"]]["status"] == "ok"
