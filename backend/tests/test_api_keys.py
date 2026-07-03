@@ -185,3 +185,100 @@ async def test_require_api_key_or_session_accepts_either_rejects_neither(app_db)
     with pytest.raises(HTTPException) as exc_info:
         await require_api_key_or_session(_fake_request())
     assert exc_info.value.status_code == 401
+
+
+# ── /api/keys endpoints (Task 4) ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_key_returns_token_once_and_stores_only_hash(
+    test_client, app_db,
+):
+    resp = await test_client.post("/api/keys", json={"name": "ci-bot"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body.keys()) == {"id", "name", "prefix", "token"}
+    assert body["name"] == "ci-bot"
+    assert body["token"].startswith(KEY_PREFIX)
+    assert body["prefix"] == body["token"][:PREFIX_DISPLAY_CHARS]
+
+    # The row stores the hash only.
+    def _row(conn: sqlite3.Connection) -> dict[str, Any]:
+        return dict(conn.execute(
+            "SELECT * FROM api_keys WHERE id = ?", (body["id"],)
+        ).fetchone())
+
+    row = await app_db.run(_row)
+    assert row["token_hash"] == hash_token(body["token"])
+    assert body["token"] not in json.dumps(row)
+
+    # ...and the plaintext appears nowhere in the DB file (+ WAL sidecar).
+    await app_db.run(
+        lambda conn: conn.execute("PRAGMA wal_checkpoint(FULL)").fetchone())
+    blob = app_db.path.read_bytes()
+    wal = app_db.path.with_name(app_db.path.name + "-wal")
+    if wal.exists():
+        blob += wal.read_bytes()
+    assert body["token"].encode("ascii") not in blob
+
+
+@pytest.mark.asyncio
+async def test_list_keys_no_secrets_newest_first(test_client, app_db):
+    first = (await test_client.post("/api/keys", json={"name": "a"})).json()
+    second = (await test_client.post("/api/keys", json={"name": "b"})).json()
+    resp = await test_client.get("/api/keys")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["id"] for r in rows] == [second["id"], first["id"]]
+    for row in rows:
+        assert set(row.keys()) == {
+            "id", "name", "prefix", "created_at", "last_used_at", "revoked_at",
+        }
+
+
+@pytest.mark.asyncio
+async def test_revoke_is_soft_and_row_stays_listed(test_client, app_db):
+    created = (await test_client.post("/api/keys", json={"name": "r"})).json()
+    resp = await test_client.post(f"/api/keys/{created['id']}/revoke")
+    assert resp.status_code == 200
+    assert resp.json()["revoked_at"] is not None
+
+    rows = (await test_client.get("/api/keys")).json()
+    assert len(rows) == 1                     # deliberately not DELETE
+    assert rows[0]["revoked_at"] is not None
+
+    # A revoked key immediately fails auth.
+    result = await require_api_key(
+        _fake_request({"Authorization": f"Bearer {created['token']}"})
+    )
+    assert not result.ok
+
+
+@pytest.mark.asyncio
+async def test_revoke_unknown_id_404(test_client, app_db):
+    resp = await test_client.post("/api/keys/9999/revoke")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_keys_routes_require_session_token(app_db):
+    # THE auth_guard GET gap this design closes: without the route-level
+    # dependency, GET /api/keys would be world-readable (the middleware
+    # never covered GETs, and now exempts this prefix entirely).
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url=f"http://127.0.0.1:{settings.PORT}",
+    ) as anon:
+        assert (await anon.get("/api/keys")).status_code == 403
+        assert (await anon.post(
+            "/api/keys", json={"name": "x"})).status_code == 403
+        assert (await anon.post("/api/keys/1/revoke")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_keys_routes_503_without_db(test_client):
+    if hasattr(app.state, "db"):
+        delattr(app.state, "db")
+    resp = await test_client.get("/api/keys")
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "database unavailable"}
