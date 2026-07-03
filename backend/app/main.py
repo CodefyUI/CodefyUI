@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
+    routes_apps,
     routes_custom_nodes,
     routes_examples,
     routes_execution_outputs,
@@ -291,6 +292,7 @@ app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
+app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
 
