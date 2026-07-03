@@ -18,6 +18,11 @@ from typing import Any
 
 from .graph_engine import find_entry_points, reachable_from_entry_points
 
+# Settings import is allowed here — the module constraint is
+# no-FastAPI-imports (pure JSON manipulation), and the pixel budget
+# (Decision H2) is config, not transport.
+from ..config import settings
+
 # Input `type` values (v1, frozen). `json` stays `json` — it describes
 # exactly what a caller can send; no new DataType is needed.
 INPUT_TYPES = ("string", "number", "integer", "boolean", "json", "image")
@@ -166,8 +171,25 @@ def _decode_image(value: Any) -> Any:
     # InputCoercionError, never escape as a raw unenveloped 500.
     try:
         img = Image.open(io.BytesIO(raw))
+        # Pixel budget (Decision H2): PIL parses dimensions WITHOUT
+        # decoding, so this header-only check costs nothing and bounds
+        # decode memory before img.load() pays it (25 MP RGB float32 CHW
+        # is ~300 MB worst case). Above ~179 MP PIL's own
+        # DecompressionBombError fires FIRST inside Image.open — PIL is
+        # the front-stop for that range; this budget covers everything
+        # between it and MAX_IMAGE_PIXELS.
+        width, height = img.size
+        if width * height > settings.MAX_IMAGE_PIXELS:
+            raise InputCoercionError(
+                "image exceeds MAX_IMAGE_PIXELS "
+                f"({width}x{height}={width * height})"
+            )
         img.load()
         img = img.convert("RGB")
+    except InputCoercionError:
+        # Our own budget rejection — must NOT be re-wrapped by the generic
+        # arm below into a "does not decode" message.
+        raise
     except Exception as exc:
         raise InputCoercionError(
             f"value does not decode to an image: {exc}"
