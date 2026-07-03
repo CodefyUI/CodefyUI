@@ -52,6 +52,7 @@ DELETE /api/apps/{slug}
 ```
 
 - `activate` subsumes rollback: activating an older version restores it, and activating from the unpublished state restores service at that version.
+- Publishing always sets `record_io` (its body default is `true`). If you disabled recording via `PATCH`, pass `"record_io": false` again when you republish — otherwise recording is silently re-enabled.
 - While unpublished, invokes return 409 `app_unpublished` — nothing is lost.
 - **`DELETE /api/apps/{slug}` irrevocably removes the app, ALL its versions AND all its run records.** There is no undo. Prefer `unpublish` unless you truly mean delete.
 
