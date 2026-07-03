@@ -687,3 +687,104 @@ async def test_invoke_succeeds_after_queued_timeout(
     assert by_run_id[resp_b.json()["run_id"]]["status"] == "error"
     assert by_run_id[resp_b.json()["run_id"]]["error_code"] == "timeout"
     assert by_run_id[resp_c.json()["run_id"]]["status"] == "ok"
+
+
+# ── runs reads: metadata list + full detail, either-credential (Task 11) ─
+
+
+@pytest.mark.asyncio
+async def test_runs_list_metadata_only_newest_first(
+    test_client, app_db, api_key,
+):
+    await _publish(test_client, SLUG, _echo_graph())
+    key_headers = _bearer(api_key["token"])
+    first = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                   json={"inputs": {"x": "one"}},
+                                   headers=key_headers)
+    second = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                    json={"inputs": {"x": 2}},  # 422
+                                    headers=key_headers)
+
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["run_id"] for r in rows] == [
+        second.json()["run_id"], first.json()["run_id"],
+    ]
+    for row in rows:
+        assert set(row.keys()) == {
+            "run_id", "version", "status", "error_code", "error_node_id",
+            "device", "total_s", "api_key_id", "created_at",
+        }  # metadata ONLY — no inputs/outputs/node_timings
+
+    # limit + before cursor.
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs?limit=1")
+    assert [r["run_id"] for r in resp.json()] == [second.json()["run_id"]]
+    cursor = rows[0]["created_at"]
+    resp = await test_client.get(
+        f"/api/apps/{SLUG}/runs?before={cursor}")
+    assert [r["run_id"] for r in resp.json()] == [first.json()["run_id"]]
+
+    resp = await test_client.get("/api/apps/ghost/runs")
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "app_not_found"
+
+
+@pytest.mark.asyncio
+async def test_run_detail_full_row_with_parsed_io(
+    test_client, app_db, api_key,
+):
+    await _publish(test_client, SLUG, _echo_graph())
+    invoke = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                    json={"inputs": {"x": "hi"}},
+                                    headers=_bearer(api_key["token"]))
+    run_id = invoke.json()["run_id"]
+
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs/{run_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run_id"] == run_id
+    assert body["version"] == 1
+    assert body["status"] == "ok"
+    assert body["api_key_id"] == api_key["id"]
+    assert body["inputs"] == {"x": "hi"}
+    assert body["outputs"] == {"y": "hi"}
+    assert isinstance(body["node_timings"], dict)
+    assert "inputs_json" not in body        # parsed, not raw columns
+
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs/never-ran")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_runs_reads_accept_either_credential_reject_neither(
+    test_client, app_db, api_key,
+):
+    from httpx import ASGITransport, AsyncClient
+
+    await _publish(test_client, SLUG, _echo_graph())
+    invoke = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                    json={"inputs": {"x": "hi"}},
+                                    headers=_bearer(api_key["token"]))
+    run_id = invoke.json()["run_id"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url=f"http://127.0.0.1:{settings.PORT}",
+    ) as anon:
+        # API key alone (no session header) works.
+        key_only = await anon.get(f"/api/apps/{SLUG}/runs",
+                                  headers=_bearer(api_key["token"]))
+        assert key_only.status_code == 200
+        detail = await anon.get(f"/api/apps/{SLUG}/runs/{run_id}",
+                                headers=_bearer(api_key["token"]))
+        assert detail.status_code == 200
+        # Neither credential -> plain {"detail": ...} 401.
+        denied = await anon.get(f"/api/apps/{SLUG}/runs")
+        assert denied.status_code == 401
+        assert set(denied.json().keys()) == {"detail"}
+        denied = await anon.get(f"/api/apps/{SLUG}/runs/{run_id}")
+        assert denied.status_code == 401
+    # Session token alone (test_client default headers) works.
+    assert (await test_client.get(
+        f"/api/apps/{SLUG}/runs")).status_code == 200

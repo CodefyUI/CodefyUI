@@ -25,7 +25,7 @@ from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -36,6 +36,7 @@ from ..core.api_keys import (
     ApiKeyResult,
     get_db,
     require_api_key,
+    require_api_key_or_session,
     require_session_token,
 )
 from ..core.db import Database, utc_now_iso
@@ -648,3 +649,78 @@ async def invoke_app(
 
     # 8. Best-effort runs INSERT, then the envelope.
     return await _finish(http_status, envelope, node_timings, run_req.inputs)
+
+
+@router.get("/{slug}/runs",
+            dependencies=[Depends(require_api_key_or_session)])
+async def list_runs(
+    slug: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    before: str | None = Query(default=None),
+):
+    """Newest-first METADATA-ONLY rows; IO lives on the detail endpoint.
+
+    Either-credential read (Stage 3's editor UI uses the session token).
+    ``before`` is an ISO timestamp cursor over ``created_at``.
+    """
+    db = get_db(request)
+
+    def _select(conn: sqlite3.Connection) -> list[dict[str, Any]] | None:
+        app_row = conn.execute(
+            "SELECT id FROM apps WHERE slug = ?", (slug,),
+        ).fetchone()
+        if app_row is None:
+            return None
+        sql = (
+            "SELECT run_id, version, status, error_code, error_node_id, "
+            "device, total_s, api_key_id, created_at "
+            "FROM runs WHERE app_id = ?"
+        )
+        params: list[Any] = [app_row["id"]]
+        if before is not None:
+            sql += " AND created_at < ?"
+            params.append(before)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    rows = await db.run(_select)
+    if rows is None:
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    return rows
+
+
+@router.get("/{slug}/runs/{run_id}",
+            dependencies=[Depends(require_api_key_or_session)])
+async def get_run(slug: str, run_id: str, request: Request):
+    """The full row, with inputs/outputs/node_timings parsed back to JSON
+    (marker objects included verbatim). Unknown run_id -> plain 404."""
+    db = get_db(request)
+
+    def _select(conn: sqlite3.Connection):
+        app_row = conn.execute(
+            "SELECT id FROM apps WHERE slug = ?", (slug,),
+        ).fetchone()
+        if app_row is None:
+            return "app_not_found"
+        row = conn.execute(
+            "SELECT run_id, version, api_key_id, status, error_code, "
+            "error_message, error_node_id, device, total_s, "
+            "node_timings_json, inputs_json, outputs_json, created_at "
+            "FROM runs WHERE run_id = ? AND app_id = ?",
+            (run_id, app_row["id"]),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    result = await db.run(_select)
+    if result == "app_not_found":
+        raise _manage_error(404, "app_not_found", f"app '{slug}' not found")
+    if result is None:
+        raise _manage_error(404, "run_not_found",
+                            f"run '{run_id}' not found for app '{slug}'")
+    result["node_timings"] = json.loads(
+        result.pop("node_timings_json") or "{}")
+    result["inputs"] = json.loads(result.pop("inputs_json") or "{}")
+    result["outputs"] = json.loads(result.pop("outputs_json") or "{}")
+    return result
