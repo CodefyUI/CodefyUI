@@ -15,22 +15,39 @@ execution surfaces only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import sqlite3
+import time
+from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ..config import settings
 from ..core import api_contract
 from ..core.api_contract import InputCoercionError
-from ..core.api_keys import get_db, require_session_token
-from ..core.db import utc_now_iso
+from ..core.api_keys import (
+    ApiKeyResult,
+    get_db,
+    require_api_key,
+    require_session_token,
+)
+from ..core.db import Database, utc_now_iso
 from ..core.graph_engine import find_entry_points, validate_graph
 from .routes_graph import _graph_path, _sanitize_name
-from .routes_graph_run import _derive_output_type
+from .routes_graph_run import (
+    _derive_output_type,
+    _parse_run_body,
+    build_envelope,
+    error_response,
+    execute_contract_run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -384,3 +401,250 @@ async def delete_app(slug: str, request: Request):
     if locks is not None:
         locks.pop(slug, None)
     return {"slug": slug, "deleted": True}
+
+
+def _encode_io(fields: dict[str, Any], *, record_io: bool,
+               cap_bytes: int) -> str:
+    """Encode one runs IO column (inputs_json / outputs_json).
+
+    Every stored field stays parseable JSON: an over-cap field becomes the
+    PINNED marker ``{"__codefyui__": "truncated", "bytes": N}``; with
+    ``record_io=false`` every field becomes ``{"__codefyui__":
+    "redacted"}``. Never partial JSON — the marker shapes are a
+    cross-stage contract Stage 3 switches on.
+    """
+    if not record_io:
+        return json.dumps(
+            {name: {"__codefyui__": "redacted"} for name in fields}
+        )
+    capped: dict[str, Any] = {}
+    for name, value in fields.items():
+        blob = json.dumps(value)
+        size = len(blob.encode("utf-8"))
+        if size > cap_bytes:
+            capped[name] = {"__codefyui__": "truncated", "bytes": size}
+        else:
+            capped[name] = value
+    return json.dumps(capped)
+
+
+async def _record_run(
+    db: Database,
+    *,
+    run_id: str,
+    app_id: int,
+    version: int,
+    api_key_id: int,
+    envelope: dict[str, Any],
+    node_timings: dict[str, float],
+    raw_inputs: dict[str, Any],
+    record_io: bool,
+) -> None:
+    """BEST-EFFORT runs INSERT (row-only-if-resolved rule, spec 6.1).
+
+    A failure here loses one audit row, never a run result: log at ERROR
+    and return — the run outcome outranks bookkeeping. Also piggybacks
+    the retention prune (rate-limited to hourly inside prune_runs).
+    """
+    error = envelope.get("error") or {}
+    timing = envelope.get("timing") or {}
+    cap = settings.RUN_IO_CAP_BYTES
+    row = (
+        run_id, app_id, version, api_key_id, envelope["status"],
+        error.get("code"), error.get("message"), error.get("node_id"),
+        envelope.get("device"), timing.get("total_s"),
+        json.dumps(node_timings),
+        _encode_io(raw_inputs, record_io=record_io, cap_bytes=cap),
+        _encode_io(envelope.get("outputs") or {}, record_io=record_io,
+                   cap_bytes=cap),
+        utc_now_iso(),
+    )
+
+    def _insert(conn: sqlite3.Connection) -> None:
+        # NOTE: keep this closure named `_insert` — the best-effort test
+        # injects a fault by matching fn.__name__.
+        conn.execute(
+            "INSERT INTO runs (run_id, app_id, version, api_key_id, status, "
+            "error_code, error_message, error_node_id, device, total_s, "
+            "node_timings_json, inputs_json, outputs_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            row,
+        )
+
+    try:
+        await db.run(_insert)
+    except Exception:
+        logger.error(
+            "failed to record run %s for app_id=%s "
+            "(run result still returned)",
+            run_id, app_id, exc_info=True,
+        )
+        return
+    try:
+        await db.prune_runs(settings.RUNS_RETENTION_DAYS)
+    except Exception:
+        logger.error("runs retention prune failed", exc_info=True)
+
+
+@router.post("/{slug}/invoke")
+async def invoke_app(
+    slug: str,
+    request: Request,
+    key_result: ApiKeyResult = Depends(require_api_key),
+):
+    """Execute the app's ACTIVE snapshot version.
+
+    Key-only auth (the session token is NEVER accepted here); every
+    response is the 9-key envelope with ``graph`` = ``app`` = slug; a runs
+    row is written (best-effort) for every outcome that resolved to an
+    app version. Body identical to Stage-1 /run — ``record_outputs`` is
+    accepted-and-ignored (Decision H1).
+    """
+    # 1. run_id at entry — before any rejection (Stage-1 rule).
+    run_id = uuid4().hex
+    started = time.monotonic()
+
+    # 2. NON-RAISING key check; THIS handler envelopes the 401 and adds
+    #    WWW-Authenticate (spec Section 6.3 taxonomy row).
+    if not key_result.ok:
+        return error_response(
+            401, run_id=run_id, graph=slug, app=slug, code="invalid_key",
+            message=key_result.failure or "invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 3. Body cap against Content-Length, before reading the body
+    #    (routes_graph_run step-2 pattern).
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            declared_bytes = 0
+        if declared_bytes > settings.MAX_RUN_BODY_BYTES:
+            return error_response(
+                413, run_id=run_id, graph=slug, app=slug,
+                code="payload_too_large",
+                message=(
+                    f"request body is {declared_bytes} bytes "
+                    f"(max {settings.MAX_RUN_BODY_BYTES})"
+                ),
+            )
+
+    # 4. Resolve slug -> (app, active version, record_io) in ONE SELECT
+    #    join — atomic against concurrent publish (the row shows either
+    #    the old or the new active version, never a mix).
+    db = get_db(request)
+    app_locks = _get_app_locks(request)
+
+    def _resolve(conn: sqlite3.Connection) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT a.id AS app_id, a.active_version, a.record_io, "
+            "       v.graph_json "
+            "FROM apps a "
+            "LEFT JOIN app_versions v "
+            "  ON v.app_id = a.id AND v.version = a.active_version "
+            "WHERE a.slug = ?",
+            (slug,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    resolved = await db.run(_resolve)
+    if resolved is None:
+        return error_response(404, run_id=run_id, graph=slug, app=slug,
+                              code="app_not_found",
+                              message=f"app '{slug}' not found")
+    if resolved["active_version"] is None or resolved["graph_json"] is None:
+        # graph_json None = belt-and-braces for a dangling active_version
+        # (publish/activate both validate, so it cannot normally happen).
+        return error_response(409, run_id=run_id, graph=slug, app=slug,
+                              code="app_unpublished",
+                              message=(
+                                  f"app '{slug}' has no active version — "
+                                  "publish or activate one first"
+                              ))
+    version = int(resolved["active_version"])
+    record_io = bool(resolved["record_io"])
+    api_key_id = int(key_result.key_row["id"])
+
+    # From here the request RESOLVED to an app version: every outcome
+    # records a runs row (best-effort) and carries version in the envelope.
+    async def _finish(
+        http_status: int,
+        envelope: dict[str, Any],
+        node_timings: dict[str, float],
+        raw_inputs: dict[str, Any],
+    ):
+        envelope["app"] = slug
+        envelope["version"] = version
+        await _record_run(
+            db, run_id=run_id, app_id=int(resolved["app_id"]),
+            version=version, api_key_id=api_key_id, envelope=envelope,
+            node_timings=node_timings, raw_inputs=raw_inputs,
+            record_io=record_io,
+        )
+        if http_status == 200:
+            return envelope
+        return JSONResponse(status_code=http_status, content=envelope)
+
+    snapshot = json.loads(resolved["graph_json"])
+    nodes = snapshot.get("nodes", [])
+    edges = snapshot.get("edges", [])
+
+    # 5. Parse the body via the shared Stage-1 parser (enveloped 422; the
+    #    row records whatever inputs parsed — for malformed bodies, {}).
+    raw_body = await request.body()
+    run_req, field_errors = _parse_run_body(raw_body)
+    if field_errors:
+        return await _finish(422, build_envelope(
+            status="error", run_id=run_id, graph=slug,
+            error={"code": "invalid_input", "message": "invalid request body",
+                   "node_id": None, "details": field_errors},
+        ), {}, run_req.inputs)
+
+    # 6. Per-slug lock (Decision I): the timeout budget covers TOTAL
+    #    request time INCLUDING queue wait. FIFO fairness is asyncio.Lock's
+    #    default wake order. A client that disconnects while queued is
+    #    cancelled before any envelope exists — no runs row.
+    lock = app_locks.setdefault(slug, asyncio.Lock())
+    remaining = max(0.001, run_req.timeout_s - (time.monotonic() - started))
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=remaining)
+    except asyncio.TimeoutError:
+        return await _finish(500, build_envelope(
+            status="error", run_id=run_id, graph=slug,
+            error={
+                "code": "timeout",
+                "message": (
+                    f"run exceeded timeout_s={run_req.timeout_s} — "
+                    "expired while queued behind another invoke of this app"
+                ),
+                "node_id": None,
+                "details": None,
+            },
+            timing={"total_s": round(time.monotonic() - started, 3)},
+        ), {}, run_req.inputs)
+    try:
+        # 7. Remaining-budget COPY: execute_contract_run reads
+        #    run_req.timeout_s internally — without the copy, queue time
+        #    would not count against the execution wait and the
+        #    total-budget rule of step 6 would be broken.
+        exec_req = replace(
+            run_req,
+            timeout_s=max(
+                0.001, run_req.timeout_s - (time.monotonic() - started),
+            ),
+        )
+        # output_store=None: Decision H1 — isolation is structural, not a
+        # flag. The editor inspector store can never contain this data.
+        http_status, envelope, node_timings = await execute_contract_run(
+            slug, nodes, edges, exec_req, run_id, output_store=None,
+        )
+    finally:
+        # On an execution timeout the lock releases here while the
+        # shielded task's in-flight node drains — documented residual
+        # overlap, mirrors Stage-1 timeout semantics (spec Section 13).
+        lock.release()
+
+    # 8. Best-effort runs INSERT, then the envelope.
+    return await _finish(http_status, envelope, node_timings, run_req.inputs)
