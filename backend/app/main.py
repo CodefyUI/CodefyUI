@@ -199,6 +199,7 @@ async def lifespan(app: FastAPI):
     # Release the SQLite handle so `cdui stop` on Windows frees the DB and
     # its WAL sidecar files (spec Section 13, Windows file locking).
     db.close()
+    app.state.db = None
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)

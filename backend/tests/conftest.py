@@ -12,6 +12,8 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+import os
+
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, init_allowed_hosts, session_token
 from app.core.node_base import BaseNode, DataType, PortDefinition
@@ -45,6 +47,52 @@ install_plugin_finder(
         },
     },
 )
+
+
+_ISOLATION_TEMP_PATH = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_db_path(tmp_path_factory):
+    """Keep every test run's SQLite DB out of backend/data/ (lifespan-driving
+    TestClient tests would otherwise create a real codefyui.db there)."""
+    global _ISOLATION_TEMP_PATH
+    _ISOLATION_TEMP_PATH = tmp_path_factory.mktemp("db") / "codefyui-test.db"
+    # Start with isolation disabled; enable it per-test based on which test is running.
+    yield
+
+
+def pytest_runtest_setup(item):
+    """Apply DB isolation only to non-config tests."""
+    global _ISOLATION_TEMP_PATH
+    # Config tests verify the default path; keep it unchanged.
+    if "test_config_stage2" in str(item.fspath):
+        return
+    # All other tests get isolation to prevent backend/data/codefyui.db creation.
+    original = getattr(item, "_original_db_path", None)
+    if original is None:
+        item._original_db_path = settings.DB_PATH
+        settings.DB_PATH = _ISOLATION_TEMP_PATH
+        original_env = os.environ.get("CODEFYUI_DB_PATH")
+        if original_env is None:
+            item._original_env = None
+        else:
+            item._original_env = original_env
+        os.environ["CODEFYUI_DB_PATH"] = str(_ISOLATION_TEMP_PATH)
+
+
+def pytest_runtest_teardown(item):
+    """Restore DB path after test."""
+    global _ISOLATION_TEMP_PATH
+    if "test_config_stage2" in str(item.fspath):
+        return
+    original = getattr(item, "_original_db_path", None)
+    if original is not None:
+        settings.DB_PATH = original
+        if getattr(item, "_original_env", None) is None:
+            os.environ.pop("CODEFYUI_DB_PATH", None)
+        else:
+            os.environ["CODEFYUI_DB_PATH"] = item._original_env
 
 
 class _TestSourceNode(BaseNode):

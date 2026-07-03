@@ -62,6 +62,8 @@ backend/data/images/*
 !backend/data/images/.gitkeep
 backend/data/cifar-10-batches-py/
 backend/data/cifar-10-python.tar.gz
+backend/data/*.db
+backend/data/*.db-*
 
 # ML model weights
 *.pt
