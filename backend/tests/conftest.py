@@ -137,3 +137,28 @@ def sample_graph():
         "name": "test-graph",
         "description": "A test graph",
     }
+
+
+@pytest.fixture
+async def app_db(tmp_path):
+    """Per-test Stage-2 Database on app.state (+ empty app_locks).
+
+    PER TEST, never module/session-scoped: asyncio locks bind to the
+    running event loop on first use. The lifespan does not run under
+    httpx ASGITransport, so tests set app.state directly (the
+    run_output_store precedent in test_api_graph_run.py).
+    """
+    from app.core.db import Database
+
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    app.state.db = db
+    app.state.app_locks = {}
+    try:
+        yield db
+    finally:
+        db.close()
+        if hasattr(app.state, "db"):
+            delattr(app.state, "db")
+        if hasattr(app.state, "app_locks"):
+            delattr(app.state, "app_locks")
