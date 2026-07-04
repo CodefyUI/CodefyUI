@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
+    routes_apps,
     routes_custom_nodes,
     routes_examples,
     routes_execution_outputs,
@@ -54,9 +55,11 @@ from .api import (
 from .config import settings
 from .core.auth import (
     TOKEN_HEADER,
+    allowed_hosts,
     constant_time_equals,
     host_is_allowed,
     init_allowed_hosts,
+    local_interface_ips,
     session_token,
     write_token_file,
 )
@@ -108,6 +111,25 @@ def _prefix_exempt(path: str) -> bool:
     )
 
 
+def _extra_allowed_host_entries() -> list[str]:
+    """Extra Host-whitelist entries beyond the bind address.
+
+    ``EXTRA_ALLOWED_HOSTS`` (comma-separated str — see config.py) split
+    and stripped; plus, when binding a wildcard (which init_allowed_hosts
+    deliberately skips), each concrete interface IP as ``{ip}:{port}``.
+    """
+    entries = [
+        entry.strip()
+        for entry in settings.EXTRA_ALLOWED_HOSTS.split(",")
+        if entry.strip()
+    ]
+    if settings.HOST in ("0.0.0.0", "::"):
+        entries.extend(
+            f"{ip}:{settings.PORT}" for ip in local_interface_ips()
+        )
+    return entries
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(
@@ -122,7 +144,22 @@ async def lifespan(app: FastAPI):
     # from the file.
     init_allowed_hosts(settings.HOST, settings.PORT, extra=[
         urlparse(o).netloc for o in settings.CORS_ORIGINS
-    ])
+    ] + _extra_allowed_host_entries())
+    if settings.HOST not in ("127.0.0.1", "localhost", "::1"):
+        # Startup transparency for non-loopback binds (spec Section 9):
+        # print the effective whitelist and the reachable URLs. Anyone who
+        # can reach the port controls the instance — the docs carry the
+        # full framing; this log makes the exposure visible at start.
+        logger.warning(
+            "Serving on a non-loopback bind (%s:%s) — anyone who can "
+            "reach this port controls the instance; use only on trusted "
+            "networks.",
+            settings.HOST, settings.PORT,
+        )
+        logger.info("Host whitelist: %s", ", ".join(sorted(allowed_hosts())))
+        logger.info("Reachable at: %s", ", ".join(sorted(
+            f"http://{h}" for h in allowed_hosts() if ":" in h
+        )))
     token_path = write_token_file()
     logger.info("Session token written to %s", token_path)
 
@@ -291,6 +328,7 @@ app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
+app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
 

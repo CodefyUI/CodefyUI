@@ -88,11 +88,16 @@ class RunTiming(BaseModel):
 
 
 class RunEnvelope(BaseModel):
-    """Response envelope for POST /api/graph/run/{name}.
+    """Response envelope for POST /api/graph/run/{name} AND
+    POST /api/apps/{slug}/invoke.
 
     Every key is ALWAYS present (null when not applicable); HTTP status
-    mirrors ``status``/``error.code``. Forward compatibility (also stated
-    on the docs page): clients MUST ignore unknown envelope fields, and
+    mirrors ``status``/``error.code``. ``app``/``version`` identify the
+    published app and executed version on the invoke route; on the editor
+    route both are always null. On invoke, ``graph`` and ``app`` are the
+    slug on EVERY outcome, and ``version`` is null on errors before an
+    app version was resolved. Forward compatibility (also stated on the
+    docs page): clients MUST ignore unknown envelope fields, and
     ``error.code`` is an open enum — treat unknown codes as generic
     errors. The ``job`` key is reserved by name for the future async mode.
     """
@@ -100,6 +105,8 @@ class RunEnvelope(BaseModel):
     status: Literal["ok", "error"]
     run_id: str
     graph: str
+    app: str | None = None
+    version: int | None = None
     device: str | None = None
     outputs: dict[str, Any] | None = None
     error: RunError | None = None

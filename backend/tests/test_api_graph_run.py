@@ -15,7 +15,10 @@ from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.run_output_store import RunOutputStore
 from app.main import app
 
-ENVELOPE_KEYS = {"status", "run_id", "graph", "device", "outputs", "error", "timing"}
+ENVELOPE_KEYS = {
+    "status", "run_id", "graph", "app", "version",
+    "device", "outputs", "error", "timing",
+}
 
 
 # ── config: body cap setting ─────────────────────────────────────────────

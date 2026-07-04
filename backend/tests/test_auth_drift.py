@@ -6,7 +6,7 @@ only this test catches it arriving without route-level auth."""
 
 from __future__ import annotations
 
-from app.api import routes_keys
+from app.api import routes_apps, routes_keys
 from app.core.api_keys import (
     require_api_key,
     require_api_key_or_session,
@@ -14,8 +14,7 @@ from app.core.api_keys import (
 )
 from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt
 
-# PR2 (Task 6) appends routes_apps.router here.
-_EXEMPT_ROUTERS = [routes_keys.router]
+_EXEMPT_ROUTERS = [routes_apps.router, routes_keys.router]
 
 _AUTH_DEPS = {require_api_key, require_api_key_or_session,
               require_session_token}
