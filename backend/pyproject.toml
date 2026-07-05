@@ -13,7 +13,11 @@ requires-python = ">=3.10"
 # identifier above is the canonical statement.
 license = "AGPL-3.0-only"
 dependencies = [
-    "fastapi>=0.115.0",
+    # Upper bound: CI resolves deps fresh (ignoring uv.lock) and has been
+    # broken twice by upstream FastAPI releases. The pinned 0.135.x in
+    # uv.lock still satisfies this range; bump the ceiling deliberately after
+    # vetting a new major/minor.
+    "fastapi>=0.115.0,<0.140",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
