@@ -47,7 +47,7 @@ The node appears in the palette immediately. You can also use the **Custom Node 
 | `CATEGORY` | Palette grouping and color. |
 | `DESCRIPTION` | User-facing help text (LaTeX is supported). |
 | `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional`. |
-| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers, or `tensor_grid`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. |
+| `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers, `tensor_grid`, or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
 | `define_outputs_dynamic(params)` | Optional — vary output ports by parameter values. |
 | `execute(self, inputs, params, *, context=...)` | The work. Returns a dict keyed by output port name. |
 

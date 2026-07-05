@@ -11,9 +11,33 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
+from app.core.preset_registry import preset_registry
 from app.main import app
+from app.schemas.models import InternalNodeSchema, PresetDefinition
 
 SLUG = "demo-app"
+
+
+@pytest.fixture
+def _secret_preset():
+    """Register a preset with an inner LLMChat so the publish pre-flight can
+    resolve a secret baked into a preset node's internalParams. Cleaned up
+    afterward to leave the global registry as discovered."""
+    preset = PresetDefinition(
+        preset_name="SecretChat",
+        category="Test",
+        description="",
+        nodes=[InternalNodeSchema(id="chat", type="LLMChat", params={})],
+        edges=[],
+        exposed_inputs=[],
+        exposed_outputs=[],
+        exposed_params=[],
+    )
+    preset_registry._presets["SecretChat"] = preset
+    try:
+        yield preset
+    finally:
+        preset_registry._presets.pop("SecretChat", None)
 
 
 @pytest.fixture(autouse=True)
@@ -299,6 +323,39 @@ async def test_publish_rejects_hand_edited_secret(
         "/api/apps/leaky-app/publish",
         json={"graph": "leaky", "create": True})
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_preset_embedded_secret(
+    test_client, app_db, _graphs_dir, _secret_preset,
+):
+    """C1: a hand-edited graph with a secret baked into a preset node's
+    internalParams is rejected 409 secret_in_graph, naming the offending
+    inner slot as ``<inner_id>.<param>``."""
+    graph = _echo_graph(name="leaky-preset")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:SecretChat",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {
+            "chat": {"openai_api_key": "sk-leaked-in-preset"},
+        }},
+    })
+    (_graphs_dir / "leaky-preset.json").write_text(json.dumps(graph))
+
+    resp = await test_client.post(
+        "/api/apps/leaky-preset-app/publish",
+        json={"graph": "leaky-preset", "create": True})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "secret_in_graph"
+    assert "p1" in detail["message"]
+    assert "chat.openai_api_key" in detail["message"]
+    assert {"node_id": "p1", "param": "chat.openai_api_key"} in detail["details"]
+
+    # Rejected publish created nothing.
+    count = await app_db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM apps").fetchone()[0])
+    assert count == 0
 
 
 @pytest.mark.asyncio

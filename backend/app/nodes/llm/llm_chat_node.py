@@ -234,14 +234,12 @@ def _api_key_for(provider: Provider, params: dict[str, Any]) -> str | None:
     if provider == "openai":
         return _first_non_empty(
             params.get("openai_api_key"),
-            params.get("api_key"),
             os.environ.get("CODEFYUI_OPENAI_API_KEY"),
             os.environ.get("OPENAI_API_KEY"),
         )
     if provider == "anthropic":
         return _first_non_empty(
             params.get("anthropic_api_key"),
-            params.get("api_key"),
             os.environ.get("CODEFYUI_ANTHROPIC_API_KEY"),
             os.environ.get("ANTHROPIC_API_KEY"),
         )

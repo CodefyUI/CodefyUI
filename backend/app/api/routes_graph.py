@@ -73,6 +73,13 @@ async def export_graph(graph: GraphData):
     nodes = [n.model_dump() for n in graph.nodes]
     edges = [e.model_dump() for e in graph.edges]
 
+    # M4: parity with /save — never echo a SECRET param value into exported
+    # source. codegen emits raw params in a comment for node types without a
+    # template (e.g. LLMChat), so scrub before validation/expansion/codegen.
+    # Scrubbing pre-expansion also blanks any secret embedded in a preset
+    # node's internalParams before expand_presets injects it downstream.
+    scrub_graph_secrets(nodes)
+
     # Validate the user-authored graph (presets are validated against the
     # preset registry rather than expanded here).
     errors = validate_graph(nodes, edges)
