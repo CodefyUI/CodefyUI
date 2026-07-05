@@ -99,6 +99,33 @@ def test_iter_statements_handles_comments_and_multistatement():
     assert "CREATE INDEX idx_a" in statements[1]
 
 
+def test_iter_statements_semicolon_inside_comment_does_not_split():
+    # A ';' inside a `--` comment must not be mistaken for a statement
+    # terminator (sqlite3.complete_statement is comment-aware) — the
+    # leading comment stays attached to the CREATE TABLE it precedes.
+    script = (
+        "-- this comment has a ; semicolon that must not split\n"
+        "CREATE TABLE a (x INTEGER);\n"
+        "CREATE INDEX idx_a ON a(x);\n"
+    )
+    statements = list(iter_statements(script))
+    assert len(statements) == 2
+    assert "CREATE TABLE a" in statements[0]
+    assert "CREATE INDEX idx_a" in statements[1]
+
+
+def test_iter_statements_ignores_trailing_comment_only_tail():
+    # A dangling trailing comment with no SQL after it (and no terminating
+    # semicolon) must never be yielded as a bogus pseudo-statement.
+    script = (
+        "CREATE TABLE a (x INTEGER);\n"
+        "-- dangling trailing comment, no SQL after this\n"
+    )
+    statements = list(iter_statements(script))
+    assert len(statements) == 1
+    assert "CREATE TABLE a" in statements[0]
+
+
 def test_utc_now_iso_is_sortable_utc():
     stamp = utc_now_iso()
     assert stamp.endswith("Z")

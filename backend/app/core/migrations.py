@@ -64,6 +64,22 @@ CREATE INDEX idx_runs_created     ON runs(created_at);
 MIGRATIONS: list[str] = [MIGRATION_001]
 
 
+def _is_comment_only(statement: str) -> bool:
+    """True if *statement* has no executable content once ``--`` line
+    comments are stripped from every line.
+
+    Used only to guard the final, possibly-unterminated tail fragment in
+    :func:`iter_statements` — a script ending in a bare comment (no SQL,
+    no semicolon after it) must never be yielded as a pseudo-statement for
+    ``Connection.execute`` to choke on.
+    """
+    for line in statement.splitlines():
+        code = line.split("--", 1)[0]
+        if code.strip():
+            return False
+    return True
+
+
 def iter_statements(script: str) -> Iterator[str]:
     """Split a migration script into single executable statements.
 
@@ -82,5 +98,5 @@ def iter_statements(script: str) -> Iterator[str]:
                 yield statement
             buffer = ""
     tail = buffer.strip()
-    if tail:
+    if tail and not _is_comment_only(tail):
         yield tail
