@@ -1,5 +1,7 @@
 """Tests for the graph API endpoints."""
 
+import json
+
 import pytest
 
 
@@ -75,3 +77,89 @@ def test_graph_path_helper(monkeypatch, tmp_path):
 
     p = _graph_path("weird name")
     assert p == tmp_path / "weird_name.json"
+
+
+@pytest.mark.asyncio
+async def test_save_scrubs_secret_params(test_client, tmp_path, monkeypatch):
+    """Item 1d: a filled SECRET param (LLMChat api key) is blanked before the
+    graph file is written — secrets never persist to disk, even if a client
+    bypasses the editor's own stripping."""
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "secret-graph",
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+             "data": {"params": {}}},
+            {"id": "llm", "type": "LLMChat", "position": {"x": 0, "y": 0},
+             "data": {"params": {
+                 "provider": "ChatGPT API",
+                 "openai_api_key": "sk-super-secret",
+                 "anthropic_api_key": "sk-ant-secret",
+                 "model": "gpt-5.2",
+             }}},
+        ],
+        "edges": [],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200
+
+    saved = json.loads((tmp_path / "secret-graph.json").read_text())
+    params = next(n for n in saved["nodes"] if n["id"] == "llm")["data"]["params"]
+    assert params["openai_api_key"] == ""
+    assert params["anthropic_api_key"] == ""
+    # Non-secret params on the same node survive untouched.
+    assert params["model"] == "gpt-5.2"
+    assert params["provider"] == "ChatGPT API"
+
+
+@pytest.mark.asyncio
+async def test_save_unknown_node_type_left_untouched(
+    test_client, tmp_path, monkeypatch,
+):
+    """A node type the registry doesn't know carries no known secret params,
+    so its data is written verbatim (the scrub is a no-op for it) and the
+    save still succeeds."""
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "unknown-graph",
+        "nodes": [
+            {"id": "x", "type": "TotallyUnknownNode", "position": {"x": 0, "y": 0},
+             "data": {"params": {"api_key": "kept-verbatim", "foo": "bar"}}},
+        ],
+        "edges": [],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200
+
+    saved = json.loads((tmp_path / "unknown-graph.json").read_text())
+    assert saved["nodes"][0]["data"]["params"] == {
+        "api_key": "kept-verbatim", "foo": "bar",
+    }
+
+
+@pytest.mark.asyncio
+async def test_save_and_load_roundtrips_segment_groups(
+    test_client, tmp_path, monkeypatch,
+):
+    """Item 4: segmentGroups is persisted and returned by load (previously
+    silently dropped by the GraphData schema)."""
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "seg-graph",
+        "nodes": [],
+        "edges": [],
+        "segmentGroups": [
+            {"id": "g1", "headNodeId": "a", "tailNodeId": "b"},
+            {"id": "g2", "headNodeId": "c", "tailNodeId": "d"},
+        ],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200
+
+    resp = await test_client.get("/api/graph/load/seg-graph")
+    assert resp.status_code == 200
+    loaded = resp.json()
+    assert loaded["segmentGroups"] == [
+        {"id": "g1", "headNodeId": "a", "tailNodeId": "b"},
+        {"id": "g2", "headNodeId": "c", "tailNodeId": "d"},
+    ]

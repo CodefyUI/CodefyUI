@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, validate_graph
 from ..core.node_registry import registry
+from ..core.secret_params import scrub_graph_secrets
 from ..schemas import GraphData, GraphValidationResponse
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -33,7 +34,11 @@ async def validate(graph: GraphData):
 async def save_graph(graph: GraphData):
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     path = _graph_path(graph.name)
-    path.write_text(json.dumps(graph.model_dump(), indent=2))
+    payload = graph.model_dump()
+    # Defense-in-depth: even if a client bypasses the editor (which already
+    # blanks SECRET params before sending), never write a secret to disk.
+    scrub_graph_secrets(payload.get("nodes", []))
+    path.write_text(json.dumps(payload, indent=2))
     return {"message": "Graph saved", "path": str(path)}
 
 

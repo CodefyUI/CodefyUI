@@ -125,21 +125,23 @@ class LLMChatNode(BaseNode):
             ),
             ParamDefinition(
                 name="openai_api_key",
-                param_type=ParamType.STRING,
+                param_type=ParamType.SECRET,
                 default="",
                 description=(
-                    "OpenAI API key. Prefer OPENAI_API_KEY or CODEFYUI_OPENAI_API_KEY "
-                    "so saved graphs do not contain secrets."
+                    "OpenAI API key. Session only -- it is cleared when the graph "
+                    "is saved and never written to disk. Prefer OPENAI_API_KEY or "
+                    "CODEFYUI_OPENAI_API_KEY."
                 ),
                 visible_when={"provider": "ChatGPT API"},
             ),
             ParamDefinition(
                 name="anthropic_api_key",
-                param_type=ParamType.STRING,
+                param_type=ParamType.SECRET,
                 default="",
                 description=(
-                    "Anthropic API key. Prefer ANTHROPIC_API_KEY or "
-                    "CODEFYUI_ANTHROPIC_API_KEY so saved graphs do not contain secrets."
+                    "Anthropic API key. Session only -- it is cleared when the "
+                    "graph is saved and never written to disk. Prefer "
+                    "ANTHROPIC_API_KEY or CODEFYUI_ANTHROPIC_API_KEY."
                 ),
                 visible_when={"provider": "Claude API"},
             ),

@@ -41,6 +41,7 @@ from ..core.api_keys import (
 )
 from ..core.db import Database, utc_now_iso
 from ..core.graph_engine import find_entry_points, validate_graph
+from ..core.secret_params import find_secret_violations
 from .routes_graph import _graph_path, _sanitize_name
 from .routes_graph_run import (
     _derive_output_type,
@@ -172,6 +173,21 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         )
     nodes = graph_data.get("nodes", [])
     edges = graph_data.get("edges", [])
+
+    # Publish-specific security gate (NOT part of /run parity): a graph file
+    # hand-edited to bake in a SECRET-typed param value never becomes an
+    # immutable, API-exposed snapshot. The editor and POST /api/graph/save
+    # both blank secrets, so this only fires on a file dropped in by hand.
+    secret_violations = find_secret_violations(nodes)
+    if secret_violations:
+        first = secret_violations[0]
+        raise _manage_error(
+            409, "secret_in_graph",
+            f"node '{first['node_id']}' has a non-empty secret param "
+            f"'{first['param']}' — clear it before publishing (secrets are "
+            "never persisted; use the environment variable instead)",
+            details=secret_violations,
+        )
 
     # Stage-1 pre-flight, identical checks in identical order — you can
     # never publish a graph that POST /api/graph/run would refuse.

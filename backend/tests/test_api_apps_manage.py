@@ -261,6 +261,47 @@ async def test_publish_preflight_blocks_bad_graphs_with_stage1_codes(
 
 
 @pytest.mark.asyncio
+async def test_publish_rejects_hand_edited_secret(
+    test_client, app_db, _graphs_dir,
+):
+    """Item 1e: a graph file dropped into the graphs dir by hand with a
+    non-empty SECRET param is rejected 409 secret_in_graph, naming the
+    offending node + param. Clearing the secret lets the same graph publish
+    (the gate is specifically about NON-empty secrets)."""
+    graph = _echo_graph(name="leaky")
+    graph["nodes"].append({
+        "id": "llm", "type": "LLMChat", "position": {"x": 0, "y": 300},
+        "data": {"params": {"provider": "ChatGPT API",
+                            "openai_api_key": "sk-leaked-key"}},
+    })
+    # Write the file DIRECTLY, bypassing the save-endpoint scrub.
+    (_graphs_dir / "leaky.json").write_text(json.dumps(graph))
+
+    resp = await test_client.post(
+        "/api/apps/leaky-app/publish",
+        json={"graph": "leaky", "create": True})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "secret_in_graph"
+    assert "llm" in detail["message"]
+    assert "openai_api_key" in detail["message"]
+    assert {"node_id": "llm", "param": "openai_api_key"} in detail["details"]
+
+    # Rejected publish created nothing.
+    count = await app_db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM apps").fetchone()[0])
+    assert count == 0
+
+    # Clearing the secret (as the editor / save endpoint would) publishes.
+    graph["nodes"][-1]["data"]["params"]["openai_api_key"] = ""
+    (_graphs_dir / "leaky.json").write_text(json.dumps(graph))
+    resp = await test_client.post(
+        "/api/apps/leaky-app/publish",
+        json={"graph": "leaky", "create": True})
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
 async def test_publish_stores_contract_document_and_exact_snapshot(
     test_client, app_db, _graphs_dir,
 ):
