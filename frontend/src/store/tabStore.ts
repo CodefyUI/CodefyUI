@@ -215,6 +215,21 @@ function roundPosition(p: { x: number; y: number } | undefined): { x: number; y:
   return { x: Math.round(p.x), y: Math.round(p.y) };
 }
 
+// Like roundPosition but preserves an explicit `null` (a note's boundOffset is
+// `{x,y} | null`, where null means "unbound"). Rounds sub-pixel drag offsets
+// so serialized note data doesn't carry noisy floats.
+function roundOffset(
+  p: { x: number; y: number } | null | undefined,
+): { x: number; y: number } | null | undefined {
+  if (!p) return p;
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
+
+// Round an optional pixel dimension (note width/height), tolerating undefined.
+function roundDimension(v: number | undefined): number | undefined {
+  return typeof v === 'number' ? Math.round(v) : v;
+}
+
 // Replace every SECRET-typed param value with '' so secrets (e.g. an LLM API
 // key typed into the canvas) never reach a saved file or exported JSON. The
 // node definition (attached by buildFlowNode / resolveSerializedNodes) tells
@@ -234,6 +249,63 @@ function stripSecretParams(
     if (name in cleaned) cleaned[name] = '';
   }
   return cleaned;
+}
+
+// Blank SECRET-typed values embedded in a preset node's `internalParams`.
+// A preset's `exposed_params` carry each exposed param's `param_def`, so a
+// param exposed as `secret` (an OLD preset created before secrets were
+// withheld from presets — see backend routes_presets) pins the exact
+// (internal_node, param_name) slot to blank. New presets expose no secret at
+// all, so nothing matches and internalParams passes through untouched. Only
+// the secret slots are blanked; every other inner override persists. Returns
+// the same reference when there is nothing to strip, so callers can cheaply
+// detect a no-op.
+function stripSecretInternalParams(
+  internalParams: Record<string, Record<string, any>> | undefined,
+  preset: PresetDefinition | undefined,
+): Record<string, Record<string, any>> | undefined {
+  if (!internalParams || !preset) return internalParams;
+  const secretSlots = preset.exposed_params.filter(
+    (ep) => ep.param_def?.param_type === 'secret',
+  );
+  if (secretSlots.length === 0) return internalParams;
+  let cleaned: Record<string, Record<string, any>> | null = null;
+  for (const ep of secretSlots) {
+    const inner = internalParams[ep.internal_node];
+    if (inner && ep.param_name in inner) {
+      if (cleaned === null) cleaned = { ...internalParams };
+      cleaned[ep.internal_node] = { ...inner, [ep.param_name]: '' };
+    }
+  }
+  return cleaned ?? internalParams;
+}
+
+// Return a copy of `nodes` with every SECRET-typed value blanked in both
+// `data.params` (via the node definition) and, for preset nodes,
+// `data.internalParams` (via the preset's exposed_params). Nodes with no
+// secret are returned by identity so persistence stays cheap. Used before
+// writing to localStorage so a typed API key never survives a page refresh —
+// honouring the field's "Session only" promise (a refresh drops typed keys).
+function stripNodeSecretsForPersist(
+  nodes: Node<NodeData>[],
+): Node<NodeData>[] {
+  return nodes.map((n) => {
+    const params = stripSecretParams(n.data.params, n.data.definition);
+    const internalParams = n.data.isPreset
+      ? stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition)
+      : n.data.internalParams;
+    if (params === n.data.params && internalParams === n.data.internalParams) {
+      return n;
+    }
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        params,
+        ...(n.data.isPreset ? { internalParams } : {}),
+      },
+    };
+  });
 }
 
 // ── LocalStorage persistence ──
@@ -270,7 +342,9 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         name: t.name,
         description: t.description,
         currentGraphFile: t.currentGraphFile,
-        nodes: t.nodes,
+        // Never persist SECRET param values (typed API keys) to localStorage:
+        // they must not survive a page refresh — the field is "Session only".
+        nodes: stripNodeSecretsForPersist(t.nodes),
         edges: t.edges,
         segmentGroups: t.segmentGroups,
         recordOutputs: t.recordOutputs,
@@ -673,6 +747,13 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         selectedNodeId: null,
         presetModalNodeId: null,
         subgraphModalNodeId: null,
+        // A cleared canvas is a fresh, unbound graph. Drop the metadata tied
+        // to the previously-open graph so the next save doesn't silently
+        // overwrite that file with stale description / segment overlays.
+        description: '',
+        currentGraphFile: null,
+        segmentGroups: [],
+        activeSegment: null,
       })),
     });
   },
@@ -694,9 +775,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
             noteContent: n.data.noteContent,
             noteColor: n.data.noteColor,
             boundToNodeId: n.data.boundToNodeId,
-            boundOffset: n.data.boundOffset,
-            noteWidth: n.data.noteWidth,
-            noteHeight: n.data.noteHeight,
+            boundOffset: roundOffset(n.data.boundOffset),
+            noteWidth: roundDimension(n.data.noteWidth),
+            noteHeight: roundDimension(n.data.noteHeight),
           },
         };
       }
@@ -714,7 +795,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         position: roundPosition(n.position),
         data: {
           params: stripSecretParams(n.data.params, n.data.definition),
-          ...(n.data.isPreset ? { internalParams: n.data.internalParams } : {}),
+          ...(n.data.isPreset
+            ? { internalParams: stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition) }
+            : {}),
         },
       };
     });
@@ -751,6 +834,17 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           ),
         edges: tab.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
         selectedNodeId: tab.selectedNodeId === nodeId ? null : tab.selectedNodeId,
+        // Drop any Teaching Inspector segment whose head/tail was this node —
+        // it can never resolve a path once an endpoint is gone.
+        segmentGroups: tab.segmentGroups.filter(
+          (s) => s.headNodeId !== nodeId && s.tailNodeId !== nodeId,
+        ),
+        activeSegment:
+          tab.activeSegment &&
+          (tab.activeSegment.headNodeId === nodeId ||
+            tab.activeSegment.tailNodeId === nodeId)
+            ? null
+            : tab.activeSegment,
       })),
     });
   },

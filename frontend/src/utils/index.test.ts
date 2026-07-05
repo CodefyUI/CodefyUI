@@ -511,4 +511,15 @@ describe('findGraphNameCollision', () => {
     // Open graph is "Other"; saving as "My Graph" collides with the other file.
     expect(findGraphNameCollision('My Graph', existing, 'Other')).toBe('My Graph');
   });
+
+  it('flags a CASE-ONLY collision (NTFS/APFS are case-insensitive)', () => {
+    // "my graph" sanitizes to "my_graph"; on Windows/macOS that overwrites the
+    // saved "My_Graph", so we must warn despite the case difference.
+    expect(findGraphNameCollision('my graph', existing, null)).toBe('My Graph');
+  });
+
+  it('does not warn on a case-only re-save of the currently-open graph', () => {
+    // Open file stem "My_Graph"; saving "my graph" maps to the same file.
+    expect(findGraphNameCollision('my graph', existing, 'My_Graph')).toBeNull();
+  });
 });

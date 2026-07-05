@@ -34,8 +34,17 @@ export function findGraphNameCollision(
   existing: { name: string; file: string }[],
   currentFile: string | null,
 ): string | null {
-  const target = sanitizeGraphName(targetName);
-  const hit = existing.find((g) => g.file === target && g.file !== currentFile);
+  // NTFS and APFS are case-INSENSITIVE, so "My_Graph.json" and
+  // "my_graph.json" are the same file on Windows/macOS even though the
+  // backend's _sanitize_name preserves case. Compare lowercased stems so a
+  // case-only collision still triggers the overwrite warning. A spurious
+  // warning on case-sensitive Linux (where the two really are distinct files)
+  // is far safer than a silent overwrite on the majority platform.
+  const target = sanitizeGraphName(targetName).toLowerCase();
+  const current = currentFile == null ? null : currentFile.toLowerCase();
+  const hit = existing.find(
+    (g) => g.file.toLowerCase() === target && g.file.toLowerCase() !== current,
+  );
   return hit ? hit.name : null;
 }
 
