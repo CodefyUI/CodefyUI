@@ -258,6 +258,13 @@ async def test_revoke_is_soft_and_row_stays_listed(test_client, app_db):
 async def test_revoke_unknown_id_404(test_client, app_db):
     resp = await test_client.post("/api/keys/9999/revoke")
     assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "key_not_found"
+
+
+@pytest.mark.asyncio
+async def test_create_key_empty_name_422(test_client, app_db):
+    resp = await test_client.post("/api/keys", json={"name": ""})
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

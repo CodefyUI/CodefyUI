@@ -13,7 +13,7 @@ import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..core.api_keys import (
     PREFIX_DISPLAY_CHARS,
@@ -29,8 +29,20 @@ router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 _KEY_COLUMNS = "id, name, prefix, created_at, last_used_at, revoked_at"
 
 
+def _key_error(
+    status_code: int, code: str, message: str,
+    details: list[Any] | None = None,
+) -> HTTPException:
+    """Management-surface error: plain ``{"detail": ...}`` transport with a
+    stable ``code`` inside — same shape as routes_apps._manage_error."""
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, "details": details},
+    )
+
+
 class CreateKeyRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
 
 
 @router.post("", dependencies=[Depends(require_session_token)])
@@ -92,6 +104,5 @@ async def revoke_key(key_id: int, request: Request):
 
     row = await db.run(_revoke)
     if row is None:
-        raise HTTPException(status_code=404,
-                            detail=f"API key {key_id} not found")
+        raise _key_error(404, "key_not_found", f"API key {key_id} not found")
     return row
