@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import mimetypes
 import sys
@@ -130,6 +131,39 @@ def _extra_allowed_host_entries() -> list[str]:
     return entries
 
 
+def _is_bare_ip_without_port(entry: str) -> bool:
+    """True when *entry* is a bare IPv4/IPv6 address with no port suffix
+    (optionally bracketed, e.g. ``"::1"`` or ``"[::1]"``) — not directly
+    usable as a URL.
+
+    A naive ``":" in entry`` check wrongly keeps these: IPv6 addresses are
+    full of colons even with no port at all, so the whitelist's bare
+    ``"::1"`` entry (see ``init_allowed_hosts``) produced a malformed
+    ``"http://::1"`` reachable-at line. Anything that ISN'T a bare address
+    (a real ``host:port`` or ``[ipv6]:port`` pair) returns False and stays
+    in the printable set.
+    """
+    candidate = (
+        entry[1:-1] if entry.startswith("[") and entry.endswith("]")
+        else entry
+    )
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return False
+    return True
+
+
+def _reachable_urls() -> list[str]:
+    """Sorted ``http://host:port`` lines worth printing at startup: every
+    whitelisted entry that carries a real port, robustly excluding bare
+    IPv4/IPv6 addresses (spec Section 9's startup transparency log)."""
+    return sorted(
+        f"http://{h}" for h in allowed_hosts()
+        if ":" in h and not _is_bare_ip_without_port(h)
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(
@@ -157,9 +191,7 @@ async def lifespan(app: FastAPI):
             settings.HOST, settings.PORT,
         )
         logger.info("Host whitelist: %s", ", ".join(sorted(allowed_hosts())))
-        logger.info("Reachable at: %s", ", ".join(sorted(
-            f"http://{h}" for h in allowed_hosts() if ":" in h
-        )))
+        logger.info("Reachable at: %s", ", ".join(_reachable_urls()))
     token_path = write_token_file()
     logger.info("Session token written to %s", token_path)
 

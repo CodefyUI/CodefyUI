@@ -13,7 +13,11 @@ from app.core.auth import (
     init_allowed_hosts,
     local_interface_ips,
 )
-from app.main import _extra_allowed_host_entries
+from app.main import (
+    _extra_allowed_host_entries,
+    _is_bare_ip_without_port,
+    _reachable_urls,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -53,3 +57,32 @@ def test_extra_entries_reach_the_whitelist():
     assert "192.168.1.20:8000" in allowed_hosts()
     assert host_is_allowed("192.168.1.20:8000")
     assert not host_is_allowed("attacker.example:8000")  # rebinding stays closed
+
+
+# ── reachable-at startup log (robust IPv6 filtering) ─────────────────────
+
+
+def test_is_bare_ip_without_port():
+    assert _is_bare_ip_without_port("::1")
+    assert _is_bare_ip_without_port("[::1]")
+    assert _is_bare_ip_without_port("127.0.0.1")
+    assert not _is_bare_ip_without_port("127.0.0.1:8000")
+    assert not _is_bare_ip_without_port("[::1]:8000")
+    assert not _is_bare_ip_without_port("localhost:8000")
+    assert not _is_bare_ip_without_port("localhost")
+
+
+def test_reachable_urls_excludes_malformed_bare_ipv6_lines():
+    init_allowed_hosts("192.168.1.20", 8000)
+    urls = _reachable_urls()
+    # Bare loopback aliases (no port) must never appear — these produced
+    # the malformed "http://::1" line under the old bare ':' substring
+    # filter (allowed_hosts() always carries a portless "::1" / "[::1]"
+    # alongside their port-suffixed siblings; see init_allowed_hosts).
+    assert "http://::1" not in urls
+    assert "http://[::1]" not in urls
+    assert "http://::1:8000" not in urls
+    # The correctly bracketed host:port form IS printed.
+    assert "http://[::1]:8000" in urls
+    assert "http://127.0.0.1:8000" in urls
+    assert "http://192.168.1.20:8000" in urls

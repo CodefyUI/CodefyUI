@@ -1059,14 +1059,17 @@ def _server_health_info(host: "str | None" = None,
 
 def _running_server_pid() -> "int | None":
     """Return the PID of the live background server, or None. Clears a stale
-    pidfile as a side effect so callers don't act on a dead PID."""
+    pidfile (and its recorded server.addr) as a side effect so callers don't
+    act on a dead PID or report a stale address."""
     pid = _read_server_pid()
     if pid is None:
         return None
     if _pid_alive(pid):
         return pid
-    # Stale pidfile (server crashed / was killed externally) — tidy up.
+    # Stale pidfile (server crashed / was killed externally) — tidy up both
+    # files so `cdui status` can't report a dead server's last-known address.
     SERVER_PIDFILE.unlink(missing_ok=True)
+    SERVER_ADDRFILE.unlink(missing_ok=True)
     return None
 
 
