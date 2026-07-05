@@ -18,6 +18,11 @@ dependencies = [
     # uv.lock still satisfies this range; bump the ceiling deliberately after
     # vetting a new major/minor.
     "fastapi>=0.115.0,<0.140",
+    # Starlette is FastAPI's transitive dependency, but FastAPI only declares
+    # a floor (starlette>=0.46.0). CI resolves deps fresh (ignoring uv.lock),
+    # so an uncapped starlette lets a future breaking major land silently.
+    # Cap it explicitly at the top level; the lock's 1.0.0 satisfies this.
+    "starlette>=0.46.0,<2",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
