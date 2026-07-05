@@ -731,6 +731,39 @@ async def test_runs_list_metadata_only_newest_first(
 
 
 @pytest.mark.asyncio
+async def test_runs_list_tie_breaks_on_run_id_desc_when_created_at_equal(
+    test_client, app_db,
+):
+    """Rows sharing one created_at timestamp must still sort deterministically
+    (run_id DESC tie-break) — the `before` cursor design is unaffected."""
+    await _publish(test_client, SLUG, _echo_graph())
+
+    def _app_id(conn: sqlite3.Connection) -> int:
+        return conn.execute(
+            "SELECT id FROM apps WHERE slug = ?", (SLUG,)).fetchone()[0]
+
+    app_id = await app_db.run(_app_id)
+    same_ts = "2026-01-01T00:00:00.000000Z"
+
+    def _seed(conn: sqlite3.Connection) -> None:
+        for run_id in ("run-aaa", "run-zzz", "run-mmm"):
+            conn.execute(
+                "INSERT INTO runs (run_id, app_id, version, api_key_id, "
+                "status, node_timings_json, inputs_json, outputs_json, "
+                "created_at) VALUES (?, ?, 1, NULL, 'ok', '{}', '{}', '{}', "
+                "?)",
+                (run_id, app_id, same_ts),
+            )
+
+    await app_db.run(_seed)
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs")
+    assert resp.status_code == 200
+    assert [r["run_id"] for r in resp.json()] == [
+        "run-zzz", "run-mmm", "run-aaa",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_detail_full_row_with_parsed_io(
     test_client, app_db, api_key,
 ):

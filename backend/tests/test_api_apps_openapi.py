@@ -104,6 +104,12 @@ async def test_openapi_document_is_complete_and_typed(test_client, app_db):
         "status", "run_id", "graph", "app", "version",
         "device", "outputs", "error", "timing",
     }
+    # Codegen strictness: the error/timing subschemas declare their own
+    # required arrays too (every key always present when non-null).
+    assert envelope["properties"]["error"]["required"] == [
+        "code", "message", "node_id", "details",
+    ]
+    assert envelope["properties"]["timing"]["required"] == ["total_s"]
     ref = {"$ref": "#/components/schemas/RunEnvelope"}
     assert post["responses"]["200"]["content"]["application/json"]["schema"] \
         == ref
