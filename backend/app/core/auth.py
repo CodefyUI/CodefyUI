@@ -125,6 +125,15 @@ def init_allowed_hosts(host: str, port: int, extra: Iterable[str] = ()) -> None:
     if host and host not in ("0.0.0.0", "::"):
         bases.add(host)
     for base in bases:
+        if ":" in base and not base.startswith("["):
+            # Unbracketed IPv6 ("::1", or a concrete --host fe80::1): no real
+            # client ever sends "::1:8000" in a Host header — RFC 3986 puts
+            # brackets around IPv6 in the authority. Keep the bare form for
+            # forgiveness and whitelist the bracketed forms clients DO send.
+            _ALLOWED_HOSTS.add(base)
+            _ALLOWED_HOSTS.add(f"[{base}]")
+            _ALLOWED_HOSTS.add(f"[{base}]:{port}")
+            continue
         _ALLOWED_HOSTS.add(f"{base}:{port}")
         # Some clients omit the port when it's the protocol default; we don't
         # serve on 80/443 by default but accept the bare host for forgiveness.

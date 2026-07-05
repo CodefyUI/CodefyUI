@@ -20,7 +20,8 @@ All management calls below use the editor session token (`X-CodefyUI-Token`, obt
 
 ```text
 POST /api/apps/{slug}/publish        (session token)
-body: {"graph": "<saved name>", "record_io": true, "note": "optional", "create": false}
+body: {"graph": "<saved name>", "note": "optional", "create": false}
+      (optional "record_io": true|false — omitted inherits the app's current setting; see below)
 ```
 
 - `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name — renaming a graph never breaks a published URL.

@@ -126,6 +126,33 @@ def test_iter_statements_ignores_trailing_comment_only_tail():
     assert "CREATE TABLE a" in statements[0]
 
 
+def test_iter_statements_ignores_trailing_block_comment_tail():
+    # Same guard for SQL's other comment syntax: a trailing /* ... */
+    # block (terminated or dangling unterminated) is not a statement.
+    for tail in (
+        "/* terminated block comment; with a semicolon inside */\n",
+        "/* dangling unterminated block comment\n   spanning lines\n",
+        "-- line comment\n/* then a block */  \n",
+    ):
+        script = "CREATE TABLE a (x INTEGER);\n" + tail
+        statements = list(iter_statements(script))
+        assert len(statements) == 1, tail
+        assert "CREATE TABLE a" in statements[0]
+
+
+def test_iter_statements_yields_sql_after_block_comment_in_tail():
+    # Conservative direction of the same guard: real SQL hiding after a
+    # block comment in the unterminated tail must still be yielded (and
+    # then fail loudly downstream if malformed) — never silently dropped.
+    script = (
+        "CREATE TABLE a (x INTEGER);\n"
+        "/* comment */ CREATE TABLE b (y INTEGER)\n"  # no semicolon
+    )
+    statements = list(iter_statements(script))
+    assert len(statements) == 2
+    assert "CREATE TABLE b" in statements[1]
+
+
 def test_utc_now_iso_is_sortable_utc():
     stamp = utc_now_iso()
     assert stamp.endswith("Z")

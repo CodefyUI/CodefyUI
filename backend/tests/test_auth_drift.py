@@ -66,6 +66,26 @@ def _exempt_router_api_routes() -> list[APIRoute]:
     ]
 
 
+def test_exempt_routers_carry_only_plain_api_routes():
+    # Known boundary of both nets below: WebSocket routes never appear in
+    # app.openapi() and are not APIRoutes, so neither layer would see one.
+    # This tripwire turns "someone adds a WS route to an exempt router"
+    # into a loud failure forcing a conscious auth decision. (A FUTURE
+    # router under an exempt prefix whose routes set include_in_schema=
+    # False shares the same blindness — documented here; revisit if one
+    # ever exists.)
+    for router in (routes_apps.router, routes_keys.router):
+        non_api = [
+            route for route in router.routes
+            if not isinstance(route, APIRoute)
+        ]
+        assert not non_api, (
+            f"non-APIRoute routes on {router.prefix}: {non_api} — the "
+            "auth-drift nets cannot see these; wire explicit auth and "
+            "extend this test before shipping one"
+        )
+
+
 def test_every_exempt_route_declares_exactly_one_auth_dependency():
     routes = _exempt_router_api_routes()
     # Sanity: an empty walk would make the loop below vacuously pass —

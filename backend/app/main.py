@@ -1,5 +1,4 @@
 import asyncio
-import ipaddress
 import logging
 import mimetypes
 import sys
@@ -131,36 +130,33 @@ def _extra_allowed_host_entries() -> list[str]:
     return entries
 
 
-def _is_bare_ip_without_port(entry: str) -> bool:
-    """True when *entry* is a bare IPv4/IPv6 address with no port suffix
-    (optionally bracketed, e.g. ``"::1"`` or ``"[::1]"``) — not directly
-    usable as a URL.
+def _has_port(entry: str) -> bool:
+    """True when a whitelist *entry* carries an explicit port —
+    ``host:port`` or ``[ipv6]:port`` — i.e. it is directly usable as the
+    authority of a printable URL.
 
-    A naive ``":" in entry`` check wrongly keeps these: IPv6 addresses are
-    full of colons even with no port at all, so the whitelist's bare
-    ``"::1"`` entry (see ``init_allowed_hosts``) produced a malformed
-    ``"http://::1"`` reachable-at line. Anything that ISN'T a bare address
-    (a real ``host:port`` or ``[ipv6]:port`` pair) returns False and stays
-    in the printable set.
+    Structural on purpose. Both a naive ``":" in entry`` check and a
+    parse-based one (``ipaddress.ip_address``) mis-classify IPv6 forms:
+    the former keeps the portless ``"::1"``, and the latter only excluded
+    ``"::1:8000"`` by accident — four-digit ports happen to parse as a
+    hextet while five-digit ports (10000-65535) do not, so the malformed
+    line came back on high ports. Bracket structure is unambiguous:
+    bracketed entries have a port iff ``"]:"`` appears; unbracketed
+    entries (hostname/IPv4 only — ``init_allowed_hosts`` never suffixes a
+    port onto unbracketed IPv6) have a port iff they contain exactly one
+    colon.
     """
-    candidate = (
-        entry[1:-1] if entry.startswith("[") and entry.endswith("]")
-        else entry
-    )
-    try:
-        ipaddress.ip_address(candidate)
-    except ValueError:
-        return False
-    return True
+    if entry.startswith("["):
+        return "]:" in entry
+    return entry.count(":") == 1
 
 
 def _reachable_urls() -> list[str]:
     """Sorted ``http://host:port`` lines worth printing at startup: every
-    whitelisted entry that carries a real port, robustly excluding bare
-    IPv4/IPv6 addresses (spec Section 9's startup transparency log)."""
+    whitelisted entry that carries a real port (spec Section 9's startup
+    transparency log)."""
     return sorted(
-        f"http://{h}" for h in allowed_hosts()
-        if ":" in h and not _is_bare_ip_without_port(h)
+        f"http://{h}" for h in allowed_hosts() if _has_port(h)
     )
 
 
