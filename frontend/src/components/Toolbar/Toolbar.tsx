@@ -6,7 +6,7 @@ import { useUIStore } from '../../store/uiStore';
 import { saveGraph, loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest';
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
-import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
+import { resolveSerializedNodes, resolveSerializedEdges, sanitizeGraphName, findGraphNameCollision } from '../../utils';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
@@ -197,7 +197,7 @@ function LoadSubMenuPanel({
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
-  const { clear, getSerializedGraph, setNodes, setEdges } = useTabStore();
+  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   const { reload, fetchDefinitions } = useNodeDefStore();
@@ -265,15 +265,48 @@ export function Toolbar() {
       title: t('toolbar.save.prompt'),
       placeholder: 'graph-name',
     });
-    if (!name?.trim()) return;
+    const trimmed = name?.trim();
+    if (!trimmed) return;
+
+    // Overwrite guard: two different display names can sanitize to the same
+    // file, so warn only when the sanitized target collides with a DIFFERENT
+    // saved graph (re-saving the currently-open graph is silent). A failed
+    // list fetch must not block saving — default to no collision.
+    let existing: { name: string; file: string }[] = [];
     try {
-      const { nodes, edges, presets } = getSerializedGraph();
-      await saveGraph({ nodes, edges, name: name.trim(), description: '', presets });
-      addToast(t('toolbar.save.success', { name: name.trim() }), 'success');
+      const result = await listGraphs();
+      if (Array.isArray(result)) existing = result;
+    } catch {
+      /* list unavailable — skip the overwrite check and proceed to save */
+    }
+    const collidingName = findGraphNameCollision(trimmed, existing, activeTab.currentGraphFile);
+    if (collidingName !== null) {
+      const ok = await confirm({
+        title: t('toolbar.save.overwriteConfirm', { name: collidingName }),
+        confirmText: t('toolbar.save'),
+        variant: 'danger',
+      });
+      if (!ok) return;
+    }
+
+    try {
+      const { nodes, edges, presets, segmentGroups } = getSerializedGraph();
+      await saveGraph({
+        nodes,
+        edges,
+        name: trimmed,
+        description: activeTab.description ?? '',
+        presets,
+        segmentGroups,
+      });
+      // Bind the tab to the graph it was just saved as (drives the overwrite
+      // guard on the next save).
+      setCurrentGraphFile(sanitizeGraphName(trimmed));
+      addToast(t('toolbar.save.success', { name: trimmed }), 'success');
     } catch (e) {
       addToast(t('toolbar.save.fail', { error: (e as Error).message }), 'error');
     }
-  }, [getSerializedGraph, t, addToast]);
+  }, [getSerializedGraph, t, addToast, activeTab.currentGraphFile, activeTab.description, setCurrentGraphFile]);
 
   const handleClear = useCallback(async () => {
     const ok = await confirm({
@@ -302,6 +335,11 @@ export function Toolbar() {
         const resolvedEdges = resolveSerializedEdges(rawEdges);
         setNodes(resolvedNodes);
         setEdges(resolvedEdges);
+        setDescription(typeof graphData.description === 'string' ? graphData.description : '');
+        setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
+        // `name` is the sanitized file stem — bind the tab to it so re-saving
+        // under the same name doesn't trigger the overwrite warning.
+        setCurrentGraphFile(name);
         if (savedPresets.length > 0) {
           useNodeDefStore.setState({ presets: mergedPresets });
         }
@@ -309,7 +347,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [setNodes, setEdges, t, addToast],
+    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -337,6 +375,11 @@ export function Toolbar() {
           const resolvedEdges = resolveSerializedEdges(edges);
           setNodes(resolvedNodes);
           setEdges(resolvedEdges);
+          setDescription(typeof data.description === 'string' ? data.description : '');
+          setSegmentGroups(Array.isArray(data.segmentGroups) ? data.segmentGroups : []);
+          // An imported file is a fresh, unsaved graph — not bound to any
+          // saved file yet, so the next save always runs the overwrite check.
+          setCurrentGraphFile(null);
           if (importedPresets.length > 0) {
             useNodeDefStore.setState({ presets: mergedPresets });
           }
@@ -347,17 +390,17 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [setNodes, setEdges, t, addToast],
+    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {
-    const { nodes, edges, presets } = getSerializedGraph();
+    const { nodes, edges, presets, segmentGroups } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.exportJson.empty'), 'warning');
       return;
     }
     const name = activeTab.name || 'graph';
-    const data = { name, description: '', nodes, edges, presets };
+    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -365,7 +408,7 @@ export function Toolbar() {
     a.download = `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [getSerializedGraph, activeTab.name, t, addToast]);
+  }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
     const { nodes, edges } = getSerializedGraph();

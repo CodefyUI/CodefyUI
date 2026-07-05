@@ -275,6 +275,10 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
     );
   }
 
+  if (param.param_type === 'secret') {
+    return <SecretField param={param} value={value} onChange={onChange} displayLabel={displayLabel} />;
+  }
+
   // Default: string
   return (
     <div>
@@ -285,6 +289,39 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
         onChange={(e) => onChange(param.name, e.target.value)}
         className={styles.input}
       />
+    </div>
+  );
+}
+
+/**
+ * SECRET param: a masked (password) input. The value lives only in canvas /
+ * runtime state — the editor strips it from the serialized graph on save and
+ * export, so it never reaches disk. The hint steers users to the environment
+ * variable for anything they want to keep.
+ */
+function SecretField({
+  param,
+  value,
+  onChange,
+  displayLabel,
+}: {
+  param: ParamDefinition;
+  value: any;
+  onChange: (name: string, value: any) => void;
+  displayLabel: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <div>
+      <label className={styles.label}>{displayLabel}</label>
+      <input
+        type="password"
+        autoComplete="off"
+        value={value ?? param.default ?? ''}
+        onChange={(e) => onChange(param.name, e.target.value)}
+        className={styles.input}
+      />
+      <span className={styles.hint}>{t('paramField.secretHint')}</span>
     </div>
   );
 }

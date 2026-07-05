@@ -562,6 +562,69 @@ describe('getSerializedGraph', () => {
     const g = store().getSerializedGraph();
     expect(g.presets).toEqual([]);
   });
+
+  it('rounds node positions to integers (regular + note nodes)', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 12.7, y: -3.2 }, data: { label: 'A', type: 'Add', params: {} } },
+    ] as any);
+    store().addNote('text', { x: 5.6, y: 9.1 });
+    const g = store().getSerializedGraph();
+    const regular = g.nodes.find((n) => n.id === 'n1')!;
+    const note = g.nodes.find((n) => n.type === 'note')!;
+    expect(regular.position).toEqual({ x: 13, y: -3 });
+    expect(note.position).toEqual({ x: 6, y: 9 });
+  });
+
+  it('strips SECRET-typed param values to "" (using the node definition)', () => {
+    const definition = {
+      node_name: 'LLMChat', category: 'LLM', description: '', inputs: [], outputs: [],
+      params: [
+        { name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+        { name: 'model', param_type: 'string', default: '', description: '', options: [], min_value: null, max_value: null },
+      ],
+    };
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-secret', model: 'gpt-5.2' }, definition } },
+    ] as any);
+    const g = store().getSerializedGraph();
+    expect(g.nodes[0].data.params.openai_api_key).toBe('');   // secret blanked
+    expect(g.nodes[0].data.params.model).toBe('gpt-5.2');     // non-secret kept
+  });
+
+  it('leaves params untouched when the node has no secret-typed params', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 1, y: 2 }, data: { label: 'A', type: 'Dataset', params: { p: 1 } } },
+    ] as any);
+    const g = store().getSerializedGraph();
+    // Identity preserved (no definition -> nothing to strip).
+    expect(g.nodes[0].data.params).toEqual({ p: 1 });
+  });
+});
+
+// ── graph metadata actions (description / currentGraphFile / segmentGroups) ──
+
+describe('graph metadata actions', () => {
+  beforeEach(resetToSingleTab);
+
+  it('setDescription updates the active tab description', () => {
+    expect(activeTab().description).toBe('');
+    store().setDescription('an important graph');
+    expect(activeTab().description).toBe('an important graph');
+  });
+
+  it('setCurrentGraphFile binds and unbinds the saved-graph file', () => {
+    expect(activeTab().currentGraphFile).toBeNull();
+    store().setCurrentGraphFile('my_graph');
+    expect(activeTab().currentGraphFile).toBe('my_graph');
+    store().setCurrentGraphFile(null);
+    expect(activeTab().currentGraphFile).toBeNull();
+  });
+
+  it('setSegmentGroups replaces the whole segmentGroups array', () => {
+    store().addSegmentGroup({ id: 'g0', headNodeId: 'x', tailNodeId: 'y' });
+    store().setSegmentGroups([{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }]);
+    expect(activeTab().segmentGroups).toEqual([{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }]);
+  });
 });
 
 // ── deleteNode / duplicateNode / renameNode ──────────────────────────────────

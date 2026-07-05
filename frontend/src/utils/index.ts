@@ -6,6 +6,40 @@ export function generateId(): string {
 }
 
 /**
+ * Client-side replica of the backend's ``_sanitize_name`` (routes_graph.py):
+ * every char outside [alphanumeric, '-', '_'] becomes '_'. Two different
+ * display names can therefore map to the same on-disk file. Python's
+ * ``str.isalnum()`` is Unicode-aware (Chinese, accented Latin, etc. are kept),
+ * so we mirror that with the Unicode letter/number classes rather than
+ * ASCII-only ranges. The backend remains authoritative — this only powers the
+ * pre-save overwrite warning, so an exotic-codepoint divergence at worst
+ * misses or double-shows the warning; it never affects what is written.
+ */
+export function sanitizeGraphName(name: string): string {
+  return Array.from(name)
+    .map((ch) => (/[\p{L}\p{N}]/u.test(ch) || ch === '-' || ch === '_' ? ch : '_'))
+    .join('');
+}
+
+/**
+ * Detect whether saving under ``targetName`` would silently overwrite a
+ * DIFFERENT existing graph. Returns the colliding graph's display name (for
+ * the confirm dialog) or ``null`` when there is no collision. ``existing`` is
+ * the ``/api/graph/list`` result (``file`` is the sanitized stem);
+ * ``currentFile`` is the sanitized stem of the graph currently open in the tab
+ * — re-saving the SAME graph is never treated as a collision.
+ */
+export function findGraphNameCollision(
+  targetName: string,
+  existing: { name: string; file: string }[],
+  currentFile: string | null,
+): string | null {
+  const target = sanitizeGraphName(targetName);
+  const hit = existing.find((g) => g.file === target && g.file !== currentFile);
+  return hit ? hit.name : null;
+}
+
+/**
  * Frontend allowlist mapping NODE_NAME → custom xyflow node type. Nodes not
  * listed here render via the default `baseNode`. Backend stays UI-agnostic;
  * the renderer choice lives in the frontend so saved graphs round-trip without

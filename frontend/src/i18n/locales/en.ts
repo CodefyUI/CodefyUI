@@ -16,6 +16,7 @@ const en = {
   'toolbar.save.prompt': 'Enter a name for this graph:',
   'toolbar.save.success': 'Graph "{name}" saved successfully.',
   'toolbar.save.fail': 'Save failed: {error}',
+  'toolbar.save.overwriteConfirm': 'A graph named {name} already exists and will be overwritten - continue?',
   'toolbar.load': 'Load',
   'toolbar.load.title': 'Load a saved graph',
   'toolbar.load.fail': 'Load failed: {error}',
@@ -200,6 +201,7 @@ const en = {
   'paramField.selectFile': '-- select file --',
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
+  'paramField.secretHint': 'Session only - cleared on save. Prefer the environment variable.',
 
   // Grid Snap
   'toolbar.gridSnap.on': 'Snap ON',

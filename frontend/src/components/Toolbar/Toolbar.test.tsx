@@ -112,6 +112,10 @@ describe('Toolbar', () => {
     // Default async resolutions
     mockedRest.listGraphs.mockResolvedValue([]);
     mockedRest.listCustomNodes.mockResolvedValue([]);
+    // saveGraph is a shared vi.fn() from the module mock — restoreAllMocks
+    // does not reset factory mocks, so clear its call history each test to
+    // keep per-test "was/was not called" assertions order-independent.
+    mockedRest.saveGraph.mockClear();
 
     mockedExportDiagram.svgToPngBlob.mockReset();
     mockedExportDiagram.svgToPngBlob.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
@@ -274,6 +278,75 @@ describe('Toolbar', () => {
     );
   });
 
+  it('Save: carries the tab description through to saveGraph (round-trip half)', async () => {
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ description: 'my important description' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('my-graph');
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'my-graph', description: 'my important description' }),
+      ),
+    );
+  });
+
+  it('Save: forwards segmentGroups from the serialized graph', async () => {
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ segmentGroups: [{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }] as never });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('seg-graph');
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(
+        expect.objectContaining({ segmentGroups: [{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }] }),
+      ),
+    );
+  });
+
+  it('Save: warns before overwriting a DIFFERENT existing graph and aborts on cancel', async () => {
+    // A saved graph "Existing" (file "existing") is present; the tab is not
+    // bound to it (currentGraphFile null), so saving as "existing" collides.
+    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
+    setActiveTab({ currentGraphFile: null });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('existing');   // prompt: name sanitizes to 'existing' -> collides
+    await resolveDialog(false);         // decline the overwrite confirm
+    expect(mockedRest.saveGraph).not.toHaveBeenCalled();
+  });
+
+  it('Save: overwrite confirmed proceeds to saveGraph', async () => {
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
+    setActiveTab({ currentGraphFile: null });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('existing');   // prompt
+    await resolveDialog(true);          // confirm overwrite
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'existing' })),
+    );
+  });
+
+  it('Save: re-saving the currently-open graph does NOT warn', async () => {
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    mockedRest.listGraphs.mockResolvedValue([{ name: 'Existing', file: 'existing' }] as never);
+    // Tab is already bound to "existing" -> re-saving it is silent.
+    setActiveTab({ currentGraphFile: 'existing' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await resolveDialog('existing');   // only the prompt; no overwrite confirm
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'existing' })),
+    );
+  });
+
   // ── Clear action ────────────────────────────────────────────────────
 
   it('Clear: confirmed clears the canvas', async () => {
@@ -411,6 +484,28 @@ describe('Toolbar', () => {
     });
     // No crash, nothing rendered.
     expect(screen.queryByText('No saved graphs')).toBeNull();
+  });
+
+  it('Load: restores description + segmentGroups and binds the graph file', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({
+      nodes: [],
+      edges: [],
+      description: 'desc-abc',
+      segmentGroups: [{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }],
+    } as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
+    await waitFor(() => {
+      const tab = useTabStore.getState().tabs[0];
+      expect(tab.description).toBe('desc-abc');
+      expect(tab.segmentGroups).toEqual([{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }]);
+      // Bound to the loaded file so re-saving under the same name is silent.
+      expect(tab.currentGraphFile).toBe('alpha');
+    });
   });
 
   it('Load: loadGraph rejection toasts an error', async () => {
@@ -574,6 +669,39 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as JSON'));
     expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it('Export JSON: strips SECRET param values from the downloaded document', async () => {
+    const definition = {
+      node_name: 'LLMChat', category: 'LLM', description: '', inputs: [], outputs: [],
+      params: [
+        { name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+      ],
+    };
+    setActiveTab({
+      description: 'exported',
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 1.6, y: 2.4 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-secret' }, definition } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as JSON'));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+    const blob = (URL.createObjectURL as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as Blob;
+    // jsdom's Blob has no .text(); read it via FileReader (same path the
+    // import flow uses).
+    const text = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsText(blob);
+    });
+    const doc = JSON.parse(text);
+    // Secret blanked; description carried; position rounded.
+    expect(doc.nodes[0].data.params.openai_api_key).toBe('');
+    expect(doc.description).toBe('exported');
+    expect(doc.nodes[0].position).toEqual({ x: 2, y: 2 });
   });
 
   it('Export Subgraph: empty canvas warns', () => {

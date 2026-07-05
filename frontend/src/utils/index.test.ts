@@ -10,6 +10,8 @@ import {
   resolveSerializedEdges,
   resolveDynamicOutputs,
   buildFlowNode,
+  sanitizeGraphName,
+  findGraphNameCollision,
 } from './index';
 import type { NodeDefinition, ParamDefinition, PresetDefinition } from '../types';
 
@@ -464,5 +466,49 @@ describe('buildFlowNode', () => {
   it('still resolves a first-party viz when a namespaced node\'s bare name has one', () => {
     const n = buildFlowNode({ ...def, node_name: 'foundations:Edu-KNN' }, { x: 0, y: 0 });
     expect(n.type).toBe('eduKNNNode');
+  });
+});
+
+describe('sanitizeGraphName', () => {
+  it('keeps alphanumerics, hyphen and underscore verbatim (matches backend)', () => {
+    expect(sanitizeGraphName('my-graph_2')).toBe('my-graph_2');
+  });
+
+  it('replaces every other char with an underscore', () => {
+    // Mirrors the backend test: "a b.c/d" -> "a_b_c_d".
+    expect(sanitizeGraphName('a b.c/d')).toBe('a_b_c_d');
+  });
+
+  it('preserves Unicode letters/digits (Python str.isalnum is Unicode-aware)', () => {
+    // Chinese kept, the space between becomes '_'.
+    expect(sanitizeGraphName('中文 graph')).toBe('中文_graph');
+    // Accented Latin kept.
+    expect(sanitizeGraphName('café')).toBe('café');
+  });
+});
+
+describe('findGraphNameCollision', () => {
+  const existing = [
+    { name: 'My Graph', file: 'My_Graph' },
+    { name: 'Other', file: 'Other' },
+  ];
+
+  it('returns the colliding graph display name when a different graph shares the sanitized file', () => {
+    // "My.Graph" sanitizes to "My_Graph", colliding with the saved "My Graph".
+    expect(findGraphNameCollision('My.Graph', existing, null)).toBe('My Graph');
+  });
+
+  it('returns null when no existing graph shares the sanitized file', () => {
+    expect(findGraphNameCollision('brand-new', existing, null)).toBeNull();
+  });
+
+  it('returns null when the only match IS the currently-open graph (re-save)', () => {
+    // Editing "My_Graph" and saving under a name that maps to it again.
+    expect(findGraphNameCollision('My Graph', existing, 'My_Graph')).toBeNull();
+  });
+
+  it('still warns when the collision is a DIFFERENT graph than the open one', () => {
+    // Open graph is "Other"; saving as "My Graph" collides with the other file.
+    expect(findGraphNameCollision('My Graph', existing, 'Other')).toBe('My Graph');
   });
 });

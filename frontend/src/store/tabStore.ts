@@ -27,6 +27,13 @@ const MAX_UNDO = 50;
 export interface TabState {
   id: string;
   name: string;
+  // Graph-level metadata carried through save/load (distinct from the tab
+  // label `name`). `description` round-trips to the saved file;
+  // `currentGraphFile` is the sanitized stem of the saved graph this tab is
+  // bound to (set on load and on save), used to skip the overwrite warning
+  // when re-saving the same graph.
+  description: string;
+  currentGraphFile: string | null;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -65,6 +72,8 @@ function createTabState(id: string, name: string): TabState {
   return {
     id,
     name,
+    description: '',
+    currentGraphFile: null,
     nodes: [],
     edges: [],
     selectedNodeId: null,
@@ -103,6 +112,9 @@ interface TabStoreState {
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
   renameTab: (id: string, name: string) => void;
+  // graph-level metadata (active tab)
+  setDescription: (description: string) => void;
+  setCurrentGraphFile: (file: string | null) => void;
 
   // flow actions (operate on active tab)
   setNodes: (nodes: Node<NodeData>[]) => void;
@@ -179,6 +191,7 @@ interface TabStoreState {
   setActiveSegment: (segment: SegmentGroup | null) => void;
   addSegmentGroup: (segment: SegmentGroup) => void;
   removeSegmentGroup: (id: string) => void;
+  setSegmentGroups: (segments: SegmentGroup[]) => void;
   // A1/A2/A3 toggles
   toggleVerbose: () => void;
   togglePersistWeights: () => void;
@@ -190,6 +203,39 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
 }
 
+// ── Serialization helpers ──
+//
+// Node positions serialize as integers so drag micro-movements don't produce
+// noisy floating-point diffs in saved / exported graph JSON. Loading still
+// tolerates floats.
+function roundPosition(p: { x: number; y: number } | undefined): { x: number; y: number } | undefined {
+  // Tolerate a missing position (some callers/tests build nodes without one);
+  // the previous serializer passed `n.position` through verbatim.
+  if (!p) return p;
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
+
+// Replace every SECRET-typed param value with '' so secrets (e.g. an LLM API
+// key typed into the canvas) never reach a saved file or exported JSON. The
+// node definition (attached by buildFlowNode / resolveSerializedNodes) tells
+// us which params are secret. The backend save endpoint re-scrubs as
+// defense-in-depth; this is the primary strip.
+function stripSecretParams(
+  params: Record<string, any>,
+  definition: NodeDefinition | undefined,
+): Record<string, any> {
+  if (!params) return params;
+  const secretNames = (definition?.params ?? [])
+    .filter((p) => p.param_type === 'secret')
+    .map((p) => p.name);
+  if (secretNames.length === 0) return params;
+  const cleaned = { ...params };
+  for (const name of secretNames) {
+    if (name in cleaned) cleaned[name] = '';
+  }
+  return cleaned;
+}
+
 // ── LocalStorage persistence ──
 
 const STORAGE_KEY = 'codefyui-tabs';
@@ -197,6 +243,8 @@ const STORAGE_KEY = 'codefyui-tabs';
 interface PersistedTab {
   id: string;
   name: string;
+  description?: string;
+  currentGraphFile?: string | null;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -220,6 +268,8 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
       tabs: tabs.map((t) => ({
         id: t.id,
         name: t.name,
+        description: t.description,
+        currentGraphFile: t.currentGraphFile,
         nodes: t.nodes,
         edges: t.edges,
         segmentGroups: t.segmentGroups,
@@ -259,6 +309,8 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
           const base = createTabState(t.id, t.name);
           return {
             ...base,
+            description: t.description ?? '',
+            currentGraphFile: t.currentGraphFile ?? null,
             nodes: t.nodes ?? [],
             edges: t.edges ?? [],
             segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
@@ -321,6 +373,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   renameTab: (id, name) =>
     set({ tabs: updateTab(get().tabs, id, () => ({ name })) }),
+
+  setDescription: (description) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ description })) }),
+
+  setCurrentGraphFile: (file) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
 
   // ── Helpers ──
 
@@ -630,7 +688,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         return {
           id: n.id,
           type: 'note',
-          position: n.position,
+          position: roundPosition(n.position),
           data: {
             noteKind: n.data.noteKind,
             noteContent: n.data.noteContent,
@@ -653,9 +711,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       return {
         id: n.id,
         type: n.data.type,
-        position: n.position,
+        position: roundPosition(n.position),
         data: {
-          params: n.data.params,
+          params: stripSecretParams(n.data.params, n.data.definition),
           ...(n.data.isPreset ? { internalParams: n.data.internalParams } : {}),
         },
       };
@@ -1100,6 +1158,13 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         segmentGroups: tab.segmentGroups.filter((s) => s.id !== id),
         activeSegment: tab.activeSegment?.id === id ? null : tab.activeSegment,
+      })),
+    }),
+
+  setSegmentGroups: (segments) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+        segmentGroups: segments,
       })),
     }),
 

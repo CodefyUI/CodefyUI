@@ -94,6 +94,39 @@ describe('ParamField — string (default) branch', () => {
   });
 });
 
+describe('ParamField — secret branch', () => {
+  it('renders a masked password input, shows the session-only hint, and fires onChange', () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <ParamField
+        param={mkParam({ name: 'openai_api_key', param_type: 'secret' })}
+        value="sk-abc"
+        onChange={onChange}
+      />,
+    );
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe('sk-abc');
+    // The English hint steers users to the environment variable.
+    expect(
+      screen.getByText('Session only - cleared on save. Prefer the environment variable.'),
+    ).toBeTruthy();
+    fireEvent.change(input, { target: { value: 'sk-xyz' } });
+    expect(onChange).toHaveBeenCalledWith('openai_api_key', 'sk-xyz');
+  });
+
+  it('falls back to param.default then empty string when value is nullish', () => {
+    const { rerender, container } = render(
+      <ParamField param={mkParam({ param_type: 'secret', default: 'dflt' })} value={undefined} onChange={() => {}} />,
+    );
+    expect((container.querySelector('input[type="password"]') as HTMLInputElement).value).toBe('dflt');
+    rerender(
+      <ParamField param={mkParam({ param_type: 'secret', default: undefined })} value={undefined} onChange={() => {}} />,
+    );
+    expect((container.querySelector('input[type="password"]') as HTMLInputElement).value).toBe('');
+  });
+});
+
 describe('ParamField — bool branch', () => {
   it('renders a checkbox bound to Boolean(value) and emits checked', () => {
     const onChange = vi.fn();
