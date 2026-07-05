@@ -2,19 +2,39 @@
 auth_guard-exempt prefixes declares exactly ONE of the three Stage-2 auth
 dependencies. The middleware exemption alone is NEVER trusted — a future
 bare route matching an exempt prefix silently skips the middleware, and
-only this test catches it arriving without route-level auth."""
+only this test catches it arriving without route-level auth.
+
+Two complementary layers, both deliberately restricted to STABLE public
+surfaces (FastAPI 0.139 stopped flattening included routers into
+``app.routes``, which silently emptied a private-internals walk):
+
+1. Structural: every route on the two exempt routers declares exactly one
+   auth dependency, read from ``route.dependant`` on OUR own
+   ``APIRouter.routes`` (verified present on 0.135 and 0.139 alike — the
+   0.139 change only removed the app-level flattening). ``dependant``
+   is required here because parameter-style ``Depends`` (e.g. invoke's
+   non-raising key dependency) never appear in ``route.dependencies``.
+2. Behavioral app-level net: enumerate the LIVE app's paths via
+   ``app.openapi()`` (public API, flattens included routers on every
+   version) and hit every exempt path/method anonymously — each one must
+   reject with 401/403. A FUTURE router mounted under ``/api/apps`` or
+   ``/api/keys`` whose routes forget route-level auth shows up here as a
+   non-401/403 anonymous response, with no test update needed.
+"""
 
 from __future__ import annotations
 
+from fastapi.routing import APIRoute
+from httpx import ASGITransport, AsyncClient
+
 from app.api import routes_apps, routes_keys
+from app.config import settings
 from app.core.api_keys import (
     require_api_key,
     require_api_key_or_session,
     require_session_token,
 )
-from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt
-
-_EXEMPT_ROUTERS = [routes_apps.router, routes_keys.router]
+from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt, app
 
 _AUTH_DEPS = {require_api_key, require_api_key_or_session,
               require_session_token}
@@ -34,23 +54,94 @@ def test_prefix_matching_is_exact_or_slash():
     assert not _prefix_exempt("/api/app")
 
 
+def _exempt_router_api_routes() -> list[APIRoute]:
+    """All APIRoutes on the two exempt routers — OUR objects, so the
+    ``routes`` attribute is stable regardless of how FastAPI represents
+    them inside ``app.routes`` after ``include_router``."""
+    return [
+        route
+        for router in (routes_apps.router, routes_keys.router)
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    ]
+
+
+def test_exempt_routers_carry_only_plain_api_routes():
+    # Known boundary of both nets below: WebSocket routes never appear in
+    # app.openapi() and are not APIRoutes, so neither layer would see one.
+    # This tripwire turns "someone adds a WS route to an exempt router"
+    # into a loud failure forcing a conscious auth decision. (A FUTURE
+    # router under an exempt prefix whose routes set include_in_schema=
+    # False shares the same blindness — documented here; revisit if one
+    # ever exists.)
+    for router in (routes_apps.router, routes_keys.router):
+        non_api = [
+            route for route in router.routes
+            if not isinstance(route, APIRoute)
+        ]
+        assert not non_api, (
+            f"non-APIRoute routes on {router.prefix}: {non_api} — the "
+            "auth-drift nets cannot see these; wire explicit auth and "
+            "extend this test before shipping one"
+        )
+
+
 def test_every_exempt_route_declares_exactly_one_auth_dependency():
-    for router in _EXEMPT_ROUTERS:
-        for route in router.routes:
-            calls = [
-                d.call for d in route.dependant.dependencies
-                if d.call in _AUTH_DEPS
-            ]
-            assert len(calls) == 1, (
-                f"{sorted(route.methods)} {route.path} declares "
-                f"{len(calls)} auth dependencies — every route under an "
-                "exempt prefix MUST declare exactly one of "
-                "require_session_token / require_api_key / "
-                "require_api_key_or_session"
+    routes = _exempt_router_api_routes()
+    # Sanity: an empty walk would make the loop below vacuously pass —
+    # fail loudly instead if the traversal itself is broken.
+    assert len(routes) >= 10, "router walk is broken (expected the full apps+keys surface)"
+    for route in routes:
+        calls = [
+            d.call for d in route.dependant.dependencies
+            if d.call in _AUTH_DEPS
+        ]
+        assert len(calls) == 1, (
+            f"{sorted(route.methods)} {route.path} declares "
+            f"{len(calls)} auth dependencies — every route under an "
+            "exempt prefix MUST declare exactly one of "
+            "require_session_token / require_api_key / "
+            "require_api_key_or_session"
+        )
+
+
+def _exempt_openapi_operations() -> list[tuple[str, str]]:
+    """Every (path, method) the LIVE app serves under an exempt prefix,
+    enumerated through ``app.openapi()`` so included routers are covered
+    on every FastAPI version."""
+    return [
+        (path, method)
+        for path, ops in app.openapi()["paths"].items()
+        for method in ops
+        if _prefix_exempt(path)
+    ]
+
+
+async def test_every_exempt_route_rejects_anonymous_requests():
+    operations = _exempt_openapi_operations()
+    assert len(operations) >= 10, "openapi walk is broken"
+    assert any(p.startswith("/api/apps") for p, _ in operations)
+    assert any(p.startswith("/api/keys") for p, _ in operations)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url=f"http://127.0.0.1:{settings.PORT}"
+    ) as client:
+        for path, method in operations:
+            concrete = path.replace("{slug}", "drift-probe")
+            for param in ("{key_id}", "{version}", "{run_id}"):
+                concrete = concrete.replace(param, "1")
+            response = await client.request(method.upper(), concrete)
+            assert response.status_code in (401, 403), (
+                f"{method.upper()} {concrete} answered anonymous request "
+                f"with {response.status_code} — every route under an "
+                "exempt prefix must reject missing credentials with "
+                "401/403 (did a new route forget its auth dependency?)"
             )
 
 
 def test_exempt_router_prefixes_are_actually_exempt():
-    # Belt-and-braces: each router's prefix really is covered by the tuple.
-    for router in _EXEMPT_ROUTERS:
+    # Belt-and-braces: each currently-mounted exempt router's prefix
+    # really is covered by the tuple.
+    for router in (routes_apps.router, routes_keys.router):
         assert _prefix_exempt(router.prefix), router.prefix

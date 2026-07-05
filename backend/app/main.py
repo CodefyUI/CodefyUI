@@ -130,6 +130,36 @@ def _extra_allowed_host_entries() -> list[str]:
     return entries
 
 
+def _has_port(entry: str) -> bool:
+    """True when a whitelist *entry* carries an explicit port —
+    ``host:port`` or ``[ipv6]:port`` — i.e. it is directly usable as the
+    authority of a printable URL.
+
+    Structural on purpose. Both a naive ``":" in entry`` check and a
+    parse-based one (``ipaddress.ip_address``) mis-classify IPv6 forms:
+    the former keeps the portless ``"::1"``, and the latter only excluded
+    ``"::1:8000"`` by accident — four-digit ports happen to parse as a
+    hextet while five-digit ports (10000-65535) do not, so the malformed
+    line came back on high ports. Bracket structure is unambiguous:
+    bracketed entries have a port iff ``"]:"`` appears; unbracketed
+    entries (hostname/IPv4 only — ``init_allowed_hosts`` never suffixes a
+    port onto unbracketed IPv6) have a port iff they contain exactly one
+    colon.
+    """
+    if entry.startswith("["):
+        return "]:" in entry
+    return entry.count(":") == 1
+
+
+def _reachable_urls() -> list[str]:
+    """Sorted ``http://host:port`` lines worth printing at startup: every
+    whitelisted entry that carries a real port (spec Section 9's startup
+    transparency log)."""
+    return sorted(
+        f"http://{h}" for h in allowed_hosts() if _has_port(h)
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging(
@@ -157,9 +187,7 @@ async def lifespan(app: FastAPI):
             settings.HOST, settings.PORT,
         )
         logger.info("Host whitelist: %s", ", ".join(sorted(allowed_hosts())))
-        logger.info("Reachable at: %s", ", ".join(sorted(
-            f"http://{h}" for h in allowed_hosts() if ":" in h
-        )))
+        logger.info("Reachable at: %s", ", ".join(_reachable_urls()))
     token_path = write_token_file()
     logger.info("Session token written to %s", token_path)
 

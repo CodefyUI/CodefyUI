@@ -64,6 +64,37 @@ CREATE INDEX idx_runs_created     ON runs(created_at);
 MIGRATIONS: list[str] = [MIGRATION_001]
 
 
+def _is_comment_only(statement: str) -> bool:
+    """True if *statement* has no executable content — only whitespace,
+    ``--`` line comments, and ``/* ... */`` block comments (an
+    unterminated trailing block comment counts as comment too).
+
+    Used only to guard the final, possibly-unterminated tail fragment in
+    :func:`iter_statements` — a script ending in a bare comment (no SQL,
+    no semicolon after it) must never be yielded as a pseudo-statement for
+    ``Connection.execute`` to choke on. A single sequential scan handles
+    both comment syntaxes in order (mirroring sqlite's own tokenizer), so
+    ``/*`` inside a line comment or ``--`` inside a block comment cannot
+    be misread; anything that is not whitespace or a comment opener makes
+    this return False — when in doubt the tail is yielded and sqlite
+    fails loudly rather than a statement being dropped silently.
+    """
+    i, n = 0, len(statement)
+    while i < n:
+        ch = statement[i]
+        if ch in " \t\r\n":
+            i += 1
+        elif statement.startswith("--", i):
+            newline = statement.find("\n", i)
+            i = n if newline == -1 else newline + 1
+        elif statement.startswith("/*", i):
+            end = statement.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+        else:
+            return False
+    return True
+
+
 def iter_statements(script: str) -> Iterator[str]:
     """Split a migration script into single executable statements.
 
@@ -82,5 +113,5 @@ def iter_statements(script: str) -> Iterator[str]:
                 yield statement
             buffer = ""
     tail = buffer.strip()
-    if tail:
+    if tail and not _is_comment_only(tail):
         yield tail

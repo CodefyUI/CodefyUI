@@ -122,7 +122,9 @@ def _contract_document(
 
 class PublishRequest(BaseModel):
     graph: str
-    record_io: bool = True
+    # None means INHERIT the app's current record_io (a brand-new app
+    # defaults to True); explicit true/false always overrides.
+    record_io: bool | None = None
     note: str | None = None
     create: bool = False
 
@@ -209,7 +211,7 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT id FROM apps WHERE slug = ?", (slug,),
+                "SELECT id, record_io FROM apps WHERE slug = ?", (slug,),
             ).fetchone()
             created = row is None
             if created:
@@ -219,15 +221,27 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
                         f"app '{slug}' does not exist — pass "
                         '"create": true to create it',
                     )
+                # record_io omitted on a brand-new app -> default True
+                # (there is no prior value to inherit).
+                record_io = (
+                    True if body.record_io is None else body.record_io
+                )
                 cur = conn.execute(
                     "INSERT INTO apps (slug, graph_name, active_version, "
                     "record_io, created_at, updated_at) "
                     "VALUES (?, ?, NULL, ?, ?, ?)",
-                    (slug, body.graph, int(body.record_io), now, now),
+                    (slug, body.graph, int(record_io), now, now),
                 )
                 app_id = cur.lastrowid
             else:
                 app_id = row["id"]
+                # record_io omitted on a republish -> INHERIT the app's
+                # current value (never silently re-enables recording);
+                # explicit true/false still overrides.
+                record_io = (
+                    bool(row["record_io"]) if body.record_io is None
+                    else body.record_io
+                )
             next_version = conn.execute(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM app_versions "
                 "WHERE app_id = ?",
@@ -243,7 +257,7 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
             conn.execute(
                 "UPDATE apps SET active_version = ?, graph_name = ?, "
                 "record_io = ?, updated_at = ? WHERE id = ?",
-                (next_version, body.graph, int(body.record_io), now, app_id),
+                (next_version, body.graph, int(record_io), now, app_id),
             )
             conn.execute("COMMIT")
         except BaseException:
@@ -716,6 +730,7 @@ def _openapi_document(
             "outputs": {"type": ["object", "null"]},
             "error": {
                 "type": ["object", "null"],
+                "required": ["code", "message", "node_id", "details"],
                 "properties": {
                     "code": {"type": "string"},
                     "message": {"type": "string"},
@@ -725,6 +740,7 @@ def _openapi_document(
             },
             "timing": {
                 "type": ["object", "null"],
+                "required": ["total_s"],
                 "properties": {"total_s": {"type": "number"}},
             },
         },
@@ -905,7 +921,10 @@ async def list_runs(
         if before is not None:
             sql += " AND created_at < ?"
             params.append(before)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        # run_id DESC is a pure tie-breaker for rows sharing a created_at
+        # timestamp — determinism only, the `before` cursor stays keyed on
+        # created_at alone.
+        sql += " ORDER BY created_at DESC, run_id DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 

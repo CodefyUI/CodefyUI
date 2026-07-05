@@ -20,7 +20,8 @@ All management calls below use the editor session token (`X-CodefyUI-Token`, obt
 
 ```text
 POST /api/apps/{slug}/publish        (session token)
-body: {"graph": "<saved name>", "record_io": true, "note": "optional", "create": false}
+body: {"graph": "<saved name>", "note": "optional", "create": false}
+      (optional "record_io": true|false — omitted inherits the app's current setting; see below)
 ```
 
 - `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name — renaming a graph never breaks a published URL.
@@ -52,7 +53,7 @@ DELETE /api/apps/{slug}
 ```
 
 - `activate` subsumes rollback: activating an older version restores it, and activating from the unpublished state restores service at that version.
-- Publishing always sets `record_io` (its body default is `true`). If you disabled recording via `PATCH`, pass `"record_io": false` again when you republish — otherwise recording is silently re-enabled.
+- `record_io` on publish is tri-state: omit it (or pass `null`) to **inherit** the app's current `record_io` — a republish that doesn't mention it never flips a setting you changed via `PATCH`. A brand-new app (first publish with `"create": true`) defaults to `true` when omitted. Pass an explicit `true`/`false` to override, at create time or on any republish.
 - While unpublished, invokes return 409 `app_unpublished` — nothing is lost.
 - **`DELETE /api/apps/{slug}` irrevocably removes the app, ALL its versions AND all its run records.** There is no undo. Prefer `unpublish` unless you truly mean delete.
 

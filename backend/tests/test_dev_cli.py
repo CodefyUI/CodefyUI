@@ -55,3 +55,15 @@ def test_local_ips_returns_non_loopback_strings():
     assert isinstance(ips, list)
     assert "127.0.0.1" not in ips
     assert all(isinstance(ip, str) for ip in ips)
+
+
+def test_running_server_pid_clears_stale_addr_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(dev, "SERVER_PIDFILE", tmp_path / "server.pid")
+    monkeypatch.setattr(dev, "SERVER_ADDRFILE", tmp_path / "server.addr")
+    dev.SERVER_PIDFILE.write_text("999999")
+    dev.SERVER_ADDRFILE.write_text("192.168.1.20:8080")
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+
+    assert dev._running_server_pid() is None
+    assert not dev.SERVER_PIDFILE.exists()
+    assert not dev.SERVER_ADDRFILE.exists()   # stale address must not linger

@@ -114,6 +114,42 @@ async def test_publish_create_then_republish_versions(test_client, app_db):
 
 
 @pytest.mark.asyncio
+async def test_publish_record_io_tristate_inherit_and_override(
+    test_client, app_db,
+):
+    """record_io omitted (None) means INHERIT; a brand-new app defaults to
+    True; explicit true/false always overrides regardless of the current
+    value (spec: publish never silently re-enables recording)."""
+    await _save_graph(test_client, _echo_graph())
+
+    # New app, record_io omitted -> defaults True.
+    await _publish(test_client, SLUG, "pub-src")
+    rows = (await test_client.get("/api/apps")).json()
+    assert rows[0]["record_io"] is True
+
+    # Flip to False via PATCH (no new version).
+    resp = await test_client.patch(f"/api/apps/{SLUG}",
+                                   json={"record_io": False})
+    assert resp.status_code == 200
+
+    # Republish OMITTING record_io -> inherits the PATCHed False; does
+    # NOT silently re-enable it.
+    await _publish(test_client, SLUG, "pub-src")
+    rows = (await test_client.get("/api/apps")).json()
+    assert rows[0]["record_io"] is False
+
+    # Republish with an EXPLICIT True -> overrides the inherited False.
+    await _publish(test_client, SLUG, "pub-src", record_io=True)
+    rows = (await test_client.get("/api/apps")).json()
+    assert rows[0]["record_io"] is True
+
+    # Republish with an EXPLICIT False -> overrides again.
+    await _publish(test_client, SLUG, "pub-src", record_io=False)
+    rows = (await test_client.get("/api/apps")).json()
+    assert rows[0]["record_io"] is False
+
+
+@pytest.mark.asyncio
 async def test_publish_invalid_slugs_422(test_client, app_db):
     await _save_graph(test_client, _echo_graph())
     for bad in ("UPPER", "9starts-with-digit", "has space", "has_underscore",

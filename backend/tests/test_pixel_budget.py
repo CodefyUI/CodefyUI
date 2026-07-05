@@ -59,6 +59,14 @@ def test_decode_image_under_budget_still_decodes(monkeypatch):
     assert tuple(tensor.shape) == (3, 2, 4)   # (C, H, W)
 
 
+def test_decode_image_exactly_at_budget_is_accepted(monkeypatch):
+    # Equality boundary: the check rejects only strictly-greater (`>`), so
+    # an image of EXACTLY MAX_IMAGE_PIXELS pixels must be accepted.
+    monkeypatch.setattr("app.config.settings.MAX_IMAGE_PIXELS", 8)
+    tensor = api_contract.coerce_input(_png_base64(4, 2), "image")  # 4x2=8
+    assert tuple(tensor.shape) == (3, 2, 4)   # (C, H, W)
+
+
 def test_real_default_budget_rejects_100_megapixel_png():
     # No monkeypatch: a genuine 100 MP crafted PNG (success criterion 5)
     # against the real 25 MP default. The 10000x10000 bilevel PNG
