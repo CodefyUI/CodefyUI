@@ -116,6 +116,7 @@ async def test_publish_create_then_republish_versions(test_client, app_db):
     assert first == {
         "slug": SLUG, "version": 1, "active": True, "created": True,
         "graph_name": "pub-src", "note": "first cut",
+        "git_commit": None, "git_dirty": None,
     }
     second = await _publish(test_client, SLUG, "pub-src")
     assert second["version"] == 2
@@ -358,6 +359,77 @@ async def test_publish_rejects_preset_embedded_secret(
     assert count == 0
 
 
+def _embedded_preset_def(preset_name: str) -> dict:
+    """A trivial PresetDefinition dict (no secrets, one inner node) used to
+    prove a preset embedded ONLY in a graph's own ``presets[]`` resolves at
+    publish -- never registered in the server-side preset_registry."""
+    return {
+        "preset_name": preset_name, "category": "Test", "description": "",
+        "tags": [],
+        "nodes": [{"id": "n1", "type": "_TestSource", "params": {}}],
+        "edges": [], "exposed_inputs": [], "exposed_outputs": [],
+        "exposed_params": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_publish_preflight_resolves_embedded_only_preset(
+    test_client, app_db, _graphs_dir,
+):
+    """Controller addition: publish's pre-flight ``validate_graph`` call
+    must resolve a preset defined ONLY in the graph's own embedded
+    ``presets[]`` (ID6 fallback) exactly as ``POST /api/graph/validate``
+    already does -- otherwise a graph that is CI-green under
+    ``cdui project validate`` would 409 (invalid_graph) at publish, an
+    incoherence between the two surfaces."""
+    assert preset_registry.get("EmbeddedOnly") is None  # never registered
+
+    graph = _echo_graph(name="embedded-preset-ok")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:EmbeddedOnly",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {}},
+    })
+    graph["presets"] = [_embedded_preset_def("EmbeddedOnly")]
+    await _save_graph(test_client, graph)
+
+    resp = await test_client.post(
+        "/api/apps/embedded-preset-ok/publish",
+        json={"graph": "embedded-preset-ok", "create": True})
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_publish_preflight_rejects_unresolvable_preset(
+    test_client, app_db, _graphs_dir,
+):
+    """Same graph WITHOUT the embedded presets[] definition still 409s --
+    proves the fallback above does real work rather than masking the
+    unknown-preset check."""
+    assert preset_registry.get("EmbeddedOnly") is None  # never registered
+
+    graph = _echo_graph(name="embedded-preset-missing")
+    graph["nodes"].append({
+        "id": "p1", "type": "preset:EmbeddedOnly",
+        "position": {"x": 0, "y": 300},
+        "data": {"internalParams": {}},
+    })
+    await _save_graph(test_client, graph)
+
+    resp = await test_client.post(
+        "/api/apps/embedded-preset-missing/publish",
+        json={"graph": "embedded-preset-missing", "create": True})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "invalid_graph"
+    assert any("Unknown preset: EmbeddedOnly" in d for d in detail["details"])
+
+    # Rejected publish created nothing.
+    count = await app_db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM apps").fetchone()[0])
+    assert count == 0
+
+
 @pytest.mark.asyncio
 async def test_publish_stores_contract_document_and_exact_snapshot(
     test_client, app_db, _graphs_dir,
@@ -433,6 +505,7 @@ async def test_versions_list_marks_active_and_echoes_note(test_client, app_db):
     ]
     assert all(set(r.keys()) == {
         "version", "source_graph_name", "note", "created_at", "active",
+        "git_commit", "git_dirty",
     } for r in rows)
 
     resp = await test_client.get("/api/apps/nope/versions")

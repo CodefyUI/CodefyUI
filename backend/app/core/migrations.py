@@ -61,7 +61,12 @@ CREATE INDEX idx_runs_app_created ON runs(app_id, created_at DESC);
 CREATE INDEX idx_runs_created     ON runs(created_at);
 """
 
-MIGRATIONS: list[str] = [MIGRATION_001]
+MIGRATION_002 = """
+ALTER TABLE app_versions ADD COLUMN git_commit TEXT;
+ALTER TABLE app_versions ADD COLUMN git_dirty INTEGER;
+"""
+
+MIGRATIONS: list[str] = [MIGRATION_001, MIGRATION_002]
 
 
 def _is_comment_only(statement: str) -> bool:
