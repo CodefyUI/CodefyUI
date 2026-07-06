@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from ..config import settings
-from ..core.graph_engine import GraphValidationError, validate_graph
+from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
 from ..core.node_registry import registry
 from ..core.secret_params import scrub_graph_secrets
 from ..schemas import GraphData, GraphValidationResponse
@@ -92,7 +92,10 @@ def _graph_path(name: str) -> Path:
 async def validate(graph: GraphData):
     nodes = [n.model_dump() for n in graph.nodes]
     edges = [e.model_dump() for e in graph.edges]
-    errors = validate_graph(nodes, edges)
+    errors = validate_graph(
+        nodes, edges,
+        preset_fallback=build_preset_fallback([p.model_dump() for p in graph.presets]),
+    )
     return GraphValidationResponse(valid=len(errors) == 0, errors=errors)
 
 
@@ -206,9 +209,13 @@ async def export_graph(graph: GraphData):
     # node's internalParams before expand_presets injects it downstream.
     scrub_graph_secrets(nodes)
 
+    # ID6: the graph's own presets[] resolve even when the server's preset
+    # registry doesn't know them (portability).
+    preset_fallback = build_preset_fallback([p.model_dump() for p in graph.presets])
+
     # Validate the user-authored graph (presets are validated against the
     # preset registry rather than expanded here).
-    errors = validate_graph(nodes, edges)
+    errors = validate_graph(nodes, edges, preset_fallback=preset_fallback)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
 
@@ -218,7 +225,7 @@ async def export_graph(graph: GraphData):
         for _ in range(10):  # support nested presets, same depth cap as execution
             if not any(n.get("type", "").startswith("preset:") for n in nodes):
                 break
-            nodes, edges, _ = expand_presets(nodes, edges)
+            nodes, edges, _ = expand_presets(nodes, edges, preset_fallback=preset_fallback)
     except GraphValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

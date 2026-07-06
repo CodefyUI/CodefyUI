@@ -671,8 +671,10 @@ async def invoke_app(
         )
         # output_store=None: Decision H1 — isolation is structural, not a
         # flag. The editor inspector store can never contain this data.
+        from ..core.graph_engine import build_preset_fallback
         http_status, envelope, node_timings = await execute_contract_run(
             slug, nodes, edges, exec_req, run_id, output_store=None,
+            preset_fallback=build_preset_fallback(snapshot.get("presets", [])),
         )
     finally:
         # On an execution timeout the lock releases here while the

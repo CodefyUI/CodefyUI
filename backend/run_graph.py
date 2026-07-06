@@ -24,7 +24,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.config import settings
-from app.core.graph_engine import GraphValidationError, execute_graph, expand_presets, validate_graph
+from app.core.graph_engine import (
+    GraphValidationError,
+    build_preset_fallback,
+    execute_graph,
+    expand_presets,
+    validate_graph,
+)
 from app.core.logging_config import setup_logging
 from app.core.node_registry import registry
 from app.core.preset_registry import preset_registry
@@ -93,14 +99,19 @@ async def run(
     logger.info("  Nodes: %d, Edges: %d", len(nodes), len(edges))
     logger.info("=" * 60)
 
+    # ID6: the graph's own presets[] resolve even when the server's preset
+    # registry doesn't know them (portability).
+    preset_fallback = build_preset_fallback(graph.get("presets", []))
+
     # Expand presets
-    expanded_nodes, expanded_edges, preset_map = expand_presets(nodes, edges)
+    expanded_nodes, expanded_edges, preset_map = expand_presets(
+        nodes, edges, preset_fallback=preset_fallback)
     if len(expanded_nodes) != len(nodes):
         logger.info("Expanded %d nodes -> %d (presets resolved)", len(nodes), len(expanded_nodes))
 
     # Validate
     logger.info("Checking graph...")
-    errors = validate_graph(expanded_nodes, expanded_edges)
+    errors = validate_graph(expanded_nodes, expanded_edges, preset_fallback=preset_fallback)
     if errors:
         logger.error("Validation FAILED:")
         for e in errors:
@@ -129,6 +140,7 @@ async def run(
             edges,
             on_progress=_on_progress if verbose else _on_progress,
             context=context,
+            preset_fallback=preset_fallback,
         )
     except GraphValidationError as e:
         logger.error("Validation error: %s", e)
