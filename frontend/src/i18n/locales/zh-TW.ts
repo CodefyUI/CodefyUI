@@ -426,6 +426,10 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.layoutMode.aria': '排版模式',
   'toolbar.language.aria': '語言',
   'persistence.quotaError': '無法儲存分頁 — 瀏覽器儲存空間已滿。',
+
+  // 專案範圍的分頁持久化（ID10）：標題徽章 + 跨專案儲存拒絕
+  'project.badge.title': '目前的專案目錄',
+  'project.save.crossProjectRefused': '此圖屬於另一個專案（{origin}），無法儲存到目前開啟的專案。',
 };
 
 export default zhTW;

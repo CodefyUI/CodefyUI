@@ -66,3 +66,22 @@ describe('saveActiveGraph', () => {
     expect(saveGraph).not.toHaveBeenCalled();
   });
 });
+
+describe('saveActiveGraph cross-project guard (ID10)', () => {
+  it('refuses to save a tab whose origin differs from the open project', async () => {
+    useProjectStore.setState({ projectDir: '/b', projectName: 'b', loaded: true });
+    useTabStore.getState().setCurrentGraphFile('classifier');
+    useTabStore.getState().stampActiveTabProject('/a'); // belongs to project A
+    await saveActiveGraph();
+    expect(saveGraph).not.toHaveBeenCalled();
+  });
+
+  it('stamps the origin after a successful project save', async () => {
+    useProjectStore.setState({ projectDir: '/b', projectName: 'b', loaded: true });
+    useTabStore.getState().setCurrentGraphFile('classifier');
+    await saveActiveGraph();
+    const st = useTabStore.getState();
+    const tab = st.tabs.find((t) => t.id === st.activeTabId)!;
+    expect(tab.projectOrigin).toBe('/b');
+  });
+});

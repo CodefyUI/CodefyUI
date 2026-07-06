@@ -425,6 +425,10 @@ const en = {
   'toolbar.layoutMode.aria': 'Layout mode',
   'toolbar.language.aria': 'Language',
   'persistence.quotaError': 'Could not save tabs — browser storage is full.',
+
+  // Per-project tab scoping (ID10): header badge + cross-project save refusal.
+  'project.badge.title': 'Active project directory',
+  'project.save.crossProjectRefused': 'This graph belongs to another project ({origin}) and cannot be saved into the open project.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

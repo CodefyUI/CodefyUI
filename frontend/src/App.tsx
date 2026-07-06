@@ -88,7 +88,9 @@ function App() {
     let cancelled = false;
     fetchHealth()
       .then((h) => {
-        if (!cancelled) useProjectStore.getState().setProject(h.project);
+        if (cancelled) return;
+        useProjectStore.getState().setProject(h.project);
+        useTabStore.getState().rehydrateForProject(h.project);
       })
       .catch(() => {
         /* health unreachable -- stay in non-project defaults */

@@ -12,6 +12,7 @@ import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
+import { useProjectStore } from '../../store/projectStore';
 import { autoLayout, stackUnboundNotes, type LayoutMode } from '../../utils/autoLayout';
 // Aliased: this file already casts DOM MouseEvent targets to the ambient
 // lib.dom `Node` type (see the mousedown handlers below) -- importing
@@ -20,6 +21,7 @@ import type { Node as FlowNode } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { SettingsPopover } from './SettingsPopover';
 import { FontSizeMenu } from './FontSizeMenu';
+import { ProjectBadge } from './ProjectBadge';
 import styles from './Toolbar.module.css';
 
 /* ── Shared dropdown menu ───────────────────────────────────────── */
@@ -312,6 +314,8 @@ export function Toolbar() {
         // `name` is the sanitized file stem — bind the tab to it so re-saving
         // under the same name doesn't trigger the overwrite warning.
         setCurrentGraphFile(name);
+        const projectDir = useProjectStore.getState().projectDir;
+        if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
         if (savedPresets.length > 0) {
           useNodeDefStore.setState({ presets: mergedPresets });
         }
@@ -498,6 +502,7 @@ export function Toolbar() {
         <span className={styles.logoBrand}>Codefy</span>
         <span className={styles.logoSuffix}>UI</span>
       </div>
+      <ProjectBadge />
 
       {/* Run / Stop */}
       <div className={styles.cluster}>

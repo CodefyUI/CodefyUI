@@ -25,6 +25,13 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
   const projectDir = useProjectStore.getState().projectDir;
   const projectMode = projectDir !== null;
 
+  // Cross-project footgun guard (ID10): a tab stamped with a DIFFERENT project
+  // must never overwrite into the currently-open project.
+  if (projectMode && tab.projectOrigin != null && tab.projectOrigin !== projectDir) {
+    addToast(t('project.save.crossProjectRefused', { origin: tab.projectOrigin }), 'error');
+    return;
+  }
+
   const inPlace = projectMode && !!tab.currentGraphFile && !opts.saveAs;
 
   let targetName: string;
@@ -60,6 +67,7 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
       description: tab.description ?? '', presets, segmentGroups,
     });
     store.setCurrentGraphFile(sanitizeGraphName(targetName));
+    if (projectMode) store.stampActiveTabProject(projectDir);
     addToast(t('toolbar.save.success', { name: targetName }), 'success');
   } catch (e) {
     addToast(t('toolbar.save.fail', { error: (e as Error).message }), 'error');
