@@ -17,7 +17,17 @@ from pathlib import Path
 
 # Reuse the tested bilingual print helpers + stdio reconfigure from plugins.py
 # (both are scripts/ siblings loaded onto sys.path by the dispatcher).
-from plugins import _reconfigure_stdio, err, info, ok, section, t, warn
+from plugins import (
+    _install_github,
+    _reconfigure_stdio,
+    err,
+    info,
+    ok,
+    parse_source,
+    section,
+    t,
+    warn,
+)
 
 from app.core.plugin_loader import (
     iter_plugin_dirs,
@@ -361,6 +371,104 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_manifest(project_tbl: dict, pins: dict, publish: dict) -> str:
+    """Regenerate the manifest with a machine-written [plugins] table (spec
+    5). Comments in [plugins] are not preserved -- it is a generated section."""
+    lines = ["[project]"]
+    lines.append(f'name = "{project_tbl.get("name", "")}"')
+    lines.append(f'format_version = {int(project_tbl.get("format_version", 1))}')
+    if project_tbl.get("requires_codefyui"):
+        lines.append(f'requires_codefyui = "{project_tbl["requires_codefyui"]}"')
+    lines.append("")
+    lines.append("[plugins]")
+    lines.append("# written by `cdui project freeze`; installed by `cdui project restore`")
+    for pid in sorted(pins):
+        p = pins[pid]
+        lines.append(
+            f'{pid} = {{ url = "{p["url"]}", ref = "{p["ref"]}", '
+            f'sha = "{p["sha"]}" }}')
+    lines.append("")
+    if publish:
+        lines.append("[publish]")
+        for k in ("graph", "slug"):
+            if publish.get(k):
+                lines.append(f'{k} = "{publish[k]}"')
+        if "record_io" in publish:
+            lines.append(f'record_io = {"true" if publish["record_io"] else "false"}')
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_freeze(args: argparse.Namespace) -> int:
+    proj = Path(args.dir).expanduser().resolve()
+    manifest_path = proj / MANIFEST_FILENAME
+    from app.core.plugin_loader import tomllib
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    section("凍結外掛版本", "Freezing plugin pins")
+    pins: dict = {}
+    for pid, entry in load_lockfile().get("plugins", {}).items():
+        kind = entry.get("source_kind")
+        if kind == "local":
+            warn(f"略過本地連結：{pid}",
+                 f"Skipping linked/local plugin: {pid} (machine-specific path)")
+            continue
+        if kind == "builtin":
+            continue  # ships with cdui; nothing to pin
+        url, sha, ref = entry.get("url"), entry.get("sha"), entry.get("ref", "")
+        if not url or not sha:
+            warn(f"略過 {pid}（缺 url/sha）", f"Skipping {pid} (missing url/sha)")
+            continue
+        pins[pid] = {"url": url, "ref": ref, "sha": sha}
+        ok(f"釘選 {pid} @ {sha[:7]}", f"Pinned {pid} @ {sha[:7]}")
+    manifest_path.write_text(
+        _render_manifest(manifest.get("project", {}), pins,
+                         manifest.get("publish", {})),
+        encoding="utf-8")
+    ok(f"已寫入 {len(pins)} 個釘選", f"Wrote {len(pins)} pin(s) to the manifest")
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    proj = Path(args.dir).expanduser().resolve()
+    manifest_path = proj / MANIFEST_FILENAME
+    from app.core.plugin_loader import tomllib
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    pins = manifest.get("plugins", {}) or {}
+    if not pins:
+        info("manifest 沒有外掛釘選", "No plugin pins in the manifest")
+        return 0
+    section("還原外掛版本", "Restoring plugin pins")
+    lockfile = load_lockfile()
+    installed = lockfile.get("plugins", {})
+    rc_all = 0
+    for pid, pin in pins.items():
+        sha, url, ref = pin.get("sha"), pin.get("url"), pin.get("ref", "")
+        if not sha or not url:
+            err(f"{pid}：釘選缺 url/sha", f"{pid}: pin missing url/sha")
+            rc_all = 1
+            continue
+        cur = installed.get(pid)
+        if cur and cur.get("sha") == sha:
+            ok(f"{pid} 已是 {sha[:7]}", f"{pid} already at {sha[:7]}")
+            continue
+        _kind, owner, repo, _ref = parse_source(url)
+        inst_args = argparse.Namespace(
+            force=True, no_confirm=True, trust_author=True, pinned_sha=sha)
+        # Trust _install_github's return code (spec ID11: install BY the pinned
+        # sha). It never re-resolves the ref when pinned_sha is set, so success
+        # (rc == 0) already means the installed plugin is at this exact sha.
+        rc = _install_github(owner, repo, ref, inst_args, lockfile)
+        if rc != 0:
+            rc_all = 1
+    return rc_all
+
+
 def _write_if_absent(path: Path, content: str) -> None:
     if not path.exists():
         path.write_text(content, encoding="utf-8")
@@ -412,6 +520,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--strict", action="store_true",
                        help="treat missing/mismatched plugin pins as errors")
     p_val.set_defaults(_func=cmd_validate)
+
+    p_freeze = sub.add_parser("freeze", help="Write installed github plugin pins into the manifest")
+    p_freeze.add_argument("dir", help="project directory")
+    p_freeze.set_defaults(_func=cmd_freeze)
+
+    p_restore = sub.add_parser("restore", help="Install the manifest's plugin pins by their exact SHA")
+    p_restore.add_argument("dir", help="project directory")
+    p_restore.set_defaults(_func=cmd_restore)
 
     return p
 

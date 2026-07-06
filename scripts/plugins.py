@@ -569,11 +569,17 @@ def _manifest_has_frontend(manifest: dict) -> bool:
 def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
     url = f"https://github.com/{owner}/{repo}"
     info(f"來源：{url}", f"Source: {url}")
-    try:
-        sha = resolve_sha(owner, repo, ref)
-    except RuntimeError as e:
-        err(str(e), str(e))
-        return 1
+    pinned_sha = getattr(args, "pinned_sha", None)
+    if pinned_sha:
+        # Restore path (spec ID11): install BY the pinned sha -- never re-resolve
+        # a possibly-moved tag. Using the pinned value verifies resolved==pinned.
+        sha = pinned_sha
+    else:
+        try:
+            sha = resolve_sha(owner, repo, ref)
+        except RuntimeError as e:
+            err(str(e), str(e))
+            return 1
 
     short_sha = sha[:7]
     info(
