@@ -17,9 +17,75 @@ def _sanitize_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
 
 
+def _project_mode() -> bool:
+    return settings.PROJECT_DIR is not None
+
+
+class GraphAmbiguityError(Exception):
+    """Both `<name>.graph.json` and legacy `<name>.json` exist in project
+    mode — never silently pick one (spec ID2/ID7)."""
+
+    def __init__(self, name: str, canonical: "Path", legacy: "Path") -> None:
+        self.name = name
+        self.canonical = canonical
+        self.legacy = legacy
+        super().__init__(
+            f"Graph '{name}' is ambiguous: both {canonical.name} and "
+            f"{legacy.name} exist in {canonical.parent}. Remove one "
+            "(the legacy single-file form upgrades to the pair on save)."
+        )
+
+
+def _reserved_graph_name(name: str) -> bool:
+    """True when the (pre-sanitize) name would collide with the split
+    suffixes.
+
+    Checked against the RAW name, not `_sanitize_name(name)`: sanitization
+    maps every '.' to '_', so a sanitized name can never contain a literal
+    '.' and this check would be unreachable dead code if run post-sanitize.
+    """
+    return name.endswith(".graph") or name.endswith(".layout")
+
+
+def _graph_logic_path(name: str) -> Path:
+    """Canonical write target for a graph's LOGIC file.
+
+    Non-project: `<GRAPHS_DIR>/<name>.json` (byte-for-byte legacy).
+    Project:     `<GRAPHS_DIR>/<name>.graph.json`.
+    """
+    safe = _sanitize_name(name)
+    if not _project_mode():
+        return settings.GRAPHS_DIR / f"{safe}.json"
+    return settings.GRAPHS_DIR / f"{safe}.graph.json"
+
+
+def _graph_layout_path(name: str) -> "Path | None":
+    """Project-mode LAYOUT file path, else None (non-project has no layout)."""
+    if not _project_mode():
+        return None
+    return settings.LAYOUT_DIR / f"{_sanitize_name(name)}.layout.json"
+
+
 def _graph_path(name: str) -> Path:
-    """Resolve a graph name to its on-disk JSON path under GRAPHS_DIR."""
-    return settings.GRAPHS_DIR / f"{_sanitize_name(name)}.json"
+    """Resolve a graph name to the on-disk file to READ.
+
+    Non-project: `<GRAPHS_DIR>/<name>.json` (existence not checked — callers
+    guard with `.exists()`; identical to legacy behavior).
+    Project: canonical `<name>.graph.json` when present, else legacy
+    `<name>.json`; raises GraphAmbiguityError when BOTH exist; when NEITHER
+    exists returns the canonical (non-existent) path so callers' 404 path
+    still fires.
+    """
+    safe = _sanitize_name(name)
+    if not _project_mode():
+        return settings.GRAPHS_DIR / f"{safe}.json"
+    canonical = settings.GRAPHS_DIR / f"{safe}.graph.json"
+    legacy = settings.GRAPHS_DIR / f"{safe}.json"
+    if canonical.exists() and legacy.exists():
+        raise GraphAmbiguityError(name, canonical, legacy)
+    if legacy.exists() and not canonical.exists():
+        return legacy
+    return canonical
 
 
 @router.post("/validate", response_model=GraphValidationResponse)
@@ -32,6 +98,14 @@ async def validate(graph: GraphData):
 
 @router.post("/save")
 async def save_graph(graph: GraphData):
+    if _project_mode() and _reserved_graph_name(graph.name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Graph name '{graph.name}' is reserved: names ending in "
+                "'.graph' or '.layout' collide with the project file split."
+            ),
+        )
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     path = _graph_path(graph.name)
     payload = graph.model_dump()
@@ -44,7 +118,10 @@ async def save_graph(graph: GraphData):
 
 @router.get("/load/{name}")
 async def load_graph(name: str):
-    path = _graph_path(name)
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     data = json.loads(path.read_text())
@@ -55,10 +132,39 @@ async def load_graph(name: str):
 async def list_graphs():
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     graphs = []
+    if not _project_mode():
+        for f in settings.GRAPHS_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                graphs.append({"name": data.get("name", f.stem), "file": f.stem})
+            except Exception:
+                continue
+        return graphs
+
+    # Project mode: canonical `<name>.graph.json` + legacy `<name>.json`.
+    # Path("x.graph.json").stem is "x.graph" — strip the whole ".graph.json"
+    # so the file stem never leaks the double suffix (spec ID7).
+    files: dict[str, Path] = {}
+    for f in settings.GRAPHS_DIR.glob("*.graph.json"):
+        files.setdefault(f.name[: -len(".graph.json")], f)
     for f in settings.GRAPHS_DIR.glob("*.json"):
+        if f.name.endswith(".graph.json"):
+            continue  # already counted as canonical
+        base = f.stem
+        if base in files:
+            # Both forms present -> fail loudly naming both (no silent pick).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Graph '{base}' is ambiguous: both {files[base].name} "
+                    f"and {f.name} exist. Remove one."
+                ),
+            )
+        files[base] = f
+    for base, f in sorted(files.items()):
         try:
             data = json.loads(f.read_text())
-            graphs.append({"name": data.get("name", f.stem), "file": f.stem})
+            graphs.append({"name": data.get("name", base), "file": base})
         except Exception:
             continue
     return graphs

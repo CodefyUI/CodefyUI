@@ -44,7 +44,7 @@ from ..schemas import (
     RunError,
     RunTiming,
 )
-from .routes_graph import _graph_path, _sanitize_name
+from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,10 @@ async def get_contract(name: str):
     if _sanitize_name(name) != name:
         # Strict-name rule: never silently alias to a different file.
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
-    path = _graph_path(name)
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     try:
@@ -594,7 +597,11 @@ async def run_graph_as_function(name: str, request: Request):
         return error_response(404, run_id=run_id, graph=name,
                               code="graph_not_found",
                               message=f"Graph '{name}' not found")
-    path = _graph_path(name)
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        return error_response(409, run_id=run_id, graph=name,
+                              code="invalid_graph", message=str(e))
     if not path.exists():
         return error_response(404, run_id=run_id, graph=name,
                               code="graph_not_found",

@@ -42,7 +42,7 @@ from ..core.api_keys import (
 from ..core.db import Database, utc_now_iso
 from ..core.graph_engine import find_entry_points, validate_graph
 from ..core.secret_params import find_secret_violations
-from .routes_graph import _graph_path, _sanitize_name
+from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
 from .routes_graph_run import (
     _derive_output_type,
     _parse_run_body,
@@ -159,7 +159,10 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
     if _sanitize_name(body.graph) != body.graph:
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
-    path = _graph_path(body.graph)
+    try:
+        path = _graph_path(body.graph)
+    except GraphAmbiguityError as e:
+        raise _manage_error(409, "invalid_graph", str(e))
     if not path.exists():
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
