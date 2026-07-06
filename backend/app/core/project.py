@@ -13,8 +13,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # 3.10 backport — same API.
 
 FORMAT_VERSION = 1
 
@@ -146,3 +153,68 @@ def write_graph_pair(
         and legacy_path.exists()
     ):
         legacy_path.unlink()
+
+
+def git_provenance(project_dir: Path) -> tuple[str | None, bool | None]:
+    """(full_commit_sha, dirty) for *project_dir*, or (None, None) when it is
+    not a git repo / git is unavailable (this also covers the common
+    fresh-scaffold state: `cdui project init` runs `git init` with NO initial
+    commit, leaving an unborn HEAD that `rev-parse HEAD` reports as a
+    non-zero exit). dirty = any uncommitted change, including untracked files
+    (`git status --porcelain`).
+
+    Both git invocations are decoded as utf-8 (errors replaced rather than
+    raised) instead of the platform-default text encoding: on this project's
+    actual Windows deployments (Traditional Chinese locale, cp950) the
+    default encoding cannot decode arbitrary UTF-8 bytes, which would
+    otherwise crash on a non-ASCII path in `git status` output. The status
+    call is also individually guarded so a timeout/spawn failure there
+    degrades to dirty=None instead of losing an already-resolved commit.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(project_dir), "rev-parse", "HEAD"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    if head.returncode != 0:
+        return None, None
+    commit = head.stdout.strip() or None
+    if commit is None:
+        return None, None
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(project_dir), "status", "--porcelain"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return commit, None
+    dirty = bool(status.stdout.strip()) if status.returncode == 0 else None
+    return commit, dirty
+
+
+def check_stale_pins_from_manifest(manifest: dict, lockfile: dict) -> list[str]:
+    """Plugin ids that are pinned in the manifest but missing or sha-mismatched
+    in the installed lockfile (spec 7.4)."""
+    pins = manifest.get("plugins", {}) or {}
+    installed = lockfile.get("plugins", {})
+    stale: list[str] = []
+    for pid, pin in pins.items():
+        if not isinstance(pin, dict):
+            continue
+        entry = installed.get(pid)
+        if entry is None:
+            stale.append(pid)
+        elif pin.get("sha") and entry.get("sha") != pin["sha"]:
+            stale.append(pid)
+    return stale
+
+
+def check_stale_pins(project_dir: Path, lockfile: dict) -> list[str]:
+    """Read the manifest from disk and return stale pin ids (empty on a missing
+    or unparseable manifest)."""
+    manifest_path = project_dir / "codefyui.project.toml"
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    return check_stale_pins_from_manifest(manifest, lockfile)

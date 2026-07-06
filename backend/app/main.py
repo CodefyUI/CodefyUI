@@ -234,6 +234,22 @@ async def lifespan(app: FastAPI):
     for name in sorted(preset_registry.presets.keys()):
         logger.debug("  * %s", name)
 
+    # ── Project transparency (spec 7.4) ────────────────────────────────
+    if settings.PROJECT_DIR is not None:
+        from .core.project import check_stale_pins, git_provenance
+        commit, dirty = git_provenance(settings.PROJECT_DIR)
+        if commit is None:
+            logger.info("Project: %s (not a repo)", settings.PROJECT_DIR)
+        else:
+            logger.info("Project: %s (git %s%s)", settings.PROJECT_DIR,
+                        commit[:7], " dirty" if dirty else "")
+        stale = check_stale_pins(settings.PROJECT_DIR, lockfile)
+        if stale:
+            # ONE warning; no auto-install at startup (spec 7.4).
+            logger.warning(
+                "Project plugin pins missing/mismatched: %s -- run "
+                "`cdui project restore`", ", ".join(sorted(stale)))
+
     # Mount each installed plugin's assets/ dir so the frontend can fetch
     # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
     for plugin_id, plugin_dir in iter_plugin_dirs(
@@ -373,11 +389,19 @@ app.include_router(ws_execution.router)
 
 @app.get("/api/health")
 async def health():
-    return {
+    body = {
         "status": "ok",
         "nodes_loaded": len(registry.nodes),
         "presets_loaded": len(preset_registry.presets),
     }
+    if settings.PROJECT_DIR is not None:
+        # Additive (spec ID4), project mode ONLY: the refactor guard requires
+        # non-project responses to stay byte-for-byte identical, so this key
+        # is omitted entirely (not even null) when PROJECT_DIR is unset.
+        # The frontend (Tasks 12/13) and the Task 15 publish CLI's mismatch
+        # refusal both read this to detect project mode + identity.
+        body["project"] = str(settings.PROJECT_DIR)
+    return body
 
 
 @app.get("/api/auth/bootstrap")
