@@ -93,14 +93,24 @@ cdui project validate .
 
 `validate` initializes the FULL registry (builtin + custom + plugin nodes and
 presets, exactly like the server) and runs the publish pre-flight on every
-graph: contract, entry points, wiring, node/preset validity, and the
-secret-in-graph check. It also errors if `.env` is tracked by git, and warns
+graph: the secret-in-graph check, contract, entry points, wiring, and
+node/preset validity. It also errors if `.env` is tracked by git, and warns
 (errors with `--strict`) on missing plugin pins. In CI, run **restore then
 validate**:
 
 ```bash
 cdui project restore .   # install the manifest's plugin pins by exact SHA
 cdui project validate .
+```
+
+Pins come from `cdui project freeze .`: it reads your locally-installed
+plugins and writes each one's exact commit SHA into `codefyui.project.toml`'s
+`[plugins]` table (a plugin you installed as a local dev link is skipped --
+there is no SHA to pin for a machine-specific path). Run it after installing
+or updating a plugin, and commit the manifest change before your next push:
+
+```bash
+cdui project freeze .
 ```
 
 ### 5. Start the server on the project
@@ -114,20 +124,37 @@ The log prints `Project: <abs> (git <short-sha>)` and warns once, naming
 
 ### 6. Create an API key (invoke needs one)
 
-The session token lives at `%LOCALAPPDATA%\codefyui\session.token` (Windows) or
-`~/.local/share/codefyui/session.token` (Linux/macOS).
+The session token lives at `<user_data_dir>/codefyui/session.token` -- on
+Windows `%LOCALAPPDATA%\codefyui\session.token`, on macOS `~/Library/Application
+Support/codefyui/session.token`, on Linux `~/.local/share/codefyui/session.token`
+(see [Graph as a Function](./graph-as-a-function.md) for the full breakdown).
+
+PowerShell:
+
+```powershell
+# payload.json: {"name": "demo"}
+$token = Get-Content "$env:LOCALAPPDATA\codefyui\session.token"
+curl.exe -s -X POST "http://127.0.0.1:8000/api/keys" `
+  -H "X-CodefyUI-Token: $token" -H "Content-Type: application/json" `
+  --data "@payload.json"
+```
+
+bash:
 
 ```bash
-TOKEN=$(cat ~/.local/share/codefyui/session.token)
+TOKEN=$(cat ~/.local/share/codefyui/session.token)   # macOS: ~/Library/Application Support/codefyui/session.token
 curl -s -X POST http://127.0.0.1:8000/api/keys \
   -H "X-CodefyUI-Token: $TOKEN" -H "Content-Type: application/json" \
   --data '{"name": "demo"}'
-# -> {"id": 1, "name": "demo", "prefix": "cdui_xxxxxxxx", "token": "cdui_..."}  (the full key is shown ONCE, in the "token" field)
 ```
+
+`# -> {"id": 1, "name": "demo", "prefix": "cdui_xxxxxxxx", "token": "cdui_..."}` (the full key is shown ONCE, in the "token" field)
 
 ### 7. Publish (records the git commit)
 
-Set the default target once in `codefyui.project.toml`:
+`cdui project publish` wraps the same [publish](./publish.md) endpoint
+(`POST /api/apps/{slug}/publish`) with a project-mode guard and automatic git
+provenance. Set the default target once in `codefyui.project.toml`:
 
 ```toml
 [publish]
@@ -147,7 +174,9 @@ cdui project publish .
 Publish is **local-only** in v1: it confirms `GET /api/health` reports THIS
 project open (so it can never record the wrong commit against foreign bytes),
 computes `git rev-parse HEAD` + `git status --porcelain`, and warns LOUDLY if
-the tree is dirty. Publishing from a dirty tree records `git_dirty = true`.
+the tree is dirty. Every publish from a git repo records `git_dirty` as
+`true` or `false` alongside the commit -- a dirty tree additionally prints
+the warning banner above.
 
 > **Remote / CI deploy is out of scope for v1.** `cdui project validate` runs
 > in CI, but publishing requires a local server with the project open. The
@@ -155,28 +184,50 @@ the tree is dirty. Publishing from a dirty tree records `git_dirty = true`.
 
 ### 8. Invoke
 
+PowerShell:
+
+```powershell
+# payload.json: {"inputs": {"x": "hello"}}
+curl.exe -s -X POST "http://127.0.0.1:8000/api/apps/echo-svc/invoke" `
+  -H "Authorization: Bearer cdui_YOUR_KEY" -H "Content-Type: application/json" `
+  --data "@payload.json"
+```
+
+bash:
+
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/apps/echo-svc/invoke \
   -H "Authorization: Bearer cdui_YOUR_KEY" -H "Content-Type: application/json" \
   --data '{"inputs": {"x": "hello"}}'
-# -> {"status": "ok", "outputs": {"y": "hello"}, ...}
 ```
 
+`# -> {"status": "ok", "outputs": {"y": "hello"}, ...}`
+
 ### 9. See "which commit built this"
+
+PowerShell:
+
+```powershell
+curl.exe -s "http://127.0.0.1:8000/api/apps/echo-svc/versions" -H "X-CodefyUI-Token: $token"
+```
+
+bash:
 
 ```bash
 curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
   -H "X-CodefyUI-Token: $TOKEN"
-# -> [{"version": 1, "git_commit": "1a2b...", "git_dirty": false, "active": true, ...}]
 ```
+
+`# -> [{"version": 1, "git_commit": "1a2b...", "git_dirty": false, "active": true, ...}]`
 
 The active version's `GET /api/apps/echo-svc/openapi.json` `info` block also
 carries `x-codefyui-git-commit` and `x-codefyui-git-dirty`.
 
 ## Migrating an existing flat graphs dir
 
-If you followed the older "version control your graphs" recipe (a flat dir of
-`*.json` behind `CODEFYUI_GRAPHS_DIR`), adopt it in one command:
+If you followed the older ["version control your graphs"](./version-control-graphs.md)
+recipe (a flat dir of `*.json` behind `CODEFYUI_GRAPHS_DIR`), adopt it in one
+command:
 
 ```bash
 cdui project init my-service --adopt /path/to/old-graphs
@@ -187,10 +238,13 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 ## Notes and limits (v1)
 
 - One project per server instance (no in-editor project switcher yet).
-- `DB_PATH` and custom nodes stay install-global; plugins are the portable
-  mechanism (pinned by SHA in the manifest).
+- `DB_PATH` and custom nodes stay install-global; [plugins](/advanced/plugins)
+  are the portable mechanism (pinned by SHA in the manifest).
 - Last-write-wins between the editor and hand-edits (a "changed on disk"
   warning is a follow-up). Exclude project dirs from OneDrive/Dropbox sync --
   sync clients corrupt `.git` and race atomic renames; use a real git remote.
 - A graph written by a newer CodefyUI opens **read-only** (view/run allowed,
   Save disabled) so an older build can never drop fields it does not know.
+  Save As is blocked by the identical guard, by design: the in-memory graph
+  already lost those unknown fields the moment it loaded, so Save As would
+  just write that lossy copy out under a different name.
