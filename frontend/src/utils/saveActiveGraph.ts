@@ -15,6 +15,8 @@ import { sanitizeGraphName, findGraphNameCollision } from './index';
  * - Save As (or unbound gallery/import graphs): prompt + collision guard.
  *
  * Task 13 extends this with project-origin stamping + cross-project refusal.
+ * Task 16 (ID8) refuses outright when the active tab is read-only (its graph
+ * was loaded from a newer format_version than this build writes).
  */
 export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<void> {
   const t = useI18n.getState().t;
@@ -22,6 +24,12 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
   const store = useTabStore.getState();
   const tab = store.tabs.find((tb) => tb.id === store.activeTabId);
   if (!tab) return;
+  if (tab.readOnly) {
+    // A graph written by a newer CodefyUI opens read-only so an older build
+    // can never round-trip-drop fields it does not understand (ID8).
+    useToastStore.getState().addToast(t('project.readOnly.saveBlocked'), 'error');
+    return;
+  }
   const projectDir = useProjectStore.getState().projectDir;
   const projectMode = projectDir !== null;
 

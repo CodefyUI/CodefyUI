@@ -429,6 +429,11 @@ const en = {
   // Per-project tab scoping (ID10): header badge + cross-project save refusal.
   'project.badge.title': 'Active project directory',
   'project.save.crossProjectRefused': 'This graph belongs to another project ({origin}) and cannot be saved into the open project.',
+
+  // format_version read policy (ID8): newer-than-this-build graphs open
+  // read-only, never blocked on load.
+  'project.readOnly.loadNotice': 'Opened read-only: this graph uses a newer format (v{version}) than this CodefyUI build.',
+  'project.readOnly.saveBlocked': 'Save is disabled: this graph was written by a newer CodefyUI. Update CodefyUI to edit it.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

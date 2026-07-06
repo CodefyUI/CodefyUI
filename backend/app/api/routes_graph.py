@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +11,7 @@ from ..core.secret_params import scrub_graph_secrets
 from ..schemas import GraphData, GraphValidationResponse
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
+logger = logging.getLogger(__name__)
 
 
 def _sanitize_name(name: str) -> str:
@@ -146,9 +148,19 @@ async def load_graph(name: str):
                 layout = json.loads(layout_path.read_text())
             except (ValueError, OSError):
                 layout = None
-        merged, _missing = merge_graph(data, layout)
-        return merged
+        data, _missing = merge_graph(data, layout)
+    _warn_if_newer_format(name, data)
     return data
+
+
+def _warn_if_newer_format(name: str, data: dict) -> None:
+    from ..core.project import FORMAT_VERSION
+    fmt = data.get("format_version", 1)
+    if isinstance(fmt, int) and fmt > FORMAT_VERSION:
+        # Read policy: warn, never block (ID8). The editor opens it read-only.
+        logger.warning(
+            "Graph '%s' has format_version %d newer than this build (%d) -- "
+            "opening read-only", name, fmt, FORMAT_VERSION)
 
 
 @router.get("/list")

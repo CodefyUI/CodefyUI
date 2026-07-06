@@ -40,6 +40,11 @@ export interface TabState {
   // (e.g. a brand-new tab, or one opened before any project was resolved).
   // Used by saveActiveGraph's cross-project refusal guard (ID10).
   projectOrigin: string | null;
+  // True when the loaded graph's format_version is NEWER than this build
+  // understands (ID8). The editor opens it read-only -- saveActiveGraph
+  // refuses to write it -- so an older CodefyUI build can never
+  // destructively down-save a newer file.
+  readOnly: boolean;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -81,6 +86,7 @@ function createTabState(id: string, name: string): TabState {
     description: '',
     currentGraphFile: null,
     projectOrigin: null,
+    readOnly: false,
     nodes: [],
     edges: [],
     selectedNodeId: null,
@@ -122,6 +128,7 @@ interface TabStoreState {
   // graph-level metadata (active tab)
   setDescription: (description: string) => void;
   setCurrentGraphFile: (file: string | null) => void;
+  setTabReadOnly: (v: boolean) => void;
   // Per-project persistence scoping (ID10)
   rehydrateForProject: (projectId: string | null) => void;
   stampActiveTabProject: (projectId: string | null) => void;
@@ -336,6 +343,7 @@ interface PersistedTab {
   description?: string;
   currentGraphFile?: string | null;
   projectOrigin?: string | null;
+  readOnly?: boolean;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -363,6 +371,9 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         currentGraphFile: t.currentGraphFile,
         // Only persisted when set, so non-project localStorage is byte-identical.
         ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
+        // Only persisted when true, so an editable graph's localStorage shape
+        // stays byte-identical to before this task.
+        ...(t.readOnly ? { readOnly: true } : {}),
         // Never persist SECRET param values (typed API keys) to localStorage:
         // they must not survive a page refresh — the field is "Session only".
         nodes: stripNodeSecretsForPersist(t.nodes),
@@ -407,6 +418,7 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
             description: t.description ?? '',
             currentGraphFile: t.currentGraphFile ?? null,
             projectOrigin: t.projectOrigin ?? null,
+            readOnly: t.readOnly ?? false,
             nodes: t.nodes ?? [],
             edges: t.edges ?? [],
             segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
@@ -475,6 +487,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   setCurrentGraphFile: (file) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
+
+  setTabReadOnly: (v) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ readOnly: v })) }),
 
   rehydrateForProject: (projectId) => {
     // Non-project mode keeps the import-time base-key tabs untouched.

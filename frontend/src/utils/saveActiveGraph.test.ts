@@ -85,3 +85,11 @@ describe('saveActiveGraph cross-project guard (ID10)', () => {
     expect(tab.projectOrigin).toBe('/b');
   });
 });
+
+describe('saveActiveGraph read-only guard (ID8)', () => {
+  it('refuses to save a read-only (newer-format) graph', async () => {
+    useTabStore.getState().setTabReadOnly(true);
+    await saveActiveGraph();
+    expect(saveGraph).not.toHaveBeenCalled();
+  });
+});

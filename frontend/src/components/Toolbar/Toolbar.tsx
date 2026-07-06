@@ -10,6 +10,7 @@ import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
+import { GRAPH_FORMAT_VERSION } from '../../utils/formatVersion';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -311,6 +312,12 @@ export function Toolbar() {
         setEdges(resolvedEdges);
         setDescription(typeof graphData.description === 'string' ? graphData.description : '');
         setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
+        const tooNew = typeof graphData.format_version === 'number'
+          && graphData.format_version > GRAPH_FORMAT_VERSION;
+        useTabStore.getState().setTabReadOnly(tooNew);
+        if (tooNew) {
+          addToast(t('project.readOnly.loadNotice', { version: graphData.format_version }), 'warning');
+        }
         // `name` is the sanitized file stem — bind the tab to it so re-saving
         // under the same name doesn't trigger the overwrite warning.
         setCurrentGraphFile(name);

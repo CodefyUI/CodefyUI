@@ -430,6 +430,10 @@ const zhTW: Record<TranslationKey, string> = {
   // 專案範圍的分頁持久化（ID10）：標題徽章 + 跨專案儲存拒絕
   'project.badge.title': '目前的專案目錄',
   'project.save.crossProjectRefused': '此圖屬於另一個專案（{origin}），無法儲存到目前開啟的專案。',
+
+  // format_version 讀取政策（ID8）：比目前版本更新的圖只會以唯讀開啟，載入時絕不阻擋
+  'project.readOnly.loadNotice': '以唯讀開啟：此圖使用比目前版本更新的格式（v{version}）。',
+  'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
 };
 
 export default zhTW;
