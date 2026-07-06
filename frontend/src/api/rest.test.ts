@@ -4,6 +4,7 @@ import {
   fetchNodeDefinitions,
   fetchPresetDefinitions,
   fetchDevices,
+  fetchHealth,
   validateGraph,
   saveGraph,
   loadGraph,
@@ -176,6 +177,35 @@ describe('GET endpoints', () => {
       await expect(c.fn()).rejects.toThrow(c.errorRe);
     });
   }
+});
+
+// fetchHealth is NOT a plain passthrough GET (unlike the `cases` table
+// above): it normalizes the backend's project-mode-only `project` key so
+// callers never see `undefined`. Covered separately so that distinction is
+// pinned explicitly (Task 12 controller item 1).
+describe('fetchHealth', () => {
+  it('passes through the project path string when present (project mode)', async () => {
+    const fetchMock = mockFetch(200, {
+      status: 'ok', nodes_loaded: 3, presets_loaded: 1, project: '/home/me/my-service',
+    });
+    const out = await fetchHealth();
+    expect(fetchMock).toHaveBeenCalledWith('/api/health');
+    expect(out).toEqual({
+      status: 'ok', nodes_loaded: 3, presets_loaded: 1, project: '/home/me/my-service',
+    });
+  });
+
+  it('normalizes an ABSENT project key (non-project mode) to null, never undefined', async () => {
+    mockFetch(200, { status: 'ok', nodes_loaded: 3, presets_loaded: 1 });
+    const out = await fetchHealth();
+    expect(out.project).toBeNull();
+    expect('project' in out).toBe(true);
+  });
+
+  it('throws on a non-ok response', async () => {
+    mockFetch(500, {});
+    await expect(fetchHealth()).rejects.toThrow(/Health failed/);
+  });
 });
 
 describe('loadGraph', () => {

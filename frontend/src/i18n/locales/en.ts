@@ -17,6 +17,8 @@ const en = {
   'toolbar.save.success': 'Graph "{name}" saved successfully.',
   'toolbar.save.fail': 'Save failed: {error}',
   'toolbar.save.overwriteConfirm': 'A graph named {name} already exists and will be overwritten - continue?',
+  'toolbar.saveAs': 'Save As...',
+  'toolbar.saveAs.title': 'Save under a new name',
   'toolbar.load': 'Load',
   'toolbar.load.title': 'Load a saved graph',
   'toolbar.load.fail': 'Load failed: {error}',

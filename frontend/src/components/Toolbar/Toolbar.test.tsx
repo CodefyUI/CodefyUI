@@ -7,6 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useProjectStore } from '../../store/projectStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
@@ -102,6 +103,7 @@ describe('Toolbar', () => {
       fontSize: 'default',
     });
     useNodeDefStore.setState({ definitions: [], presets: [], categorized: {}, presetCategorized: {} });
+    useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
     setActiveTab();
 
     // Stub blob-download plumbing (jsdom lacks createObjectURL).
@@ -347,6 +349,35 @@ describe('Toolbar', () => {
     );
   });
 
+  // ── Project-mode Save / Save As (delegated through saveActiveGraph -- ID9) ──
+
+  it('Save (project mode, bound): overwrites the bound file in place, no prompt', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ currentGraphFile: 'bound-graph' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'bound-graph' })),
+    );
+    // No dialog was ever opened for the in-place overwrite.
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('Save As (project mode, bound): still prompts, saving under the entered name', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ currentGraphFile: 'bound-graph' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save As...'));
+    await resolveDialog('bound-graph-copy');
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'bound-graph-copy' })),
+    );
+  });
+
   // ── Clear action ────────────────────────────────────────────────────
 
   it('Clear: confirmed clears the canvas', async () => {
@@ -506,6 +537,80 @@ describe('Toolbar', () => {
       // Bound to the loaded file so re-saving under the same name is silent.
       expect(tab.currentGraphFile).toBe('alpha');
     });
+  });
+
+  // ── Load: layout_missing branch (Task 11 gate; Task 12 controller item 2) ──
+  //
+  // Pins handleLoadGraph's project-mode fallback: a `layout_missing: true`
+  // response runs the nodes through autoLayout + stackUnboundNotes (instead
+  // of using the file's stored positions) with NO toast and NO undo-stack
+  // push (setNodes is called directly, bypassing applyLayout). Black-box
+  // against handleLoadGraph's public behavior only -- no internal spies.
+
+  it('Load: layout_missing true auto-lays-out nodes and stacks unbound notes, with no toast/undo push', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Proj', file: 'proj' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({
+      nodes: [
+        // 9999,9999 is not a placement dagre's LR ranked layout would ever
+        // produce for a 2-node graph -- any change proves a real layout ran,
+        // independent of dagre's own coordinate convention (which may start
+        // a rank at x=0, indistinguishable from an untouched (0,0) input).
+        { id: 'n1', type: 'Add', position: { x: 9999, y: 9999 }, data: { params: {} } },
+        { id: 'n2', type: 'Add', position: { x: 9999, y: 9999 }, data: { params: {} } },
+        { id: 'note1', type: 'note', position: { x: 999, y: 999 }, data: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2', sourceHandle: '', targetHandle: '' }],
+      layout_missing: true,
+    } as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Proj'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
+
+    await waitFor(() => {
+      const tab = useTabStore.getState().tabs[0];
+      const n1 = tab.nodes.find((n) => n.id === 'n1')!;
+      const n2 = tab.nodes.find((n) => n.id === 'n2')!;
+      const note = tab.nodes.find((n) => n.id === 'note1')!;
+      // dagre actually laid the connected pair out (positions diverge from
+      // the identical (9999,9999)/(9999,9999) the "file" supplied, and from
+      // each other -- LR rank order puts n1/n2 at different x).
+      expect(n1.position).not.toEqual({ x: 9999, y: 9999 });
+      expect(n2.position).not.toEqual({ x: 9999, y: 9999 });
+      expect(n1.position.x).not.toBe(n2.position.x);
+      // stackUnboundNotes deterministically places the lone unbound note.
+      expect(note.position).toEqual({ x: -320, y: 0 });
+    });
+    // No success toast and no undo snapshot from the layout_missing path.
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(useTabStore.getState().tabs[0].undoStack).toHaveLength(0);
+  });
+
+  it('Load: layout_missing absent (or false) keeps the file positions unchanged', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Proj', file: 'proj' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({
+      nodes: [
+        { id: 'n1', type: 'Add', position: { x: 123, y: 456 }, data: { params: {} } },
+        { id: 'note1', type: 'note', position: { x: 50, y: 50 }, data: {} },
+      ],
+      edges: [],
+      // layout_missing intentionally omitted
+    } as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Proj'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
+
+    await waitFor(() => {
+      const tab = useTabStore.getState().tabs[0];
+      expect(tab.nodes.find((n) => n.id === 'n1')!.position).toEqual({ x: 123, y: 456 });
+      // Unbound note is untouched too -- stackUnboundNotes never runs on this branch.
+      expect(tab.nodes.find((n) => n.id === 'note1')!.position).toEqual({ x: 50, y: 50 });
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(useTabStore.getState().tabs[0].undoStack).toHaveLength(0);
   });
 
   it('Load: loadGraph rejection toasts an error', async () => {

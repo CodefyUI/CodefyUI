@@ -3,12 +3,13 @@ import { useGraphExecution } from '../../hooks/useGraphExecution';
 import { useTabStore } from '../../store/tabStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
-import { saveGraph, loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest';
+import { loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest';
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
-import { resolveSerializedNodes, resolveSerializedEdges, sanitizeGraphName, findGraphNameCollision } from '../../utils';
+import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
+import { saveActiveGraph } from '../../utils/saveActiveGraph';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { autoLayout, stackUnboundNotes, type LayoutMode } from '../../utils/autoLayout';
@@ -265,53 +266,8 @@ export function Toolbar() {
   const handleRun = useCallback(() => execute(), [execute]);
   const handleStop = useCallback(() => stop(), [stop]);
 
-  const handleSave = useCallback(async () => {
-    const name = await prompt({
-      title: t('toolbar.save.prompt'),
-      placeholder: 'graph-name',
-    });
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-
-    // Overwrite guard: two different display names can sanitize to the same
-    // file, so warn only when the sanitized target collides with a DIFFERENT
-    // saved graph (re-saving the currently-open graph is silent). A failed
-    // list fetch must not block saving — default to no collision.
-    let existing: { name: string; file: string }[] = [];
-    try {
-      const result = await listGraphs();
-      if (Array.isArray(result)) existing = result;
-    } catch {
-      /* list unavailable — skip the overwrite check and proceed to save */
-    }
-    const collidingName = findGraphNameCollision(trimmed, existing, activeTab.currentGraphFile);
-    if (collidingName !== null) {
-      const ok = await confirm({
-        title: t('toolbar.save.overwriteConfirm', { name: collidingName }),
-        confirmText: t('toolbar.save'),
-        variant: 'danger',
-      });
-      if (!ok) return;
-    }
-
-    try {
-      const { nodes, edges, presets, segmentGroups } = getSerializedGraph();
-      await saveGraph({
-        nodes,
-        edges,
-        name: trimmed,
-        description: activeTab.description ?? '',
-        presets,
-        segmentGroups,
-      });
-      // Bind the tab to the graph it was just saved as (drives the overwrite
-      // guard on the next save).
-      setCurrentGraphFile(sanitizeGraphName(trimmed));
-      addToast(t('toolbar.save.success', { name: trimmed }), 'success');
-    } catch (e) {
-      addToast(t('toolbar.save.fail', { error: (e as Error).message }), 'error');
-    }
-  }, [getSerializedGraph, t, addToast, activeTab.currentGraphFile, activeTab.description, setCurrentGraphFile]);
+  const handleSave = useCallback(() => saveActiveGraph(), []);
+  const handleSaveAs = useCallback(() => saveActiveGraph({ saveAs: true }), []);
 
   const handleClear = useCallback(async () => {
     const ok = await confirm({
@@ -507,6 +463,7 @@ export function Toolbar() {
 
   const fileMenuItems: MenuItem[] = [
     { label: t('toolbar.save'), title: t('toolbar.save.title'), onClick: handleSave },
+    { label: t('toolbar.saveAs'), title: t('toolbar.saveAs.title'), onClick: handleSaveAs },
     { label: t('toolbar.clear'), title: t('toolbar.clear.title'), onClick: handleClear },
   ];
 
