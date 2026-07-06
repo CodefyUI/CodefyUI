@@ -955,6 +955,34 @@ def _parse_host_port(argv: list) -> "tuple[str, int]":
     return host, port
 
 
+def _parse_project(argv: list) -> "str | None":
+    """Read --project <dir> from start/dev argv (same lightweight style as
+    --host)."""
+    for i, a in enumerate(argv):
+        if a == "--project" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--project="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def _activate_project(raw: str) -> None:
+    """Validate the project manifest and export CODEFYUI_PROJECT_DIR (abs) into
+    the child env so uvicorn derives its roots (spec 7.1). Exits on a missing
+    manifest."""
+    proj = Path(raw).expanduser().resolve()
+    manifest = proj / "codefyui.project.toml"
+    if not manifest.exists():
+        print(t(f"錯誤：找不到專案 manifest：{manifest}",
+                f"Error: project manifest not found: {manifest}"),
+              file=sys.stderr)
+        print(t("  用 'cdui project init <dir>' 建立專案。",
+                "  Create one with 'cdui project init <dir>'."), file=sys.stderr)
+        sys.exit(1)
+    os.environ["CODEFYUI_PROJECT_DIR"] = str(proj)
+    print(t(f"    專案 → {proj}", f"    Project -> {proj}"))
+
+
 def _probe_host(host: str) -> str:
     """The address to PROBE for a bind host: 0.0.0.0/:: listen everywhere
     but answer on loopback; a concrete LAN IP answers only on itself."""
@@ -1098,6 +1126,9 @@ def start() -> None:
 
     _warn_if_dist_stale()
     _apply_dev_env()
+    project = _parse_project(sys.argv[2:])
+    if project is not None:
+        _activate_project(project)
     # settings.HOST/PORT (and therefore init_allowed_hosts) must agree
     # with the actual bind — binding a concrete LAN IP whitelists it
     # automatically (app.core.auth.init_allowed_hosts).
@@ -1583,6 +1614,9 @@ def dev() -> None:
         sys.exit(1)
     _install_frontend_deps_if_needed()
     _apply_dev_env()
+    project = _parse_project(sys.argv[2:])
+    if project is not None:
+        _activate_project(project)
 
     uvicorn = _require_venv_tool("uvicorn")
     backend_cmd = [uvicorn, "app.main:app", "--reload"]
@@ -1754,10 +1788,30 @@ def _dispatch_plugin_subcommand() -> int:
     return plugin_cli.main(sys.argv[2:])
 
 
+def _dispatch_project_subcommand() -> int:
+    """Hand off `cdui project <subcmd> ...` to scripts/project.py.
+
+    Same venv hop as the plugin subgroup: project.py imports app.core.* so it
+    must run inside the backend venv with token/env resolution matching the
+    server (spec Section 5).
+    """
+    _exec_into_venv_if_available()
+    _ensure_uv()
+    _apply_dev_env()
+    scripts_dir = str(Path(__file__).resolve().parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import project as project_cli  # noqa: PLC0415 — late import: needs venv
+    return project_cli.main(sys.argv[2:])
+
+
 if __name__ == "__main__":
     # Long-form sub-grouped commands come first.
     if len(sys.argv) >= 2 and sys.argv[1] == "plugin":
         sys.exit(_dispatch_plugin_subcommand())
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "project":
+        sys.exit(_dispatch_project_subcommand())
 
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(__doc__)
