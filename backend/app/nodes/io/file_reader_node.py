@@ -69,7 +69,11 @@ class FileReaderNode(BaseNode):
 
         p = Path(path)
         if not p.is_absolute():
-            p = settings.GRAPHS_DIR / p
+            if settings.PROJECT_DIR is not None:
+                # Project mode: relative paths live under assets/data (spec 7.2).
+                p = settings.PROJECT_DIR / "assets" / "data" / p
+            else:
+                p = settings.GRAPHS_DIR / p
         p = p.resolve()
 
         # Restrict file reading to project data directories
@@ -78,6 +82,9 @@ class FileReaderNode(BaseNode):
             settings.MODELS_DIR.resolve(),
             settings.EXAMPLES_DIR.resolve(),
         ]
+        if settings.PROJECT_DIR is not None:
+            # The whole assets/ tree is readable in project mode.
+            allowed_roots.append((settings.PROJECT_DIR / "assets").resolve())
         if not any(p.is_relative_to(root) for root in allowed_roots):
             raise ValueError(
                 "File path must be within the project data directories "

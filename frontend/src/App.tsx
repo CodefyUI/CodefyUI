@@ -16,6 +16,8 @@ import { PluginHost } from './plugins/PluginHost';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { fetchHealth } from './api/rest';
+import { useProjectStore } from './store/projectStore';
 import styles from './App.module.css';
 
 // Map user font-size choice to the documentElement. Setting an empty string
@@ -81,6 +83,22 @@ function App() {
   useEffect(() => {
     document.documentElement.style.fontSize = FONT_SIZE_PX[fontSize] ?? '';
   }, [fontSize]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchHealth()
+      .then((h) => {
+        if (cancelled) return;
+        useProjectStore.getState().setProject(h.project);
+        useTabStore.getState().rehydrateForProject(h.project);
+      })
+      .catch(() => {
+        /* health unreachable -- stay in non-project defaults */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className={styles.root}>

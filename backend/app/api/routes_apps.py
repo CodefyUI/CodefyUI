@@ -42,7 +42,7 @@ from ..core.api_keys import (
 from ..core.db import Database, utc_now_iso
 from ..core.graph_engine import find_entry_points, validate_graph
 from ..core.secret_params import find_secret_violations
-from .routes_graph import _graph_path, _sanitize_name
+from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
 from .routes_graph_run import (
     _derive_output_type,
     _parse_run_body,
@@ -128,6 +128,9 @@ class PublishRequest(BaseModel):
     record_io: bool | None = None
     note: str | None = None
     create: bool = False
+    # Publish provenance (spec 9). git_commit validated IN-HANDLER (below).
+    git_commit: str | None = None
+    git_dirty: bool | None = None
 
 
 class PatchAppRequest(BaseModel):
@@ -153,13 +156,21 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
             422, "invalid_slug",
             "slug must match ^[a-z][a-z0-9-]{0,63}$",
         )
+    if body.git_commit is not None and re.match(r"^[0-9a-f]{7,40}$", body.git_commit) is None:
+        # Management error shape (not FastAPI's default 422 list) for
+        # consistency with the other publish errors.
+        raise _manage_error(422, "invalid_git_commit",
+                            "git_commit must match ^[0-9a-f]{7,40}$")
 
     # Load the saved graph under the strict-name rule
     # (routes_graph_run.py:341-349): execute exactly what was named.
     if _sanitize_name(body.graph) != body.graph:
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
-    path = _graph_path(body.graph)
+    try:
+        path = _graph_path(body.graph)
+    except GraphAmbiguityError as e:
+        raise _manage_error(409, "invalid_graph", str(e))
     if not path.exists():
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
@@ -211,7 +222,15 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
                             "GraphOutput node(s) are not reachable from any "
                             "entry point",
                             details=wiring.unreachable)
-    validation_errors = validate_graph(nodes, edges)
+    # ID6 fallback: a preset defined ONLY in this graph's own embedded
+    # presets[] (never registered server-side) must resolve here exactly as
+    # it does at POST /api/graph/validate (routes_graph.py) -- otherwise a
+    # graph that is CI-green under `cdui project validate` could 409 here.
+    from ..core.graph_engine import build_preset_fallback
+    validation_errors = validate_graph(
+        nodes, edges,
+        preset_fallback=build_preset_fallback(graph_data.get("presets", [])),
+    )
     if validation_errors:
         raise _manage_error(409, "invalid_graph", "graph failed validation",
                             details=validation_errors)
@@ -265,10 +284,13 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
             ).fetchone()[0]
             conn.execute(
                 "INSERT INTO app_versions (app_id, version, graph_json, "
-                "contract_json, source_graph_name, note, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "contract_json, source_graph_name, note, git_commit, "
+                "git_dirty, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (app_id, next_version, graph_text, json.dumps(contract_doc),
-                 body.graph, body.note, now),
+                 body.graph, body.note, body.git_commit,
+                 (None if body.git_dirty is None else int(body.git_dirty)),
+                 now),
             )
             conn.execute(
                 "UPDATE apps SET active_version = ?, graph_name = ?, "
@@ -289,6 +311,8 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         "created": result["created"],
         "graph_name": body.graph,
         "note": body.note,
+        "git_commit": body.git_commit,
+        "git_dirty": body.git_dirty,
     }
 
 
@@ -323,12 +347,15 @@ async def list_versions(slug: str, request: Request):
         if app_row is None:
             return None
         rows = conn.execute(
-            "SELECT version, source_graph_name, note, created_at "
+            "SELECT version, source_graph_name, note, git_commit, git_dirty, "
+            "created_at "
             "FROM app_versions WHERE app_id = ? ORDER BY version DESC",
             (app_row["id"],),
         ).fetchall()
         return [
-            {**dict(r), "active": r["version"] == app_row["active_version"]}
+            {**dict(r),
+             "active": r["version"] == app_row["active_version"],
+             "git_dirty": (None if r["git_dirty"] is None else bool(r["git_dirty"]))}
             for r in rows
         ]
 
@@ -668,8 +695,10 @@ async def invoke_app(
         )
         # output_store=None: Decision H1 — isolation is structural, not a
         # flag. The editor inspector store can never contain this data.
+        from ..core.graph_engine import build_preset_fallback
         http_status, envelope, node_timings = await execute_contract_run(
             slug, nodes, edges, exec_req, run_id, output_store=None,
+            preset_fallback=build_preset_fallback(snapshot.get("presets", [])),
         )
     finally:
         # On an execution timeout the lock releases here while the
@@ -696,6 +725,7 @@ _CONTRACT_TYPE_TO_SCHEMA: dict[str, dict[str, Any]] = {
 
 def _openapi_document(
     slug: str, version: int, contract_doc: dict[str, Any], host: str,
+    git_commit: str | None = None, git_dirty: int | None = None,
 ) -> dict[str, Any]:
     """A COMPLETE standalone OpenAPI 3.1 document for the active version.
 
@@ -788,6 +818,10 @@ def _openapi_document(
                 "optional; record_outputs is accepted and ignored on "
                 "published invokes (run records live in SQLite)."
             ),
+            **({"x-codefyui-git-commit": git_commit}
+               if git_commit is not None else {}),
+            **({"x-codefyui-git-dirty": bool(git_dirty)}
+               if git_dirty is not None else {}),
         },
         "servers": [{"url": base_url}],
         "security": [{"bearerAuth": []}],
@@ -884,7 +918,8 @@ async def get_app_openapi(slug: str, request: Request):
 
     def _resolve(conn: sqlite3.Connection) -> dict[str, Any] | None:
         row = conn.execute(
-            "SELECT a.active_version, v.contract_json "
+            "SELECT a.active_version, v.contract_json, v.git_commit, "
+            "       v.git_dirty "
             "FROM apps a "
             "LEFT JOIN app_versions v "
             "  ON v.app_id = a.id AND v.version = a.active_version "
@@ -904,6 +939,7 @@ async def get_app_openapi(slug: str, request: Request):
     host = request.headers.get("host", f"{settings.HOST}:{settings.PORT}")
     return _openapi_document(
         slug, int(resolved["active_version"]), contract_doc, host,
+        git_commit=resolved["git_commit"], git_dirty=resolved["git_dirty"],
     )
 
 

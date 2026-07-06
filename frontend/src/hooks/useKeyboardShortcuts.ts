@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
+import { useProjectStore } from '../store/projectStore';
+import { saveActiveGraph } from '../utils/saveActiveGraph';
 
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -44,6 +46,16 @@ export function useKeyboardShortcuts() {
       if (mod && !e.shiftKey && e.key === 'v') {
         e.preventDefault();
         useTabStore.getState().pasteNodes();
+        return;
+      }
+
+      // Ctrl+S / Cmd+S — Save. Project mode only, so non-project keeps the
+      // browser's native behavior and this never hijacks it (ID9).
+      if (mod && !e.shiftKey && e.key === 's') {
+        if (useProjectStore.getState().projectDir !== null) {
+          e.preventDefault();
+          void saveActiveGraph();
+        }
         return;
       }
 

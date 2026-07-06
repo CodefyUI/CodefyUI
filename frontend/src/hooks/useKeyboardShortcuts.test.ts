@@ -3,6 +3,12 @@ import { renderHook } from '@testing-library/react';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
+import { useProjectStore } from '../store/projectStore';
+import { saveActiveGraph } from '../utils/saveActiveGraph';
+
+vi.mock('../utils/saveActiveGraph', () => ({
+  saveActiveGraph: vi.fn(),
+}));
 
 // Spy holders for the store actions the handler dispatches to.
 let undo: ReturnType<typeof vi.fn>;
@@ -23,6 +29,8 @@ beforeEach(() => {
   // Override only the actions exercised here; leave the rest of the store intact.
   useTabStore.setState({ undo, redo, copySelectedNodes, pasteNodes, applyLayout } as any);
   useUIStore.setState({ toggleShortcutsModal, lastLayoutMode: 'all' } as any);
+  useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
+  vi.mocked(saveActiveGraph).mockClear();
 });
 
 afterEach(() => {
@@ -84,6 +92,35 @@ describe('useKeyboardShortcuts', () => {
     const e = dispatchKey({ key: 'v', ctrlKey: true });
     expect(pasteNodes).toHaveBeenCalledTimes(1);
     expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('Ctrl+S saves in project mode and prevents the browser default', () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 's', ctrlKey: true });
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('Cmd+S (metaKey) also saves in project mode', () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 's', metaKey: true });
+    expect(saveActiveGraph).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+S is a no-op in non-project mode, leaving the browser Save dialog untouched', () => {
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 's', ctrlKey: true });
+    expect(saveActiveGraph).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('Ctrl+Shift+S does not trigger save (reserved combination, shiftKey excluded)', () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 's', ctrlKey: true, shiftKey: true });
+    expect(saveActiveGraph).not.toHaveBeenCalled();
   });
 
   it('? toggles the shortcuts modal', () => {

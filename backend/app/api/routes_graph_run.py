@@ -44,7 +44,7 @@ from ..schemas import (
     RunError,
     RunTiming,
 )
-from .routes_graph import _graph_path, _sanitize_name
+from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,10 @@ async def get_contract(name: str):
     if _sanitize_name(name) != name:
         # Strict-name rule: never silently alias to a different file.
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
-    path = _graph_path(name)
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     try:
@@ -334,6 +337,7 @@ async def execute_contract_run(
     run_req: _RunRequest,
     run_id: str,
     output_store: Any,
+    preset_fallback: dict | None = None,
 ) -> tuple[int, dict[str, Any], dict[str, float]]:
     """Steps 5-12 of a contract run: pre-flight, inject, execute, collect,
     serialize. Shared by the editor route below and Stage-2 invoke
@@ -410,7 +414,7 @@ async def execute_contract_run(
                           "any entry point"
                       ),
                       details=wiring.unreachable)
-    validation_errors = validate_graph(nodes, edges)
+    validation_errors = validate_graph(nodes, edges, preset_fallback=preset_fallback)
     if validation_errors:
         return _error(409, code="invalid_graph",
                       message="graph failed validation",
@@ -477,6 +481,7 @@ async def execute_contract_run(
         run_id=run_id,
         output_store=output_store,
         record_outputs=run_req.record_outputs and output_store is not None,
+        preset_fallback=preset_fallback,
     ))
     task.add_done_callback(_retrieve_background_exception)
     try:
@@ -594,7 +599,11 @@ async def run_graph_as_function(name: str, request: Request):
         return error_response(404, run_id=run_id, graph=name,
                               code="graph_not_found",
                               message=f"Graph '{name}' not found")
-    path = _graph_path(name)
+    try:
+        path = _graph_path(name)
+    except GraphAmbiguityError as e:
+        return error_response(409, run_id=run_id, graph=name,
+                              code="invalid_graph", message=str(e))
     if not path.exists():
         return error_response(404, run_id=run_id, graph=name,
                               code="graph_not_found",
@@ -629,8 +638,11 @@ async def run_graph_as_function(name: str, request: Request):
         # (ws_execution.py getattr precedent).
         output_store = getattr(request.app.state, "run_output_store", None)
 
+    from ..core.graph_engine import build_preset_fallback
+    preset_fallback = build_preset_fallback(graph_data.get("presets", []))
     http_status, envelope, _node_timings = await execute_contract_run(
         name, nodes, edges, run_req, run_id, output_store,
+        preset_fallback=preset_fallback,
     )
     if http_status != 200:
         return JSONResponse(status_code=http_status, content=envelope)

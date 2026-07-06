@@ -19,6 +19,8 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.save.success': '圖表「{name}」儲存成功。',
   'toolbar.save.fail': '儲存失敗：{error}',
   'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
+  'toolbar.saveAs': '另存為...',
+  'toolbar.saveAs.title': '以新名稱儲存',
   'toolbar.load': '載入',
   'toolbar.load.title': '載入已儲存的圖表',
   'toolbar.load.fail': '載入失敗：{error}',
@@ -424,6 +426,14 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.layoutMode.aria': '排版模式',
   'toolbar.language.aria': '語言',
   'persistence.quotaError': '無法儲存分頁 — 瀏覽器儲存空間已滿。',
+
+  // 專案範圍的分頁持久化（ID10）：標題徽章 + 跨專案儲存拒絕
+  'project.badge.title': '目前的專案目錄',
+  'project.save.crossProjectRefused': '此圖屬於另一個專案（{origin}），無法儲存到目前開啟的專案。',
+
+  // format_version 讀取政策（ID8）：比目前版本更新的圖只會以唯讀開啟，載入時絕不阻擋
+  'project.readOnly.loadNotice': '以唯讀開啟：此圖使用比目前版本更新的格式（v{version}）。',
+  'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
 };
 
 export default zhTW;

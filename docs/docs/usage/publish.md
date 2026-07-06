@@ -6,13 +6,13 @@ description: Freeze a saved graph as a versioned app behind a stable, API-key-pr
 
 # Publish (Graphs as Apps)
 
-[Graph as a Function](./graph-as-a-function) makes any saved graph callable over HTTP — but that endpoint is a moving target: every canvas save changes what it runs, and its session token rotates on every server restart. **Publishing** turns a working graph into a stable product endpoint:
+[Graph as a Function](./graph-as-a-function) makes any saved graph callable over HTTP -- but that endpoint is a moving target: every canvas save changes what it runs, and its session token rotates on every server restart. **Publishing** turns a working graph into a stable product endpoint:
 
 - an immutable **version** snapshot served at `POST /api/apps/{slug}/invoke`,
 - protected by durable **API keys** (`Authorization: Bearer cdui_...`) that survive restarts,
 - with every resolved invoke recorded to SQLite (`backend/data/codefyui.db`).
 
-Canvas edits touch only the saved graph file; invokes read only the stored snapshot — editing the canvas can never change a published app until you re-publish.
+Canvas edits touch only the saved graph file; invokes read only the stored snapshot -- editing the canvas can never change a published app until you re-publish.
 
 All management calls below use the editor session token (`X-CodefyUI-Token`, obtained exactly as on the [Graph as a Function](./graph-as-a-function) page). On Windows use `curl.exe` and pass bodies as files (`--data "@payload.json"`), never inline JSON.
 
@@ -21,16 +21,19 @@ All management calls below use the editor session token (`X-CodefyUI-Token`, obt
 ```text
 POST /api/apps/{slug}/publish        (session token)
 body: {"graph": "<saved name>", "note": "optional", "create": false}
-      (optional "record_io": true|false — omitted inherits the app's current setting; see below)
+      (optional "record_io": true|false -- omitted inherits the app's current setting; see below)
+      (optional "git_commit": "<7-40 hex>", "git_dirty": true|false -- publish provenance;
+       normally set for you by `cdui project publish`)
 ```
 
-- `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name — renaming a graph never breaks a published URL.
-- Publishing to a slug that does not exist yet requires `"create": true`, otherwise 404 `app_not_found` — a misspelled slug on a re-publish can never silently create a second app.
-- Publishing to an existing slug appends the next version — that IS the re-publish path.
+- `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name -- renaming a graph never breaks a published URL.
+- Publishing to a slug that does not exist yet requires `"create": true`, otherwise 404 `app_not_found` -- a misspelled slug on a re-publish can never silently create a second app.
+- Publishing to an existing slug appends the next version -- that IS the re-publish path.
 - `note` is optional, immutable version metadata, echoed in the versions list.
 - Publish runs the exact `/run` pre-flight first: a graph that `POST /api/graph/run/{name}` would refuse (409 `invalid_contract` / `no_entry_points` / `untriggered_input` / `unreachable_output` / `invalid_graph`) cannot be published either.
-- Publish also rejects (409 `secret_in_graph`) a graph whose saved file still holds a non-empty `SECRET`-typed parameter (for example an LLMChat API key), naming the offending node and param. **Graphs never persist secrets** — the editor masks `SECRET` fields and drops them on save/export, and `POST /api/graph/save` scrubs them server-side, so this pre-flight only ever fires on a hand-edited file. Keep API keys in the environment (`CODEFYUI_OPENAI_API_KEY` / `OPENAI_API_KEY`, `CODEFYUI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY`) instead.
-- Success: `{"slug", "version", "active": true, "created", "graph_name", "note"}`.
+- Publish also rejects (409 `secret_in_graph`) a graph whose saved file still holds a non-empty `SECRET`-typed parameter (for example an LLMChat API key), naming the offending node and param. **Graphs never persist secrets** -- the editor masks `SECRET` fields and drops them on save/export, and `POST /api/graph/save` scrubs them server-side, so this pre-flight only ever fires on a hand-edited file. Keep API keys in the environment (`CODEFYUI_OPENAI_API_KEY` / `OPENAI_API_KEY`, `CODEFYUI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY`) instead.
+- Success: `{"slug", "version", "active": true, "created", "graph_name", "note", "git_commit", "git_dirty"}`.
+- **Provenance.** `git_commit` (validated `^[0-9a-f]{7,40}$`; a bad value is 422 `invalid_git_commit`) and `git_dirty` are recorded on the version. `cdui project publish` fills them from `git rev-parse HEAD` + `git status --porcelain` and warns loudly when the tree is dirty. They surface in `GET /api/apps/{slug}/versions` and as `x-codefyui-git-commit` / `x-codefyui-git-dirty` in the per-app OpenAPI `info` block. See [Project directories](./project-directories.md).
 
 **Publish activates immediately.** There is no staging path in v1: canvas Run plus the identical pre-flight IS the verification story. If the graph runs from the Run button and `/run` accepts it, the published version serves that same behavior.
 
@@ -46,27 +49,27 @@ Managing versions:
 
 ```text
 GET    /api/apps                       -> [{slug, graph_name, active_version, versions_count, record_io, ...}]
-GET    /api/apps/{slug}/versions       -> [{version, source_graph_name, note, created_at, active}]
-POST   /api/apps/{slug}/activate       body {"version": n} — point the slug at ANY existing version
+GET    /api/apps/{slug}/versions       -> [{version, source_graph_name, note, git_commit, git_dirty, created_at, active}]
+POST   /api/apps/{slug}/activate       body {"version": n} -- point the slug at ANY existing version
 POST   /api/apps/{slug}/unpublish      -> active_version = null; versions and runs are kept
-PATCH  /api/apps/{slug}                body {"record_io": bool} — flips run-recording, no republish
+PATCH  /api/apps/{slug}                body {"record_io": bool} -- flips run-recording, no republish
 DELETE /api/apps/{slug}
 ```
 
 - `activate` subsumes rollback: activating an older version restores it, and activating from the unpublished state restores service at that version.
-- `record_io` on publish is tri-state: omit it (or pass `null`) to **inherit** the app's current `record_io` — a republish that doesn't mention it never flips a setting you changed via `PATCH`. A brand-new app (first publish with `"create": true`) defaults to `true` when omitted. Pass an explicit `true`/`false` to override, at create time or on any republish.
-- While unpublished, invokes return 409 `app_unpublished` — nothing is lost.
+- `record_io` on publish is tri-state: omit it (or pass `null`) to **inherit** the app's current `record_io` -- a republish that doesn't mention it never flips a setting you changed via `PATCH`. A brand-new app (first publish with `"create": true`) defaults to `true` when omitted. Pass an explicit `true`/`false` to override, at create time or on any republish.
+- While unpublished, invokes return 409 `app_unpublished` -- nothing is lost.
 - **`DELETE /api/apps/{slug}` irrevocably removes the app, ALL its versions AND all its run records.** There is no undo. Prefer `unpublish` unless you truly mean delete.
 
 ## 2. API keys
 
 ```text
 POST /api/keys                (session token)  body {"name": "ci-bot"}
-GET  /api/keys                (session token)  — id, name, prefix, timestamps; never secrets
-POST /api/keys/{id}/revoke    (session token)  — soft revoke; the row stays listed
+GET  /api/keys                (session token)  -- id, name, prefix, timestamps; never secrets
+POST /api/keys/{id}/revoke    (session token)  -- soft revoke; the row stays listed
 ```
 
-**The full key (`cdui_...`) appears ONCE, in the create response, and is never stored or logged.** Copy it immediately; lists show only the first 12 characters (`prefix`). Keys are stored as sha256 hashes and survive restarts — the deliberate contrast with the rotating session token. Revoked keys fail auth immediately but remain listed with their `revoked_at`, so old run records stay attributable.
+**The full key (`cdui_...`) appears ONCE, in the create response, and is never stored or logged.** Copy it immediately; lists show only the first 12 characters (`prefix`). Keys are stored as sha256 hashes and survive restarts -- the deliberate contrast with the rotating session token. Revoked keys fail auth immediately but remain listed with their `revoked_at`, so old run records stay attributable.
 
 ## 3. Invoke
 
@@ -76,10 +79,10 @@ POST /api/apps/{slug}/invoke          (auth: Authorization: Bearer cdui_...)
 
 The body is the same as [`/api/graph/run`](./graph-as-a-function): optional, with optional `inputs`, `timeout_s`, `device`. Two differences:
 
-- `record_outputs` is **accepted and ignored** — published runs are recorded in SQLite (below), never in the editor's inspector store.
+- `record_outputs` is **accepted and ignored** -- published runs are recorded in SQLite (below), never in the editor's inspector store.
 - `timeout_s` covers TOTAL request time INCLUDING queue wait: invokes of one app run one-at-a-time (per-slug lock), and a call that spends its budget waiting behind another invoke fails with the `timeout` envelope noting it expired while queued. Different slugs run in parallel.
 
-The editor session token is NEVER accepted on invoke — pasting it produces a self-diagnosing 401: "this endpoint takes an API key (cdui_...), not the editor session token".
+The editor session token is NEVER accepted on invoke -- pasting it produces a self-diagnosing 401: "this endpoint takes an API key (cdui_...), not the editor session token".
 
 Every response is the same 9-key envelope as `/run` (see [the envelope](./graph-as-a-function)), with the two Stage-2 keys filled in: `graph` and `app` are the slug on every outcome, and `version` is the executed version (`null` on errors before a version was resolved). New error codes on top of the Stage-1 taxonomy:
 
@@ -89,7 +92,7 @@ Every response is the same 9-key envelope as `/run` (see [the envelope](./graph-
 | `app_not_found` | 404 | slug does not exist |
 | `app_unpublished` | 409 | app exists but no version is active |
 
-Oversized images are rejected up front on BOTH run routes: 422 `invalid_input` when a single image exceeds `MAX_IMAGE_PIXELS` (default 25,000,000; `CODEFYUI_MAX_IMAGE_PIXELS`). Match on the code, not the message — far above the budget, PIL's own decompression-bomb error text appears instead of ours.
+Oversized images are rejected up front on BOTH run routes: 422 `invalid_input` when a single image exceeds `MAX_IMAGE_PIXELS` (default 25,000,000; `CODEFYUI_MAX_IMAGE_PIXELS`). Match on the code, not the message -- far above the budget, PIL's own decompression-bomb error text appears instead of ours.
 
 PowerShell:
 
@@ -115,8 +118,8 @@ curl -s -X POST "http://127.0.0.1:8000/api/apps/classifier/invoke" \
 Every invoke that resolves to an app version writes one row (status, error code, device, `total_s`, per-node timings, capped inputs/outputs, key id). Pre-resolution rejections (`invalid_key`, `app_not_found`, `app_unpublished`) write nothing. Recording is best-effort: a storage failure after execution is logged and the run result is still returned.
 
 ```text
-GET /api/apps/{slug}/runs?limit=50&before=<iso>   — newest-first metadata only
-GET /api/apps/{slug}/runs/{run_id}                — the full row incl. inputs/outputs/node_timings
+GET /api/apps/{slug}/runs?limit=50&before=<iso>   -- newest-first metadata only
+GET /api/apps/{slug}/runs/{run_id}                -- the full row incl. inputs/outputs/node_timings
 ```
 
 Reads accept EITHER a valid API key or the editor session token (the editor UI reads runs without ever holding an API key), and reject requests with neither.
@@ -134,7 +137,7 @@ Retention: `CODEFYUI_RUNS_RETENTION_DAYS` defaults to **0 = keep forever**. When
 GET /api/apps/{slug}/openapi.json      (API key or session token)
 ```
 
-A complete, standalone OpenAPI 3.1 document for the ACTIVE version — importable into Swagger UI, Postman, or openapi-generator as-is. It carries the typed input schema derived from the graph's contract, the 9-key envelope schema, the bearer security scheme, and an `x-codefyui-curl` object with ready-to-paste `powershell` and `bash` invoke commands. JSON only; there is no generated HTML page.
+A complete, standalone OpenAPI 3.1 document for the ACTIVE version -- importable into Swagger UI, Postman, or openapi-generator as-is. It carries the typed input schema derived from the graph's contract, the 9-key envelope schema, the bearer security scheme, and an `x-codefyui-curl` object with ready-to-paste `powershell` and `bash` invoke commands. JSON only; there is no generated HTML page. When the active version was published with provenance, the OpenAPI `info` block also carries `x-codefyui-git-commit` and `x-codefyui-git-dirty`.
 
 ## 6. Serving on your LAN
 
@@ -145,10 +148,10 @@ cdui start --host 192.168.1.20             # one concrete interface
 
 The Host-header whitelist follows the bind automatically (a concrete LAN IP is whitelisted; a `0.0.0.0` bind whitelists each local interface IP), extra names can be added via `CODEFYUI_EXTRA_ALLOWED_HOSTS="mybox:8000,192.168.1.20:8000"`, and the effective whitelist plus reachable URLs are printed at startup. `cdui status` and `cdui stop` report the real address. `cdui dev` remains loopback-only by design.
 
-Understand what a LAN bind exposes — plainly:
+Understand what a LAN bind exposes -- plainly:
 
 - Binding a LAN address serves the FULL editor, and `GET /api/auth/bootstrap` hands out the session token to any allowed-Host request. **Anyone who can reach the port controls the instance; use only on trusted networks.**
 - API keys on the published surface are therefore attribution and off-box script hygiene, NOT LAN access control.
-- Transport is plain HTTP — no TLS in v1.
-- CORS settings change nothing about this: the exposure is same-origin, and the `Authorization` CORS header exists only so future cross-origin JS callers can be preflighted — it is not a mitigation.
+- Transport is plain HTTP -- no TLS in v1.
+- CORS settings change nothing about this: the exposure is same-origin, and the `Authorization` CORS header exists only so future cross-origin JS callers can be preflighted -- it is not a mitigation.
 - Editor-scoped LAN hardening (loopback-gated bootstrap; published-surface-only on non-loopback Hosts) is a named follow-up, not in v1.

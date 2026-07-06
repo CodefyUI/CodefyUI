@@ -7,6 +7,7 @@ import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, Outpu
 import { ExecutionWebSocket } from '../api/ws';
 import { useToastStore } from './toastStore';
 import { useI18n } from '../i18n';
+import { useProjectStore } from './projectStore';
 
 // ── Per-tab state ──
 
@@ -34,6 +35,16 @@ export interface TabState {
   // when re-saving the same graph.
   description: string;
   currentGraphFile: string | null;
+  // Project directory (absolute path) this tab's bound graph was last saved
+  // into or loaded from. `null` for a tab never touched by a project save
+  // (e.g. a brand-new tab, or one opened before any project was resolved).
+  // Used by saveActiveGraph's cross-project refusal guard (ID10).
+  projectOrigin: string | null;
+  // True when the loaded graph's format_version is NEWER than this build
+  // understands (ID8). The editor opens it read-only -- saveActiveGraph
+  // refuses to write it -- so an older CodefyUI build can never
+  // destructively down-save a newer file.
+  readOnly: boolean;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -74,6 +85,8 @@ function createTabState(id: string, name: string): TabState {
     name,
     description: '',
     currentGraphFile: null,
+    projectOrigin: null,
+    readOnly: false,
     nodes: [],
     edges: [],
     selectedNodeId: null,
@@ -115,6 +128,10 @@ interface TabStoreState {
   // graph-level metadata (active tab)
   setDescription: (description: string) => void;
   setCurrentGraphFile: (file: string | null) => void;
+  setTabReadOnly: (v: boolean) => void;
+  // Per-project persistence scoping (ID10)
+  rehydrateForProject: (projectId: string | null) => void;
+  stampActiveTabProject: (projectId: string | null) => void;
 
   // flow actions (operate on active tab)
   setNodes: (nodes: Node<NodeData>[]) => void;
@@ -310,13 +327,23 @@ function stripNodeSecretsForPersist(
 
 // ── LocalStorage persistence ──
 
-const STORAGE_KEY = 'codefyui-tabs';
+const STORAGE_KEY_BASE = 'codefyui-tabs';
+
+// Persistence key is scoped to the active project so `--project B` never
+// resurrects project A's tabs (ID10). Non-project mode keeps the bare base key
+// -> byte-for-byte unchanged.
+function _storageKey(): string {
+  const pid = useProjectStore.getState().projectDir;
+  return pid ? `${STORAGE_KEY_BASE}::${pid}` : STORAGE_KEY_BASE;
+}
 
 interface PersistedTab {
   id: string;
   name: string;
   description?: string;
   currentGraphFile?: string | null;
+  projectOrigin?: string | null;
+  readOnly?: boolean;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -342,6 +369,11 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         name: t.name,
         description: t.description,
         currentGraphFile: t.currentGraphFile,
+        // Only persisted when set, so non-project localStorage is byte-identical.
+        ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
+        // Only persisted when true, so an editable graph's localStorage shape
+        // stays byte-identical to before this task.
+        ...(t.readOnly ? { readOnly: true } : {}),
         // Never persist SECRET param values (typed API keys) to localStorage:
         // they must not survive a page refresh — the field is "Session only".
         nodes: stripNodeSecretsForPersist(t.nodes),
@@ -355,7 +387,7 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         autoBackward: t.autoBackward,
       })),
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(_storageKey(), JSON.stringify(data));
   } catch {
     // QuotaExceededError / SecurityError / private mode etc. The README
     // promises auto-save; failing silently lets the user lose work without
@@ -375,7 +407,7 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(_storageKey());
     if (raw) {
       const data = JSON.parse(raw);
       if (Array.isArray(data.tabs) && data.tabs.length > 0) {
@@ -385,6 +417,8 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
             ...base,
             description: t.description ?? '',
             currentGraphFile: t.currentGraphFile ?? null,
+            projectOrigin: t.projectOrigin ?? null,
+            readOnly: t.readOnly ?? false,
             nodes: t.nodes ?? [],
             edges: t.edges ?? [],
             segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
@@ -453,6 +487,18 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   setCurrentGraphFile: (file) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ currentGraphFile: file })) }),
+
+  setTabReadOnly: (v) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ readOnly: v })) }),
+
+  rehydrateForProject: (projectId) => {
+    // Non-project mode keeps the import-time base-key tabs untouched.
+    if (projectId === null) return;
+    const loaded = loadTabs(); // reads the now-scoped key
+    set({ tabs: loaded.tabs, activeTabId: loaded.activeTabId });
+  },
+  stampActiveTabProject: (projectId) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ projectOrigin: projectId })) }),
 
   // ── Helpers ──
 
@@ -754,6 +800,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         currentGraphFile: null,
         segmentGroups: [],
         activeSegment: null,
+        // An empty graph is trivially current-format -- never leave a tab
+        // that became read-only from a newer-format load stuck refusing
+        // Save forever after Clear (ID8 fast-follow, task 16 review
+        // Adjudication B / Important finding 1).
+        readOnly: false,
       })),
     });
   },

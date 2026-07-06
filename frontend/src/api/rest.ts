@@ -15,6 +15,35 @@ export async function fetchPresetDefinitions(): Promise<PresetDefinition[]> {
   return res.json();
 }
 
+export interface HealthInfo {
+  status: string;
+  nodes_loaded: number;
+  presets_loaded: number;
+  project: string | null;
+}
+
+/**
+ * /api/health, including the additive `project` field (spec ID4).
+ *
+ * The backend (backend/app/main.py) OMITS the `project` key entirely in
+ * non-project mode -- it is never sent as `null`. Normalize that gap here so
+ * `HealthInfo.project` is always exactly `string | null`, never `undefined`:
+ * `useProjectStore.setProject` / `isProjectMode` key off a strict
+ * `!== null` check, which `undefined` would satisfy and misreport project
+ * mode as active.
+ */
+export async function fetchHealth(): Promise<HealthInfo> {
+  const res = await fetch(`${BASE_URL}/health`);
+  if (!res.ok) throw new Error(`Health failed: ${res.statusText}`);
+  const data = await res.json();
+  return {
+    status: data.status,
+    nodes_loaded: data.nodes_loaded,
+    presets_loaded: data.presets_loaded,
+    project: data.project ?? null,
+  };
+}
+
 export interface DeviceInfo {
   value: string;
   label: string;

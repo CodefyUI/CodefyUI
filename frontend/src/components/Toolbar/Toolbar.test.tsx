@@ -7,6 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
+import { useProjectStore } from '../../store/projectStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
@@ -102,6 +103,7 @@ describe('Toolbar', () => {
       fontSize: 'default',
     });
     useNodeDefStore.setState({ definitions: [], presets: [], categorized: {}, presetCategorized: {} });
+    useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
     setActiveTab();
 
     // Stub blob-download plumbing (jsdom lacks createObjectURL).
@@ -347,6 +349,35 @@ describe('Toolbar', () => {
     );
   });
 
+  // ── Project-mode Save / Save As (delegated through saveActiveGraph -- ID9) ──
+
+  it('Save (project mode, bound): overwrites the bound file in place, no prompt', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ currentGraphFile: 'bound-graph' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'bound-graph' })),
+    );
+    // No dialog was ever opened for the in-place overwrite.
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('Save As (project mode, bound): still prompts, saving under the entered name', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+    setActiveTab({ currentGraphFile: 'bound-graph' });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('File'));
+    fireEvent.click(screen.getByText('Save As...'));
+    await resolveDialog('bound-graph-copy');
+    await waitFor(() =>
+      expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'bound-graph-copy' })),
+    );
+  });
+
   // ── Clear action ────────────────────────────────────────────────────
 
   it('Clear: confirmed clears the canvas', async () => {
@@ -508,6 +539,134 @@ describe('Toolbar', () => {
     });
   });
 
+  // -- Load: project-mode origin stamping (Task 13 review gap, ID10) --
+  // handleLoadGraph stamps the active tab's projectOrigin with the open
+  // project's dir right after a successful load (Toolbar.tsx:317-318), but
+  // only while a project is open. Scoped in its own describe so the extra
+  // localStorage reset doesn't touch the rest of this file's tests.
+  describe('Load: project origin stamping (ID10)', () => {
+    beforeEach(() => {
+      localStorage.clear();
+      // setActiveTab() (outer beforeEach) copies forward whatever
+      // `projectOrigin` the previous test's tab was left with via `...real` --
+      // pin a clean baseline here so these two tests are independent of run
+      // order and of each other.
+      setActiveTab({ projectOrigin: null });
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it('project mode: stamps the active tab projectOrigin with the open project dir', async () => {
+      useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+      mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
+      mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+      render(<Toolbar />);
+      fireEvent.click(screen.getByText('Load'));
+      await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Alpha'));
+      await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
+      await waitFor(() => {
+        const tab = useTabStore.getState().tabs[0];
+        expect(tab.projectOrigin).toBe('/proj');
+        expect(tab.currentGraphFile).toBe('alpha');
+      });
+    });
+
+    it('non-project mode: projectOrigin stays null after the same load', async () => {
+      // projectDir stays null via the outer beforeEach default -- no project open.
+      mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
+      mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+      render(<Toolbar />);
+      fireEvent.click(screen.getByText('Load'));
+      await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Alpha'));
+      await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
+      await waitFor(() => {
+        const tab = useTabStore.getState().tabs[0];
+        // Load still ran to completion (proves the guard's false branch, not
+        // just an untouched default) -- only projectOrigin stays unset.
+        expect(tab.currentGraphFile).toBe('alpha');
+        expect(tab.projectOrigin).toBeNull();
+      });
+    });
+  });
+
+  // ── Load: layout_missing branch (Task 11 gate; Task 12 controller item 2) ──
+  //
+  // Pins handleLoadGraph's project-mode fallback: a `layout_missing: true`
+  // response runs the nodes through autoLayout + stackUnboundNotes (instead
+  // of using the file's stored positions) with NO toast and NO undo-stack
+  // push (setNodes is called directly, bypassing applyLayout). Black-box
+  // against handleLoadGraph's public behavior only -- no internal spies.
+
+  it('Load: layout_missing true auto-lays-out nodes and stacks unbound notes, with no toast/undo push', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Proj', file: 'proj' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({
+      nodes: [
+        // 9999,9999 is not a placement dagre's LR ranked layout would ever
+        // produce for a 2-node graph -- any change proves a real layout ran,
+        // independent of dagre's own coordinate convention (which may start
+        // a rank at x=0, indistinguishable from an untouched (0,0) input).
+        { id: 'n1', type: 'Add', position: { x: 9999, y: 9999 }, data: { params: {} } },
+        { id: 'n2', type: 'Add', position: { x: 9999, y: 9999 }, data: { params: {} } },
+        { id: 'note1', type: 'note', position: { x: 999, y: 999 }, data: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2', sourceHandle: '', targetHandle: '' }],
+      layout_missing: true,
+    } as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Proj'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
+
+    await waitFor(() => {
+      const tab = useTabStore.getState().tabs[0];
+      const n1 = tab.nodes.find((n) => n.id === 'n1')!;
+      const n2 = tab.nodes.find((n) => n.id === 'n2')!;
+      const note = tab.nodes.find((n) => n.id === 'note1')!;
+      // dagre actually laid the connected pair out (positions diverge from
+      // the identical (9999,9999)/(9999,9999) the "file" supplied, and from
+      // each other -- LR rank order puts n1/n2 at different x).
+      expect(n1.position).not.toEqual({ x: 9999, y: 9999 });
+      expect(n2.position).not.toEqual({ x: 9999, y: 9999 });
+      expect(n1.position.x).not.toBe(n2.position.x);
+      // stackUnboundNotes deterministically places the lone unbound note.
+      expect(note.position).toEqual({ x: -320, y: 0 });
+    });
+    // No success toast and no undo snapshot from the layout_missing path.
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(useTabStore.getState().tabs[0].undoStack).toHaveLength(0);
+  });
+
+  it('Load: layout_missing absent (or false) keeps the file positions unchanged', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Proj', file: 'proj' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({
+      nodes: [
+        { id: 'n1', type: 'Add', position: { x: 123, y: 456 }, data: { params: {} } },
+        { id: 'note1', type: 'note', position: { x: 50, y: 50 }, data: {} },
+      ],
+      edges: [],
+      // layout_missing intentionally omitted
+    } as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Proj'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
+
+    await waitFor(() => {
+      const tab = useTabStore.getState().tabs[0];
+      expect(tab.nodes.find((n) => n.id === 'n1')!.position).toEqual({ x: 123, y: 456 });
+      // Unbound note is untouched too -- stackUnboundNotes never runs on this branch.
+      expect(tab.nodes.find((n) => n.id === 'note1')!.position).toEqual({ x: 50, y: 50 });
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(useTabStore.getState().tabs[0].undoStack).toHaveLength(0);
+  });
+
   it('Load: loadGraph rejection toasts an error', async () => {
     mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Bad', file: 'bad.json' }] as never);
     mockedRest.loadGraph.mockRejectedValueOnce(new Error('404'));
@@ -636,6 +795,70 @@ describe('Toolbar', () => {
         useToastStore.getState().toasts.some((t) => t.type === 'error' && t.message.includes('Import failed')),
       ).toBe(true),
     );
+  });
+
+  // -- Import: readOnly handling (ID8 fast-follow, task 16 review Adjudication B) --
+  // handleImportFile previously never touched `readOnly`: importing an
+  // ordinary file into a tab that had loaded a too-new graph left it stuck
+  // read-only forever (over-blocking), while importing a NEWER-format file
+  // into a normal tab left it editable (the same lossy-copy hazard Ruling A
+  // documented for loads, but unguarded on the import path). Scoped in its
+  // own describe, like the sibling "Load: project origin stamping" block
+  // above, because `setActiveTab()` (outer beforeEach) copies `readOnly`
+  // forward from whatever the previous test's tab was left with via
+  // `...real` -- pin a clean baseline here and reset after so later tests
+  // in this file can't inherit a stuck read-only flag from run order.
+  describe('Import: readOnly handling (ID8 fast-follow)', () => {
+    beforeEach(() => {
+      setActiveTab({ readOnly: false, projectOrigin: null });
+    });
+
+    afterEach(() => {
+      useTabStore.getState().setTabReadOnly(false);
+    });
+
+    it('importing a current-format file into a read-only tab clears readOnly and Save is no longer refused', async () => {
+      mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+      setActiveTab({ readOnly: true, projectOrigin: null });
+      render(<Toolbar />);
+
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 1 });
+      const file = new File([payload], 'current.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      await waitFor(() => expect(useTabStore.getState().tabs[0].readOnly).toBe(false));
+
+      // Save is no longer refused: saveGraph is actually reached (the
+      // read-only guard in saveActiveGraph would otherwise short-circuit
+      // before ever calling it).
+      fireEvent.click(screen.getByText('File'));
+      fireEvent.click(screen.getByText('Save'));
+      await resolveDialog('now-editable');
+      await waitFor(() =>
+        expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'now-editable' })),
+      );
+    });
+
+    it('importing a current-format file into an already-editable tab leaves readOnly false', async () => {
+      render(<Toolbar />);
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 1 });
+      const file = new File([payload], 'current.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+      await waitFor(() => expect(fileInput().value).toBe(''));
+      expect(useTabStore.getState().tabs[0].readOnly).toBe(false);
+    });
+
+    it('importing a newer-format file into a normal tab sets readOnly and toasts a warning', async () => {
+      render(<Toolbar />);
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 999 });
+      const file = new File([payload], 'newer.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      await waitFor(() => expect(useTabStore.getState().tabs[0].readOnly).toBe(true));
+      expect(
+        useToastStore.getState().toasts.some((t) => t.type === 'warning' && t.message.includes('v999')),
+      ).toBe(true);
+    });
   });
 
   // ── Export menu actions ─────────────────────────────────────────────

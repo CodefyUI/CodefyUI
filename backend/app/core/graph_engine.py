@@ -29,14 +29,37 @@ class GraphValidationError(Exception):
     pass
 
 
+def build_preset_fallback(presets: Any) -> dict:
+    """Map preset_name -> PresetDefinition for graph-embedded presets (ID6).
+
+    Accepts PresetDefinition objects or plain dicts (json.loads output);
+    malformed entries are skipped so a stray preset never breaks a run.
+    """
+    from ..schemas.models import PresetDefinition
+
+    out: dict[str, Any] = {}
+    for p in presets or []:
+        try:
+            model = p if isinstance(p, PresetDefinition) else PresetDefinition(**p)
+        except Exception:
+            continue
+        out[model.preset_name] = model
+    return out
+
+
 def expand_presets(
     nodes: list[dict],
     edges: list[dict],
+    preset_fallback: dict | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Expand preset nodes into their sub-graph of real nodes.
 
     Returns (expanded_nodes, expanded_edges, internal_to_preset_map).
     internal_to_preset_map maps internal node IDs to the preset node ID they came from.
+
+    ``preset_fallback`` (ID6) is consulted when the server's preset
+    registry does not know the preset name -- lets a graph carrying its
+    own ``presets[]`` expand on a machine whose registry lacks it.
     """
     from .preset_registry import preset_registry
 
@@ -51,7 +74,7 @@ def expand_presets(
             continue
 
         preset_name = node_type[len("preset:"):]
-        preset = preset_registry.get(preset_name)
+        preset = preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)
         if not preset:
             raise GraphValidationError(f"Unknown preset: {preset_name}")
 
@@ -117,8 +140,17 @@ def expand_presets(
     return expanded_nodes, expanded_edges, internal_to_preset
 
 
-def validate_graph(nodes: list[dict], edges: list[dict]) -> list[str]:
-    """Validate a graph definition. Returns list of errors (empty = valid)."""
+def validate_graph(
+    nodes: list[dict],
+    edges: list[dict],
+    preset_fallback: dict | None = None,
+) -> list[str]:
+    """Validate a graph definition. Returns list of errors (empty = valid).
+
+    ``preset_fallback`` (ID6) lets a graph-embedded preset (one the
+    server's registry does not know) validate as present -- see
+    ``build_preset_fallback``.
+    """
     errors: list[str] = []
     node_map = {n["id"]: n for n in nodes}
 
@@ -133,7 +165,7 @@ def validate_graph(nodes: list[dict], edges: list[dict]) -> list[str]:
         # Preset nodes are expanded at execution time; validate they exist in preset registry
         if node_type.startswith("preset:"):
             preset_name = node_type[len("preset:"):]
-            if not preset_registry.get(preset_name):
+            if not (preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)):
                 errors.append(f"Unknown preset: {preset_name} (node {node['id']})")
             else:
                 preset_node_ids.add(node["id"])
@@ -407,6 +439,7 @@ async def execute_graph(
     run_id: str | None = None,
     output_store: "RunOutputStore | None" = None,
     record_outputs: bool = False,
+    preset_fallback: dict | None = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -425,6 +458,8 @@ async def execute_graph(
             is True, each node's full output is written under ``run_id``.
         record_outputs: When True, capture every node's output into
             ``output_store`` for later retrieval via the REST endpoint.
+        preset_fallback: Graph-embedded preset definitions (ID6), consulted
+            when the server's preset registry lacks a referenced preset.
     """
     from .execution_context import CancellationError
 
@@ -435,7 +470,8 @@ async def execute_graph(
         has_preset = any(n.get("type", "").startswith("preset:") for n in expanded_nodes)
         if not has_preset:
             break
-        expanded_nodes, expanded_edges, mapping = expand_presets(expanded_nodes, expanded_edges)
+        expanded_nodes, expanded_edges, mapping = expand_presets(
+            expanded_nodes, expanded_edges, preset_fallback=preset_fallback)
         internal_to_preset.update(mapping)
 
     # Filter to the executable subgraph: the nodes reachable from any entry
@@ -481,7 +517,7 @@ async def execute_graph(
         if e["source"] in executable_ids and e["target"] in executable_ids
     ]
 
-    errors = validate_graph(expanded_nodes, expanded_edges)
+    errors = validate_graph(expanded_nodes, expanded_edges, preset_fallback=preset_fallback)
     if errors:
         raise GraphValidationError("; ".join(errors))
 

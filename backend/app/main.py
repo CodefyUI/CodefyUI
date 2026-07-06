@@ -168,6 +168,16 @@ async def lifespan(app: FastAPI):
         json_format=settings.LOG_JSON,
     )
 
+    # Project .env: execution-time secrets only, os.environ.setdefault
+    # semantics, loaded before node/plugin discovery. CODEFYUI_* config keys
+    # here are IGNORED (settings already materialized at import) -- spec 7.3.
+    if settings.PROJECT_DIR is not None:
+        from .core.dotenv import load_dotenv_file
+        env_applied = load_dotenv_file(settings.PROJECT_DIR / ".env")
+        if env_applied:
+            # Log the COUNT only, never the values.
+            logger.info("Loaded %d value(s) from project .env", env_applied)
+
     # Populate Host whitelist and persist the session token before any handler
     # can fire. Frontend bootstrap reads the token via /api/auth/bootstrap; CLI
     # tools (e.g. `cdui plugin install` → POST /api/plugins/reload) read it
@@ -223,6 +233,22 @@ async def lifespan(app: FastAPI):
     logger.info("Discovered %d presets", preset_count)
     for name in sorted(preset_registry.presets.keys()):
         logger.debug("  * %s", name)
+
+    # ── Project transparency (spec 7.4) ────────────────────────────────
+    if settings.PROJECT_DIR is not None:
+        from .core.project import check_stale_pins, git_provenance
+        commit, dirty = git_provenance(settings.PROJECT_DIR)
+        if commit is None:
+            logger.info("Project: %s (not a repo)", settings.PROJECT_DIR)
+        else:
+            logger.info("Project: %s (git %s%s)", settings.PROJECT_DIR,
+                        commit[:7], " dirty" if dirty else "")
+        stale = check_stale_pins(settings.PROJECT_DIR, lockfile)
+        if stale:
+            # ONE warning; no auto-install at startup (spec 7.4).
+            logger.warning(
+                "Project plugin pins missing/mismatched: %s -- run "
+                "`cdui project restore`", ", ".join(sorted(stale)))
 
     # Mount each installed plugin's assets/ dir so the frontend can fetch
     # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
@@ -363,11 +389,19 @@ app.include_router(ws_execution.router)
 
 @app.get("/api/health")
 async def health():
-    return {
+    body = {
         "status": "ok",
         "nodes_loaded": len(registry.nodes),
         "presets_loaded": len(preset_registry.presets),
     }
+    if settings.PROJECT_DIR is not None:
+        # Additive (spec ID4), project mode ONLY: the refactor guard requires
+        # non-project responses to stay byte-for-byte identical, so this key
+        # is omitted entirely (not even null) when PROJECT_DIR is unset.
+        # The frontend (Tasks 12/13) and the Task 15 publish CLI's mismatch
+        # refusal both read this to detect project mode + identity.
+        body["project"] = str(settings.PROJECT_DIR)
+    return body
 
 
 @app.get("/api/auth/bootstrap")

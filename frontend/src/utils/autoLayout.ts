@@ -323,3 +323,25 @@ export function autoLayout(
     };
   });
 }
+
+/**
+ * Deterministically place UNBOUND note nodes in an offset column. dagre skips
+ * notes (they have no edges), so a `layout_missing` load would otherwise leave
+ * them stacked at the origin. Bound notes are already repositioned relative to
+ * their parent by autoLayout. Ordering is by node id for stability (spec 6.3).
+ */
+export function stackUnboundNotes(nodes: Node[]): Node[] {
+  const NOTE_X = -320;
+  const NOTE_GAP = 140;
+  const unbound = nodes
+    .filter((n) => n.type === 'noteNode' && !(n.data as { boundToNodeId?: string }).boundToNodeId)
+    .map((n) => n.id)
+    .sort();
+  const order = new Map(unbound.map((id, i) => [id, i]));
+  return nodes.map((n) => {
+    if (n.type !== 'noteNode') return n;
+    const idx = order.get(n.id);
+    if (idx === undefined) return n; // bound note -> untouched
+    return { ...n, position: { x: NOTE_X, y: idx * NOTE_GAP } };
+  });
+}

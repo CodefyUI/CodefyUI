@@ -1,0 +1,67 @@
+"""freeze writes github pins (skipping linked/local); restore installs each pin
+BY ITS SHA, no-confirm, skipping already-satisfied pins (spec ID11)."""
+
+import argparse
+
+import project
+from app.core.plugin_loader import tomllib
+
+
+def _init(tmp_path):
+    target = tmp_path / "svc"
+    project.cmd_init(argparse.Namespace(dir=str(target), adopt=None, force=False))
+    return target
+
+
+def test_freeze_writes_github_pins_skips_local_and_builtin(tmp_path, monkeypatch):
+    proj = _init(tmp_path)
+    fake_lock = {"schema": 1, "plugins": {
+        "pack-a": {"source_kind": "github_url",
+                   "url": "https://github.com/o/pack-a", "ref": "v1.2",
+                   "sha": "a" * 40, "enabled": True},
+        "linked": {"source_kind": "local", "path": "/abs/linked",
+                   "enabled": True},
+        "builtin-pack": {"source_kind": "builtin", "source": "builtin-pack"},
+    }}
+    monkeypatch.setattr(project, "load_lockfile", lambda: fake_lock)
+    assert project.cmd_freeze(argparse.Namespace(dir=str(proj))) == 0
+    manifest = tomllib.loads(
+        (proj / "codefyui.project.toml").read_text(encoding="utf-8"))
+    assert manifest["plugins"]["pack-a"]["sha"] == "a" * 40
+    assert manifest["plugins"]["pack-a"]["ref"] == "v1.2"
+    assert "linked" not in manifest["plugins"]       # local skipped (warned)
+    assert "builtin-pack" not in manifest["plugins"]  # builtins not pinned
+
+
+def test_restore_installs_pin_by_sha(tmp_path, monkeypatch):
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\npack-a = { url = "https://github.com/o/pack-a", '
+        'ref = "v1.2", sha = "' + "b" * 40 + '" }\n', encoding="utf-8")
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    calls = []
+
+    def fake_install(owner, repo, ref, args, lockfile):
+        calls.append((owner, repo, ref, args.pinned_sha, args.no_confirm))
+        return 0
+
+    monkeypatch.setattr(project, "_install_github", fake_install)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
+    assert calls == [("o", "pack-a", "v1.2", "b" * 40, True)]
+
+
+def test_restore_skips_already_satisfied(tmp_path, monkeypatch):
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\npack-a = { url = "https://github.com/o/pack-a", '
+        'ref = "v1.2", sha = "' + "c" * 40 + '" }\n', encoding="utf-8")
+    monkeypatch.setattr(project, "load_lockfile", lambda: {"schema": 1, "plugins": {
+        "pack-a": {"source_kind": "github_url", "sha": "c" * 40}}})
+    called = []
+    monkeypatch.setattr(project, "_install_github",
+                        lambda *a, **k: called.append(1) or 0)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
+    assert called == []  # already at the pinned sha -> no reinstall
