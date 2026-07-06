@@ -22,6 +22,8 @@ All management calls below use the editor session token (`X-CodefyUI-Token`, obt
 POST /api/apps/{slug}/publish        (session token)
 body: {"graph": "<saved name>", "note": "optional", "create": false}
       (optional "record_io": true|false — omitted inherits the app's current setting; see below)
+      (optional "git_commit": "<7-40 hex>", "git_dirty": true|false — publish provenance;
+       normally set for you by `cdui project publish`)
 ```
 
 - `slug` is the stable public name: `^[a-z][a-z0-9-]{0,63}$`, chosen by you, independent of the graph name — renaming a graph never breaks a published URL.
@@ -30,7 +32,8 @@ body: {"graph": "<saved name>", "note": "optional", "create": false}
 - `note` is optional, immutable version metadata, echoed in the versions list.
 - Publish runs the exact `/run` pre-flight first: a graph that `POST /api/graph/run/{name}` would refuse (409 `invalid_contract` / `no_entry_points` / `untriggered_input` / `unreachable_output` / `invalid_graph`) cannot be published either.
 - Publish also rejects (409 `secret_in_graph`) a graph whose saved file still holds a non-empty `SECRET`-typed parameter (for example an LLMChat API key), naming the offending node and param. **Graphs never persist secrets** — the editor masks `SECRET` fields and drops them on save/export, and `POST /api/graph/save` scrubs them server-side, so this pre-flight only ever fires on a hand-edited file. Keep API keys in the environment (`CODEFYUI_OPENAI_API_KEY` / `OPENAI_API_KEY`, `CODEFYUI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY`) instead.
-- Success: `{"slug", "version", "active": true, "created", "graph_name", "note"}`.
+- Success: `{"slug", "version", "active": true, "created", "graph_name", "note", "git_commit", "git_dirty"}`.
+- **Provenance.** `git_commit` (validated `^[0-9a-f]{7,40}$`; a bad value is 422 `invalid_git_commit`) and `git_dirty` are recorded on the version. `cdui project publish` fills them from `git rev-parse HEAD` + `git status --porcelain` and warns loudly when the tree is dirty. They surface in `GET /api/apps/{slug}/versions` and as `x-codefyui-git-commit` / `x-codefyui-git-dirty` in the per-app OpenAPI `info` block. See [Project directories](./project-directories.md).
 
 **Publish activates immediately.** There is no staging path in v1: canvas Run plus the identical pre-flight IS the verification story. If the graph runs from the Run button and `/run` accepts it, the published version serves that same behavior.
 
@@ -46,7 +49,7 @@ Managing versions:
 
 ```text
 GET    /api/apps                       -> [{slug, graph_name, active_version, versions_count, record_io, ...}]
-GET    /api/apps/{slug}/versions       -> [{version, source_graph_name, note, created_at, active}]
+GET    /api/apps/{slug}/versions       -> [{version, source_graph_name, note, git_commit, git_dirty, created_at, active}]
 POST   /api/apps/{slug}/activate       body {"version": n} — point the slug at ANY existing version
 POST   /api/apps/{slug}/unpublish      -> active_version = null; versions and runs are kept
 PATCH  /api/apps/{slug}                body {"record_io": bool} — flips run-recording, no republish
@@ -134,7 +137,7 @@ Retention: `CODEFYUI_RUNS_RETENTION_DAYS` defaults to **0 = keep forever**. When
 GET /api/apps/{slug}/openapi.json      (API key or session token)
 ```
 
-A complete, standalone OpenAPI 3.1 document for the ACTIVE version — importable into Swagger UI, Postman, or openapi-generator as-is. It carries the typed input schema derived from the graph's contract, the 9-key envelope schema, the bearer security scheme, and an `x-codefyui-curl` object with ready-to-paste `powershell` and `bash` invoke commands. JSON only; there is no generated HTML page.
+A complete, standalone OpenAPI 3.1 document for the ACTIVE version — importable into Swagger UI, Postman, or openapi-generator as-is. It carries the typed input schema derived from the graph's contract, the 9-key envelope schema, the bearer security scheme, and an `x-codefyui-curl` object with ready-to-paste `powershell` and `bash` invoke commands. JSON only; there is no generated HTML page. When the active version was published with provenance, the OpenAPI `info` block also carries `x-codefyui-git-commit` and `x-codefyui-git-dirty`.
 
 ## 6. Serving on your LAN
 

@@ -6,6 +6,13 @@ description: Keep your graph JSON in a git service repo, validate every graph in
 
 # Version Control Your Graphs
 
+:::tip First-class project directories now exist
+This page describes an older flat-directory recipe whose shape does **not**
+forward-map to the split logic/layout format. For new services use
+[Project directories](./project-directories.md); migrate an existing graphs dir
+in one command: `cdui project init my-service --adopt /path/to/my-graphs`.
+:::
+
 CodefyUI saves each graph as a plain JSON file, so graphs are a natural fit for git: you get history, review, and rollback for the pipelines you build. This page is a recipe for keeping your graphs in their own git repository, validating them in CI, and publishing from a versioned source.
 
 One catch up front: the default save location is **not** version-controlled. Saved graphs land in `backend/data/graphs/`, which the repo's own `.gitignore` excludes (`backend/data/graphs/*.json`, keeping only `.gitkeep`). To version your work you point CodefyUI's graph directory at a repo you own — the rest of this page shows how.
@@ -115,6 +122,8 @@ python run_graph.py /path/to/my-graphs/classifier.json --validate-only
 
 The runner lives inside the CodefyUI backend, and there is no standalone package on PyPI today, so the most reliable way to get it in a *separate* graphs repo is to check CodefyUI out alongside your repo at a pinned release tag and install its backend with uv (mirroring how CodefyUI's own CI installs itself). Installing the backend pulls the full runtime, including PyTorch, so the job is not featherweight — cache the venv or expect a few minutes on a cold run. This is the honest state today; a lightweight validate command is a natural future.
 
+The job below assumes this repo carries the project-directory layout (a `codefyui.project.toml` manifest plus `graphs/`/`layout/`) rather than a bare flat `*.json` folder, since `cdui project validate` needs that manifest -- see [Project directories](./project-directories.md) to migrate with `cdui project init <dir> --adopt <this-repo>`. Staying on the flat layout instead? Keep validating file-by-file with `run_graph.py` as shown above.
+
 ```yaml
 name: validate-graphs
 on: [push, pull_request]
@@ -144,18 +153,17 @@ jobs:
           uv venv
           uv pip install -e .
 
-      - name: Validate every graph
+      - name: Restore plugin pins, then validate the project
         run: |
-          status=0
-          for f in $(git ls-files '*.json'); do
-            echo "== validating $f =="
-            CodefyUI/backend/.venv/bin/python \
-              CodefyUI/backend/run_graph.py "$f" --validate-only || status=1
-          done
-          exit $status
+          cdui project restore .    # or: CodefyUI/backend/.venv/bin/python CodefyUI/scripts/dev.py project restore .
+          cdui project validate .   # runs the full publish pre-flight on every graph
 ```
 
-`git ls-files '*.json'` lists only the JSON files tracked in *your* graphs repo, so the loop skips the nested CodefyUI checkout automatically. Any single failure sets `status=1`, and the final `exit $status` fails the whole job.
+`cdui project validate .` validates every graph in the project through the same
+pre-flight the publish gate uses. It never hands `layout/*.layout.json` files
+to the validator, so there is no `*.json` glob to get wrong. Run
+`cdui project restore` first so plugin-provided nodes are installed before
+validation (CI order: restore, then validate).
 
 ## Publishing from a versioned graph
 
@@ -167,7 +175,7 @@ To tie a published version back to its source, put the graph's git commit hash i
 {"graph": "classifier", "create": true, "note": "git 1a2b3c4"}
 ```
 
-That gives you a trail from a running app version back to the exact commit it came from. First-class project directories and richer publish provenance are on the roadmap.
+That gives you a trail from a running app version back to the exact commit it came from -- or skip the manual `note` convention entirely: [Project directories](./project-directories.md) ship first-class publish provenance, where `cdui project publish` records the exact `git_commit`/`git_dirty` on every version automatically.
 
 ## Known rough edges
 
