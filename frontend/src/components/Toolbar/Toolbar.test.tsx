@@ -797,6 +797,70 @@ describe('Toolbar', () => {
     );
   });
 
+  // -- Import: readOnly handling (ID8 fast-follow, task 16 review Adjudication B) --
+  // handleImportFile previously never touched `readOnly`: importing an
+  // ordinary file into a tab that had loaded a too-new graph left it stuck
+  // read-only forever (over-blocking), while importing a NEWER-format file
+  // into a normal tab left it editable (the same lossy-copy hazard Ruling A
+  // documented for loads, but unguarded on the import path). Scoped in its
+  // own describe, like the sibling "Load: project origin stamping" block
+  // above, because `setActiveTab()` (outer beforeEach) copies `readOnly`
+  // forward from whatever the previous test's tab was left with via
+  // `...real` -- pin a clean baseline here and reset after so later tests
+  // in this file can't inherit a stuck read-only flag from run order.
+  describe('Import: readOnly handling (ID8 fast-follow)', () => {
+    beforeEach(() => {
+      setActiveTab({ readOnly: false, projectOrigin: null });
+    });
+
+    afterEach(() => {
+      useTabStore.getState().setTabReadOnly(false);
+    });
+
+    it('importing a current-format file into a read-only tab clears readOnly and Save is no longer refused', async () => {
+      mockedRest.saveGraph.mockResolvedValueOnce({} as never);
+      setActiveTab({ readOnly: true, projectOrigin: null });
+      render(<Toolbar />);
+
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 1 });
+      const file = new File([payload], 'current.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      await waitFor(() => expect(useTabStore.getState().tabs[0].readOnly).toBe(false));
+
+      // Save is no longer refused: saveGraph is actually reached (the
+      // read-only guard in saveActiveGraph would otherwise short-circuit
+      // before ever calling it).
+      fireEvent.click(screen.getByText('File'));
+      fireEvent.click(screen.getByText('Save'));
+      await resolveDialog('now-editable');
+      await waitFor(() =>
+        expect(mockedRest.saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'now-editable' })),
+      );
+    });
+
+    it('importing a current-format file into an already-editable tab leaves readOnly false', async () => {
+      render(<Toolbar />);
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 1 });
+      const file = new File([payload], 'current.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+      await waitFor(() => expect(fileInput().value).toBe(''));
+      expect(useTabStore.getState().tabs[0].readOnly).toBe(false);
+    });
+
+    it('importing a newer-format file into a normal tab sets readOnly and toasts a warning', async () => {
+      render(<Toolbar />);
+      const payload = JSON.stringify({ nodes: [], edges: [], format_version: 999 });
+      const file = new File([payload], 'newer.json', { type: 'application/json' });
+      fireEvent.change(fileInput(), { target: { files: [file] } });
+
+      await waitFor(() => expect(useTabStore.getState().tabs[0].readOnly).toBe(true));
+      expect(
+        useToastStore.getState().toasts.some((t) => t.type === 'warning' && t.message.includes('v999')),
+      ).toBe(true);
+    });
+  });
+
   // ── Export menu actions ─────────────────────────────────────────────
 
   it('Export JSON: empty canvas warns', () => {

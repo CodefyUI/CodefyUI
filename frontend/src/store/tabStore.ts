@@ -800,6 +800,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         currentGraphFile: null,
         segmentGroups: [],
         activeSegment: null,
+        // An empty graph is trivially current-format -- never leave a tab
+        // that became read-only from a newer-format load stuck refusing
+        // Save forever after Clear (ID8 fast-follow, task 16 review
+        // Adjudication B / Important finding 1).
+        readOnly: false,
       })),
     });
   },

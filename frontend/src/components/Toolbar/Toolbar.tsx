@@ -10,7 +10,7 @@ import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
-import { GRAPH_FORMAT_VERSION } from '../../utils/formatVersion';
+import { isFormatTooNew } from '../../utils/formatVersion';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -312,8 +312,7 @@ export function Toolbar() {
         setEdges(resolvedEdges);
         setDescription(typeof graphData.description === 'string' ? graphData.description : '');
         setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
-        const tooNew = typeof graphData.format_version === 'number'
-          && graphData.format_version > GRAPH_FORMAT_VERSION;
+        const tooNew = isFormatTooNew(graphData.format_version);
         useTabStore.getState().setTabReadOnly(tooNew);
         if (tooNew) {
           addToast(t('project.readOnly.loadNotice', { version: graphData.format_version }), 'warning');
@@ -360,6 +359,15 @@ export function Toolbar() {
           setEdges(resolvedEdges);
           setDescription(typeof data.description === 'string' ? data.description : '');
           setSegmentGroups(Array.isArray(data.segmentGroups) ? data.segmentGroups : []);
+          // Same format-version gate as handleLoadGraph (ID8 fast-follow):
+          // importing a newer-format file must open it read-only too, and
+          // importing an ordinary file into a previously read-only tab must
+          // clear the stale flag -- called unconditionally either way.
+          const tooNew = isFormatTooNew(data.format_version);
+          useTabStore.getState().setTabReadOnly(tooNew);
+          if (tooNew) {
+            addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
+          }
           // An imported file is a fresh, unsaved graph — not bound to any
           // saved file yet, so the next save always runs the overwrite check.
           setCurrentGraphFile(null);

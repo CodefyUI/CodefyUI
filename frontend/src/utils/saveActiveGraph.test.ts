@@ -92,4 +92,17 @@ describe('saveActiveGraph read-only guard (ID8)', () => {
     await saveActiveGraph();
     expect(saveGraph).not.toHaveBeenCalled();
   });
+
+  // ID8 fast-follow (task 16 review Adjudication B / Important finding 1):
+  // clear() must reset readOnly, otherwise a cleared (fresh, empty) graph is
+  // stuck refusing Save forever even though it is trivially current-format.
+  it('clear() resets readOnly so a subsequent save is no longer refused', async () => {
+    (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('fresh-after-clear');
+    useTabStore.getState().setTabReadOnly(true);
+
+    useTabStore.getState().clear();
+
+    await saveActiveGraph();
+    expect(saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'fresh-after-clear' }));
+  });
 });
