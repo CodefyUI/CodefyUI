@@ -33,6 +33,10 @@ class ParamType(str, Enum):
     MODEL_FILE = "model_file"
     IMAGE_FILE = "image_file"
     TENSOR_GRID = "tensor_grid"
+    # Session-only secret (e.g. an API key). The editor masks the input and
+    # never persists the value; the save endpoint and the publish pre-flight
+    # both scrub SECRET params to "" so saved graphs never contain secrets.
+    SECRET = "secret"
 
 
 @dataclass

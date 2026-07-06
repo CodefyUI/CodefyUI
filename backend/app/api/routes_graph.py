@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, validate_graph
 from ..core.node_registry import registry
+from ..core.secret_params import scrub_graph_secrets
 from ..schemas import GraphData, GraphValidationResponse
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -33,7 +34,11 @@ async def validate(graph: GraphData):
 async def save_graph(graph: GraphData):
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     path = _graph_path(graph.name)
-    path.write_text(json.dumps(graph.model_dump(), indent=2))
+    payload = graph.model_dump()
+    # Defense-in-depth: even if a client bypasses the editor (which already
+    # blanks SECRET params before sending), never write a secret to disk.
+    scrub_graph_secrets(payload.get("nodes", []))
+    path.write_text(json.dumps(payload, indent=2))
     return {"message": "Graph saved", "path": str(path)}
 
 
@@ -67,6 +72,13 @@ async def export_graph(graph: GraphData):
 
     nodes = [n.model_dump() for n in graph.nodes]
     edges = [e.model_dump() for e in graph.edges]
+
+    # M4: parity with /save — never echo a SECRET param value into exported
+    # source. codegen emits raw params in a comment for node types without a
+    # template (e.g. LLMChat), so scrub before validation/expansion/codegen.
+    # Scrubbing pre-expansion also blanks any secret embedded in a preset
+    # node's internalParams before expand_presets injects it downstream.
+    scrub_graph_secrets(nodes)
 
     # Validate the user-authored graph (presets are validated against the
     # preset registry rather than expanded here).

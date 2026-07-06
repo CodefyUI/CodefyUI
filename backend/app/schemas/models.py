@@ -54,12 +54,24 @@ class EdgeData(BaseModel):
     type: Literal["data", "trigger"] = "data"
 
 
+class SegmentGroupData(BaseModel):
+    """Teaching Inspector segment (head/tail node span). Mirrors the
+    frontend ``SegmentGroup`` shape so save/load round-trips it verbatim
+    instead of silently dropping it."""
+    id: str
+    headNodeId: str
+    tailNodeId: str
+
+
 class GraphData(BaseModel):
     nodes: list[NodeData]
     edges: list[EdgeData]
     name: str = "Untitled"
     description: str = ""
     presets: list[PresetDefinition] = []
+    # Persisted so the Teaching Inspector's segment overlays survive a
+    # save/load round-trip. Optional; older graph files simply omit it.
+    segmentGroups: list[SegmentGroupData] = []
 
 
 class GraphValidationResponse(BaseModel):

@@ -143,6 +143,46 @@ describe('BaseNode', () => {
     expect(screen.getByText('128')).toBeTruthy();
   });
 
+  it('masks a non-empty SECRET param value on the node card', () => {
+    const def = makeDef({
+      params: [
+        {
+          name: 'openai_api_key',
+          param_type: 'secret',
+          default: '',
+          description: '',
+          options: [],
+          min_value: null,
+          max_value: null,
+        },
+      ],
+    });
+    renderBody(
+      baseData({ definition: def, params: { openai_api_key: 'sk-visible-leak' } }),
+    );
+    expect(screen.queryByText('sk-visible-leak')).toBeNull();
+    expect(screen.getByText('••••••••')).toBeTruthy();
+    expect(screen.getByTitle('••••••••')).toBeTruthy();
+  });
+
+  it('renders an empty SECRET param without mask dots', () => {
+    const def = makeDef({
+      params: [
+        {
+          name: 'openai_api_key',
+          param_type: 'secret',
+          default: '',
+          description: '',
+          options: [],
+          min_value: null,
+          max_value: null,
+        },
+      ],
+    });
+    renderBody(baseData({ definition: def, params: {} }));
+    expect(screen.queryByText('••••••••')).toBeNull();
+  });
+
   it('falls back to Utility category color when definition has no category', () => {
     // def.category undefined → category 'Utility'; an unknown category string
     // would exercise the `?? '#607D8B'` fallback.

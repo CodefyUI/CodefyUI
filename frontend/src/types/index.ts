@@ -9,7 +9,7 @@ export interface PortDefinition {
 
 export interface ParamDefinition {
   name: string;
-  param_type: 'int' | 'float' | 'string' | 'bool' | 'select' | 'model_file' | 'image_file' | 'tensor_grid';
+  param_type: 'int' | 'float' | 'string' | 'bool' | 'select' | 'model_file' | 'image_file' | 'tensor_grid' | 'secret';
   default: any;
   description: string;
   options: string[];

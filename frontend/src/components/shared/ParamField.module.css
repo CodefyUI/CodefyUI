@@ -96,3 +96,12 @@
   color: #f44336;
   margin-top: 2px;
 }
+
+/* Neutral helper text (e.g. the SECRET-param session-only notice). */
+.hint {
+  display: block;
+  font-size: 0.6875rem;
+  color: #888;
+  margin-top: 3px;
+  line-height: 1.35;
+}

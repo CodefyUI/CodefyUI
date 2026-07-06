@@ -3,8 +3,10 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from ..config import settings
+from ..core.node_base import ParamType
 from ..core.node_registry import registry as node_registry
 from ..core.preset_registry import preset_registry
+from ..core.secret_params import scrub_graph_secrets
 from ..schemas import CreatePresetRequest, PresetDefinition
 
 router = APIRouter(prefix="/api/presets", tags=["presets"])
@@ -34,6 +36,13 @@ async def create_preset(request: CreatePresetRequest):
 
     if preset_registry.get(request.name):
         raise HTTPException(status_code=409, detail=f"Preset '{request.name}' already exists")
+
+    # I3: never persist a SECRET param value into a preset definition file.
+    # Blank secrets in the incoming graph (both data.params and any
+    # preset-embedded data.internalParams) before any of it is copied into
+    # the stored preset. C1 (below) additionally keeps SECRET params out of
+    # the exposed-params schema; this guards the raw VALUES.
+    scrub_graph_secrets(request.nodes)
 
     # Create short ID mapping for cleaner JSON
     id_map: dict[str, str] = {}
@@ -106,6 +115,13 @@ async def create_preset(request: CreatePresetRequest):
 
         # All params → exposed params (grouped by node type)
         for param in node_cls.define_params():
+            # C1: never expose a SECRET param (API key) as a preset param. A
+            # masked field in the preset config modal would let a user type a
+            # key that round-trips into the preset node's internalParams and
+            # leaks to disk. The inner node keeps its env-var fallback at
+            # runtime, so the preset still works with env keys.
+            if param.param_type == ParamType.SECRET:
+                continue
             exposed_params.append({
                 "internal_node": node["id"],
                 "param_name": param.name,

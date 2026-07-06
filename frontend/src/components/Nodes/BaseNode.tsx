@@ -244,14 +244,21 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             .filter((p) => isParamVisible(p, data.params))
             .map((p) => {
               const val = data.params[p.name] ?? p.default;
+              // SECRET params never render their value on the node card —
+              // the canvas is visible during screen shares; only the
+              // masked ParamField may hold the session value.
+              const display =
+                p.param_type === 'secret' && String(val ?? '') !== ''
+                  ? '••••••••'
+                  : String(val);
               return (
                 <div key={p.name} className={styles.paramRow}>
                   <span className={styles.paramName}>{p.name}</span>
                   <span
                     className={styles.paramValue}
-                    title={String(val)}
+                    title={display}
                   >
-                    {String(val)}
+                    {display}
                   </span>
                 </div>
               );

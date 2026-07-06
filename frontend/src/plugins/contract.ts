@@ -31,7 +31,7 @@ export interface ParamDefinition {
   name: string;
   param_type:
     | 'int' | 'float' | 'string' | 'bool'
-    | 'select' | 'model_file' | 'image_file' | 'tensor_grid';
+    | 'select' | 'model_file' | 'image_file' | 'tensor_grid' | 'secret';
   default: unknown;
   description: string;
   options: string[];

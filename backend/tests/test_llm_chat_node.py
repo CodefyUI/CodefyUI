@@ -46,6 +46,13 @@ def test_node_metadata():
     assert provider_param.param_type == ParamType.SELECT
     assert provider_param.options == ["ChatGPT API", "Codex", "Claude API", "Ollama"]
 
+    # Both API-key params are SECRET so their values are never persisted to a
+    # saved graph (scrubbed by the save endpoint and the publish pre-flight).
+    key_params = {p.name: p for p in LLMChatNode.define_params()
+                  if p.name.endswith("_api_key")}
+    assert key_params["openai_api_key"].param_type == ParamType.SECRET
+    assert key_params["anthropic_api_key"].param_type == ParamType.SECRET
+
 
 def test_provider_aliases():
     assert _normalize_provider("ChatGPT API") == "openai"

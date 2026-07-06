@@ -489,6 +489,19 @@ describe('clear', () => {
     // addNode pushed one snapshot, clear() pushed a second.
     expect(tab.undoStack.length).toBe(2);
   });
+
+  it('resets graph metadata (description, currentGraphFile, segments) so a cleared canvas is unbound', () => {
+    store().setDescription('bound graph');
+    store().setCurrentGraphFile('bound_file');
+    store().addSegmentGroup({ id: 's1', headNodeId: 'h', tailNodeId: 't' });
+    store().setActiveSegment({ id: 's1', headNodeId: 'h', tailNodeId: 't' });
+    store().clear();
+    const tab = activeTab();
+    expect(tab.description).toBe('');
+    expect(tab.currentGraphFile).toBeNull();
+    expect(tab.segmentGroups).toEqual([]);
+    expect(tab.activeSegment).toBeNull();
+  });
 });
 
 describe('getSerializedGraph', () => {
@@ -562,6 +575,110 @@ describe('getSerializedGraph', () => {
     const g = store().getSerializedGraph();
     expect(g.presets).toEqual([]);
   });
+
+  it('rounds node positions to integers (regular + note nodes)', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 12.7, y: -3.2 }, data: { label: 'A', type: 'Add', params: {} } },
+    ] as any);
+    store().addNote('text', { x: 5.6, y: 9.1 });
+    const g = store().getSerializedGraph();
+    const regular = g.nodes.find((n) => n.id === 'n1')!;
+    const note = g.nodes.find((n) => n.type === 'note')!;
+    expect(regular.position).toEqual({ x: 13, y: -3 });
+    expect(note.position).toEqual({ x: 6, y: 9 });
+  });
+
+  it('strips SECRET-typed param values to "" (using the node definition)', () => {
+    const definition = {
+      node_name: 'LLMChat', category: 'LLM', description: '', inputs: [], outputs: [],
+      params: [
+        { name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+        { name: 'model', param_type: 'string', default: '', description: '', options: [], min_value: null, max_value: null },
+      ],
+    };
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-secret', model: 'gpt-5.2' }, definition } },
+    ] as any);
+    const g = store().getSerializedGraph();
+    expect(g.nodes[0].data.params.openai_api_key).toBe('');   // secret blanked
+    expect(g.nodes[0].data.params.model).toBe('gpt-5.2');     // non-secret kept
+  });
+
+  it('leaves params untouched when the node has no secret-typed params', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 1, y: 2 }, data: { label: 'A', type: 'Dataset', params: { p: 1 } } },
+    ] as any);
+    const g = store().getSerializedGraph();
+    // Identity preserved (no definition -> nothing to strip).
+    expect(g.nodes[0].data.params).toEqual({ p: 1 });
+  });
+
+  it('strips secret-typed values from a preset node internalParams (old preset)', () => {
+    // An OLD preset (created before secrets were withheld) exposes a secret
+    // param, so its param_def.param_type === "secret" pins the inner slot.
+    const preset = makePreset({
+      exposed_params: [
+        {
+          internal_node: 'inner1', param_name: 'api_key',
+          display_name: 'Dataset - api_key', group: 'Dataset',
+          param_def: { name: 'api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+        },
+        {
+          internal_node: 'inner1', param_name: 'a',
+          display_name: 'Dataset - a', group: 'Dataset',
+          param_def: { name: 'a', param_type: 'int', default: 1, description: '', options: [], min_value: null, max_value: null },
+        },
+      ],
+    });
+    store().addPresetNode(preset, { x: 0, y: 0 });
+    const nodeId = activeTab().nodes[0].id;
+    store().updatePresetInternalParam(nodeId, 'inner1', 'api_key', 'sk-typed-secret');
+    const g = store().getSerializedGraph();
+    const internal = g.nodes[0].data.internalParams!;
+    expect(internal.inner1.api_key).toBe('');   // secret blanked
+    expect(internal.inner1.a).toBe(1);          // non-secret override kept
+    expect(internal.inner2).toEqual({ b: 2 });  // sibling inner untouched
+  });
+
+  it('rounds note boundOffset and width/height in serialization', () => {
+    store().setNodes([
+      { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: {
+        label: 'Note', type: 'note', params: {}, noteKind: 'text', noteContent: '', noteColor: '#fff',
+        boundToNodeId: 'x', boundOffset: { x: 12.7, y: -3.2 }, noteWidth: 200.6, noteHeight: 149.4,
+      } },
+    ] as any);
+    const g = store().getSerializedGraph();
+    const note = g.nodes[0] as any;
+    expect(note.data.boundOffset).toEqual({ x: 13, y: -3 });
+    expect(note.data.noteWidth).toBe(201);
+    expect(note.data.noteHeight).toBe(149);
+  });
+});
+
+// ── graph metadata actions (description / currentGraphFile / segmentGroups) ──
+
+describe('graph metadata actions', () => {
+  beforeEach(resetToSingleTab);
+
+  it('setDescription updates the active tab description', () => {
+    expect(activeTab().description).toBe('');
+    store().setDescription('an important graph');
+    expect(activeTab().description).toBe('an important graph');
+  });
+
+  it('setCurrentGraphFile binds and unbinds the saved-graph file', () => {
+    expect(activeTab().currentGraphFile).toBeNull();
+    store().setCurrentGraphFile('my_graph');
+    expect(activeTab().currentGraphFile).toBe('my_graph');
+    store().setCurrentGraphFile(null);
+    expect(activeTab().currentGraphFile).toBeNull();
+  });
+
+  it('setSegmentGroups replaces the whole segmentGroups array', () => {
+    store().addSegmentGroup({ id: 'g0', headNodeId: 'x', tailNodeId: 'y' });
+    store().setSegmentGroups([{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }]);
+    expect(activeTab().segmentGroups).toEqual([{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }]);
+  });
 });
 
 // ── deleteNode / duplicateNode / renameNode ──────────────────────────────────
@@ -617,6 +734,35 @@ describe('deleteNode', () => {
     store().deleteNode('comp');
     const note = activeTab().nodes.find((n) => n.id === 'note')!;
     expect(note.data.boundToNodeId).toBe('other');
+  });
+
+  it('prunes segment groups (and a dangling active segment) referencing the deleted node', () => {
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'Add', params: {} } },
+      { id: 'b', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'Add', params: {} } },
+      { id: 'c', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'C', type: 'Add', params: {} } },
+    ] as any);
+    store().addSegmentGroup({ id: 's1', headNodeId: 'a', tailNodeId: 'b' }); // references a
+    store().addSegmentGroup({ id: 's2', headNodeId: 'b', tailNodeId: 'c' }); // does not
+    store().setActiveSegment({ id: 's1', headNodeId: 'a', tailNodeId: 'b' });
+    store().deleteNode('a');
+    const tab = activeTab();
+    expect(tab.segmentGroups.map((s) => s.id)).toEqual(['s2']);
+    expect(tab.activeSegment).toBeNull();
+  });
+
+  it('keeps segment groups + active segment when the deleted node is unrelated', () => {
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'Add', params: {} } },
+      { id: 'b', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'Add', params: {} } },
+      { id: 'z', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'Z', type: 'Add', params: {} } },
+    ] as any);
+    store().addSegmentGroup({ id: 's1', headNodeId: 'a', tailNodeId: 'b' });
+    store().setActiveSegment({ id: 's1', headNodeId: 'a', tailNodeId: 'b' });
+    store().deleteNode('z');
+    const tab = activeTab();
+    expect(tab.segmentGroups.map((s) => s.id)).toEqual(['s1']);
+    expect(tab.activeSegment?.id).toBe('s1');
   });
 });
 
@@ -1584,6 +1730,48 @@ describe('persistence (module reload)', () => {
       expect(raw).toBeTruthy();
       const data = JSON.parse(raw!);
       expect(data.tabs.some((t: { name: string }) => t.name === 'Persisted')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('saveTabs strips SECRET values (params + preset internalParams) before persisting', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import('./tabStore');
+      const llmDef = {
+        node_name: 'LLMChat', category: 'LLM', description: '', inputs: [], outputs: [],
+        params: [{ name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null }],
+      };
+      const presetDef = {
+        preset_name: 'X', category: 'c', description: '', tags: [],
+        nodes: [{ id: 'inner', type: 'LLMChat', params: {} }], edges: [],
+        exposed_inputs: [], exposed_outputs: [],
+        exposed_params: [{
+          internal_node: 'inner', param_name: 'openai_api_key', display_name: 'k', group: 'g',
+          param_def: { name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null },
+        }],
+      };
+      mod.useTabStore.getState().setNodes([
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'LLM', type: 'LLMChat', params: { openai_api_key: 'sk-in-storage', model: 'gpt-5.2' }, definition: llmDef } },
+        { id: 'plain', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'D', type: 'Dataset', params: { p: 1 } } },
+        { id: 'p1', type: 'presetNode', position: { x: 0, y: 0 }, data: { label: 'P', type: 'preset:X', params: {}, isPreset: true, presetDefinition: presetDef, internalParams: { inner: { openai_api_key: 'sk-preset-in-storage' } } } },
+      ] as any);
+      vi.advanceTimersByTime(300);
+      const raw = localStorage.getItem(STORAGE_KEY)!;
+      expect(raw).toBeTruthy();
+      // No secret value survives to disk.
+      expect(raw).not.toContain('sk-in-storage');
+      expect(raw).not.toContain('sk-preset-in-storage');
+      // Structure preserved: blanked keys present but empty, non-secrets kept.
+      const persistedNodes = JSON.parse(raw).tabs[0].nodes;
+      const llm = persistedNodes.find((n: any) => n.id === 'n1');
+      expect(llm.data.params.openai_api_key).toBe('');
+      expect(llm.data.params.model).toBe('gpt-5.2');
+      const plain = persistedNodes.find((n: any) => n.id === 'plain');
+      expect(plain.data.params).toEqual({ p: 1 });
+      const preset = persistedNodes.find((n: any) => n.id === 'p1');
+      expect(preset.data.internalParams.inner.openai_api_key).toBe('');
     } finally {
       vi.useRealTimers();
     }

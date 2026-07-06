@@ -18,6 +18,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.save.prompt': '請輸入圖表名稱：',
   'toolbar.save.success': '圖表「{name}」儲存成功。',
   'toolbar.save.fail': '儲存失敗：{error}',
+  'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
   'toolbar.load': '載入',
   'toolbar.load.title': '載入已儲存的圖表',
   'toolbar.load.fail': '載入失敗：{error}',
@@ -202,6 +203,7 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.selectFile': '-- 選擇檔案 --',
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
+  'paramField.secretHint': '僅本次工作階段有效，存檔時會清除。建議改用環境變數。',
 
   // Grid Snap
   'toolbar.gridSnap.on': '吸附 ON',

@@ -19,6 +19,7 @@ from .models import (
     RunEnvelope,
     RunError,
     RunTiming,
+    SegmentGroupData,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "RunEnvelope",
     "RunError",
     "RunTiming",
+    "SegmentGroupData",
 ]

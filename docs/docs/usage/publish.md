@@ -29,6 +29,7 @@ body: {"graph": "<saved name>", "note": "optional", "create": false}
 - Publishing to an existing slug appends the next version — that IS the re-publish path.
 - `note` is optional, immutable version metadata, echoed in the versions list.
 - Publish runs the exact `/run` pre-flight first: a graph that `POST /api/graph/run/{name}` would refuse (409 `invalid_contract` / `no_entry_points` / `untriggered_input` / `unreachable_output` / `invalid_graph`) cannot be published either.
+- Publish also rejects (409 `secret_in_graph`) a graph whose saved file still holds a non-empty `SECRET`-typed parameter (for example an LLMChat API key), naming the offending node and param. **Graphs never persist secrets** — the editor masks `SECRET` fields and drops them on save/export, and `POST /api/graph/save` scrubs them server-side, so this pre-flight only ever fires on a hand-edited file. Keep API keys in the environment (`CODEFYUI_OPENAI_API_KEY` / `OPENAI_API_KEY`, `CODEFYUI_ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY`) instead.
 - Success: `{"slug", "version", "active": true, "created", "graph_name", "note"}`.
 
 **Publish activates immediately.** There is no staging path in v1: canvas Run plus the identical pre-flight IS the verification story. If the graph runs from the Run button and `/run` accepts it, the published version serves that same behavior.
