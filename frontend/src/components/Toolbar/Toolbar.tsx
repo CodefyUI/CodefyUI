@@ -11,7 +11,12 @@ import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
-import type { LayoutMode } from '../../utils/autoLayout';
+import { autoLayout, stackUnboundNotes, type LayoutMode } from '../../utils/autoLayout';
+// Aliased: this file already casts DOM MouseEvent targets to the ambient
+// lib.dom `Node` type (see the mousedown handlers below) -- importing
+// @xyflow/react's `Node` unaliased would shadow that global and break them.
+import type { Node as FlowNode } from '@xyflow/react';
+import type { NodeData } from '../../types';
 import { SettingsPopover } from './SettingsPopover';
 import { FontSizeMenu } from './FontSizeMenu';
 import styles from './Toolbar.module.css';
@@ -333,7 +338,18 @@ export function Toolbar() {
         }
         const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
         const resolvedEdges = resolveSerializedEdges(rawEdges);
-        setNodes(resolvedNodes);
+        // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
+        // directly -- NOT via applyLayout, which pushes an undo snapshot and a
+        // toast -- then deterministically place unbound notes. The next save
+        // persists the computed layout (spec 6.3).
+        if (graphData.layout_missing) {
+          const laid = stackUnboundNotes(
+            autoLayout(resolvedNodes, resolvedEdges, 'all'),
+          ) as FlowNode<NodeData>[];
+          setNodes(laid);
+        } else {
+          setNodes(resolvedNodes);
+        }
         setEdges(resolvedEdges);
         setDescription(typeof graphData.description === 'string' ? graphData.description : '');
         setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
