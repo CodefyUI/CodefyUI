@@ -2,23 +2,28 @@
 scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
-main(argv) that dispatches to args._func. This file ships `init` and
-`validate`; restore / freeze / publish are added by later tasks.
+main(argv) that dispatches to args._func. This file ships `init`, `validate`,
+`freeze`, `restore`, and `publish`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 # Reuse the tested bilingual print helpers + stdio reconfigure from plugins.py
 # (both are scripts/ siblings loaded onto sys.path by the dispatcher).
 from plugins import (
+    USER_AGENT,
     _install_github,
+    _read_session_token,
     _reconfigure_stdio,
     err,
     info,
@@ -469,6 +474,125 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return rc_all
 
 
+def _server_base() -> tuple[str, str]:
+    """(base_url, host_header) for the local server, mirroring the plugin CLI's
+    port resolution (CODEFYUI_PORT env, then settings.PORT, then 8000). The
+    client always connects on loopback, which is always whitelisted."""
+    port = 8000
+    env = os.environ.get("CODEFYUI_PORT", "").strip()
+    if env.isdigit():
+        port = int(env)
+    else:
+        try:
+            from app.config import settings
+            port = int(settings.PORT)
+        except Exception:  # noqa: BLE001
+            port = 8000
+    netloc = f"127.0.0.1:{port}"
+    return f"http://{netloc}", netloc
+
+
+def _http_get_json(url: str, host: str) -> dict | None:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Host": host})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (URLError, HTTPError, OSError, ValueError):
+        return None
+
+
+def _http_post_json(url: str, host: str, token: str, body: dict) -> dict | None:
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, method="POST", data=data, headers={
+        "User-Agent": USER_AGENT, "Host": host,
+        "Content-Type": "application/json", "X-CodefyUI-Token": token,
+        "Content-Length": str(len(data))})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            out = json.loads(resp.read().decode("utf-8"))
+            out["_status"] = resp.status
+            return out
+    except HTTPError as e:
+        try:
+            out = json.loads(e.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            out = {}
+        out["_status"] = e.code
+        return out
+    except (URLError, OSError, ValueError):
+        return None
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    proj = Path(args.dir).expanduser().resolve()
+    manifest_path = proj / MANIFEST_FILENAME
+    from app.core.plugin_loader import tomllib
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    defaults = manifest.get("publish", {}) or {}
+    graph = args.graph or defaults.get("graph")
+    slug = args.slug or defaults.get("slug")
+    if not graph:
+        err("需要 --graph 或 manifest [publish].graph",
+            "A graph is required: pass --graph or set [publish].graph")
+        return 1
+    if not slug:
+        err("需要 --slug 或 manifest [publish].slug",
+            "A slug is required: pass --slug or set [publish].slug")
+        return 1
+
+    token = _read_session_token()
+    if token is None:
+        err("找不到 session token -- 伺服器未執行？先 cdui start --project .",
+            "No session token -- is the server running? Run `cdui start --project .`")
+        return 1
+    base, host = _server_base()
+
+    # Local-only verification (ID4): the server must have THIS project open.
+    health = _http_get_json(f"{base}/api/health", host)
+    if health is None:
+        err(f"無法連線到 {base}/api/health", f"Cannot reach {base}/api/health")
+        return 1
+    server_project = health.get("project")
+    if server_project is None or Path(server_project).resolve() != proj:
+        err(f"伺服器開啟的專案（{server_project}）與 {proj} 不符",
+            f"Server has a different project open ({server_project}) -- run "
+            f"`cdui start --project {proj}` first")
+        return 1
+
+    from app.core.project import git_provenance
+    commit, dirty = git_provenance(proj)
+    if commit is None:
+        print("NOTE: not a git repo -- publishing with NULL provenance")
+    elif dirty:
+        # Loud, locale-independent warning (ID12).
+        print("=" * 70)
+        print("WARNING: working tree is DIRTY -- the recorded commit does NOT "
+              "match the published bytes.")
+        print("=" * 70)
+
+    body: dict = {"graph": graph, "slug": slug, "create": True, "note": args.note}
+    if "record_io" in defaults:
+        body["record_io"] = bool(defaults["record_io"])
+    if commit is not None:
+        body["git_commit"] = commit
+        body["git_dirty"] = bool(dirty)
+
+    resp = _http_post_json(f"{base}/api/apps/{slug}/publish", host, token, body)
+    if resp is None or resp.get("_status", 500) != 200:
+        detail = resp.get("detail") if isinstance(resp, dict) else resp
+        err(f"發佈失敗：{detail}", f"Publish failed: {detail}")
+        return 1
+    prov = (f" (git {commit[:7]}{' dirty' if dirty else ''})"
+            if commit else " (no provenance)")
+    ok(f"已發佈 {slug} v{resp.get('version')}{prov}",
+       f"Published {slug} v{resp.get('version')}{prov}")
+    return 0
+
+
 def _write_if_absent(path: Path, content: str) -> None:
     if not path.exists():
         path.write_text(content, encoding="utf-8")
@@ -528,6 +652,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore = sub.add_parser("restore", help="Install the manifest's plugin pins by their exact SHA")
     p_restore.add_argument("dir", help="project directory")
     p_restore.set_defaults(_func=cmd_restore)
+
+    p_pub = sub.add_parser("publish", help="Publish a graph to the local server, recording git provenance")
+    p_pub.add_argument("dir", help="project directory")
+    p_pub.add_argument("--graph", default=None, help="saved graph name (default: manifest [publish].graph)")
+    p_pub.add_argument("--slug", default=None, help="published slug (default: manifest [publish].slug)")
+    p_pub.add_argument("--note", default=None, help="optional immutable version note")
+    p_pub.set_defaults(_func=cmd_publish)
 
     return p
 
