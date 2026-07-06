@@ -2,8 +2,8 @@
 scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
-main(argv) that dispatches to args._func. This file ships `init`; validate /
-restore / freeze / publish are added by later tasks.
+main(argv) that dispatches to args._func. This file ships `init` and
+`validate`; restore / freeze / publish are added by later tasks.
 """
 
 from __future__ import annotations
@@ -18,6 +18,11 @@ from pathlib import Path
 # Reuse the tested bilingual print helpers + stdio reconfigure from plugins.py
 # (both are scripts/ siblings loaded onto sys.path by the dispatcher).
 from plugins import _reconfigure_stdio, err, info, ok, section, t, warn
+
+from app.core.plugin_loader import (
+    iter_plugin_dirs,
+    load_lockfile,
+)
 
 MANIFEST_FILENAME = "codefyui.project.toml"
 
@@ -174,6 +179,188 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _collect_graphs(graphs_dir: Path) -> list[tuple[str, Path]]:
+    """(base_name, file) for each graph: canonical `.graph.json` + legacy
+    `.json`; raises RuntimeError naming both files on ambiguity (spec ID2)."""
+    files: dict[str, Path] = {}
+    if not graphs_dir.is_dir():
+        return []
+    for f in sorted(graphs_dir.glob("*.graph.json")):
+        files[f.name[: -len(".graph.json")]] = f
+    for f in sorted(graphs_dir.glob("*.json")):
+        if f.name.endswith(".graph.json"):
+            continue
+        base = f.stem
+        if base in files:
+            raise RuntimeError(
+                f"Graph '{base}' is ambiguous: both {files[base].name} and "
+                f"{f.name} exist. Remove one.")
+        files[base] = f
+    return sorted(files.items())
+
+
+def _init_registries_like_server() -> None:
+    """Discover builtin + custom + PLUGIN nodes and presets exactly like the
+    server lifespan (main.py) -- run_graph.py's init loads no plugins and is
+    NOT sufficient (spec ID3)."""
+    import app.core.plugin_loader as plugin_loader
+    from app.config import settings
+    from app.core.node_registry import registry
+    from app.core.plugin_loader import install_plugin_finder
+    from app.core.preset_registry import preset_registry
+
+    registry.discover(settings.NODES_DIR, "app.nodes")
+    registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
+    lockfile = load_lockfile()
+    builtin_root = plugin_loader.plugins_builtin_root()
+    user_root = plugin_loader.plugins_user_root()
+    for nodes_dir, pkg_name in install_plugin_finder(builtin_root, user_root, lockfile):
+        registry.discover(nodes_dir, pkg_name)
+    preset_registry.discover(settings.PRESETS_DIR, registry)
+    for _pid, pdir in iter_plugin_dirs(builtin_root, user_root, lockfile):
+        preset_registry.discover(pdir / "presets", registry)
+
+
+def _validate_one_graph(path: Path, base: str) -> list[str]:
+    """The publish six-gate pre-flight, IN PUBLISH ORDER (routes_apps): secret
+    -> contract -> entry -> wiring -> validate. Returns problems (empty=pass)."""
+    from app.core import api_contract
+    from app.core.graph_engine import (
+        build_preset_fallback,
+        find_entry_points,
+        validate_graph,
+    )
+    from app.core.project import FORMAT_VERSION
+    from app.core.secret_params import find_secret_violations
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        return [f"unreadable: {e}"]
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+    fb = build_preset_fallback(data.get("presets", []))
+
+    fmt = data.get("format_version", 1)
+    if isinstance(fmt, int) and fmt > FORMAT_VERSION:
+        # Read policy: warn-never-block (spec ID8).
+        warn(f"{base}: format_version {fmt} is newer than this build "
+             f"(known {FORMAT_VERSION})",
+             f"{base}: format_version {fmt} is newer than this build "
+             f"(known {FORMAT_VERSION})")
+
+    # 1. secrets (publish checks these FIRST, routes_apps.py).
+    violations = find_secret_violations(nodes)
+    if violations:
+        v = violations[0]
+        return [f"secret_in_graph: node '{v['node_id']}' param '{v['param']}'"]
+    # 2. contract.
+    contract = api_contract.derive_contract(nodes)
+    if contract.problems:
+        return [f"invalid_contract: {contract.problems[0]}"]
+    # 3. entry points.
+    if not find_entry_points(nodes, edges):
+        return ["no_entry_points: wire a Start node into every GraphInput"]
+    # 4. wiring.
+    wiring = api_contract.check_wiring(nodes, edges, contract)
+    if wiring.untriggered:
+        return [f"untriggered_input: {wiring.untriggered[0]}"]
+    if wiring.unreachable:
+        return [f"unreachable_output: {wiring.unreachable[0]}"]
+    # 5. validate_graph (unknown-type errors get the specific ID3 message).
+    errors = validate_graph(nodes, edges, preset_fallback=fb)
+    if errors:
+        first = errors[0]
+        if first.startswith("Unknown node type"):
+            first = first + " -- run `cdui project restore` (or install the plugin that provides it)"
+        return [f"invalid_graph: {first}"]
+    return []
+
+
+def _check_env_not_tracked(proj: Path) -> bool:
+    """True on FAILURE: .env is tracked by git. No git -> notice + pass."""
+    if not shutil.which("git"):
+        info("git 不存在，略過 .env 追蹤檢查",
+             "git not found; skipping the .env-tracked check")
+        return False
+    res = subprocess.run(["git", "-C", str(proj), "ls-files", ".env"],
+                         capture_output=True, text=True)
+    if res.stdout.strip():
+        err(".env 已被 git 追蹤（絕不可提交機密）",
+            ".env is tracked by git -- secrets must never be committed")
+        return True
+    return False
+
+
+def _check_pins(manifest: dict, strict: bool) -> bool:
+    """True on FAILURE (only when strict). Missing/mismatched pins warn, and
+    with --strict become errors (spec ID3)."""
+    pins = manifest.get("plugins", {}) or {}
+    if not pins:
+        return False
+    installed = load_lockfile().get("plugins", {})
+    failed = False
+    for pid, pin in pins.items():
+        entry = installed.get(pid)
+        pinned_sha = pin.get("sha") if isinstance(pin, dict) else None
+        if entry is None:
+            _warn_or_err(strict, f"pinned plugin '{pid}' is not installed -- "
+                                 "run `cdui project restore`")
+            failed = failed or strict
+        elif pinned_sha and entry.get("sha") != pinned_sha:
+            _warn_or_err(strict, f"plugin '{pid}' sha {entry.get('sha', '')[:7]} "
+                                 f"!= pinned {pinned_sha[:7]} -- run restore")
+            failed = failed or strict
+    return failed
+
+
+def _warn_or_err(strict: bool, msg: str) -> None:
+    (err if strict else warn)(msg, msg)
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    proj = Path(args.dir).expanduser().resolve()
+    section(f"驗證專案：{proj}", f"Validating project: {proj}")
+
+    manifest_path = proj / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}",
+            f"Manifest not found: {manifest_path}")
+        return 1
+    from app.core.plugin_loader import tomllib
+    try:
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        err(f"manifest 解析失敗：{e}", f"Manifest parse error: {e}")
+        return 1
+
+    _init_registries_like_server()
+
+    try:
+        graphs = _collect_graphs(proj / "graphs")
+    except RuntimeError as e:
+        err(str(e), str(e))
+        return 1
+
+    all_ok = True
+    for base, path in graphs:
+        problems = _validate_one_graph(path, base)
+        if problems:
+            all_ok = False
+            err(f"FAIL {base}: {problems[0]}", f"FAIL {base}: {problems[0]}")
+        else:
+            ok(f"PASS {base}", f"PASS {base}")
+
+    pin_fail = _check_pins(manifest, args.strict)
+    env_fail = _check_env_not_tracked(proj)
+
+    if not all_ok or pin_fail or env_fail:
+        err("驗證失敗", "Validation FAILED")
+        return 1
+    ok("驗證通過", "Validation passed")
+    return 0
+
+
 def _write_if_absent(path: Path, content: str) -> None:
     if not path.exists():
         path.write_text(content, encoding="utf-8")
@@ -219,6 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--force", action="store_true",
                         help="write into an existing non-empty directory")
     p_init.set_defaults(_func=cmd_init)
+
+    p_val = sub.add_parser("validate", help="Validate every graph (publish pre-flight) + project checks")
+    p_val.add_argument("dir", help="project directory to validate")
+    p_val.add_argument("--strict", action="store_true",
+                       help="treat missing/mismatched plugin pins as errors")
+    p_val.set_defaults(_func=cmd_validate)
 
     return p
 
