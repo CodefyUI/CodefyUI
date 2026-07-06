@@ -168,6 +168,16 @@ async def lifespan(app: FastAPI):
         json_format=settings.LOG_JSON,
     )
 
+    # Project .env: execution-time secrets only, os.environ.setdefault
+    # semantics, loaded before node/plugin discovery. CODEFYUI_* config keys
+    # here are IGNORED (settings already materialized at import) -- spec 7.3.
+    if settings.PROJECT_DIR is not None:
+        from .core.dotenv import load_dotenv_file
+        env_applied = load_dotenv_file(settings.PROJECT_DIR / ".env")
+        if env_applied:
+            # Log the COUNT only, never the values.
+            logger.info("Loaded %d value(s) from project .env", env_applied)
+
     # Populate Host whitelist and persist the session token before any handler
     # can fire. Frontend bootstrap reads the token via /api/auth/bootstrap; CLI
     # tools (e.g. `cdui plugin install` → POST /api/plugins/reload) read it
