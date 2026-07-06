@@ -49,6 +49,16 @@ class DatasetNode(BaseNode):
         name = params.get("name", "MNIST")
         split = params.get("split", "train")
         data_dir = params.get("data_dir", "./data")
+
+        from pathlib import Path
+
+        from ...config import settings
+
+        if settings.PROJECT_DIR is not None and not Path(data_dir).is_absolute():
+            # torchvision downloads land in the project, not the install CWD
+            # (spec 7.2). kagglehub / HF caches stay machine-global.
+            data_dir = str(settings.PROJECT_DIR / "assets" / "data")
+
         is_train = split == "train"
 
         transform = transforms.Compose([

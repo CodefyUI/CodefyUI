@@ -113,10 +113,25 @@ class CSVReaderNode(BaseNode):
     ) -> dict[str, Any]:
         import pandas as pd
 
+        from ...config import settings
+
         path_str = str(params.get("path", "")).strip()
         if not path_str:
             raise ValueError("CSVReader requires a non-empty `path` param.")
         path = Path(path_str)
+        if settings.PROJECT_DIR is not None and not path.is_absolute():
+            # The bundled sample is special-cased to the install (cwd stays
+            # backend/ even in project mode) so demos keep working (spec 7.2).
+            if path_str.replace("\\", "/") == "data/samples/iris.csv":
+                path = path.resolve()
+            else:
+                proj = settings.PROJECT_DIR.resolve()
+                resolved = (proj / path).resolve()
+                if not resolved.is_relative_to(proj):
+                    raise ValueError(
+                        f"CSVReader: path {path_str!r} escapes the project directory"
+                    )
+                path = resolved
         if not path.exists():
             raise FileNotFoundError(f"CSVReader: file not found at {path}")
 
