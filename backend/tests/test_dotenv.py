@@ -1,10 +1,31 @@
 """Project .env loader (spec 7.3): stdlib parse, setdefault semantics, and the
 scoping guarantee that CODEFYUI_* CONFIG keys never reconfigure the already-
-materialized settings singleton."""
+materialized settings singleton.
+
+load_dotenv_file writes via a raw os.environ[...] = val (setdefault
+semantics), not monkeypatch.setenv, so monkeypatch's own undo stack cannot
+see or revert those writes. The autouse _isolate_environ fixture below
+snapshots/restores os.environ around every test in this module so nothing a
+test causes to be written (e.g. CODEFYUI_OPENAI_API_KEY, CODEFYUI_PORT) leaks
+into later tests in this process.
+"""
 
 import os
 
+import pytest
+
 from app.core.dotenv import load_dotenv_file, parse_dotenv
+
+
+@pytest.fixture(autouse=True)
+def _isolate_environ():
+    """Snapshot/restore os.environ around each test in this module. Needed
+    because load_dotenv_file's raw os.environ writes are invisible to
+    monkeypatch's undo stack (see module docstring)."""
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
 
 
 def test_parse_basic_and_comments():
@@ -47,3 +68,23 @@ def test_config_keys_do_not_reconfigure_running_settings(tmp_path, monkeypatch):
     # A CODEFYUI_* CONFIG key in .env never changes the running server: the
     # settings singleton materialized at import, before .env loads (spec 7.3).
     assert settings.PORT == original_port
+
+
+def test_bom_prefixed_env_key_loads_clean(tmp_path, monkeypatch):
+    """A UTF-8 BOM (b"\\xef\\xbb\\xbf") at the start of the file must not
+    corrupt the first key: utf-8-sig strips it, plain utf-8 would not."""
+    env = tmp_path / ".env"
+    env.write_bytes(b"\xef\xbb\xbfBOM_KEY=clean\n")
+    monkeypatch.delenv("BOM_KEY", raising=False)
+    load_dotenv_file(env)
+    assert os.environ.get("BOM_KEY") == "clean"
+    assert "\ufeffBOM_KEY" not in os.environ
+
+
+def test_no_env_leak_after_module():
+    # Regression guard for _isolate_environ above: by the time this test runs
+    # (last, in file order), CODEFYUI_OPENAI_API_KEY and CODEFYUI_PORT --
+    # written directly into os.environ by earlier tests in this file via
+    # load_dotenv_file -- must already be restored to absent.
+    assert "CODEFYUI_OPENAI_API_KEY" not in os.environ
+    assert "CODEFYUI_PORT" not in os.environ

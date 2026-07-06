@@ -42,7 +42,7 @@ def load_dotenv_file(path: Path) -> int:
     """os.environ.setdefault each KEY=VALUE from *path*. Returns the number of
     NEW variables applied. Absent/unreadable file -> 0. Never logs values."""
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")  # tolerates a leading UTF-8 BOM
     except (OSError, UnicodeDecodeError):
         return 0
     applied = 0
