@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from platformdirs import user_data_dir
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 # Let the handful of ops not yet implemented for Apple MPS fall back to CPU
@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     IMAGES_DIR: Path = Path(__file__).parent.parent / "data" / "images"
     EXAMPLES_DIR: Path = Path(__file__).parent.parent.parent / "examples"
 
+    # ── Project directory (spec 7.1) ───────────────────────────────────
+    # Set by `cdui start|dev --project <dir>` (CODEFYUI_PROJECT_DIR=<abs>).
+    # None = non-project mode (byte-for-byte legacy behavior). When set,
+    # the graph/asset roots derive from it UNLESS the specific root was
+    # explicitly provided (env/init) — see _derive_project_roots.
+    PROJECT_DIR: Path | None = None
+
     # First-party plugin packs shipped with the repo (<REPO>/plugins/).
     PLUGINS_BUILTIN_DIR: Path = Path(__file__).parent.parent.parent / "plugins"
     # Third-party downloads + lockfile. Resolved per-instance so the
@@ -78,6 +85,43 @@ class Settings(BaseSettings):
     LOG_JSON: bool = False
 
     MAX_PARALLEL_NODES: int = 4
+
+    @model_validator(mode="after")
+    def _derive_project_roots(self) -> "Settings":
+        """Project mode repoints graphs/assets roots (spec 7.1).
+
+        Precedence: an explicitly-set root (CODEFYUI_GRAPHS_DIR etc., or an
+        init kwarg) beats project derivation — detected via model_fields_set,
+        which lists ONLY fields provided from env/init, never class defaults.
+        DB_PATH / CUSTOM_NODES_DIR are intentionally NOT derived (install-
+        global in v1). No module-level settings caching exists, so setting
+        these here (before any node reads settings at call time) is safe.
+        """
+        if self.PROJECT_DIR is None:
+            return self
+        explicit = set(self.model_fields_set)
+        proj = self.PROJECT_DIR.resolve()
+        self.PROJECT_DIR = proj
+        assets = proj / "assets"
+        if "GRAPHS_DIR" not in explicit:
+            self.GRAPHS_DIR = proj / "graphs"
+        if "IMAGES_DIR" not in explicit:
+            self.IMAGES_DIR = assets / "images"
+        if "MODELS_DIR" not in explicit:
+            self.MODELS_DIR = assets / "models"
+        return self
+
+    @property
+    def LAYOUT_DIR(self) -> Path | None:
+        """Server-side layout dir (<proj>/layout) in project mode, else None.
+
+        Only read by the project-mode save/load split (Task 3); non-project
+        mode never touches it. A property (not a field) so it always tracks
+        PROJECT_DIR and needs no precedence handling of its own.
+        """
+        if self.PROJECT_DIR is None:
+            return None
+        return self.PROJECT_DIR / "layout"
 
     model_config = {"env_prefix": "CODEFYUI_"}
 
