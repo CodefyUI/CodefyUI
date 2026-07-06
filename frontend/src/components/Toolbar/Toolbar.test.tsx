@@ -539,6 +539,60 @@ describe('Toolbar', () => {
     });
   });
 
+  // -- Load: project-mode origin stamping (Task 13 review gap, ID10) --
+  // handleLoadGraph stamps the active tab's projectOrigin with the open
+  // project's dir right after a successful load (Toolbar.tsx:317-318), but
+  // only while a project is open. Scoped in its own describe so the extra
+  // localStorage reset doesn't touch the rest of this file's tests.
+  describe('Load: project origin stamping (ID10)', () => {
+    beforeEach(() => {
+      localStorage.clear();
+      // setActiveTab() (outer beforeEach) copies forward whatever
+      // `projectOrigin` the previous test's tab was left with via `...real` --
+      // pin a clean baseline here so these two tests are independent of run
+      // order and of each other.
+      setActiveTab({ projectOrigin: null });
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it('project mode: stamps the active tab projectOrigin with the open project dir', async () => {
+      useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+      mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
+      mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+      render(<Toolbar />);
+      fireEvent.click(screen.getByText('Load'));
+      await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Alpha'));
+      await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
+      await waitFor(() => {
+        const tab = useTabStore.getState().tabs[0];
+        expect(tab.projectOrigin).toBe('/proj');
+        expect(tab.currentGraphFile).toBe('alpha');
+      });
+    });
+
+    it('non-project mode: projectOrigin stays null after the same load', async () => {
+      // projectDir stays null via the outer beforeEach default -- no project open.
+      mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
+      mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+      render(<Toolbar />);
+      fireEvent.click(screen.getByText('Load'));
+      await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+      fireEvent.click(screen.getByText('Alpha'));
+      await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
+      await waitFor(() => {
+        const tab = useTabStore.getState().tabs[0];
+        // Load still ran to completion (proves the guard's false branch, not
+        // just an untouched default) -- only projectOrigin stays unset.
+        expect(tab.currentGraphFile).toBe('alpha');
+        expect(tab.projectOrigin).toBeNull();
+      });
+    });
+  });
+
   // ── Load: layout_missing branch (Task 11 gate; Task 12 controller item 2) ──
   //
   // Pins handleLoadGraph's project-mode fallback: a `layout_missing: true`

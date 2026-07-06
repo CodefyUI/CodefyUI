@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
+import { useProjectStore } from './store/projectStore';
+import { fetchHealth } from './api/rest';
 
 // ── Mock heavy children so we test only App's composition logic ───────────────
 // Each stub renders a stable testid so we can assert presence / counts.
@@ -48,6 +50,17 @@ vi.mock('./components/shared/DialogContainer', () => ({
   DialogContainer: () => <div data-testid="dialog-container" />,
 }));
 
+// fetchHealth drives the bootstrap effect's project branch (App.tsx:87-101).
+// Left unmocked, the real implementation's fetch() call rejects in jsdom (no
+// server) and the effect's .catch swallows it silently, so that branch never
+// ran under test. Mocking it here lets the non-project shape PIN the existing
+// tests' behavior below (rather than it being accidental) and lets one
+// dedicated test drive the project-mode rehydration path.
+vi.mock('./api/rest', () => ({
+  fetchHealth: vi.fn(),
+}));
+const mockedFetchHealth = vi.mocked(fetchHealth);
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function resetToSingleTab() {
@@ -60,14 +73,27 @@ function resetToSingleTab() {
 }
 
 beforeEach(() => {
+  useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
   resetToSingleTab();
   useUIStore.setState({ fontSize: 'default' });
   document.documentElement.style.fontSize = '';
+  localStorage.clear();
+  // Default: non-project health shape, so the pre-existing tests below
+  // exercise (and pin) the same bootstrap branch the real server takes
+  // outside project mode, instead of silently skipping it.
+  mockedFetchHealth.mockReset();
+  mockedFetchHealth.mockResolvedValue({
+    status: 'ok',
+    nodes_loaded: 0,
+    presets_loaded: 0,
+    project: null,
+  });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   document.documentElement.style.fontSize = '';
+  localStorage.clear();
 });
 
 describe('App', () => {
@@ -195,5 +221,32 @@ describe('App', () => {
     expect(flexContents.length).toBeGreaterThanOrEqual(1);
     // Switching active away (no other tab) keeps it active; sanity: id unchanged.
     expect(useTabStore.getState().activeTabId).toBe(tabId);
+  });
+
+  // -- Health bootstrap -> per-project rehydration (Task 13 review gap, ID10) --
+  // App's bootstrap effect calls setProject(h.project) then
+  // rehydrateForProject(h.project) once fetchHealth resolves (App.tsx:90-94).
+  // The tests above pin the non-project shape via the beforeEach default;
+  // this one drives the project branch and asserts the tab store actually
+  // rehydrated from the project-scoped localStorage key.
+  it('rehydrates tabs for the resolved project once fetchHealth reports one', async () => {
+    localStorage.setItem(
+      'codefyui-tabs::/proj',
+      JSON.stringify({
+        activeTabId: 'p1',
+        tabs: [{ id: 'p1', name: 'project-tab', nodes: [], edges: [] }],
+      }),
+    );
+    mockedFetchHealth.mockResolvedValueOnce({
+      status: 'ok',
+      nodes_loaded: 0,
+      presets_loaded: 0,
+      project: '/proj',
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs.some((t) => t.name === 'project-tab')).toBe(true);
+    });
+    expect(useProjectStore.getState().projectDir).toBe('/proj');
   });
 });
