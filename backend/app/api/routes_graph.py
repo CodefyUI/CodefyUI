@@ -107,11 +107,18 @@ async def save_graph(graph: GraphData):
             ),
         )
     settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _graph_path(graph.name)
     payload = graph.model_dump()
     # Defense-in-depth: even if a client bypasses the editor (which already
     # blanks SECRET params before sending), never write a secret to disk.
     scrub_graph_secrets(payload.get("nodes", []))
+    if _project_mode():
+        from ..core.project import write_graph_pair
+        logic_path = _graph_logic_path(graph.name)
+        layout_path = _graph_layout_path(graph.name)
+        legacy = settings.GRAPHS_DIR / f"{_sanitize_name(graph.name)}.json"
+        write_graph_pair(logic_path, layout_path, payload, legacy_path=legacy)
+        return {"message": "Graph saved", "path": str(logic_path)}
+    path = _graph_path(graph.name)
     path.write_text(json.dumps(payload, indent=2))
     return {"message": "Graph saved", "path": str(path)}
 
@@ -125,6 +132,19 @@ async def load_graph(name: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     data = json.loads(path.read_text())
+    # Legacy single-file `<name>.json` (project or non-project) loads verbatim
+    # with embedded positions (spec 6.4); only the canonical pair is merged.
+    if _project_mode() and path.name.endswith(".graph.json"):
+        from ..core.project import merge_graph
+        layout_path = _graph_layout_path(name)
+        layout = None
+        if layout_path is not None and layout_path.exists():
+            try:
+                layout = json.loads(layout_path.read_text())
+            except (ValueError, OSError):
+                layout = None
+        merged, _missing = merge_graph(data, layout)
+        return merged
     return data
 
 
