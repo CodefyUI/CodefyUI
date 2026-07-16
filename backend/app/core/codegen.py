@@ -1,535 +1,364 @@
-"""Generate a standalone Python script from a CodefyUI graph.
+"""Generate a runnable, single-file Python runner for a CodefyUI graph.
 
-Security note: all node-supplied type names that get interpolated into the
-generated source (dataset name, optimizer class, loss class, etc.) are
-whitelisted against the lists below. A malicious graph.json that puts
-``"MNIST(); __import__('os').system('rm -rf /')"`` into the dataset ``name``
-field would otherwise produce a runnable exploit when the user downloads
-and executes the script.
+The exporter deliberately reuses CodefyUI's node registry and graph engine
+instead of translating a small subset of nodes into handwritten source.  That
+keeps exported execution aligned with the canvas for built-in, custom, and
+plugin nodes, including future node types that the exporter does not know
+about.  The generated file does not need a running CodefyUI server, but it
+does need to be launched with a compatible CodefyUI backend environment.
 
-The whitelists are intentionally narrow — the export feature is meant to
-hand off a *teaching example* to the user, not a generic graph→Python
-compiler. Anything the whitelist doesn't cover is emitted as a TODO comment
-so the user understands they need to fill it in by hand.
+All graph-controlled data is embedded as one JSON string literal.  Node IDs,
+graph names, labels, paths, and parameters are therefore data rather than
+Python identifiers or source fragments.
 """
 
 from __future__ import annotations
 
 import json
-from collections import deque
+
+
+_GRAPH_JSON_SENTINEL = "__CODEFYUI_GRAPH_JSON_LITERAL__"
+
+
+_SCRIPT_TEMPLATE = '''#!/usr/bin/env python3
+"""Runnable CodefyUI graph export.
+
+This file contains the graph and runs it without starting the CodefyUI server.
+It requires a compatible CodefyUI backend Python environment (including every
+custom/plugin node and third-party dependency used by the graph).
+
+Development checkout examples:
+  Windows: backend/.venv/Scripts/python.exe exported_graph.py
+  macOS/Linux: backend/.venv/bin/python exported_graph.py
+
+Use ``--help`` for device, input, timeout, and project-directory options.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from contextlib import nullcontext, redirect_stdout
+from pathlib import Path
 from typing import Any
 
 
-# ── Whitelists for user-controlled type names ─────────────────────────
-
-# torchvision.datasets — the common ones we generate transforms for. Anything
-# outside this list produces a TODO comment instead of an interpolated call.
-_DATASET_WHITELIST = frozenset({
-    "MNIST", "FashionMNIST", "KMNIST", "EMNIST", "QMNIST",
-    "CIFAR10", "CIFAR100", "ImageNet", "ImageFolder",
-    "Caltech101", "Caltech256", "CelebA", "STL10", "SVHN",
-    "Cityscapes", "VOCSegmentation", "VOCDetection",
-    "CocoCaptions", "CocoDetection",
-})
-
-# torch.optim subclasses.
-_OPTIMIZER_WHITELIST = frozenset({
-    "Adam", "AdamW", "SGD", "RMSprop", "Adagrad", "Adadelta",
-    "Adamax", "ASGD", "LBFGS", "NAdam", "RAdam", "Rprop",
-})
-
-# torch.nn loss modules.
-_LOSS_WHITELIST = frozenset({
-    "CrossEntropyLoss", "MSELoss", "L1Loss", "SmoothL1Loss",
-    "BCELoss", "BCEWithLogitsLoss", "NLLLoss", "PoissonNLLLoss",
-    "KLDivLoss", "MarginRankingLoss", "MultiMarginLoss",
-    "HuberLoss", "HingeEmbeddingLoss", "CosineEmbeddingLoss",
-    "TripletMarginLoss", "CTCLoss",
-})
+GRAPH_JSON = __CODEFYUI_GRAPH_JSON_LITERAL__
 
 
-# ── Per-layer source rendering (shared between legacy + v2 builders) ──
-
-_ACTIVATIONS = {
-    "ReLU", "GELU", "Sigmoid", "Tanh", "LeakyReLU",
-    "ELU", "SiLU", "Mish", "SELU", "PReLU", "Hardswish",
-}
-_INPLACE_ACTIVATIONS = {"ReLU", "LeakyReLU", "ELU", "SiLU", "Mish", "SELU", "Hardswish"}
-
-
-def _var(nid: str) -> str:
-    return nid.replace("-", "_")
-
-
-_SAFE_LAYER_TYPES = frozenset({
-    "Linear", "Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d",
-    "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
-    "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d",
-    "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm",
-    "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d",
-    "Dropout", "Dropout1d", "Dropout2d", "Dropout3d",
-    "Flatten", "Unflatten", "Embedding",
-    "LSTM", "GRU", "RNN",
-    "MultiheadAttention", "TransformerEncoderLayer", "TransformerDecoderLayer",
-    "Softmax", "LogSoftmax", "Identity",
-})
-
-
-def _layer_to_source(layer_type: str, params: dict) -> str:
-    """Render a single layer dict as an ``nn.X(...)`` Python expression.
-
-    Layer type is whitelisted against the union of activations, normalisation,
-    pooling, and the other common building blocks. Any layer type not on the
-    list produces an Identity placeholder so the export stays runnable while
-    making the missing piece obvious to the user.
-    """
-    if layer_type == "Softmax":
-        return "nn.Softmax(dim=-1)"
-    if layer_type in _ACTIVATIONS:
-        if layer_type in _INPLACE_ACTIVATIONS:
-            return f"nn.{layer_type}(inplace=True)"
-        return f"nn.{layer_type}()"
-    if layer_type not in _SAFE_LAYER_TYPES:
-        # Refuse to interpolate an unknown layer type — that's the H-2 injection
-        # vector. Leave a placeholder so the script still parses.
-        return f"nn.Identity()  # TODO: unsupported layer type {layer_type!r}"
-    args = ", ".join(f"{k}={v!r}" for k, v in params.items())
-    return f"nn.{layer_type}({args})"
-
-
-# ── SequentialModel codegen (legacy + v2) ────────────────────────────
-
-
-def _gen_sequential_model(var: str, params: dict) -> list[str]:
-    layers_json = params.get("layers", "[]")
-    spec = json.loads(layers_json) if isinstance(layers_json, str) else layers_json
-
-    # v2 graph spec: {"version":2, "nodes":[...], "edges":[...]}.  Older
-    # graphs still ship a flat list of layer dicts.
-    if isinstance(spec, dict) and spec.get("version") == 2:
-        return _gen_v2_sequential(var, spec)
-    return _gen_legacy_sequential(var, spec)
-
-
-def _gen_legacy_sequential(var: str, layers: list[dict]) -> list[str]:
-    layer_strs = [_layer_to_source(l.get("type", ""), {k: v for k, v in l.items() if k != "type"}) for l in layers]
-    lines = ["# Build nn.Sequential model", f"{var} = nn.Sequential("]
-    for s in layer_strs:
-        lines.append(f"    {s},")
-    lines.append(")")
-    return lines
-
-
-def _gen_v2_sequential(var: str, spec: dict) -> list[str]:
-    """Emit an ``nn.Sequential`` when the v2 graph is a simple chain.
-
-    For DAGs with merges/branches we fall back to a clear TODO comment;
-    callers can wire up a custom ``nn.Module`` by hand. (Most teaching
-    examples — CNN-MNIST, GPT-Mini, etc. — are simple chains.)
-    """
-    nodes = spec.get("nodes", [])
-    edges = spec.get("edges", [])
-    nodes_by_id = {n["id"]: n for n in nodes}
-
-    inputs = [n for n in nodes if n["type"] == "Input"]
-    outputs = [n for n in nodes if n["type"] == "Output"]
-    if len(inputs) != 1 or len(outputs) != 1:
-        return [
-            f"# {var}: SequentialModel has {len(inputs)} input(s) and {len(outputs)} output(s)",
-            f"# Custom forward needed — define a nn.Module subclass manually.",
-            f"{var} = None",
-        ]
-
-    incoming: dict[str, list[str]] = {n["id"]: [] for n in nodes}
-    outgoing: dict[str, list[str]] = {n["id"]: [] for n in nodes}
-    for e in edges:
-        src, tgt = e["source"], e["target"]
-        if src in nodes_by_id and tgt in nodes_by_id:
-            incoming[tgt].append(src)
-            outgoing[src].append(tgt)
-
-    # Topological order (Kahn's algorithm).
-    in_degree = {nid: len(incoming[nid]) for nid in nodes_by_id}
-    queue = deque(nid for nid, d in in_degree.items() if d == 0)
-    topo: list[str] = []
-    while queue:
-        nid = queue.popleft()
-        topo.append(nid)
-        for tgt in outgoing[nid]:
-            in_degree[tgt] -= 1
-            if in_degree[tgt] == 0:
-                queue.append(tgt)
-
-    # Detect "simple chain": no merge nodes, every non-boundary layer has
-    # exactly 1 in and 1 out edge.
-    merge_types = {"Add", "Concat", "Multiply", "Subtract", "Mean", "Stack"}
-    is_chain = True
-    for n in nodes:
-        if n["type"] in ("Input", "Output"):
-            continue
-        if n["type"] in merge_types:
-            is_chain = False
-            break
-        if len(incoming[n["id"]]) > 1 or len(outgoing[n["id"]]) > 1:
-            is_chain = False
-            break
-
-    if not is_chain:
-        return [
-            f"# {var}: SequentialModel contains merges or branches",
-            f"# (Add/Concat/Multiply/skip-connections) — define a nn.Module subclass manually.",
-            f"{var} = None",
-        ]
-
-    layer_strs: list[str] = []
-    for nid in topo:
-        n = nodes_by_id[nid]
-        if n["type"] in ("Input", "Output"):
-            continue
-        layer_strs.append(_layer_to_source(n["type"], n.get("params", {})))
-
-    lines = ["# Build nn.Sequential model (compiled from v2 graph spec)", f"{var} = nn.Sequential("]
-    for s in layer_strs:
-        lines.append(f"    {s},")
-    lines.append(")")
-    return lines
-
-
-# ── Other node codegens ──────────────────────────────────────────────
-
-
-def _gen_dataset(var: str, params: dict) -> list[str]:
-    name = params.get("name", "MNIST")
-    split = params.get("split", "train")
-    data_dir = params.get("data_dir", "./data")
-    is_train = split == "train"
-    if name not in _DATASET_WHITELIST:
-        return [
-            f"# TODO: Dataset {name!r} is not in the codegen whitelist.",
-            f"# Edit this block manually to instantiate the dataset you want.",
-            f"{var} = None",
-        ]
-    return [
-        f"transform_{var} = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])",
-        f"{var} = datasets.{name}({data_dir!r}, train={is_train}, download=True, transform=transform_{var})",
-    ]
-
-
-def _gen_dataloader(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    bs = params.get("batch_size", 64)
-    shuffle = params.get("shuffle", True)
-    nw = params.get("num_workers", 0)
-    dataset_var = inputs.get("dataset", "dataset")
-    return [f"{var} = DataLoader({dataset_var}, batch_size={bs}, shuffle={shuffle}, num_workers={nw})"]
-
-
-def _gen_optimizer(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    opt_type = params.get("type", "Adam")
-    lr = params.get("lr", 0.001)
-    wd = params.get("weight_decay", 0.0)
-    model_var = inputs.get("model", "model")
-    if opt_type not in _OPTIMIZER_WHITELIST:
-        return [
-            f"# TODO: Optimizer {opt_type!r} is not in the codegen whitelist.",
-            f"{var} = None",
-        ]
-    # Coerce numeric params through float() so a malicious graph can't smuggle
-    # arbitrary expressions through e.g. ``"lr": "1; __import__('os').system(...)"``.
-    try:
-        lr_v = float(lr)
-        wd_v = float(wd) if wd else 0.0
-    except (TypeError, ValueError):
-        return [
-            f"# TODO: Optimizer {opt_type} has non-numeric lr/weight_decay.",
-            f"{var} = None",
-        ]
-    args = f"{model_var}.parameters(), lr={lr_v}"
-    if wd_v:
-        args += f", weight_decay={wd_v}"
-    return [f"{var} = optim.{opt_type}({args})"]
-
-
-def _gen_loss(var: str, params: dict) -> list[str]:
-    loss_type = params.get("type", "CrossEntropyLoss")
-    if loss_type not in _LOSS_WHITELIST:
-        return [
-            f"# TODO: Loss {loss_type!r} is not in the codegen whitelist.",
-            f"{var} = None",
-        ]
-    return [f"{var} = nn.{loss_type}()"]
-
-
-def _gen_training_loop(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    epochs = params.get("epochs", 5)
-    device = params.get("device", "cpu")
-    model_var = inputs.get("model", "model")
-    loader_var = inputs.get("dataloader", "dataloader")
-    opt_var = inputs.get("optimizer", "optimizer")
-    loss_var = inputs.get("loss_fn", "loss_fn")
-    return [
-        "# Training loop",
-        f"device = {device!r}",
-        f"{model_var} = {model_var}.to(device)",
-        f"{model_var}.train()",
-        "epoch_losses = []",
-        f"for epoch in range({epochs}):",
-        "    running_loss = 0.0",
-        "    batch_count = 0",
-        f"    for batch_data in {loader_var}:",
-        "        if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:",
-        "            data, targets = batch_data",
-        "            data, targets = data.to(device), targets.to(device)",
-        "        else:",
-        "            data = batch_data.to(device) if hasattr(batch_data, 'to') else batch_data",
-        "            targets = None",
-        f"        {opt_var}.zero_grad()",
-        f"        outputs = {model_var}(data)",
-        f"        loss = {loss_var}(outputs, targets) if targets is not None else {loss_var}(outputs)",
-        "        loss.backward()",
-        f"        {opt_var}.step()",
-        "        running_loss += loss.item()",
-        "        batch_count += 1",
-        "    avg_loss = running_loss / max(batch_count, 1)",
-        "    epoch_losses.append(avg_loss)",
-        f'    print(f"Epoch {{epoch + 1}}/{epochs} — Loss: {{avg_loss:.4f}}")',
-        f"{var}_losses = torch.tensor(epoch_losses)",
-    ]
-
-
-def _gen_model_saver(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    path = params.get("path", "model_weights.pt")
-    mode = params.get("save_mode", "state_dict")
-    model_var = inputs.get("model", "model")
-    if mode == "state_dict":
-        return [f"torch.save({model_var}.state_dict(), {path!r})", f"print('Model saved to', {path!r})"]
-    return [f"torch.save({model_var}, {path!r})", f"print('Model saved to', {path!r})"]
-
-
-def _gen_model_loader(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    path = params.get("path", "model_weights.pt")
-    mode = params.get("load_mode", "state_dict")
-    device = params.get("device", "cpu")
-    model_var = inputs.get("model", "model")
-    if mode == "state_dict":
-        return [
-            f"state_dict = torch.load({path!r}, map_location={device!r}, weights_only=True)",
-            f"{model_var}.load_state_dict(state_dict)",
-            f"{model_var} = {model_var}.to({device!r})",
-        ]
-    # full_model mode used to emit ``weights_only=False`` which deserialises
-    # arbitrary pickle — that's a known RCE class (CVE-2025-32434 et al.). We
-    # refuse to emit unsafe loads; tell the user to re-export their checkpoint
-    # as state_dict, which is the supported safe path.
-    unsafe_msg = (
-        "full_model load mode is disabled for safety; "
-        "re-save the checkpoint as state_dict."
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the CodefyUI graph embedded in this Python file.",
     )
-    return [
-        "# TODO: full_model load mode is unsafe (pickle RCE risk).",
-        "# Re-save your checkpoint with mode='state_dict' and update this node.",
-        f"raise RuntimeError({unsafe_msg!r})",
-        f"{model_var} = None",
-    ]
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Execution device: auto, cpu, cuda, or mps (default: auto).",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help=(
+            "Optional soft timeout in seconds. A synchronous node already "
+            "running in a worker thread may finish before the process exits."
+        ),
+    )
+    parser.add_argument(
+        "--project-dir",
+        type=Path,
+        default=None,
+        help=(
+            "CodefyUI project directory used to resolve project assets. "
+            "Set this when the graph refers to project-local models/images."
+        ),
+    )
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument(
+        "--inputs-json",
+        default=None,
+        help="JSON object to inject into GraphInput nodes.",
+    )
+    input_group.add_argument(
+        "--inputs-file",
+        type=Path,
+        default=None,
+        help="UTF-8 JSON file containing GraphInput values.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-node progress and a traceback on failure.",
+    )
+    return parser
 
 
-def _gen_inference(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    device = params.get("device", "cpu")
-    model_var = inputs.get("model", "model")
-    input_var = inputs.get("input", "input_tensor")
-    return [
-        f"{model_var} = {model_var}.to({device!r})",
-        f"{input_var} = {input_var}.to({device!r})",
-        f"{model_var}.eval()",
-        "with torch.no_grad():",
-        f"    {var} = {model_var}({input_var})",
-        f'print(f"Output shape: {{{var}.shape}}")',
-    ]
+def _load_inputs(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.inputs_json is None and args.inputs_file is None:
+        return None
+
+    try:
+        raw = (
+            args.inputs_file.read_text(encoding="utf-8")
+            if args.inputs_file is not None
+            else args.inputs_json
+        )
+        value = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read inputs JSON: {exc}") from exc
+
+    if not isinstance(value, dict):
+        raise ValueError("inputs JSON must be an object")
+    return value
 
 
-def _gen_visualize(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    title = params.get("title", "Plot")
-    plot_type = params.get("plot_type", "line")
-    data_var = inputs.get("data", "data")
-    lines = ["plt.figure(figsize=(8, 5))"]
-    if plot_type == "line":
-        lines.append(f"plt.plot({data_var}.cpu().numpy() if hasattr({data_var}, 'cpu') else {data_var})")
-    else:
-        lines.append(f"plt.bar(range(len({data_var})), {data_var}.cpu().numpy() if hasattr({data_var}, 'cpu') else {data_var})")
-    lines += [
-        f"plt.title({title!r})",
-        "plt.tight_layout()",
-        "plt.show()",
-    ]
-    return lines
+def _load_runtime(project_dir: Path | None):
+    # Settings are created when app.config is imported, so apply the project
+    # override before importing any CodefyUI module.
+    if project_dir is not None:
+        os.environ["CODEFYUI_PROJECT_DIR"] = str(project_dir.resolve())
+
+    try:
+        from app.core import api_contract
+        from app.core.device_utils import describe_accelerator, resolve_device
+        from app.core.execution_context import ExecutionContext
+        from app.core.graph_engine import (
+            GraphValidationError,
+            build_preset_fallback,
+            execute_graph,
+            prepare_executable_graph,
+        )
+        from app.core.runtime import initialize_runtime
+    except (ImportError, ModuleNotFoundError) as exc:
+        missing = getattr(exc, "name", None) or str(exc)
+        raise RuntimeError(
+            "CodefyUI backend runtime is unavailable "
+            f"(failed import: {missing}). Run this file with the Python "
+            "environment from a compatible CodefyUI installation."
+        ) from exc
+
+    return (
+        api_contract,
+        describe_accelerator,
+        resolve_device,
+        ExecutionContext,
+        GraphValidationError,
+        build_preset_fallback,
+        execute_graph,
+        prepare_executable_graph,
+        initialize_runtime,
+    )
 
 
-def _gen_print(var: str, params: dict, inputs: dict[str, str]) -> list[str]:
-    label = params.get("label", "")
-    val_var = inputs.get("value", "value")
-    if label:
-        return [f'print(f"[{label}] {{{val_var}}}")']
-    return [f"print({val_var})"]
+def _print_problems(title: str, problems: list[Any]) -> None:
+    print(title, file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
 
 
-# ── Generator dispatch ────────────────────────────────────────────
+async def _run(args: argparse.Namespace) -> int:
+    try:
+        request_inputs = _load_inputs(args)
+        graph = json.loads(GRAPH_JSON)
+        has_graph_output = any(
+            node.get("type") == "GraphOutput" for node in graph["nodes"]
+        )
+        (
+            api_contract,
+            describe_accelerator,
+            resolve_device,
+            ExecutionContext,
+            GraphValidationError,
+            build_preset_fallback,
+            execute_graph,
+            prepare_executable_graph,
+            initialize_runtime,
+        ) = _load_runtime(args.project_dir)
+        discovery_stream = (
+            redirect_stdout(sys.stderr) if has_graph_output else nullcontext()
+        )
+        with discovery_stream:
+            initialize_runtime()
+    except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Exported graph setup failed: {exc}", file=sys.stderr)
+        if args.verbose:
+            raise
+        return 2
+
+    nodes = graph["nodes"]
+    edges = graph["edges"]
+    graph_name = graph.get("name", "Untitled")
+    preset_fallback = build_preset_fallback(graph.get("presets", []))
+
+    try:
+        preflight_stream = (
+            redirect_stdout(sys.stderr) if has_graph_output else nullcontext()
+        )
+        with preflight_stream:
+            prepare_executable_graph(
+                nodes,
+                edges,
+                preset_fallback=preset_fallback,
+            )
+    except GraphValidationError as exc:
+        print(f"Exported graph validation failed: {exc}", file=sys.stderr)
+        return 2
+
+    has_contract_nodes = any(
+        node.get("type") in ("GraphInput", "GraphOutput") for node in nodes
+    )
+    contract = api_contract.derive_contract(nodes) if has_contract_nodes else None
+
+    if contract is not None:
+        # A canvas-style graph may use GraphInput defaults without declaring a
+        # GraphOutput.  That is still runnable; ignore only that one API-contract
+        # complaint and retain every other name/type/default validation error.
+        contract_problems = [
+            problem
+            for problem in contract.problems
+            if not (
+                not has_graph_output
+                and problem.startswith("graph has no GraphOutput node")
+            )
+        ]
+        if contract_problems:
+            _print_problems("Graph I/O contract is invalid:", contract_problems)
+            return 2
+
+        wiring = api_contract.check_wiring(nodes, edges, contract)
+        wiring_problems = [
+            *(f"untriggered GraphInput: {name}" for name in wiring.untriggered),
+            *(f"unreachable GraphOutput: {name}" for name in wiring.unreachable),
+        ]
+        if wiring_problems:
+            _print_problems("Graph I/O wiring is invalid:", wiring_problems)
+            return 2
+
+    if request_inputs is not None:
+        if contract is None or not contract.inputs:
+            print(
+                "Inputs were supplied, but this graph has no GraphInput nodes.",
+                file=sys.stderr,
+            )
+            return 2
+        nodes, input_errors = api_contract.inject_inputs(
+            nodes, contract, request_inputs
+        )
+        if input_errors:
+            _print_problems("Graph inputs are invalid:", input_errors)
+            return 2
+
+    try:
+        requested_device = (args.device or "auto").strip().lower() or "auto"
+        resolved_device = (
+            describe_accelerator()["default"]
+            if requested_device == "auto"
+            else resolve_device(requested_device)
+        )
+        context = ExecutionContext(
+            device=resolved_device,
+            weights_persistent=False,
+            graph_id=f"export:{graph_name}",
+        )
+
+        def on_progress(
+            node_id: str, status: str, data: dict[str, Any] | None
+        ) -> None:
+            if args.verbose or status == "error":
+                suffix = ""
+                if status == "error" and data:
+                    suffix = f": {data.get('error', data)}"
+                print(f"[{node_id}] {status}{suffix}", file=sys.stderr)
+
+        # Contract runners reserve stdout for their final JSON object.  Nodes
+        # such as Print still remain visible on stderr, including when they run
+        # inside the engine's worker threads.
+        output_stream = redirect_stdout(sys.stderr) if has_graph_output else nullcontext()
+        with output_stream:
+            execution = execute_graph(
+                nodes,
+                edges,
+                on_progress=on_progress,
+                context=context,
+                error_mode="fail_fast",
+                preset_fallback=preset_fallback,
+            )
+            result = (
+                await execution
+                if args.timeout is None
+                else await asyncio.wait_for(execution, timeout=args.timeout)
+            )
+    except Exception as exc:
+        print(f"Graph execution failed: {exc}", file=sys.stderr)
+        if args.verbose:
+            raise
+        return 1
+
+    if has_graph_output and contract is not None:
+        collected, missing = api_contract.collect_outputs(contract, result)
+        if missing:
+            _print_problems("Graph outputs are missing:", missing)
+            return 1
+        try:
+            serialized = {
+                name: api_contract.serialize_output(value)
+                for name, value in collected.items()
+            }
+            output_json = json.dumps(
+                serialized,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        except Exception as exc:
+            print(f"Graph output serialization failed: {exc}", file=sys.stderr)
+            if args.verbose:
+                raise
+            return 1
+        print(output_json)
+
+    print(
+        f"CodefyUI graph {graph_name!r} completed on {resolved_device} "
+        f"({len(result)} node results).",
+        file=sys.stderr,
+    )
+    return 0
 
 
-_GENERATORS: dict[str, Any] = {
-    "SequentialModel": lambda v, p, i: _gen_sequential_model(v, p),
-    "Dataset": lambda v, p, i: _gen_dataset(v, p),
-    "DataLoader": _gen_dataloader,
-    "Optimizer": _gen_optimizer,
-    "Loss": lambda v, p, i: _gen_loss(v, p),
-    "TrainingLoop": _gen_training_loop,
-    "ModelSaver": _gen_model_saver,
-    "ModelLoader": _gen_model_loader,
-    "Inference": _gen_inference,
-    "Visualize": _gen_visualize,
-    "Print": _gen_print,
-}
-
-# Start is an execution-flow marker — it has no runtime representation in
-# the exported script, so we skip it silently rather than dumping a
-# placeholder comment.
-_SKIP_TYPES = {"Start"}
+def main() -> None:
+    args = _parser().parse_args()
+    raise SystemExit(asyncio.run(_run(args)))
 
 
-# ── Main entry point ─────────────────────────────────────────────
+if __name__ == "__main__":
+    main()
+'''
 
 
 def generate_python(
     nodes: list[dict],
     edges: list[dict],
-    order: list[str],
+    order: list[str] | None = None,
     name: str = "Untitled",
+    presets: list[dict] | None = None,
 ) -> str:
-    """Generate a runnable Python script from graph data."""
+    """Return a runnable Python script containing *nodes* and *edges*.
 
-    node_map = {n["id"]: n for n in nodes}
+    ``order`` remains accepted for compatibility with the original direct
+    code generator.  The production graph engine computes execution levels at
+    runtime, so source generation no longer turns node IDs into Python
+    variables or depends on this precomputed ordering.
+    """
 
-    # input_mapping[node_id][target_handle] = source variable name
-    input_mapping: dict[str, dict[str, str]] = {n["id"]: {} for n in nodes}
-
-    for nid in order:
-        node = node_map[nid]
-        ntype = node["type"]
-        var = _var(nid)
-
-        out_map: dict[str, str] = {}
-        if ntype == "SequentialModel":
-            out_map["model"] = var
-        elif ntype == "Dataset":
-            out_map["dataset"] = var
-        elif ntype == "DataLoader":
-            out_map["dataloader"] = var
-        elif ntype == "Optimizer":
-            out_map["optimizer"] = var
-        elif ntype == "Loss":
-            out_map["loss_fn"] = var
-        elif ntype == "TrainingLoop":
-            model_in = input_mapping[nid].get("model", "model")
-            out_map["model"] = model_in
-            out_map["losses"] = f"{var}_losses"
-        elif ntype == "ModelLoader":
-            model_in = input_mapping[nid].get("model", "model")
-            out_map["model"] = model_in
-        elif ntype == "ModelSaver":
-            model_in = input_mapping[nid].get("model", "model")
-            out_map["model"] = model_in
-            out_map["path"] = repr(node.get("data", {}).get("params", {}).get("path", "model_weights.pt"))
-        elif ntype == "Inference":
-            out_map["output"] = var
-            out_map["model"] = input_mapping[nid].get("model", "model")
-        elif ntype == "Visualize":
-            out_map["image"] = f"{var}_img"
-        elif ntype == "Print":
-            pass
-        else:
-            out_map["output"] = var
-
-        for edge in edges:
-            if edge["source"] != nid:
-                continue
-            if edge.get("type", "data") == "trigger":
-                continue
-            target = edge["target"]
-            src_handle = edge.get("sourceHandle", "output")
-            tgt_handle = edge.get("targetHandle", "input")
-            var_name = out_map.get(src_handle, var)
-            if target in input_mapping:
-                input_mapping[target][tgt_handle] = var_name
-
-    # ── Header (imports) ─────────────────────────────────────────────
-    needs_torch = False
-    needs_nn = False
-    needs_optim = False
-    needs_dataloader = False
-    needs_datasets = False
-    needs_transforms = False
-    needs_pyplot = False
-
-    for nid in order:
-        ntype = node_map[nid]["type"]
-        if ntype in ("SequentialModel", "Loss", "TrainingLoop", "Inference"):
-            needs_torch = True
-            needs_nn = True
-        if ntype == "Optimizer":
-            needs_torch = True
-            needs_optim = True
-        if ntype == "Dataset":
-            needs_datasets = True
-            needs_transforms = True
-        if ntype == "DataLoader":
-            needs_dataloader = True
-        if ntype in ("ModelSaver", "ModelLoader", "TrainingLoop"):
-            needs_torch = True
-        if ntype == "Visualize":
-            needs_pyplot = True
-
-    header: list[str] = [
-        '"""',
-        name,
-        "Auto-generated by CodefyUI",
-        '"""',
-        "",
-    ]
-    if needs_torch:
-        header.append("import torch")
-    if needs_nn:
-        header.append("import torch.nn as nn")
-    if needs_optim:
-        header.append("import torch.optim as optim")
-    if needs_dataloader:
-        header.append("from torch.utils.data import DataLoader")
-    if needs_datasets:
-        header.append("from torchvision import datasets")
-    if needs_transforms:
-        header.append("from torchvision import transforms")
-    if needs_pyplot:
-        header.append("import matplotlib.pyplot as plt")
-    header.append("")
-
-    # ── Body ────────────────────────────────────────────────────────
-    body: list[str] = []
-    for nid in order:
-        node = node_map[nid]
-        ntype = node["type"]
-        if ntype in _SKIP_TYPES:
-            continue
-        params = node.get("data", {}).get("params", {})
-        var = _var(nid)
-        inputs = input_mapping.get(nid, {})
-
-        gen = _GENERATORS.get(ntype)
-        if gen:
-            body.append("")
-            body.extend(gen(var, params, inputs))
-        else:
-            body.append("")
-            body.append(f"# TODO: {ntype} (id: {nid}) — no codegen template yet, please implement manually.")
-            if params:
-                body.append(f"# params: {params}")
-            body.append(f"{var} = None")
-
-    return "\n".join(header + body) + "\n"
+    del order
+    graph = {"name": name, "nodes": nodes, "edges": edges}
+    if presets:
+        graph["presets"] = presets
+    graph_json = json.dumps(
+        graph,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return _SCRIPT_TEMPLATE.replace(_GRAPH_JSON_SENTINEL, repr(graph_json), 1)

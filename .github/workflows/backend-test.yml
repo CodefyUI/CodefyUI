@@ -12,12 +12,16 @@ on:
   pull_request:
     paths:
       - 'backend/**'
+      - 'examples/**'
+      - 'plugins/**'
       - '.github/workflows/backend-test.yml'
   push:
     branches:
       - main
     paths:
       - 'backend/**'
+      - 'examples/**'
+      - 'plugins/**'
       - '.github/workflows/backend-test.yml'
   workflow_dispatch:
 

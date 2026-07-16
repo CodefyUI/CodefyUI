@@ -7,7 +7,10 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
 from ..core.node_registry import registry
-from ..core.secret_params import scrub_graph_secrets
+from ..core.secret_params import (
+    scrub_graph_secrets,
+    scrub_preset_definition_secrets,
+)
 from ..schemas import GraphData, GraphValidationResponse
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -115,7 +118,12 @@ async def save_graph(graph: GraphData):
     payload = graph.model_dump()
     # Defense-in-depth: even if a client bypasses the editor (which already
     # blanks SECRET params before sending), never write a secret to disk.
-    scrub_graph_secrets(payload.get("nodes", []))
+    portable_presets = payload.get("presets", [])
+    scrub_preset_definition_secrets(portable_presets)
+    scrub_graph_secrets(
+        payload.get("nodes", []),
+        preset_fallback=build_preset_fallback(portable_presets),
+    )
     if _project_mode():
         from ..core.project import write_graph_pair
         logic_path = _graph_logic_path(graph.name)
@@ -207,43 +215,48 @@ async def list_graphs():
 
 @router.post("/export")
 async def export_graph(graph: GraphData):
-    """Export graph as a standalone Python script."""
+    """Export a graph as a single-file, headless CodefyUI Python runner."""
     from ..core.codegen import generate_python
-    from ..core.graph_engine import expand_presets, topological_sort
+    from ..core.graph_engine import prepare_executable_graph
 
-    nodes = [n.model_dump() for n in graph.nodes]
-    edges = [e.model_dump() for e in graph.edges]
+    # Notes are persisted layout annotations, not executable nodes.  The
+    # canvas execution path filters them too; accept saved/imported graph JSON
+    # directly instead of making API callers duplicate that UI-only cleanup.
+    note_ids = {node.id for node in graph.nodes if node.type == "note"}
+    nodes = [n.model_dump() for n in graph.nodes if n.id not in note_ids]
+    edges = [
+        e.model_dump()
+        for e in graph.edges
+        if e.source not in note_ids and e.target not in note_ids
+    ]
 
-    # M4: parity with /save — never echo a SECRET param value into exported
-    # source. codegen emits raw params in a comment for node types without a
-    # template (e.g. LLMChat), so scrub before validation/expansion/codegen.
-    # Scrubbing pre-expansion also blanks any secret embedded in a preset
-    # node's internalParams before expand_presets injects it downstream.
-    scrub_graph_secrets(nodes)
+    # M4: parity with /save — never embed a SECRET param value. Portable
+    # definitions carry defaults separately, while preset instances carry
+    # per-inner-node overrides in internalParams, so scrub both representations.
+    presets = [p.model_dump() for p in graph.presets]
+    scrub_preset_definition_secrets(presets)
+    preset_fallback = build_preset_fallback(presets)
+    scrub_graph_secrets(nodes, preset_fallback=preset_fallback)
 
-    # ID6: the graph's own presets[] resolve even when the server's preset
-    # registry doesn't know them (portability).
-    preset_fallback = build_preset_fallback([p.model_dump() for p in graph.presets])
-
-    # Validate the user-authored graph (presets are validated against the
-    # preset registry rather than expanded here).
-    errors = validate_graph(nodes, edges, preset_fallback=preset_fallback)
-    if errors:
-        raise HTTPException(status_code=400, detail=errors)
-
-    # Expand preset:* nodes into their real sub-graphs so codegen sees the
-    # actual training nodes (Dataset, DataLoader, Optimizer, Loss, etc.).
     try:
-        for _ in range(10):  # support nested presets, same depth cap as execution
-            if not any(n.get("type", "").startswith("preset:") for n in nodes):
-                break
-            nodes, edges, _ = expand_presets(nodes, edges, preset_fallback=preset_fallback)
+        prepare_executable_graph(
+            nodes,
+            edges,
+            preset_fallback=preset_fallback,
+        )
     except GraphValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     try:
-        order = topological_sort(nodes, edges)
-        script = generate_python(nodes, edges, order, name=graph.name)
+        script = generate_python(
+            nodes,
+            edges,
+            name=graph.name,
+            presets=presets,
+        )
+        # A successful response must never download syntactically broken
+        # Python, even if a future template edit regresses quoting/bracketing.
+        compile(script, "<CodefyUI Python export>", "exec")
     except GraphValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

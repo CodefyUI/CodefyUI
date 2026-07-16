@@ -293,9 +293,13 @@ def _has_cycle(nodes: list[dict], edges: list[dict]) -> bool:
     for edge in edges:
         if edge.get("type", "data") == "trigger":
             continue  # markers, not dependencies
+        if edge["source"] not in in_degree or edge["target"] not in in_degree:
+            # Edge validation already reports missing endpoints. Keep cycle
+            # detection total so a malformed edge produces a clean 4xx error
+            # instead of a secondary KeyError.
+            continue
         adj[edge["source"]].append(edge["target"])
-        if edge["target"] in in_degree:
-            in_degree[edge["target"]] += 1
+        in_degree[edge["target"]] += 1
 
     queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
     visited = 0
@@ -427,6 +431,88 @@ def topological_levels(nodes: list[dict], edges: list[dict]) -> list[list[str]]:
     return levels
 
 
+def prepare_executable_graph(
+    nodes: list[dict],
+    edges: list[dict],
+    *,
+    preset_fallback: dict | None = None,
+) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Expand presets, prune draft components, and validate runtime input.
+
+    This is the structural preflight used immediately before execution. It is
+    also safe for callers such as Python export that need the exact same preset
+    grouping and draft-pruning semantics without actually running any nodes.
+    """
+
+    internal_to_preset: dict[str, str] = {}
+    expanded_nodes, expanded_edges = nodes, edges
+    for _ in range(10):
+        if not any(
+            node.get("type", "").startswith("preset:")
+            for node in expanded_nodes
+        ):
+            break
+        expanded_nodes, expanded_edges, mapping = expand_presets(
+            expanded_nodes,
+            expanded_edges,
+            preset_fallback=preset_fallback,
+        )
+        internal_to_preset.update(mapping)
+
+    if any(
+        node.get("type", "").startswith("preset:")
+        for node in expanded_nodes
+    ):
+        raise GraphValidationError("Preset nesting exceeds the maximum depth of 10")
+
+    entry_ids = find_entry_points(expanded_nodes, expanded_edges)
+    if not entry_ids:
+        raise GraphValidationError("Graph has no entry points")
+
+    executable_ids = reachable_from_entry_points(entry_ids, expanded_edges)
+
+    # Preserve Start markers whose trigger targets are executable so the
+    # validation pass sees the same entry points.
+    for edge in expanded_edges:
+        if (
+            edge.get("type", "data") == "trigger"
+            and edge["target"] in executable_ids
+        ):
+            executable_ids.add(edge["source"])
+
+    # A preset is one logical unit. If any internal node is reachable, retain
+    # all sibling roots (for example Dataset and Loss in a training preset).
+    presets_to_include = {
+        preset_id
+        for internal_id, preset_id in internal_to_preset.items()
+        if internal_id in executable_ids
+    }
+    executable_ids.update(
+        internal_id
+        for internal_id, preset_id in internal_to_preset.items()
+        if preset_id in presets_to_include
+    )
+
+    executable_nodes = [
+        node for node in expanded_nodes if node["id"] in executable_ids
+    ]
+    executable_edges = [
+        edge
+        for edge in expanded_edges
+        if edge["source"] in executable_ids and edge["target"] in executable_ids
+    ]
+
+    errors = validate_graph(
+        executable_nodes,
+        executable_edges,
+        preset_fallback=preset_fallback,
+    )
+    if errors:
+        raise GraphValidationError("; ".join(errors))
+
+    return executable_nodes, executable_edges, internal_to_preset
+
+
 async def execute_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -463,63 +549,11 @@ async def execute_graph(
     """
     from .execution_context import CancellationError
 
-    # Expand preset nodes iteratively (handles nested presets)
-    internal_to_preset: dict[str, str] = {}
-    expanded_nodes, expanded_edges = nodes, edges
-    for _ in range(10):  # max nesting depth
-        has_preset = any(n.get("type", "").startswith("preset:") for n in expanded_nodes)
-        if not has_preset:
-            break
-        expanded_nodes, expanded_edges, mapping = expand_presets(
-            expanded_nodes, expanded_edges, preset_fallback=preset_fallback)
-        internal_to_preset.update(mapping)
-
-    # Filter to the executable subgraph: the nodes reachable from any entry
-    # point via data edges (plus the entry points themselves). Draft
-    # components (graph fragments with no entry point) are silently skipped.
-    entry_ids = find_entry_points(expanded_nodes, expanded_edges)
-    if not entry_ids:
-        # validate_graph would catch this, but defend in depth.
-        raise GraphValidationError("Graph has no entry points")
-
-    executable_ids = reachable_from_entry_points(entry_ids, expanded_edges)
-
-    # Include Start nodes whose trigger targets are executable, so that
-    # trigger edges are preserved for validate_graph's entry-point detection.
-    for e in expanded_edges:
-        if e.get("type", "data") == "trigger" and e["target"] in executable_ids:
-            executable_ids.add(e["source"])
-
-    # Every execution path must originate from a Start node: a node is only
-    # executable if it (or an upstream node along its data path) carries an
-    # incoming trigger edge. Producers with no trigger — even ones that feed a
-    # required input of an otherwise-reachable node — are NOT auto-included;
-    # the user must wire a Start node into that producer to run it. This keeps
-    # the entry-point contract simple: if it's not reachable from a Start, it
-    # doesn't run (validate_graph will then flag any missing required input).
-
-    # If any internal node of a preset is reachable, include ALL sibling
-    # nodes from that preset.  A preset is a logical unit — its internal
-    # root nodes (e.g. Dataset, Loss) have no incoming external edges and
-    # would otherwise be pruned, breaking the internal wiring.
-    presets_to_include: set[str] = set()
-    for internal_id, preset_id in internal_to_preset.items():
-        if internal_id in executable_ids:
-            presets_to_include.add(preset_id)
-    for internal_id, preset_id in internal_to_preset.items():
-        if preset_id in presets_to_include:
-            executable_ids.add(internal_id)
-
-    expanded_nodes = [n for n in expanded_nodes if n["id"] in executable_ids]
-    expanded_edges = [
-        e
-        for e in expanded_edges
-        if e["source"] in executable_ids and e["target"] in executable_ids
-    ]
-
-    errors = validate_graph(expanded_nodes, expanded_edges, preset_fallback=preset_fallback)
-    if errors:
-        raise GraphValidationError("; ".join(errors))
+    expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
+        nodes,
+        edges,
+        preset_fallback=preset_fallback,
+    )
 
     levels = topological_levels(expanded_nodes, expanded_edges)
     node_map = {n["id"]: n for n in expanded_nodes}

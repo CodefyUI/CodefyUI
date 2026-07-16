@@ -21,7 +21,7 @@ untouched.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .node_base import ParamType
 from .node_registry import registry
@@ -63,7 +63,10 @@ def _internal_params_of(node: dict[str, Any]) -> dict[str, Any] | None:
     return internal if isinstance(internal, dict) else None
 
 
-def _preset_secret_param_map(node_type: str) -> dict[str, set[str]]:
+def _preset_secret_param_map(
+    node_type: str,
+    preset_fallback: Mapping[str, Any] | None = None,
+) -> dict[str, set[str]]:
     """For a ``preset:<name>`` node type, map each internal node id to the
     set of its SECRET-typed param names.
 
@@ -83,14 +86,34 @@ def _preset_secret_param_map(node_type: str) -> dict[str, set[str]]:
     # lazy-import pattern for exactly this reason).
     from .preset_registry import preset_registry
 
-    preset = preset_registry.get(node_type[len("preset:"):])
-    if preset is None:
+    preset_name = node_type[len("preset:"):]
+    registered = preset_registry.get(preset_name)
+    fallback = (preset_fallback or {}).get(preset_name)
+    candidates = [p for p in (registered, fallback) if p is not None]
+    if not candidates:
         return {}
     result: dict[str, set[str]] = {}
-    for internal in preset.nodes:
-        names = secret_param_names(internal.type)
-        if names:
-            result[internal.id] = names
+    # For execution, an installed preset intentionally wins over a portable
+    # same-name fallback. For scrubbing, take the union: the downloaded graph
+    # may later run on a machine where only the embedded definition exists.
+    for preset in candidates:
+        internal_nodes = (
+            preset.get("nodes", []) if isinstance(preset, dict) else preset.nodes
+        )
+        for internal in internal_nodes:
+            internal_type = (
+                internal.get("type", "")
+                if isinstance(internal, dict)
+                else internal.type
+            )
+            internal_id = (
+                internal.get("id", "")
+                if isinstance(internal, dict)
+                else internal.id
+            )
+            names = secret_param_names(internal_type)
+            if names:
+                result.setdefault(internal_id, set()).update(names)
     return result
 
 
@@ -106,7 +129,11 @@ def _is_nonempty_secret(value: Any) -> bool:
     return bool(value)
 
 
-def scrub_graph_secrets(nodes: Iterable[dict[str, Any]]) -> int:
+def scrub_graph_secrets(
+    nodes: Iterable[dict[str, Any]],
+    *,
+    preset_fallback: Mapping[str, Any] | None = None,
+) -> int:
     """Blank every SECRET-typed param value in ``nodes`` (in place).
 
     Returns the number of values changed. Only params that are both
@@ -128,7 +155,7 @@ def scrub_graph_secrets(nodes: Iterable[dict[str, Any]]) -> int:
         # Preset node: blank SECRET params embedded per inner node in
         # data.internalParams (secret_param_names is empty for a preset:*
         # type, so the block above no-ops for it — no double counting).
-        preset_secrets = _preset_secret_param_map(node_type)
+        preset_secrets = _preset_secret_param_map(node_type, preset_fallback)
         if preset_secrets:
             internal_params = _internal_params_of(node)
             if internal_params is not None:
@@ -140,6 +167,35 @@ def scrub_graph_secrets(nodes: Iterable[dict[str, Any]]) -> int:
                         if name in inner and _is_nonempty_secret(inner[name]):
                             inner[name] = ""
                             changed += 1
+    return changed
+
+
+def scrub_preset_definition_secrets(
+    presets: Iterable[dict[str, Any]],
+) -> int:
+    """Blank SECRET defaults stored in portable preset definitions.
+
+    ``scrub_graph_secrets`` handles instantiated graph nodes and a preset
+    node's ``internalParams`` overrides. A portable graph can additionally
+    carry defaults in ``presets[].nodes[].params``; those definitions are
+    serialized separately and therefore need this matching pass.
+    """
+
+    changed = 0
+    for preset in presets:
+        internal_nodes = preset.get("nodes")
+        if not isinstance(internal_nodes, list):
+            continue
+        for internal in internal_nodes:
+            if not isinstance(internal, dict):
+                continue
+            params = internal.get("params")
+            if not isinstance(params, dict):
+                continue
+            for name in secret_param_names(str(internal.get("type", ""))):
+                if name in params and _is_nonempty_secret(params[name]):
+                    params[name] = ""
+                    changed += 1
     return changed
 
 

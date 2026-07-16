@@ -118,6 +118,7 @@ describe('Toolbar', () => {
     // does not reset factory mocks, so clear its call history each test to
     // keep per-test "was/was not called" assertions order-independent.
     mockedRest.saveGraph.mockClear();
+    mockedRest.exportGraph.mockReset();
 
     mockedExportDiagram.svgToPngBlob.mockReset();
     mockedExportDiagram.svgToPngBlob.mockResolvedValue(new Blob(['png'], { type: 'image/png' }));
@@ -986,6 +987,19 @@ describe('Toolbar', () => {
     expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
   });
 
+  it('Export Python: a canvas with only notes warns and does not call the API', () => {
+    setActiveTab({
+      nodes: [
+        { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: { type: 'note', params: {} } },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(true);
+    expect(mockedRest.exportGraph).not.toHaveBeenCalled();
+  });
+
   it('Export Python: success downloads the script', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
     setActiveTab({
@@ -998,6 +1012,50 @@ describe('Toolbar', () => {
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
   });
 
+  it('Export Python: filters notes and sends embedded presets', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
+    const preset = {
+      preset_name: 'Portable',
+      category: 'Test',
+      description: '',
+      tags: [],
+      nodes: [],
+      edges: [],
+      exposed_inputs: [],
+      exposed_outputs: [],
+      exposed_params: [],
+    };
+    setActiveTab({
+      nodes: [
+        {
+          id: 'preset1',
+          type: 'baseNode',
+          position: { x: 0, y: 0 },
+          data: {
+            type: 'preset:Portable',
+            params: {},
+            isPreset: true,
+            presetDefinition: preset,
+            internalParams: {},
+          },
+        },
+        { id: 'note1', type: 'noteNode', position: { x: 0, y: 0 }, data: { type: 'note', params: {} } },
+      ],
+      edges: [
+        { id: 'note-edge', source: 'preset1', target: 'note1', sourceHandle: 'x', targetHandle: 'y' },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
+    const [nodes, edges, name, presets] = mockedRest.exportGraph.mock.calls[0];
+    expect(nodes.map((node: any) => node.id)).toEqual(['preset1']);
+    expect(edges).toEqual([]);
+    expect(name).toBe('My Graph');
+    expect(presets).toEqual([preset]);
+  });
+
   it('Export Python: uses "graph" fallback when tab name empty', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
@@ -1007,7 +1065,9 @@ describe('Toolbar', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
-    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'graph'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'graph', [],
+    ));
   });
 
   it('Export Python: exportGraph rejection toasts error', async () => {

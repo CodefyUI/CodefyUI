@@ -279,7 +279,7 @@ Hot-reload via `POST /api/nodes/reload` or the **Reload Nodes** button in the to
 | `/api/graph/save` | POST | Save a graph |
 | `/api/graph/load/{name}` | GET | Load a saved graph |
 | `/api/graph/list` | GET | List saved graphs |
-| `/api/graph/export` | POST | Export graph as Python script |
+| `/api/graph/export` | POST | Export a single-file headless Python runner (CodefyUI backend environment required) |
 | `/api/examples/list` | GET | List example graphs |
 | `/api/examples/load` | GET | Load an example graph |
 | `/api/custom-nodes` | GET | List custom nodes |
