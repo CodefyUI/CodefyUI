@@ -8,9 +8,8 @@ const NODE_H = 80;
 const NODESEP = 40;
 const RANKSEP = 80;
 const LANE_GAP = 60;
-const TARGET_ROW_WIDTH = 2400;
-const ROW_GAP = 120;
-const MIN_NODES_FOR_WRAP = 4;
+const VALLEY_MIN_SPAN = 3;
+const VALLEY_GAP = 60;
 
 function getLayoutConfig(nodeCount: number): { nodesep: number; ranksep: number } {
   if (nodeCount > 50) return { nodesep: 28, ranksep: 56 };
@@ -101,81 +100,139 @@ interface LaidOutComponent {
   bounds: { minY: number; maxY: number };
 }
 
+export type ValleyEdge = {
+  source: string;
+  target: string;
+  type?: string;
+  data?: unknown;
+  sourceHandle?: string | null;
+};
+
+export function isTriggerEdge(e: ValleyEdge): boolean {
+  return (
+    e.type === 'triggerEdge' ||
+    (e.data as { type?: string } | undefined)?.type === 'trigger' ||
+    e.sourceHandle === 'trigger'
+  );
+}
+
+type ValleyPos = { x: number; y: number; width: number; height: number };
+
 /**
- * If a component's trunk exceeds TARGET_ROW_WIDTH, split its ranks into multiple
- * rows and shift each row downward. Keeps intra-rank lane layout intact (nodes
- * sharing a rank stay vertically aligned).
+ * Skip-aware "valley" pass (replaces the old width wrapping). Ranks spanned by
+ * a skip connection are shifted along the cross axis, so the trunk dips under
+ * its skips: a UNet reads as a U, residual blocks as small dips, and graphs
+ * without skips are returned untouched. A skip is a non-trigger edge whose
+ * endpoints both lie on the spine (longest forward path) and whose rank span
+ * is at least `minSpan`. Cycle-safe: only forward edges (rank increasing) are
+ * walked, so back edges are simply ignored.
  */
-function wrapIntoGrid(
-  positions: Map<string, { x: number; y: number; width: number; height: number }>,
-): Map<string, { x: number; y: number; width: number; height: number }> {
-  if (positions.size < MIN_NODES_FOR_WRAP) return positions;
+export function applyValleyPass(
+  positions: Map<string, ValleyPos>,
+  edges: ValleyEdge[],
+  opts: {
+    axis: 'y' | 'x';
+    skipPredicate?: (e: ValleyEdge) => boolean;
+    minSpan?: number;
+    gap?: number;
+  },
+): Map<string, ValleyPos> {
+  const { axis, skipPredicate = () => true, minSpan = VALLEY_MIN_SPAN, gap = VALLEY_GAP } = opts;
+  if (positions.size === 0) return positions;
 
-  const values = Array.from(positions.values());
-  let minX = Infinity;
-  let maxX = -Infinity;
-  for (const p of values) {
-    if (p.x < minX) minX = p.x;
-    if (p.x + p.width > maxX) maxX = p.x + p.width;
+  // 1. Geometric ranks: cluster distinct centers along the flow axis. Dagre
+  //    gives every node of a rank the same center coordinate, so this recovers
+  //    true ranks regardless of node sizes or spacing tier.
+  const centerOf = (p: ValleyPos) => (axis === 'y' ? p.x + p.width / 2 : p.y + p.height / 2);
+  const centers = Array.from(positions.values(), centerOf).sort((a, b) => a - b);
+  const rankCenters: number[] = [];
+  for (const c of centers) {
+    if (rankCenters.length === 0 || c - rankCenters[rankCenters.length - 1] > 1) {
+      rankCenters.push(c);
+    }
   }
-  const width = maxX - minX;
-  if (width <= TARGET_ROW_WIDTH) return positions;
-
-  const rankUnit = NODE_W + RANKSEP;
-  const rankSet = new Set<number>();
   const rankOf = new Map<string, number>();
   for (const [id, p] of positions) {
-    const rank = Math.round((p.x - minX) / rankUnit);
-    rankOf.set(id, rank);
-    rankSet.add(rank);
-  }
-  // width > TARGET_ROW_WIDTH implies nodes exist, so rankSet.size is always ≥ 1
-  /* v8 ignore start */
-  const totalRanks = rankSet.size || 1;
-  /* v8 ignore stop */
-  const maxRanksPerRow = Math.max(1, Math.floor(TARGET_ROW_WIDTH / rankUnit));
-  if (totalRanks <= maxRanksPerRow) return positions;
-
-  const rowCount = Math.ceil(totalRanks / maxRanksPerRow);
-  const ranksPerRow = Math.ceil(totalRanks / rowCount);
-  const rowWidth = ranksPerRow * rankUnit;
-
-  const rowOf = new Map<string, number>();
-  for (const [id, rank] of rankOf) {
-    const row = Math.min(rowCount - 1, Math.floor(rank / ranksPerRow));
-    rowOf.set(id, row);
-  }
-
-  const rowYOffset: number[] = new Array(rowCount).fill(0);
-  let cumY = 0;
-  for (let r = 0; r < rowCount; r++) {
-    let rMinY = Infinity;
-    let rMaxY = -Infinity;
-    for (const [id, p] of positions) {
-      if (rowOf.get(id) !== r) continue;
-      if (p.y < rMinY) rMinY = p.y;
-      if (p.y + p.height > rMaxY) rMaxY = p.y + p.height;
+    const c = centerOf(p);
+    let lo = 0;
+    let hi = rankCenters.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rankCenters[mid] < c - 1) lo = mid + 1;
+      else hi = mid;
     }
-    // Every intermediate grid row gets at least one rank, so a row is never empty
-    /* v8 ignore start */
-    if (rMinY === Infinity) {
-      rMinY = 0;
-      rMaxY = 0;
+    rankOf.set(id, lo);
+  }
+  const maxRank = rankCenters.length - 1;
+  if (maxRank < minSpan) return positions;
+
+  // 2. Spine: longest path over FORWARD edges (rank strictly increasing),
+  //    deterministic tie-break by id.
+  const ids = Array.from(positions.keys()).sort();
+  const byRank = ids
+    .slice()
+    .sort((a, b) => rankOf.get(a)! - rankOf.get(b)! || a.localeCompare(b));
+  const forwardIn = new Map<string, string[]>(ids.map((id) => [id, []]));
+  for (const e of edges) {
+    if (!positions.has(e.source) || !positions.has(e.target)) continue;
+    if (rankOf.get(e.target)! > rankOf.get(e.source)!) {
+      forwardIn.get(e.target)!.push(e.source);
     }
-    /* v8 ignore stop */
-    rowYOffset[r] = cumY - rMinY;
-    cumY += rMaxY - rMinY + ROW_GAP;
+  }
+  const pathLen = new Map<string, number>();
+  const pred = new Map<string, string | null>();
+  for (const id of byRank) {
+    let best = 0;
+    let bestPred: string | null = null;
+    for (const p of forwardIn.get(id)!.sort()) {
+      const cand = pathLen.get(p)! + 1;
+      if (cand > best) {
+        best = cand;
+        bestPred = p;
+      }
+    }
+    pathLen.set(id, best);
+    pred.set(id, bestPred);
+  }
+  let tail = ids[0];
+  for (const id of ids) {
+    if (
+      pathLen.get(id)! > pathLen.get(tail)! ||
+      (pathLen.get(id) === pathLen.get(tail) && id < tail)
+    ) {
+      tail = id;
+    }
+  }
+  const spine = new Set<string>();
+  for (let cur: string | null = tail; cur !== null; cur = pred.get(cur) ?? null) {
+    spine.add(cur);
   }
 
-  const result = new Map<string, { x: number; y: number; width: number; height: number }>();
+  // 3. Skips: eligible edges with both endpoints on the spine spanning >= minSpan.
+  const coverage = new Array(maxRank + 1).fill(0);
+  let hasSkip = false;
+  for (const e of edges) {
+    if (!skipPredicate(e)) continue;
+    if (!spine.has(e.source) || !spine.has(e.target)) continue;
+    // Off-map endpoints are filtered by the spine check (spine ⊆ positions keys)
+    const rs = rankOf.get(e.source)!;
+    const rt = rankOf.get(e.target)!;
+    if (rt - rs < minSpan) continue;
+    hasSkip = true;
+    for (let r = rs + 1; r < rt; r++) coverage[r]++;
+  }
+  if (!hasSkip) return positions;
+
+  // 4. Shift whole ranks along the cross axis by coverage * step.
+  let maxCross = 0;
+  for (const p of positions.values()) {
+    maxCross = Math.max(maxCross, axis === 'y' ? p.height : p.width);
+  }
+  const step = maxCross + gap;
+  const result = new Map<string, ValleyPos>();
   for (const [id, p] of positions) {
-    const row = rowOf.get(id)!;
-    result.set(id, {
-      x: p.x - row * rowWidth,
-      y: p.y + rowYOffset[row],
-      width: p.width,
-      height: p.height,
-    });
+    const shift = coverage[rankOf.get(id)!] * step;
+    result.set(id, axis === 'y' ? { ...p, y: p.y + shift } : { ...p, x: p.x + shift });
   }
   return result;
 }
@@ -269,7 +326,10 @@ export function autoLayout(
   // Lay out each component independently
   const laidOut: LaidOutComponent[] = componentIds.map((ids) => {
     const rawPositions = layoutComponentWithDagre(ids, nodes, edges);
-    const positions = wrapIntoGrid(rawPositions);
+    const positions = applyValleyPass(rawPositions, edges, {
+      axis: 'y',
+      skipPredicate: (e) => !isTriggerEdge(e),
+    });
     const ys = Array.from(positions.values()).map((p) => p.y);
     const heights = Array.from(positions.values()).map((p) => p.height);
     const minY = Math.min(...ys);

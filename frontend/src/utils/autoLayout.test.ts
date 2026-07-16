@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { autoLayout } from './autoLayout';
+import { autoLayout, applyValleyPass, isTriggerEdge, type ValleyEdge } from './autoLayout';
 import type { Node, Edge } from '@xyflow/react';
 
 function makeStartNode(id: string, x = 0, y = 0): Node {
@@ -206,24 +206,6 @@ describe('autoLayout', () => {
     expect(result[0].position).toEqual({ x: 1, y: 1 });
   });
 
-  it('long chain exceeding the row-width budget wraps into a multi-row grid', () => {
-    // rankUnit = NODE_W(200)+RANKSEP(80) = 280; TARGET_ROW_WIDTH = 2400.
-    // A 14-node chain has a pre-wrap trunk far wider than 2400 → wrapIntoGrid runs.
-    const N = 14;
-    const ids = Array.from({ length: N }, (_, i) => `c${i}`);
-    const nodes = ids.map((id) => makeNode(id));
-    const edges = ids.slice(1).map((id, i) => makeEdge(`e${i}`, ids[i], id));
-    const result = autoLayout(nodes, edges, 'all');
-    const ys = result.map((n) => n.position.y);
-    const yRange = Math.max(...ys) - Math.min(...ys);
-    // Wrapping pushes later ranks onto new rows → vertical spread well beyond one node.
-    expect(yRange).toBeGreaterThan(100);
-    for (const n of result) {
-      expect(Number.isFinite(n.position.x)).toBe(true);
-      expect(Number.isFinite(n.position.y)).toBe(true);
-    }
-  });
-
   it('excludes note nodes from layout in mode=all and leaves unbound notes put', () => {
     const nodes = [
       makeStartNode('s'),
@@ -343,27 +325,6 @@ describe('autoLayout', () => {
     expect(result).toHaveLength(N);
   });
 
-  it('skips grid wrapping when the trunk is wide but has few ranks', () => {
-    // 5 very wide nodes: pre-wrap pixel width exceeds TARGET_ROW_WIDTH (2400) so
-    // the width guard passes, but there are only ~5 distinct ranks (<= the
-    // maxRanksPerRow budget of 8) → wrapIntoGrid returns the positions as-is and
-    // everything stays on a single row band.
-    const widths = [700, 700, 700, 700, 700];
-    const ids = widths.map((_, i) => `w${i}`);
-    const nodes: Node[] = widths.map((w, i) => ({
-      id: ids[i],
-      position: { x: 0, y: 0 },
-      data: { id: ids[i], type: 'Dataset' },
-      type: 'baseNode',
-      width: w,
-      height: 80,
-    }));
-    const edges = ids.slice(1).map((id, i) => makeEdge(`e${i}`, ids[i], id));
-    const result = autoLayout(nodes, edges, 'all');
-    const yBands = new Set(result.map((n) => Math.round(n.position.y)));
-    expect(yBands.size).toBe(1);
-  });
-
   it('selected mode falls back to default dimensions for bare nodes when centering', () => {
     // Bare nodes (no measured/width/height) force the NODE_W / NODE_H fallbacks
     // in both the original-centroid and new-centroid calculations.
@@ -418,5 +379,163 @@ describe('autoLayout', () => {
     const liveY = result.find((n) => n.id === 'live')!.position.y;
     const draftAY = result.find((n) => n.id === 'draftA')!.position.y;
     expect(liveY).toBeLessThan(draftAY);
+  });
+});
+
+describe('applyValleyPass (unit)', () => {
+  const W = 200;
+  const H = 80;
+  const UNIT = 280;
+  const STEP = H + 60; // max node height in set + default gap
+
+  type Pos = { x: number; y: number; width: number; height: number };
+  // Hand-built layered positions: n0..n{k-1} left-to-right, all at y=0.
+  function chainPositions(k: number): Map<string, Pos> {
+    const m = new Map<string, Pos>();
+    for (let i = 0; i < k; i++) m.set(`n${i}`, { x: i * UNIT, y: 0, width: W, height: H });
+    return m;
+  }
+  function chainEdges(k: number, skips: Array<[number, number]> = []): ValleyEdge[] {
+    const edges: ValleyEdge[] = [];
+    for (let i = 0; i < k - 1; i++) edges.push({ source: `n${i}`, target: `n${i + 1}` });
+    for (const [a, b] of skips) edges.push({ source: `n${a}`, target: `n${b}` });
+    return edges;
+  }
+  const yOf = (m: Map<string, Pos>, id: string) => m.get(id)!.y;
+
+  it('no skips -> returns the input unchanged (identity)', () => {
+    const positions = chainPositions(10);
+    const result = applyValleyPass(positions, chainEdges(10), { axis: 'y' });
+    expect(result).toBe(positions);
+  });
+
+  it('UNet-style nested skips: exact staircase, level skip endpoints', () => {
+    // outer n1->n13 covers ranks 2..12; inner n4->n10 covers ranks 5..9.
+    const result = applyValleyPass(chainPositions(18), chainEdges(18, [[1, 13], [4, 10]]), {
+      axis: 'y',
+    });
+    expect(yOf(result, 'n0')).toBe(0);
+    expect(yOf(result, 'n1')).toBe(0);
+    expect(yOf(result, 'n13')).toBe(0); // outer endpoints level
+    expect(yOf(result, 'n2')).toBe(STEP); // under outer only
+    expect(yOf(result, 'n4')).toBe(STEP); // inner endpoints level...
+    expect(yOf(result, 'n10')).toBe(STEP);
+    expect(yOf(result, 'n7')).toBe(2 * STEP); // under both
+    expect(yOf(result, 'n15')).toBe(0); // tail back to top
+  });
+
+  it('sequential residuals (ResNet-style) dip independently to equal depth', () => {
+    const result = applyValleyPass(chainPositions(14), chainEdges(14, [[1, 5], [6, 10]]), {
+      axis: 'y',
+    });
+    expect(yOf(result, 'n3')).toBe(STEP); // inside block 1
+    expect(yOf(result, 'n8')).toBe(STEP); // inside block 2
+    expect(yOf(result, 'n5')).toBe(0); // between blocks
+    expect(yOf(result, 'n0')).toBe(0);
+    expect(yOf(result, 'n13')).toBe(0);
+  });
+
+  it('short span (< 3) does not dip', () => {
+    const positions = chainPositions(8);
+    const result = applyValleyPass(positions, chainEdges(8, [[2, 4]]), { axis: 'y' });
+    expect(result).toBe(positions);
+  });
+
+  it('skips whose endpoint is off the spine are ignored', () => {
+    // t sits beside rank 2 and feeds n6/n10: long spans, but t is off-spine.
+    const positions = chainPositions(12);
+    positions.set('t', { x: 2 * UNIT, y: 300, width: W, height: H });
+    const edges = [
+      ...chainEdges(12),
+      { source: 'n1', target: 't' },
+      { source: 't', target: 'n6' },
+      { source: 't', target: 'n10' },
+    ];
+    const result = applyValleyPass(positions, edges, { axis: 'y' });
+    expect(result).toBe(positions);
+  });
+
+  it('skipPredicate excludes trigger edges', () => {
+    const positions = chainPositions(10);
+    const edges: ValleyEdge[] = [...chainEdges(10), { source: 'n1', target: 'n8', type: 'triggerEdge' }];
+    const result = applyValleyPass(positions, edges, {
+      axis: 'y',
+      skipPredicate: (e) => !isTriggerEdge(e),
+    });
+    expect(result).toBe(positions);
+  });
+
+  it('axis "x" transposes the shift for TB layouts', () => {
+    const m = new Map<string, Pos>();
+    for (let i = 0; i < 10; i++) m.set(`n${i}`, { x: 0, y: i * 140, width: 260, height: H });
+    const result = applyValleyPass(m, chainEdges(10, [[1, 7]]), { axis: 'x' });
+    const xStep = 260 + 60; // max width + gap
+    expect(result.get('n0')!.x).toBe(0);
+    expect(result.get('n1')!.x).toBe(0);
+    expect(result.get('n7')!.x).toBe(0);
+    expect(result.get('n4')!.x).toBe(xStep);
+    expect(result.get('n4')!.y).toBe(4 * 140); // flow axis untouched
+  });
+
+  it('cycle edges (backward in rank) are ignored safely', () => {
+    const positions = chainPositions(8);
+    const edges = [...chainEdges(8), { source: 'n6', target: 'n1' }]; // back edge
+    const result = applyValleyPass(positions, edges, { axis: 'y' });
+    expect(result).toBe(positions);
+  });
+});
+
+describe('isTriggerEdge', () => {
+  it('recognizes all three trigger edge shapes', () => {
+    expect(isTriggerEdge({ source: 'a', target: 'b', type: 'triggerEdge' })).toBe(true);
+    expect(isTriggerEdge({ source: 'a', target: 'b', data: { type: 'trigger' } })).toBe(true);
+    expect(isTriggerEdge({ source: 'a', target: 'b', sourceHandle: 'trigger' })).toBe(true);
+    expect(isTriggerEdge({ source: 'a', target: 'b' })).toBe(false);
+  });
+});
+
+describe('valley layout through autoLayout (integration)', () => {
+  // Chain helper: start -> n0 -> n1 -> ... -> n{k-1}, plus extra data skips.
+  function chainWithSkips(k: number, skips: Array<[number, number]>) {
+    const nodes = [makeStartNode('s'), ...Array.from({ length: k }, (_, i) => makeNode(`n${i}`))];
+    const edges = [
+      makeEdge('et', 's', 'n0', 'trigger'),
+      ...Array.from({ length: k - 1 }, (_, i) => makeEdge(`e${i}`, `n${i}`, `n${i + 1}`)),
+      ...skips.map(([a, b], i) => makeEdge(`sk${i}`, `n${a}`, `n${b}`)),
+    ];
+    return { nodes, edges };
+  }
+  const posOf = (result: Node[], id: string) => result.find((n) => n.id === id)!.position;
+
+  it('long plain chain stays on ONE row — wrapping is gone', () => {
+    const { nodes, edges } = chainWithSkips(14, []);
+    const result = autoLayout(nodes, edges, 'all');
+    const ys = new Set(
+      Array.from({ length: 14 }, (_, i) => Math.round(posOf(result, `n${i}`).y / 10)),
+    );
+    expect(ys.size).toBe(1);
+    const xs = Array.from({ length: 14 }, (_, i) => posOf(result, `n${i}`).x);
+    for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThan(xs[i - 1]);
+  });
+
+  it('nested skips produce a valley: covered trunk sinks by full steps, x stays monotone', () => {
+    const { nodes, edges } = chainWithSkips(18, [[1, 13], [4, 10]]);
+    const result = autoLayout(nodes, edges, 'all');
+    // STEP = max node height (200x80 base nodes) + 60 = 140; dagre lane jitter
+    // from skip-edge dummy nodes is < 130, so a full step is distinguishable.
+    expect(posOf(result, 'n7').y - posOf(result, 'n1').y).toBeGreaterThan(140);
+    expect(posOf(result, 'n7').y - posOf(result, 'n2').y).toBeGreaterThan(70);
+    // tail comes back up to the outer level
+    expect(Math.abs(posOf(result, 'n16').y - posOf(result, 'n0').y)).toBeLessThan(70);
+    // no wrapping: trunk x strictly increases (no carriage-return rows)
+    const xs = Array.from({ length: 18 }, (_, i) => posOf(result, `n${i}`).x);
+    for (let i = 1; i < xs.length; i++) expect(xs[i]).toBeGreaterThan(xs[i - 1]);
+  });
+
+  it('valley output is deterministic across runs', () => {
+    const { nodes, edges } = chainWithSkips(18, [[1, 13], [4, 10]]);
+    const a = autoLayout(nodes, edges, 'all').map((n) => ({ id: n.id, ...n.position }));
+    const b = autoLayout(nodes, edges, 'all').map((n) => ({ id: n.id, ...n.position }));
+    expect(a).toEqual(b);
   });
 });
