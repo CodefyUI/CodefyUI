@@ -494,10 +494,9 @@ describe('graphToFlow', () => {
     expect(res.nodes[1].position).toEqual({ x: 0, y: 0 });
   });
 
-  it('runs auto-layout but leaves a short topology un-wrapped (height under target)', () => {
-    // 5-node chain: enough nodes to pass the wrap min (>=4) yet short enough that
-    // the laid-out height stays <= SUBGRAPH_TARGET_COL_HEIGHT, hitting the early
-    // `height <= TARGET` return in wrapIntoColumns.
+  it('auto-layout keeps a short chain in a single column', () => {
+    // 5-node chain with no skips: the valley pass is a no-op, so dagre's
+    // single-column TB layout comes through untouched.
     const nodes = Array.from({ length: 5 }, (_, i) => ({ id: `s${i}`, type: 'Conv2d' }));
     const edges = Array.from({ length: 4 }, (_, i) => ({
       id: `se${i}`,
@@ -564,9 +563,9 @@ describe('graphToFlow', () => {
     expect(res.nodes).toHaveLength(2);
   });
 
-  it('wraps a tall topology into multiple columns during auto-layout', () => {
-    // A long vertical chain exceeds SUBGRAPH_TARGET_COL_HEIGHT (700) and triggers
-    // wrapIntoColumns, producing more than one distinct x column.
+  it('a long chain never wraps into columns — single column preserved', () => {
+    // 40-node vertical chain: column wrapping is gone, so however tall the
+    // layout gets it stays one column (pan/zoom handles the length).
     const n = 40;
     const nodes = Array.from({ length: n }, (_, i) => ({ id: `n${i}`, type: 'Conv2d' }));
     const edges = Array.from({ length: n - 1 }, (_, i) => ({
@@ -576,43 +575,33 @@ describe('graphToFlow', () => {
     }));
     const res = graphToFlow(JSON.stringify({ version: 2, nodes, edges }));
     const xs = new Set(res.nodes.map((node) => node.position.x));
-    // Wrapping shifts later ranks into new columns -> multiple distinct x values.
-    expect(xs.size).toBeGreaterThan(1);
+    expect(xs.size).toBe(1);
+    // y strictly increases down the chain (no carriage-return columns).
+    const ys = res.nodes.map((node) => node.position.y);
+    for (let i = 1; i < ys.length; i++) expect(ys[i]).toBeGreaterThan(ys[i - 1]);
   });
 
-  it('wraps a tall branched topology whose deepest rank holds multiple nodes', () => {
-    // A long chain that forks into two equal-length tails so the final rank holds
-    // TWO nodes sharing the same bottom edge. While scanning for maxY in
-    // wrapIntoColumns, the second sibling does NOT exceed the running max,
-    // exercising the `p.y + p.height > maxY` false branch.
-    const chain = 22;
-    const nodes: GraphSpec['nodes'] = Array.from({ length: chain }, (_, i) => ({
-      id: `c${i}`,
+  it('a skip connection sinks its covered ranks rightward (transposed valley)', () => {
+    // 12-node TB chain with a skip n1 -> n7: ranks 2..6 are covered and shift
+    // right by a full valley step; the skip endpoints stay in the base column
+    // (within dagre's dummy-lane jitter, which is smaller than one step).
+    const n = 12;
+    const nodes: GraphSpec['nodes'] = Array.from({ length: n }, (_, i) => ({
+      id: `n${i}`,
       type: 'Conv2d',
     }));
-    const edges: GraphSpec['edges'] = Array.from({ length: chain - 1 }, (_, i) => ({
-      id: `ce${i}`,
-      source: `c${i}`,
-      target: `c${i + 1}`,
+    const edges: GraphSpec['edges'] = Array.from({ length: n - 1 }, (_, i) => ({
+      id: `e${i}`,
+      source: `n${i}`,
+      target: `n${i + 1}`,
     }));
-    // Fork two parallel tails off the chain tail; both reach the same depth.
-    const tail = 8;
-    for (let i = 0; i < tail; i++) {
-      nodes.push({ id: `a${i}`, type: 'Conv2d' });
-      nodes.push({ id: `b${i}`, type: 'Conv2d' });
-      const srcA = i === 0 ? `c${chain - 1}` : `a${i - 1}`;
-      const srcB = i === 0 ? `c${chain - 1}` : `b${i - 1}`;
-      edges.push({ id: `ae${i}`, source: srcA, target: `a${i}` });
-      edges.push({ id: `be${i}`, source: srcB, target: `b${i}` });
-    }
+    edges.push({ id: 'skip', source: 'n1', target: 'n7' });
     const res = graphToFlow(JSON.stringify({ version: 2, nodes, edges }));
-    // The two final-rank siblings share the same y (same rank).
-    const ay = res.nodes.find((n) => n.id === `a${tail - 1}`)!.position.y;
-    const by = res.nodes.find((n) => n.id === `b${tail - 1}`)!.position.y;
-    expect(ay).toBe(by);
-    // And the tall graph still wrapped into more than one column.
-    const xs = new Set(res.nodes.map((node) => node.position.x));
-    expect(xs.size).toBeGreaterThan(1);
+    const xOf = (id: string) => res.nodes.find((node) => node.id === id)!.position.x;
+    // Covered trunk (n4) sits clearly right of both skip endpoints.
+    expect(xOf('n4')).toBeGreaterThan(Math.max(xOf('n1'), xOf('n7')) + 60);
+    // Outside the skip, head and tail share the base column band.
+    expect(Math.abs(xOf('n0') - xOf('n11'))).toBeLessThan(1);
   });
 });
 
@@ -669,12 +658,9 @@ describe('autoLayoutSubgraph', () => {
     expect(laid).toHaveLength(2);
   });
 
-  it('skips column-wrapping when few rank-units span a tall layout (large nodes)', () => {
-    // wrapIntoColumns derives ranks from a FIXED rankUnit (NODE_H + RANKSEP = 100),
-    // not the measured node height. Very tall nodes make the pixel height exceed
-    // the 700 target (so we pass the early height return) while only occupying a
-    // handful of rank-units, so `totalRanks <= maxRanksPerCol` short-circuits and
-    // positions are returned unwrapped.
+  it('very tall nodes still lay out in a single column (no wrapping by pixel height)', () => {
+    // Column wrapping used to fire on pixel height; with the valley pass a
+    // skip-free chain is returned untouched regardless of how tall it renders.
     const tall = (id: string): Node<LayerNodeData> =>
       flowNode(id, {}, { width: 160, height: 2000 });
     const nodes = [tall('t0'), tall('t1'), tall('t2'), tall('t3')];
