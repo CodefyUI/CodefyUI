@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -139,6 +140,60 @@ async def test_get_valid_access_raises_when_logged_out():
             await codex_auth.get_valid_access(client)
 
 
+@pytest.mark.asyncio
+async def test_logout_during_refresh_cannot_restore_the_old_session():
+    codex_auth.save_tokens(seeded_tokens(exp_offset=10))
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        refresh_started.set()
+        await release_refresh.wait()
+        return httpx.Response(200, json={
+            "access_token": make_jwt({"exp": int(time.time()) + 7200}),
+            "refresh_token": "rt-2",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        pending = asyncio.create_task(codex_auth.get_valid_access(client))
+        await refresh_started.wait()
+        codex_auth.logout()
+        release_refresh.set()
+        with pytest.raises(codex_auth.CodexNotLoggedIn, match="session changed"):
+            await pending
+
+    assert codex_auth.load_tokens() is None
+
+
+@pytest.mark.asyncio
+async def test_new_login_during_refresh_cannot_be_overwritten():
+    codex_auth.save_tokens(seeded_tokens(exp_offset=10, account_id="acc-a"))
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        refresh_started.set()
+        await release_refresh.wait()
+        return httpx.Response(200, json={
+            "access_token": make_jwt({"exp": int(time.time()) + 7200}),
+            "refresh_token": "rt-a-rotated",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        pending = asyncio.create_task(codex_auth.get_valid_access(client))
+        await refresh_started.wait()
+        replacement = seeded_tokens(account_id="acc-b")
+        replacement["refresh_token"] = "rt-b"
+        codex_auth.save_tokens(replacement)
+        release_refresh.set()
+        with pytest.raises(codex_auth.CodexNotLoggedIn, match="session changed"):
+            await pending
+
+    stored = codex_auth.load_tokens()
+    assert stored["account_id"] == "acc-b"
+    assert stored["refresh_token"] == "rt-b"
+
+
 # -- full login flow over a real localhost socket ------------------------------
 
 @pytest.mark.asyncio
@@ -191,3 +246,40 @@ async def test_login_flow_rejects_bad_state():
             params={"code": "x", "state": "WRONG"})
     assert r.status_code == 400
     assert codex_auth.status()["status"] == "pending"  # flow still waiting
+
+
+@pytest.mark.asyncio
+async def test_logout_during_code_exchange_cannot_restore_session():
+    exchange_started = asyncio.Event()
+    release_exchange = asyncio.Event()
+
+    async def token_handler(request: httpx.Request) -> httpx.Response:
+        exchange_started.set()
+        await release_exchange.wait()
+        return httpx.Response(200, json={
+            "id_token": make_jwt({
+                "email": "late@example.com",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acc-late"},
+            }),
+            "access_token": make_jwt({"exp": int(time.time()) + 3600}),
+            "refresh_token": "rt-late",
+        })
+
+    exchange_client = httpx.AsyncClient(transport=httpx.MockTransport(token_handler))
+    auth_url = await codex_auth.start_login(ports=(0,), exchange_client=exchange_client)
+    query = parse_qs(urlparse(auth_url).query)
+    port = codex_auth.active_login_port()
+
+    async with httpx.AsyncClient() as browser:
+        callback = asyncio.create_task(browser.get(
+            f"http://127.0.0.1:{port}/auth/callback",
+            params={"code": "late-code", "state": query["state"][0]},
+        ))
+        await exchange_started.wait()
+        codex_auth.logout()
+        release_exchange.set()
+        response = await callback
+
+    assert response.status_code == 400
+    assert codex_auth.load_tokens() is None
+    assert codex_auth.status()["status"] == "logged_out"

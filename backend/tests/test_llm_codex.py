@@ -47,12 +47,14 @@ def test_payload_shapes():
                     tool_calls=[ToolCall(id="c1", name="apply", arguments={"x": 1})]),
         ChatMessage(role="tool", tool_call_id="c1", content="done"),
     ], tools=[ToolSpec(name="apply", description="d",
-                       input_schema={"type": "object", "properties": {}})])
+                       input_schema={"type": "object", "properties": {}})],
+        reasoning_effort="xhigh")
     p = codex.build_payload(req)
     assert p["model"] == "gpt-5.5"
     assert p["instructions"] == "be terse"
     assert p["store"] is False
     assert p["stream"] is True
+    assert p["reasoning"] == {"effort": "xhigh"}
     items = p["input"]
     assert items[0] == {"type": "message", "role": "user",
                         "content": [{"type": "input_text", "text": "go"}]}
@@ -144,8 +146,14 @@ async def test_response_failed_becomes_error():
     assert "usage limit" in events[-1]["message"]
 
 
-def test_static_models_list():
-    assert "gpt-5.5" in codex.STATIC_MODELS
+def test_static_models_compatibility_view_includes_gpt_5_6_and_legacy():
+    assert {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"} <= set(
+        codex.STATIC_MODELS
+    )
+
+
+def test_payload_omits_reasoning_when_unspecified():
+    assert "reasoning" not in codex.build_payload(make_req())
 
 def test_payload_flattens_multimodal_content_to_text():
     content = [

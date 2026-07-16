@@ -91,6 +91,23 @@ def email_from_id_token(id_token: str) -> str | None:
 
 # -- token storage ------------------------------------------------------------
 
+# Process-local lineage for the stored ChatGPT session.  Route handlers and
+# OAuth callbacks run on one event loop, so synchronous increments plus a
+# compare-before-write are sufficient to invalidate work that was suspended at
+# an HTTP await.  Refreshes within the same session deliberately do not bump it.
+_SESSION_GENERATION = 0
+
+
+def session_generation() -> int:
+    """Return the current in-process auth-session lineage."""
+    return _SESSION_GENERATION
+
+
+def _advance_session_generation() -> None:
+    global _SESSION_GENERATION
+    _SESSION_GENERATION += 1
+
+
 def load_tokens() -> dict[str, Any] | None:
     p = auth_file()
     if not p.exists():
@@ -102,7 +119,7 @@ def load_tokens() -> dict[str, Any] | None:
     return data if isinstance(data, dict) and data.get("access_token") else None
 
 
-def save_tokens(tokens: dict[str, Any]) -> None:
+def _write_tokens(tokens: dict[str, Any]) -> None:
     p = auth_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
@@ -112,11 +129,21 @@ def save_tokens(tokens: dict[str, Any]) -> None:
         pass  # best-effort on Windows
 
 
+def save_tokens(tokens: dict[str, Any]) -> None:
+    """Replace the stored session and invalidate suspended prior-session work."""
+    _write_tokens(tokens)
+    _advance_session_generation()
+
+
 def clear_tokens() -> None:
     try:
         auth_file().unlink(missing_ok=True)
     except OSError:
         pass
+    finally:
+        # Bump even when no file exists: logout is an explicit invalidation of
+        # any refresh or catalog operation already suspended at an await.
+        _advance_session_generation()
 
 
 # -- refresh ------------------------------------------------------------------
@@ -160,8 +187,22 @@ async def get_valid_access(
     if not tokens:
         raise CodexNotLoggedIn("Not signed in to ChatGPT")
     if force_refresh or needs_refresh(tokens):
-        tokens = await _refresh(client, tokens)
-        save_tokens(tokens)
+        generation = session_generation()
+        refresh_source = dict(tokens)
+        refreshed = await _refresh(client, refresh_source)
+        current = load_tokens()
+        if (
+            generation != session_generation()
+            or current is None
+            or current.get("access_token") != refresh_source.get("access_token")
+            or current.get("refresh_token") != refresh_source.get("refresh_token")
+        ):
+            raise CodexNotLoggedIn("ChatGPT session changed during token refresh")
+        # Same event loop and no await between the CAS above and this write.
+        # Keep the generation stable: this is credential rotation within the
+        # same authenticated session, not a login/session replacement.
+        _write_tokens(refreshed)
+        tokens = refreshed
     return tokens["access_token"], tokens.get("account_id", "")
 
 
@@ -258,6 +299,7 @@ async def _handle_conn(reader: asyncio.StreamReader,
         if not code:
             writer.write(_http_response(400, "Missing authorization code."))
             return
+        exchange_generation = session_generation()
         client = flow.exchange_client or httpx.AsyncClient()
         try:
             tokens = await _exchange_code(client, code=code,
@@ -265,6 +307,12 @@ async def _handle_conn(reader: asyncio.StreamReader,
         finally:
             if flow.exchange_client is None:
                 await client.aclose()
+        # Logout, cancellation, or a newer login flow may have happened while
+        # the OAuth token exchange was awaiting the network.  The captured
+        # callback must not resurrect or replace that newer session.
+        if _flow is not flow or session_generation() != exchange_generation:
+            writer.write(_http_response(400, "Sign-in was cancelled or superseded."))
+            return
         save_tokens(tokens)
         writer.write(_http_response(
             200,

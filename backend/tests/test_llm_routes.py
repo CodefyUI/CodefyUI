@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import routes_llm
-from app.core.llm_proxy import codex_auth
+from app.core.llm_proxy import codex_auth, codex_models
 
 
 @pytest.fixture
@@ -98,12 +98,61 @@ def test_models_openai(client, monkeypatch):
     r = client.post("/api/llm/models", json={"provider": "openai", "api_key": "sk-x"})
     assert r.status_code == 200
     assert {"id": "gpt-4.1"} in r.json()["models"]
+    assert r.json()["capabilities"] == {
+        "reasoning_effort": True,
+        "rich_model_catalog": False,
+    }
 
 
-def test_models_codex_static(client):
+def test_models_codex_fallback_is_rich_and_backward_compatible(client):
+    codex_models.clear_cache()
     r = client.post("/api/llm/models", json={"provider": "openai-codex"})
     assert r.status_code == 200
-    assert {"id": "gpt-5.5"} in r.json()["models"]
+    body = r.json()
+    assert any(model["id"] == "gpt-5.5" for model in body["models"])
+    sol = next(model for model in body["models"] if model["id"] == "gpt-5.6-sol")
+    assert sol["default_reasoning_effort"] == "low"
+    assert {item["effort"] for item in sol["supported_reasoning_efforts"]} == {
+        "low", "medium", "high", "xhigh", "max",
+    }
+    assert body["capabilities"] == {
+        "reasoning_effort": True,
+        "rich_model_catalog": True,
+    }
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "anthropic", "custom"])
+def test_models_non_forwarding_provider_capabilities_are_false(
+    client, monkeypatch, provider
+):
+    mock_upstream(
+        monkeypatch,
+        lambda request: httpx.Response(200, json={"data": [{"id": "model-1"}]}),
+    )
+    body = {"provider": provider, "api_key": "key"}
+    if provider == "custom":
+        body.update({"api_key": None, "base_url": "http://127.0.0.1:11434/v1"})
+    r = client.post("/api/llm/models", json=body)
+    assert r.status_code == 200
+    assert r.json()["capabilities"] == {
+        "reasoning_effort": False,
+        "rich_model_catalog": False,
+    }
+
+
+def test_chat_rejects_codex_ultra_even_when_logged_in(client, monkeypatch):
+    monkeypatch.setattr(codex_auth, "status", lambda: {"status": "logged_in"})
+    r = client.post(
+        "/api/llm/chat",
+        json=chat_body(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            api_key=None,
+            reasoning_effort="ultra",
+        ),
+    )
+    assert r.status_code == 400
+    assert "multi-agent orchestration" in r.json()["detail"]
 
 
 def test_models_upstream_error_becomes_502(client, monkeypatch):

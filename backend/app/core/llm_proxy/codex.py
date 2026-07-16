@@ -15,16 +15,16 @@ from typing import Any
 
 import httpx
 
-from . import codex_auth
+from . import codex_auth, codex_models
 from ._common import TIMEOUT, content_to_text, parse_tool_args
 from .events import done_event, error_event, text_delta
 from .schema import ChatRequest, ToolCall
 
 _URL = "https://chatgpt.com/backend-api/codex/responses"
 
-# ChatGPT-plan model slugs (mid-2026); the picker shows these because the
-# backend has no public list endpoint for subscription accounts.
-STATIC_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+# Backward-compatible id-only view for older in-process callers.  The HTTP
+# route uses the dynamic rich catalog in ``codex_models``.
+STATIC_MODELS = [model["id"] for model in codex_models.fallback_models()]
 
 
 def build_payload(req: ChatRequest) -> dict[str, Any]:
@@ -65,6 +65,8 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
         "store": False,
         "stream": True,
     }
+    if req.reasoning_effort is not None:
+        payload["reasoning"] = {"effort": req.reasoning_effort}
     return payload
 
 
