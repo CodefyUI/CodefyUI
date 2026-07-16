@@ -64,7 +64,7 @@ function TabContent({ tabId }: { tabId: string }) {
           <NodePalette />
           <div className={styles.canvasHost}>
             <div className={styles.canvasFill}>
-              <FlowCanvas />
+              <FlowCanvas tabId={tabId} />
             </div>
           </div>
           <RightColumn />

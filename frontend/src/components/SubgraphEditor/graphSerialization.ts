@@ -2,6 +2,7 @@
 import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import { generateId } from '../../utils';
+import { applyValleyPass, isTriggerEdge } from '../../utils/autoLayout';
 
 export interface PortDef {
   id: string;
@@ -258,10 +259,6 @@ const SUBGRAPH_NODE_W = 160;
 const SUBGRAPH_NODE_H = 40;
 const SUBGRAPH_NODESEP = 40;
 const SUBGRAPH_RANKSEP = 60;
-const SUBGRAPH_TARGET_COL_HEIGHT = 700;
-const SUBGRAPH_COL_GAP = 120;
-const SUBGRAPH_MIN_NODES_FOR_WRAP = 4;
-
 function getSubgraphLayoutConfig(
   nodeCount: number,
 ): { nodesep: number; ranksep: number } {
@@ -272,84 +269,9 @@ function getSubgraphLayoutConfig(
 
 type SubgraphPos = { x: number; y: number; width: number; height: number };
 
-/**
- * Transposed wrap: if the TB layout exceeds SUBGRAPH_TARGET_COL_HEIGHT, split
- * its vertical ranks into multiple columns and shift each column rightward.
- * Mirror of wrapIntoGrid in autoLayout.ts.
- */
-function wrapIntoColumns(positions: Map<string, SubgraphPos>): Map<string, SubgraphPos> {
-  if (positions.size < SUBGRAPH_MIN_NODES_FOR_WRAP) return positions;
-
-  const values = Array.from(positions.values());
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const p of values) {
-    if (p.y < minY) minY = p.y;
-    if (p.y + p.height > maxY) maxY = p.y + p.height;
-  }
-  const height = maxY - minY;
-  if (height <= SUBGRAPH_TARGET_COL_HEIGHT) return positions;
-
-  const rankUnit = SUBGRAPH_NODE_H + SUBGRAPH_RANKSEP;
-  const rankSet = new Set<number>();
-  const rankOf = new Map<string, number>();
-  for (const [id, p] of positions) {
-    const rank = Math.round((p.y - minY) / rankUnit);
-    rankOf.set(id, rank);
-    rankSet.add(rank);
-  }
-  // rankSet always has at least one entry once we reach here (size >= 4 nodes), so
-  // the `|| 1` fallback is unreachable.
-  /* v8 ignore start */
-  const totalRanks = rankSet.size || 1;
-  /* v8 ignore stop */
-  const maxRanksPerCol = Math.max(1, Math.floor(SUBGRAPH_TARGET_COL_HEIGHT / rankUnit));
-  if (totalRanks <= maxRanksPerCol) return positions;
-
-  const colCount = Math.ceil(totalRanks / maxRanksPerCol);
-  const ranksPerCol = Math.ceil(totalRanks / colCount);
-  const colHeight = ranksPerCol * rankUnit;
-
-  const colOf = new Map<string, number>();
-  for (const [id, rank] of rankOf) {
-    const col = Math.min(colCount - 1, Math.floor(rank / ranksPerCol));
-    colOf.set(id, col);
-  }
-
-  const colXOffset: number[] = new Array(colCount).fill(0);
-  let cumX = 0;
-  for (let c = 0; c < colCount; c++) {
-    let cMinX = Infinity;
-    let cMaxX = -Infinity;
-    for (const [id, p] of positions) {
-      if (colOf.get(id) !== c) continue;
-      if (p.x < cMinX) cMinX = p.x;
-      if (p.x + p.width > cMaxX) cMaxX = p.x + p.width;
-    }
-    // Each column is derived by partitioning existing ranks, so every column has at
-    // least one node and cMinX is never left at Infinity.
-    /* v8 ignore start */
-    if (cMinX === Infinity) {
-      cMinX = 0;
-      cMaxX = 0;
-    }
-    /* v8 ignore stop */
-    colXOffset[c] = cumX - cMinX;
-    cumX += cMaxX - cMinX + SUBGRAPH_COL_GAP;
-  }
-
-  const result = new Map<string, SubgraphPos>();
-  for (const [id, p] of positions) {
-    const col = colOf.get(id)!;
-    result.set(id, {
-      x: p.x + colXOffset[col],
-      y: p.y - col * colHeight,
-      width: p.width,
-      height: p.height,
-    });
-  }
-  return result;
-}
+// Column wrapping was removed in favor of the shared skip-aware valley pass
+// (applyValleyPass with axis 'x'): a TB subgraph never splits into columns;
+// ranks covered by a skip connection shift rightward instead.
 
 /**
  * Topological-sort ids and return the order.
@@ -437,11 +359,14 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
       height: SUBGRAPH_NODE_H,
     });
   }
-  const wrapped = wrapIntoColumns(raw);
+  const wrapped = applyValleyPass(raw, spec.edges, {
+    axis: 'x',
+    skipPredicate: (e) => !isTriggerEdge(e),
+  });
   for (const n of spec.nodes) {
     const p = wrapped.get(n.id);
-    // wrapIntoColumns returns an entry for every input id, so `p` is always defined
-    // (the falsy branch is unreachable).
+    // applyValleyPass returns an entry for every input id, so `p` is always
+    // defined (the falsy branch is unreachable).
     /* v8 ignore start */
     if (p) {
       /* v8 ignore stop */
@@ -500,11 +425,14 @@ export function autoLayoutSubgraph(
       height: h,
     });
   }
-  const wrapped = wrapIntoColumns(raw);
+  const wrapped = applyValleyPass(raw, edges, {
+    axis: 'x',
+    skipPredicate: (e) => !isTriggerEdge(e),
+  });
 
   return nodes.map((n) => {
     const p = wrapped.get(n.id);
-    // wrapIntoColumns returns an entry for every input id, so `p` is always defined.
+    // applyValleyPass returns an entry for every input id, so `p` is always defined.
     /* v8 ignore start */
     if (!p) return n;
     /* v8 ignore stop */

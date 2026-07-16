@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useTabStore } from './tabStore';
 import { useToastStore } from './toastStore';
+import { useUIStore } from './uiStore';
 import type { NodeDefinition, PresetDefinition } from '../types';
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
@@ -127,6 +128,72 @@ describe('applyLayout', () => {
 
     // Undo snapshot was pushed so Ctrl+Z reverts the layout
     expect(tab.undoStack.length).toBe(1);
+  });
+
+  it('publishes a one-shot layout-fit request naming the laid-out nodes and their bound notes', () => {
+    const tabId = useTabStore.getState().activeTabId!;
+    useTabStore.setState((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+              ...t,
+              nodes: [
+                {
+                  id: 's',
+                  type: 'start',
+                  position: { x: 0, y: 0 },
+                  width: 80,
+                  height: 40,
+                  data: { id: 's', type: 'Start' },
+                },
+                {
+                  id: 'a',
+                  type: 'baseNode',
+                  position: { x: 0, y: 0 },
+                  width: 200,
+                  height: 80,
+                  data: { id: 'a', type: 'Dataset' },
+                },
+                {
+                  id: 'note1',
+                  type: 'noteNode',
+                  position: { x: 0, y: 0 },
+                  width: 200,
+                  height: 100,
+                  data: {
+                    id: 'note1',
+                    type: 'note',
+                    boundToNodeId: 'a',
+                    boundOffset: { x: 20, y: -40 },
+                  },
+                },
+              ] as any,
+              edges: [{ id: 'et', source: 's', target: 'a', data: { type: 'trigger' } }] as any,
+            }
+          : t,
+      ),
+    }));
+    useUIStore.setState({ layoutFitRequest: null });
+
+    useTabStore.getState().applyLayout('experiments');
+
+    const req = useUIStore.getState().layoutFitRequest;
+    expect(req).not.toBeNull();
+    const { bounds } = req!;
+    expect(bounds.width).toBeGreaterThan(0);
+    expect(bounds.height).toBeGreaterThan(0);
+    // The bound note follows its parent during layout at offset (20, -40), so
+    // the fitted box must extend above the computational nodes to include it.
+    const tab = useTabStore.getState().getActiveTab();
+    const parentY = tab.nodes.find((n) => n.id === 'a')!.position.y;
+    expect(bounds.y).toBeLessThanOrEqual(parentY - 40);
+
+    // Requests are one-shot: the consumer clears, and a later layout
+    // publishes a fresh request object.
+    useUIStore.getState().clearLayoutFit();
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+    useTabStore.getState().applyLayout('experiments');
+    expect(useUIStore.getState().layoutFitRequest).not.toBeNull();
   });
 });
 
