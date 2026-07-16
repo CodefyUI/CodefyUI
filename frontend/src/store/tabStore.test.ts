@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useTabStore } from './tabStore';
 import { useToastStore } from './toastStore';
+import { useUIStore } from './uiStore';
 import type { NodeDefinition, PresetDefinition } from '../types';
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
@@ -127,6 +128,49 @@ describe('applyLayout', () => {
 
     // Undo snapshot was pushed so Ctrl+Z reverts the layout
     expect(tab.undoStack.length).toBe(1);
+  });
+
+  it('publishes a layout-fit request naming the laid-out nodes', () => {
+    const tabId = useTabStore.getState().activeTabId!;
+    useTabStore.setState((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? {
+              ...t,
+              nodes: [
+                {
+                  id: 's',
+                  type: 'start',
+                  position: { x: 0, y: 0 },
+                  width: 80,
+                  height: 40,
+                  data: { id: 's', type: 'Start' },
+                },
+                {
+                  id: 'a',
+                  type: 'baseNode',
+                  position: { x: 0, y: 0 },
+                  width: 200,
+                  height: 80,
+                  data: { id: 'a', type: 'Dataset' },
+                },
+              ] as any,
+              edges: [{ id: 'et', source: 's', target: 'a', data: { type: 'trigger' } }] as any,
+            }
+          : t,
+      ),
+    }));
+    useUIStore.setState({ layoutFitRequest: null });
+
+    useTabStore.getState().applyLayout('experiments');
+
+    const req = useUIStore.getState().layoutFitRequest;
+    expect(req).not.toBeNull();
+    expect(new Set(req!.nodeIds)).toEqual(new Set(['s', 'a']));
+
+    // A second layout bumps the sequence so the canvas effect re-fires.
+    useTabStore.getState().applyLayout('experiments');
+    expect(useUIStore.getState().layoutFitRequest!.seq).toBe(req!.seq + 1);
   });
 });
 

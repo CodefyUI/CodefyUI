@@ -99,7 +99,24 @@ export function FlowCanvas() {
   const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
-  const { screenToFlowPosition } = useReactFlow();
+  const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
+  const { screenToFlowPosition, fitView } = useReactFlow();
+
+  // Re-fit the viewport to the nodes that were just auto-laid-out (mirrors the
+  // subgraph editor's post-layout fit; 50ms lets the new positions commit).
+  useEffect(() => {
+    if (!layoutFitRequest) return;
+    const timerId = setTimeout(
+      () =>
+        fitView({
+          padding: 0.2,
+          duration: 300,
+          nodes: layoutFitRequest.nodeIds.map((id) => ({ id })),
+        }),
+      50,
+    );
+    return () => clearTimeout(timerId);
+  }, [layoutFitRequest, fitView]);
 
   // Snap all existing nodes to grid when grid snap is enabled
   useEffect(() => {

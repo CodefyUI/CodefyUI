@@ -2,10 +2,11 @@ import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import { generateId, buildFlowNode } from '../utils';
-import { autoLayout, type LayoutMode } from '../utils/autoLayout';
+import { autoLayout, layoutTargetIds, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup } from '../types';
 import { ExecutionWebSocket } from '../api/ws';
 import { useToastStore } from './toastStore';
+import { useUIStore } from './uiStore';
 import { useI18n } from '../i18n';
 import { useProjectStore } from './projectStore';
 
@@ -1040,6 +1041,18 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         };
       }),
     }));
+    // Ask the canvas to re-fit the viewport to the nodes that were laid out
+    // (scoped so "selected" mode focuses the selection, not the whole graph).
+    const laidTab = get().getActiveTab();
+    const fitIds = layoutTargetIds(
+      laidTab.nodes as Node[],
+      laidTab.edges as Edge[],
+      mode,
+      new Set(laidTab.nodes.filter((n) => n.selected).map((n) => n.id)),
+    );
+    if (fitIds.size > 0) {
+      useUIStore.getState().requestLayoutFit(Array.from(fitIds));
+    }
     // Warn if there are unbound notes on the canvas
     const tab = get().getActiveTab();
     const hasUnboundNotes = tab.nodes.some(

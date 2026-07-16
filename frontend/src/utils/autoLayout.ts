@@ -302,6 +302,17 @@ function pickTargetIds(
   return targets;
 }
 
+/** The set of node ids a layout call would move — used by callers to scope
+ * the post-layout viewport fit (e.g. "selected" mode fits the selection). */
+export function layoutTargetIds(
+  nodes: Node[],
+  edges: Edge[],
+  mode: LayoutMode,
+  selectedIds?: Set<string>,
+): Set<string> {
+  return pickTargetIds(nodes, edges, mode, selectedIds);
+}
+
 export function autoLayout(
   nodes: Node[],
   edges: Edge[],

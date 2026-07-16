@@ -17,6 +17,10 @@ interface UIState {
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
+  /** Bumped after auto-layout so the canvas re-fits the viewport to the
+   * laid-out nodes. `seq` distinguishes repeated requests over the same ids. */
+  layoutFitRequest: { seq: number; nodeIds: string[] } | null;
+  requestLayoutFit: (nodeIds: string[]) => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** Global compute device sent with every graph run ('cpu' | 'cuda' | 'mps').
@@ -79,6 +83,11 @@ export const useUIStore = create<UIState>((set) => ({
     localStorage.setItem(LAYOUT_MODE_KEY, mode);
     set({ lastLayoutMode: mode });
   },
+  layoutFitRequest: null,
+  requestLayoutFit: (nodeIds) =>
+    set((state) => ({
+      layoutFitRequest: { seq: (state.layoutFitRequest?.seq ?? 0) + 1, nodeIds },
+    })),
   fontSize: loadFontSize(),
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);
