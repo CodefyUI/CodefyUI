@@ -97,15 +97,36 @@ export async function listGraphs() {
   return res.json();
 }
 
-export async function exportGraph(nodes: any[], edges: any[], name?: string) {
-  const body: { nodes: any[]; edges: any[]; name?: string } = { nodes, edges };
+export async function exportGraph(
+  nodes: any[],
+  edges: any[],
+  name?: string,
+  presets?: PresetDefinition[],
+) {
+  const body: {
+    nodes: any[];
+    edges: any[];
+    name?: string;
+    presets?: PresetDefinition[];
+  } = { nodes, edges };
   if (name) body.name = name;
+  if (presets && presets.length > 0) body.presets = presets;
   const res = await apiFetch(`${BASE_URL}/graph/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Export failed: ${res.statusText}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errorBody = await res.json();
+      if (typeof errorBody.detail === 'string') detail = errorBody.detail;
+      else if (Array.isArray(errorBody.detail)) detail = errorBody.detail.join('; ');
+    } catch {
+      // Preserve the HTTP status text when the response is not JSON.
+    }
+    throw new Error(`Export failed: ${detail}`);
+  }
   return res.json() as Promise<{ script: string }>;
 }
 

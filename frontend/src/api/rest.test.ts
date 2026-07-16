@@ -94,9 +94,29 @@ describe('exportGraph', () => {
     expect(JSON.parse(init.body)).toEqual({ nodes: [], edges: [] });
   });
 
+  it('sends embedded preset definitions needed for portable expansion', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    const preset = { preset_name: 'Portable', nodes: [], edges: [] } as any;
+    await exportGraph([], [], 'portable', [preset]);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      nodes: [],
+      edges: [],
+      name: 'portable',
+      presets: [preset],
+    });
+  });
+
   it('throws when the endpoint fails', async () => {
     mockFetch(500, {});
     await expect(exportGraph([], [], 'x')).rejects.toThrow(/Export failed/);
+  });
+
+  it('surfaces backend validation details when export fails', async () => {
+    mockFetch(400, { detail: ['Unknown node type: Missing', 'No start node defined'] });
+    await expect(exportGraph([], [], 'x')).rejects.toThrow(
+      /Unknown node type: Missing; No start node defined/,
+    );
   });
 
   it('returns the parsed script payload on success', async () => {

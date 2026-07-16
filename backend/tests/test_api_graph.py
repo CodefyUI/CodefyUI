@@ -168,8 +168,7 @@ async def test_save_scrubs_preset_embedded_secret(
 
 @pytest.mark.asyncio
 async def test_export_scrubs_secret_params(test_client):
-    """M4: exported Python never echoes a SECRET param value (codegen dumps
-    raw params in a comment for node types with no template, e.g. LLMChat)."""
+    """M4: exported Python never embeds a SECRET param value."""
     graph = {
         "name": "export-secret",
         "nodes": [
@@ -190,6 +189,153 @@ async def test_export_scrubs_secret_params(test_client):
     assert resp.status_code == 200, resp.text
     script = resp.json()["script"]
     assert "sk-export-secret" not in script
+
+
+@pytest.mark.asyncio
+async def test_export_scrubs_secrets_from_embedded_preset(test_client):
+    """Portable preset defaults and overrides are scrubbed before embedding."""
+    graph = {
+        "name": "embedded-secret-preset",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "Start",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {}},
+            },
+            {
+                "id": "loss",
+                "type": "Loss",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"type": "MSELoss"}},
+            },
+            {
+                "id": "preset",
+                "type": "preset:PortableSecretChat",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "internalParams": {
+                        "chat": {
+                            "anthropic_api_key": "sk-preset-override-secret",
+                        },
+                    },
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "trigger",
+                "source": "start",
+                "target": "loss",
+                "sourceHandle": "trigger",
+                "targetHandle": "",
+                "type": "trigger",
+            },
+        ],
+        "presets": [
+            {
+                "preset_name": "PortableSecretChat",
+                "category": "Test",
+                "description": "",
+                "tags": [],
+                "nodes": [
+                    {
+                        "id": "chat",
+                        "type": "LLMChat",
+                        "params": {
+                            "provider": "ChatGPT API",
+                            "model": "gpt-5.2",
+                            "openai_api_key": "sk-preset-default-secret",
+                        },
+                    },
+                ],
+                "edges": [],
+                "exposed_inputs": [],
+                "exposed_outputs": [],
+                "exposed_params": [],
+            },
+        ],
+    }
+
+    resp = await test_client.post("/api/graph/export", json=graph)
+    assert resp.status_code == 200, resp.text
+    script = resp.json()["script"]
+    assert "sk-preset-default-secret" not in script
+    assert "sk-preset-override-secret" not in script
+    assert '"openai_api_key":""' in script
+    assert '"anthropic_api_key":""' in script
+
+
+@pytest.mark.asyncio
+async def test_export_scrubs_shadowed_embedded_preset_override(
+    test_client,
+    _secret_preset,
+):
+    """Installed same-name presets cannot hide portable secret slots."""
+    graph = {
+        "name": "shadowed-portable-preset",
+        "nodes": [
+            {
+                "id": "start",
+                "type": "Start",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {}},
+            },
+            {
+                "id": "loss",
+                "type": "Loss",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"type": "MSELoss"}},
+            },
+            {
+                "id": "preset",
+                "type": "preset:SecretChat",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "internalParams": {
+                        "portable_chat": {
+                            "openai_api_key": "sk-shadowed-override",
+                        },
+                    },
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "trigger",
+                "source": "start",
+                "target": "loss",
+                "sourceHandle": "trigger",
+                "targetHandle": "",
+                "type": "trigger",
+            },
+        ],
+        "presets": [
+            {
+                "preset_name": "SecretChat",
+                "category": "Portable",
+                "description": "",
+                "tags": [],
+                "nodes": [
+                    {
+                        "id": "portable_chat",
+                        "type": "LLMChat",
+                        "params": {},
+                    },
+                ],
+                "edges": [],
+                "exposed_inputs": [],
+                "exposed_outputs": [],
+                "exposed_params": [],
+            },
+        ],
+    }
+
+    resp = await test_client.post("/api/graph/export", json=graph)
+    assert resp.status_code == 200, resp.text
+    script = resp.json()["script"]
+    assert "sk-shadowed-override" not in script
+    assert '"openai_api_key":""' in script
 
 
 @pytest.mark.asyncio

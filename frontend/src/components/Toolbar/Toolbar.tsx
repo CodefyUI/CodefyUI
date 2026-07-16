@@ -422,14 +422,21 @@ export function Toolbar() {
   }, [getSerializedGraph, fetchDefinitions, t, addToast]);
 
   const handleExportPython = useCallback(async () => {
-    const { nodes, edges } = getSerializedGraph();
+    const serialized = getSerializedGraph();
+    const noteIds = new Set(
+      serialized.nodes.filter((node) => node.type === 'note').map((node) => node.id),
+    );
+    const nodes = serialized.nodes.filter((node) => !noteIds.has(node.id));
+    const edges = serialized.edges.filter(
+      (edge) => !noteIds.has(edge.source) && !noteIds.has(edge.target),
+    );
     if (nodes.length === 0) {
       addToast(t('toolbar.exportPython.empty'), 'warning');
       return;
     }
     const name = activeTab.name || 'graph';
     try {
-      const result = await exportGraph(nodes, edges, name);
+      const result = await exportGraph(nodes, edges, name, serialized.presets);
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

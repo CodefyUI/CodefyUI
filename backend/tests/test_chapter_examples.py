@@ -1,6 +1,6 @@
 """Smoke-test every chapter plugin example by actually executing its graph.
 
-Each chapter has at least one ``plugins/c{N}/examples/C{N}-{M}/<name>/graph.json``
+Each chapter plugin has at least one ``plugins/<plugin>/examples/**/graph.json``
 that the textbook references. A broken graph wastes the student's first
 attempt at running the example, so this test asserts each graph parses,
 validates, and executes end-to-end without error.
@@ -25,10 +25,11 @@ _PLUGIN_ROOT = _REPO_ROOT / "plugins"
 
 
 def _discover_chapter_graphs() -> list[Path]:
-    return sorted(_PLUGIN_ROOT.glob("c?/examples/**/graph.json"))
+    return sorted(_PLUGIN_ROOT.glob("*/examples/**/graph.json"))
 
 
 _GRAPHS = _discover_chapter_graphs()
+assert _GRAPHS, "chapter graph smoke suite discovered no plugin examples"
 
 # Node types that pull a real dataset, train for multiple epochs, download
 # weights, or otherwise take longer than a few seconds. These graphs ship as

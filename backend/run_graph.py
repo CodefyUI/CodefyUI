@@ -23,7 +23,6 @@ from typing import Any
 # Ensure the backend package is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.config import settings
 from app.core.graph_engine import (
     GraphValidationError,
     build_preset_fallback,
@@ -32,18 +31,21 @@ from app.core.graph_engine import (
     validate_graph,
 )
 from app.core.logging_config import setup_logging
-from app.core.node_registry import registry
-from app.core.preset_registry import preset_registry
+from app.core.runtime import initialize_runtime
 
 logger = logging.getLogger("codefyui.cli")
 
 
 def _init_registries() -> None:
     """Discover all nodes and presets."""
-    n = registry.discover(settings.NODES_DIR, "app.nodes")
-    c = registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
-    p = preset_registry.discover(settings.PRESETS_DIR, registry)
-    logger.info("%d built-in nodes, %d custom nodes, %d presets", n, c, p)
+    counts = initialize_runtime()
+    logger.info(
+        "%d built-in nodes, %d custom nodes, %d plugin nodes, %d presets",
+        counts["builtin"],
+        counts["custom"],
+        counts["plugins"],
+        counts["presets"],
+    )
 
 
 def _on_progress(node_id: str, status: str, data: dict[str, Any] | None) -> None:

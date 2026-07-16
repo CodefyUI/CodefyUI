@@ -21,7 +21,7 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/graph/save` | POST | Save a graph. |
 | `/api/graph/load/{name}` | GET | Load a saved graph. |
 | `/api/graph/list` | GET | List saved graphs. |
-| `/api/graph/export` | POST | Export a graph as a Python script. |
+| `/api/graph/export` | POST | Export a single-file headless Python runner. It embeds the graph and requires a compatible CodefyUI backend environment, but no running server. |
 | `/api/examples/list` | GET | List example graphs. |
 | `/api/examples/load` | GET | Load an example graph. |
 | `/api/custom-nodes` | GET | List custom nodes. |
