@@ -13,7 +13,7 @@ CodefyUI is a single-page app: a **canvas** in the middle, a **node palette** on
 - **Add a node** — drag it from the palette, or **double-click the canvas** to open the quick search panel and type a node or preset name.
 - **Connect nodes** — drag from an output port to an input port. Edges are **type-safe**: ports carry an explicit data type (Tensor, Model, Dataset, DataLoader, Optimizer, Loss, Scalar, String, Image, List, Trigger, …) and incompatible connections are rejected with a tooltip.
 - **Select** — click a node; **Shift**+click to multi-select; drag a box to marquee-select.
-- **Auto layout** — press `Shift`+`L` to lay the graph out hierarchically.
+- **Auto layout** — press `Shift`+`L` to lay the graph out left-to-right in one flow direction; the viewport then re-fits to the result. The layout is **skip-aware**: parts of a pipeline bypassed by a skip connection sink below it, so a U-Net reads as a U, residual blocks as small dips under their bypass edges, and plain chains stay a single straight line.
 
 See all shortcuts in **[Key Bindings](./keybindings)**.
 
