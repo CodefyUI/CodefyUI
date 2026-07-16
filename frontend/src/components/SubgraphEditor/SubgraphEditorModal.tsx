@@ -994,6 +994,7 @@ function SubgraphFlowInner({
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               fitView
+              minZoom={0.1}
               snapToGrid={snapEnabled}
               snapGrid={[20, 20]}
               proOptions={{ hideAttribution: true }}

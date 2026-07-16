@@ -100,23 +100,7 @@ export function FlowCanvas() {
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
   const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
-  const { screenToFlowPosition, fitView } = useReactFlow();
-
-  // Re-fit the viewport to the nodes that were just auto-laid-out (mirrors the
-  // subgraph editor's post-layout fit; 50ms lets the new positions commit).
-  useEffect(() => {
-    if (!layoutFitRequest) return;
-    const timerId = setTimeout(
-      () =>
-        fitView({
-          padding: 0.2,
-          duration: 300,
-          nodes: layoutFitRequest.nodeIds.map((id) => ({ id })),
-        }),
-      50,
-    );
-    return () => clearTimeout(timerId);
-  }, [layoutFitRequest, fitView]);
+  const { screenToFlowPosition, fitBounds, getNodesBounds } = useReactFlow();
 
   // Snap all existing nodes to grid when grid snap is enabled
   useEffect(() => {
@@ -141,6 +125,24 @@ export function FlowCanvas() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const reactFlowId = useId();
+
+  // Re-fit the viewport to the nodes that were just auto-laid-out (mirrors the
+  // subgraph editor's post-layout fit; 50ms lets the new positions commit).
+  // fitBounds sets the viewport directly — the queued fitView() from
+  // useReactFlow only flushes on the next node change, which never comes when
+  // the layout left node objects untouched. One FlowCanvas is mounted per tab
+  // (hidden via display:none), so only the visible canvas may answer: a 0×0
+  // canvas would compute a degenerate viewport.
+  useEffect(() => {
+    if (!layoutFitRequest) return;
+    const timerId = setTimeout(() => {
+      if (!containerRef.current || containerRef.current.offsetWidth === 0) return;
+      const bounds = getNodesBounds(layoutFitRequest.nodeIds);
+      if (!bounds.width || !bounds.height) return;
+      fitBounds(bounds, { padding: 0.2, duration: 300 });
+    }, 50);
+    return () => clearTimeout(timerId);
+  }, [layoutFitRequest, fitBounds, getNodesBounds]);
 
   const [quickSearch, setQuickSearch] = useState<{
     screen: { x: number; y: number };
@@ -490,6 +492,7 @@ export function FlowCanvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
+        minZoom={0.1}
         proOptions={proOptions}
         deleteKeyCode="Delete"
         multiSelectionKeyCode="Shift"
