@@ -47,11 +47,14 @@ def test_payload_extracts_system_and_maps_tools():
                         tool_calls=[ToolCall(id="t1", name="apply", arguments={"x": 2})]),
             ChatMessage(role="tool", tool_call_id="t1", content="ok"),
         ],
+        reasoning_effort="high",
     )
     p = build_payload(req)
     assert p["system"] == "be brief"
     assert p["model"] == "claude-sonnet-4-6"
     assert p["stream"] is True
+    assert "reasoning" not in p
+    assert "reasoning_effort" not in p
     assert p["tools"] == [{"name": "apply", "description": "d",
                            "input_schema": {"type": "object", "properties": {}}}]
     assert all(m["role"] != "system" for m in p["messages"])

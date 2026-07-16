@@ -17,6 +17,29 @@ def test_chat_request_minimal():
     assert req.max_tokens == 4096
     assert req.tools == []
     assert req.api_key is None
+    assert req.reasoning_effort is None
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "max", "future_effort"])
+def test_chat_request_accepts_safe_reasoning_effort_slugs(effort):
+    req = ChatRequest(
+        provider="openai",
+        model="gpt-5.6-sol",
+        messages=[ChatMessage(role="user", content="hi")],
+        reasoning_effort=effort,
+    )
+    assert req.reasoning_effort == effort
+
+
+@pytest.mark.parametrize("effort", ["", "High", "very high", "ultra\n", "a" * 65])
+def test_chat_request_rejects_unsafe_reasoning_effort_values(effort):
+    with pytest.raises(ValidationError):
+        ChatRequest(
+            provider="openai",
+            model="gpt-5.6-sol",
+            messages=[ChatMessage(role="user", content="hi")],
+            reasoning_effort=effort,
+        )
 
 
 def test_chat_request_rejects_unknown_provider():

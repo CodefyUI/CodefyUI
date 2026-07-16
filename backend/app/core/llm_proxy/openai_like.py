@@ -65,8 +65,16 @@ def build_payload(req: ChatRequest) -> dict[str, Any]:
         "model": req.model,
         "messages": messages,
         "stream": True,
-        "max_tokens": req.max_tokens,
     }
+    if req.provider == "openai":
+        # First-party Chat Completions deprecated max_tokens for newer models.
+        payload["max_completion_tokens"] = req.max_tokens
+        if req.reasoning_effort is not None:
+            payload["reasoning_effort"] = req.reasoning_effort
+    else:
+        # Preserve the long-standing OpenAI-compatible contract for OpenRouter
+        # and custom servers; many reject newer first-party-only fields.
+        payload["max_tokens"] = req.max_tokens
     # Older OpenAI-compatible servers (Ollama, LM Studio, etc.) reject unknown
     # fields -- only send stream_options for first-party providers.
     if req.provider != "custom":

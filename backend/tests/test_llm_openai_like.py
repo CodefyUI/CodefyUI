@@ -61,12 +61,15 @@ def test_payload_maps_messages_tools_and_sampling():
             ChatMessage(role="tool", tool_call_id="c1", content="done"),
         ],
         temperature=0.3,
+        reasoning_effort="high",
     )
     p = build_payload(req)
     assert p["model"] == "gpt-5.2"
     assert p["stream"] is True
     assert p["stream_options"] == {"include_usage": True}
-    assert p["max_tokens"] == 4096
+    assert p["max_completion_tokens"] == 4096
+    assert "max_tokens" not in p
+    assert p["reasoning_effort"] == "high"
     assert p["temperature"] == 0.3
     assert p["tools"][0]["function"]["name"] == "apply"
     assert p["tools"][0]["function"]["parameters"]["properties"]["x"]["type"] == "integer"
@@ -167,9 +170,25 @@ async def test_custom_provider_hits_custom_base():
 
 
 def test_custom_payload_has_no_stream_options():
-    req = make_req(provider="custom", base_url="http://127.0.0.1:11434/v1", api_key=None)
+    req = make_req(
+        provider="custom",
+        base_url="http://127.0.0.1:11434/v1",
+        api_key=None,
+        reasoning_effort="high",
+    )
     p = build_payload(req)
     assert "stream_options" not in p
+    assert p["max_tokens"] == 4096
+    assert "max_completion_tokens" not in p
+    assert "reasoning_effort" not in p
+
+
+def test_openrouter_keeps_compatible_token_field_and_omits_effort():
+    req = make_req(provider="openrouter", reasoning_effort="high")
+    p = build_payload(req)
+    assert p["max_tokens"] == 4096
+    assert "max_completion_tokens" not in p
+    assert "reasoning_effort" not in p
 
 
 @pytest.mark.asyncio

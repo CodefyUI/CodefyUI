@@ -42,3 +42,13 @@ class ChatRequest(BaseModel):
     base_url: str | None = None  # "custom" provider only
     max_tokens: int = Field(default=4096, ge=1, le=200_000)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Keep this open to future provider-advertised effort names instead of a
+    # closed Literal.  The conservative slug shape prevents control/whitespace
+    # values from riding through the proxy while accepting additions beyond
+    # today's none/low/medium/high/xhigh/max set.
+    reasoning_effort: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+    )

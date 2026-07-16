@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ..core.llm_proxy import anthropic, codex, codex_auth, openai_like
+from ..core.llm_proxy import anthropic, codex, codex_auth, codex_models, openai_like
 from ..core.llm_proxy.events import error_event, sse_format
 from ..core.llm_proxy.schema import ChatRequest, Provider
 
@@ -47,6 +47,12 @@ def _validate(req: ChatRequest) -> None:
         raise HTTPException(400, "custom provider requires an http(s) base_url")
     if req.provider == "openai-codex" and codex_auth.status()["status"] != "logged_in":
         raise HTTPException(400, "openai-codex requires ChatGPT sign-in - open Settings to sign in")
+    if req.provider == "openai-codex" and req.reasoning_effort == "ultra":
+        raise HTTPException(
+            400,
+            "reasoning_effort 'ultra' requires Codex multi-agent orchestration "
+            "and is not supported by this proxy",
+        )
 
 
 @router.post("/chat")
@@ -86,10 +92,27 @@ _MODEL_ENDPOINTS = {
 }
 
 
+def _model_capabilities(provider: Provider) -> dict[str, bool]:
+    """Advertise only fields this proxy intentionally routes for a provider."""
+    return {
+        "reasoning_effort": provider in {"openai", "openai-codex"},
+        # The Codex catalog is the only provider catalog currently enriched
+        # with display names and effort metadata; other providers retain the
+        # legacy id-only model shape.
+        "rich_model_catalog": provider == "openai-codex",
+    }
+
+
 @router.post("/models")
 async def list_models(req: ModelsRequest) -> dict:
     if req.provider == "openai-codex":
-        return {"models": [{"id": m} for m in codex.STATIC_MODELS]}
+        client = _client_factory()
+        try:
+            result = await codex_models.list_models(client)
+            result["capabilities"] = _model_capabilities(req.provider)
+            return result
+        finally:
+            await client.aclose()
 
     if req.provider == "custom":
         base = (req.base_url or "").strip().rstrip("/")
@@ -114,7 +137,10 @@ async def list_models(req: ModelsRequest) -> dict:
             raise HTTPException(502, f"upstream {resp.status_code} from {req.provider}")
         data = resp.json().get("data", [])
         models = sorted({m.get("id", "") for m in data if isinstance(m, dict)} - {""})
-        return {"models": [{"id": m} for m in models]}
+        return {
+            "models": [{"id": m} for m in models],
+            "capabilities": _model_capabilities(req.provider),
+        }
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"could not reach {req.provider}: {exc}") from exc
     finally:
@@ -135,4 +161,5 @@ async def codex_status() -> dict:
 @router.post("/codex/logout")
 async def codex_logout() -> dict:
     codex_auth.logout()
+    codex_models.clear_cache()
     return {"status": "logged_out"}
