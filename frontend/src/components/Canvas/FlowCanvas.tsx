@@ -14,7 +14,7 @@ import {
   type Edge,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { CATEGORY_COLORS } from '../../styles/theme';
+import { CANVAS_MIN_ZOOM, CATEGORY_COLORS } from '../../styles/theme';
 
 import BaseNode from '../Nodes/BaseNode';
 import PluginNodeBridge from '../Nodes/PluginNodeBridge';
@@ -86,7 +86,7 @@ const minimapNodeColor = (node: any) => {
 };
 
 
-export function FlowCanvas() {
+export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const onNodesChange = useTabStore((s) => s.onNodesChange);
   const onEdgesChange = useTabStore((s) => s.onEdgesChange);
@@ -100,7 +100,7 @@ export function FlowCanvas() {
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
   const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
-  const { screenToFlowPosition, fitBounds, getNodesBounds } = useReactFlow();
+  const { screenToFlowPosition, fitBounds } = useReactFlow();
 
   // Snap all existing nodes to grid when grid snap is enabled
   useEffect(() => {
@@ -126,23 +126,41 @@ export function FlowCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const reactFlowId = useId();
 
-  // Re-fit the viewport to the nodes that were just auto-laid-out (mirrors the
-  // subgraph editor's post-layout fit; 50ms lets the new positions commit).
-  // fitBounds sets the viewport directly — the queued fitView() from
-  // useReactFlow only flushes on the next node change, which never comes when
-  // the layout left node objects untouched. One FlowCanvas is mounted per tab
-  // (hidden via display:none), so only the visible canvas may answer: a 0×0
-  // canvas would compute a degenerate viewport.
+  // Re-fit the viewport after auto-layout. The request already carries the
+  // laid-out bounding box (computed from store data), so this needs nothing
+  // from React Flow's internal position sync — fitBounds sets the viewport
+  // directly and immediately. (The queued fitView() from useReactFlow only
+  // flushes on the next node change, and reading positions back via
+  // getNodesBounds races the sync — both failure modes seen in e2e.) One
+  // FlowCanvas is mounted per tab behind display:none, so only the active,
+  // visible canvas answers, then clears the one-shot request so a canvas
+  // remount can't replay it.
   useEffect(() => {
     if (!layoutFitRequest) return;
-    const timerId = setTimeout(() => {
-      if (!containerRef.current || containerRef.current.offsetWidth === 0) return;
-      const bounds = getNodesBounds(layoutFitRequest.nodeIds);
-      if (!bounds.width || !bounds.height) return;
-      fitBounds(bounds, { padding: 0.2, duration: 300 });
-    }, 50);
-    return () => clearTimeout(timerId);
-  }, [layoutFitRequest, fitBounds, getNodesBounds]);
+    const el = containerRef.current;
+    if (!el || el.offsetWidth === 0) return;
+    if (tabId !== undefined && tabId !== useTabStore.getState().activeTabId) return;
+    // Fits are for overview: inflate small bounds (e.g. a single selected
+    // node) so the fit never zooms IN aggressively toward maxZoom.
+    let { x, y, width, height } = layoutFitRequest.bounds;
+    const minW = el.offsetWidth * 0.85;
+    const minH = el.offsetHeight * 0.85;
+    if (width < minW) {
+      x -= (minW - width) / 2;
+      width = minW;
+    }
+    if (height < minH) {
+      y -= (minH - height) / 2;
+      height = minH;
+    }
+    // Instant fit (no duration): animated viewport transitions run on
+    // requestAnimationFrame, which Chrome throttles to zero in occluded or
+    // background windows — the animation then never applies at all. The
+    // subgraph editor's post-layout fit and the Controls button are instant
+    // for the same reason.
+    fitBounds({ x, y, width, height }, { padding: 0.2 });
+    useUIStore.getState().clearLayoutFit();
+  }, [layoutFitRequest, fitBounds, tabId]);
 
   const [quickSearch, setQuickSearch] = useState<{
     screen: { x: number; y: number };
@@ -492,7 +510,7 @@ export function FlowCanvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
-        minZoom={0.1}
+        minZoom={CANVAS_MIN_ZOOM}
         proOptions={proOptions}
         deleteKeyCode="Delete"
         multiSelectionKeyCode="Shift"

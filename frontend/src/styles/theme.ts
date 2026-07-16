@@ -56,6 +56,11 @@ export const STATUS_COLORS: Record<string, string> = {
   idle: '#444',
 };
 
+/** Shared zoom-out floor for both React Flow canvases. Wide skip-aware valley
+ * layouts (long UNet-style graphs) need well below React Flow's 0.5 default
+ * to fit on screen. */
+export const CANVAS_MIN_ZOOM = 0.1;
+
 export const SURFACE = {
   bg: '#121212',
   panel: '#161616',

@@ -119,13 +119,17 @@ export function isTriggerEdge(e: ValleyEdge): boolean {
 type ValleyPos = { x: number; y: number; width: number; height: number };
 
 /**
- * Skip-aware "valley" pass (replaces the old width wrapping). Ranks spanned by
- * a skip connection are shifted along the cross axis, so the trunk dips under
- * its skips: a UNet reads as a U, residual blocks as small dips, and graphs
- * without skips are returned untouched. A skip is a non-trigger edge whose
- * endpoints both lie on the spine (longest forward path) and whose rank span
- * is at least `minSpan`. Cycle-safe: only forward edges (rank increasing) are
- * walked, so back edges are simply ignored.
+ * Skip-aware "valley" pass (replaces the old width wrapping). Within each
+ * connected component, ranks spanned by a skip connection are shifted along
+ * the cross axis, so the trunk dips under its skips: a UNet reads as a U,
+ * residual blocks as small dips, and graphs without skips are returned
+ * untouched. A skip is an eligible edge whose endpoints both lie on the spine
+ * (longest forward path) and whose rank span is at least `minSpan`.
+ * Components are processed independently because a single dagre call over a
+ * disconnected graph (the subgraph editor does this) places components side
+ * by side with shared rank coordinates — a whole-map pass would let one
+ * component's skip bend another. Cycle-safe: only forward edges (rank
+ * increasing) are walked, so back edges are simply ignored.
  */
 export function applyValleyPass(
   positions: Map<string, ValleyPos>,
@@ -140,101 +144,142 @@ export function applyValleyPass(
   const { axis, skipPredicate = () => true, minSpan = VALLEY_MIN_SPAN, gap = VALLEY_GAP } = opts;
   if (positions.size === 0) return positions;
 
-  // 1. Geometric ranks: cluster distinct centers along the flow axis. Dagre
-  //    gives every node of a rank the same center coordinate, so this recovers
-  //    true ranks regardless of node sizes or spacing tier.
-  const centerOf = (p: ValleyPos) => (axis === 'y' ? p.x + p.width / 2 : p.y + p.height / 2);
-  const centers = Array.from(positions.values(), centerOf).sort((a, b) => a - b);
-  const rankCenters: number[] = [];
-  for (const c of centers) {
-    if (rankCenters.length === 0 || c - rankCenters[rankCenters.length - 1] > 1) {
-      rankCenters.push(c);
-    }
-  }
-  const rankOf = new Map<string, number>();
-  for (const [id, p] of positions) {
-    const c = centerOf(p);
-    let lo = 0;
-    let hi = rankCenters.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (rankCenters[mid] < c - 1) lo = mid + 1;
-      else hi = mid;
-    }
-    rankOf.set(id, lo);
-  }
-  const maxRank = rankCenters.length - 1;
-  if (maxRank < minSpan) return positions;
+  const innerEdges = edges.filter((e) => positions.has(e.source) && positions.has(e.target));
 
-  // 2. Spine: longest path over FORWARD edges (rank strictly increasing),
-  //    deterministic tie-break by id.
-  const ids = Array.from(positions.keys()).sort();
-  const byRank = ids
-    .slice()
-    .sort((a, b) => rankOf.get(a)! - rankOf.get(b)! || a.localeCompare(b));
-  const forwardIn = new Map<string, string[]>(ids.map((id) => [id, []]));
-  for (const e of edges) {
-    if (!positions.has(e.source) || !positions.has(e.target)) continue;
-    if (rankOf.get(e.target)! > rankOf.get(e.source)!) {
-      forwardIn.get(e.target)!.push(e.source);
+  // Union-find the connected components of the laid-out subgraph.
+  const parent = new Map<string, string>();
+  for (const id of positions.keys()) parent.set(id, id);
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = x;
+    while (cur !== root) {
+      const next = parent.get(cur)!;
+      parent.set(cur, root);
+      cur = next;
     }
+    return root;
+  };
+  for (const e of innerEdges) {
+    const ra = find(e.source);
+    const rb = find(e.target);
+    if (ra !== rb) parent.set(ra, rb);
   }
-  const pathLen = new Map<string, number>();
-  const pred = new Map<string, string | null>();
-  for (const id of byRank) {
-    let best = 0;
-    let bestPred: string | null = null;
-    for (const p of forwardIn.get(id)!.sort()) {
-      const cand = pathLen.get(p)! + 1;
-      if (cand > best) {
-        best = cand;
-        bestPred = p;
+  const components = new Map<string, string[]>();
+  for (const id of positions.keys()) {
+    const root = find(id);
+    if (!components.has(root)) components.set(root, []);
+    components.get(root)!.push(id);
+  }
+
+  const result = new Map<string, ValleyPos>(positions);
+  let anyShift = false;
+  for (const componentIds of components.values()) {
+    if (valleyOneComponent(componentIds)) anyShift = true;
+  }
+  return anyShift ? result : positions;
+
+  /** Shift one component's covered ranks in `result`; true if it shifted. */
+  function valleyOneComponent(ids: string[]): boolean {
+    // 1. Geometric ranks: cluster distinct centers along the flow axis. Dagre
+    //    gives every node of a rank the same center coordinate, so this
+    //    recovers true ranks regardless of node sizes or spacing tier.
+    const centerOf = (p: ValleyPos) => (axis === 'y' ? p.x + p.width / 2 : p.y + p.height / 2);
+    const centers = ids.map((id) => centerOf(positions.get(id)!)).sort((a, b) => a - b);
+    const rankByCenter = new Map<number, number>();
+    let maxRank = -1;
+    let prev = Number.NEGATIVE_INFINITY;
+    for (const c of centers) {
+      if (c - prev > 1) maxRank++;
+      rankByCenter.set(c, maxRank);
+      prev = c;
+    }
+    if (maxRank < minSpan) return false;
+    const rankOf = new Map<string, number>();
+    for (const id of ids) rankOf.set(id, rankByCenter.get(centerOf(positions.get(id)!))!);
+
+    const componentEdges = innerEdges.filter((e) => rankOf.has(e.source) && rankOf.has(e.target));
+
+    // 2. Cheap necessary condition: some eligible edge spans >= minSpan ranks.
+    //    Most graphs have no skip at all — skip the spine machinery for them.
+    const candidates = componentEdges.filter(
+      (e) => skipPredicate(e) && rankOf.get(e.target)! - rankOf.get(e.source)! >= minSpan,
+    );
+    if (candidates.length === 0) return false;
+
+    // 3. Spine: longest path over FORWARD edges (rank strictly increasing),
+    //    deterministic smallest-id tie-breaks.
+    const byRank = ids
+      .slice()
+      .sort((a, b) => rankOf.get(a)! - rankOf.get(b)! || (a < b ? -1 : a > b ? 1 : 0));
+    const forwardIn = new Map<string, string[]>(ids.map((id) => [id, []]));
+    for (const e of componentEdges) {
+      if (rankOf.get(e.target)! > rankOf.get(e.source)!) {
+        forwardIn.get(e.target)!.push(e.source);
       }
     }
-    pathLen.set(id, best);
-    pred.set(id, bestPred);
-  }
-  let tail = ids[0];
-  for (const id of ids) {
-    if (
-      pathLen.get(id)! > pathLen.get(tail)! ||
-      (pathLen.get(id) === pathLen.get(tail) && id < tail)
-    ) {
-      tail = id;
+    const pathLen = new Map<string, number>();
+    const pred = new Map<string, string | null>();
+    for (const id of byRank) {
+      let best = 0;
+      let bestPred: string | null = null;
+      for (const p of forwardIn.get(id)!) {
+        const cand = pathLen.get(p)! + 1;
+        if (cand > best || (cand === best && bestPred !== null && p < bestPred)) {
+          best = cand;
+          bestPred = p;
+        }
+      }
+      pathLen.set(id, best);
+      pred.set(id, bestPred);
     }
-  }
-  const spine = new Set<string>();
-  for (let cur: string | null = tail; cur !== null; cur = pred.get(cur) ?? null) {
-    spine.add(cur);
-  }
+    let tail = byRank[0];
+    for (const id of byRank) {
+      if (
+        pathLen.get(id)! > pathLen.get(tail)! ||
+        (pathLen.get(id) === pathLen.get(tail) && id < tail)
+      ) {
+        tail = id;
+      }
+    }
+    const spine = new Set<string>();
+    for (let cur: string | null = tail; cur !== null; cur = pred.get(cur) ?? null) {
+      spine.add(cur);
+    }
 
-  // 3. Skips: eligible edges with both endpoints on the spine spanning >= minSpan.
-  const coverage = new Array(maxRank + 1).fill(0);
-  let hasSkip = false;
-  for (const e of edges) {
-    if (!skipPredicate(e)) continue;
-    if (!spine.has(e.source) || !spine.has(e.target)) continue;
-    // Off-map endpoints are filtered by the spine check (spine ⊆ positions keys)
-    const rs = rankOf.get(e.source)!;
-    const rt = rankOf.get(e.target)!;
-    if (rt - rs < minSpan) continue;
-    hasSkip = true;
-    for (let r = rs + 1; r < rt; r++) coverage[r]++;
-  }
-  if (!hasSkip) return positions;
+    // 4. Skips: candidates with both endpoints on the spine. Coverage counts
+    //    how many skips span each rank (difference array + prefix sum).
+    const coverageDelta = new Array(maxRank + 2).fill(0);
+    let hasSkip = false;
+    for (const e of candidates) {
+      if (!spine.has(e.source) || !spine.has(e.target)) continue;
+      hasSkip = true;
+      coverageDelta[rankOf.get(e.source)! + 1]++;
+      coverageDelta[rankOf.get(e.target)!]--;
+    }
+    if (!hasSkip) return false;
 
-  // 4. Shift whole ranks along the cross axis by coverage * step.
-  let maxCross = 0;
-  for (const p of positions.values()) {
-    maxCross = Math.max(maxCross, axis === 'y' ? p.height : p.width);
+    // 5. Shift whole ranks along the cross axis by coverage * step.
+    let maxCross = 0;
+    for (const id of ids) {
+      const p = positions.get(id)!;
+      maxCross = Math.max(maxCross, axis === 'y' ? p.height : p.width);
+    }
+    const step = maxCross + gap;
+    const coverage = new Array(maxRank + 1).fill(0);
+    let running = 0;
+    for (let r = 0; r <= maxRank; r++) {
+      running += coverageDelta[r];
+      coverage[r] = running;
+    }
+    for (const id of ids) {
+      const shift = coverage[rankOf.get(id)!] * step;
+      if (shift === 0) continue;
+      const p = positions.get(id)!;
+      result.set(id, axis === 'y' ? { ...p, y: p.y + shift } : { ...p, x: p.x + shift });
+    }
+    return true;
   }
-  const step = maxCross + gap;
-  const result = new Map<string, ValleyPos>();
-  for (const [id, p] of positions) {
-    const shift = coverage[rankOf.get(id)!] * step;
-    result.set(id, axis === 'y' ? { ...p, y: p.y + shift } : { ...p, x: p.x + shift });
-  }
-  return result;
 }
 
 function packIntoSwimLanes(
@@ -302,25 +347,50 @@ function pickTargetIds(
   return targets;
 }
 
-/** The set of node ids a layout call would move — used by callers to scope
- * the post-layout viewport fit (e.g. "selected" mode fits the selection). */
-export function layoutTargetIds(
-  nodes: Node[],
-  edges: Edge[],
-  mode: LayoutMode,
-  selectedIds?: Set<string>,
-): Set<string> {
-  return pickTargetIds(nodes, edges, mode, selectedIds);
-}
-
 export function autoLayout(
   nodes: Node[],
   edges: Edge[],
   mode: LayoutMode,
   selectedIds?: Set<string>,
 ): Node[] {
+  return autoLayoutWithTargets(nodes, edges, mode, selectedIds).nodes;
+}
+
+/** Bounding box over the given nodes using the same size fallbacks layout
+ * uses. Lets callers fit the viewport from store data without racing React
+ * Flow's internal lookup. Null for an empty list. */
+export function nodesBoundingBox(
+  nodes: Node[],
+): { x: number; y: number; width: number; height: number } | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    const w = n.measured?.width ?? n.width ?? NODE_W;
+    const h = n.measured?.height ?? n.height ?? NODE_H;
+    minX = Math.min(minX, n.position.x);
+    minY = Math.min(minY, n.position.y);
+    maxX = Math.max(maxX, n.position.x + w);
+    maxY = Math.max(maxY, n.position.y + h);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Like autoLayout, but also reports which node ids the layout targeted so
+ * callers can scope the post-layout viewport fit (e.g. "selected" mode fits
+ * the selection) without recomputing the target set.
+ */
+export function autoLayoutWithTargets(
+  nodes: Node[],
+  edges: Edge[],
+  mode: LayoutMode,
+  selectedIds?: Set<string>,
+): { nodes: Node[]; targetIds: Set<string> } {
   const targetIds = pickTargetIds(nodes, edges, mode, selectedIds);
-  if (targetIds.size === 0) return nodes;
+  if (targetIds.size === 0) return { nodes, targetIds };
 
   const componentIds = findConnectedComponents(targetIds, edges);
 
@@ -379,7 +449,7 @@ export function autoLayout(
   });
 
   // Reposition bound notes relative to their parent's new position
-  return result.map((n) => {
+  const withNotes = result.map((n) => {
     if (!isNoteNode(n)) return n;
     const data = n.data as any;
     if (!data.boundToNodeId || !data.boundOffset) return n;
@@ -393,6 +463,7 @@ export function autoLayout(
       },
     };
   });
+  return { nodes: withNotes, targetIds };
 }
 
 /**

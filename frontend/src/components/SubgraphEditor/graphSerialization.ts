@@ -2,7 +2,7 @@
 import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import { generateId } from '../../utils';
-import { applyValleyPass } from '../../utils/autoLayout';
+import { applyValleyPass, isTriggerEdge } from '../../utils/autoLayout';
 
 export interface PortDef {
   id: string;
@@ -359,11 +359,14 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
       height: SUBGRAPH_NODE_H,
     });
   }
-  const wrapped = applyValleyPass(raw, spec.edges, { axis: 'x' });
+  const wrapped = applyValleyPass(raw, spec.edges, {
+    axis: 'x',
+    skipPredicate: (e) => !isTriggerEdge(e),
+  });
   for (const n of spec.nodes) {
     const p = wrapped.get(n.id);
-    // wrapIntoColumns returns an entry for every input id, so `p` is always defined
-    // (the falsy branch is unreachable).
+    // applyValleyPass returns an entry for every input id, so `p` is always
+    // defined (the falsy branch is unreachable).
     /* v8 ignore start */
     if (p) {
       /* v8 ignore stop */
@@ -422,11 +425,14 @@ export function autoLayoutSubgraph(
       height: h,
     });
   }
-  const wrapped = applyValleyPass(raw, edges, { axis: 'x' });
+  const wrapped = applyValleyPass(raw, edges, {
+    axis: 'x',
+    skipPredicate: (e) => !isTriggerEdge(e),
+  });
 
   return nodes.map((n) => {
     const p = wrapped.get(n.id);
-    // wrapIntoColumns returns an entry for every input id, so `p` is always defined.
+    // applyValleyPass returns an entry for every input id, so `p` is always defined.
     /* v8 ignore start */
     if (!p) return n;
     /* v8 ignore stop */

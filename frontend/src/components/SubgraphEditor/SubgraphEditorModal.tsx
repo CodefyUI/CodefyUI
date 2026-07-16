@@ -23,6 +23,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import { generateId } from '../../utils';
+import { CANVAS_MIN_ZOOM } from '../../styles/theme';
 import { SmartDataEdge } from '../Canvas/SmartDataEdge';
 import { LayerNode } from './LayerNode';
 import { InputNode } from './InputNode';
@@ -994,7 +995,7 @@ function SubgraphFlowInner({
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               fitView
-              minZoom={0.1}
+              minZoom={CANVAS_MIN_ZOOM}
               snapToGrid={snapEnabled}
               snapGrid={[20, 20]}
               proOptions={{ hideAttribution: true }}

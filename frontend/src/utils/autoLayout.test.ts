@@ -483,6 +483,60 @@ describe('applyValleyPass (unit)', () => {
     const result = applyValleyPass(positions, edges, { axis: 'y' });
     expect(result).toBe(positions);
   });
+
+  it('empty positions map is returned as-is', () => {
+    const positions = new Map<string, Pos>();
+    expect(applyValleyPass(positions, [], { axis: 'y' })).toBe(positions);
+  });
+
+  it('components are isolated: a skip in one never shifts another', () => {
+    // Two side-by-side chains sharing rank centers (how one dagre call places
+    // disconnected components); the skip lives only in chain A.
+    const positions = new Map<string, Pos>();
+    const edges: ValleyEdge[] = [];
+    for (let i = 0; i < 7; i++) {
+      positions.set(`a${i}`, { x: i * UNIT, y: 0, width: W, height: H });
+      positions.set(`b${i}`, { x: i * UNIT, y: 300, width: W, height: H });
+      if (i > 0) {
+        edges.push({ source: `a${i - 1}`, target: `a${i}` });
+        edges.push({ source: `b${i - 1}`, target: `b${i}` });
+      }
+    }
+    edges.push({ source: 'a1', target: 'a5' });
+    const result = applyValleyPass(positions, edges, { axis: 'y' });
+    for (let i = 0; i < 7; i++) {
+      expect(result.get(`b${i}`)!.y).toBe(300); // chain B untouched
+    }
+    expect(yOf(result, 'a3')).toBe(STEP); // chain A dips under its skip
+    expect(yOf(result, 'a1')).toBe(0);
+    expect(yOf(result, 'a5')).toBe(0);
+  });
+
+  it('a branch sibling sharing a covered rank sinks with its whole rank', () => {
+    // t sits beside n3 in the same rank; whole-rank shifting keeps the rank
+    // together, so t sinks along with n3 under the skip.
+    const positions = chainPositions(8);
+    positions.set('t', { x: 3 * UNIT, y: 200, width: W, height: H });
+    const edges = [...chainEdges(8, [[1, 6]]), { source: 'n2', target: 't' }];
+    const result = applyValleyPass(positions, edges, { axis: 'y' });
+    expect(yOf(result, 'n3')).toBe(STEP);
+    expect(result.get('t')!.y).toBe(200 + STEP);
+  });
+
+  it('recovers ranks from centers with non-uniform node widths', () => {
+    // Mixed widths but consistent per-rank centers (dagre's invariant): the
+    // valley must still align skip endpoints and dip the covered ranks.
+    const positions = new Map<string, Pos>();
+    const widths = [120, 320, 200, 80, 260, 200, 140, 300];
+    for (let i = 0; i < 8; i++) {
+      const w = widths[i];
+      positions.set(`n${i}`, { x: i * UNIT + (W - w) / 2, y: 0, width: w, height: H });
+    }
+    const result = applyValleyPass(positions, chainEdges(8, [[1, 6]]), { axis: 'y' });
+    expect(yOf(result, 'n1')).toBe(0);
+    expect(yOf(result, 'n6')).toBe(0);
+    expect(yOf(result, 'n3')).toBe(STEP);
+  });
 });
 
 describe('isTriggerEdge', () => {

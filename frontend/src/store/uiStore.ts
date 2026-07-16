@@ -17,10 +17,13 @@ interface UIState {
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
   setLastLayoutMode: (mode: 'experiments' | 'all' | 'selected') => void;
-  /** Bumped after auto-layout so the canvas re-fits the viewport to the
-   * laid-out nodes. `seq` distinguishes repeated requests over the same ids. */
-  layoutFitRequest: { seq: number; nodeIds: string[] } | null;
-  requestLayoutFit: (nodeIds: string[]) => void;
+  /** Set after auto-layout so the visible canvas re-fits the viewport to the
+   * laid-out nodes' bounding box; the consumer clears it once handled
+   * (one-shot). Carrying the bounds (not node ids) lets the canvas fit from
+   * store data without racing React Flow's internal position sync. */
+  layoutFitRequest: { bounds: { x: number; y: number; width: number; height: number } } | null;
+  requestLayoutFit: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  clearLayoutFit: () => void;
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** Global compute device sent with every graph run ('cpu' | 'cuda' | 'mps').
@@ -84,10 +87,8 @@ export const useUIStore = create<UIState>((set) => ({
     set({ lastLayoutMode: mode });
   },
   layoutFitRequest: null,
-  requestLayoutFit: (nodeIds) =>
-    set((state) => ({
-      layoutFitRequest: { seq: (state.layoutFitRequest?.seq ?? 0) + 1, nodeIds },
-    })),
+  requestLayoutFit: (bounds) => set({ layoutFitRequest: { bounds } }),
+  clearLayoutFit: () => set({ layoutFitRequest: null }),
   fontSize: loadFontSize(),
   setFontSize: (size) => {
     localStorage.setItem(FONT_SIZE_KEY, size);

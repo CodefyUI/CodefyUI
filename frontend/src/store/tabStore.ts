@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import { generateId, buildFlowNode } from '../utils';
-import { autoLayout, layoutTargetIds, type LayoutMode } from '../utils/autoLayout';
+import { autoLayoutWithTargets, nodesBoundingBox, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup } from '../types';
 import { ExecutionWebSocket } from '../api/ws';
 import { useToastStore } from './toastStore';
@@ -1027,35 +1027,45 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   applyLayout: (mode) => {
     const tabId = get().activeTabId;
     if (!tabId) return;
+    const activeTab = get().getActiveTab();
+    const selectedIds = new Set(
+      activeTab.nodes.filter((n) => n.selected).map((n) => n.id),
+    );
+    const { nodes: laidNodes, targetIds } = autoLayoutWithTargets(
+      activeTab.nodes as Node[],
+      activeTab.edges as Edge[],
+      mode,
+      selectedIds,
+    );
+    const newNodes = laidNodes as Node<NodeData>[];
     get().pushUndoSnapshot();
     set((state) => ({
-      tabs: state.tabs.map((tab) => {
-        if (tab.id !== tabId) return tab;
-        const selectedIds = new Set(
-          tab.nodes.filter((n) => n.selected).map((n) => n.id),
-        );
-        const newNodes = autoLayout(tab.nodes, tab.edges, mode, selectedIds) as Node<NodeData>[];
-        return {
-          ...tab,
-          nodes: newNodes,
-        };
-      }),
+      tabs: state.tabs.map((tab) =>
+        tab.id === tabId ? { ...tab, nodes: newNodes } : tab,
+      ),
     }));
-    // Ask the canvas to re-fit the viewport to the nodes that were laid out
-    // (scoped so "selected" mode focuses the selection, not the whole graph).
-    const laidTab = get().getActiveTab();
-    const fitIds = layoutTargetIds(
-      laidTab.nodes as Node[],
-      laidTab.edges as Edge[],
-      mode,
-      new Set(laidTab.nodes.filter((n) => n.selected).map((n) => n.id)),
-    );
-    if (fitIds.size > 0) {
-      useUIStore.getState().requestLayoutFit(Array.from(fitIds));
+    // Ask the canvas to re-fit the viewport to what was laid out (scoped so
+    // "selected" mode focuses the selection). Bound notes follow their parents
+    // during layout, so include them or they could end up cropped off-screen.
+    // The request carries the bounding box computed from the fresh store nodes
+    // so the canvas never races React Flow's internal position sync.
+    if (targetIds.size > 0) {
+      const fitIds = new Set(targetIds);
+      for (const n of newNodes) {
+        const boundTo = n.data.boundToNodeId;
+        if (n.type === 'noteNode' && boundTo && fitIds.has(boundTo)) {
+          fitIds.add(n.id);
+        }
+      }
+      const bounds = nodesBoundingBox(
+        newNodes.filter((n) => fitIds.has(n.id)) as Node[],
+      );
+      if (bounds && bounds.width > 0 && bounds.height > 0) {
+        useUIStore.getState().requestLayoutFit(bounds);
+      }
     }
     // Warn if there are unbound notes on the canvas
-    const tab = get().getActiveTab();
-    const hasUnboundNotes = tab.nodes.some(
+    const hasUnboundNotes = newNodes.some(
       (n) => n.type === 'noteNode' && !n.data.boundToNodeId
     );
     if (hasUnboundNotes) {
