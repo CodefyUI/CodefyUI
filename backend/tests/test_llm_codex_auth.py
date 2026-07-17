@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import socket
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +14,18 @@ import httpx
 import pytest
 
 from app.core.llm_proxy import codex_auth
+
+
+def _ipv6_loopback_available() -> bool:
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        try:
+            s.bind(("::1", 0))
+        finally:
+            s.close()
+        return True
+    except OSError:
+        return False
 
 
 @pytest.fixture(autouse=True)
@@ -231,6 +244,79 @@ async def test_login_flow_end_to_end():
     assert st["status"] == "logged_in"
     assert st["email"] == "u@example.com"
     assert codex_auth.load_tokens()["account_id"] == "acc-7"
+
+
+@pytest.mark.asyncio
+async def test_login_callback_reachable_over_ipv6_loopback():
+    # The redirect_uri says `localhost`; a browser may resolve that to ::1
+    # first, so the callback must answer on the IPv6 loopback too.
+    if not _ipv6_loopback_available():
+        pytest.skip("host has no IPv6 loopback")
+
+    def token_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id_token": make_jwt({
+                "email": "v6@example.com",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acc-v6"},
+            }),
+            "access_token": make_jwt({"exp": int(time.time()) + 3600}),
+            "refresh_token": "rt-v6",
+        })
+
+    exchange_client = httpx.AsyncClient(transport=httpx.MockTransport(token_handler))
+    auth_url = await codex_auth.start_login(ports=(0,), exchange_client=exchange_client)
+    state = parse_qs(urlparse(auth_url).query)["state"][0]
+    port = codex_auth.active_login_port()
+
+    async with httpx.AsyncClient() as browser:
+        r = await browser.get(
+            f"http://[::1]:{port}/auth/callback",
+            params={"code": "the-code", "state": state})
+    assert r.status_code == 200
+    assert "close this tab" in r.text
+
+    await codex_auth.wait_login_settled()
+    st = codex_auth.status()
+    assert st["status"] == "logged_in"
+    assert st["email"] == "v6@example.com"
+
+
+@pytest.mark.asyncio
+async def test_login_flow_survives_hosts_without_ipv6(monkeypatch):
+    # An IPv4-only host must keep the pre-existing behavior: bind 127.0.0.1
+    # and complete the flow even though the ::1 bind is impossible.
+    real_start_server = asyncio.start_server
+
+    async def no_v6_start_server(handler, host=None, port=None, **kwargs):
+        if host == "::1":
+            raise OSError("address family not supported")
+        return await real_start_server(handler, host, port, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_server", no_v6_start_server)
+
+    def token_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id_token": make_jwt({
+                "email": "v4@example.com",
+                "https://api.openai.com/auth": {"chatgpt_account_id": "acc-v4"},
+            }),
+            "access_token": make_jwt({"exp": int(time.time()) + 3600}),
+            "refresh_token": "rt-v4",
+        })
+
+    exchange_client = httpx.AsyncClient(transport=httpx.MockTransport(token_handler))
+    auth_url = await codex_auth.start_login(ports=(0,), exchange_client=exchange_client)
+    state = parse_qs(urlparse(auth_url).query)["state"][0]
+    port = codex_auth.active_login_port()
+
+    async with httpx.AsyncClient() as browser:
+        r = await browser.get(
+            f"http://127.0.0.1:{port}/auth/callback",
+            params={"code": "the-code", "state": state})
+    assert r.status_code == 200
+
+    await codex_auth.wait_login_settled()
+    assert codex_auth.status()["status"] == "logged_in"
 
 
 @pytest.mark.asyncio
