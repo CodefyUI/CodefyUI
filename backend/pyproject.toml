@@ -54,6 +54,10 @@ dependencies = [
     # installs via `uv pip install` which ignores uv.lock, so the cap must
     # live here. Lift once a newer pyarrow is verified green in CI.
     'pyarrow<25; python_version >= "3.11"',
+    # Direct import of the CsvReader node (and pandas-based tests); was
+    # previously only transitive via `datasets`. Floor-only: 2.3.x serves
+    # <=3.10 and 3.x serves >=3.11, both proven in CI.
+    "pandas>=2.0",
     "tiktoken>=0.7.0",
     "tokenizers>=0.15.0",
     "huggingface_hub>=0.20.0",
