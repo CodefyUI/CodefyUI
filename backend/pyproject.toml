@@ -44,6 +44,13 @@ dependencies = [
     # dependency spec itself. Remove once kagglehub ships a release that uses
     # the new name.
     "kagglesdk<0.1.24",
+    # CSVReader imports pandas directly; declare it instead of relying on the
+    # transitive copy from `datasets`. Capped below 3: pandas 3.0.3 with
+    # pyarrow 25.0.0 segfaults inside ArrowStringArray._from_sequence on CI's
+    # Linux runners (3.11/3.12; 2026-07-17), while pandas 2.3.3 with the same
+    # pyarrow passes. CI resolves deps fresh (ignoring uv.lock), so the cap
+    # must live here. Bump the ceiling deliberately after vetting pandas 3.
+    "pandas>=2.0,<3",
     "tiktoken>=0.7.0",
     "tokenizers>=0.15.0",
     "huggingface_hub>=0.20.0",
