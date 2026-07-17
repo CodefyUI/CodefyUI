@@ -44,6 +44,20 @@ dependencies = [
     # dependency spec itself. Remove once kagglehub ships a release that uses
     # the new name.
     "kagglesdk<0.1.24",
+    # pyarrow 25.0.0 (2026-07-10) intermittently segfaults inside
+    # ArrowStringArray._from_sequence when pandas.read_csv runs on a worker
+    # thread (CsvReader node): identical native crash observed on cp312
+    # (3 of 4 CI runs since its release, main red since the #92 merge run)
+    # AND cp311 (PR #95 run). Only 3.10 is safe because pandas 3.x needs
+    # Python >=3.11, so 3.10 resolves pandas 2.x which doesn't require
+    # pyarrow. pyarrow is transitive (datasets -> pandas 3.x) and CI
+    # installs via `uv pip install` which ignores uv.lock, so the cap must
+    # live here. Lift once a newer pyarrow is verified green in CI.
+    'pyarrow<25; python_version >= "3.11"',
+    # Direct import of the CsvReader node (and pandas-based tests); was
+    # previously only transitive via `datasets`. Floor-only: 2.3.x serves
+    # <=3.10 and 3.x serves >=3.11, both proven in CI.
+    "pandas>=2.0",
     "tiktoken>=0.7.0",
     "tokenizers>=0.15.0",
     "huggingface_hub>=0.20.0",
