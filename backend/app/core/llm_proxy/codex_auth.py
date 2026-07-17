@@ -214,6 +214,7 @@ class _LoginFlow:
         self.verifier, self.challenge = generate_pkce()
         self.port: int = 0
         self.server: asyncio.AbstractServer | None = None
+        self.server_v6: asyncio.AbstractServer | None = None
         self.exchange_client: httpx.AsyncClient | None = None
         self.settled = asyncio.Event()
         self.timeout_task: asyncio.Task | None = None
@@ -346,6 +347,11 @@ def _settle() -> None:
             flow.server.close()
         except Exception:
             pass  # loop already closed (e.g. sync fixture teardown on Windows)
+    if flow.server_v6 is not None:
+        try:
+            flow.server_v6.close()
+        except Exception:
+            pass
     if flow.timeout_task is not None:
         try:
             flow.timeout_task.cancel()
@@ -390,6 +396,14 @@ async def start_login(*, ports: tuple[int, ...] = CALLBACK_PORTS,
             last_err = exc
     if flow.server is None:
         raise RuntimeError(f"Could not bind a callback port {ports}: {last_err}")
+    # The redirect_uri host is `localhost` (fixed by the registered OAuth
+    # client), which some resolvers answer with ::1 first -- listen on the
+    # IPv6 loopback at the same port too. Best-effort: IPv4-only hosts keep
+    # the plain 127.0.0.1 listener.
+    try:
+        flow.server_v6 = await asyncio.start_server(_handle_conn, "::1", flow.port)
+    except OSError:
+        flow.server_v6 = None
 
     async def _timeout() -> None:
         await asyncio.sleep(LOGIN_TIMEOUT_S)
