@@ -186,7 +186,9 @@ export function useGraphExecution() {
 
     // Pre-execution validation
     try {
-      const validation = await validateGraph(execNodes, graph.edges);
+      // Embedded presets ride along so a portable graph whose presets are
+      // not in the local registry still validates (#84).
+      const validation = await validateGraph(execNodes, graph.edges, graph.presets);
       if (!validation.valid) {
         const { addToast } = useToastStore.getState();
         validation.errors.forEach((err: string) => addToast(err, 'error'));

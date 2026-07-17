@@ -18,7 +18,11 @@ from ..core.auth import (
 from ..core.cache import ExecutionCache
 from ..core.device_utils import resolve_device
 from ..core.execution_context import CancellationError, ExecutionContext
-from ..core.graph_engine import GraphValidationError, execute_graph
+from ..core.graph_engine import (
+    GraphValidationError,
+    build_preset_fallback,
+    execute_graph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +175,9 @@ async def websocket_execution(ws: WebSocket):
 
                 nodes = data.get("nodes", [])
                 edges = data.get("edges", [])
+                # Graph-embedded presets (#84): portable graphs carry their
+                # own presets[]; consulted when the local registry lacks one.
+                preset_fallback = build_preset_fallback(data.get("presets", []))
                 error_mode = data.get("error_mode", "fail_fast")
                 max_retries = data.get("max_retries", 0)
                 changed_nodes = data.get("changed_nodes")  # partial re-execution hint
@@ -248,6 +255,7 @@ async def websocket_execution(ws: WebSocket):
                             run_id=run_id,
                             output_store=output_store,
                             record_outputs=record_outputs,
+                            preset_fallback=preset_fallback,
                         )
                         await ws.send_text(json.dumps({"type": "execution_complete"}))
                     except CancellationError:

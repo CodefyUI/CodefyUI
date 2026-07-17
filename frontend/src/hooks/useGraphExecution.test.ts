@@ -456,6 +456,37 @@ describe('useGraphExecution - execute', () => {
     useTabStore.setState({ getSerializedGraph: realSerialize } as any);
   });
 
+  it('passes graph-embedded presets to validation and the execute message (#84)', async () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+      }),
+    ]);
+    const presets = [{ preset_name: 'EmbeddedPr', nodes: [], edges: [] }];
+    const serializedNodes = [
+      { id: 'p', type: 'preset:EmbeddedPr', position: { x: 0, y: 0 }, data: {} },
+    ];
+    const realSerialize = useTabStore.getState().getSerializedGraph;
+    useTabStore.setState({
+      getSerializedGraph: () => ({ nodes: serializedNodes, edges: [], presets }),
+    } as any);
+
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    // Pre-run REST validation must see the embedded presets, otherwise a
+    // portable graph fails "Unknown preset" before the run even starts.
+    expect(validateGraphMock).toHaveBeenCalledWith(serializedNodes, [], presets);
+    expect(ws.send.mock.calls[0][0].presets).toEqual(presets);
+
+    useTabStore.setState({ getSerializedGraph: realSerialize } as any);
+  });
+
   it('omits changed_nodes when nothing is dirty', async () => {
     const ws = tabById('t1').ws as FakeWs;
     const { result } = renderHook(() => useGraphExecution());

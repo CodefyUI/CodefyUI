@@ -266,8 +266,20 @@ describe('validateGraph', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/graph/validate');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ nodes: [{ id: 'a' }], edges: [{ id: 'e' }] });
+    expect(JSON.parse(init.body)).toEqual({
+      nodes: [{ id: 'a' }],
+      edges: [{ id: 'e' }],
+      presets: [],
+    });
     expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+  });
+
+  it('POSTs graph-embedded presets so portable graphs validate (#84)', async () => {
+    const fetchMock = mockFetch(200, { valid: true });
+    const presets = [{ preset_name: 'EmbeddedPr' }];
+    await validateGraph([{ id: 'a' }], [], presets);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body).presets).toEqual(presets);
   });
 
   it('throws on failure', async () => {

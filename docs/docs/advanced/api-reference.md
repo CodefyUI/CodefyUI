@@ -51,7 +51,7 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | Captured gradient metadata (Inspector → Backward tab). |
 | `/api/execution/state/reset` | POST | Reset persisted layer weights (per-node or per-graph). |
 | `/api/execution/state/list` | GET | List how many modules are persisted (diagnostic). |
-| `/ws/execution` | WebSocket | Real-time graph execution (accepts `run_id`, `record_outputs`). |
+| `/ws/execution` | WebSocket | Real-time graph execution (accepts `run_id`, `record_outputs`, graph-embedded `presets`). |
 
 :::note WebSocket auth
 The execution WebSocket takes its session token as a query parameter, since browsers can't set custom headers on a WebSocket handshake. The frontend handles this for you.

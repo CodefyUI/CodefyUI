@@ -65,11 +65,11 @@ export async function fetchDevices(): Promise<DevicesResponse> {
   return res.json();
 }
 
-export async function validateGraph(nodes: any[], edges: any[]) {
+export async function validateGraph(nodes: any[], edges: any[], presets: any[] = []) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes, edges }),
+    body: JSON.stringify({ nodes, edges, presets }),
   });
   if (!res.ok) throw new Error(`Validation failed: ${res.statusText}`);
   return res.json();
