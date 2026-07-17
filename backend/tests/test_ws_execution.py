@@ -68,6 +68,79 @@ async def test_ws_unknown_action():
             assert "foobar" in msg["error"]
 
 
+# ── Graph-embedded presets (#84) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_resolves_graph_embedded_preset():
+    """A graph carrying its own ``presets[]`` must run even when the server's
+    preset registry has never heard of the preset (portable graphs, #84).
+
+    Mirrors the REST run path: the execute message's ``presets`` field is
+    turned into a preset_fallback for expansion/validation.
+    """
+    from app.core.preset_registry import preset_registry
+
+    preset_name = "WsEmbeddedPr"
+    assert preset_registry.get(preset_name) is None  # sanity: truly absent
+
+    embedded_preset = {
+        "preset_name": preset_name,
+        "category": "Custom",
+        "description": "",
+        "tags": [],
+        "nodes": [{"id": "inner", "type": "Print", "params": {"label": "x"}}],
+        "edges": [],
+        "exposed_inputs": [
+            {"name": "in", "internal_node": "inner", "internal_port": "value",
+             "data_type": "ANY", "description": ""},
+        ],
+        "exposed_outputs": [],
+        "exposed_params": [],
+    }
+
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "nodes": [
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                    {"id": "p", "type": f"preset:{preset_name}",
+                     "position": {"x": 0, "y": 0}, "data": {}},
+                ],
+                "edges": [
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                    {"source": "1", "target": "p",
+                     "sourceHandle": "value", "targetHandle": "in"},
+                ],
+                "presets": [embedded_preset],
+            }))
+
+            messages = []
+            for _ in range(30):
+                msg = json.loads(await ws.receive_text())
+                messages.append(msg)
+                if msg["type"] in ("execution_complete", "execution_error"):
+                    break
+
+            errors = [m for m in messages if m["type"] == "execution_error"]
+            assert not errors, f"unexpected execution_error: {errors}"
+            assert "execution_complete" in [m["type"] for m in messages]
+            # Internal preset progress is aggregated under the preset node's
+            # own id (the canvas only knows "p"), so completion lands there.
+            assert any(
+                m["type"] == "node_status"
+                and m.get("node_id") == "p"
+                and m["status"] == "completed"
+                for m in messages
+            )
+
+
 # ── Origin policy ──────────────────────────────────────────────────────
 # Regression guards for the WS handshake's same-origin / CORS_ORIGINS gate
 # (see ws_execution.websocket_execution comment). The bug these protect
