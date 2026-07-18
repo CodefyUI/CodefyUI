@@ -142,3 +142,55 @@ def test_publish_app_not_found_hints_create_flag(tmp_path, monkeypatch, capsys):
     assert project.cmd_publish(_pargs(proj, slug="my-svc")) == 1
     captured = capsys.readouterr()
     assert "--create" in (captured.out + captured.err)
+
+
+# -- Error paths before/around the HTTP hop (issue #88), monkeypatched at the
+# -- same _read_session_token/_server_base/_http_* module boundaries as above.
+# -- Check order under test: token -> health(GET) -> publish(POST).
+
+
+def test_publish_missing_token_makes_no_http_calls(tmp_path, monkeypatch,
+                                                   capsys):
+    """No session token (server not running): fail BEFORE any network I/O."""
+    proj = _init_with_publish_defaults(tmp_path)
+    monkeypatch.setattr(project, "_read_session_token", lambda: None)
+    calls = []
+    monkeypatch.setattr(project, "_http_get_json",
+                        lambda *a, **k: calls.append("get") or {"project": ""})
+    monkeypatch.setattr(project, "_http_post_json",
+                        lambda *a, **k: calls.append("post") or {"_status": 200})
+    assert project.cmd_publish(_pargs(proj)) == 1
+    assert calls == []  # neither the health GET nor the publish POST fired
+    captured = capsys.readouterr()
+    # Both locales name the missing session token.
+    assert "token" in (captured.out + captured.err).lower()
+
+
+def test_publish_health_unreachable_never_posts(tmp_path, monkeypatch, capsys):
+    """/api/health unreachable: rc 1 naming the URL, and the publish POST is
+    never attempted."""
+    proj = _init_with_publish_defaults(tmp_path)
+    monkeypatch.setattr(project, "_read_session_token", lambda: "tok")
+    monkeypatch.setattr(project, "_server_base",
+                        lambda: ("http://127.0.0.1:8000", "127.0.0.1:8000"))
+    monkeypatch.setattr(project, "_http_get_json", lambda url, host: None)
+    posted = []
+    monkeypatch.setattr(project, "_http_post_json",
+                        lambda *a, **k: posted.append(1) or {"_status": 200})
+    assert project.cmd_publish(_pargs(proj)) == 1
+    assert posted == []
+    captured = capsys.readouterr()
+    assert "/api/health" in (captured.out + captured.err)
+
+
+def test_publish_non_200_post_reports_detail(tmp_path, monkeypatch, capsys):
+    """A non-200 publish response (e.g. a 409 pre-flight refusal) is rc 1
+    and the server's detail is echoed so CI logs say WHY."""
+    proj = _init_with_publish_defaults(tmp_path)
+    _patch_common(monkeypatch, proj)
+    monkeypatch.setattr(
+        project, "_http_post_json",
+        lambda *a, **k: {"_status": 409, "detail": "secret_in_graph boom"})
+    assert project.cmd_publish(_pargs(proj)) == 1
+    captured = capsys.readouterr()
+    assert "secret_in_graph boom" in (captured.out + captured.err)
