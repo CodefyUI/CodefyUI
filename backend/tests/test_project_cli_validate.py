@@ -45,8 +45,8 @@ def _write_graph(proj, graph, base=None):
     (proj / "graphs" / f"{base}.graph.json").write_text(json.dumps(graph))
 
 
-def _vargs(proj, strict=False):
-    return argparse.Namespace(dir=str(proj), strict=strict)
+def _vargs(proj, strict=False, graph=None):
+    return argparse.Namespace(dir=str(proj), strict=strict, graph=graph)
 
 
 def test_valid_contract_graph_passes(tmp_path):
@@ -122,6 +122,73 @@ def test_env_tracked_fails(tmp_path):
     subprocess.run(["git", "-C", str(proj), "add", "-f", ".env"],
                    capture_output=True)
     assert project.cmd_validate(_vargs(proj)) == 1
+
+
+def _canvas_only_graph(name="train"):
+    """A training-style graph with no GraphOutput (no API surface): fine on
+    the canvas, but it fails the publish contract gate."""
+    return {
+        "format_version": 1, "name": name, "description": "",
+        "nodes": [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "p", "type": "Print", "data": {"params": {"label": "loss"}}},
+        ],
+        "edges": [
+            {"id": "t1", "source": "start", "target": "p",
+             "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        ],
+        "presets": [],
+    }
+
+
+def test_validate_empty_project_reports_zero_graphs(tmp_path, capsys):
+    """An empty graphs/ must not produce a vacuous 'Validation passed' --
+    CI logs need the honest '0 graphs checked' (issue #86)."""
+    proj = _init(tmp_path)
+    assert project.cmd_validate(_vargs(proj)) == 0
+    assert "0 graphs checked" in capsys.readouterr().out
+
+
+def test_validate_reports_checked_count(tmp_path, capsys):
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph("aaa"))
+    _write_graph(proj, _echo_graph("bbb"))
+    assert project.cmd_validate(_vargs(proj)) == 0
+    assert "2 graphs checked" in capsys.readouterr().out
+
+
+def test_validate_canvas_only_graph_names_the_escape_hatch(tmp_path, capsys):
+    """A no-GraphOutput graph still fails (publishable graphs need a declared
+    output), but the error must explain itself and point at --graph."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph("serve"))
+    _write_graph(proj, _canvas_only_graph("train"))
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "GraphOutput" in combined
+    assert "--graph" in combined
+
+
+def test_validate_graph_filter_checks_only_named(tmp_path, capsys):
+    """--graph validates only the publish targets, so a mixed project
+    (canvas-only train graph + serve graph) can still gate CI."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph("serve"))
+    _write_graph(proj, _canvas_only_graph("train"))
+    assert project.cmd_validate(_vargs(proj, graph=["serve"])) == 0
+    assert "1 graph checked" in capsys.readouterr().out
+
+
+def test_validate_graph_filter_unknown_name_fails(tmp_path, capsys):
+    """A typo in --graph must be an error naming what exists -- never a
+    silently-vacuous pass."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph("serve"))
+    assert project.cmd_validate(_vargs(proj, graph=["sevre"])) == 1
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "sevre" in combined and "serve" in combined
 
 
 def test_strict_pin_missing(tmp_path, monkeypatch):

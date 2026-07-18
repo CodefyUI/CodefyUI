@@ -108,6 +108,21 @@ cdui project restore .   # install the manifest's plugin pins by exact SHA
 cdui project validate .
 ```
 
+`validate` checks **every** graph under `graphs/` and prints the checked
+count -- an empty `graphs/` reports `Validation passed (0 graphs checked)`
+rather than a bare green. A **canvas-only** graph (say, a training graph
+that declares no **GraphOutput**) fails the contract gate, because every
+publishable graph needs at least one declared output. Either give it a
+legitimate output (the MNIST example project publishes its checkpoint path
+as a `weights_path` output) or validate only your publish targets:
+
+```bash
+cdui project validate . --graph serve   # repeatable: --graph a --graph b
+```
+
+A `--graph` name that does not exist in `graphs/` is an error, so a typo can
+never turn the CI gate into a vacuous pass.
+
 Pins come from `cdui project freeze .`: it reads your locally-installed
 plugins and writes each one's exact commit SHA into `codefyui.project.toml`'s
 `[plugins]` table (a plugin you installed as a local dev link is skipped --
@@ -181,7 +196,19 @@ project open (so it can never record the wrong commit against foreign bytes),
 computes `git rev-parse HEAD` + `git status --porcelain`, and warns LOUDLY if
 the tree is dirty. Every publish from a git repo records `git_dirty` as
 `true` or `false` alongside the commit -- a dirty tree additionally prints
-the warning banner above.
+the warning banner above. If `git status` itself fails after the commit was
+resolved, `git_dirty` is recorded as `null` (= unknown), never a fabricated
+`false`.
+
+Creating the app on first publish is automatic **only** for the manifest's
+committed `[publish].slug` target. An explicitly passed `--slug` that names
+an app the server does not know fails with 404 `app_not_found` -- a typo can
+no longer silently mint a second app -- and the CLI points you at `--create`
+for a deliberate first publish of a new command-line slug:
+
+```bash
+cdui project publish . --graph echo --slug echo-svc --create
+```
 
 > **Remote / CI deploy is out of scope for v1.** `cdui project validate` runs
 > in CI, but publishing requires a local server with the project open. The

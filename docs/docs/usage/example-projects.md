@@ -6,7 +6,7 @@ description: Official ready-to-clone example services -- each one a standalone C
 
 # Example Projects
 
-Each official example is a standalone [project directory](./project-directories.md)
+Each official example is a standalone [project directory](./project-directories)
 hosted as its own repository under the CodefyUI organization. Clone one, start the
 server on it, and you have a working service on your canvas -- then publish it as a
 real HTTP API and push the repo anywhere you like. They are also honest templates:
@@ -41,4 +41,4 @@ its own CI. Keeping each example as a real repository (instead of files bundled
 inside CodefyUI) means the clone-to-published-API path you practice on an example
 is exactly the path you will use for your own services. Each example repo runs
 `cdui project validate .` cleanly, so any of them also works as a template for
-[CI validation](./project-directories.md#4-validate-the-ci-gate) of your own project.
+[CI validation](./project-directories) of your own project.
