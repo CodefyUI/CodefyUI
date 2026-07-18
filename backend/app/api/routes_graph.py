@@ -7,6 +7,11 @@ from fastapi import APIRouter, HTTPException
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
 from ..core.node_registry import registry
+from ..core.project import (
+    GraphAmbiguityError,
+    collect_graph_files,
+    resolve_graph_file,
+)
 from ..core.secret_params import (
     scrub_graph_secrets,
     scrub_preset_definition_secrets,
@@ -24,21 +29,6 @@ def _sanitize_name(name: str) -> str:
 
 def _project_mode() -> bool:
     return settings.PROJECT_DIR is not None
-
-
-class GraphAmbiguityError(Exception):
-    """Both `<name>.graph.json` and legacy `<name>.json` exist in project
-    mode — never silently pick one (spec ID2/ID7)."""
-
-    def __init__(self, name: str, canonical: "Path", legacy: "Path") -> None:
-        self.name = name
-        self.canonical = canonical
-        self.legacy = legacy
-        super().__init__(
-            f"Graph '{name}' is ambiguous: both {canonical.name} and "
-            f"{legacy.name} exist in {canonical.parent}. Remove one "
-            "(the legacy single-file form upgrades to the pair on save)."
-        )
 
 
 def _reserved_graph_name(name: str) -> bool:
@@ -76,21 +66,16 @@ def _graph_path(name: str) -> Path:
 
     Non-project: `<GRAPHS_DIR>/<name>.json` (existence not checked — callers
     guard with `.exists()`; identical to legacy behavior).
-    Project: canonical `<name>.graph.json` when present, else legacy
-    `<name>.json`; raises GraphAmbiguityError when BOTH exist; when NEITHER
-    exists returns the canonical (non-existent) path so callers' 404 path
-    still fires.
+    Project: the shared canonical-vs-legacy rule
+    (app.core.project.resolve_graph_file) — canonical `<name>.graph.json`
+    when present, legacy `<name>.json` accepted, GraphAmbiguityError when
+    BOTH exist, and the canonical (non-existent) path when NEITHER does so
+    callers' 404 path still fires.
     """
     safe = _sanitize_name(name)
     if not _project_mode():
         return settings.GRAPHS_DIR / f"{safe}.json"
-    canonical = settings.GRAPHS_DIR / f"{safe}.graph.json"
-    legacy = settings.GRAPHS_DIR / f"{safe}.json"
-    if canonical.exists() and legacy.exists():
-        raise GraphAmbiguityError(name, canonical, legacy)
-    if legacy.exists() and not canonical.exists():
-        return legacy
-    return canonical
+    return resolve_graph_file(settings.GRAPHS_DIR, safe, display_name=name)
 
 
 @router.post("/validate", response_model=GraphValidationResponse)
@@ -184,27 +169,14 @@ async def list_graphs():
                 continue
         return graphs
 
-    # Project mode: canonical `<name>.graph.json` + legacy `<name>.json`.
-    # Path("x.graph.json").stem is "x.graph" — strip the whole ".graph.json"
-    # so the file stem never leaks the double suffix (spec ID7).
-    files: dict[str, Path] = {}
-    for f in settings.GRAPHS_DIR.glob("*.graph.json"):
-        files.setdefault(f.name[: -len(".graph.json")], f)
-    for f in settings.GRAPHS_DIR.glob("*.json"):
-        if f.name.endswith(".graph.json"):
-            continue  # already counted as canonical
-        base = f.stem
-        if base in files:
-            # Both forms present -> fail loudly naming both (no silent pick).
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Graph '{base}' is ambiguous: both {files[base].name} "
-                    f"and {f.name} exist. Remove one."
-                ),
-            )
-        files[base] = f
-    for base, f in sorted(files.items()):
+    # Project mode: the shared canonical-vs-legacy collection rule
+    # (app.core.project.collect_graph_files) — bases never leak the double
+    # suffix (spec ID7) and both-forms-present fails loudly naming both.
+    try:
+        pairs = collect_graph_files(settings.GRAPHS_DIR)
+    except GraphAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    for base, f in pairs:
         try:
             data = json.loads(f.read_text())
             graphs.append({"name": data.get("name", base), "file": base})
