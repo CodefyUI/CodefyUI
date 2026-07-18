@@ -83,8 +83,10 @@ def test_bom_prefixed_env_key_loads_clean(tmp_path, monkeypatch):
 
 def test_no_env_leak_after_module():
     # Regression guard for _isolate_environ above: by the time this test runs
-    # (last, in file order), CODEFYUI_OPENAI_API_KEY and CODEFYUI_PORT --
-    # written directly into os.environ by earlier tests in this file via
-    # load_dotenv_file -- must already be restored to absent.
-    assert "CODEFYUI_OPENAI_API_KEY" not in os.environ
-    assert "CODEFYUI_PORT" not in os.environ
+    # (last, in file order), the SENTINEL VALUES written directly into
+    # os.environ by earlier tests in this file via load_dotenv_file must be
+    # gone. Assert on the sentinel values, never on key absence: a real
+    # CODEFYUI_OPENAI_API_KEY exported by a developer or CI must not fail
+    # the suite spuriously (issue #88).
+    assert os.environ.get("CODEFYUI_OPENAI_API_KEY") != "sk-xyz"
+    assert os.environ.get("CODEFYUI_PORT") != "59999"

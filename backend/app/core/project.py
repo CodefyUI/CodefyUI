@@ -130,11 +130,21 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """Write text via a temp file + os.replace (atomic per file, spec 13)."""
+    """Write text via a temp file + os.replace (atomic per file, spec 13).
+
+    The temp file is unlinked on ANY failure (write or replace) so an
+    interrupted save cannot strand a ``*.tmp-*`` orphan next to the pair
+    (issue #88; the scaffold .gitignore additionally hides one in-repo).
+    On success os.replace has already consumed the temp file, so the
+    unlink is a no-op.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_graph_pair(

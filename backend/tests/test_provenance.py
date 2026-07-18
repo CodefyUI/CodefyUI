@@ -124,6 +124,29 @@ async def test_publish_records_and_surfaces_provenance(test_client, app_db, grap
     assert info["x-codefyui-git-dirty"] is True
 
 
+async def test_publish_clean_tree_records_dirty_false(test_client, app_db,
+                                                      graphs_dir):
+    """git_dirty=False is a REAL value, not absence (issue #88): int(False)=0
+    must round-trip as false -- never collapse to null -- through the publish
+    response, the versions rows, and the OpenAPI info block (the 0-is-not-None
+    branch of _openapi_document)."""
+    await _save_echo(test_client)
+    commit = "f" * 40
+    r = await test_client.post("/api/apps/svc4/publish", json={
+        "graph": "echo-graph", "create": True,
+        "git_commit": commit, "git_dirty": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["git_dirty"] is False
+
+    row = (await test_client.get("/api/apps/svc4/versions")).json()[0]
+    assert row["git_commit"] == commit
+    assert row["git_dirty"] is False
+
+    info = (await test_client.get("/api/apps/svc4/openapi.json")).json()["info"]
+    assert info["x-codefyui-git-commit"] == commit
+    assert info["x-codefyui-git-dirty"] is False
+
+
 async def test_publish_without_provenance(test_client, app_db, graphs_dir):
     await _save_echo(test_client)
     r = await test_client.post("/api/apps/svc2/publish",

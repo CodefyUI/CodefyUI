@@ -3,6 +3,9 @@ layout file, params only in the logic file, and the layout is a full snapshot.""
 
 import json
 
+import pytest
+
+from app.core import project as project_mod
 from app.core.project import (
     FORMAT_VERSION,
     merge_graph,
@@ -99,3 +102,77 @@ def test_write_pair_removes_legacy(tmp_path):
     write_graph_pair(logic_path, layout_path, _payload(), legacy_path=legacy)
     assert logic_path.exists()
     assert not legacy.exists()  # upgraded to the pair
+
+
+def test_atomic_write_failure_leaves_no_tmp_orphan(tmp_path, monkeypatch):
+    """A failed os.replace must not strand a `*.tmp-*` file next to the pair
+    (issue #88): _atomic_write unlinks its temp file on ANY failure, and the
+    already-written target files stay byte-for-byte untouched."""
+    logic_path = tmp_path / "graphs" / "demo.graph.json"
+    layout_path = tmp_path / "layout" / "demo.layout.json"
+    write_graph_pair(logic_path, layout_path, _payload())
+    logic_before = logic_path.read_text()
+    layout_before = layout_path.read_text()
+
+    def _boom(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(project_mod.os, "replace", _boom)
+    p2 = _payload()
+    p2["description"] = "changed"
+    with pytest.raises(OSError, match="simulated replace failure"):
+        write_graph_pair(logic_path, layout_path, p2)
+    # No orphaned temp file anywhere in the project tree...
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+    # ...and the interrupted save never corrupted the existing pair.
+    assert logic_path.read_text() == logic_before
+    assert layout_path.read_text() == layout_before
+
+
+def _preset_payload():
+    """A graph holding a preset INSTANCE node (params + per-inner-node
+    internalParams) plus its embedded preset definition."""
+    return {
+        "name": "with-preset",
+        "description": "",
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+             "data": {"params": {}}},
+            {"id": "p1", "type": "preset:MyPack",
+             "position": {"x": 100, "y": 50},
+             "data": {"params": {"exposed_lr": 0.01},
+                      "internalParams": {"inner": {"label": "tuned"}}}},
+        ],
+        "edges": [],
+        "presets": [{
+            "preset_name": "MyPack", "category": "Custom", "description": "",
+            "tags": [],
+            "nodes": [{"id": "inner", "type": "Print",
+                       "params": {"label": "x"}}],
+            "edges": [],
+            "exposed_inputs": [], "exposed_outputs": [], "exposed_params": [],
+        }],
+        "segmentGroups": [],
+    }
+
+
+def test_preset_internal_params_round_trip():
+    """internalParams are BEHAVIOR, not geometry (issue #88): they must stay
+    in the logic file through split and come back intact through merge,
+    alongside the embedded preset definition and the exposed params."""
+    payload = _preset_payload()
+    logic, layout = split_graph(payload)
+    node = next(n for n in logic["nodes"] if n["id"] == "p1")
+    assert node["data"]["internalParams"] == {"inner": {"label": "tuned"}}
+    assert node["data"]["params"] == {"exposed_lr": 0.01}
+    assert "position" not in node                       # geometry stripped
+    assert logic["presets"] == payload["presets"]       # definition in logic
+    assert layout["positions"]["p1"] == {"x": 100, "y": 50}
+
+    merged, missing = merge_graph(logic, layout)
+    assert missing is False
+    m = next(n for n in merged["nodes"] if n["id"] == "p1")
+    assert m["position"] == {"x": 100, "y": 50}
+    assert m["data"]["params"] == {"exposed_lr": 0.01}
+    assert m["data"]["internalParams"] == {"inner": {"label": "tuned"}}
+    assert merged["presets"] == payload["presets"]

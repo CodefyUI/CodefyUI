@@ -3,6 +3,8 @@ graph/asset roots, with an explicitly-provided root always winning."""
 
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
 
 
@@ -40,3 +42,44 @@ def test_models_dir_parent_is_assets(tmp_path):
     # assets/ (spec 7.2). Guard it here so a future refactor can't break it.
     s = Settings(PROJECT_DIR=tmp_path)
     assert s.MODELS_DIR.parent == tmp_path.resolve() / "assets"
+
+
+# -- The REAL env channel (issue #88): `cdui start --project` communicates
+# -- via CODEFYUI_PROJECT_DIR (env_prefix), and _derive_project_roots reads
+# -- model_fields_set, which covers env-provided fields exactly like init
+# -- kwargs. The tests above prove the kwarg proxy; these prove the wire.
+
+
+def test_env_project_dir_derives_roots(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEFYUI_PROJECT_DIR", str(tmp_path))
+    s = Settings()
+    proj = tmp_path.resolve()
+    assert s.PROJECT_DIR == proj
+    assert s.GRAPHS_DIR == proj / "graphs"
+    assert s.IMAGES_DIR == proj / "assets" / "images"
+    assert s.MODELS_DIR == proj / "assets" / "models"
+    assert s.LAYOUT_DIR == proj / "layout"
+
+
+@pytest.mark.parametrize("env_name,field", [
+    ("CODEFYUI_IMAGES_DIR", "IMAGES_DIR"),
+    ("CODEFYUI_MODELS_DIR", "MODELS_DIR"),
+])
+def test_env_explicit_root_beats_project_derivation(tmp_path, monkeypatch,
+                                                    env_name, field):
+    override = tmp_path / "custom-root"
+    monkeypatch.setenv("CODEFYUI_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv(env_name, str(override))
+    s = Settings()
+    proj = tmp_path.resolve()
+    # The explicitly-set env root wins over project derivation...
+    assert getattr(s, field) == override
+    # ...while every root NOT explicitly set still derives from the project.
+    derived = {
+        "GRAPHS_DIR": proj / "graphs",
+        "IMAGES_DIR": proj / "assets" / "images",
+        "MODELS_DIR": proj / "assets" / "models",
+    }
+    del derived[field]
+    for other, expected in derived.items():
+        assert getattr(s, other) == expected

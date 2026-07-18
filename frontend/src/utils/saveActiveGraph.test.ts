@@ -22,6 +22,9 @@ function freshTab() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Per-project storage keys (e.g. last-saved-graph memory) leak across the
+  // '/proj'/'/a'/'/b' describe blocks below without this (issue #88).
+  localStorage.clear();
   freshTab();
   useProjectStore.setState({ projectDir: null, projectName: null, loaded: true });
 });
