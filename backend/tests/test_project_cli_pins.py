@@ -33,6 +33,93 @@ def test_freeze_writes_github_pins_skips_local_and_builtin(tmp_path, monkeypatch
     assert "builtin-pack" not in manifest["plugins"]  # builtins not pinned
 
 
+# A manifest with user-added content freeze does not own: an unknown top-level
+# scalar, an unknown key inside [project], an unknown top-level table (with a
+# nested sub-table), and unknown keys inside [publish]. [plugins] holds a
+# stale hand-written pin that freeze MUST replace (machine-owned section).
+_CUSTOMIZED_MANIFEST = (
+    'codename = "zeta"\n'
+    '\n'
+    '[project]\n'
+    'name = "svc"\n'
+    'format_version = 1\n'
+    'requires_codefyui = ">=1.4"\n'
+    'description = "my service"\n'
+    '\n'
+    '[plugins]\n'
+    'stale-pack = { url = "https://github.com/o/stale", ref = "v0", '
+    'sha = "' + "d" * 40 + '" }\n'
+    '\n'
+    '[my_notes]\n'
+    'owner = "alice"\n'
+    'priority = 7\n'
+    'active = true\n'
+    'tags = ["a", "b"]\n'
+    '\n'
+    '[my_notes.inner]\n'
+    'deep = "kept"\n'
+    '\n'
+    '[publish]\n'
+    'graph = "main"\n'
+    'slug = "svc"\n'
+    'record_io = true\n'
+    'timeout_s = 30\n'
+)
+
+
+def _freeze_with_one_pin(proj, monkeypatch):
+    fake_lock = {"schema": 1, "plugins": {
+        "pack-a": {"source_kind": "github_url",
+                   "url": "https://github.com/o/pack-a", "ref": "v1.2",
+                   "sha": "a" * 40, "enabled": True}}}
+    monkeypatch.setattr(project, "load_lockfile", lambda: fake_lock)
+    assert project.cmd_freeze(argparse.Namespace(dir=str(proj))) == 0
+
+
+def test_freeze_preserves_unknown_manifest_keys(tmp_path, monkeypatch):
+    """Issue #87: freeze must round-trip keys it does not know about."""
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        _CUSTOMIZED_MANIFEST, encoding="utf-8")
+    _freeze_with_one_pin(proj, monkeypatch)
+    manifest = tomllib.loads(
+        (proj / "codefyui.project.toml").read_text(encoding="utf-8"))
+
+    # (a) unknown top-level scalar + unknown top-level table survive.
+    assert manifest["codename"] == "zeta"
+    assert manifest["my_notes"] == {
+        "owner": "alice", "priority": 7, "active": True,
+        "tags": ["a", "b"], "inner": {"deep": "kept"}}
+    # (b) unknown key inside [project] survives; known keys intact.
+    assert manifest["project"]["description"] == "my service"
+    assert manifest["project"]["name"] == "svc"
+    assert manifest["project"]["format_version"] == 1
+    assert manifest["project"]["requires_codefyui"] == ">=1.4"
+    # (c) unknown keys inside [publish] survive alongside the known ones.
+    assert manifest["publish"] == {
+        "graph": "main", "slug": "svc", "record_io": True, "timeout_s": 30}
+    # [plugins] is machine-owned: regenerated from the lockfile, stale pin gone.
+    assert manifest["plugins"] == {
+        "pack-a": {"url": "https://github.com/o/pack-a", "ref": "v1.2",
+                   "sha": "a" * 40}}
+
+
+def test_freeze_twice_is_idempotent(tmp_path, monkeypatch):
+    """A second freeze with the same lockfile rewrites the same bytes."""
+    proj = _init(tmp_path)
+    mpath = proj / "codefyui.project.toml"
+    mpath.write_text(_CUSTOMIZED_MANIFEST, encoding="utf-8")
+    _freeze_with_one_pin(proj, monkeypatch)
+    first = mpath.read_text(encoding="utf-8")
+    _freeze_with_one_pin(proj, monkeypatch)
+    second = mpath.read_text(encoding="utf-8")
+    assert second == first
+    manifest = tomllib.loads(second)
+    assert manifest["codename"] == "zeta"          # still there after 2 passes
+    assert manifest["my_notes"]["inner"]["deep"] == "kept"
+    assert manifest["publish"]["timeout_s"] == 30
+
+
 def test_restore_installs_pin_by_sha(tmp_path, monkeypatch):
     proj = _init(tmp_path)
     (proj / "codefyui.project.toml").write_text(

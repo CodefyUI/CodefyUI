@@ -133,6 +133,10 @@ or updating a plugin, and commit the manifest change before your next push:
 cdui project freeze .
 ```
 
+Freeze rewrites the manifest in place: any custom keys you have added (in
+`[project]`, `[publish]`, or your own tables) are preserved, but comments are
+not, and the `[plugins]` table is fully regenerated from what is installed.
+
 ### 5. Start the server on the project
 
 ```bash
