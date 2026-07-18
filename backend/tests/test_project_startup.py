@@ -7,9 +7,12 @@ import subprocess
 import pytest
 
 from app.core.project import (
+    PinIssue,
+    check_pin_issues,
     check_stale_pins,
     check_stale_pins_from_manifest,
     git_provenance,
+    read_project_manifest,
 )
 
 
@@ -129,3 +132,53 @@ def test_check_stale_pins_reads_manifest_from_disk(tmp_path):
     (tmp_path / "codefyui.project.toml").write_text(
         '[plugins]\npack-a = { sha = "' + "z" * 40 + '" }\n', encoding="utf-8")
     assert check_stale_pins(tmp_path, lockfile) == ["pack-a"]
+
+
+# -- The shared pin-classification rule (issue #85): ONE source consumed by
+# -- both the startup warning above and `cdui project validate [--strict]`.
+
+
+def test_check_pin_issues_classifies_missing_and_mismatch():
+    lockfile = {"plugins": {"pack-a": {"sha": "a" * 40}}}
+    ok = check_pin_issues({"plugins": {"pack-a": {"sha": "a" * 40}}}, lockfile)
+    assert ok == []
+    missing = check_pin_issues({"plugins": {"pack-b": {"sha": "b" * 40}}},
+                               lockfile)
+    assert missing == [PinIssue("pack-b", "missing", "b" * 40, None)]
+    mism = check_pin_issues({"plugins": {"pack-a": {"sha": "z" * 40}}},
+                            lockfile)
+    assert mism == [PinIssue("pack-a", "sha_mismatch", "z" * 40, "a" * 40)]
+
+
+def test_check_pin_issues_pin_without_sha_only_checks_installedness():
+    """A well-formed pin table lacking "sha" can only assert installed-ness:
+    installed -> no issue; absent -> missing (matches the pre-unification
+    behavior of BOTH call sites)."""
+    lockfile = {"plugins": {"pack-a": {"sha": "a" * 40}}}
+    assert check_pin_issues({"plugins": {"pack-a": {"url": "u"}}},
+                            lockfile) == []
+    got = check_pin_issues({"plugins": {"pack-b": {"url": "u"}}}, lockfile)
+    assert got == [PinIssue("pack-b", "missing", None, None)]
+
+
+def test_malformed_pin_reported_and_excluded_from_stale():
+    """CONVERGED RULE (issue #85): a `[plugins]` value that is not a table is
+    classified "malformed" and warn-and-skipped everywhere -- it is never in
+    the stale list (the CLI used to mislabel it 'not installed'; the server
+    used to drop it silently), but it does not mask real stale pins either."""
+    lockfile = {"plugins": {}}
+    manifest = {"plugins": {"bad": "not-a-table",
+                            "ghost": {"sha": "0" * 40}}}
+    issues = check_pin_issues(manifest, lockfile)
+    assert [(i.plugin_id, i.kind) for i in issues] == [
+        ("bad", "malformed"), ("ghost", "missing")]
+    assert check_stale_pins_from_manifest(manifest, lockfile) == ["ghost"]
+
+
+def test_read_project_manifest_never_raises(tmp_path):
+    assert read_project_manifest(tmp_path) == {}
+    manifest_path = tmp_path / "codefyui.project.toml"
+    manifest_path.write_text("not [ valid toml", encoding="utf-8")
+    assert read_project_manifest(tmp_path) == {}
+    manifest_path.write_text('[project]\nname = "svc"\n', encoding="utf-8")
+    assert read_project_manifest(tmp_path)["project"]["name"] == "svc"
