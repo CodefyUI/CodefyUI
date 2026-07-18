@@ -54,6 +54,7 @@ Thumbs.db
 
 # Claude Code
 .claude/settings.local.json
+.claude/worktrees/
 
 # Data
 backend/data/graphs/*.json
