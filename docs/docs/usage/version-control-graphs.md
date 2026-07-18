@@ -9,7 +9,7 @@ description: Keep your graph JSON in a git service repo, validate every graph in
 :::tip First-class project directories now exist
 This page describes an older flat-directory recipe whose shape does **not**
 forward-map to the split logic/layout format. For new services use
-[Project directories](./project-directories.md); migrate an existing graphs dir
+[Project directories](./project-directories); migrate an existing graphs dir
 in one command: `cdui project init my-service --adopt /path/to/my-graphs`.
 :::
 
@@ -122,7 +122,7 @@ python run_graph.py /path/to/my-graphs/classifier.json --validate-only
 
 The runner lives inside the CodefyUI backend, and there is no standalone package on PyPI today, so the most reliable way to get it in a *separate* graphs repo is to check CodefyUI out alongside your repo at a pinned release tag and install its backend with uv (mirroring how CodefyUI's own CI installs itself). Installing the backend pulls the full runtime, including PyTorch, so the job is not featherweight -- cache the venv or expect a few minutes on a cold run. This is the honest state today; a lightweight validate command is a natural future.
 
-The job below assumes this repo carries the project-directory layout (a `codefyui.project.toml` manifest plus `graphs/`/`layout/`) rather than a bare flat `*.json` folder, since `cdui project validate` needs that manifest -- see [Project directories](./project-directories.md) to migrate with `cdui project init <dir> --adopt <this-repo>`. Staying on the flat layout instead? Keep validating file-by-file with `run_graph.py` as shown above.
+The job below assumes this repo carries the project-directory layout (a `codefyui.project.toml` manifest plus `graphs/`/`layout/`) rather than a bare flat `*.json` folder, since `cdui project validate` needs that manifest -- see [Project directories](./project-directories) to migrate with `cdui project init <dir> --adopt <this-repo>`. Staying on the flat layout instead? Keep validating file-by-file with `run_graph.py` as shown above.
 
 ```yaml
 name: validate-graphs
@@ -175,7 +175,7 @@ To tie a published version back to its source, put the graph's git commit hash i
 {"graph": "classifier", "create": true, "note": "git 1a2b3c4"}
 ```
 
-That gives you a trail from a running app version back to the exact commit it came from -- or skip the manual `note` convention entirely: [Project directories](./project-directories.md) ship first-class publish provenance, where `cdui project publish` records the exact `git_commit`/`git_dirty` on every version automatically.
+That gives you a trail from a running app version back to the exact commit it came from -- or skip the manual `note` convention entirely: [Project directories](./project-directories) ship first-class publish provenance, where `cdui project publish` records the exact `git_commit`/`git_dirty` on every version automatically.
 
 ## Known rough edges
 

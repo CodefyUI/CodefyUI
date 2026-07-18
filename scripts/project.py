@@ -111,7 +111,11 @@ files ARE the storage. Open it with:
 
     cdui start --project .          # edit graphs in the browser; Save writes the pair
     cdui project validate .         # CI gate: every graph must pass the publish pre-flight
-    cdui project publish . --graph my-graph --slug my-service   # local publish + provenance
+    cdui project publish . --graph my-graph --slug my-service --create   # first publish + provenance
+
+A slug declared in `codefyui.project.toml` `[publish]` creates its app on
+first `cdui project publish .` automatically; an explicitly passed `--slug`
+needs `--create` the first time (so a typo cannot mint a second app).
 
 ## Version control
 
@@ -134,7 +138,10 @@ to `assets/output/` are local artifacts, not source.
 Run `cdui project restore .` THEN `cdui project validate .` (restore installs
 the plugin pins the graphs need; validate needs the full backend env incl.
 torch -- cache the venv in CI). Validate `.` -- do NOT feed a raw `*.json` glob
-to the validator, or it would pick up `layout/*.layout.json` files too.
+to the validator, or it would pick up `layout/*.layout.json` files too. A
+canvas-only graph (no GraphOutput, e.g. a training graph) fails the publish
+pre-flight; give it a real output or validate only your publish targets with
+`cdui project validate . --graph <name>`.
 """
 
 
@@ -272,7 +279,17 @@ def _validate_one_graph(path: Path, base: str) -> list[str]:
     # 2. contract.
     contract = api_contract.derive_contract(nodes)
     if contract.problems:
-        return [f"invalid_contract: {contract.problems[0]}"]
+        msg = f"invalid_contract: {contract.problems[0]}"
+        if not contract.outputs:
+            # The mixed-project story (issue #86): a canvas-only training
+            # graph has no API surface, and that is fine ON THE CANVAS --
+            # but every publishable graph needs a declared output. Name the
+            # escape hatch instead of leaving CI users to reverse it.
+            msg += (" -- a publishable graph needs a declared GraphOutput; "
+                    "for a canvas-only graph (e.g. training), either add a "
+                    "real output or validate only your publish targets: "
+                    "`cdui project validate . --graph <name>`")
+        return [msg]
     # 3. entry points.
     if not find_entry_points(nodes, edges):
         return ["no_entry_points: wire a Start node into every GraphInput"]
@@ -357,6 +374,23 @@ def cmd_validate(args: argparse.Namespace) -> int:
         err(str(e), str(e))
         return 1
 
+    # --graph filter (issue #86): mixed projects keep canvas-only graphs
+    # (train...) next to publish targets (serve...); let CI gate just the
+    # targets. An unknown name is an ERROR -- a typo must never turn the
+    # gate into a vacuous pass.
+    requested = getattr(args, "graph", None)
+    if requested:
+        by_name = dict(graphs)
+        missing = [n for n in requested if n not in by_name]
+        if missing:
+            avail = ", ".join(n for n, _ in graphs) or "(none)"
+            err(f"graphs/ 沒有這些 graph：{', '.join(missing)}（現有：{avail}）",
+                f"No such graph in graphs/: {', '.join(missing)} "
+                f"(available: {avail})")
+            return 1
+        wanted = set(requested)
+        graphs = [(n, p) for n, p in graphs if n in wanted]
+
     all_ok = True
     for base, path in graphs:
         problems = _validate_one_graph(path, base)
@@ -372,7 +406,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if not all_ok or pin_fail or env_fail:
         err("驗證失敗", "Validation FAILED")
         return 1
-    ok("驗證通過", "Validation passed")
+    # Always print the checked count: "Validation passed" over an empty
+    # graphs/ would be a vacuous green in CI logs (issue #86).
+    checked = len(graphs)
+    noun = "graph" if checked == 1 else "graphs"
+    ok(f"驗證通過（已檢查 {checked} 個 graph）",
+       f"Validation passed ({checked} {noun} checked)")
     return 0
 
 
@@ -567,6 +606,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
     commit, dirty = git_provenance(proj)
     if commit is None:
         print("NOTE: not a git repo -- publishing with NULL provenance")
+    elif dirty is None:
+        # rev-parse resolved a commit but `git status` failed: the tree
+        # state is UNKNOWN. Record null (the schema's "unknown"), never a
+        # fabricated clean=false (issue #86).
+        print("NOTE: `git status` failed -- working-tree state unknown; "
+              "recording git_dirty as null")
     elif dirty:
         # Loud, locale-independent warning (ID12).
         print("=" * 70)
@@ -574,17 +619,28 @@ def cmd_publish(args: argparse.Namespace) -> int:
               "match the published bytes.")
         print("=" * 70)
 
-    body: dict = {"graph": graph, "slug": slug, "create": True, "note": args.note}
+    # create only when the slug is the manifest's committed [publish].slug
+    # (a deliberate target) or the user passed --create: an explicitly
+    # typed --slug with a typo must hit the server's app_not_found 404
+    # instead of silently minting a second app (issue #86). The slug itself
+    # travels in the URL path only -- PublishRequest declares no such field.
+    create = bool(args.create or args.slug is None)
+    body: dict = {"graph": graph, "create": create, "note": args.note}
     if "record_io" in defaults:
         body["record_io"] = bool(defaults["record_io"])
     if commit is not None:
         body["git_commit"] = commit
-        body["git_dirty"] = bool(dirty)
+        body["git_dirty"] = None if dirty is None else bool(dirty)
 
     resp = _http_post_json(f"{base}/api/apps/{slug}/publish", host, token, body)
     if resp is None or resp.get("_status", 500) != 200:
         detail = resp.get("detail") if isinstance(resp, dict) else resp
         err(f"發佈失敗：{detail}", f"Publish failed: {detail}")
+        if (not create and isinstance(detail, dict)
+                and detail.get("code") == "app_not_found"):
+            info(f"slug '{slug}' 尚不存在 -- 第一次發佈新 slug 請加 --create",
+                 f"slug '{slug}' does not exist yet -- pass --create to "
+                 "create it on first publish")
         return 1
     prov = (f" (git {commit[:7]}{' dirty' if dirty else ''})"
             if commit else " (no provenance)")
@@ -641,6 +697,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_val = sub.add_parser("validate", help="Validate every graph (publish pre-flight) + project checks")
     p_val.add_argument("dir", help="project directory to validate")
+    p_val.add_argument("--graph", action="append", default=None, metavar="NAME",
+                       help="validate only the named graph (repeatable); lets "
+                            "CI gate publish targets while canvas-only graphs "
+                            "(no GraphOutput) live in the same project")
     p_val.add_argument("--strict", action="store_true",
                        help="treat missing/mismatched plugin pins as errors")
     p_val.set_defaults(_func=cmd_validate)
@@ -658,6 +718,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--graph", default=None, help="saved graph name (default: manifest [publish].graph)")
     p_pub.add_argument("--slug", default=None, help="published slug (default: manifest [publish].slug)")
     p_pub.add_argument("--note", default=None, help="optional immutable version note")
+    p_pub.add_argument("--create", action="store_true",
+                       help="allow creating a NEW app for an explicitly "
+                            "passed --slug (a slug from the manifest "
+                            "[publish].slug creates automatically; without "
+                            "this flag a misspelled --slug fails with 404 "
+                            "instead of minting a second app)")
     p_pub.set_defaults(_func=cmd_publish)
 
     return p

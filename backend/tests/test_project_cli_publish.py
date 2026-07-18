@@ -16,7 +16,8 @@ def _init_with_publish_defaults(tmp_path):
 
 
 def _pargs(proj, **kw):
-    ns = argparse.Namespace(dir=str(proj), graph=None, slug=None, note=None)
+    ns = argparse.Namespace(dir=str(proj), graph=None, slug=None, note=None,
+                            create=False)
     for k, v in kw.items():
         setattr(ns, k, v)
     return ns
@@ -44,12 +45,17 @@ def test_publish_sends_provenance_and_manifest_defaults(tmp_path, monkeypatch):
 
     monkeypatch.setattr(project, "_http_post_json", fake_post)
     assert project.cmd_publish(_pargs(proj, note="cut1")) == 0
-    assert posted["slug"] == "myslug"          # from manifest [publish]
+    # slug targets via the URL path only -- PublishRequest declares no
+    # "slug" field, so the body must not smuggle one (issue #86).
+    assert "slug" not in posted
+    assert posted["_url"].endswith("/api/apps/myslug/publish")
     assert posted["graph"] == "echo-graph"
+    # The manifest's committed [publish].slug is a deliberate target:
+    # first publish may create the app without extra flags.
+    assert posted["create"] is True
     assert posted["git_commit"] == "d" * 40
     assert posted["git_dirty"] is False
     assert posted["note"] == "cut1"
-    assert posted["_url"].endswith("/api/apps/myslug/publish")
 
 
 def test_publish_refuses_on_project_mismatch(tmp_path, monkeypatch):
@@ -80,3 +86,59 @@ def test_publish_not_a_repo_null_provenance(tmp_path, monkeypatch):
                         or {"version": 1, "_status": 200})
     assert project.cmd_publish(_pargs(proj)) == 0
     assert "git_commit" not in posted  # NULL provenance -> field omitted
+
+
+def test_publish_unknown_dirty_sends_null(tmp_path, monkeypatch, capsys):
+    """git status failed AFTER rev-parse resolved a commit: git_dirty must
+    be null (= unknown, the schema's meaning), never a fabricated false
+    (issue #86)."""
+    proj = _init_with_publish_defaults(tmp_path)
+    _patch_common(monkeypatch, proj, provenance=("f" * 40, None))
+    posted = {}
+    monkeypatch.setattr(project, "_http_post_json",
+                        lambda url, host, token, body: posted.update(body)
+                        or {"version": 1, "_status": 200})
+    assert project.cmd_publish(_pargs(proj)) == 0
+    assert posted["git_commit"] == "f" * 40
+    assert "git_dirty" in posted and posted["git_dirty"] is None
+    # The CLI says so instead of silently pretending the tree is clean.
+    assert "unknown" in capsys.readouterr().out.lower()
+
+
+def test_publish_explicit_slug_does_not_create(tmp_path, monkeypatch):
+    """--slug on the command line must NOT auto-create: a typo has to hit
+    the server's app_not_found 404 instead of minting a second app."""
+    proj = _init_with_publish_defaults(tmp_path)
+    _patch_common(monkeypatch, proj)
+    posted = {}
+    monkeypatch.setattr(project, "_http_post_json",
+                        lambda url, host, token, body: posted.update(body)
+                        or {"version": 3, "_status": 200})
+    assert project.cmd_publish(_pargs(proj, slug="myslug")) == 0
+    assert posted["create"] is False
+
+
+def test_publish_explicit_slug_with_create_flag(tmp_path, monkeypatch):
+    proj = _init_with_publish_defaults(tmp_path)
+    _patch_common(monkeypatch, proj)
+    posted = {}
+    monkeypatch.setattr(project, "_http_post_json",
+                        lambda url, host, token, body: posted.update(body)
+                        or {"version": 1, "_status": 200})
+    assert project.cmd_publish(_pargs(proj, slug="brand-new", create=True)) == 0
+    assert posted["create"] is True
+
+
+def test_publish_app_not_found_hints_create_flag(tmp_path, monkeypatch, capsys):
+    """The server's 404 talks JSON ('pass \"create\": true'); the CLI must
+    translate that to its own flag so the fix is discoverable."""
+    proj = _init_with_publish_defaults(tmp_path)
+    _patch_common(monkeypatch, proj)
+    monkeypatch.setattr(
+        project, "_http_post_json",
+        lambda *a, **k: {"_status": 404, "detail": {
+            "code": "app_not_found",
+            "message": "app 'my-svc' does not exist", "details": None}})
+    assert project.cmd_publish(_pargs(proj, slug="my-svc")) == 1
+    captured = capsys.readouterr()
+    assert "--create" in (captured.out + captured.err)
