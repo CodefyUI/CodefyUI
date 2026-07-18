@@ -134,3 +134,56 @@ def test_strict_pin_missing(tmp_path, monkeypatch):
                         lambda: {"schema": 1, "plugins": {}})
     assert project.cmd_validate(_vargs(proj, strict=False)) == 0  # warn only
     assert project.cmd_validate(_vargs(proj, strict=True)) == 1   # strict error
+
+
+def test_ambiguous_graph_pair_fails_naming_both(tmp_path, capsys):
+    """Both `dup.graph.json` and legacy `dup.json` in graphs/ is never
+    silently resolved: validate fails naming BOTH files (same rule as the
+    server's /list 409 -- single source in app.core.project, issue #85)."""
+    proj = _init(tmp_path)
+    g = _echo_graph(name="dup")
+    _write_graph(proj, g, base="dup")
+    (proj / "graphs" / "dup.json").write_text(json.dumps(g))
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "dup.graph.json" in out
+    assert "dup.json" in out
+
+
+def test_malformed_pin_warns_and_skips_even_under_strict(tmp_path, monkeypatch,
+                                                         capsys):
+    """CONVERGED RULE (issue #85): a `[plugins]` entry whose value is not a
+    table cannot be enforced (no url/sha to compare or restore), so every
+    surface warn-and-skips it. validate names the pin but passes -- even
+    under --strict; the CLI previously mislabeled this 'not installed' and
+    failed strict runs, while the server startup check silently ignored it."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph())
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\nbadpin = "not-a-table"\n')
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    assert project.cmd_validate(_vargs(proj, strict=False)) == 0
+    assert project.cmd_validate(_vargs(proj, strict=True)) == 0
+    captured = capsys.readouterr()
+    out = (captured.out + captured.err).lower()
+    assert "badpin" in out
+    assert "malformed" in out
+
+
+def test_malformed_pin_does_not_mask_real_stale_pins(tmp_path, monkeypatch):
+    """A malformed pin alongside a well-formed missing pin: the missing pin
+    still warns (and still fails under --strict)."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph())
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\nbadpin = "not-a-table"\n'
+        'ghostpack = { url = "https://github.com/x/y", '
+        'ref = "v1", sha = "' + "0" * 40 + '" }\n')
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    assert project.cmd_validate(_vargs(proj, strict=False)) == 0
+    assert project.cmd_validate(_vargs(proj, strict=True)) == 1

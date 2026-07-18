@@ -66,6 +66,55 @@ def test_init_adopt_splits_legacy_json(tmp_path):
     assert layout["positions"]["a"] == {"x": 3, "y": 4}
 
 
+def test_init_adopt_canonical_source_keeps_base(tmp_path):
+    """A source file already named `<base>.graph.json` adopts under `<base>`
+    (never a doubled `mix.graph.graph.json`)."""
+    src = tmp_path / "old"
+    src.mkdir()
+    (src / "mix.graph.json").write_text(json.dumps(
+        {"name": "mix", "nodes": [], "edges": []}), encoding="utf-8")
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
+    assert (target / "graphs" / "mix.graph.json").exists()
+    assert not (target / "graphs" / "mix.graph.graph.json").exists()
+
+
+def test_init_adopt_skips_layout_files(tmp_path):
+    """`*.layout.json` in the source dir is layout, not a graph -- never
+    adopted as a graph named '<base>.layout'."""
+    src = tmp_path / "old"
+    src.mkdir()
+    (src / "keep.json").write_text(json.dumps(
+        {"name": "keep", "nodes": [], "edges": []}), encoding="utf-8")
+    (src / "stray.layout.json").write_text(json.dumps(
+        {"format_version": 1, "positions": {}}), encoding="utf-8")
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
+    adopted = sorted(p.name for p in (target / "graphs").glob("*.graph.json"))
+    assert adopted == ["keep.graph.json"]
+
+
+def test_init_adopt_ambiguous_pair_fails_naming_both(tmp_path, capsys):
+    """CONVERGED RULE (issue #85): a source dir holding BOTH `dup.json` and
+    `dup.graph.json` is the same ambiguity the server 409s on and validate
+    fails on -- adopt must surface it identically (it previously wrote both
+    payloads to the same target, so whichever sorted last silently won)."""
+    src = tmp_path / "old"
+    src.mkdir()
+    (src / "dup.json").write_text(json.dumps(
+        {"name": "legacy wins?", "nodes": [], "edges": []}), encoding="utf-8")
+    (src / "dup.graph.json").write_text(json.dumps(
+        {"name": "canonical wins?", "nodes": [], "edges": []}), encoding="utf-8")
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 1
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "dup.graph.json" in out
+    assert "dup.json" in out
+    # Nothing half-adopted: the ambiguity aborts before any split is written.
+    assert list((target / "graphs").glob("*.json")) == []
+
+
 def test_init_git_init_no_commit(tmp_path):
     if not shutil.which("git"):
         pytest.skip("git not installed")

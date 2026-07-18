@@ -236,19 +236,35 @@ async def lifespan(app: FastAPI):
 
     # ── Project transparency (spec 7.4) ────────────────────────────────
     if settings.PROJECT_DIR is not None:
-        from .core.project import check_stale_pins, git_provenance
+        from .core.project import (
+            check_pin_issues,
+            git_provenance,
+            read_project_manifest,
+        )
         commit, dirty = git_provenance(settings.PROJECT_DIR)
         if commit is None:
             logger.info("Project: %s (not a repo)", settings.PROJECT_DIR)
         else:
             logger.info("Project: %s (git %s%s)", settings.PROJECT_DIR,
                         commit[:7], " dirty" if dirty else "")
-        stale = check_stale_pins(settings.PROJECT_DIR, lockfile)
+        # Shared stale-pin rule (issue #85): same classification the CLI's
+        # `cdui project validate` consumes.
+        issues = check_pin_issues(
+            read_project_manifest(settings.PROJECT_DIR), lockfile)
+        stale = sorted(i.plugin_id for i in issues if i.kind != "malformed")
+        malformed = sorted(i.plugin_id for i in issues if i.kind == "malformed")
         if stale:
             # ONE warning; no auto-install at startup (spec 7.4).
             logger.warning(
                 "Project plugin pins missing/mismatched: %s -- run "
-                "`cdui project restore`", ", ".join(sorted(stale)))
+                "`cdui project restore`", ", ".join(stale))
+        if malformed:
+            # Warn-and-skip: a non-table pin cannot be enforced or restored.
+            logger.warning(
+                "Project manifest has malformed plugin pins (skipped): %s -- "
+                "each pin must be a table like "
+                "{ url = \"...\", ref = \"...\", sha = \"...\" }",
+                ", ".join(malformed))
 
     # Mount each installed plugin's assets/ dir so the frontend can fetch
     # plugin-shipped CSVs / images at /plugins/<id>/assets/<file>.
