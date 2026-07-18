@@ -121,6 +121,11 @@ jobs:
       - name: Package dist
         id: pack
         run: |
+          # The tarball redistributes compiled third-party code (React, KaTeX
+          # and its fonts, ...), so the AGPL license text and the third-party
+          # attribution notices must travel with it. Copy them into dist so
+          # they land at the top level of the archive.
+          cp LICENSE THIRD_PARTY_NOTICES.md frontend/dist/
           # Pack from inside the dist dir so extraction lands cleanly with
           # `tar -xzf frontend-dist.tar.gz -C frontend/dist` (no strip needed).
           tar -czf frontend-dist.tar.gz -C frontend/dist .

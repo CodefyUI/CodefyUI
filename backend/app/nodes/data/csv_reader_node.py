@@ -78,7 +78,11 @@ class CSVReaderNode(BaseNode):
                 name="path",
                 param_type=ParamType.STRING,
                 default="data/samples/iris.csv",
-                description="Path to the CSV file (absolute or relative to the backend working dir).",
+                description=(
+                    "Path to the CSV file (absolute or relative to the backend "
+                    "working dir; in project mode, relative paths resolve "
+                    "inside the project directory)."
+                ),
             ),
             ParamDefinition(
                 name="target_column",

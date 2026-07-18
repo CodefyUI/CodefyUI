@@ -38,6 +38,11 @@ from app.core.plugin_loader import (
     iter_plugin_dirs,
     load_lockfile,
 )
+from app.core.project import (
+    GraphAmbiguityError,
+    check_pin_issues,
+    collect_graph_files,
+)
 
 MANIFEST_FILENAME = "codefyui.project.toml"
 
@@ -201,26 +206,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _collect_graphs(graphs_dir: Path) -> list[tuple[str, Path]]:
-    """(base_name, file) for each graph: canonical `.graph.json` + legacy
-    `.json`; raises RuntimeError naming both files on ambiguity (spec ID2)."""
-    files: dict[str, Path] = {}
-    if not graphs_dir.is_dir():
-        return []
-    for f in sorted(graphs_dir.glob("*.graph.json")):
-        files[f.name[: -len(".graph.json")]] = f
-    for f in sorted(graphs_dir.glob("*.json")):
-        if f.name.endswith(".graph.json"):
-            continue
-        base = f.stem
-        if base in files:
-            raise RuntimeError(
-                f"Graph '{base}' is ambiguous: both {files[base].name} and "
-                f"{f.name} exist. Remove one.")
-        files[base] = f
-    return sorted(files.items())
-
-
 def _init_registries_like_server() -> None:
     """Discover builtin + custom + PLUGIN nodes and presets exactly like the
     server lifespan (main.py) -- run_graph.py's init loads no plugins and is
@@ -326,23 +311,28 @@ def _check_env_not_tracked(proj: Path) -> bool:
 
 def _check_pins(manifest: dict, strict: bool) -> bool:
     """True on FAILURE (only when strict). Missing/mismatched pins warn, and
-    with --strict become errors (spec ID3)."""
+    with --strict become errors (spec ID3). Malformed (non-table) pins are
+    warn-and-skip on EVERY surface -- never a failure, even under --strict
+    (shared rule: app.core.project.check_pin_issues, issue #85)."""
     pins = manifest.get("plugins", {}) or {}
     if not pins:
         return False
-    installed = load_lockfile().get("plugins", {})
     failed = False
-    for pid, pin in pins.items():
-        entry = installed.get(pid)
-        pinned_sha = pin.get("sha") if isinstance(pin, dict) else None
-        if entry is None:
+    for issue in check_pin_issues(manifest, load_lockfile()):
+        pid = issue.plugin_id
+        if issue.kind == "malformed":
+            msg = (f"pin '{pid}' in [plugins] is malformed (expected a table "
+                   'like { url = "...", ref = "...", sha = "..." }) -- skipping')
+            warn(msg, msg)
+            continue
+        if issue.kind == "missing":
             _warn_or_err(strict, f"pinned plugin '{pid}' is not installed -- "
                                  "run `cdui project restore`")
-            failed = failed or strict
-        elif pinned_sha and entry.get("sha") != pinned_sha:
-            _warn_or_err(strict, f"plugin '{pid}' sha {entry.get('sha', '')[:7]} "
-                                 f"!= pinned {pinned_sha[:7]} -- run restore")
-            failed = failed or strict
+        else:  # sha_mismatch
+            _warn_or_err(strict,
+                         f"plugin '{pid}' sha {(issue.installed_sha or '')[:7]} "
+                         f"!= pinned {issue.pinned_sha[:7]} -- run restore")
+        failed = failed or strict
     return failed
 
 
@@ -369,8 +359,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     _init_registries_like_server()
 
     try:
-        graphs = _collect_graphs(proj / "graphs")
-    except RuntimeError as e:
+        # Shared canonical-vs-legacy collection rule (app.core.project).
+        graphs = collect_graph_files(proj / "graphs")
+    except GraphAmbiguityError as e:
         err(str(e), str(e))
         return 1
 
@@ -662,11 +653,17 @@ def _adopt(src: Path, target: Path) -> int:
         return 1
     graphs_dir = target / "graphs"
     layout_dir = target / "layout"
+    try:
+        # Shared canonical-vs-legacy rule (app.core.project): skips
+        # `*.layout.json`, and a source holding BOTH `x.json` and
+        # `x.graph.json` aborts naming both files instead of silently
+        # letting one overwrite the other (issue #85).
+        pairs = collect_graph_files(src)
+    except GraphAmbiguityError as e:
+        err(str(e), str(e))
+        return 1
     count = 0
-    for jf in sorted(src.glob("*.json")):
-        if jf.name.endswith(".layout.json"):
-            continue
-        base = jf.name[:-len(".graph.json")] if jf.name.endswith(".graph.json") else jf.stem
+    for base, jf in pairs:
         try:
             payload = json.loads(jf.read_text(encoding="utf-8"))
         except (ValueError, OSError) as e:
@@ -678,6 +675,11 @@ def _adopt(src: Path, target: Path) -> int:
             payload,
         )
         count += 1
+    if count:
+        # cmd_init scaffolds `.gitkeep` placeholders BEFORE adoption runs;
+        # once real graph/layout files have landed, drop the stray ones.
+        for d in (graphs_dir, layout_dir):
+            (d / ".gitkeep").unlink(missing_ok=True)
     ok(f"已採用並拆分 {count} 個 graph", f"Adopted and split {count} graph(s)")
     return 0
 
