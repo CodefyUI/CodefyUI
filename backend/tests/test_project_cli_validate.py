@@ -254,3 +254,80 @@ def test_malformed_pin_does_not_mask_real_stale_pins(tmp_path, monkeypatch):
                         lambda: {"schema": 1, "plugins": {}})
     assert project.cmd_validate(_vargs(proj, strict=False)) == 0
     assert project.cmd_validate(_vargs(proj, strict=True)) == 1
+
+
+# -- Fail-side gate constructions (issue #88): each graph trips exactly ONE
+# -- of the publish pre-flight gates, in publish order (secret -> contract ->
+# -- entry -> wiring -> validate), and validate names the gate + offender.
+
+
+def test_duplicate_input_name_fails_contract_gate(tmp_path, capsys):
+    """A second GraphInput reusing the name "x" -- TRIGGERED, so nothing but
+    the contract gate can fire -- fails as invalid_contract naming the dup."""
+    proj = _init(tmp_path)
+    g = _echo_graph()
+    g["nodes"].append({"id": "gi2", "type": "GraphInput", "data": {"params": {
+        "name": "x", "type": "string", "required": True,
+        "default": "", "description": ""}}})
+    g["edges"].append({"id": "t2", "source": "start", "target": "gi2",
+                       "sourceHandle": "trigger", "targetHandle": "",
+                       "type": "trigger"})
+    _write_graph(proj, g)
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "invalid_contract" in out
+    assert "duplicate input name 'x'" in out
+
+
+def test_untriggered_input_fails_wiring_gate(tmp_path, capsys):
+    """A GraphInput with NO trigger edge: the engine would silently prune it,
+    so validate must fail it as untriggered_input naming the input."""
+    proj = _init(tmp_path)
+    g = _echo_graph()
+    g["nodes"].append({"id": "gi2", "type": "GraphInput", "data": {"params": {
+        "name": "z", "type": "string", "required": False,
+        "default": "", "description": ""}}})
+    _write_graph(proj, g)
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "untriggered_input" in out
+    assert "z" in out
+
+
+def test_unreachable_output_fails_wiring_gate(tmp_path, capsys):
+    """A GraphOutput no path from an entry point reaches: its declared field
+    could never be produced, so validate fails it as unreachable_output."""
+    proj = _init(tmp_path)
+    g = _echo_graph()
+    g["nodes"].append({"id": "out2", "type": "GraphOutput",
+                       "data": {"params": {"name": "w", "description": ""}}})
+    _write_graph(proj, g)
+    assert project.cmd_validate(_vargs(proj)) == 1
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert "unreachable_output" in out
+    assert "w" in out
+
+
+def test_strict_pin_sha_mismatch(tmp_path, monkeypatch, capsys):
+    """The sha_mismatch branch of the shared pin rule, hermetic vs the
+    machine lockfile (issue #88): installed sha != pinned sha warns (naming
+    restore) on a plain run and fails under --strict."""
+    proj = _init(tmp_path)
+    _write_graph(proj, _echo_graph())
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\npack-a = { url = "https://github.com/o/pack-a", '
+        'ref = "v1", sha = "' + "a" * 40 + '" }\n')
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {
+                            "pack-a": {"source_kind": "github_url",
+                                       "sha": "b" * 40}}})
+    assert project.cmd_validate(_vargs(proj, strict=False)) == 0  # warn only
+    captured = capsys.readouterr()
+    out = (captured.out + captured.err).lower()
+    assert "pack-a" in out
+    assert "restore" in out
+    assert project.cmd_validate(_vargs(proj, strict=True)) == 1   # strict error

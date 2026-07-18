@@ -76,6 +76,12 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
     segmentGroups: [] as any[],
     undoStack: [],
     redoStack: [],
+    // Pin the fresh-tab defaults (tabStore.ts) BEFORE the overrides spread:
+    // `...real` would otherwise copy forward whatever projectOrigin/readOnly
+    // the previous test's tab was left with -- a latent cross-describe leak
+    // (issue #88). Tests that need other values override them explicitly.
+    projectOrigin: null,
+    readOnly: false,
     ...overrides,
   };
   useTabStore.setState({ tabs: [tab as never], activeTabId: 'tab-1' });
@@ -548,10 +554,9 @@ describe('Toolbar', () => {
   describe('Load: project origin stamping (ID10)', () => {
     beforeEach(() => {
       localStorage.clear();
-      // setActiveTab() (outer beforeEach) copies forward whatever
-      // `projectOrigin` the previous test's tab was left with via `...real` --
-      // pin a clean baseline here so these two tests are independent of run
-      // order and of each other.
+      // setActiveTab() now pins projectOrigin: null itself (the helper resets
+      // the fresh-tab defaults before spreading overrides); keep the explicit
+      // pin here as belt-and-braces documentation of this block's baseline.
       setActiveTab({ projectOrigin: null });
     });
 
@@ -803,12 +808,10 @@ describe('Toolbar', () => {
   // ordinary file into a tab that had loaded a too-new graph left it stuck
   // read-only forever (over-blocking), while importing a NEWER-format file
   // into a normal tab left it editable (the same lossy-copy hazard Ruling A
-  // documented for loads, but unguarded on the import path). Scoped in its
-  // own describe, like the sibling "Load: project origin stamping" block
-  // above, because `setActiveTab()` (outer beforeEach) copies `readOnly`
-  // forward from whatever the previous test's tab was left with via
-  // `...real` -- pin a clean baseline here and reset after so later tests
-  // in this file can't inherit a stuck read-only flag from run order.
+  // documented for loads, but unguarded on the import path). setActiveTab()
+  // now pins readOnly/projectOrigin to the fresh-tab defaults itself; the
+  // explicit pins below stay as belt-and-braces documentation of this
+  // block's baseline, and the afterEach still resets the store flag.
   describe('Import: readOnly handling (ID8 fast-follow)', () => {
     beforeEach(() => {
       setActiveTab({ readOnly: false, projectOrigin: null });

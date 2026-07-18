@@ -152,3 +152,44 @@ def test_restore_skips_already_satisfied(tmp_path, monkeypatch):
                         lambda *a, **k: called.append(1) or 0)
     assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
     assert called == []  # already at the pinned sha -> no reinstall
+
+
+def test_restore_pin_missing_url_sha_fails_without_install(tmp_path,
+                                                           monkeypatch):
+    """A pin table lacking url/sha cannot be installed: restore reports it
+    (rc 1) and never attempts an install for it (issue #88)."""
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\nbroken = { ref = "v1" }\n', encoding="utf-8")
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    called = []
+    monkeypatch.setattr(project, "_install_github",
+                        lambda *a, **k: called.append(1) or 0)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 1
+    assert called == []  # nothing installable from an unenforceable pin
+
+
+def test_restore_continues_batch_after_install_failure(tmp_path, monkeypatch):
+    """One failing install (rc != 0) must not abort the batch: the next pin
+    is still attempted, and the overall rc reports the failure (issue #88)."""
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\n'
+        'pack-a = { url = "https://github.com/o/pack-a", ref = "v1", '
+        'sha = "' + "a" * 40 + '" }\n'
+        'pack-b = { url = "https://github.com/o/pack-b", ref = "v2", '
+        'sha = "' + "b" * 40 + '" }\n', encoding="utf-8")
+    monkeypatch.setattr(project, "load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    attempts = []
+
+    def fake_install(owner, repo, ref, args, lockfile):
+        attempts.append(repo)
+        return 1 if repo == "pack-a" else 0
+
+    monkeypatch.setattr(project, "_install_github", fake_install)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 1
+    assert attempts == ["pack-a", "pack-b"]  # pack-b still ran after the fail

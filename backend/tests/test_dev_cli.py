@@ -4,6 +4,10 @@ gate; these pin the pure helpers."""
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import dev  # scripts/dev.py — conftest puts scripts/ on sys.path
 
 
@@ -67,3 +71,44 @@ def test_running_server_pid_clears_stale_addr_file(tmp_path, monkeypatch):
     assert dev._running_server_pid() is None
     assert not dev.SERVER_PIDFILE.exists()
     assert not dev.SERVER_ADDRFILE.exists()   # stale address must not linger
+
+
+# -- `--project` activation (spec 7.1, issue #88): _activate_project exports
+# -- CODEFYUI_PROJECT_DIR (absolute) into the child uvicorn env, and exits(1)
+# -- WITHOUT exporting when the manifest is missing.
+
+
+@pytest.fixture
+def _restore_project_env():
+    """_activate_project writes raw os.environ (monkeypatch cannot undo a
+    write it never saw) -- snapshot/restore the one key it touches."""
+    before = os.environ.get("CODEFYUI_PROJECT_DIR")
+    yield
+    if before is None:
+        os.environ.pop("CODEFYUI_PROJECT_DIR", None)
+    else:
+        os.environ["CODEFYUI_PROJECT_DIR"] = before
+
+
+def test_activate_project_exports_absolute_env(tmp_path, monkeypatch, capsys,
+                                               _restore_project_env):
+    proj = tmp_path / "svc"
+    proj.mkdir()
+    (proj / "codefyui.project.toml").write_text('[project]\nname = "svc"\n',
+                                               encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    dev._activate_project("svc")  # relative on purpose -- must resolve
+    assert os.environ["CODEFYUI_PROJECT_DIR"] == str(proj.resolve())
+    # The activation echoes the resolved dir (both locales include the path).
+    assert str(proj.resolve()) in capsys.readouterr().out
+
+
+def test_activate_project_missing_manifest_exits_without_env(
+        tmp_path, monkeypatch, capsys, _restore_project_env):
+    monkeypatch.delenv("CODEFYUI_PROJECT_DIR", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        dev._activate_project(str(tmp_path / "nope"))
+    assert exc.value.code == 1
+    assert "CODEFYUI_PROJECT_DIR" not in os.environ
+    # The error goes to stderr and names the manifest in both locales.
+    assert "manifest" in capsys.readouterr().err.lower()
