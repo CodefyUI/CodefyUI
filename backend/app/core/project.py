@@ -106,6 +106,10 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
         else:
             any_missing = True
         if node.get("type") == "note":
+            # Geometry-only absence intentionally does NOT set any_missing:
+            # a note without a notes{} entry just falls back to default
+            # size/binding. Only a missing *position* (above) flags
+            # layout_missing and triggers the frontend auto-layout path.
             note_layout = notes.get(nid, {})
             if isinstance(note_layout, dict):
                 for k, v in note_layout.items():

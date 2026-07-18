@@ -1,6 +1,6 @@
 [project]
 name = "codefyui-backend"
-version = "0.1.0"
+version = "1.4.0"
 description = "Visual Node-Based ML Pipeline Builder - Backend"
 requires-python = ">=3.10"
 # PEP 639 SPDX license expression (bare string). The previous PEP 621

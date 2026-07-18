@@ -115,6 +115,31 @@ def test_init_adopt_ambiguous_pair_fails_naming_both(tmp_path, capsys):
     assert list((target / "graphs").glob("*.json")) == []
 
 
+def test_init_adopt_removes_stale_gitkeep(tmp_path):
+    src = tmp_path / "old"
+    src.mkdir()
+    (src / "g.json").write_text(json.dumps({
+        "name": "g", "nodes": [], "edges": [],
+    }), encoding="utf-8")
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
+    # Real files landed, so the scaffold placeholders must be gone ...
+    assert (target / "graphs" / "g.graph.json").exists()
+    assert not (target / "graphs" / ".gitkeep").exists()
+    assert not (target / "layout" / ".gitkeep").exists()
+    # ... while still-empty assets dirs keep theirs.
+    assert (target / "assets" / "images" / ".gitkeep").exists()
+
+
+def test_init_adopt_empty_src_keeps_gitkeep(tmp_path):
+    src = tmp_path / "old"
+    src.mkdir()
+    target = tmp_path / "svc"
+    assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
+    assert (target / "graphs" / ".gitkeep").exists()
+    assert (target / "layout" / ".gitkeep").exists()
+
+
 def test_init_git_init_no_commit(tmp_path):
     if not shutil.which("git"):
         pytest.skip("git not installed")

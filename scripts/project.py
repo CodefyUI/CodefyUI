@@ -619,6 +619,11 @@ def _adopt(src: Path, target: Path) -> int:
             payload,
         )
         count += 1
+    if count:
+        # cmd_init scaffolds `.gitkeep` placeholders BEFORE adoption runs;
+        # once real graph/layout files have landed, drop the stray ones.
+        for d in (graphs_dir, layout_dir):
+            (d / ".gitkeep").unlink(missing_ok=True)
     ok(f"已採用並拆分 {count} 個 graph", f"Adopted and split {count} graph(s)")
     return 0
 
