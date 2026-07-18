@@ -19,7 +19,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.save.success': '圖表「{name}」儲存成功。',
   'toolbar.save.fail': '儲存失敗：{error}',
   'toolbar.save.overwriteConfirm': '已存在名為 {name} 的圖，存檔將會覆蓋它。要繼續嗎？',
-  'toolbar.saveAs': '另存為...',
+  'toolbar.saveAs': '另存新檔...',
   'toolbar.saveAs.title': '以新名稱儲存',
   'toolbar.load': '載入',
   'toolbar.load.title': '載入已儲存的圖表',

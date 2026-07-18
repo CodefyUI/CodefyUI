@@ -32,6 +32,11 @@ the logic change, not a wall of moved-pixels noise. (Known exception:
 `SequentialModel` sub-graph layer positions live inside `params.layers` and
 stay in the logic file.)
 
+A missing layout file (or a node without a saved position) makes the editor
+auto-layout the graph on load and persist the result at the next save; a note
+missing only its geometry entry (size/binding) simply falls back to defaults --
+geometry-only absence intentionally does not count as a missing layout.
+
 ## A complete walkthrough
 
 ### 1. Create the project
