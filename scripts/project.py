@@ -9,6 +9,7 @@ main(argv) that dispatches to args._func. This file ships `init`, `validate`,
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -128,6 +129,9 @@ Commit `.env.example`, never `.env`. Commit a small **fetch script** that
 downloads large data on demand -- do NOT commit datasets or weights (they are
 gitignored). Model checkpoints written to `assets/models/` and images written
 to `assets/output/` are local artifacts, not source.
+
+`cdui project freeze` rewrites `codefyui.project.toml` in place: keys you add
+are preserved, but comments are not, and `[plugins]` is fully regenerated.
 
 ## Continuous integration
 
@@ -376,14 +380,76 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _render_manifest(project_tbl: dict, pins: dict, publish: dict) -> str:
-    """Regenerate the manifest with a machine-written [plugins] table (spec
-    5). Comments in [plugins] are not preserved -- it is a generated section."""
-    lines = ["[project]"]
+def _toml_key(key: str) -> str:
+    """A bare TOML key when possible, else a basic-quoted key."""
+    if key and all((ch.isascii() and ch.isalnum()) or ch in "-_" for ch in key):
+        return key
+    return json.dumps(key)
+
+
+def _toml_value(value: object) -> str:
+    """Serialize one tomllib-parsed value back to TOML. json.dumps produces a
+    valid TOML basic string (its escapes are a subset of TOML's) except for
+    DEL, which JSON leaves raw but TOML requires escaped."""
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value).replace("\x7f", "\\u007f")
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        items = ", ".join(f"{_toml_key(k)} = {_toml_value(v)}"
+                          for k, v in value.items())
+        return "{ " + items + " }" if items else "{}"
+    raise TypeError(f"unsupported TOML value type: {type(value).__name__}")
+
+
+def _render_extra_table(header: str, table: dict) -> list[str]:
+    """Render a user-owned table freeze knows nothing about as a [header]
+    section, nested dicts becoming [header.sub] sections (document order)."""
+    lines = [f"[{header}]"]
+    subtables = []
+    for k, v in table.items():
+        if isinstance(v, dict):
+            subtables.append((k, v))
+        else:
+            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
+    lines.append("")
+    for k, v in subtables:
+        lines.extend(_render_extra_table(f"{header}.{_toml_key(k)}", v))
+    return lines
+
+
+def _render_manifest(manifest: dict, pins: dict) -> str:
+    """Regenerate the manifest with a machine-written [plugins] table (spec 5)
+    while round-tripping every key freeze does not own (#87): unknown top-level
+    keys/tables and unknown keys inside [project]/[publish] are preserved in
+    document order. tomllib discards comments, so comments are NOT preserved.
+    [plugins] is a generated section: its content is replaced wholesale."""
+    project_tbl = manifest.get("project", {}) or {}
+    publish = manifest.get("publish", {}) or {}
+    extras = {k: v for k, v in manifest.items()
+              if k not in ("project", "plugins", "publish")}
+
+    lines: list[str] = []
+    # Root-level (non-table) keys must precede the first [table] header.
+    root_scalars = [(k, v) for k, v in extras.items() if not isinstance(v, dict)]
+    for k, v in root_scalars:
+        lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
+    if root_scalars:
+        lines.append("")
+    lines.append("[project]")
     lines.append(f'name = "{project_tbl.get("name", "")}"')
     lines.append(f'format_version = {int(project_tbl.get("format_version", 1))}')
     if project_tbl.get("requires_codefyui"):
         lines.append(f'requires_codefyui = "{project_tbl["requires_codefyui"]}"')
+    for k, v in project_tbl.items():
+        if k not in ("name", "format_version", "requires_codefyui"):
+            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
     lines.append("")
     lines.append("[plugins]")
     lines.append("# written by `cdui project freeze`; installed by `cdui project restore`")
@@ -400,7 +466,13 @@ def _render_manifest(project_tbl: dict, pins: dict, publish: dict) -> str:
                 lines.append(f'{k} = "{publish[k]}"')
         if "record_io" in publish:
             lines.append(f'record_io = {"true" if publish["record_io"] else "false"}')
+        for k, v in publish.items():
+            if k not in ("graph", "slug", "record_io"):
+                lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
         lines.append("")
+    for k, v in extras.items():
+        if isinstance(v, dict):
+            lines.extend(_render_extra_table(_toml_key(k), v))
     return "\n".join(lines) + "\n"
 
 
@@ -429,9 +501,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         pins[pid] = {"url": url, "ref": ref, "sha": sha}
         ok(f"釘選 {pid} @ {sha[:7]}", f"Pinned {pid} @ {sha[:7]}")
     manifest_path.write_text(
-        _render_manifest(manifest.get("project", {}), pins,
-                         manifest.get("publish", {})),
-        encoding="utf-8")
+        _render_manifest(manifest, pins), encoding="utf-8")
     ok(f"已寫入 {len(pins)} 個釘選", f"Wrote {len(pins)} pin(s) to the manifest")
     return 0
 
