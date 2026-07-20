@@ -219,10 +219,19 @@ def test_install_help_still_names_install(capsys):
 
 
 def test_update_help_does_not_touch_the_checkout(tmp_path, monkeypatch, capsys):
-    """`--help` has to exit before the git realign — update() hard-resets the
-    working tree to FETCH_HEAD, which is not something a help flag may do."""
+    """`--help` has to exit before update() starts mutating things: it
+    hard-resets the working tree to FETCH_HEAD and wipes frontend/dist,
+    neither of which a help flag may do.
+
+    DIST_DIR is redirected at a throwaway directory on purpose — stubbing
+    `run` alone leaves the real shutil.rmtree live, so a regression here
+    would delete the developer's built frontend instead of failing.
+    """
     (tmp_path / ".git").mkdir()
+    dist = tmp_path / "dist"
+    dist.mkdir()
     monkeypatch.setattr(dev, "ROOT", tmp_path)
+    monkeypatch.setattr(dev, "DIST_DIR", dist)
     calls: list[list[str]] = []
     monkeypatch.setattr(dev, "run", lambda cmd, **kw: calls.append(list(cmd)))
     monkeypatch.setattr(dev, "install", lambda **kw: calls.append(["install"]))
@@ -232,4 +241,5 @@ def test_update_help_does_not_touch_the_checkout(tmp_path, monkeypatch, capsys):
         dev.update()
 
     assert calls == [], f"--help ran commands before exiting: {calls}"
+    assert dist.exists(), "--help wiped the frontend dist before exiting"
     assert "cdui update" in capsys.readouterr().out
