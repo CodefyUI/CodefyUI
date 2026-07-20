@@ -80,3 +80,5 @@ cdui update
 ```
 
 Updates to the latest release (prebuilt path) or pulls `main` (when building from source) and re-syncs the frontend.
+
+Unlike `cdui install`, this never prompts. It reuses the PyTorch variant and dev tooling already in the venv — reading the variant straight off the installed wheel — so a deliberately chosen torch build is left alone, and an unchanged one isn't re-downloaded. The same `--gpu` / `--dev` flags and `CODEFYUI_GPU` / `CODEFYUI_DEV` env vars still override when you do want a switch.

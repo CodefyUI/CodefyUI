@@ -80,3 +80,5 @@ cdui update
 ```
 
 更新到最新 release（prebuilt 路徑），或拉取 `main`（從原始碼建置時）並重新同步前端。
+
+和 `cdui install` 不同，這個指令不會詢問任何問題。它會直接從已安裝的 wheel 讀出 PyTorch 變體，沿用 venv 中既有的變體與 dev 工具設定，因此你刻意選的 torch 版本不會被動到，沒有變動時也不會重新下載。真的要換的時候，`--gpu` / `--dev` 旗標與 `CODEFYUI_GPU` / `CODEFYUI_DEV` 環境變數依然可以覆蓋。
