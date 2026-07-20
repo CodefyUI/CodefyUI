@@ -63,7 +63,7 @@
 .panelHeader {
   padding: 10px 14px;
   background: #1a1a1a;
-  border-bottom: 2px solid rgba(255, 140, 0, 0.45);
+  border-bottom: 2px solid rgba(6, 182, 212, 0.45);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -73,7 +73,7 @@
 .panelTitle {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #bbb;
+  color: #06b6d4;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -87,8 +87,8 @@
 .segmentBadge {
   font-size: 0.65rem;
   font-weight: 700;
-  color: #fff;
-  background: rgba(255, 140, 0, 0.85);
+  color: #021821;
+  background: rgba(6, 182, 212, 0.85);
   padding: 2px 6px;
   border-radius: 3px;
   letter-spacing: 0.08em;
@@ -132,7 +132,7 @@
   align-items: center;
   justify-content: center;
   font-size: 1.4rem;
-  color: #ff9500;
+  color: #666;
 }
 
 .emptyHint {
@@ -141,8 +141,8 @@
 }
 
 .portBlock {
-  background: #181818;
-  border: 1px solid #262626;
+  background: #1e1e1e;
+  border: 1px solid #2a2a2a;
   border-radius: 6px;
   padding: 8px 10px;
 }
@@ -155,6 +155,15 @@
   letter-spacing: 0.05em;
 }
 
+.portDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
 .portError {
   font-size: 0.7rem;
   color: #f5a623;
@@ -162,52 +171,6 @@
   padding: 4px 6px;
   border-radius: 3px;
   margin-bottom: 6px;
-}
-
-/* ── ValueDiff ── */
-
-.diffRow {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.shapeChangeBanner {
-  font-size: 0.7rem;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  color: #ff9500;
-  background: rgba(255, 140, 0, 0.08);
-  border: 1px solid rgba(255, 140, 0, 0.35);
-  padding: 3px 6px;
-  border-radius: 3px;
-  text-align: center;
-}
-
-.diffPair {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.diffCol {
-  min-width: 0;
-  width: 100%;
-}
-
-.diffArrow {
-  font-size: 1rem;
-  color: #666;
-  text-align: center;
-  padding: 2px 0;
-  line-height: 1;
-  user-select: none;
-}
-
-.diffEmpty {
-  padding: 12px;
-  text-align: center;
-  color: #555;
-  font-size: 0.75rem;
 }
 
 .diffMissing {
@@ -310,29 +273,59 @@
   border-radius: 4px;
 }
 
-/* ── Segment mode: stacked inputs then outputs ── */
+/* ── Port groups: stacked inputs then outputs (single-node and segment) ── */
 
-.segmentSide {
+.portGroup {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.segmentSideTitle {
+.portGroupTitle {
   font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  color: #888;
+  letter-spacing: 0.08em;
+  color: #06b6d4;
   text-transform: uppercase;
 }
 
-.segmentDivider {
-  text-align: center;
-  color: #ff9500;
-  font-size: 1.2rem;
+.portGroupEmpty {
+  font-size: 0.75rem;
+  color: #555;
+  padding: 6px 2px;
+}
+
+/* The in→out flow divider between the two groups */
+
+.flowDivider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   padding: 2px 0;
-  line-height: 1;
   user-select: none;
+}
+
+.flowLine {
+  width: 1px;
+  height: 8px;
+  background: #2a2a2a;
+}
+
+.flowArrow {
+  color: #06b6d4;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.shapeChip {
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #22d3ee;
+  background: rgba(6, 182, 212, 0.09);
+  border: 1px solid #0e7490;
+  padding: 2px 8px;
+  border-radius: 3px;
 }
 
 .portName {
@@ -374,7 +367,7 @@
 
 .tabActive {
   color: #ddd;
-  border-bottom-color: #ff9500;
+  border-bottom-color: #06b6d4;
 }
 
 .tabDisabled {
@@ -426,7 +419,7 @@
 }
 
 .stepIndex {
-  color: #ff9500;
+  color: #06b6d4;
   font-weight: 700;
   font-size: 0.78rem;
   font-family: ui-monospace, SFMono-Regular, monospace;

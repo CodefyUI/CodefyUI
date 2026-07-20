@@ -150,5 +150,5 @@ export function TensorGridView({ tensor, highlight, label }: Props) {
 function heatColor(intensity: number): string | undefined {
   if (intensity <= 0) return undefined;
   const alpha = Math.min(0.75, intensity);
-  return `rgba(255, 140, 0, ${alpha})`;
+  return `rgba(6, 182, 212, ${alpha})`;
 }

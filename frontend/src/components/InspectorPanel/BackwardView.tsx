@@ -218,7 +218,7 @@ function Section({
 }) {
   return (
     <div>
-      <div className={styles.segmentSideTitle}>{title}</div>
+      <div className={styles.portGroupTitle}>{title}</div>
       {entries.map((e) => {
         const state = tensors[entryKey(e)];
         const tensorData =

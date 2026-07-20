@@ -6,35 +6,17 @@ import {
   RunDataExpiredError,
   PayloadTooLargeError,
 } from '../../api/executionOutputs';
-import type { OutputData, TensorOutput } from '../../types';
-import { TensorGridView } from './TensorGridView';
-import { ValueDiff } from './ValueDiff';
+import type { OutputData } from '../../types';
 import { StepTraceView } from './StepTraceView';
 import { BackwardView } from './BackwardView';
 import { TokenChipsView } from './TokenChipsView';
+import { PortGroup, FlowDivider, keyOf } from './PortGroup';
+import type { PortTarget, FetchMap } from './PortGroup';
+import { isTensor, shapesEqual, makeHighlight } from './diff';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
 
 type InspectorTab = 'forward' | 'steps' | 'backward';
-
-interface PortFetchState {
-  loading: boolean;
-  error: string | null;
-  data: OutputData | null;
-}
-
-type FetchMap = Record<string, PortFetchState>;
-
-interface PortTarget {
-  nodeId: string;
-  port: string;
-  /** Optional extra label shown above the tensor view (e.g. `→ NodeX.tensor`) */
-  displayName?: string;
-}
-
-function keyOf(nodeId: string, port: string): string {
-  return `${nodeId}::${port}`;
-}
 
 async function fetchPortWithSliceFallback(
   runId: string,
@@ -103,6 +85,7 @@ export function InspectorPanel() {
           nodeId: e.source,
           port: e.sourceHandle,
           displayName: `→ ${targetLabel}.${e.targetHandle ?? ''}`,
+          dataType: portDataType(nodes, e.source, e.sourceHandle),
         });
       }
 
@@ -110,6 +93,7 @@ export function InspectorPanel() {
         nodeId: tail.id,
         port: o.name,
         displayName: `${o.name}`,
+        dataType: o.data_type,
       }));
 
       return {
@@ -123,10 +107,21 @@ export function InspectorPanel() {
     if (selectedNodeId) {
       const node = nodes.find((n) => n.id === selectedNodeId);
       if (!node) return { mode: 'none' as const };
-      const inputs = resolveInputSources(node.id, edges);
+      // Inputs are the connected upstream ports; label them with their
+      // provenance (source node + port) since they are foreign values.
+      const inputs = resolveInputSources(node.id, edges).map((p) => {
+        const srcNode = nodes.find((n) => n.id === p.nodeId);
+        const srcLabel = srcNode?.data.label || p.nodeId.slice(0, 6);
+        return {
+          ...p,
+          displayName: `${srcLabel}.${p.port}`,
+          dataType: portDataType(nodes, p.nodeId, p.port),
+        };
+      });
       const outputs: PortTarget[] = (node.data.definition?.outputs ?? []).map((o) => ({
         nodeId: node.id,
         port: o.name,
+        dataType: o.data_type,
       }));
       return {
         mode: 'single' as const,
@@ -244,14 +239,14 @@ export function InspectorPanel() {
           </span>
         </div>
         <div className={styles.panelContent}>
-          <SegmentSide
+          <PortGroup
             kind="input"
             title={t('inspector.segment.inputs', { count: targets.inputs.length })}
             ports={targets.inputs}
             fetches={fetches}
           />
-          <div className={styles.segmentDivider}>↓</div>
-          <SegmentSide
+          <FlowDivider />
+          <PortGroup
             kind="output"
             title={t('inspector.segment.outputs', { count: targets.outputs.length })}
             ports={targets.outputs}
@@ -265,6 +260,24 @@ export function InspectorPanel() {
   // Single node mode
   const inputs = targets.inputs;
   const outputs = targets.outputs;
+
+  // The in→out transform summary (shape chip / cell heat) is only
+  // well-defined when the node has exactly one input and one output.
+  let shapeChip: string | null = null;
+  let outHighlight: { portKey: string; fn: (i: number, j: number) => number } | undefined;
+  if (inputs.length === 1 && outputs.length === 1) {
+    const inData = fetches[keyOf(inputs[0].nodeId, inputs[0].port)]?.data ?? null;
+    const outData = fetches[keyOf(outputs[0].nodeId, outputs[0].port)]?.data ?? null;
+    if (isTensor(inData) && isTensor(outData)) {
+      if (shapesEqual(inData.full_shape, outData.full_shape)) {
+        const fn = makeHighlight(inData, outData);
+        if (fn) outHighlight = { portKey: keyOf(outputs[0].nodeId, outputs[0].port), fn };
+      } else {
+        shapeChip = `[${inData.full_shape.join(', ')}] → [${outData.full_shape.join(', ')}]`;
+      }
+    }
+  }
+
   return (
     <div className={styles.panel}>
       {collapseButton}
@@ -308,26 +321,28 @@ export function InspectorPanel() {
                 offsets={fetches[keyOf(targets.nodeId, 'offsets')]?.data ?? null}
               />
             )}
-            {inputs.length === 0 && outputs.length === 0 && (
+            {inputs.length === 0 && outputs.length === 0 ? (
               <div className={styles.emptyState}>{t('inspector.emptyPorts')}</div>
+            ) : (
+              <>
+                <PortGroup
+                  kind="input"
+                  title={t('inspector.node.inputs', { count: inputs.length })}
+                  ports={inputs}
+                  fetches={fetches}
+                  emptyText={t('inspector.node.inputsEmpty')}
+                />
+                <FlowDivider chip={shapeChip} />
+                <PortGroup
+                  kind="output"
+                  title={t('inspector.node.outputs', { count: outputs.length })}
+                  ports={outputs}
+                  fetches={fetches}
+                  emptyText={t('inspector.node.outputsEmpty')}
+                  highlight={outHighlight}
+                />
+              </>
             )}
-            {/* Pair input[i] with output[i] when possible */}
-            {pairLists(inputs, outputs).map((row, i) => {
-              const inKey = row.input ? keyOf(row.input.nodeId, row.input.port) : null;
-              const outKey = row.output ? keyOf(row.output.nodeId, row.output.port) : null;
-              const inState = inKey ? fetches[inKey] : null;
-              const outState = outKey ? fetches[outKey] : null;
-              return (
-                <div key={i} className={styles.portBlock}>
-                  <div className={styles.portHeader}>
-                    {row.input ? `in: ${row.input.port}` : 'in: —'} &nbsp;&nbsp;·&nbsp;&nbsp;{' '}
-                    {row.output ? `out: ${row.output.port}` : 'out: —'}
-                  </div>
-                  {renderErrors(inState, outState)}
-                  <ValueDiff input={inState?.data ?? null} output={outState?.data ?? null} />
-                </div>
-              );
-            })}
           </>
         )}
         {inspectorTab === 'steps' && lastRunId && selectedNodeId && (
@@ -349,82 +364,14 @@ export function InspectorPanel() {
   );
 }
 
-function SegmentSide({
-  kind,
-  title,
-  ports,
-  fetches,
-}: {
-  kind: 'input' | 'output';
-  title: string;
-  ports: PortTarget[];
-  fetches: FetchMap;
-}) {
-  if (ports.length === 0) {
-    return (
-      <div className={styles.segmentSide}>
-        <div className={styles.segmentSideTitle}>{title}</div>
-        <div className={styles.diffMissing}>—</div>
-      </div>
-    );
-  }
-  return (
-    <div className={styles.segmentSide}>
-      <div className={styles.segmentSideTitle}>{title}</div>
-      {ports.map((p) => {
-        const key = keyOf(p.nodeId, p.port);
-        const state = fetches[key];
-        return (
-          <div key={key} className={styles.portBlock}>
-            <div className={styles.portHeader}>
-              {kind === 'input' ? '⟵ ' : '⟶ '}
-              <span className={styles.portName}>
-                {/* SegmentSide only renders in segment mode, where displayName is always set */}
-                {/* v8 ignore start */}
-                {p.displayName ?? p.port}
-                {/* v8 ignore stop */}
-              </span>
-            </div>
-            {state?.error && <div className={styles.portError}>{state.error}</div>}
-            {state?.data && state.data.type === 'tensor' && (
-              <TensorGridView tensor={state.data as TensorOutput} />
-            )}
-            {state?.data && state.data.type !== 'tensor' && (
-              <div className={styles.tensorScalar}>
-                {state.data.type === 'scalar' && String((state.data as { value?: unknown }).value)}
-                {state.data.type === 'string' && (state.data as { value?: string }).value}
-                {state.data.type === 'model' && (
-                  `${(state.data as { class?: string }).class ?? 'Module'} · params ${(state.data as { params?: number }).params ?? '?'}`
-                )}
-              </div>
-            )}
-            {!state?.data && !state?.error && (
-              <div className={styles.diffMissing}>…</div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function pairLists<T>(a: T[], b: T[]): { input: T | null; output: T | null }[] {
-  const n = Math.max(a.length, b.length);
-  return Array.from({ length: n }, (_, i) => ({
-    input: a[i] ?? null,
-    output: b[i] ?? null,
-  }));
-}
-
-function renderErrors(
-  inState: PortFetchState | null | undefined,
-  outState: PortFetchState | null | undefined,
-) {
-  const msgs: string[] = [];
-  if (inState?.error) msgs.push(`input: ${inState.error}`);
-  if (outState?.error) msgs.push(`output: ${outState.error}`);
-  if (msgs.length === 0) return null;
-  return <div className={styles.portError}>{msgs.join(' · ')}</div>;
+/** Look up a source port's declared data type from its node definition. */
+function portDataType(
+  nodes: { id: string; data: { definition?: { outputs?: { name: string; data_type: string }[] } } }[],
+  nodeId: string,
+  port: string,
+): string | undefined {
+  const n = nodes.find((x) => x.id === nodeId);
+  return n?.data.definition?.outputs?.find((o) => o.name === port)?.data_type;
 }
 
 function resolveInputSources(

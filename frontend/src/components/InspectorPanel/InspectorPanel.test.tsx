@@ -164,7 +164,7 @@ describe('InspectorPanel — collapse', () => {
 });
 
 describe('InspectorPanel — single node mode', () => {
-  it('shows tabs, node name, and forward port pairing with values', async () => {
+  it('groups all inputs above all outputs with provenance labels and values', async () => {
     const n = node('a', 'NodeA', { outputs: ['out'] });
     const src = node('src', 'Src');
     seedTab({
@@ -173,14 +173,21 @@ describe('InspectorPanel — single node mode', () => {
       nodes: [n, src],
       edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
     });
-    render(<InspectorPanel />);
+    const { container } = render(<InspectorPanel />);
     expect(screen.getByText('NodeA')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Forward' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Steps' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Backward' })).toBeInTheDocument();
-    // input port label "in: y" and output port label "out: out"
-    expect(screen.getByText(/in: y/)).toBeInTheDocument();
-    expect(screen.getByText(/out: out/)).toBeInTheDocument();
+    // one group per side, inputs above outputs
+    expect(screen.getByText('Inputs (1)')).toBeInTheDocument();
+    expect(screen.getByText('Outputs (1)')).toBeInTheDocument();
+    const text = container.textContent ?? '';
+    expect(text.indexOf('Inputs (1)')).toBeLessThan(text.indexOf('Outputs (1)'));
+    // input rows carry source provenance; output rows the port name
+    expect(screen.getByText('Src.y')).toBeInTheDocument();
+    expect(screen.getByText('out')).toBeInTheDocument();
+    // the old one-to-one placeholders must never render
+    expect(screen.queryByText(/in: —|out: —/)).toBeNull();
     // values fetched and rendered
     await waitFor(() =>
       expect(screen.getAllByText('shape [2, 2]').length).toBeGreaterThan(0),
@@ -222,9 +229,12 @@ describe('InspectorPanel — single node mode', () => {
       }
       return tensor([[1]], { min: 1, max: 1 });
     });
-    render(<InspectorPanel />);
+    const { container } = render(<InspectorPanel />);
     await waitFor(() => expect(screen.getByText('Hello')).toBeInTheDocument());
     expect(screen.getByText('2 tokens')).toBeInTheDocument();
+    // chips render above the port groups
+    const text = container.textContent ?? '';
+    expect(text.indexOf('Hello')).toBeLessThan(text.indexOf('Inputs (0)'));
   });
 
   it('switches to the Steps tab and renders StepTraceView', async () => {
@@ -261,8 +271,9 @@ describe('InspectorPanel — single node mode', () => {
     });
     mockOutput.mockRejectedValue(new Error('port failed'));
     render(<InspectorPanel />);
+    // one error line per port row, input and output groups alike
     await waitFor(() =>
-      expect(screen.getByText(/input: port failed · output: port failed/)).toBeInTheDocument(),
+      expect(screen.getAllByText('port failed').length).toBeGreaterThanOrEqual(2),
     );
   });
 
@@ -349,7 +360,7 @@ describe('InspectorPanel — single node mode', () => {
     );
   });
 
-  it('pairs more inputs than outputs (output side null in a row)', async () => {
+  it('renders every input when there are more inputs than outputs (no placeholder rows)', async () => {
     const n = node('a', 'NodeA', { outputs: ['o1'] }); // 1 output
     const s1 = node('s1', 'S1');
     const s2 = node('s2', 'S2');
@@ -363,19 +374,24 @@ describe('InspectorPanel — single node mode', () => {
       ],
     });
     render(<InspectorPanel />);
-    // second row has no output → "out: —"
-    expect(screen.getByText(/out: —/)).toBeInTheDocument();
-    expect(screen.getByText(/in: q/)).toBeInTheDocument();
+    expect(screen.getByText('Inputs (2)')).toBeInTheDocument();
+    expect(screen.getByText('Outputs (1)')).toBeInTheDocument();
+    expect(screen.getByText('S1.p')).toBeInTheDocument();
+    expect(screen.getByText('S2.q')).toBeInTheDocument();
+    expect(screen.getByText('o1')).toBeInTheDocument();
+    expect(screen.queryByText(/in: —|out: —/)).toBeNull();
   });
 
-  it('pairs more outputs than inputs (input side null in a row)', async () => {
+  it('renders the inputs empty state when outputs outnumber absent inputs', async () => {
     const n = node('a', 'NodeA', { outputs: ['o1', 'o2'] }); // 2 outputs, 0 inputs
     seedTab({ lastRunId: 'run1', selectedNodeId: 'a', nodes: [n], edges: [] });
     render(<InspectorPanel />);
-    // rows where input is null → "in: —"
-    expect(screen.getAllByText(/in: —/).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/out: o1/)).toBeInTheDocument();
-    expect(screen.getByText(/out: o2/)).toBeInTheDocument();
+    expect(screen.getByText('Inputs (0)')).toBeInTheDocument();
+    expect(screen.getByText('No inputs connected')).toBeInTheDocument();
+    expect(screen.getByText('Outputs (2)')).toBeInTheDocument();
+    expect(screen.getByText('o1')).toBeInTheDocument();
+    expect(screen.getByText('o2')).toBeInTheDocument();
+    expect(screen.queryByText(/in: —|out: —/)).toBeNull();
   });
 
   it('resets the tab back to forward when the selection changes', async () => {
@@ -394,6 +410,70 @@ describe('InspectorPanel — single node mode', () => {
         'true',
       ),
     );
+  });
+});
+
+describe('InspectorPanel — single node transform summary', () => {
+  it('highlights changed output cells when the solo input/output tensors share a shape', async () => {
+    const n = node('a', 'NodeA', { outputs: ['out'] });
+    const src = node('src', 'Src');
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [n, src],
+      edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
+    });
+    mockOutput.mockImplementation(async (_r, nodeId) =>
+      nodeId === 'src'
+        ? tensor([[1, 2], [3, 4]], { min: 1, max: 4 })
+        : tensor([[1, 9], [3, 4]], { min: 1, max: 9 }),
+    );
+    const { container } = render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getAllByText('shape [2, 2]').length).toBe(2));
+    const colored = Array.from(container.querySelectorAll('td')).some((td) =>
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
+    );
+    expect(colored).toBe(true);
+  });
+
+  it('shows a shape chip in the divider when the solo tensors change shape', async () => {
+    const n = node('a', 'NodeA', { outputs: ['out'] });
+    const src = node('src', 'Src');
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [n, src],
+      edges: [edge('e1', 'src', 'a', { sourceHandle: 'y' })],
+    });
+    mockOutput.mockImplementation(async (_r, nodeId) =>
+      nodeId === 'src'
+        ? tensor([[1, 2, 3], [4, 5, 6]], { full_shape: [2, 3], sliced_shape: [2, 3] })
+        : tensor([1, 2, 3], { full_shape: [3], sliced_shape: [3] }),
+    );
+    render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getByText('[2, 3] → [3]')).toBeInTheDocument());
+  });
+
+  it('shows neither chip nor highlight for multi-port nodes', async () => {
+    const n = node('a', 'NodeA', { outputs: ['o1'] });
+    const s1 = node('s1', 'S1');
+    const s2 = node('s2', 'S2');
+    seedTab({
+      lastRunId: 'run1',
+      selectedNodeId: 'a',
+      nodes: [n, s1, s2],
+      edges: [
+        edge('e1', 's1', 'a', { sourceHandle: 'p' }),
+        edge('e2', 's2', 'a', { sourceHandle: 'q' }),
+      ],
+    });
+    const { container } = render(<InspectorPanel />);
+    await waitFor(() => expect(screen.getAllByText('shape [2, 2]').length).toBe(3));
+    expect(container.querySelector('[class*="shapeChip"]')).toBeNull();
+    const colored = Array.from(container.querySelectorAll('td')).some((td) =>
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
+    );
+    expect(colored).toBe(false);
   });
 });
 

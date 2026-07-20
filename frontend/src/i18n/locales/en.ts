@@ -284,7 +284,10 @@ const en = {
   'inspector.empty.noSelectionHint': 'Click any node, or shift-select two and press Compare',
   'inspector.segment.inputs': 'Segment inputs ({count})',
   'inspector.segment.outputs': 'Segment outputs ({count})',
-  'inspector.valueDiff.noValues': 'No values captured for this port',
+  'inspector.node.inputs': 'Inputs ({count})',
+  'inspector.node.outputs': 'Outputs ({count})',
+  'inspector.node.inputsEmpty': 'No inputs connected',
+  'inspector.node.outputsEmpty': 'Run the graph to see outputs',
   'segment.removeThis': 'Remove this segment',
 
   // A1 — Verbose / step-trace mode

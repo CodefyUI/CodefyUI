@@ -286,7 +286,10 @@ const zhTW: Record<TranslationKey, string> = {
   'inspector.empty.noSelectionHint': '點擊任一節點，或 Shift 選兩個後按「段落比較」',
   'inspector.segment.inputs': '段落輸入（{count}）',
   'inspector.segment.outputs': '段落輸出（{count}）',
-  'inspector.valueDiff.noValues': '此連接埠沒有捕獲的值',
+  'inspector.node.inputs': '輸入（{count}）',
+  'inspector.node.outputs': '輸出（{count}）',
+  'inspector.node.inputsEmpty': '尚未連接輸入',
+  'inspector.node.outputsEmpty': '執行後顯示輸出',
   'segment.removeThis': '移除此段落',
 
   // A1 — 詳細／步驟追蹤模式
