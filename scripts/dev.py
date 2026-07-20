@@ -448,15 +448,21 @@ def _install_frontend_deps_if_needed() -> None:
 #   {"tag": str|null, "commit": str|null, "built_at": iso8601, "source": str}
 
 
+# git emits UTF-8 (e.g. non-ASCII paths with core.quotepath=false); decoding
+# with the locale codepage (cp950/cp1252) would crash the reader thread, so
+# force utf-8 with replacement — a mangled char only degrades a display string.
+_GIT_TEXT_KW: dict = {"encoding": "utf-8", "errors": "replace"}
+
+
 def _git_head_commit() -> str | None:
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=ROOT, capture_output=True, text=True, timeout=5,
+            cwd=ROOT, capture_output=True, timeout=5, **_GIT_TEXT_KW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    commit = out.stdout.strip()
+    commit = (out.stdout or "").strip()
     return commit if out.returncode == 0 and commit else None
 
 
@@ -464,11 +470,11 @@ def _git_exact_tag() -> str | None:
     try:
         out = subprocess.run(
             ["git", "describe", "--tags", "--exact-match"],
-            cwd=ROOT, capture_output=True, text=True, timeout=5,
+            cwd=ROOT, capture_output=True, timeout=5, **_GIT_TEXT_KW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    tag = out.stdout.strip()
+    tag = (out.stdout or "").strip()
     return tag if out.returncode == 0 and tag else None
 
 
@@ -476,13 +482,33 @@ def _git_frontend_src_dirty() -> bool | None:
     try:
         out = subprocess.run(
             ["git", "status", "--porcelain", "--", "frontend/src"],
-            cwd=ROOT, capture_output=True, text=True, timeout=5,
+            cwd=ROOT, capture_output=True, timeout=5, **_GIT_TEXT_KW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if out.returncode != 0:
+    if out.returncode != 0 or out.stdout is None:
         return None
     return any(line.strip() for line in out.stdout.splitlines())
+
+
+def _git_frontend_unchanged_since(commit: str) -> bool | None:
+    """Whether tracked frontend/ files are identical between `commit` and HEAD.
+
+    True/False when git can prove it; None when undecidable (e.g. a shallow
+    clone that no longer has the stamped commit). Only exit codes matter here.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--quiet", commit, "HEAD", "--", "frontend"],
+            cwd=ROOT, capture_output=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode == 0:
+        return True
+    if out.returncode == 1:
+        return False
+    return None
 
 
 def _read_build_stamp() -> dict | None:
@@ -548,9 +574,15 @@ def _warn_if_dist_stale() -> None:
         head = _git_head_commit()
         if head is None:
             return  # can't judge without git — stay quiet
-        if stamp["commit"] == head:
+        in_sync = stamp["commit"] == head
+        if not in_sync:
+            # A backend-only commit after the build leaves the dist valid:
+            # frontend/ unchanged between the stamped commit and HEAD counts
+            # as in sync. None (undecidable) does not.
+            in_sync = _git_frontend_unchanged_since(stamp["commit"]) is True
+        if in_sync:
             if not _git_frontend_src_dirty():
-                return  # pristine checkout at the stamped commit == in sync
+                return  # checkout matches the stamped frontend == in sync
             # dirty tree: fall through to the mtime comparison below
         else:
             stamp_tag = stamp.get("tag")

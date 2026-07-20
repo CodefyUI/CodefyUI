@@ -61,9 +61,10 @@ def _stamp(dist, commit=HEAD, tag="1.4.1", source="release-build"):
     )
 
 
-def _fake_git(monkeypatch, head=HEAD, dirty=False):
+def _fake_git(monkeypatch, head=HEAD, dirty=False, unchanged=False):
     monkeypatch.setattr(dev, "_git_head_commit", lambda: head)
     monkeypatch.setattr(dev, "_git_frontend_src_dirty", lambda: dirty)
+    monkeypatch.setattr(dev, "_git_frontend_unchanged_since", lambda commit: unchanged)
 
 
 def _fake_pnpm(monkeypatch, present):
@@ -135,7 +136,56 @@ def test_stamp_commit_mismatch_warns_regardless_of_mtime(
     err = capsys.readouterr().err
     assert OTHER[:12] in err
     assert HEAD[:12] in err
+    assert "1.4.0" in err  # the stamped tag names the version the dist came from
     assert advice in err
+
+
+def test_mismatch_backend_only_commit_is_silent(tmp_path, monkeypatch, capsys):
+    """Committing backend-only work after a build must not nag: frontend/
+    unchanged between the stamped commit and HEAD counts as in sync."""
+    dist = _mk_frontend(tmp_path, monkeypatch, src_newer=True)
+    _stamp(dist, commit=OTHER)
+    _fake_git(monkeypatch, head=HEAD, dirty=False, unchanged=True)
+    _fake_pnpm(monkeypatch, present=True)
+    dev._warn_if_dist_stale()
+    assert capsys.readouterr().err == ""
+
+
+def test_mismatch_equivalent_but_dirty_falls_back_to_mtime(tmp_path, monkeypatch, capsys):
+    dist = _mk_frontend(tmp_path, monkeypatch, src_newer=True)
+    _stamp(dist, commit=OTHER)
+    _fake_git(monkeypatch, head=HEAD, dirty=True, unchanged=True)
+    _fake_pnpm(monkeypatch, present=True)
+    dev._warn_if_dist_stale()
+    err = capsys.readouterr().err
+    assert "dist mtime" in err
+    assert "cdui build" in err
+
+
+def test_mismatch_undecidable_equivalence_warns(tmp_path, monkeypatch, capsys):
+    """Shallow clone that lost the stamped commit (None) must still warn."""
+    dist = _mk_frontend(tmp_path, monkeypatch, src_newer=False)
+    _stamp(dist, commit=OTHER)
+    _fake_git(monkeypatch, head=HEAD, dirty=False, unchanged=None)
+    _fake_pnpm(monkeypatch, present=False)
+    dev._warn_if_dist_stale()
+    err = capsys.readouterr().err
+    assert OTHER[:12] in err
+    assert "cdui update" in err
+
+
+def test_git_helpers_survive_none_stdout(monkeypatch):
+    """A dead pipe reader (locale decode failure) yields stdout=None; the
+    helpers must degrade to unknown instead of raising."""
+
+    class _Out:
+        returncode = 0
+        stdout = None
+
+    monkeypatch.setattr(dev.subprocess, "run", lambda *a, **k: _Out())
+    assert dev._git_head_commit() is None
+    assert dev._git_exact_tag() is None
+    assert dev._git_frontend_src_dirty() is None
 
 
 def test_stamp_present_but_head_unknown_is_silent(tmp_path, monkeypatch, capsys):
@@ -258,6 +308,20 @@ def test_git_helpers_against_real_repo(tmp_path, monkeypatch):
 
     (src / "a.ts").write_text("2", encoding="utf-8")
     assert dev._git_frontend_src_dirty() is True
+
+    # frontend edit committed, then a backend-only commit on top: the dist
+    # stamped at the frontend commit stays equivalent to HEAD.
+    _git("add", "-A", cwd=tmp_path)
+    _git("commit", "-m", "src edit", cwd=tmp_path)
+    frontend_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (tmp_path / "backend.py").write_text("x", encoding="utf-8")
+    _git("add", "-A", cwd=tmp_path)
+    _git("commit", "-m", "backend only", cwd=tmp_path)
+    assert dev._git_frontend_unchanged_since(frontend_head) is True
+    assert dev._git_frontend_unchanged_since(head) is False
+    assert dev._git_frontend_unchanged_since("0" * 40) is None
 
 
 def test_git_head_commit_none_outside_repo(tmp_path, monkeypatch):
