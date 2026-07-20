@@ -118,6 +118,24 @@ jobs:
           ls -la frontend/dist
           ls -la frontend/dist/assets
 
+      # Schema is shared with _write_build_stamp() in scripts/dev.py — keep
+      # both writers in sync. `cdui start` compares the stamped commit against
+      # the checkout's HEAD instead of trusting file mtimes.
+      - name: Stamp dist with build provenance
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          jq -n \
+            --arg tag "$TAG" \
+            --arg commit "$(git rev-parse HEAD)" \
+            --arg built_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{tag: (if $tag == "" then null else $tag end),
+              commit: $commit,
+              built_at: $built_at,
+              source: "release-build"}' \
+            > frontend/dist/build-info.json
+          cat frontend/dist/build-info.json
+
       - name: Package dist
         id: pack
         run: |

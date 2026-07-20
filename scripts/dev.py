@@ -441,11 +441,88 @@ def _install_frontend_deps_if_needed() -> None:
         run(["pnpm", "install"], cwd=FRONTEND_DIR)
 
 
-def _warn_if_dist_stale() -> None:
-    """Print a warning when frontend/dist is older than the newest src file.
+# ── Dist build stamp ──────────────────────────────────────────────────────────
+# frontend/dist/build-info.json records which commit/tag the dist was built
+# from. Schema is shared with the "Stamp dist with build provenance" step in
+# .github/workflows/release-build.yml — keep both writers in sync:
+#   {"tag": str|null, "commit": str|null, "built_at": iso8601, "source": str}
 
-    Only meaningful in a developer checkout (frontend/src present) — release
-    tarball installs ship without src so the comparison is skipped silently.
+
+def _git_head_commit() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = out.stdout.strip()
+    return commit if out.returncode == 0 and commit else None
+
+
+def _git_exact_tag() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    tag = out.stdout.strip()
+    return tag if out.returncode == 0 and tag else None
+
+
+def _git_frontend_src_dirty() -> bool | None:
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--", "frontend/src"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return any(line.strip() for line in out.stdout.splitlines())
+
+
+def _read_build_stamp() -> dict | None:
+    try:
+        stamp = json.loads((DIST_DIR / "build-info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stamp, dict):
+        return None
+    if not isinstance(stamp.get("commit"), (str, type(None))):
+        return None  # foreign schema — a non-string commit would crash the [:12] display
+    return stamp
+
+
+def _write_build_stamp(source: str) -> None:
+    """Best-effort: a failed stamp must never fail the build itself."""
+    from datetime import datetime, timezone
+
+    stamp = {
+        "tag": _git_exact_tag(),
+        "commit": _git_head_commit(),
+        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source": source,
+    }
+    try:
+        (DIST_DIR / "build-info.json").write_text(
+            json.dumps(stamp, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _warn_if_dist_stale() -> None:
+    """Warn when frontend/dist does not correspond to the checked-out code.
+
+    Release installs clone the full repo (frontend/src included) and unpack a
+    prebuilt dist whose mtimes predate the checkout, so mtimes alone cannot
+    tell "stale" from "freshly installed". Trust the build stamp first: a dist
+    stamped with the current HEAD on a clean checkout is in sync. The mtime
+    heuristic remains only for dirty or unstamped developer trees.
     """
     src = FRONTEND_DIR / "src"
     if not src.is_dir():
@@ -454,6 +531,53 @@ def _warn_if_dist_stale() -> None:
         dist_mtime = DIST_INDEX.stat().st_mtime
     except OSError:
         return
+
+    if shutil.which("pnpm"):
+        advice = t(
+            "若想看到最新前端，請先執行 'cdui build' 重新打包。",
+            "Run 'cdui build' to rebuild the frontend.",
+        )
+    else:
+        advice = t(
+            "執行 'cdui update' 重新下載對應版本的前端。",
+            "Run 'cdui update' to re-download the matching frontend.",
+        )
+
+    stamp = _read_build_stamp()
+    if stamp and stamp.get("commit"):
+        head = _git_head_commit()
+        if head is None:
+            return  # can't judge without git — stay quiet
+        if stamp["commit"] == head:
+            if not _git_frontend_src_dirty():
+                return  # pristine checkout at the stamped commit == in sync
+            # dirty tree: fall through to the mtime comparison below
+        else:
+            stamp_tag = stamp.get("tag")
+            built_desc = (
+                f"{stamp_tag} ({stamp['commit'][:12]})" if stamp_tag
+                else stamp["commit"][:12]
+            )
+            print(
+                "\n"
+                + t(
+                    f"警告：frontend/dist 建置自其他版本\n"
+                    f"    dist 建置自：{built_desc}\n"
+                    f"    目前程式碼：{head[:12]}\n",
+                    f"Warning: frontend/dist was built from a different version\n"
+                    f"    dist built from: {built_desc}\n"
+                    f"    current code:    {head[:12]}\n",
+                )
+                + f"    {advice}\n",
+                file=sys.stderr,
+            )
+            return
+    else:
+        # Unstamped dist (pre-1.4.1 release asset or hand-placed). Without
+        # pnpm the user can't rebuild anyway and the dist is release-managed
+        # — stay quiet instead of pointing at an impossible fix.
+        if not shutil.which("pnpm"):
+            return
 
     src_mtime = 0.0
     for p in src.rglob("*"):
@@ -471,10 +595,14 @@ def _warn_if_dist_stale() -> None:
     src_when = datetime.fromtimestamp(src_mtime).strftime("%Y-%m-%d %H:%M")
     dist_when = datetime.fromtimestamp(dist_mtime).strftime("%Y-%m-%d %H:%M")
     print(
-        f"\n警告：frontend/dist 比 src 舊 {delta_min:.0f} 分鐘\n"
-        f"    dist mtime: {dist_when}\n"
+        "\n"
+        + t(
+            f"警告：frontend/dist 比 src 舊 {delta_min:.0f} 分鐘",
+            f"Warning: frontend/dist is {delta_min:.0f} minutes older than src",
+        )
+        + f"\n    dist mtime: {dist_when}\n"
         f"    src  mtime: {src_when}\n"
-        f"    若想看到最新前端，請先執行 'cdui build' 重新打包。\n",
+        f"    {advice}\n",
         file=sys.stderr,
     )
 
@@ -835,6 +963,7 @@ def install(gpu: str, dev: bool) -> None:
         run(["pnpm", "install"], cwd=FRONTEND_DIR)
         section("Frontend: 建置 dist", "Frontend: building dist")
         run(["pnpm", "build"], cwd=FRONTEND_DIR)
+        _write_build_stamp("local-build")
     else:
         section("Frontend: 未偵測到 pnpm，改下載 release dist",
                 "Frontend: pnpm not found, downloading release dist instead")
@@ -920,6 +1049,7 @@ def build() -> None:
         run(["pnpm", "install"], cwd=FRONTEND_DIR)
     print("=== Frontend: 建置 dist ===")
     run(["pnpm", "build"], cwd=FRONTEND_DIR)
+    _write_build_stamp("local-build")
     print(f"=== 建置完成：{DIST_DIR} ===")
 
 
