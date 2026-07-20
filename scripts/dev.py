@@ -715,13 +715,16 @@ def detect_gpu() -> tuple[str, str]:
     return ("CPU only", "cpu")
 
 
-def _parse_install_args(argv_tail: list[str]) -> argparse.Namespace:
+def _parse_install_args(argv_tail: list[str],
+                        prog: str = "cdui install") -> argparse.Namespace:
     """Parse the flags passed to `cdui install` / `cdui update`."""
     p = argparse.ArgumentParser(
-        prog="cdui install",
+        prog=prog,
         description=(
-            "Install backend (with PyTorch wheel + dev tooling choice) and "
-            "frontend. From a TTY without flags, runs an interactive menu."
+            "Select the PyTorch wheel variant and dev tooling for the backend "
+            "venv. `cdui install` prompts interactively from a TTY when no "
+            "flags are given; `cdui update` never prompts and reuses whatever "
+            "the venv already has."
         ),
     )
     p.add_argument(
@@ -813,17 +816,16 @@ def _prompt_install_options(detected_label: str, detected_gpu: str) -> tuple[str
     return gpu, dev
 
 
-def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
-    """Combine CLI flags + env vars + interactive prompt into a final (gpu, dev)."""
-    args = _parse_install_args(argv_tail)
-
-    # --lang flag overrides env-var-based LANG detection done at module load.
+def _apply_lang(args: argparse.Namespace) -> None:
+    """--lang overrides the env-var-based LANG detection done at module load."""
     if args.lang:
         global LANG
         LANG = args.lang
 
-    detected_label, detected_gpu = detect_gpu()
 
+def _explicit_options(args: argparse.Namespace) -> tuple[str | None, bool | None]:
+    """The gpu/dev choices the user stated outright — flags first, then env
+    vars. None means "not stated"; each caller picks its own default."""
     gpu = args.gpu or os.environ.get("CODEFYUI_GPU", "").strip() or None
     if gpu is not None and gpu not in TORCH_INDEX_URLS:
         err(f"未知的 --gpu 值 {gpu!r}（合法值：{', '.join(TORCH_INDEX_URLS)}）",
@@ -837,6 +839,16 @@ def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
             dev = True
         elif env_dev in ("0", "false", "no"):
             dev = False
+    return gpu, dev
+
+
+def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
+    """Combine CLI flags + env vars + interactive prompt into a final (gpu, dev)."""
+    args = _parse_install_args(argv_tail)
+    _apply_lang(args)
+
+    detected_label, detected_gpu = detect_gpu()
+    gpu, dev = _explicit_options(args)
 
     interactive = (
         not args.yes
@@ -862,19 +874,23 @@ def _resolve_install_options(argv_tail: list[str]) -> tuple[str, bool]:
     return gpu, dev
 
 
-def _get_installed_torch_version() -> str | None:
-    """Read torch's __version__ from the venv without importing torch."""
-    candidates = [
-        VENV / "Lib" / "site-packages" / "torch" / "version.py",            # Windows
-        VENV / "lib" / "site-packages" / "torch" / "version.py",            # uv layout
+def _venv_site_packages() -> list[Path]:
+    """Every site-packages dir that actually exists in the backend venv."""
+    dirs = [
+        VENV / "Lib" / "site-packages",                                     # Windows
+        VENV / "lib" / "site-packages",                                     # uv layout
     ]
     lib = VENV / "lib"
     if lib.exists():
-        for entry in lib.iterdir():
-            cand = entry / "site-packages" / "torch" / "version.py"
-            if cand.exists():
-                candidates.append(cand)
-    for path in candidates:
+        # POSIX: lib/python3.11/site-packages
+        dirs += [entry / "site-packages" for entry in lib.iterdir()]
+    return [d for d in dirs if d.exists()]
+
+
+def _get_installed_torch_version() -> str | None:
+    """Read torch's __version__ from the venv without importing torch."""
+    for site in _venv_site_packages():
+        path = site / "torch" / "version.py"
         if not path.exists():
             continue
         try:
@@ -884,6 +900,75 @@ def _get_installed_torch_version() -> str | None:
         except OSError:
             pass
     return None
+
+
+def _installed_torch_variant() -> str | None:
+    """Which TORCH_INDEX_URLS key produced the torch currently in the venv.
+
+    torch stamps its wheel index into the version's local build tag —
+    ``2.11.0+cu128``, ``2.6.0+cpu``, ``2.5.1+rocm6.2`` — so the variant is
+    readable without importing torch or re-guessing from the hardware.
+
+    Returns None when torch isn't installed at all. An installed torch we
+    can't place (untagged PyPI wheel — Apple Silicon, or a hand-built one)
+    resolves to "skip": leaving an unrecognized wheel alone beats
+    overwriting what may well be a deliberate choice.
+    """
+    version = _get_installed_torch_version()
+    if version is None:
+        return None
+    _, sep, local = version.partition("+")
+    if not sep:
+        return "skip"
+    # Longest key first so "rocm6.2" can't be shadowed by a shorter prefix;
+    # the tag may carry extra segments (e.g. "cpu.cxx11.abi").
+    indexed = sorted(
+        (k for k, v in TORCH_INDEX_URLS.items() if (v or "").startswith("https://")),
+        key=len, reverse=True,
+    )
+    for key in indexed:
+        if local == key or local.startswith(key + "."):
+            return key
+    return "skip"
+
+
+def _venv_has_dev_extra() -> bool:
+    """Was the venv installed with the [dev] extra? pytest is the marker —
+    httpx would false-positive, since the LLM clients depend on it anyway."""
+    return any(any(site.glob("pytest-*.dist-info")) for site in _venv_site_packages())
+
+
+def _resolve_update_options(argv_tail: list[str]) -> tuple[str, bool]:
+    """Final (gpu, dev) for `cdui update` — never prompts.
+
+    An update is not a re-install. The user already chose their PyTorch
+    variant and dev tooling, so reuse what the venv actually has instead of
+    asking again (the installer menu has no business appearing here) or
+    re-deriving from hardware detection, which would silently overwrite a
+    deliberate choice. Flags and env vars still override.
+    """
+    args = _parse_install_args(argv_tail, prog="cdui update")
+    _apply_lang(args)
+    gpu, dev = _explicit_options(args)
+
+    if gpu is None:
+        gpu = _installed_torch_variant()
+    if gpu is None:
+        # No torch in the venv at all — a half-built install. Fall back to
+        # detection so `cdui update` can still repair it.
+        gpu = "auto"
+    if gpu == "auto":
+        _, gpu = detect_gpu()
+
+    if dev is None:
+        dev = _venv_has_dev_extra()
+
+    current = _get_installed_torch_version() or t("尚未安裝", "not installed")
+    section(
+        f"CodefyUI update: gpu={gpu}, dev={dev}（目前 torch：{current}）",
+        f"CodefyUI update: gpu={gpu}, dev={dev} (current torch: {current})",
+    )
+    return gpu, dev
 
 
 def _print_post_install_summary(gpu: str, dev: bool) -> None:
@@ -958,17 +1043,27 @@ def install(gpu: str, dev: bool) -> None:
         section(f"Backend: PyTorch 走 PyPI 預設（gpu={gpu}）",
                 f"Backend: PyTorch from PyPI default (gpu={gpu})")
     else:
-        section(f"Backend: 安裝 PyTorch（{gpu}）— {index_url}",
-                f"Backend: installing PyTorch ({gpu}) — {index_url}")
         # `--reinstall-package` forces uv to drop the existing torch even when
         # the version constraint is already satisfied. Without it, swapping
         # variants (e.g. `--gpu cpu` after a previous `cu128` install) is a
-        # no-op and the user keeps the wrong wheel.
-        run(["uv", "pip", "install",
-             "--reinstall-package", "torch",
-             "--reinstall-package", "torchvision",
-             "torch", "torchvision",
-             "--index-url", index_url], cwd=BACKEND_DIR)
+        # no-op and the user keeps the wrong wheel. It is *only* needed for
+        # that switch though: when the installed variant already matches, the
+        # flag buys nothing but a multi-GB re-download on every `cdui update`.
+        # Dropping it still runs against the right index, so a raised torch
+        # floor upgrades from there rather than falling back to default PyPI
+        # (which on Windows would quietly swap a CUDA build for a CPU one).
+        switching = _installed_torch_variant() != gpu
+        cmd = ["uv", "pip", "install"]
+        if switching:
+            section(f"Backend: 安裝 PyTorch（{gpu}）— {index_url}",
+                    f"Backend: installing PyTorch ({gpu}) — {index_url}")
+            cmd += ["--reinstall-package", "torch",
+                    "--reinstall-package", "torchvision"]
+        else:
+            section(f"Backend: 沿用現有 PyTorch（{gpu}）— 只檢查更新",
+                    f"Backend: keeping existing PyTorch ({gpu}) — checking for updates only")
+        cmd += ["torch", "torchvision", "--index-url", index_url]
+        run(cmd, cwd=BACKEND_DIR)
 
     # Step 2: project + every node's runtime deps. `gymnasium` / `safetensors` /
     # `tiktoken` etc. are all in [project.dependencies] now — no separate
@@ -1031,6 +1126,13 @@ def update() -> None:
         err("此目錄不是 git clone，無法 update",
             "Not a git checkout — cannot update")
         sys.exit(1)
+
+    # Resolve options *before* touching git: `--help` and bad flags must exit
+    # without hard-resetting the working tree, and the summary belongs above
+    # the long fetch/build output. Nothing here depends on the new source —
+    # this process already imported the old dev.py either way.
+    gpu, dev = _resolve_update_options(sys.argv[2:])
+
     # Decide whether this install will use a prebuilt release dist (no Node) or
     # build the frontend from source (pnpm available / forced). On the prebuilt
     # path we MUST pin the backend to the same release tag as the dist — pulling
@@ -1067,7 +1169,6 @@ def update() -> None:
         section("移除舊 frontend/dist", "Removing stale frontend/dist")
         shutil.rmtree(DIST_DIR, ignore_errors=True)
 
-    gpu, dev = _resolve_install_options(sys.argv[2:])
     install(gpu=gpu, dev=dev)
 
 

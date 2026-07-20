@@ -13,7 +13,7 @@ description: The cdui launcher commands — install, start, status, dev, build, 
 | Command | Description |
 |---------|-------------|
 | `cdui install` | Install backend deps; download the prebuilt frontend (or build locally if `pnpm` is available). |
-| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (source build) and re-sync the frontend. |
+| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (source build) and re-sync the frontend. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. |
 | `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground` / `-f` runs it attached. |
 | `cdui status` | btop / k9s-style dashboard: CPU, memory, disk, GPU, top processes, plus the server's PID and health. Refreshes live (every 2s; `Ctrl+C` to quit). Pass a number to set the interval (`cdui status 1`), or `--once` for a single frame. |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm). |
