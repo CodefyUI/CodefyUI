@@ -145,7 +145,7 @@ describe('TensorGridView', () => {
     );
     const cells = container.querySelectorAll('td');
     // second cell (intensity 1 → alpha min(0.75,1)=0.75) gets a background; first (0) gets undefined
-    expect(cells[1].style.background).toContain('rgba(255, 140, 0');
+    expect(cells[1].style.background).toContain('rgba(6, 182, 212');
     expect(cells[0].style.background).toBe('');
   });
 
@@ -159,7 +159,7 @@ describe('TensorGridView', () => {
       <TensorGridView tensor={tensor} highlight={() => 0.5} />,
     );
     const cells = container.querySelectorAll('td');
-    expect(cells[0].style.background).toContain('rgba(255, 140, 0');
+    expect(cells[0].style.background).toContain('rgba(6, 182, 212');
   });
 
   it('formats boolean, null and string cell values', () => {

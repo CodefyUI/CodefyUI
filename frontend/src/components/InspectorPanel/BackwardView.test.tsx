@@ -222,7 +222,7 @@ describe('BackwardView', () => {
     );
     // at least one cell got an orange heat background (|2|/2 = 1)
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(true);
   });
@@ -238,7 +238,7 @@ describe('BackwardView', () => {
       expect(container.querySelectorAll('td').length).toBeGreaterThan(0),
     );
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(false);
   });
@@ -256,7 +256,7 @@ describe('BackwardView', () => {
       expect(container.querySelectorAll('td').length).toBeGreaterThan(0),
     );
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(true);
   });
@@ -283,7 +283,7 @@ describe('BackwardView', () => {
       expect(container.querySelectorAll('td').length).toBeGreaterThan(0),
     );
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(true);
   });
@@ -302,7 +302,7 @@ describe('BackwardView', () => {
     );
     // strings rendered; no cell colored (all cells resolve to 0)
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(false);
   });
@@ -320,7 +320,7 @@ describe('BackwardView', () => {
       expect(container.querySelectorAll('td').length).toBeGreaterThan(0),
     );
     const colored = Array.from(container.querySelectorAll('td')).some((td) =>
-      (td as HTMLElement).style.background.includes('rgba(255, 140, 0'),
+      (td as HTMLElement).style.background.includes('rgba(6, 182, 212'),
     );
     expect(colored).toBe(false);
   });
