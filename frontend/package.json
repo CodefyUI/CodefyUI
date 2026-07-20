@@ -1,7 +1,7 @@
 {
   "name": "codefyui-frontend",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.4.1",
   "license": "AGPL-3.0-only",
   "packageManager": "pnpm@9.15.0",
   "type": "module",
