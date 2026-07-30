@@ -296,7 +296,7 @@ export function Toolbar() {
           }
         }
         const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
-        const resolvedEdges = resolveSerializedEdges(rawEdges);
+        const resolvedEdges = resolveSerializedEdges(rawEdges, resolvedNodes);
         // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
         // directly -- NOT via applyLayout, which pushes an undo snapshot and a
         // toast -- then deterministically place unbound notes. The next save
@@ -354,7 +354,7 @@ export function Toolbar() {
             }
           }
           const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
-          const resolvedEdges = resolveSerializedEdges(edges);
+          const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
           setNodes(resolvedNodes);
           setEdges(resolvedEdges);
           setDescription(typeof data.description === 'string' ? data.description : '');

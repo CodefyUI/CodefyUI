@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { Position } from '@xyflow/react';
 import type { ConnectionLineComponentProps } from '@xyflow/react';
 import { renderWithFlow } from '../../test/utils';
+import { useUIStore } from '../../store/uiStore';
 import { CustomConnectionLine } from './CustomConnectionLine';
 
 // `ConnectionLineComponentProps` is large; CustomConnectionLine only reads
-// fromX/fromY/toX/toY, so cast a minimal object to that shape.
+// the coordinates and positions, so cast a minimal object to that shape.
 function makeProps(over: Partial<Record<string, unknown>> = {}): ConnectionLineComponentProps {
   return {
     fromX: 10,
@@ -25,7 +26,8 @@ function makeProps(over: Partial<Record<string, unknown>> = {}): ConnectionLineC
 }
 
 describe('CustomConnectionLine', () => {
-  it('renders a bezier path and end circle using the from/to coordinates', () => {
+  it('renders a bezier path and end circle using the from/to coordinates (curve mode)', () => {
+    useUIStore.setState({ edgeStyle: 'curve' });
     const { container } = renderWithFlow(
       <svg>
         <CustomConnectionLine {...makeProps()} />
@@ -45,5 +47,27 @@ describe('CustomConnectionLine', () => {
     expect(circle?.getAttribute('cy')).toBe('220');
     expect(circle?.getAttribute('r')).toBe('4');
     expect(circle?.getAttribute('fill')).toBe('#888');
+  });
+
+  it('renders an orthogonal smoothstep preview in circuit mode, keeping the cursor dot', () => {
+    useUIStore.setState({ edgeStyle: 'circuit' });
+    const { container } = renderWithFlow(
+      <svg>
+        <CustomConnectionLine {...makeProps()} />
+      </svg>,
+    );
+
+    const path = container.querySelector('path');
+    const d = path?.getAttribute('d') ?? '';
+    expect(d.startsWith('M')).toBe(true);
+    // smoothstep emits line/quadratic segments only -- no cubics.
+    expect(d).not.toContain('C');
+    expect(d).toContain('L');
+    expect(path?.getAttribute('stroke')).toBe('#888');
+
+    const circle = container.querySelector('circle');
+    expect(circle?.getAttribute('cx')).toBe('110');
+    expect(circle?.getAttribute('cy')).toBe('220');
+    expect(circle?.getAttribute('r')).toBe('4');
   });
 });

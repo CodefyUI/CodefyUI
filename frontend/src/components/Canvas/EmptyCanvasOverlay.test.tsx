@@ -206,9 +206,10 @@ describe('EmptyCanvasOverlay', () => {
     fireEvent.click(await screen.findByText('Bare'));
 
     await waitFor(() => expect(setNodes).toHaveBeenCalled());
-    // resolveSerializedNodes/Edges were called with [] fallbacks.
+    // resolveSerializedNodes/Edges were called with [] fallbacks; the edges
+    // resolver also receives the resolved nodes for per-data-type coloring.
     expect(mockedUtils.resolveSerializedNodes).toHaveBeenCalledWith([], [], expect.any(Array));
-    expect(mockedUtils.resolveSerializedEdges).toHaveBeenCalledWith([]);
+    expect(mockedUtils.resolveSerializedEdges).toHaveBeenCalledWith([], [{ id: 'n1' }]);
     // blank name => no rename
     expect(renameTab).not.toHaveBeenCalled();
     // no imported presets => store unchanged

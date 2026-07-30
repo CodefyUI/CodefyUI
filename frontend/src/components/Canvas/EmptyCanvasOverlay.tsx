@@ -103,7 +103,7 @@ export function EmptyCanvasOverlay() {
         }
 
         const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
-        const resolvedEdges = resolveSerializedEdges(edges);
+        const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
         setNodes(resolvedNodes);
         setEdges(resolvedEdges);
 

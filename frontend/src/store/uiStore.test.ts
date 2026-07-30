@@ -8,6 +8,7 @@ const KEYS = {
   LAYOUT_MODE: 'codefyui-last-layout-mode',
   FONT_SIZE: 'codefyui-font-size',
   GLOBAL_DEVICE: 'codefyui-global-device',
+  EDGE_STYLE: 'codefyui-edge-style',
 };
 
 describe('useUIStore', () => {
@@ -26,6 +27,7 @@ describe('useUIStore', () => {
       lastLayoutMode: 'experiments',
       fontSize: 'default',
       globalDevice: 'cpu',
+      edgeStyle: 'circuit',
     });
   });
 
@@ -169,6 +171,18 @@ describe('useUIStore', () => {
     });
   });
 
+  describe('setEdgeStyle', () => {
+    it('updates the style and persists each valid value', () => {
+      useUIStore.getState().setEdgeStyle('curve');
+      expect(useUIStore.getState().edgeStyle).toBe('curve');
+      expect(localStorage.getItem(KEYS.EDGE_STYLE)).toBe('curve');
+
+      useUIStore.getState().setEdgeStyle('circuit');
+      expect(useUIStore.getState().edgeStyle).toBe('circuit');
+      expect(localStorage.getItem(KEYS.EDGE_STYLE)).toBe('circuit');
+    });
+  });
+
   // ── module-load loaders (loadLayoutMode / loadFontSize) ──────────────────────
   // These run once at import time. To exercise every branch we reset the module
   // registry with localStorage pre-seeded and re-import, observing the initial
@@ -234,6 +248,26 @@ describe('useUIStore', () => {
       localStorage.setItem(KEYS.GLOBAL_DEVICE, 'mps');
       const mod = await import('./uiStore');
       expect(mod.useUIStore.getState().globalDevice).toBe('mps');
+    });
+
+    it('edgeStyle defaults to circuit when nothing is persisted', async () => {
+      vi.resetModules();
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().edgeStyle).toBe('circuit');
+    });
+
+    it('edgeStyle loads a persisted valid value', async () => {
+      vi.resetModules();
+      localStorage.setItem(KEYS.EDGE_STYLE, 'curve');
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().edgeStyle).toBe('curve');
+    });
+
+    it('edgeStyle falls back to circuit for an unknown persisted value', async () => {
+      vi.resetModules();
+      localStorage.setItem(KEYS.EDGE_STYLE, 'zigzag');
+      const mod = await import('./uiStore');
+      expect(mod.useUIStore.getState().edgeStyle).toBe('circuit');
     });
   });
 });
