@@ -81,6 +81,7 @@ describe('SettingsPopover', () => {
       tooltipsEnabled: true,
       beginnerMode: false,
       globalDevice: 'cpu',
+      edgeStyle: 'circuit',
     });
     mockedFetchCodexStatus.mockResolvedValue({ status: 'logged_out' });
     mockedStartCodexLogin.mockResolvedValue({ auth_url: 'https://auth.example' });
@@ -511,6 +512,25 @@ describe('SettingsPopover', () => {
     // Now Basic click toggles on
     fireEvent.click(within(group).getByText('Basic'));
     expect(useUIStore.getState().beginnerMode).toBe(true);
+  });
+
+  it('connection-style segmented control switches between Circuit and Curve', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    const group = screen.getByRole('group', { name: 'Connection style' });
+    const circuitBtn = within(group).getByText('Circuit');
+    const curveBtn = within(group).getByText('Curve');
+
+    // Default is circuit -> Circuit renders as the active segment.
+    expect(circuitBtn.className).toContain('active');
+    expect(curveBtn.className).not.toContain('active');
+
+    fireEvent.click(curveBtn);
+    expect(useUIStore.getState().edgeStyle).toBe('curve');
+    expect(localStorage.getItem('codefyui-edge-style')).toBe('curve');
+
+    fireEvent.click(circuitBtn);
+    expect(useUIStore.getState().edgeStyle).toBe('circuit');
+    expect(localStorage.getItem('codefyui-edge-style')).toBe('circuit');
   });
 
   // ── default-value fallbacks (?? operators) ────────────────────────

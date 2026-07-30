@@ -280,7 +280,41 @@ export function resolveSerializedNodes(
   });
 }
 
-export function resolveSerializedEdges(rawEdges: any[]): import('@xyflow/react').Edge[] {
+/** Stroke used when an edge's source port data type cannot be resolved. */
+const DEFAULT_EDGE_STROKE = '#555';
+
+/**
+ * Look up the per-data-type stroke for a serialized edge from its source
+ * node's definition (dynamic outputs included, so Split's chunk_N ports
+ * resolve too). Falls back to the neutral gray when the node, its
+ * definition's output, or the handle is missing — e.g. a graph referencing
+ * plugin nodes that are not loaded yet.
+ */
+function resolveEdgeStroke(
+  rawEdge: any,
+  nodeMap: Map<string, Node<NodeData>>,
+): string {
+  const sourceNode = nodeMap.get(rawEdge.source);
+  const data = sourceNode?.data;
+  if (!data || !rawEdge.sourceHandle) return DEFAULT_EDGE_STROKE;
+  const output = resolveDynamicOutputs(data.definition, data.params).find(
+    (o) => o.name === rawEdge.sourceHandle,
+  );
+  return output ? getPortColor(output.data_type) : DEFAULT_EDGE_STROKE;
+}
+
+/**
+ * Reconstruct ReactFlow edges from the serialized graph format. Pass the
+ * already-resolved nodes (from {@link resolveSerializedNodes}) so value edges
+ * regain the same per-data-type stroke color that live-created edges get;
+ * without them every value edge falls back to the neutral gray. Trigger
+ * edges keep their dedicated type/handle and take no inline style.
+ */
+export function resolveSerializedEdges(
+  rawEdges: any[],
+  nodes?: Node<NodeData>[],
+): import('@xyflow/react').Edge[] {
+  const nodeMap = new Map((nodes ?? []).map((n) => [n.id, n]));
   return rawEdges.map((e) => {
     const isTrigger = e.type === 'trigger' || e.sourceHandle === 'trigger';
     return {
@@ -292,7 +326,7 @@ export function resolveSerializedEdges(rawEdges: any[]): import('@xyflow/react')
       animated: false,
       ...(isTrigger
         ? { type: 'triggerEdge', data: { type: 'trigger' } }
-        : { style: { stroke: '#555', strokeWidth: 2 } }),
+        : { style: { stroke: resolveEdgeStroke(e, nodeMap), strokeWidth: 2 } }),
     };
   });
 }

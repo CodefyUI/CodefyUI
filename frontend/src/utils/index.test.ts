@@ -195,6 +195,83 @@ describe('resolveSerializedEdges', () => {
     expect(edge.sourceHandle).toBeUndefined();
     expect(edge.targetHandle).toBeUndefined();
   });
+
+  // ── per-data-type stroke restoration (nodes argument) ─────────────────────
+
+  function edgeSourceDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
+    return {
+      node_name: 'Linear',
+      category: 'Utility',
+      description: '',
+      inputs: [],
+      outputs: [{ name: 'out', data_type: 'MODEL', description: '', optional: false }],
+      params: [],
+      ...overrides,
+    };
+  }
+
+  function flowNode(id: string, definition: NodeDefinition, params: Record<string, unknown> = {}) {
+    return {
+      id,
+      type: 'baseNode',
+      position: { x: 0, y: 0 },
+      data: { label: id, type: definition.node_name, params, definition },
+    } as import('@xyflow/react').Node<import('../types').NodeData>;
+  }
+
+  it('colors a value edge by its source port data type when nodes are passed', () => {
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' }],
+      [flowNode('a', edgeSourceDef())],
+    );
+    // MODEL -> blue.
+    expect(edge.style).toEqual({ stroke: '#2196F3', strokeWidth: 2 });
+  });
+
+  it('resolves dynamic outputs (Split chunk_N ports) for coloring', () => {
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 's', target: 'b', sourceHandle: 'chunk_2', targetHandle: 'in' }],
+      [flowNode('s', edgeSourceDef({ node_name: 'Split', outputs: [] }), { chunks: 3 })],
+    );
+    // Split chunks are TENSOR -> green.
+    expect((edge.style as { stroke: string }).stroke).toBe('#4CAF50');
+  });
+
+  it('falls back to #555 when the source node is missing from the list', () => {
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 'ghost', target: 'b', sourceHandle: 'out', targetHandle: 'in' }],
+      [flowNode('a', edgeSourceDef())],
+    );
+    expect((edge.style as { stroke: string }).stroke).toBe('#555');
+  });
+
+  it('falls back to #555 when the definition has no output of that name', () => {
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'nope', targetHandle: 'in' }],
+      [flowNode('a', edgeSourceDef())],
+    );
+    expect((edge.style as { stroke: string }).stroke).toBe('#555');
+  });
+
+  it('falls back to #555 when the node carries no definition (e.g. unloaded plugin)', () => {
+    const node = flowNode('a', edgeSourceDef());
+    delete (node.data as { definition?: NodeDefinition }).definition;
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' }],
+      [node],
+    );
+    expect((edge.style as { stroke: string }).stroke).toBe('#555');
+  });
+
+  it('leaves trigger edges unstyled even when nodes are passed', () => {
+    const [edge] = resolveSerializedEdges(
+      [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'trigger' }],
+      [flowNode('a', edgeSourceDef())],
+    );
+    expect(edge.type).toBe('triggerEdge');
+    expect(edge.targetHandle).toBe('__trigger');
+    expect(edge.style).toBeUndefined();
+  });
 });
 
 describe('resolveSerializedNodes', () => {
