@@ -1,6 +1,6 @@
 {
   "name": "DQN with CNN Feature Extractor (Atari)",
-  "description": "Deep Q-Network with CNN backbone for Atari game playing — The landmark DeepMind architecture (2015) that demonstrated superhuman performance on Atari games. Uses CNN layers to extract visual features from game frames, fed into a DQN for action-value estimation. Features experience replay and target network for stable training.",
+  "description": "Deep Q-Network with CNN backbone for Atari game playing - the landmark DeepMind architecture (2015) that demonstrated superhuman performance on Atari games. Conv layers extract visual features from stacked 84x84 frames, fed into a DQN head for action-value estimation. This example runs fully offline: a TensorCreate node supplies a synthetic batch of preprocessed observations (randn, shape 2x4x84x84) in place of a live Atari environment, so no gym/ale-py install is needed. Swap in an EnvWrapper to drive it from a real environment.",
   "nodes": [
     {
       "id": "start-1",
@@ -14,15 +14,18 @@
       }
     },
     {
-      "id": "env-1",
-      "type": "EnvWrapper",
+      "id": "obs-1",
+      "type": "TensorCreate",
       "position": {
         "x": 50,
         "y": 50
       },
       "data": {
         "params": {
-          "env_name": "ALE/Breakout-v5"
+          "shape": "2,4,84,84",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
         }
       }
     },
@@ -35,7 +38,7 @@
       },
       "data": {
         "params": {
-          "label": "Atari Frame: 84×84 grayscale"
+          "label": "Synthetic observation batch: 2x4x84x84 stacked frames"
         }
       }
     },
@@ -181,21 +184,7 @@
       },
       "data": {
         "params": {
-          "label": "Action: NOOP / FIRE / LEFT / RIGHT"
-        }
-      }
-    },
-    {
-      "id": "visualize-reward",
-      "type": "Visualize",
-      "position": {
-        "x": 50,
-        "y": 1350
-      },
-      "data": {
-        "params": {
-          "title": "Episode Reward (target: 400+)",
-          "plot_type": "line"
+          "label": "Q-values per action: NOOP / FIRE / LEFT / RIGHT"
         }
       }
     },
@@ -230,16 +219,16 @@
   "edges": [
     {
       "id": "e-1",
-      "source": "env-1",
+      "source": "obs-1",
       "target": "print-env",
-      "sourceHandle": "observation",
+      "sourceHandle": "tensor",
       "targetHandle": "value"
     },
     {
       "id": "e-2",
-      "source": "env-1",
+      "source": "obs-1",
       "target": "conv-1",
-      "sourceHandle": "observation",
+      "sourceHandle": "tensor",
       "targetHandle": "tensor"
     },
     {
@@ -313,13 +302,6 @@
       "targetHandle": "model"
     },
     {
-      "id": "e-auto-13",
-      "source": "dqn-1",
-      "target": "visualize-reward",
-      "sourceHandle": "action",
-      "targetHandle": "data"
-    },
-    {
       "id": "e-auto-14",
       "source": "dqn-1",
       "target": "visualize-q",
@@ -329,7 +311,7 @@
     {
       "id": "e-trigger-1",
       "source": "start-1",
-      "target": "env-1",
+      "target": "obs-1",
       "sourceHandle": "trigger",
       "type": "trigger"
     },

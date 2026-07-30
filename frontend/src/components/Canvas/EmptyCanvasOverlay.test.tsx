@@ -93,9 +93,9 @@ describe('EmptyCanvasOverlay', () => {
     render(<EmptyCanvasOverlay />);
 
     await waitFor(() => expect(screen.getByText('Train MLP')).toBeInTheDocument());
-    // section titles for both categories
-    expect(screen.getByText('Trainable workflows')).toBeInTheDocument();
-    expect(screen.getByText('Architecture gallery')).toBeInTheDocument();
+    // Unpinned Usage_Example lands in Advanced; Model_Architecture in its own section.
+    expect(screen.getByText('Advanced Examples')).toBeInTheDocument();
+    expect(screen.getByText('Model Architectures')).toBeInTheDocument();
     // category label has underscores replaced by spaces
     expect(screen.getByText('Usage Example')).toBeInTheDocument();
     expect(screen.getByText('Model Architecture')).toBeInTheDocument();
@@ -103,7 +103,73 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText('5 nodes')).toBeInTheDocument();
   });
 
-  it('renders an uncategorized section with the fallback badge colour for unknown categories', async () => {
+  it('pins Quick Start by path and renders sections in order: quickstart, advanced, plugin, architectures', async () => {
+    // Deliberately shuffled relative to the pinned order to prove path pinning
+    // (the backend returns alphabetical-by-path, not curated order).
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'ResNet Arch', category: 'Model_Architecture', path: 'Model_Architecture/ResNet-SkipConnection-CNN' }),
+      ex({ name: 'Api Fn', category: 'Usage_Example', path: 'Usage_Example/Api-Function' }),
+      ex({ name: 'Inference CNN', category: 'Usage_Example', path: 'Usage_Example/CNN-MNIST/InferenceCNN-MNIST' }),
+      ex({ name: 'Train CNN', category: 'Usage_Example', path: 'Usage_Example/CNN-MNIST/TrainCNN-MNIST' }),
+      ex({ name: 'Train GPT', category: 'Usage_Example', path: 'Usage_Example/GPT-Mini/TrainGPT-Mini' }),
+      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Word-Embedding-Analogy' }),
+      // Plugin example whose folder shares a builtin category name — must go
+      // to the plugin section, not Advanced.
+      ex({ name: 'Plugin Demo', category: 'Classical', path: 'plugin:c2/Classical/Foo' }),
+    ]);
+    render(<EmptyCanvasOverlay />);
+    await waitFor(() => expect(screen.getByText('Train CNN')).toBeInTheDocument());
+
+    // All four section titles are present and in document order.
+    const body = document.body.textContent ?? '';
+    const positions = [
+      'Quick Start',
+      'Advanced Examples',
+      'Plugin Examples',
+      'Model Architectures',
+    ].map((title) => {
+      const idx = body.indexOf(title);
+      expect(idx, title).toBeGreaterThanOrEqual(0);
+      return idx;
+    });
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+
+    // Global card order: pinned trio first (in pinned order, not list order),
+    // then Advanced (LLM before leftover Usage_Example), then plugin, then
+    // architectures last.
+    const names = screen
+      .getAllByRole('button')
+      .map((b) => b.querySelector('span')?.textContent);
+    expect(names).toEqual([
+      'Train CNN',
+      'Inference CNN',
+      'Api Fn',
+      'Analogy',
+      'Train GPT',
+      'Plugin Demo',
+      'ResNet Arch',
+    ]);
+  });
+
+  it('orders Advanced by category order, then per-path priority within a category', async () => {
+    // Backend alphabetical order within Diffusion is Forward, Mini-UNet, Toy;
+    // the per-path priority hoists Toy-Sampling above Mini-UNet-Compact.
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Iris', category: 'Classical', path: 'Classical/Iris-Sklearn-KNN' }),
+      ex({ name: 'Forward', category: 'Diffusion', path: 'Diffusion/Forward-Process' }),
+      ex({ name: 'MiniUNet', category: 'Diffusion', path: 'Diffusion/Mini-UNet-Compact' }),
+      ex({ name: 'ToySampling', category: 'Diffusion', path: 'Diffusion/Toy-Sampling' }),
+      ex({ name: 'Analogy', category: 'LLM', path: 'LLM/Word-Embedding-Analogy' }),
+    ]);
+    render(<EmptyCanvasOverlay />);
+    await waitFor(() => expect(screen.getByText('Analogy')).toBeInTheDocument());
+    const names = screen
+      .getAllByRole('button')
+      .map((b) => b.querySelector('span')?.textContent);
+    expect(names).toEqual(['Analogy', 'Forward', 'ToySampling', 'MiniUNet', 'Iris']);
+  });
+
+  it('renders unknown categories in the plugin section with the fallback badge colour', async () => {
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Misc Demo', category: 'Something_Else', path: '/x/misc.json' }),
     ]);
@@ -111,8 +177,11 @@ describe('EmptyCanvasOverlay', () => {
     await waitFor(() => expect(screen.getByText('Misc Demo')).toBeInTheDocument());
     // Unknown category still renders its label (replaced underscores).
     expect(screen.getByText('Something Else')).toBeInTheDocument();
-    // It is NOT under a named section title.
-    expect(screen.queryByText('Trainable workflows')).toBeNull();
+    // It lands under the generic plugin/other section, not the curated ones.
+    expect(screen.getByText('Plugin Examples')).toBeInTheDocument();
+    expect(screen.queryByText('Quick Start')).toBeNull();
+    expect(screen.queryByText('Advanced Examples')).toBeNull();
+    expect(screen.queryByText('Model Architectures')).toBeNull();
   });
 
   it('truncates descriptions longer than 80 characters', async () => {

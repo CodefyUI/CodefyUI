@@ -120,8 +120,10 @@ const zhTW: Record<TranslationKey, string> = {
   'empty.hint': '或從左側面板拖曳節點',
   'empty.loading': '載入範例中...',
   'empty.loadError': '載入範例失敗',
-  'empty.section.trainable': '可訓練的完整流程',
-  'empty.section.architecture': '架構視覺化範例',
+  'empty.section.quickstart': '快速上手',
+  'empty.section.advanced': '進階範例',
+  'empty.section.plugin': '外掛範例',
+  'empty.section.architecture': '模型架構範例',
 
   // Context Menu
   'contextMenu.rename': '重新命名',

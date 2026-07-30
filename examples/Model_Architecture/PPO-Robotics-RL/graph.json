@@ -1,6 +1,6 @@
 {
   "name": "PPO Robotics Controller",
-  "description": "Proximal Policy Optimization for Robotics Control — PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture.",
+  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment.",
   "nodes": [
     {
       "id": "start-1",
@@ -14,15 +14,18 @@
       }
     },
     {
-      "id": "env-1",
-      "type": "EnvWrapper",
+      "id": "obs-1",
+      "type": "TensorCreate",
       "position": {
         "x": 50,
         "y": 50
       },
       "data": {
         "params": {
-          "env_name": "Humanoid-v4"
+          "shape": "2,376",
+          "fill": "randn",
+          "value": 0,
+          "requires_grad": false
         }
       }
     },
@@ -35,7 +38,7 @@
       },
       "data": {
         "params": {
-          "label": "Observation: 376-dim (joints + velocities + contacts)"
+          "label": "Synthetic observation batch: 2x376 (joints + velocities + contacts)"
         }
       }
     },
@@ -78,76 +81,21 @@
       },
       "data": {
         "params": {
-          "label": "Action: 17-dim continuous torques (Actor output)"
+          "label": "Action probabilities: 17 dims (Actor head output)"
         }
       }
     },
     {
-      "id": "print-value",
-      "type": "Print",
+      "id": "visualize-actions",
+      "type": "Visualize",
       "position": {
         "x": 750,
         "y": 500
       },
       "data": {
         "params": {
-          "label": "Value estimate V(s) (Critic output)"
-        }
-      }
-    },
-    {
-      "id": "visualize-reward",
-      "type": "Visualize",
-      "position": {
-        "x": 50,
-        "y": 950
-      },
-      "data": {
-        "params": {
-          "title": "Humanoid Walking Reward",
-          "plot_type": "line"
-        }
-      }
-    },
-    {
-      "id": "visualize-policy-loss",
-      "type": "Visualize",
-      "position": {
-        "x": 400,
-        "y": 950
-      },
-      "data": {
-        "params": {
-          "title": "PPO Clipped Policy Loss",
-          "plot_type": "line"
-        }
-      }
-    },
-    {
-      "id": "visualize-value-loss",
-      "type": "Visualize",
-      "position": {
-        "x": 750,
-        "y": 950
-      },
-      "data": {
-        "params": {
-          "title": "Value Function Loss",
-          "plot_type": "line"
-        }
-      }
-    },
-    {
-      "id": "visualize-entropy",
-      "type": "Visualize",
-      "position": {
-        "x": 1100,
-        "y": 950
-      },
-      "data": {
-        "params": {
-          "title": "Policy Entropy (exploration)",
-          "plot_type": "line"
+          "title": "Action Probabilities (batch x action)",
+          "plot_type": "heatmap"
         }
       }
     },
@@ -168,16 +116,16 @@
   "edges": [
     {
       "id": "e-1",
-      "source": "env-1",
+      "source": "obs-1",
       "target": "ppo-1",
-      "sourceHandle": "observation",
+      "sourceHandle": "tensor",
       "targetHandle": "state"
     },
     {
       "id": "e-2",
-      "source": "env-1",
+      "source": "obs-1",
       "target": "print-obs",
-      "sourceHandle": "observation",
+      "sourceHandle": "tensor",
       "targetHandle": "value"
     },
     {
@@ -204,42 +152,14 @@
     {
       "id": "e-auto-6",
       "source": "ppo-1",
-      "target": "visualize-reward",
+      "target": "visualize-actions",
       "sourceHandle": "action",
       "targetHandle": "data"
-    },
-    {
-      "id": "e-auto-7",
-      "source": "ppo-1",
-      "target": "visualize-policy-loss",
-      "sourceHandle": "action",
-      "targetHandle": "data"
-    },
-    {
-      "id": "e-auto-8",
-      "source": "ppo-1",
-      "target": "visualize-value-loss",
-      "sourceHandle": "action",
-      "targetHandle": "data"
-    },
-    {
-      "id": "e-auto-9",
-      "source": "ppo-1",
-      "target": "visualize-entropy",
-      "sourceHandle": "action",
-      "targetHandle": "data"
-    },
-    {
-      "id": "e-auto-10",
-      "source": "ppo-1",
-      "target": "print-value",
-      "sourceHandle": "action",
-      "targetHandle": "value"
     },
     {
       "id": "e-trigger-1",
       "source": "start-1",
-      "target": "env-1",
+      "target": "obs-1",
       "sourceHandle": "trigger",
       "type": "trigger"
     },

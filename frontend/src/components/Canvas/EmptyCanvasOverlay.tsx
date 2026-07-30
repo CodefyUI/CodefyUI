@@ -1,27 +1,111 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useTabStore } from '../../store/tabStore';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
 import { listExamples, loadExample } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
 import { useToastStore } from '../../store/toastStore';
 import styles from './EmptyCanvasOverlay.module.css';
 
+// Restrained material-style hue per builtin category; unknown categories
+// (e.g. plugin-defined folders) fall back to orange.
 const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
   Usage_Example: '#4CAF50',
   Model_Architecture: '#2196F3',
+  Classical: '#26A69A',
+  LLM: '#AB47BC',
+  Diffusion: '#EC407A',
+  Transformer: '#26C6DA',
+  RNN: '#5C6BC0',
+  RL: '#EF5350',
 };
 
-const SECTION_ORDER: { category: string; titleKey: 'empty.section.trainable' | 'empty.section.architecture' }[] = [
-  { category: 'Usage_Example', titleKey: 'empty.section.trainable' },
-  { category: 'Model_Architecture', titleKey: 'empty.section.architecture' },
+// Quick Start: pinned by path (paths are stable identifiers, robust to
+// backend ordering), rendered in exactly this order.
+const QUICK_START_PATHS: string[] = [
+  'Usage_Example/CNN-MNIST/TrainCNN-MNIST',
+  'Usage_Example/CNN-MNIST/InferenceCNN-MNIST',
+  'Usage_Example/Api-Function',
 ];
+
+// Advanced section: category display order (most visually rewarding first).
+// Builtin categories not listed here fall through to the plugin/other section.
+const ADVANCED_CATEGORY_ORDER: string[] = [
+  'LLM',
+  'Diffusion',
+  'Classical',
+  'Transformer',
+  'RNN',
+  'RL',
+  'Usage_Example',
+];
+
+// Optional fine-grained ordering inside one Advanced category (lower renders
+// first). Unlisted paths sort after listed ones, keeping the backend's
+// alphabetical order among themselves.
+const ADVANCED_PATH_PRIORITY: Record<string, number> = {
+  'Diffusion/Forward-Process': 0,
+  'Diffusion/Toy-Sampling': 1,
+  'Diffusion/Mini-UNet-Compact': 2,
+};
+
+interface GallerySection {
+  key: string;
+  titleKey: TranslationKey;
+  items: ExampleSummary[];
+}
+
+function compareAdvanced(a: ExampleSummary, b: ExampleSummary): number {
+  const catDiff =
+    ADVANCED_CATEGORY_ORDER.indexOf(a.category) - ADVANCED_CATEGORY_ORDER.indexOf(b.category);
+  if (catDiff !== 0) return catDiff;
+  return (
+    (ADVANCED_PATH_PRIORITY[a.path] ?? Number.MAX_SAFE_INTEGER) -
+    (ADVANCED_PATH_PRIORITY[b.path] ?? Number.MAX_SAFE_INTEGER)
+  );
+}
+
+/** Split the flat example list into the ordered gallery sections.
+ *
+ * 1. Quick Start  — the three pinned starter examples.
+ * 2. Advanced     — remaining runnable builtin examples, curated order.
+ * 3. Plugin/other — plugin-shipped examples and unknown categories.
+ * 4. Architectures — Model_Architecture, always last.
+ * Empty sections are dropped.
+ */
+function groupExamples(examples: ExampleSummary[]): GallerySection[] {
+  const byPath = new Map(examples.map((e) => [e.path, e]));
+  const quickStart = QUICK_START_PATHS.map((p) => byPath.get(p)).filter(
+    (e): e is ExampleSummary => e !== undefined,
+  );
+  const pinned = new Set(QUICK_START_PATHS);
+
+  const advanced: ExampleSummary[] = [];
+  const architectures: ExampleSummary[] = [];
+  const other: ExampleSummary[] = [];
+  for (const e of examples) {
+    if (pinned.has(e.path)) continue;
+    if (e.path.startsWith('plugin:')) other.push(e);
+    else if (e.category === 'Model_Architecture') architectures.push(e);
+    else if (ADVANCED_CATEGORY_ORDER.includes(e.category)) advanced.push(e);
+    else other.push(e);
+  }
+  advanced.sort(compareAdvanced);
+
+  const sections: GallerySection[] = [
+    { key: 'quickstart', titleKey: 'empty.section.quickstart', items: quickStart },
+    { key: 'advanced', titleKey: 'empty.section.advanced', items: advanced },
+    { key: 'plugin', titleKey: 'empty.section.plugin', items: other },
+    { key: 'architecture', titleKey: 'empty.section.architecture', items: architectures },
+  ];
+  return sections.filter((s) => s.items.length > 0);
+}
 
 function renderCard(
   example: ExampleSummary,
   onClick: (e: ExampleSummary) => void,
-  t: (k: any, vars?: Record<string, string | number>) => string,
+  t: (k: TranslationKey, vars?: Record<string, string | number>) => string,
 ) {
   const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? '#FF9800';
   const catLabel = example.category.replace(/_/g, ' ');
@@ -77,14 +161,7 @@ export function EmptyCanvasOverlay() {
       .finally(() => setLoading(false));
   }, []);
 
-  const grouped = SECTION_ORDER.map((s) => ({
-    ...s,
-    items: examples.filter((e) => e.category === s.category),
-  })).filter((s) => s.items.length > 0);
-
-  const uncategorized = examples.filter(
-    (e) => !SECTION_ORDER.some((s) => s.category === e.category),
-  );
+  const sections = groupExamples(examples);
 
   const handleClick = useCallback(
     async (example: ExampleSummary) => {
@@ -135,22 +212,14 @@ export function EmptyCanvasOverlay() {
           <div className={styles.hint}>{t('empty.loading')}</div>
         )}
 
-        {!loading && grouped.map((section) => (
-          <div key={section.category} className={styles.section}>
+        {!loading && sections.map((section) => (
+          <div key={section.key} className={styles.section}>
             <div className={styles.sectionTitle}>{t(section.titleKey)}</div>
             <div className={styles.quickStartGrid}>
               {section.items.map((example) => renderCard(example, handleClick, t))}
             </div>
           </div>
         ))}
-
-        {!loading && uncategorized.length > 0 && (
-          <div className={styles.section}>
-            <div className={styles.quickStartGrid}>
-              {uncategorized.map((example) => renderCard(example, handleClick, t))}
-            </div>
-          </div>
-        )}
 
         <div className={styles.hint}>{t('empty.hint')}</div>
       </div>

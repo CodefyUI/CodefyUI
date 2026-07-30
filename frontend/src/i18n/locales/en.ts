@@ -118,8 +118,10 @@ const en = {
   'empty.hint': 'or drag a node from the left palette',
   'empty.loading': 'Loading examples...',
   'empty.loadError': 'Failed to load example',
-  'empty.section.trainable': 'Trainable workflows',
-  'empty.section.architecture': 'Architecture gallery',
+  'empty.section.quickstart': 'Quick Start',
+  'empty.section.advanced': 'Advanced Examples',
+  'empty.section.plugin': 'Plugin Examples',
+  'empty.section.architecture': 'Model Architectures',
 
   // Context Menu
   'contextMenu.rename': 'Rename',
