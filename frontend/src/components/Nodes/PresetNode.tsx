@@ -50,7 +50,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
       onClick={handleClick}
       className={`${styles.node}${isTriggerTarget ? ` ${baseStyles.entryPoint}` : ''}${isDraggingTrigger ? ` ${baseStyles.triggerDropTarget}` : ''}`}
       style={{
-        border: `2px solid ${borderColor}`,
+        border: `1px solid ${borderColor}`,
         boxShadow: selected
           ? '0 0 16px rgba(212,160,23,0.3)'
           : '0 4px 12px rgba(0,0,0,0.4)',
@@ -88,7 +88,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
                 width: 10,
                 height: 10,
                 border: '2px solid #1e1e1e',
-                left: -5,
+                left: -5.5,
                 top: '50%',
                 transform: 'translateY(-50%)',
                 borderRadius: '50%',
@@ -131,7 +131,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
                 width: 10,
                 height: 10,
                 border: '2px solid #1e1e1e',
-                right: -5,
+                right: -5.5,
                 top: '50%',
                 transform: 'translateY(-50%)',
                 borderRadius: '50%',

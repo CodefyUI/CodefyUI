@@ -62,8 +62,8 @@ function EmbeddingScatterVizNode(props: NodeProps<AppNode>) {
       {points !== null && (
         <ScatterPlot
           points={points}
-          width={320}
-          height={220}
+          width={300}
+          height={207}
           showLabels
           onExpand={() => setExpanded(true)}
         />

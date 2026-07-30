@@ -3,7 +3,7 @@
 .node {
   background: #1e1e1e;
   border-radius: 8px;
-  min-width: 200px;
+  min-width: 180px;
   font-size: 0.8125rem;
   color: #eeeeee;
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -12,8 +12,8 @@
 /* Gold gradient header */
 .header {
   background: linear-gradient(135deg, #B8860B, #D4A017, #C5941A);
-  padding: 7px 12px;
-  border-radius: 6px 6px 0 0;
+  padding: 6px 10px;
+  border-radius: 7px 7px 0 0;
   font-weight: 600;
   font-size: 0.875rem;
   display: flex;
@@ -50,7 +50,7 @@
 
 .inputRow {
   position: relative;
-  padding: 4px 12px 4px 18px;
+  padding: 3px 12px 3px 18px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -58,7 +58,7 @@
 
 .outputRow {
   position: relative;
-  padding: 4px 18px 4px 12px;
+  padding: 3px 18px 3px 12px;
   display: flex;
   align-items: center;
   justify-content: flex-end;

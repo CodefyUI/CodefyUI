@@ -136,7 +136,7 @@ describe('PresetNode', () => {
     const { container } = renderPreset(presetData(), { selected: true });
     const node = container.querySelector('[class*="node"]') as HTMLElement;
     // jsdom normalizes the border shorthand color #ffffff → rgb(255, 255, 255).
-    expect(node.style.border).toBe('2px solid rgb(255, 255, 255)');
+    expect(node.style.border).toBe('1px solid rgb(255, 255, 255)');
     expect(node.style.boxShadow).toContain('rgba(212,160,23,0.3)');
   });
 
@@ -144,7 +144,7 @@ describe('PresetNode', () => {
     const { container } = renderPreset(presetData());
     const node = container.querySelector('[class*="node"]') as HTMLElement;
     // #6B5B00 → rgb(107, 91, 0)
-    expect(node.style.border).toBe('2px solid rgb(107, 91, 0)');
+    expect(node.style.border).toBe('1px solid rgb(107, 91, 0)');
     expect(node.style.boxShadow).toContain('rgba(0,0,0,0.4)');
   });
 
@@ -158,7 +158,7 @@ describe('PresetNode', () => {
       presetData({ executionStatus: status, error: status === 'error' ? 'x' : undefined }),
     );
     const node = container.querySelector('[class*="node"]') as HTMLElement;
-    expect(node.style.border).toBe(`2px solid ${rgb}`);
+    expect(node.style.border).toBe(`1px solid ${rgb}`);
   });
 
   // ── Status footers ──
