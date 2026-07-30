@@ -27,7 +27,7 @@ You can export any graph to a JSON file and import it back later (or share it):
 
 - **Export** writes the current tab's graph (nodes, edges, parameters, and segment markers) to a `.json` file.
 - **Import** loads a `.json` graph into a new tab.
-- **Export as Python** writes a single-file headless runner that embeds the executable graph. Run it with the Python environment from a compatible CodefyUI installation; it reuses the same nodes and graph engine without starting the web server. Use `--help` for device, GraphInput JSON, timeout, and project-asset options.
+- **Export as Python** writes a readable, single-file Python program: one function per node (with its parameters inlined as editable literals), flow functions that wire the nodes together in execution order, and a `main()` entry point with a small CLI. Each node function delegates to the same node implementation the canvas uses, so results match what you saw on the canvas. Run it with the Python environment from a compatible CodefyUI installation; it does not need the web server. Use `--help` for device, GraphInput JSON, timeout, and project-asset options.
 
 The same JSON format is what the backend's example graphs use, so an exported graph can also be run headless with the **[CLI Graph Runner](./cli-runner)**.
 
