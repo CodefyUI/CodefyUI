@@ -82,7 +82,7 @@ function renderPresetWithEdges(data: NodeData, edges: Edge[], id = 'p1') {
 
 function resetStores() {
   useI18n.setState({ locale: 'en' });
-  useUIStore.setState({ draggingSourceType: null });
+  useUIStore.setState({ draggingSourceType: null, reconnectingHandle: null });
   const id = 'tab-preset';
   useTabStore.setState((s) => ({
     activeTabId: id,
@@ -206,6 +206,69 @@ describe('PresetNode', () => {
     const { container } = renderPreset(presetData());
     const node = container.querySelector('[class*="node"]') as HTMLElement;
     expect(node.className).toMatch(/triggerDropTarget/);
+  });
+
+  // ── Reconnect detach indicator ──
+  it('adds portDetaching only to the matching exposed input handle, keeping its inline styles', () => {
+    useUIStore.setState({ reconnectingHandle: { nodeId: 'p1', handleId: 'x', type: 'target' } });
+    const def = makeDef({
+      inputs: [
+        { name: 'x', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'x2', data_type: 'TENSOR', description: '', optional: false },
+      ],
+    });
+    const { container } = renderPreset(presetData({ definition: def }), { id: 'p1' });
+    const detaching = container.querySelectorAll('[class*="portDetaching"]');
+    expect(detaching).toHaveLength(1);
+    const handle = detaching[0] as HTMLElement;
+    expect(handle.getAttribute('data-handleid')).toBe('x');
+    // The class coexists with PresetNode's inline handle styles — the class's
+    // !important border-color/box-shadow win the cascade over inline styles,
+    // while the untouched inline properties (background, size) remain.
+    expect(handle.style.background).not.toBe('');
+    expect(handle.style.width).toBe('10px');
+  });
+
+  it('adds portDetaching to the matching exposed output handle', () => {
+    useUIStore.setState({ reconnectingHandle: { nodeId: 'p1', handleId: 'y', type: 'source' } });
+    const { container } = renderPreset(presetData(), { id: 'p1' });
+    const detaching = container.querySelectorAll('[class*="portDetaching"]');
+    expect(detaching).toHaveLength(1);
+    expect((detaching[0] as HTMLElement).getAttribute('data-handleid')).toBe('y');
+  });
+
+  it('does not mark any handle when the reconnect concerns another node', () => {
+    useUIStore.setState({ reconnectingHandle: { nodeId: 'other', handleId: 'x', type: 'target' } });
+    const { container } = renderPreset(presetData(), { id: 'p1' });
+    expect(container.querySelector('[class*="portDetaching"]')).toBeNull();
+  });
+
+  it('requires the handle type to match (same id, wrong type is not marked)', () => {
+    useUIStore.setState({ reconnectingHandle: { nodeId: 'p1', handleId: 'x', type: 'source' } });
+    const { container } = renderPreset(presetData(), { id: 'p1' });
+    expect(container.querySelector('[class*="portDetaching"]')).toBeNull();
+  });
+
+  it('shows the red trigger diamond while the trigger target end is being detached', () => {
+    useUIStore.setState({
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: 'p1', handleId: '__trigger', type: 'target' },
+    });
+    const { container } = renderPreset(presetData(), { id: 'p1' });
+    const trigger = container.querySelector('[data-handleid="__trigger"]') as HTMLElement;
+    expect(trigger.className).toMatch(/triggerHandleActive/);
+    expect(trigger.className).toMatch(/triggerHandleDetaching/);
+  });
+
+  it('does not show the red trigger diamond when another node is the origin', () => {
+    useUIStore.setState({
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: 'other', handleId: '__trigger', type: 'target' },
+    });
+    const { container } = renderPreset(presetData(), { id: 'p1' });
+    const trigger = container.querySelector('[data-handleid="__trigger"]') as HTMLElement;
+    expect(trigger.className).toMatch(/triggerHandleActive/);
+    expect(trigger.className).not.toMatch(/triggerHandleDetaching/);
   });
 
   it('adds the entryPoint class when a trigger edge targets the node', async () => {

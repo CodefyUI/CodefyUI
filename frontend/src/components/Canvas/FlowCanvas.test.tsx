@@ -121,7 +121,12 @@ beforeEach(() => {
     activeTabId: TAB_ID,
     clipboard: null,
   });
-  useUIStore.setState({ gridSnapEnabled: false, draggingSourceType: null, isCanvasPanning: false });
+  useUIStore.setState({
+    gridSnapEnabled: false,
+    draggingSourceType: null,
+    reconnectingHandle: null,
+    isCanvasPanning: false,
+  });
   useNodeDefStore.setState({ definitions: [makeDef()], presets: [] });
   useDialogStore.setState({ active: null, resolve: null });
   captured.rf = {};
@@ -411,10 +416,13 @@ describe('onConnectStart / onConnectEnd', () => {
 describe('reconnect handlers', () => {
   const oldEdge: Edge = { id: 'e1', source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' };
 
+  // React Flow's onReconnectStart passes the type of the handle that STAYS
+  // connected as the third argument ('source' when the target end is
+  // grabbed). The simulated calls below mirror that.
   it('replaces an edge on a completed reconnect', () => {
     setTab({ nodes: [node('a'), node('b'), node('c')], edges: [oldEdge] });
     renderCanvas();
-    act(() => captured.rf.onReconnectStart(null, oldEdge));
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
     act(() =>
       captured.rf.onReconnect(oldEdge, { source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'in' }),
     );
@@ -422,6 +430,45 @@ describe('reconnect handlers', () => {
     expect(edges).toHaveLength(1);
     expect(edges[0].target).toBe('c');
     expect(edges[0].id).toBe('e1');
+  });
+
+  it('marks the grabbed endpoint as detaching on start and clears it on end', () => {
+    setTab({ nodes: [node('a'), node('b')], edges: [oldEdge] });
+    renderCanvas();
+    // Grabbing the target end -> library reports 'source' (the staying end).
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
+    expect(useUIStore.getState().reconnectingHandle).toEqual({
+      nodeId: 'b',
+      handleId: 'in',
+      type: 'target',
+    });
+    act(() => captured.rf.onReconnectEnd(null, oldEdge));
+    expect(useUIStore.getState().reconnectingHandle).toBeNull();
+  });
+
+  it('marks the source endpoint when the source end is grabbed', () => {
+    setTab({ nodes: [node('a'), node('b')], edges: [oldEdge] });
+    renderCanvas();
+    // Grabbing the source end -> library reports 'target' (the staying end).
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'target'));
+    expect(useUIStore.getState().reconnectingHandle).toEqual({
+      nodeId: 'a',
+      handleId: 'out',
+      type: 'source',
+    });
+    act(() => captured.rf.onReconnectEnd(null, oldEdge));
+    expect(useUIStore.getState().reconnectingHandle).toBeNull();
+  });
+
+  it('clears the detach indicator when the edge is rewired via onReconnect', () => {
+    setTab({ nodes: [node('a'), node('b'), node('c')], edges: [oldEdge] });
+    renderCanvas();
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
+    expect(useUIStore.getState().reconnectingHandle).not.toBeNull();
+    act(() =>
+      captured.rf.onReconnect(oldEdge, { source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'in' }),
+    );
+    expect(useUIStore.getState().reconnectingHandle).toBeNull();
   });
 
   it('reconnect with null handles falls back to undefined handles', () => {
@@ -436,15 +483,17 @@ describe('reconnect handlers', () => {
   it('deletes the edge when reconnect ends on empty space (ref still matches)', () => {
     setTab({ nodes: [node('a'), node('b')], edges: [oldEdge] });
     renderCanvas();
-    act(() => captured.rf.onReconnectStart(null, oldEdge));
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
     act(() => captured.rf.onReconnectEnd(null, oldEdge));
     expect(activeTab().edges).toHaveLength(0);
+    // The detach indicator never survives the drag.
+    expect(useUIStore.getState().reconnectingHandle).toBeNull();
   });
 
   it('does NOT delete on reconnect end when the edge was already reconnected (ref cleared)', () => {
     setTab({ nodes: [node('a'), node('b'), node('c')], edges: [oldEdge] });
     renderCanvas();
-    act(() => captured.rf.onReconnectStart(null, oldEdge));
+    act(() => captured.rf.onReconnectStart(null, oldEdge, 'source'));
     act(() => captured.rf.onReconnect(oldEdge, { source: 'a', target: 'c', sourceHandle: 'out', targetHandle: 'in' }));
     // ref was cleared by onReconnect; end should be a no-op delete.
     act(() => captured.rf.onReconnectEnd(null, oldEdge));
@@ -472,7 +521,7 @@ describe('reconnect handlers', () => {
     const end = captured.rf.onReconnectEnd;
     // Mark the edge as reconnecting so the ref matches and we reach the
     // tab lookup inside onReconnectEnd.
-    act(() => start(null, oldEdge));
+    act(() => start(null, oldEdge, 'source'));
     unmount();
     useTabStore.setState({ activeTabId: 'no-such-tab' });
     expect(() => end(null, oldEdge)).not.toThrow();

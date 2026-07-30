@@ -29,3 +29,11 @@
   border-radius: 0 !important;
   transform: rotate(45deg) !important;
 }
+
+/* Red ring + glow while the trigger edge is being detached from this handle
+   (edge reconnect drag in progress). Declared after .handle so its
+   border-color wins the cascade. */
+.handleDetaching {
+  border-color: #F44336 !important;
+  box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3), 0 0 10px 2px rgba(244, 67, 54, 0.45);
+}
