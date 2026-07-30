@@ -1,10 +1,11 @@
-"""Tests for the Python export endpoint and generated headless runner."""
+"""Tests for the Python export endpoint and generated node-function runner."""
 
 from __future__ import annotations
 
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,18 +27,30 @@ def _compile_check(script: str) -> None:
     compile(script, "<generated>", "exec")
 
 
-def _embedded_graph(script: str) -> dict:
-    """Read GRAPH_JSON without importing or executing the generated file."""
+def _node_functions(script: str) -> list[tuple[str, str, str]]:
+    """Return ``(func_name, node_id, node_type)`` per generated node function.
+
+    Reads the AST without importing or executing the generated file; entries
+    come back in file order (grouped by flow, sequence number in the name).
+    """
     module = ast.parse(script)
+    found: list[tuple[str, str, str]] = []
     for statement in module.body:
-        if not isinstance(statement, ast.Assign):
+        if not isinstance(statement, ast.FunctionDef):
             continue
-        if any(
-            isinstance(target, ast.Name) and target.id == "GRAPH_JSON"
-            for target in statement.targets
-        ):
-            return json.loads(ast.literal_eval(statement.value))
-    raise AssertionError("generated script has no GRAPH_JSON assignment")
+        if not re.fullmatch(r"n\d+_\w+", statement.name):
+            continue
+        for call in ast.walk(statement):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_call"
+            ):
+                node_type = call.args[0].value
+                node_id = call.args[1].value
+                found.append((statement.name, node_id, node_type))
+                break
+    return found
 
 
 def _run_exported_script(
@@ -93,6 +106,8 @@ def test_generate_python_treats_all_graph_fields_as_data():
     from app.core.codegen import generate_python
 
     hostile_name = 'bad """ name\nnext line'
+    hostile_label = 'quote " and triple """'
+    hostile_path = r"C:\models\weights.pt"
     nodes = [
         {
             "id": "class",
@@ -102,37 +117,320 @@ def test_generate_python_treats_all_graph_fields_as_data():
         },
         {
             "id": "123e4567-e89b-12d3-a456-426614174000",
-            "type": "FuturePluginNode",
+            "type": "_TestSource",
             "position": {"x": 0, "y": 0},
             "data": {
                 "params": {
-                    "label": 'quote " and triple """',
-                    "path": r"C:\models\weights.pt",
+                    "label": hostile_label,
+                    "path": hostile_path,
+                    "val": "import os  # data, not code",
                 }
             },
+        },
+        # These two ids collide after sanitization ("x-1" and "x_1" both
+        # slug to x_1) — the generator must dedupe the flow locals.
+        {
+            "id": "x-1",
+            "type": "_TestSource",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"val": 'x"""1'}},
+        },
+        {
+            "id": "x_1",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "collide"}},
         },
     ]
     edges = [
         {
-            "id": "trigger",
+            "id": "t1",
             "source": "class",
             "target": "123e4567-e89b-12d3-a456-426614174000",
             "sourceHandle": "trigger",
             "targetHandle": "",
             "type": "trigger",
-        }
+        },
+        {
+            "id": "t2",
+            "source": "class",
+            "target": "x-1",
+            "sourceHandle": "trigger",
+            "targetHandle": "",
+            "type": "trigger",
+        },
+        {
+            "id": "d1",
+            "source": "x-1",
+            "target": "x_1",
+            "sourceHandle": "value",
+            "targetHandle": "value",
+            "type": "data",
+        },
     ]
 
-    script = generate_python(nodes, edges, list(reversed([n["id"] for n in nodes])), name=hostile_name)
+    script = generate_python(nodes, edges, name=hostile_name)
 
     _compile_check(script)
-    assert _embedded_graph(script) == {
-        "name": hostile_name,
-        "nodes": nodes,
-        "edges": edges,
-    }
+    assert "GRAPH_JSON" not in script
     assert "no codegen template" not in script
     assert "# TODO" not in script
+    # Hostile strings survive only as escaped literals, never as source.
+    assert ascii(hostile_name) in script
+    assert ascii(hostile_label) in script
+    assert ascii(hostile_path) in script
+    assert ascii("import os  # data, not code") in script
+    funcs = _node_functions(script)
+    assert {node_id for _, node_id, _ in funcs} == {n["id"] for n in nodes}
+    # Results stay keyed by the REAL node ids...
+    assert "results['class']" in script
+    assert "results['x-1']" in script
+    assert "results['x_1']" in script
+    # ...while the flow locals are sanitized, deduped identifiers.
+    assert "x_1_2 = results['x_1']" in script
+
+
+def test_generate_python_sanitizes_hostile_port_names(monkeypatch):
+    """Port names that are not valid identifiers stay literal dict keys."""
+    from app.core.codegen import generate_python
+    from app.core.node_base import BaseNode, DataType, PortDefinition
+    from app.core.node_registry import registry
+
+    class _HostilePortsNode(BaseNode):
+        NODE_NAME = "_HostilePorts"
+        CATEGORY = "Test"
+        DESCRIPTION = "Ports that are not valid Python identifiers"
+
+        @classmethod
+        def define_inputs(cls) -> list[PortDefinition]:
+            return [
+                PortDefinition(
+                    name="weird port!", data_type=DataType.ANY, optional=True
+                ),
+                PortDefinition(
+                    name="class", data_type=DataType.ANY, optional=True
+                ),
+                PortDefinition(
+                    name="123 go", data_type=DataType.ANY, optional=True
+                ),
+            ]
+
+        @classmethod
+        def define_outputs(cls) -> list[PortDefinition]:
+            return [PortDefinition(name="out port", data_type=DataType.ANY)]
+
+        def execute(self, inputs, params):
+            return {"out port": inputs.get("weird port!")}
+
+    monkeypatch.setitem(registry._nodes, "_HostilePorts", _HostilePortsNode)
+
+    nodes = [
+        {
+            "id": "start",
+            "type": "Start",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {}},
+        },
+        {
+            "id": "src",
+            "type": "_TestSource",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {}},
+        },
+        {
+            "id": "weird",
+            "type": "_HostilePorts",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {}},
+        },
+    ]
+    edges = [
+        {
+            "id": "t1",
+            "source": "start",
+            "target": "src",
+            "sourceHandle": "trigger",
+            "targetHandle": "",
+            "type": "trigger",
+        },
+        {
+            "id": "d1",
+            "source": "src",
+            "target": "weird",
+            "sourceHandle": "value",
+            "targetHandle": "weird port!",
+            "type": "data",
+        },
+        {
+            "id": "d2",
+            "source": "src",
+            "target": "weird",
+            "sourceHandle": "value",
+            "targetHandle": "class",
+            "type": "data",
+        },
+        {
+            "id": "d3",
+            "source": "src",
+            "target": "weird",
+            "sourceHandle": "value",
+            "targetHandle": "123 go",
+            "type": "data",
+        },
+    ]
+
+    script = generate_python(nodes, edges, name="hostile ports")
+
+    _compile_check(script)
+    # Function parameters are sanitized identifiers; the inputs dict keys
+    # are the real port-name strings.
+    assert "weird_port=_ABSENT" in script
+    assert "class_=_ABSENT" in script
+    assert "v_123_go=_ABSENT" in script
+    assert "'weird port!': weird_port" in script
+    assert "'class': class_" in script
+    assert "'123 go': v_123_go" in script
+
+
+def test_generated_script_structure_and_flow_grouping():
+    """One def per node, per-flow functions, run_graph/main, no GRAPH_JSON."""
+    from app.core.codegen import generate_python
+
+    nodes = [
+        {"id": "start1", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "a",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "1", "fill": "ones"}},
+        },
+        {
+            "id": "p",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "flow one"}},
+        },
+        {"id": "start2", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "c",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "1", "fill": "zeros"}},
+        },
+    ]
+    edges = [
+        {
+            "id": "t1",
+            "source": "start1",
+            "target": "a",
+            "sourceHandle": "trigger",
+            "targetHandle": "",
+            "type": "trigger",
+        },
+        {
+            "id": "d1",
+            "source": "a",
+            "target": "p",
+            "sourceHandle": "tensor",
+            "targetHandle": "value",
+            "type": "data",
+        },
+        {
+            "id": "t2",
+            "source": "start2",
+            "target": "c",
+            "sourceHandle": "trigger",
+            "targetHandle": "",
+            "type": "trigger",
+        },
+    ]
+
+    script = generate_python(nodes, edges, name="structure")
+
+    _compile_check(script)
+    assert "GRAPH_JSON" not in script
+    names = [
+        statement.name
+        for statement in ast.parse(script).body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    node_funcs = [name for name in names if re.fullmatch(r"n\d+_\w+", name)]
+    assert len(node_funcs) == len(nodes)
+    for expected in ("flow_1", "flow_2", "run_graph", "_parser", "_run", "main"):
+        assert expected in names
+    assert "flow_3" not in names
+
+    # Weakly-connected components group into flows, first-seen order.
+    flow_1_src = script[script.index("def flow_1") : script.index("def flow_2")]
+    assert "results['start1']" in flow_1_src
+    assert "results['a']" in flow_1_src
+    assert "results['p']" in flow_1_src
+    flow_2_src = script[script.index("def flow_2") : script.index("def run_graph")]
+    assert "results['start2']" in flow_2_src
+    assert "results['c']" in flow_2_src
+
+    run_graph_src = script[script.index("def run_graph") :]
+    assert run_graph_src.index("flow_1(ctx, results, provided)") < run_graph_src.index(
+        "flow_2(ctx, results, provided)"
+    )
+
+
+def test_node_function_sequence_matches_engine_topological_sort():
+    """The nNN sequence numbers replay exactly the engine's execution order."""
+    from app.core.codegen import generate_python
+    from app.core.graph_engine import prepare_executable_graph, topological_sort
+
+    nodes = [
+        {"id": "s1", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "a1",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "1", "fill": "ones"}},
+        },
+        {"id": "s2", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "b1",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "1", "fill": "zeros"}},
+        },
+        {
+            "id": "a2",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "a"}},
+        },
+        {
+            "id": "b2",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "b"}},
+        },
+    ]
+    edges = [
+        {"id": "t1", "source": "s1", "target": "a1", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "t2", "source": "s2", "target": "b1", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "d1", "source": "a1", "target": "a2", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+        {"id": "d2", "source": "b1", "target": "b2", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+    ]
+
+    script = generate_python(nodes, edges, name="ordering")
+
+    exec_nodes, exec_edges, _ = prepare_executable_graph(
+        nodes, edges, preset_fallback={}
+    )
+    expected = topological_sort(exec_nodes, exec_edges)
+    funcs = sorted(
+        _node_functions(script),
+        key=lambda entry: int(re.match(r"n(\d+)_", entry[0]).group(1)),
+    )
+    assert [node_id for _, node_id, _ in funcs] == expected
+
+
+def test_example_graphs_discovered():
+    """Guard: the examples parametrization below must never be empty."""
+    assert EXAMPLE_GRAPHS
 
 
 @pytest.mark.parametrize(
@@ -161,7 +459,7 @@ async def test_exported_runner_executes_unsupported_nodes_from_temp_cwd(
     test_client,
     tmp_path: Path,
 ):
-    """API -> .py -> fresh subprocess executes through the real graph engine."""
+    """API -> .py -> fresh subprocess executes through the real node classes."""
     graph = {
         "name": 'runtime " graph',
         "nodes": [
@@ -251,12 +549,9 @@ async def test_exported_runner_executes_unsupported_nodes_from_temp_cwd(
     assert "completed on cpu" in completed.stderr
 
 
-@pytest.mark.asyncio
-async def test_exported_runner_graph_input_output_json_round_trip(
-    test_client,
-    tmp_path: Path,
-):
-    graph = {
+def _contract_runner_graph() -> dict:
+    """Start -> GraphInput(amount) -> Print -> GraphOutput(result)."""
+    return {
         "name": "contract-runner",
         "nodes": [
             {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
@@ -307,7 +602,13 @@ async def test_exported_runner_graph_input_output_json_round_trip(
         ],
     }
 
-    response = await test_client.post("/api/graph/export", json=graph)
+
+@pytest.mark.asyncio
+async def test_exported_runner_graph_input_output_json_round_trip(
+    test_client,
+    tmp_path: Path,
+):
+    response = await test_client.post("/api/graph/export", json=_contract_runner_graph())
     assert response.status_code == 200, response.text
     completed = _run_exported_script(
         response.json()["script"],
@@ -321,6 +622,26 @@ async def test_exported_runner_graph_input_output_json_round_trip(
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"result": 7}
     assert "[contract value] 7" in completed.stderr
+
+
+@pytest.mark.asyncio
+async def test_exported_runner_uses_graph_input_default_without_input_flags(
+    test_client,
+    tmp_path: Path,
+):
+    """No --inputs flags: the GraphInput node falls back to its default."""
+    response = await test_client.post("/api/graph/export", json=_contract_runner_graph())
+    assert response.status_code == 200, response.text
+    completed = _run_exported_script(
+        response.json()["script"],
+        tmp_path,
+        "--device",
+        "cpu",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"result": 1}
+    assert "[contract value] 1" in completed.stderr
 
 
 @pytest.mark.asyncio
@@ -365,15 +686,147 @@ async def test_exported_runner_executes_installed_plugin_node(
 
 
 @pytest.mark.asyncio
-async def test_export_endpoint_preserves_presets_for_runtime_expansion(test_client):
+async def test_export_expands_presets_into_node_functions_at_export_time(test_client):
+    """Preset internals become real node functions in the emitted script."""
     graph = _load_example("Usage_Example/CNN-MNIST/TrainCNN-MNIST/graph.json")
     response = await test_client.post("/api/graph/export", json=graph)
 
     assert response.status_code == 200, response.text
-    embedded = _embedded_graph(response.json()["script"])
-    embedded_types = {node["type"] for node in embedded["nodes"]}
-    assert "preset:Training Pipeline" in embedded_types
-    assert "TrainingLoop" not in embedded_types
+    script = response.json()["script"]
+    _compile_check(script)
+    assert "GRAPH_JSON" not in script
+    # The preset node itself is gone; its internals are expanded functions
+    # annotated with their origin.
+    assert "'preset:Training Pipeline'" not in script
+    assert "'TrainingLoop'" in script
+    assert "# from preset 'Training Pipeline'" in script
+    expanded_types = {node_type for _, _, node_type in _node_functions(script)}
+    assert "TrainingLoop" in expanded_types
+
+
+def test_generate_python_scrubs_secrets_from_expanded_preset_internals(monkeypatch):
+    """A SECRET param inside a server-side preset definition must never be
+    emitted.  Export-time expansion reads registry definitions the route's
+    payload scrub never saw (hand-edited files, or files written before
+    preset saving scrubbed secrets), so generate_python re-scrubs the
+    expanded graph itself."""
+    from app.core.codegen import generate_python
+    from app.core.preset_registry import preset_registry
+    from app.schemas.models import InternalNodeSchema, PresetDefinition
+
+    secret = "sk-REGISTRY-HAND-EDITED-SECRET"
+    monkeypatch.setitem(
+        preset_registry._presets,
+        "SecretChat",
+        PresetDefinition(
+            preset_name="SecretChat",
+            category="Test",
+            description="",
+            nodes=[
+                InternalNodeSchema(
+                    id="chat",
+                    type="LLMChat",
+                    params={"provider": "ChatGPT API", "openai_api_key": secret},
+                )
+            ],
+            edges=[],
+            exposed_inputs=[
+                {
+                    "name": "text",
+                    "internal_node": "chat",
+                    "internal_port": "text",
+                    "data_type": "STRING",
+                    "description": "",
+                }
+            ],
+            exposed_outputs=[],
+            exposed_params=[],
+        ),
+    )
+
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "p1",
+            "type": "preset:SecretChat",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {}, "internalParams": {}},
+        },
+    ]
+    edges = [
+        {
+            "id": "t1",
+            "source": "start",
+            "target": "p1",
+            "sourceHandle": "trigger",
+            "targetHandle": "text",
+            "type": "trigger",
+        },
+    ]
+
+    script = generate_python(nodes, edges, name="leak-test")
+    _compile_check(script)
+    assert secret not in script
+    assert "'openai_api_key': ''" in script
+    # The preset was triggered, so its internal node really is in the script.
+    assert any(
+        node_type == "LLMChat" for _, _, node_type in _node_functions(script)
+    )
+
+
+def test_exported_runner_timeout_stops_scheduling_remaining_nodes(tmp_path: Path):
+    """After --timeout expires, no further node may start (engine parity:
+    cancellation is cooperative and observed at node boundaries)."""
+    from app.core.codegen import generate_python
+
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "slow",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "8192,8192", "fill": "randn"}},
+        },
+        {
+            "id": "late",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "late-print"}},
+        },
+    ]
+    edges = [
+        {
+            "id": "t1",
+            "source": "start",
+            "target": "slow",
+            "sourceHandle": "trigger",
+            "targetHandle": "",
+            "type": "trigger",
+        },
+        {
+            "id": "d1",
+            "source": "slow",
+            "target": "late",
+            "sourceHandle": "tensor",
+            "targetHandle": "value",
+            "type": "data",
+        },
+    ]
+    script = generate_python(nodes, edges, name="timeout-test")
+
+    completed = _run_exported_script(
+        script,
+        tmp_path,
+        "--device",
+        "cpu",
+        "--timeout",
+        "0.05",
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert "Graph execution failed:" in completed.stderr
+    assert "--timeout reached before node 'late'" in completed.stderr
+    assert "[late-print]" not in completed.stdout
+    assert "[late-print]" not in completed.stderr
 
 
 @pytest.mark.asyncio
@@ -381,7 +834,7 @@ async def test_exported_runner_retains_embedded_preset_sibling_roots(
     test_client,
     tmp_path: Path,
 ):
-    """Runtime expansion must keep a preset's untriggered sibling sources."""
+    """Export-time expansion must keep a preset's untriggered sibling sources."""
     graph = {
         "name": "portable-preset-runner",
         "nodes": [
@@ -487,9 +940,12 @@ async def test_exported_runner_retains_embedded_preset_sibling_roots(
 
     response = await test_client.post("/api/graph/export", json=graph)
     assert response.status_code == 200, response.text
-    embedded = _embedded_graph(response.json()["script"])
-    assert embedded["nodes"][2]["type"] == "preset:Portable Add"
-    assert embedded["presets"][0]["preset_name"] == "Portable Add"
+    script = response.json()["script"]
+    # Expanded at export time: the internal nodes (including the untriggered
+    # sibling root "right") are real functions; no preset node remains.
+    assert "'portable__right'" in script
+    assert "'portable__add'" in script
+    assert "'preset:Portable Add'" not in script
 
     completed = _run_exported_script(
         response.json()["script"],
@@ -565,8 +1021,12 @@ async def test_export_ignores_disconnected_draft_cycle(
 
     response = await test_client.post("/api/graph/export", json=graph)
     assert response.status_code == 200, response.text
+    script = response.json()["script"]
+    # Drafts are pruned at export time — they leave no trace in the script.
+    assert "'draft-a'" not in script
+    assert "'draft-b'" not in script
     completed = _run_exported_script(
-        response.json()["script"],
+        script,
         tmp_path,
         "--device",
         "cpu",
@@ -617,9 +1077,229 @@ async def test_export_endpoint_ignores_note_nodes_and_incident_edges(test_client
 
     response = await test_client.post("/api/graph/export", json=graph)
     assert response.status_code == 200, response.text
-    embedded = _embedded_graph(response.json()["script"])
-    assert {node["id"] for node in embedded["nodes"]} == {"start", "tensor"}
-    assert {edge["id"] for edge in embedded["edges"]} == {"trigger"}
+    script = response.json()["script"]
+    funcs = _node_functions(script)
+    assert {node_id for _, node_id, _ in funcs} == {"start", "tensor"}
+    assert "'annotation'" not in script
+    assert "teaching note" not in script
+
+
+@pytest.mark.asyncio
+async def test_multi_edge_fan_in_matches_engine_last_edge_wins(
+    test_client,
+    tmp_path: Path,
+):
+    """Two edges into one targetHandle: engine and script pick the same one."""
+    from app.core import api_contract
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    graph = {
+        "name": "fan-in",
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+            {
+                "id": "ones",
+                "type": "TensorCreate",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"shape": "2", "fill": "ones"}},
+            },
+            {
+                "id": "twos",
+                "type": "TensorCreate",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"shape": "2", "fill": "full", "value": 2.0}},
+            },
+            {
+                "id": "picked",
+                "type": "Print",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"label": "picked"}},
+            },
+            {
+                "id": "out",
+                "type": "GraphOutput",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"name": "result"}},
+            },
+        ],
+        "edges": [
+            {"id": "t1", "source": "start", "target": "ones", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+            {"id": "t2", "source": "start", "target": "twos", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+            {"id": "first", "source": "ones", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+            {"id": "second", "source": "twos", "target": "picked", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+            {"id": "to-out", "source": "picked", "target": "out", "sourceHandle": "value", "targetHandle": "value", "type": "data"},
+        ],
+    }
+
+    context = ExecutionContext(
+        device="cpu", weights_persistent=False, graph_id="parity-fan-in"
+    )
+    engine_results = await execute_graph(
+        graph["nodes"], graph["edges"], context=context
+    )
+    contract = api_contract.derive_contract(graph["nodes"])
+    collected, missing = api_contract.collect_outputs(contract, engine_results)
+    assert not missing
+    engine_payload = json.loads(
+        json.dumps(
+            {
+                name: api_contract.serialize_output(value)
+                for name, value in collected.items()
+            }
+        )
+    )
+    # Engine semantics: the LAST edge in edges[] order wins.
+    assert engine_payload["result"]["values"] == [2.0, 2.0]
+
+    response = await test_client.post("/api/graph/export", json=graph)
+    assert response.status_code == 200, response.text
+    script = response.json()["script"]
+    # _pick candidates are emitted in reverse edge order.
+    assert "_pick(_port(twos, 'tensor'), _port(ones, 'tensor'))" in script
+
+    completed = _run_exported_script(script, tmp_path, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == engine_payload
+
+
+@pytest.mark.asyncio
+async def test_absent_source_output_key_stays_absent_like_engine(
+    test_client,
+    tmp_path: Path,
+):
+    """A wired-but-unproduced source port yields NO input key, as in the engine.
+
+    Split(chunks=3) on a 2-element tensor produces only chunk_0/chunk_1, so
+    the edge from chunk_2 delivers nothing. Add must then fail with the
+    engine's exact KeyError — a naive exporter passing None instead of
+    omitting the key would fail differently (TypeError), or worse, succeed.
+    """
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    graph = {
+        "name": "absent-port",
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+            {
+                "id": "seed",
+                "type": "TensorCreate",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"shape": "2", "fill": "ones"}},
+            },
+            {
+                "id": "split",
+                "type": "Split",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"chunks": 3, "dim": 0}},
+            },
+            {
+                "id": "7-add",
+                "type": "Add",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"alpha": 1.0}},
+            },
+        ],
+        "edges": [
+            {"id": "t1", "source": "start", "target": "seed", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+            {"id": "d1", "source": "seed", "target": "split", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data"},
+            {"id": "d2", "source": "split", "target": "7-add", "sourceHandle": "chunk_2", "targetHandle": "tensor_a", "type": "data"},
+            {"id": "d3", "source": "split", "target": "7-add", "sourceHandle": "chunk_0", "targetHandle": "tensor_b", "type": "data"},
+        ],
+    }
+
+    context = ExecutionContext(
+        device="cpu", weights_persistent=False, graph_id="parity-absent"
+    )
+    with pytest.raises(KeyError) as excinfo:
+        await execute_graph(graph["nodes"], graph["edges"], context=context)
+    assert str(excinfo.value) == "'tensor_a'"
+
+    response = await test_client.post("/api/graph/export", json=graph)
+    assert response.status_code == 200, response.text
+    completed = _run_exported_script(
+        response.json()["script"], tmp_path, "--device", "cpu"
+    )
+    assert completed.returncode == 1
+    assert "[7-add] error: 'tensor_a'" in completed.stderr
+    assert "Graph execution failed: 'tensor_a'" in completed.stderr
+
+
+@pytest.mark.asyncio
+async def test_engine_and_script_agree_on_deterministic_graph(
+    test_client,
+    tmp_path: Path,
+):
+    """execute_graph in-process and the exported script return identical JSON."""
+    from app.core import api_contract
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    graph = {
+        "name": "deterministic",
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+            {
+                "id": "a",
+                "type": "TensorCreate",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"shape": "2", "fill": "ones"}},
+            },
+            {
+                "id": "b",
+                "type": "TensorCreate",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"shape": "2", "fill": "full", "value": 2.0}},
+            },
+            {
+                "id": "add",
+                "type": "Add",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"alpha": 3.0}},
+            },
+            {
+                "id": "out",
+                "type": "GraphOutput",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"name": "result"}},
+            },
+        ],
+        "edges": [
+            {"id": "t1", "source": "start", "target": "a", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+            {"id": "t2", "source": "start", "target": "b", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+            {"id": "d1", "source": "a", "target": "add", "sourceHandle": "tensor", "targetHandle": "tensor_a", "type": "data"},
+            {"id": "d2", "source": "b", "target": "add", "sourceHandle": "tensor", "targetHandle": "tensor_b", "type": "data"},
+            {"id": "d3", "source": "add", "target": "out", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+        ],
+    }
+
+    context = ExecutionContext(
+        device="cpu", weights_persistent=False, graph_id="parity-arith"
+    )
+    engine_results = await execute_graph(
+        graph["nodes"], graph["edges"], context=context
+    )
+    contract = api_contract.derive_contract(graph["nodes"])
+    collected, missing = api_contract.collect_outputs(contract, engine_results)
+    assert not missing
+    engine_payload = json.loads(
+        json.dumps(
+            {
+                name: api_contract.serialize_output(value)
+                for name, value in collected.items()
+            }
+        )
+    )
+    assert engine_payload["result"]["values"] == [7.0, 7.0]  # 1 + 3.0 * 2
+
+    response = await test_client.post("/api/graph/export", json=graph)
+    assert response.status_code == 200, response.text
+    completed = _run_exported_script(
+        response.json()["script"], tmp_path, "--device", "cpu"
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == engine_payload
 
 
 @pytest.mark.asyncio

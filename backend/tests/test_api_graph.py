@@ -262,8 +262,11 @@ async def test_export_scrubs_secrets_from_embedded_preset(test_client):
     script = resp.json()["script"]
     assert "sk-preset-default-secret" not in script
     assert "sk-preset-override-secret" not in script
-    assert '"openai_api_key":""' in script
-    assert '"anthropic_api_key":""' in script
+    # The untriggered preset is a draft: node-function export prunes it, so
+    # its scrubbed params leave no trace at all (previously the whole graph
+    # was embedded and the blanked keys were asserted verbatim).
+    assert "openai_api_key" not in script
+    assert "anthropic_api_key" not in script
 
 
 @pytest.mark.asyncio
@@ -335,7 +338,9 @@ async def test_export_scrubs_shadowed_embedded_preset_override(
     assert resp.status_code == 200, resp.text
     script = resp.json()["script"]
     assert "sk-shadowed-override" not in script
-    assert '"openai_api_key":""' in script
+    # As above: the draft preset is pruned at export, so the scrubbed slot
+    # is absent from the generated source entirely.
+    assert "openai_api_key" not in script
 
 
 @pytest.mark.asyncio

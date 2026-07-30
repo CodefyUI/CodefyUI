@@ -431,6 +431,31 @@ def topological_levels(nodes: list[dict], edges: list[dict]) -> list[list[str]]:
     return levels
 
 
+def invoke_node(
+    instance: BaseNode,
+    inputs: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+    context: "ExecutionContext | None" = None,
+) -> dict[str, Any]:
+    """Call ``instance.execute`` with exactly the keywords it declares.
+
+    Node authors opt in to ``progress_callback`` / ``context`` by naming them
+    in their ``execute`` signature; undeclared ones are dropped here. Both the
+    graph engine and exported Python runners route every node call through
+    this helper, so invocation semantics can never drift between the canvas
+    and an exported script.
+    """
+    sig = inspect.signature(instance.execute)
+    call_kwargs: dict[str, Any] = {}
+    if "progress_callback" in sig.parameters:
+        call_kwargs["progress_callback"] = progress_callback
+    if "context" in sig.parameters:
+        call_kwargs["context"] = context
+    return instance.execute(inputs, params, **call_kwargs)
+
+
 def prepare_executable_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -739,14 +764,14 @@ async def execute_graph(
                     if context is not None:
                         context.current_node_id = node_id
 
-                    # Build the kwargs dict matching the node's execute() signature.
-                    sig = inspect.signature(instance.execute)
-                    call_kwargs: dict[str, Any] = {}
-                    if 'progress_callback' in sig.parameters:
-                        call_kwargs['progress_callback'] = _progress_bridge
-                    if 'context' in sig.parameters:
-                        call_kwargs['context'] = context
-                    fn = functools.partial(instance.execute, inputs, params, **call_kwargs)
+                    fn = functools.partial(
+                        invoke_node,
+                        instance,
+                        inputs,
+                        params,
+                        progress_callback=_progress_bridge,
+                        context=context,
+                    )
                     result = await loop.run_in_executor(None, fn)
                 outputs[node_id] = result
                 # A3: capture floating tensors for the upcoming backward pass.
