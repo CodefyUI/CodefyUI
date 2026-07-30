@@ -13,6 +13,7 @@ import baseStyles from './BaseNode.module.css';
 function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
   const openPresetModal = useTabStore((s) => s.openPresetModal);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
+  const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
   const { getEdges } = useReactFlow();
   const def = data.definition;
   const preset = data.presetDefinition;
@@ -21,6 +22,16 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
   const isTriggerTarget = getEdges().some(
     (e) => e.target === id && ((e.data as { type?: string } | undefined)?.type === 'trigger'),
   );
+
+  // True when this exact handle is the originally-connected endpoint of an
+  // in-progress edge-reconnect drag; it shows the red "detaching" ring. The
+  // shared baseStyles.portDetaching class uses !important declarations, which
+  // beat this component's inline handle styles per the CSS cascade.
+  const isDetaching = (handleId: string, type: 'source' | 'target') =>
+    reconnectingHandle !== null &&
+    reconnectingHandle.nodeId === id &&
+    reconnectingHandle.type === type &&
+    reconnectingHandle.handleId === handleId;
 
   const statusBorderColor =
     data.executionStatus === 'running'
@@ -61,7 +72,9 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
         type="target"
         position={Position.Left}
         id="__trigger"
-        className={`${baseStyles.triggerHandle}${isDraggingTrigger ? ` ${baseStyles.triggerHandleActive}` : ''}`}
+        className={`${baseStyles.triggerHandle}${isDraggingTrigger ? ` ${baseStyles.triggerHandleActive}` : ''}${
+          isDetaching('__trigger', 'target') ? ` ${baseStyles.triggerHandleDetaching}` : ''
+        }`}
       />
 
       {/* Header with gold gradient */}
@@ -83,6 +96,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               type="target"
               position={Position.Left}
               id={input.name}
+              className={isDetaching(input.name, 'target') ? baseStyles.portDetaching : undefined}
               style={{
                 background: getPortColor(input.data_type),
                 width: 10,
@@ -126,6 +140,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               type="source"
               position={Position.Right}
               id={output.name}
+              className={isDetaching(output.name, 'source') ? baseStyles.portDetaching : undefined}
               style={{
                 background: getPortColor(output.data_type),
                 width: 10,
