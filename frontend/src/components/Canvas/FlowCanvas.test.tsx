@@ -200,13 +200,12 @@ describe('handleConnect', () => {
   });
 
   it('colors a data edge by the source port data type', () => {
-    // The def lookup keys on `node.type` (== definition.node_name), so the
-    // source node's xyflow type must equal the registered definition name for
-    // the color branch to fire.
+    // The port is resolved from the source node's own data.definition, so the
+    // node's xyflow component type ('baseNode') plays no role.
     useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Linear' })], presets: [] });
     setTab({
       nodes: [
-        node('a', { type: 'Linear', data: { label: 'a', type: 'Linear', params: {}, definition: makeDef({ node_name: 'Linear' }) } }),
+        node('a'),
         node('b'),
         node('c'),
         node('d'),
@@ -228,8 +227,63 @@ describe('handleConnect', () => {
     expect((activeTab().edges.find((e) => e.id === 'other')!.style as any).stroke).toBe('#123');
   });
 
+  it('colors a data edge via the definitions registry when the node has no inline definition', () => {
+    useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Linear' })], presets: [] });
+    setTab({
+      nodes: [
+        node('a', { data: { label: 'a', type: 'Linear', params: {} } as any }),
+        node('b'),
+      ],
+    });
+    renderCanvas();
+    act(() => {
+      captured.rf.onConnect({ source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' });
+    });
+    const edge = activeTab().edges.find((e) => e.source === 'a');
+    expect((edge!.style as any).stroke).toBe('#4CAF50');
+  });
+
+  it('falls back to the xyflow node type for the registry lookup when data is absent', () => {
+    useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Linear' })], presets: [] });
+    setTab({
+      nodes: [
+        node('a', { type: 'Linear', data: undefined as never }),
+        node('b'),
+      ],
+    });
+    renderCanvas();
+    act(() => {
+      captured.rf.onConnect({ source: 'a', target: 'b', sourceHandle: 'out', targetHandle: 'in' });
+    });
+    const edge = activeTab().edges.find((e) => e.source === 'a');
+    expect((edge!.style as any).stroke).toBe('#4CAF50');
+  });
+
+  it('colors dynamic Split chunk outputs by their resolved data type', () => {
+    setTab({
+      nodes: [
+        node('a', {
+          data: {
+            label: 'a',
+            type: 'Split',
+            params: { chunks: 3 },
+            definition: makeDef({ node_name: 'Split', outputs: [] }),
+          },
+        }),
+        node('b'),
+      ],
+    });
+    renderCanvas();
+    act(() => {
+      captured.rf.onConnect({ source: 'a', target: 'b', sourceHandle: 'chunk_2', targetHandle: 'in' });
+    });
+    const edge = activeTab().edges.find((e) => e.source === 'a');
+    // Split chunks are TENSOR -> green.
+    expect((edge!.style as any).stroke).toBe('#4CAF50');
+  });
+
   it('skips coloring when the definition has no output of that name', () => {
-    // Definition is found (node.type === node_name) but has no output "missing".
+    // The node's data.definition is found but has no output named "missing".
     useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Linear' })], presets: [] });
     setTab({
       nodes: [

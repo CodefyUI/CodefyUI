@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 export type FontSize = 'small' | 'default' | 'large';
+export type EdgeStyle = 'circuit' | 'curve';
 
 interface UIState {
   tooltipsEnabled: boolean;
@@ -30,6 +31,10 @@ interface UIState {
    * Nodes whose own device param is 'auto' follow this. */
   globalDevice: string;
   setGlobalDevice: (device: string) => void;
+  /** How value edges are drawn on the canvas: orthogonal circuit-board
+   * traces ('circuit') or the classic curved beziers ('curve'). */
+  edgeStyle: EdgeStyle;
+  setEdgeStyle: (style: EdgeStyle) => void;
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
@@ -38,8 +43,15 @@ const BEGINNER_KEY = 'codefyui-beginner-mode';
 const LAYOUT_MODE_KEY = 'codefyui-last-layout-mode';
 const FONT_SIZE_KEY = 'codefyui-font-size';
 const GLOBAL_DEVICE_KEY = 'codefyui-global-device';
+const EDGE_STYLE_KEY = 'codefyui-edge-style';
 
 const loadGlobalDevice = (): string => localStorage.getItem(GLOBAL_DEVICE_KEY) || 'cpu';
+
+const loadEdgeStyle = (): EdgeStyle => {
+  const saved = localStorage.getItem(EDGE_STYLE_KEY);
+  if (saved === 'circuit' || saved === 'curve') return saved;
+  return 'circuit';
+};
 
 const loadLayoutMode = (): 'experiments' | 'all' | 'selected' => {
   const saved = localStorage.getItem(LAYOUT_MODE_KEY);
@@ -98,5 +110,10 @@ export const useUIStore = create<UIState>((set) => ({
   setGlobalDevice: (device) => {
     localStorage.setItem(GLOBAL_DEVICE_KEY, device);
     set({ globalDevice: device });
+  },
+  edgeStyle: loadEdgeStyle(),
+  setEdgeStyle: (style) => {
+    localStorage.setItem(EDGE_STYLE_KEY, style);
+    set({ edgeStyle: style });
   },
 }));

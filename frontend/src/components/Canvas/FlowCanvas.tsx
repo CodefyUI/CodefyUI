@@ -48,7 +48,7 @@ import { SegmentBubble } from './SegmentBubble';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
-import { isValidConnection, getPortColor } from '../../utils';
+import { isValidConnection, getPortColor, resolveDynamicOutputs } from '../../utils';
 import { prompt } from '../../utils/dialog';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
@@ -227,8 +227,18 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         );
         const srcNode = currentTab?.nodes.find((n) => n.id === connection.source);
         if (srcNode) {
-          const def = defs.find((d) => d.node_name === srcNode.type);
-          const output = def?.outputs.find((o) => o.name === connection.sourceHandle);
+          // Flow nodes carry the xyflow component type in `.type` ('baseNode',
+          // 'pluginNode', viz types, ...) and the real node type + definition
+          // in `.data`, so resolve the source port from the node's own
+          // definition (dynamic outputs included — Split's chunk_N ports).
+          // Fall back to the registry keyed by the real node type when a node
+          // has no inline definition.
+          const data = srcNode.data;
+          const definition =
+            data?.definition ?? defs.find((d) => d.node_name === (data?.type ?? srcNode.type));
+          const output = resolveDynamicOutputs(definition, data?.params).find(
+            (o) => o.name === connection.sourceHandle,
+          );
           if (output) {
             const color = getPortColor(output.data_type);
             const { setEdges } = useTabStore.getState();

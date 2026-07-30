@@ -50,9 +50,11 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
   const beginnerMode = useUIStore((s) => s.beginnerMode);
+  const edgeStyle = useUIStore((s) => s.edgeStyle);
   const toggleGridSnap = useUIStore((s) => s.toggleGridSnap);
   const toggleTooltips = useUIStore((s) => s.toggleTooltips);
   const toggleBeginnerMode = useUIStore((s) => s.toggleBeginnerMode);
+  const setEdgeStyle = useUIStore((s) => s.setEdgeStyle);
 
   // Global execution device. Options come from the backend (CPU + any GPU
   // backend present); fall back to CPU-only if the fetch fails.
@@ -528,6 +530,35 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                   }}
                 >
                   {t('settings.nodeMode.all')}
+                </button>
+              </div>
+            }
+          />
+
+          <Row
+            name={t('settings.edgeStyle.name')}
+            desc={t('settings.edgeStyle.desc')}
+            ctrl={
+              <div className={styles.seg} role="group" aria-label={t('settings.edgeStyle.name')}>
+                <button
+                  type="button"
+                  className={`${styles.segItem} ${edgeStyle === 'circuit' ? styles.active : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEdgeStyle('circuit');
+                  }}
+                >
+                  {t('settings.edgeStyle.circuit')}
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.segItem} ${edgeStyle === 'curve' ? styles.active : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEdgeStyle('curve');
+                  }}
+                >
+                  {t('settings.edgeStyle.curve')}
                 </button>
               </div>
             }
