@@ -21,6 +21,7 @@ describe('useUIStore', () => {
       isCanvasPanning: false,
       shortcutsModalOpen: false,
       draggingSourceType: null,
+      reconnectingHandle: null,
       beginnerMode: false,
       lastLayoutMode: 'experiments',
       fontSize: 'default',
@@ -87,6 +88,25 @@ describe('useUIStore', () => {
       expect(useUIStore.getState().draggingSourceType).toBe('Dataset');
       useUIStore.getState().setDraggingSourceType(null);
       expect(useUIStore.getState().draggingSourceType).toBeNull();
+    });
+  });
+
+  describe('setReconnectingHandle', () => {
+    it('sets the detaching endpoint then clears it back to null', () => {
+      const endpoint = { nodeId: 'n1', handleId: 'in', type: 'target' as const };
+      useUIStore.getState().setReconnectingHandle(endpoint);
+      expect(useUIStore.getState().reconnectingHandle).toEqual(endpoint);
+      useUIStore.getState().setReconnectingHandle(null);
+      expect(useUIStore.getState().reconnectingHandle).toBeNull();
+    });
+
+    it('is transient — writes nothing to localStorage', () => {
+      useUIStore
+        .getState()
+        .setReconnectingHandle({ nodeId: 'n1', handleId: 'out', type: 'source' });
+      expect(localStorage.length).toBe(0);
+      useUIStore.getState().setReconnectingHandle(null);
+      expect(localStorage.length).toBe(0);
     });
   });
 

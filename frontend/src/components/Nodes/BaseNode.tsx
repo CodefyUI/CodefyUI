@@ -32,6 +32,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const openSubgraphModal = useTabStore((s) => s.openSubgraphModal);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
+  const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
   const nodeOutputs = useTabStore((s) => {
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
     return tab?.outputSummaries?.[id];
@@ -46,6 +47,15 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
   const isSequentialModel = data.type === 'SequentialModel';
   const isDraggingTrigger = draggingSourceType === 'TRIGGER';
+
+  // True when this exact handle is the originally-connected endpoint of an
+  // in-progress edge-reconnect drag; it shows a red "detaching" ring warning
+  // that dropping on empty space deletes the edge.
+  const isDetaching = (handleId: string, type: 'source' | 'target') =>
+    reconnectingHandle !== null &&
+    reconnectingHandle.nodeId === id &&
+    reconnectingHandle.type === type &&
+    reconnectingHandle.handleId === handleId;
 
   // Detect if this node is a trigger target (connected from a Start node)
   const isTriggerTarget = getEdges().some(
@@ -119,7 +129,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
         type="target"
         position={Position.Left}
         id="__trigger"
-        className={`${styles.triggerHandle}${isDraggingTrigger ? ` ${styles.triggerHandleActive}` : ''}`}
+        className={`${styles.triggerHandle}${isDraggingTrigger ? ` ${styles.triggerHandleActive}` : ''}${
+          isDetaching('__trigger', 'target') ? ` ${styles.triggerHandleDetaching}` : ''
+        }`}
       />
 
       {/* Tooltip */}
@@ -157,13 +169,15 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
               position={Position.Left}
               id={input.name}
               className={`${styles.portHandle} ${styles.portHandleInput}${
-                draggingSourceType
-                  ? isDraggingTrigger
-                    ? ` ${styles.portIncompatible}`
-                    : isValidConnection(draggingSourceType, input.data_type)
-                      ? ` ${styles.portCompatible}`
-                      : ` ${styles.portIncompatible}`
-                  : ''
+                isDetaching(input.name, 'target')
+                  ? ` ${styles.portDetaching}`
+                  : draggingSourceType
+                    ? isDraggingTrigger
+                      ? ` ${styles.portIncompatible}`
+                      : isValidConnection(draggingSourceType, input.data_type)
+                        ? ` ${styles.portCompatible}`
+                        : ` ${styles.portIncompatible}`
+                    : ''
               }`}
               style={{ background: getPortColor(input.data_type) }}
             />
@@ -203,7 +217,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                     type="source"
                     position={Position.Right}
                     id={output.name}
-                    className={`${styles.portHandle} ${styles.portHandleOutput}`}
+                    className={`${styles.portHandle} ${styles.portHandleOutput}${
+                      isDetaching(output.name, 'source') ? ` ${styles.portDetaching}` : ''
+                    }`}
                     style={{ background: getPortColor(output.data_type) }}
                   />
                 </div>

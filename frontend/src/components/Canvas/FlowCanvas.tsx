@@ -49,6 +49,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
 import { isValidConnection, getPortColor } from '../../utils';
+import { computeDetachedEndpoint } from '../../utils/reconnect';
 import { prompt } from '../../utils/dialog';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
@@ -321,12 +322,19 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // Track which edge is being reconnected so we can delete it if dropped on empty space
   const reconnectingEdgeRef = useRef<string | null>(null);
 
-  const onReconnectStart = useCallback((_: any, edge: Edge) => {
+  const onReconnectStart = useCallback((_: any, edge: Edge, handleType: 'source' | 'target') => {
     reconnectingEdgeRef.current = edge.id;
+    // Mark the endpoint being detached so its handle shows the red warning
+    // ring (dropping on empty space deletes the edge). Note handleType names
+    // the end that STAYS connected — see computeDetachedEndpoint.
+    useUIStore.getState().setReconnectingHandle(computeDetachedEndpoint(edge, handleType));
   }, []);
 
   const onReconnect = useCallback((oldEdge: Edge, newConnection: Connection) => {
     reconnectingEdgeRef.current = null;
+    // onReconnectEnd always follows and clears too; clearing here as well
+    // keeps the indicator lifecycle local to each handler.
+    useUIStore.getState().setReconnectingHandle(null);
     // Replace old edge with new connection
     const { setEdges } = useTabStore.getState();
     const tab = useTabStore.getState().tabs.find(
@@ -348,6 +356,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   }, []);
 
   const onReconnectEnd = useCallback((_: any, edge: Edge) => {
+    // Always clear the red detach indicator — this fires after both outcomes
+    // (edge rewired via onReconnect, or dropped on empty space and deleted).
+    useUIStore.getState().setReconnectingHandle(null);
     // If the reconnect was not completed (dropped on empty space), delete the edge
     if (reconnectingEdgeRef.current === edge.id) {
       reconnectingEdgeRef.current = null;

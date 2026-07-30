@@ -315,6 +315,16 @@
   opacity: 0.3;
 }
 
+/* Origin handle of an in-progress edge-reconnect drag — red ring + glow
+   warning that dropping on empty space deletes the edge. Applied INSTEAD of
+   portCompatible/portIncompatible on that handle (the origin may also
+   qualify as a compatible drop target), so it always wins there while the
+   green compat glow stays on the other candidate handles. */
+.portDetaching {
+  border-color: #F44336 !important;
+  box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3), 0 0 10px 2px rgba(244, 67, 54, 0.45) !important;
+}
+
 /* ── Pulse animation (re-declared here so it is self-contained) ── */
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -350,6 +360,23 @@
   opacity: 1;
   pointer-events: all;
   box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+}
+
+/* Red variant of the trigger diamond while its edge is being detached —
+   mirrors .triggerHandleActive geometry with a warning red border/glow and a
+   dark fill. Declared AFTER .triggerHandleActive so it wins the cascade when
+   both apply (during a trigger reconnect every node shows the green diamond;
+   the originally-connected one must show red instead). */
+.triggerHandleDetaching {
+  width: 14px !important;
+  height: 14px !important;
+  min-width: 14px !important;
+  min-height: 14px !important;
+  background: #1e1e1e !important;
+  border: 2px solid #F44336 !important;
+  opacity: 1;
+  pointer-events: all;
+  box-shadow: 0 0 8px rgba(244, 67, 54, 0.6);
 }
 
 /* ── Node glow when it is a valid trigger drop target ── */

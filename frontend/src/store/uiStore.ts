@@ -13,6 +13,14 @@ interface UIState {
   toggleShortcutsModal: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
+  /** Endpoint of the edge currently being detached during an edge-reconnect
+   * drag (transient, never persisted). While set, the matching handle renders
+   * a red "detaching" ring warning that dropping on empty space deletes the
+   * edge. Cleared unconditionally when the reconnect drag ends. */
+  reconnectingHandle: { nodeId: string; handleId: string; type: 'source' | 'target' } | null;
+  setReconnectingHandle: (
+    handle: { nodeId: string; handleId: string; type: 'source' | 'target' } | null,
+  ) => void;
   beginnerMode: boolean;
   toggleBeginnerMode: () => void;
   lastLayoutMode: 'experiments' | 'all' | 'selected';
@@ -74,6 +82,8 @@ export const useUIStore = create<UIState>((set) => ({
   toggleShortcutsModal: () => set((state) => ({ shortcutsModalOpen: !state.shortcutsModalOpen })),
   draggingSourceType: null,
   setDraggingSourceType: (type) => set({ draggingSourceType: type }),
+  reconnectingHandle: null,
+  setReconnectingHandle: (handle) => set({ reconnectingHandle: handle }),
   beginnerMode: localStorage.getItem(BEGINNER_KEY) === 'true',
   toggleBeginnerMode: () =>
     set((state) => {

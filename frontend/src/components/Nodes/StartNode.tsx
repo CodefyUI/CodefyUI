@@ -1,9 +1,20 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useI18n } from '../../i18n';
+import { useUIStore } from '../../store/uiStore';
 import styles from './StartNode.module.css';
 
-export function StartNode(_: NodeProps) {
+export function StartNode({ id }: NodeProps) {
   const { t } = useI18n();
+  // Red ring while the user is dragging this node's trigger edge off its
+  // source diamond (edge reconnect in progress) — warns that dropping on
+  // empty space deletes the edge.
+  const detaching = useUIStore(
+    (s) =>
+      s.reconnectingHandle !== null &&
+      s.reconnectingHandle.nodeId === id &&
+      s.reconnectingHandle.type === 'source' &&
+      s.reconnectingHandle.handleId === 'trigger',
+  );
   return (
     <div className={styles.startNode}>
       <svg className={styles.icon} viewBox="0 0 16 16" fill="none">
@@ -22,7 +33,7 @@ export function StartNode(_: NodeProps) {
         type="source"
         position={Position.Right}
         id="trigger"
-        className={styles.handle}
+        className={`${styles.handle}${detaching ? ` ${styles.handleDetaching}` : ''}`}
       />
     </div>
   );

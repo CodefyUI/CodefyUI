@@ -102,7 +102,7 @@ function renderBodyWithEdges(data: NodeData, edges: Edge[], opts: { id?: string 
 
 function resetStores() {
   useI18n.setState({ locale: 'en' });
-  useUIStore.setState({ tooltipsEnabled: true, draggingSourceType: null });
+  useUIStore.setState({ tooltipsEnabled: true, draggingSourceType: null, reconnectingHandle: null });
   // Reset to a single, clean active tab so outputSummaries lookups are empty.
   const id = 'tab-test';
   useTabStore.setState((s) => ({
@@ -424,6 +424,99 @@ describe('BaseNode', () => {
     const { container } = renderBody(baseData());
     expect(container.querySelector('[class*="portIncompatible"]')).toBeTruthy();
     expect(container.querySelector('[class*="portCompatible"]')).toBeNull();
+  });
+
+  // ── Reconnect detach indicator ────────────────────────────────────────────
+
+  it('adds portDetaching only to the input handle matching reconnectingHandle', () => {
+    useUIStore.setState({
+      reconnectingHandle: { nodeId: 'n1', handleId: 'a', type: 'target' },
+    });
+    const def = makeDef({
+      inputs: [
+        { name: 'a', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'b', data_type: 'TENSOR', description: '', optional: false },
+      ],
+    });
+    const { container } = renderBody(baseData({ definition: def }), { id: 'n1' });
+    const detaching = container.querySelectorAll('[class*="portDetaching"]');
+    expect(detaching).toHaveLength(1);
+    expect((detaching[0] as HTMLElement).getAttribute('data-handleid')).toBe('a');
+  });
+
+  it('adds portDetaching to the matching output handle when type is source', () => {
+    useUIStore.setState({
+      reconnectingHandle: { nodeId: 'n1', handleId: 'out', type: 'source' },
+    });
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    const detaching = container.querySelectorAll('[class*="portDetaching"]');
+    expect(detaching).toHaveLength(1);
+    expect((detaching[0] as HTMLElement).getAttribute('data-handleid')).toBe('out');
+  });
+
+  it('does not mark any handle when reconnectingHandle points at another node', () => {
+    useUIStore.setState({
+      reconnectingHandle: { nodeId: 'other-node', handleId: 'in', type: 'target' },
+    });
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    expect(container.querySelector('[class*="portDetaching"]')).toBeNull();
+  });
+
+  it('requires the handle type to match (same id, wrong type is not marked)', () => {
+    // 'in' exists as a target handle; a source-typed match must not hit it.
+    useUIStore.setState({
+      reconnectingHandle: { nodeId: 'n1', handleId: 'in', type: 'source' },
+    });
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    expect(container.querySelector('[class*="portDetaching"]')).toBeNull();
+  });
+
+  it('portDetaching wins over portCompatible on the origin handle while others keep the compat glow', () => {
+    // Reconnect drag in progress: the origin input would also qualify as a
+    // compatible target for the dragged TENSOR source — red must win there,
+    // green stays on the other compatible input.
+    useUIStore.setState({
+      draggingSourceType: 'TENSOR',
+      reconnectingHandle: { nodeId: 'n1', handleId: 'a', type: 'target' },
+    });
+    const def = makeDef({
+      inputs: [
+        { name: 'a', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'b', data_type: 'TENSOR', description: '', optional: false },
+      ],
+    });
+    const { container } = renderBody(baseData({ definition: def }), { id: 'n1' });
+    const origin = container.querySelector('[data-handleid="a"]') as HTMLElement;
+    const other = container.querySelector('[data-handleid="b"]') as HTMLElement;
+    expect(origin.className).toMatch(/portDetaching/);
+    expect(origin.className).not.toMatch(/portCompatible/);
+    expect(origin.className).not.toMatch(/portIncompatible/);
+    expect(other.className).toMatch(/portCompatible/);
+    expect(other.className).not.toMatch(/portDetaching/);
+  });
+
+  it('shows the red trigger diamond while the trigger target end is being detached', () => {
+    useUIStore.setState({
+      // During a trigger reconnect the drag origin is Start's source handle,
+      // so draggingSourceType is also TRIGGER (green diamonds everywhere).
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: 'n1', handleId: '__trigger', type: 'target' },
+    });
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    const trigger = container.querySelector('[data-handleid="__trigger"]') as HTMLElement;
+    expect(trigger.className).toMatch(/triggerHandleActive/);
+    expect(trigger.className).toMatch(/triggerHandleDetaching/);
+  });
+
+  it('does not show the red trigger diamond on nodes that are not the origin', () => {
+    useUIStore.setState({
+      draggingSourceType: 'TRIGGER',
+      reconnectingHandle: { nodeId: 'other-node', handleId: '__trigger', type: 'target' },
+    });
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    const trigger = container.querySelector('[data-handleid="__trigger"]') as HTMLElement;
+    expect(trigger.className).toMatch(/triggerHandleActive/);
+    expect(trigger.className).not.toMatch(/triggerHandleDetaching/);
   });
 
   it('adds the entryPoint class when an incoming trigger edge targets this node', async () => {
