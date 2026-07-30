@@ -61,6 +61,8 @@ backend/data/graphs/*.json
 !backend/data/graphs/.gitkeep
 backend/data/images/*
 !backend/data/images/.gitkeep
+# Bundled MNIST digit used by the InferenceCNN-MNIST quick-start example
+!backend/data/images/test_digit.png
 backend/data/cifar-10-batches-py/
 backend/data/cifar-10-python.tar.gz
 backend/data/*.db

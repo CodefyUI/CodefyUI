@@ -6,19 +6,24 @@ description: Pre-built example workflows — model architectures, end-to-end tra
 
 # Examples Gallery
 
-CodefyUI ships a library of ready-to-run example graphs under `examples/`. Load them from the **Examples** menu in the app, or run them headless with the [CLI Graph Runner](./cli-runner).
+CodefyUI ships a library of ready-to-run example graphs under `examples/`. Whenever the active tab has an empty canvas, the gallery appears right on the canvas — pick a card and the graph loads into the tab, ready to **Run**. You can also run any example headless with the [CLI Graph Runner](./cli-runner).
 
-| Category | Examples |
-|----------|----------|
-| **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
-| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training |
-| **LLM** | Word Embedding Analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend) |
+The gallery is organized into ordered sections:
 
-The repository also groups examples by topic on disk: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, `Usage_Example/`, and `Others/`.
+| Section | Contents |
+|---------|----------|
+| **Quick Start** | The three pinned starters: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
+| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), and the remaining trainers (GPT-Mini, ResNet-CIFAR10). |
+| **Plugin Examples** | Examples shipped by installed [plugins](/advanced/plugins) (and any unrecognized categories). Only shown when present. |
+| **Model Architectures** | 15 classic architecture walkthroughs, always listed last: ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics. |
+
+On disk the examples are grouped by topic folder: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, and `Usage_Example/`.
+
+Every listed example runs offline out of the box. The two RL architecture graphs (**DQN Atari**, **PPO Robotics**) feed their networks from a synthetic observation tensor (`TensorCreate`, `randn`) instead of a live gym environment, so no `ale-py`/`mujoco` install is needed — swap in an `EnvWrapper` node to drive them from a real environment.
 
 ## Loading an example
 
-- **In the app** — open the **Examples** menu and pick a graph; it loads into a new tab ready to **Run**.
+- **In the app** — open a new (empty) tab; the gallery overlay appears on the canvas. Pick a card and the graph loads into the tab, ready to **Run**.
 - **From the CLI** — point `run_graph.py` at the graph's JSON:
 
   ```bash
@@ -34,3 +39,5 @@ Load **Train CNN on MNIST**, then:
 2. Click **Run** and watch the live loss chart in the **Training** tab.
 3. Click a `Conv2d` node to inspect its kernels and activations in the **[Teaching Inspector](./teaching-inspector)**.
 4. Run again — with weights persisted, the model keeps learning across runs.
+
+Training also saves `model_weights.pt` (under `backend/data/models/`). After that, load **Inference CNN on MNIST** — it classifies `test_digit.png`, a real MNIST digit bundled under `backend/data/images/`, using the weights you just trained.
