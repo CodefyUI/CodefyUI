@@ -123,11 +123,13 @@ const escapeCssString = (value: string): string =>
  * the given edge's target reconnect anchor.
  *
  * Locates `.react-flow__edge[data-id="<edgeId>"] .react-flow__edgeupdater-target`
- * in the handle's own document (resolved from `event.currentTarget`, so the
- * anchor found is guaranteed to live in the SAME document as the handle).
- * If found, dispatches a fresh left-button native `mousedown` carrying the
- * original pointer coordinates on the circle — which starts the full native
- * reconnect lifecycle — then suppresses the original event
+ * inside the handle's OWN canvas — `event.currentTarget.closest('.react-flow')`
+ * — falling back to the handle's whole document only when no such container
+ * exists (real handles always live inside one; the fallback is effectively
+ * test-only). Either way the anchor found lives in the SAME document as the
+ * handle. If found, dispatches a fresh left-button native `mousedown`
+ * carrying the original pointer coordinates on the circle — which starts the
+ * full native reconnect lifecycle — then suppresses the original event
  * (`preventDefault` + `stopPropagation`) and returns true.
  *
  * If the anchor cannot be found, returns false WITHOUT touching the event so
@@ -138,15 +140,28 @@ export function redirectMouseDownToReconnectAnchor(
   event: RedirectableMouseDownEvent,
   edgeId: string,
 ): boolean {
+  const handleEl =
+    event.currentTarget instanceof Element ? event.currentTarget : null;
   const doc =
-    event.currentTarget instanceof Element
-      ? event.currentTarget.ownerDocument
-      : typeof document === 'undefined'
-        ? null
-        : document;
+    handleEl?.ownerDocument ??
+    (typeof document === 'undefined' ? null : document);
   if (!doc) return false;
 
-  const anchor = doc.querySelector(
+  // Scope the lookup to the handle's own canvas. The app mounts one
+  // (hidden) <FlowCanvas> per open tab and edge ids are only unique PER
+  // TAB (graphs loaded from example files carry fixed ids), so a
+  // document-wide query could match an identically-named edge in another
+  // tab's hidden ReactFlow instance — querySelector returns the FIRST
+  // match in DOM order, i.e. the OLDER tab's canvas. The ReactFlow root
+  // container carries the class "react-flow" (verified in @xyflow/react
+  // 12.10.1 dist/esm/index.js: the ReactFlow component renders
+  // `<div data-testid="rf__wrapper" ... className={cc(['react-flow',
+  // className, colorModeClassName])}>`), and every real Handle lives
+  // inside it. When the handle sits inside a canvas, ONLY that canvas is
+  // searched — an anchor is never borrowed from another canvas.
+  const scope: ParentNode = handleEl?.closest('.react-flow') ?? doc;
+
+  const anchor = scope.querySelector(
     `.react-flow__edge[data-id="${escapeCssString(edgeId)}"] .react-flow__edgeupdater-target`,
   );
   if (!anchor) return false;

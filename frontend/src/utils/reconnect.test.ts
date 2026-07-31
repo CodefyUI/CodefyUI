@@ -80,9 +80,14 @@ describe('redirectMouseDownToReconnectAnchor', () => {
    * @xyflow/react 12.10.1 EdgeWrapper/EdgeAnchor): an svg containing
    * `<g class="react-flow__edge" data-id="<edgeId>">` with the invisible
    * `<circle class="react-flow__edgeupdater react-flow__edgeupdater-<type>">`
-   * reconnect anchor inside.
+   * reconnect anchor inside. Mounted under `parent` (a `.react-flow`
+   * canvas container in the scoping tests, document.body otherwise).
    */
-  function mountAnchorFixture(edgeId: string, anchorType: 'target' | 'source' = 'target') {
+  function mountAnchorFixture(
+    edgeId: string,
+    anchorType: 'target' | 'source' = 'target',
+    parent: Element = document.body,
+  ) {
     const svg = document.createElementNS(SVG_NS, 'svg');
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('class', 'react-flow__edge react-flow__edge-default');
@@ -96,12 +101,24 @@ describe('redirectMouseDownToReconnectAnchor', () => {
     circle.setAttribute('r', '10');
     group.appendChild(circle);
     svg.appendChild(group);
-    document.body.appendChild(svg);
+    parent.appendChild(svg);
     const received: MouseEvent[] = [];
     circle.addEventListener('mousedown', (e) => received.push(e as MouseEvent));
     return { circle, received };
   }
 
+  /** Create a `.react-flow` canvas container div (one per open tab in the app). */
+  function mountCanvas() {
+    const canvas = document.createElement('div');
+    canvas.className = 'react-flow';
+    document.body.appendChild(canvas);
+    return canvas;
+  }
+
+  // NOTE: the default currentTarget (document.body) has no `.react-flow`
+  // ancestor, so tests using this stub exercise the document-wide FALLBACK
+  // path — real handles always sit inside a canvas (covered by the
+  // canvas-scoping tests below and the component tests).
   function stubEvent(overrides: Partial<{
     clientX: number;
     clientY: number;
@@ -174,5 +191,45 @@ describe('redirectMouseDownToReconnectAnchor', () => {
     const event = stubEvent();
     expect(redirectMouseDownToReconnectAnchor(event, hostileId)).toBe(true);
     expect(received).toHaveLength(1);
+  });
+
+  it("scopes the lookup to the handle's OWN canvas when edge ids collide across canvases", () => {
+    // The app mounts one hidden <FlowCanvas> per open tab, and graphs
+    // loaded from example files reuse fixed edge ids — the same id can
+    // exist in several canvases at once. The decoy canvas comes FIRST in
+    // document order, so an unscoped document query would dispatch into
+    // the wrong (hidden) canvas.
+    const decoyCanvas = mountCanvas();
+    const decoy = mountAnchorFixture('dup-edge', 'target', decoyCanvas);
+
+    const ownCanvas = mountCanvas();
+    const own = mountAnchorFixture('dup-edge', 'target', ownCanvas);
+    const handle = document.createElement('div');
+    ownCanvas.appendChild(handle);
+
+    const event = stubEvent({ currentTarget: handle });
+    expect(redirectMouseDownToReconnectAnchor(event, 'dup-edge')).toBe(true);
+
+    expect(own.received).toHaveLength(1);
+    expect(decoy.received).toHaveLength(0);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(event.stopPropagation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT borrow an anchor from outside the canvas when the handle sits inside one', () => {
+    // Anchor exists only OUTSIDE the handle's canvas (e.g. another tab's
+    // edge) — the scoped lookup must miss and leave the event untouched
+    // rather than falling back to the whole document.
+    const outside = mountAnchorFixture('e1');
+    const canvas = mountCanvas();
+    const handle = document.createElement('div');
+    canvas.appendChild(handle);
+
+    const event = stubEvent({ currentTarget: handle });
+    expect(redirectMouseDownToReconnectAnchor(event, 'e1')).toBe(false);
+
+    expect(outside.received).toHaveLength(0);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
   });
 });

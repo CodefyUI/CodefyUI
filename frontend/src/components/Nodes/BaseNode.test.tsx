@@ -671,8 +671,13 @@ describe('BaseNode detach drag redirect', () => {
    * `<g class="react-flow__edge" data-id>` wrapping the invisible
    * `<circle class="react-flow__edgeupdater react-flow__edgeupdater-target">`
    * reconnect anchor. A spy listener records redirected mousedowns.
+   *
+   * Default parent is document.body: `renderBody` mounts the node WITHOUT a
+   * `.react-flow` container, so those tests exercise the helper's
+   * document-wide fallback; the cross-canvas test below mounts real
+   * `.react-flow` containers to exercise the scoped path.
    */
-  function mountAnchorFixture(edgeId: string) {
+  function mountAnchorFixture(edgeId: string, parent: Element = document.body) {
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('data-fixture', 'anchor');
     const group = document.createElementNS(SVG_NS, 'g');
@@ -683,10 +688,24 @@ describe('BaseNode detach drag redirect', () => {
     circle.setAttribute('r', '10');
     group.appendChild(circle);
     svg.appendChild(group);
-    document.body.appendChild(svg);
+    parent.appendChild(svg);
     const received: MouseEvent[] = [];
     circle.addEventListener('mousedown', (e) => received.push(e as MouseEvent));
     return { received };
+  }
+
+  /**
+   * A `.react-flow` canvas container div — the class the ReactFlow root
+   * carries (verified in @xyflow/react 12.10.1: `<div
+   * data-testid="rf__wrapper" ... className={cc(['react-flow', ...])}>`).
+   * The app mounts one such (hidden) canvas per open tab.
+   */
+  function mountCanvas() {
+    const canvas = document.createElement('div');
+    canvas.className = 'react-flow';
+    canvas.setAttribute('data-fixture', 'anchor');
+    document.body.appendChild(canvas);
+    return canvas;
   }
 
   function seedEdges(edges: Edge[]) {
@@ -702,7 +721,7 @@ describe('BaseNode detach drag redirect', () => {
     });
 
   afterEach(() => {
-    document.querySelectorAll('svg[data-fixture="anchor"]').forEach((el) => el.remove());
+    document.querySelectorAll('[data-fixture="anchor"]').forEach((el) => el.remove());
   });
 
   it('mousedown on a CONNECTED input redirects to the edge anchor and suppresses the default connection start', () => {
@@ -761,6 +780,40 @@ describe('BaseNode detach drag redirect', () => {
 
     expect(received).toHaveLength(0);
     expect(notCancelled).toBe(true);
+  });
+
+  it("with duplicate edge ids across canvases, redirects to the anchor in the handle's OWN canvas", () => {
+    // Edge ids are only unique PER TAB (example graphs carry fixed ids) and
+    // the app mounts one hidden FlowCanvas per open tab — so the same
+    // data-id can exist in several `.react-flow` containers at once. The
+    // decoy canvas comes FIRST in document order; an unscoped document
+    // query would dispatch into that wrong (hidden) canvas.
+    seedEdges([{ id: 'dup', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+
+    const decoyCanvas = mountCanvas();
+    const decoy = mountAnchorFixture('dup', decoyCanvas);
+
+    const ownCanvas = mountCanvas();
+    renderWithFlow(
+      <BaseNodeBody
+        id="n1"
+        type="baseNode"
+        data={baseData({ definition: twoInputDef() })}
+        selected={false}
+        {...flowProps}
+      />,
+      { container: ownCanvas },
+    );
+    // React's createRoot clears the container on first render — mount the
+    // anchor fixture AFTER rendering so it survives inside the canvas.
+    const own = mountAnchorFixture('dup', ownCanvas);
+
+    const handle = ownCanvas.querySelector('[data-handleid="a"]') as HTMLElement;
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 9, clientY: 9 });
+
+    expect(own.received).toHaveLength(1);
+    expect(decoy.received).toHaveLength(0);
+    expect(notCancelled).toBe(false);
   });
 });
 
