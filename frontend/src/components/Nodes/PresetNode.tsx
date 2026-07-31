@@ -3,6 +3,7 @@ import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { getPortColor } from '../../utils';
+import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -32,6 +33,34 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
     reconnectingHandle.nodeId === id &&
     reconnectingHandle.type === type &&
     reconnectingHandle.handleId === handleId;
+
+  // ComfyUI-style detach: a plain left-button press on a CONNECTED exposed
+  // input grabs the existing edge off the port instead of starting a second
+  // connection. Same capture-phase redirect as BaseNode — the Handle starts
+  // connections from its bubble-phase onMouseDown (verified in @xyflow/react
+  // 12.10.1, see utils/reconnect.ts), so intercepting the capture phase and
+  // re-dispatching onto the edge's reconnect anchor drives the full native
+  // reconnect lifecycle. Modified drags keep the old behavior.
+  const interceptConnectedInputMouseDown = (
+    event: React.MouseEvent,
+    handleId: string,
+  ) => {
+    if (
+      event.button !== 0 ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey
+    ) {
+      return;
+    }
+    // Read edges at event time straight from the store — no per-node
+    // subscription (same imperative pattern as the getEdges() trigger check).
+    const { tabs, activeTabId } = useTabStore.getState();
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const edge = tab ? findDetachableEdge(tab.edges, id, handleId) : null;
+    if (edge) redirectMouseDownToReconnectAnchor(event, edge.id);
+  };
 
   const statusBorderColor =
     data.executionStatus === 'running'
@@ -96,6 +125,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               type="target"
               position={Position.Left}
               id={input.name}
+              onMouseDownCapture={(e) => interceptConnectedInputMouseDown(e, input.name)}
               className={isDetaching(input.name, 'target') ? baseStyles.portDetaching : undefined}
               style={{
                 background: getPortColor(input.data_type),

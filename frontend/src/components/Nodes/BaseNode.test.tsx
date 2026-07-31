@@ -661,6 +661,162 @@ describe('BaseNode', () => {
   });
 });
 
+// ── Detach drag redirect (connected input pulls its edge off) ──────────────
+
+describe('BaseNode detach drag redirect', () => {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  /**
+   * Real React Flow edge DOM shape (verified against @xyflow/react 12.10.1):
+   * `<g class="react-flow__edge" data-id>` wrapping the invisible
+   * `<circle class="react-flow__edgeupdater react-flow__edgeupdater-target">`
+   * reconnect anchor. A spy listener records redirected mousedowns.
+   *
+   * Default parent is document.body: `renderBody` mounts the node WITHOUT a
+   * `.react-flow` container, so those tests exercise the helper's
+   * document-wide fallback; the cross-canvas test below mounts real
+   * `.react-flow` containers to exercise the scoped path.
+   */
+  function mountAnchorFixture(edgeId: string, parent: Element = document.body) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('data-fixture', 'anchor');
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'react-flow__edge react-flow__edge-default');
+    group.setAttribute('data-id', edgeId);
+    const circle = document.createElementNS(SVG_NS, 'circle');
+    circle.setAttribute('class', 'react-flow__edgeupdater react-flow__edgeupdater-target');
+    circle.setAttribute('r', '10');
+    group.appendChild(circle);
+    svg.appendChild(group);
+    parent.appendChild(svg);
+    const received: MouseEvent[] = [];
+    circle.addEventListener('mousedown', (e) => received.push(e as MouseEvent));
+    return { received };
+  }
+
+  /**
+   * A `.react-flow` canvas container div — the class the ReactFlow root
+   * carries (verified in @xyflow/react 12.10.1: `<div
+   * data-testid="rf__wrapper" ... className={cc(['react-flow', ...])}>`).
+   * The app mounts one such (hidden) canvas per open tab.
+   */
+  function mountCanvas() {
+    const canvas = document.createElement('div');
+    canvas.className = 'react-flow';
+    canvas.setAttribute('data-fixture', 'anchor');
+    document.body.appendChild(canvas);
+    return canvas;
+  }
+
+  function seedEdges(edges: Edge[]) {
+    useTabStore.setState((s) => ({ tabs: [{ ...s.tabs[0], edges }] }));
+  }
+
+  const twoInputDef = () =>
+    makeDef({
+      inputs: [
+        { name: 'a', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'b', data_type: 'TENSOR', description: '', optional: false },
+      ],
+    });
+
+  afterEach(() => {
+    document.querySelectorAll('[data-fixture="anchor"]').forEach((el) => el.remove());
+  });
+
+  it('mousedown on a CONNECTED input redirects to the edge anchor and suppresses the default connection start', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="a"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 120, clientY: 45 });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].clientX).toBe(120);
+    expect(received[0].clientY).toBe(45);
+    // fireEvent returns false when preventDefault was called on the original.
+    expect(notCancelled).toBe(false);
+  });
+
+  it('mousedown on an UNCONNECTED input keeps the normal new-connection behavior', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="b"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 5, clientY: 6 });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+
+  it('ctrl-modified mousedown on a connected input is NOT redirected (escape hatch)', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="a"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, {
+      button: 0,
+      ctrlKey: true,
+      clientX: 120,
+      clientY: 45,
+    });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+
+  it('output handles never intercept, even if an edge coincidentally targets that handle id', () => {
+    // Bogus edge whose target handle shares the OUTPUT handle's name — proves
+    // the capture handler simply is not attached on source handles.
+    seedEdges([{ id: 'e9', source: 's1', sourceHandle: 'x', target: 'n1', targetHandle: 'out' }]);
+    const { received } = mountAnchorFixture('e9');
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="out"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 1, clientY: 2 });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+
+  it("with duplicate edge ids across canvases, redirects to the anchor in the handle's OWN canvas", () => {
+    // Edge ids are only unique PER TAB (example graphs carry fixed ids) and
+    // the app mounts one hidden FlowCanvas per open tab — so the same
+    // data-id can exist in several `.react-flow` containers at once. The
+    // decoy canvas comes FIRST in document order; an unscoped document
+    // query would dispatch into that wrong (hidden) canvas.
+    seedEdges([{ id: 'dup', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+
+    const decoyCanvas = mountCanvas();
+    const decoy = mountAnchorFixture('dup', decoyCanvas);
+
+    const ownCanvas = mountCanvas();
+    renderWithFlow(
+      <BaseNodeBody
+        id="n1"
+        type="baseNode"
+        data={baseData({ definition: twoInputDef() })}
+        selected={false}
+        {...flowProps}
+      />,
+      { container: ownCanvas },
+    );
+    // React's createRoot clears the container on first render — mount the
+    // anchor fixture AFTER rendering so it survives inside the canvas.
+    const own = mountAnchorFixture('dup', ownCanvas);
+
+    const handle = ownCanvas.querySelector('[data-handleid="a"]') as HTMLElement;
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 9, clientY: 9 });
+
+    expect(own.received).toHaveLength(1);
+    expect(decoy.received).toHaveLength(0);
+    expect(notCancelled).toBe(false);
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });

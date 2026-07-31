@@ -294,4 +294,49 @@ describe('PresetNode', () => {
     await waitFor(() => expect(screen.getByText('NoTrig')).toBeTruthy());
     expect([...document.querySelectorAll('div')].some((d) => /entryPoint/.test(d.className))).toBe(false);
   });
+
+  it('mousedown on a CONNECTED exposed input redirects to the edge reconnect anchor', () => {
+    // The edge whose target endpoint is p1/x — grabbing that input should
+    // hand the mousedown to this edge's reconnect anchor (detach drag).
+    useTabStore.setState((s) => ({
+      tabs: [
+        {
+          ...s.tabs[0],
+          edges: [
+            { id: 'pe1', source: 's1', sourceHandle: 'out', target: 'p1', targetHandle: 'x' },
+          ],
+        },
+      ],
+    }));
+    // Anchor fixture matching the real React Flow edge DOM shape (verified
+    // against @xyflow/react 12.10.1 EdgeWrapper/EdgeAnchor).
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'react-flow__edge react-flow__edge-default');
+    group.setAttribute('data-id', 'pe1');
+    const circle = document.createElementNS(SVG_NS, 'circle');
+    circle.setAttribute('class', 'react-flow__edgeupdater react-flow__edgeupdater-target');
+    circle.setAttribute('r', '10');
+    group.appendChild(circle);
+    svg.appendChild(group);
+    document.body.appendChild(svg);
+    const received: MouseEvent[] = [];
+    circle.addEventListener('mousedown', (e) => received.push(e as MouseEvent));
+
+    try {
+      const { container } = renderPreset(presetData(), { id: 'p1' });
+      const handle = container.querySelector('[data-handleid="x"]') as HTMLElement;
+
+      const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 33, clientY: 44 });
+
+      expect(received).toHaveLength(1);
+      expect(received[0].clientX).toBe(33);
+      expect(received[0].clientY).toBe(44);
+      // fireEvent returns false when preventDefault was called on the original.
+      expect(notCancelled).toBe(false);
+    } finally {
+      svg.remove();
+    }
+  });
 });

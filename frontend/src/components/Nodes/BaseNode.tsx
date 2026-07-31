@@ -3,6 +3,7 @@ import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { getPortColor, isParamVisible, isValidConnection, resolveDynamicOutputs } from '../../utils';
+import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
@@ -61,6 +62,41 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const isTriggerTarget = getEdges().some(
     (e) => e.target === id && ((e.data as { type?: string } | undefined)?.type === 'trigger'),
   );
+
+  // ComfyUI-style detach: a plain left-button press on a CONNECTED input
+  // grabs the existing edge off the port instead of starting a second
+  // connection. The Handle DOM sits above React Flow's invisible reconnect
+  // anchor (edge SVG layer renders below nodes), so we intercept the
+  // connection-starting mousedown in the CAPTURE phase — the Handle starts
+  // connections from its bubble-phase onMouseDown (verified in @xyflow/react
+  // 12.10.1, see utils/reconnect.ts) — and re-dispatch it onto the edge's
+  // anchor, which drives the full native reconnect lifecycle
+  // (onReconnectStart red ring, live drag following the real mouse,
+  // drop-on-pane delete / drop-on-handle rewire). A plain click without
+  // moving stays a no-op: React Flow only starts the reconnect after its
+  // drag threshold.
+  const interceptConnectedInputMouseDown = (
+    event: React.MouseEvent,
+    handleId: string,
+  ) => {
+    // Escape hatch: modified drags (or non-left buttons) keep the old
+    // start-a-new-connection behavior.
+    if (
+      event.button !== 0 ||
+      event.shiftKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.metaKey
+    ) {
+      return;
+    }
+    // Read edges at event time straight from the store (same imperative,
+    // no-subscription pattern as the getEdges() trigger check above).
+    const { tabs, activeTabId } = useTabStore.getState();
+    const tab = tabs.find((t) => t.id === activeTabId);
+    const edge = tab ? findDetachableEdge(tab.edges, id, handleId) : null;
+    if (edge) redirectMouseDownToReconnectAnchor(event, edge.id);
+  };
 
   const handleClick = (e: React.MouseEvent) => {
     if (e.detail === 2 && isSequentialModel) {
@@ -168,6 +204,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
               type="target"
               position={Position.Left}
               id={input.name}
+              onMouseDownCapture={(e) => interceptConnectedInputMouseDown(e, input.name)}
               className={`${styles.portHandle} ${styles.portHandleInput}${
                 isDetaching(input.name, 'target')
                   ? ` ${styles.portDetaching}`
