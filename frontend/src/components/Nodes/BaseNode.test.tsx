@@ -661,6 +661,109 @@ describe('BaseNode', () => {
   });
 });
 
+// ── Detach drag redirect (connected input pulls its edge off) ──────────────
+
+describe('BaseNode detach drag redirect', () => {
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  /**
+   * Real React Flow edge DOM shape (verified against @xyflow/react 12.10.1):
+   * `<g class="react-flow__edge" data-id>` wrapping the invisible
+   * `<circle class="react-flow__edgeupdater react-flow__edgeupdater-target">`
+   * reconnect anchor. A spy listener records redirected mousedowns.
+   */
+  function mountAnchorFixture(edgeId: string) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('data-fixture', 'anchor');
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'react-flow__edge react-flow__edge-default');
+    group.setAttribute('data-id', edgeId);
+    const circle = document.createElementNS(SVG_NS, 'circle');
+    circle.setAttribute('class', 'react-flow__edgeupdater react-flow__edgeupdater-target');
+    circle.setAttribute('r', '10');
+    group.appendChild(circle);
+    svg.appendChild(group);
+    document.body.appendChild(svg);
+    const received: MouseEvent[] = [];
+    circle.addEventListener('mousedown', (e) => received.push(e as MouseEvent));
+    return { received };
+  }
+
+  function seedEdges(edges: Edge[]) {
+    useTabStore.setState((s) => ({ tabs: [{ ...s.tabs[0], edges }] }));
+  }
+
+  const twoInputDef = () =>
+    makeDef({
+      inputs: [
+        { name: 'a', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'b', data_type: 'TENSOR', description: '', optional: false },
+      ],
+    });
+
+  afterEach(() => {
+    document.querySelectorAll('svg[data-fixture="anchor"]').forEach((el) => el.remove());
+  });
+
+  it('mousedown on a CONNECTED input redirects to the edge anchor and suppresses the default connection start', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="a"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 120, clientY: 45 });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].clientX).toBe(120);
+    expect(received[0].clientY).toBe(45);
+    // fireEvent returns false when preventDefault was called on the original.
+    expect(notCancelled).toBe(false);
+  });
+
+  it('mousedown on an UNCONNECTED input keeps the normal new-connection behavior', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="b"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 5, clientY: 6 });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+
+  it('ctrl-modified mousedown on a connected input is NOT redirected (escape hatch)', () => {
+    seedEdges([{ id: 'e1', source: 's1', sourceHandle: 'out', target: 'n1', targetHandle: 'a' }]);
+    const { received } = mountAnchorFixture('e1');
+    const { container } = renderBody(baseData({ definition: twoInputDef() }), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="a"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, {
+      button: 0,
+      ctrlKey: true,
+      clientX: 120,
+      clientY: 45,
+    });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+
+  it('output handles never intercept, even if an edge coincidentally targets that handle id', () => {
+    // Bogus edge whose target handle shares the OUTPUT handle's name — proves
+    // the capture handler simply is not attached on source handles.
+    seedEdges([{ id: 'e9', source: 's1', sourceHandle: 'x', target: 'n1', targetHandle: 'out' }]);
+    const { received } = mountAnchorFixture('e9');
+    const { container } = renderBody(baseData(), { id: 'n1' });
+    const handle = container.querySelector('[data-handleid="out"]') as HTMLElement;
+
+    const notCancelled = fireEvent.mouseDown(handle, { button: 0, clientX: 1, clientY: 2 });
+
+    expect(received).toHaveLength(0);
+    expect(notCancelled).toBe(true);
+  });
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
