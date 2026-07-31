@@ -11,6 +11,11 @@ class ImageBatchReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read all images from a directory and stack them into a batch tensor (N, C, H, W)"
 
+    # The cache key hashes `directory` and `pattern`, never the directory
+    # listing, so a cached batch would survive images being added, removed,
+    # or edited between runs.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

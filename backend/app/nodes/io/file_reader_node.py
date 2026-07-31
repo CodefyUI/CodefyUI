@@ -11,6 +11,10 @@ class FileReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read a text or CSV file and output its contents as a string or as a tensor (for numeric CSV)"
 
+    # The cache key hashes `path`, never the bytes behind it, so a cached
+    # result would survive the user editing the file between runs.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

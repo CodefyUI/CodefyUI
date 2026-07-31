@@ -86,6 +86,11 @@ class CheckpointLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load a training checkpoint to resume training (restores model + optimizer + epoch)"
 
+    # The cache key hashes `path`, never the checkpoint behind it. Saving a
+    # newer checkpoint to the same path between runs is the whole point of
+    # resumable training, so a cache hit would restore a stale epoch.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

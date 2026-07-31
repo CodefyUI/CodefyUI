@@ -24,6 +24,24 @@ CodefyUI tracks which nodes are **dirty**. When you change a node's parameters o
 
 Deterministic nodes are cached automatically; non-deterministic ones (training loops, random ops, or any node with `cacheable = False`) always re-run.
 
+### What is never cached
+
+A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to that key — the key records a file **path**, never the bytes at that path. Nodes that reach for external state therefore opt out of caching entirely and re-execute on every run:
+
+| Node | External state it reads |
+| --- | --- |
+| `CSVReader`, `FileReader` | A file on disk |
+| `ImageReader`, `ImageBatchReader` | An image file, or every image in a directory |
+| `Dataset`, `HuggingFaceDataset`, `KaggleDataset` | Downloaded dataset files (plus the network, and `KAGGLE_*` credentials for Kaggle) |
+| `ModelLoader`, `CheckpointLoader` | A `.pt` / `.pth` weights or checkpoint file |
+| `LLMChat` | A remote model API |
+
+So editing a CSV on disk and clicking **Run** again gives you the new rows: the reader never replays the tensor it built last time. The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
+
+Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from the old file.
+
+The trade-off is deliberate — a graph that starts from a file reader re-reads that file on every run. Correctness first: the alternative (hashing file size and modification time into the key) is a possible future optimization, not something you can rely on today.
+
 ## Stopping
 
 Click **Stop** to cancel an in-flight run. The WebSocket connection also reconnects automatically if it drops mid-session.

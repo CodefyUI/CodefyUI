@@ -8,6 +8,10 @@ class ImageReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read an image file from disk and output as a tensor (C, H, W) with values in [0, 1]"
 
+    # The cache key hashes `path`, never the pixels behind it, so a cached
+    # tensor would survive the user replacing the image between runs.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

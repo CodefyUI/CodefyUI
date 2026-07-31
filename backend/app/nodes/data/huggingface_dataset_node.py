@@ -18,6 +18,11 @@ class HuggingFaceDatasetNode(BaseNode):
     CATEGORY = "Data"
     DESCRIPTION = "Load an image-classification dataset from HuggingFace Hub"
 
+    # Hits the network and the on-disk HuggingFace cache. Neither the remote
+    # revision nor the cached files are visible to the cache key, so a hit
+    # would pin the graph to whatever the first run happened to fetch.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

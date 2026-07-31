@@ -47,6 +47,11 @@ class CSVReaderNode(BaseNode):
         "string labels for downstream classifier nodes."
     )
 
+    # The cache key hashes `path`, never the bytes behind it, so a cached
+    # result would survive the user editing the CSV between runs. Always
+    # re-read from disk.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []
