@@ -36,6 +36,8 @@ A cache entry is keyed by a hash of the node's type, its parameters, its upstrea
 | `ModelLoader`, `CheckpointLoader` | A `.pt` / `.pth` weights or checkpoint file |
 | `LLMChat` | A remote model API |
 
+One known exception: `GraphInput` with `type=image` stays cacheable. API callers send the image with the request, so it lands in the node's parameters and the key stays complete — but a **canvas** run instead loads the `default` path from disk, and only the path is in the key. Editing that image between canvas runs can therefore serve a stale tensor; a follow-up issue tracks closing the gap.
+
 So editing a CSV on disk and clicking **Run** again gives you the new rows: the reader never replays the tensor it built last time. The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from the old file.

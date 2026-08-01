@@ -193,6 +193,10 @@ async def test_downstream_of_csv_reader_reruns_after_edit(tmp_path: Path) -> Non
     _write_csv(csv_path, [(1.0, 3.0), (3.0, 5.0)])
     second = await _run(nodes, edges, cache)
 
+    assert second["witness"][0] == "cached", (
+        "the pure witness node must hit the cache, otherwise this test proves "
+        "nothing about Mean escaping it"
+    )
     assert second["mean"][0] == "completed", (
         "Mean must re-execute when its non-cacheable upstream re-executes; it "
         f"was reported as {second['mean'][0]!r}"
