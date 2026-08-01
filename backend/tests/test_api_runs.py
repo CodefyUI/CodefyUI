@@ -38,7 +38,8 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
-from app.core.run_service import RunService
+from app.core.run_output_store import RunOutputStore
+from app.core.run_service import QueueLimits, RunService
 from app.core.run_store import RunProvenance, RunStore
 from app.main import app
 
@@ -357,6 +358,8 @@ async def test_endpoints_503_without_a_wired_service():
     try:
         async with _new_client() as http:
             assert (await http.get("/api/runs")).status_code == 503
+            assert (await http.get("/api/runs/abc/artifacts")).status_code == 503
+            assert (await http.delete("/api/runs/abc")).status_code == 503
             assert (await http.post(
                 "/api/runs", json={"graph": _graph()})).status_code == 503
     finally:
@@ -620,12 +623,240 @@ async def test_metrics_csv_export(client):
     assert float(rows[1][4]) == 1.0
 
 
+async def test_list_rows_carry_the_last_value_of_every_series(client):
+    """The Runs table's "final loss" column, without a request per row."""
+    with_metrics = (await client.post("/api/runs", json={
+        "graph": _graph("_ApiMetrics")})).json()["run_id"]
+    without = (await client.post("/api/runs",
+                                 json={"graph": _graph()})).json()["run_id"]
+    for run_id in (with_metrics, without):
+        await _poll_until_terminal(client, run_id)
+
+    rows = {run["id"]: run for run in (await client.get("/api/runs")).json()["runs"]}
+    # _ApiMetrics logs loss 1/epoch for two epochs -> last value is 0.5.
+    assert rows[with_metrics]["final_metrics"] == {"loss": 0.5}
+    assert rows[without]["final_metrics"] == {}
+    # The detail endpoint agrees with the row rather than always saying {}.
+    detail = (await client.get(f"/api/runs/{with_metrics}")).json()
+    assert detail["final_metrics"] == {"loss": 0.5}
+
+
+async def test_metrics_csv_for_a_run_with_no_series_is_header_only(client):
+    """Not an empty body and not a 404: a CSV with a header and no rows is
+    what pandas/Excel read as "zero measurements", and it keeps the panel's
+    export button honest for a run that never logged anything."""
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+
+    response = await client.get(f"/api/runs/{run_id}/metrics?format=csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.text == "run_id,node_id,name,step,value,ts\n"
+    rows = list(csv.reader(io.StringIO(response.text)))
+    assert rows == [list(("run_id", "node_id", "name", "step", "value", "ts"))]
+
+
 async def test_metrics_reject_an_unknown_format(client):
     run_id = (await client.post("/api/runs",
                                 json={"graph": _graph()})).json()["run_id"]
     await _poll_until_terminal(client, run_id)
     assert (await client.get(
         f"/api/runs/{run_id}/metrics?format=xml")).status_code == 422
+
+
+# ── artifacts ─────────────────────────────────────────────────────────────
+
+
+async def test_artifacts_list_is_oldest_first_and_filterable_by_kind(client,
+                                                                     run_app):
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+    await run_app.store.add_artifact(run_id, "checkpoint", "runs/a/epoch1.pt",
+                                     meta={"epoch": 1})
+    await run_app.store.add_artifact(run_id, "export", "runs/a/model.onnx")
+
+    body = (await client.get(f"/api/runs/{run_id}/artifacts")).json()
+    assert body["run_id"] == run_id
+    assert [a["kind"] for a in body["artifacts"]] == ["checkpoint", "export"]
+    assert body["artifacts"][0]["path"] == "runs/a/epoch1.pt"
+    assert body["artifacts"][0]["meta"] == {"epoch": 1}
+    assert body["artifacts"][1]["meta"] is None
+    assert isinstance(body["artifacts"][0]["id"], int)
+    assert body["artifacts"][0]["created_at"]
+
+    filtered = (await client.get(
+        f"/api/runs/{run_id}/artifacts?kind=checkpoint")).json()
+    assert [a["path"] for a in filtered["artifacts"]] == ["runs/a/epoch1.pt"]
+
+
+async def test_artifacts_of_an_unknown_kind_are_an_empty_list_not_a_400(client):
+    """The kind vocabulary is open, so an unknown one is simply no rows."""
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+    response = await client.get(f"/api/runs/{run_id}/artifacts?kind=nope")
+    assert response.status_code == 200
+    assert response.json()["artifacts"] == []
+
+
+async def test_artifacts_of_an_unknown_run_is_404(client):
+    assert (await client.get("/api/runs/nope/artifacts")).status_code == 404
+
+
+# ── delete ────────────────────────────────────────────────────────────────
+
+
+async def test_delete_removes_a_finished_run_and_cascades_to_its_children(
+        client, run_app):
+    run_id = (await client.post("/api/runs", json={
+        "graph": _graph("_ApiMetrics")})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+    await run_app.store.add_artifact(run_id, "checkpoint", "runs/a/final.pt")
+    assert (await client.get(f"/api/runs/{run_id}/metrics")).json()["metrics"]
+    assert (await client.get(f"/api/runs/{run_id}/events")).json()["events"]
+
+    response = await client.delete(f"/api/runs/{run_id}")
+    assert response.status_code == 200
+    assert response.json() == {"run_id": run_id, "deleted": True}
+
+    # The row is gone, and so is everything that pointed at it — asserted
+    # through the store rather than the (now 404-ing) endpoints, because a
+    # cascade that silently failed would look identical from outside.
+    assert await run_app.store.get_run(run_id) is None
+    assert await run_app.store.get_metrics(run_id) == []
+    assert await run_app.store.get_events(run_id) == []
+    assert await run_app.store.list_artifacts(run_id) == []
+    for path in ("", "/events", "/metrics", "/artifacts"):
+        assert (await client.get(
+            f"/api/runs/{run_id}{path}")).status_code == 404, path
+
+
+async def test_delete_drops_the_run_from_the_list(client):
+    keep = (await client.post("/api/runs",
+                              json={"graph": _graph(), "name": "keep"})
+            ).json()["run_id"]
+    drop = (await client.post("/api/runs",
+                              json={"graph": _graph(), "name": "drop"})
+            ).json()["run_id"]
+    for run_id in (keep, drop):
+        await _poll_until_terminal(client, run_id)
+
+    assert (await client.delete(f"/api/runs/{drop}")).status_code == 200
+    body = (await client.get("/api/runs")).json()
+    assert [run["id"] for run in body["runs"]] == [keep]
+    assert body["total"] == 1
+
+
+async def test_delete_refuses_a_running_run_with_409(client, run_app):
+    run_id = (await client.post("/api/runs", json={
+        "graph": _graph("_ApiSlow", {"seconds": 0.4})})).json()["run_id"]
+    # The run is in flight: the service, not the row, is the authority.
+    assert run_app.is_active(run_id)
+    response = await client.delete(f"/api/runs/{run_id}")
+    assert response.status_code == 409
+    assert "cancel it first" in response.json()["detail"]
+
+    # Refusing must not have damaged it — it still finishes normally.
+    assert (await client.get(f"/api/runs/{run_id}")).status_code == 200
+    await client.post(f"/api/runs/{run_id}/cancel")
+    await _poll_until_terminal(client, run_id)
+    assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+
+
+async def test_delete_refuses_a_queued_run_with_409(client, run_app):
+    """A queued run's place in the FIFO lives in memory, not in the row.
+
+    Runs against a one-slot service so the second submit is genuinely
+    parked; limits are passed explicitly rather than monkeypatched onto
+    ``settings`` because ``QueueLimits.from_settings`` is read once, when the
+    service is built — which the fixture already did.
+    """
+    single = RunService(run_app.store, shutdown_grace_s=5.0,
+                        limits=QueueLimits(cpu=1, gpu=1, interactive=1))
+    app.state.run_service = single
+    try:
+        first = (await client.post("/api/runs", json={
+            "graph": _graph("_ApiSlow", {"seconds": 0.4})})).json()["run_id"]
+        second = (await client.post("/api/runs", json={
+            "graph": _graph("_ApiSlow", {"seconds": 0.4})})).json()
+        assert second["status"] == "queued"
+        queued_id = second["run_id"]
+        assert single.is_queued(queued_id)
+
+        response = await client.delete(f"/api/runs/{queued_id}")
+        assert response.status_code == 409
+        assert "cancel it first" in response.json()["detail"]
+
+        for run_id in (first, queued_id):
+            await client.post(f"/api/runs/{run_id}/cancel")
+            await _poll_until_terminal(client, run_id)
+        # Cancelled is terminal, so the same row deletes cleanly now.
+        assert (await client.delete(f"/api/runs/{queued_id}")).status_code == 200
+    finally:
+        await single.shutdown()
+        app.state.run_service = run_app
+
+
+async def test_delete_also_purges_the_run_s_captured_outputs(client):
+    """RunOutputStore keys tensors by the same run id. Left behind they stay
+    resident until their LRU slot is reused, and /api/execution/outputs keeps
+    serving a run that answers 404 everywhere else."""
+    outputs = RunOutputStore(max_runs=4)
+    app.state.run_output_store = outputs
+    try:
+        run_id = (await client.post("/api/runs",
+                                    json={"graph": _graph()})).json()["run_id"]
+        await _poll_until_terminal(client, run_id)
+        await outputs.put(run_id, "print", "value", "hi")
+        assert await outputs.has_run(run_id) is True
+
+        assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+        assert await outputs.has_run(run_id) is False
+    finally:
+        delattr(app.state, "run_output_store")
+
+
+async def test_delete_works_when_no_output_store_is_wired(client):
+    """The store is optional on app.state (httpx's ASGITransport skips the
+    lifespan), so its absence must not turn a delete into a 500."""
+    saved = getattr(app.state, "run_output_store", None)
+    if saved is not None:
+        delattr(app.state, "run_output_store")
+    try:
+        run_id = (await client.post("/api/runs",
+                                    json={"graph": _graph()})).json()["run_id"]
+        await _poll_until_terminal(client, run_id)
+        assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+    finally:
+        if saved is not None:
+            app.state.run_output_store = saved
+
+
+async def test_delete_unknown_run_is_404(client):
+    assert (await client.delete("/api/runs/nope")).status_code == 404
+
+
+async def test_delete_twice_is_a_404_the_second_time(client):
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+    assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+    assert (await client.delete(f"/api/runs/{run_id}")).status_code == 404
+
+
+async def test_delete_requires_the_session_token(client):
+    """DELETE is mutating, so auth_guard must reject an unauthenticated one."""
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url=BASE_URL) as anonymous:
+        assert (await anonymous.delete(
+            f"/api/runs/{run_id}")).status_code == 403
+    # Still there — the refusal was not a silent success.
+    assert (await client.get(f"/api/runs/{run_id}")).status_code == 200
 
 
 # ── openapi / auth-surface sanity ─────────────────────────────────────────
@@ -636,7 +867,8 @@ def test_runs_routes_are_not_under_an_auth_exempt_prefix():
     otherwise its mutating routes would sail through with no auth at all."""
     from app.main import _prefix_exempt
 
-    for path in ("/api/runs", "/api/runs/abc", "/api/runs/abc/cancel"):
+    for path in ("/api/runs", "/api/runs/abc", "/api/runs/abc/cancel",
+                 "/api/runs/abc/artifacts"):
         assert not _prefix_exempt(path), path
 
 
@@ -647,3 +879,6 @@ def test_runs_routes_appear_in_the_openapi_document():
     assert "/api/runs/{run_id}/cancel" in paths
     assert "/api/runs/{run_id}/events" in paths
     assert "/api/runs/{run_id}/metrics" in paths
+    assert "/api/runs/{run_id}/artifacts" in paths
+    # DELETE shares the detail path with GET rather than adding a new one.
+    assert set(paths["/api/runs/{run_id}"]) == {"get", "delete"}

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { LossChart } from './LossChart';
+import { LossChart, SERIES_COLORS, colorForSeries } from './LossChart';
 
 /**
  * Control the ResizeObserver + clientWidth so the chart's `chartW`/`chartH`
@@ -136,5 +136,146 @@ describe('LossChart', () => {
     const { unmount } = render(<LossChart losses={[1, 2, 3]} />);
     unmount();
     expect(disconnect).toHaveBeenCalled();
+  });
+});
+
+// ── #124: named multi-series form ────────────────────────────────────────
+// The Runs panel charts whatever series a run recorded (train_loss,
+// val_loss, lr, …) against real step numbers, so the chart had to grow past
+// "one array of losses indexed by position".
+
+describe('LossChart — named series', () => {
+  const twoSeries = [
+    { name: 'train_loss', points: [{ x: 1, y: 2 }, { x: 2, y: 1 }, { x: 3, y: 0.5 }] },
+    { name: 'val_loss', points: [{ x: 1, y: 2.4 }, { x: 3, y: 1.2 }] },
+  ];
+
+  it('draws one polyline and one current-value dot per series', () => {
+    const { container } = render(<LossChart series={twoSeries} height={120} />);
+    const polylines = Array.from(container.querySelectorAll('polyline'));
+    expect(polylines).toHaveLength(2);
+    expect(
+      (polylines[0].getAttribute('points') ?? '').trim().split(' '),
+    ).toHaveLength(3);
+    expect(
+      (polylines[1].getAttribute('points') ?? '').trim().split(' '),
+    ).toHaveLength(2);
+    expect(container.querySelectorAll('circle')).toHaveLength(2);
+  });
+
+  it('pins the well-known series to their colours and shows a legend', () => {
+    const { container } = render(<LossChart series={twoSeries} height={120} />);
+    const polylines = Array.from(container.querySelectorAll('polyline'));
+    expect(polylines[0].getAttribute('stroke')).toBe(SERIES_COLORS[0]);  // amber
+    expect(polylines[1].getAttribute('stroke')).toBe(SERIES_COLORS[1]);  // teal
+    expect(container.textContent).toContain('train_loss');
+    expect(container.textContent).toContain('val_loss');
+  });
+
+  it('does not recolour a series when another one arrives later', () => {
+    // The headline reason colours are name-derived rather than positional:
+    // `val_loss` first appearing at epoch 5 sorts in AHEAD of `lr`, and a
+    // positional palette would swap both lines mid-run.
+    const lr = { name: 'lr', points: [{ x: 1, y: 0.01 }] };
+    const before = render(<LossChart series={[lr]} height={120} />);
+    const lrColour = before.container.querySelector('polyline')!.getAttribute('stroke');
+    before.unmount();
+
+    const after = render(
+      <LossChart series={[{ name: 'val_loss', points: [{ x: 5, y: 1 }] }, lr]} height={120} />,
+    );
+    const strokes = Array.from(after.container.querySelectorAll('polyline'))
+      .map((p) => p.getAttribute('stroke'));
+    expect(strokes[1]).toBe(lrColour);
+    expect(strokes[0]).not.toBe(lrColour);
+  });
+
+  it('gives an unknown series a colour that is stable across renders', () => {
+    const first = colorForSeries('grad_norm');
+    expect(colorForSeries('grad_norm')).toBe(first);
+    expect(SERIES_COLORS).toContain(first as never);
+    // Different names generally differ; the same name never does.
+    expect(colorForSeries('perplexity')).toBe(colorForSeries('perplexity'));
+  });
+
+  it('takes the colour from colorKey when the label was disambiguated', () => {
+    const { container } = render(
+      <LossChart
+        series={[{ name: 'loss @node-a', colorKey: 'loss', points: [{ x: 1, y: 1 }] }]}
+        height={120}
+      />,
+    );
+    expect(container.querySelector('polyline')!.getAttribute('stroke'))
+      .toBe(colorForSeries('loss'));
+  });
+
+  it('honours a per-series colour override', () => {
+    const { container } = render(
+      <LossChart series={[{ name: 'lr', points: [{ x: 1, y: 0.1 }], color: '#ff00ff' }]} />,
+    );
+    expect(container.querySelector('polyline')!.getAttribute('stroke')).toBe('#ff00ff');
+  });
+
+  it('shares one y-scale across series so the curves stay comparable', () => {
+    // val_loss tops out at 2.4; if each series were scaled on its own, both
+    // first points would land at the same height.
+    const { container } = render(<LossChart series={twoSeries} height={120} />);
+    const [train, val] = Array.from(container.querySelectorAll('polyline'));
+    const firstY = (el: Element) =>
+      Number((el.getAttribute('points') ?? '').split(' ')[0].split(',')[1]);
+    // Bigger loss = higher on the chart = SMALLER svg y.
+    expect(firstY(val)).toBeLessThan(firstY(train));
+  });
+
+  it('labels the x axis from real step numbers, not positions', () => {
+    const { container } = render(
+      <LossChart
+        series={[{ name: 'loss', points: [{ x: 10, y: 1 }, { x: 40, y: 0.5 }] }]}
+        height={120}
+        xLabel="step"
+      />,
+    );
+    const texts = Array.from(container.querySelectorAll('text')).map((t) => t.textContent);
+    expect(texts).toContain('10');
+    expect(texts).toContain('40');
+    expect(texts).toContain('step');
+    expect(texts).not.toContain('epoch');
+  });
+
+  it('centres a single-step series instead of dividing by a zero span', () => {
+    const { container } = render(
+      <LossChart series={[{ name: 'eval_accuracy', points: [{ x: 1, y: 0.9 }] }]} height={120} />,
+    );
+    const pts = container.querySelector('polyline')!.getAttribute('points') ?? '';
+    expect(pts.split(' ')).toHaveLength(1);
+    expect(Number(pts.split(',')[0])).toBeGreaterThan(0);
+  });
+
+  it('drops empty series and renders nothing when they are all empty', () => {
+    const { container } = render(
+      <LossChart series={[{ name: 'loss', points: [] }]} height={120} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('keeps axis extents honest when there is no room to plot', () => {
+    const { container } = render(
+      <LossChart
+        series={[{ name: 'loss', points: [{ x: 5, y: 1 }, { x: 9, y: 2 }] }]}
+        height={10}
+      />,
+    );
+    expect(container.querySelector('polyline')!.getAttribute('points')).toBe('');
+    const texts = Array.from(container.querySelectorAll('text')).map((t) => t.textContent);
+    expect(texts).toContain('5');
+    expect(texts).toContain('9');
+  });
+
+  it('takes precedence over a legacy `losses` prop passed alongside it', () => {
+    const { container } = render(
+      <LossChart losses={[1, 2, 3, 4, 5]} series={[{ name: 'a', points: [{ x: 1, y: 1 }] }]} />,
+    );
+    expect(container.querySelectorAll('polyline')).toHaveLength(1);
+    expect(container.textContent).toContain('a');
   });
 });

@@ -61,6 +61,15 @@ vi.mock('./api/rest', () => ({
 }));
 const mockedFetchHealth = vi.mocked(fetchHealth);
 
+// #124: App's second bootstrap effect asks the run store whether anything is
+// still training. Stubbed here for the same reason ResultsPanel is — this
+// file tests composition, and the real store would pull the (mocked) REST
+// module in for a list request nothing here is asserting.
+const mockCheckInProgress = vi.fn(async () => 0);
+vi.mock('./store/runStore', () => ({
+  useRunStore: { getState: () => ({ checkInProgress: mockCheckInProgress }) },
+}));
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function resetToSingleTab() {
@@ -248,5 +257,12 @@ describe('App', () => {
       expect(useTabStore.getState().tabs.some((t) => t.name === 'project-tab')).toBe(true);
     });
     expect(useProjectStore.getState().projectDir).toBe('/proj');
+  });
+
+  // -- Runs still in progress (#124) --
+  it('asks the run store for in-flight runs on mount', () => {
+    mockCheckInProgress.mockClear();
+    render(<App />);
+    expect(mockCheckInProgress).toHaveBeenCalledTimes(1);
   });
 });

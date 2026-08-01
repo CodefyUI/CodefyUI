@@ -88,6 +88,19 @@ def _columns(database: Database, table: str) -> list[str]:
         f"PRAGMA table_info({table})").fetchall()]
 
 
+def _explain_plan(conn: sqlite3.Connection, sql: str,
+                  *params: object) -> list[sqlite3.Row]:
+    """EXPLAIN QUERY PLAN for SQL as handed to a trace callback.
+
+    CPython 3.11's callback reports the EXPANDED statement (parameters
+    already substituted), so there is normally nothing left to bind. A
+    build that reports the unexpanded text instead is handled too, rather
+    than blowing up on "incorrect number of bindings" years from now.
+    """
+    return conn.execute("EXPLAIN QUERY PLAN " + sql,
+                        params if "?" in sql else ()).fetchall()
+
+
 def _user_version(database: Database) -> int:
     return database._conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -738,6 +751,155 @@ async def test_a_diverged_loss_is_stored_as_none_not_an_error(store):
     series = await store.get_metrics(run.id, name="train_loss")
     assert [m.step for m in series] == [0, 1, 2, 3, 4]
     assert [m.value for m in series] == [0.5, None, None, None, 0.25]
+
+
+async def test_latest_metrics_answers_a_whole_page_of_runs_at_once(store):
+    """The Runs table's per-row summary — one query, not one per row."""
+    first = await _make_run(store)
+    second = await _make_run(store)
+    barren = await _make_run(store)
+    await store.log_metrics(first.id, [
+        MetricPoint("train_loss", 2.0, 1), MetricPoint("train_loss", 0.5, 3),
+        MetricPoint("train_loss", 1.0, 2), MetricPoint("val_loss", 0.9, 3),
+    ])
+    await store.log_metrics(second.id, [MetricPoint("lr", 0.01, 7)])
+
+    finals = await store.latest_metrics([first.id, second.id, barren.id])
+    assert finals[first.id] == {"train_loss": 0.5, "val_loss": 0.9}
+    assert finals[second.id] == {"lr": 0.01}
+    # A run with no metrics is simply absent, not a run_id mapped to {}.
+    assert barren.id not in finals
+    # Scoping is real: asking for one run does not leak the other's series.
+    assert await store.latest_metrics([second.id]) == {second.id: {"lr": 0.01}}
+    assert await store.latest_metrics([]) == {}
+    assert await store.latest_metrics(["ghost"]) == {}
+
+
+async def test_latest_metrics_omits_a_series_whose_last_point_diverged(store):
+    """NaN reads back as NULL; reporting it as 0.0 would look like success."""
+    run = await _make_run(store)
+    await store.log_metrics(run.id, [
+        MetricPoint("train_loss", 0.5, 1),
+        MetricPoint("val_loss", 0.4, 1),
+        MetricPoint("train_loss", float("nan"), 2),
+    ])
+    assert await store.latest_metrics([run.id]) == {run.id: {"val_loss": 0.4}}
+
+
+async def test_latest_metrics_breaks_a_step_tie_by_write_order(store):
+    """Two points can share (name, step) -- two nodes logging `loss`, or a
+    replayed step. Without a tie-break sqlite may return either, so the
+    table's number would flicker between polls of a live run."""
+    run = await _make_run(store)
+    await store.log_metrics(run.id, [
+        MetricPoint("loss", 9.0, 1, "node-a"),
+        MetricPoint("loss", 1.0, 1, "node-b"),      # written last
+    ])
+    for _ in range(5):                              # same answer every time
+        assert await store.latest_metrics([run.id]) == {run.id: {"loss": 1.0}}
+
+    # The collapse is by NAME, so a later write from either producer wins.
+    await store.log_metric(run.id, "loss", 7.0, 1, node_id="node-a")
+    assert await store.latest_metrics([run.id]) == {run.id: {"loss": 7.0}}
+    # ...and the detail chart still sees both producers, which is where the
+    # per-node truth lives.
+    assert {m.node_id for m in await store.get_metrics(run.id)} == {
+        "node-a", "node-b"}
+
+
+async def test_latest_metrics_is_seek_bounded_not_a_table_sweep(store):
+    """The Runs panel polls this every 2 s; its cost must track the number
+    of SERIES, not the number of points.
+
+    The obvious `GROUP BY run_id, name` with MAX(step) walks every index
+    entry for every listed run (~347 ms at 4M points, measured). The
+    leapfrog CTE seeks instead. Asserted through the query plan rather than
+    a wall-clock threshold, which would be flaky on a loaded CI box.
+
+    The plan is taken from what `latest_metrics()` ACTUALLY ran, captured
+    off the connection's trace callback, not from the module's SQL
+    constant: rerouting the method to a different (slower) query has to
+    fail this test, and it would not if the test executed the constant
+    itself.
+    """
+    first = await _make_run(store)
+    second = await _make_run(store)
+    for run in (first, second):
+        await store.log_metrics(run.id, [
+            MetricPoint(name, 1.0, step)
+            for name in ("loss", "lr", "val_loss") for step in range(30)])
+
+    conn = store.db._conn
+    executed: list[str] = []
+    conn.set_trace_callback(executed.append)
+    try:
+        finals = await store.latest_metrics([first.id, second.id])
+    finally:
+        conn.set_trace_callback(None)
+    assert set(finals) == {first.id, second.id}
+
+    reads = [sql for sql in executed if "exec_run_metrics" in sql]
+    # One statement per listed RUN -- not one per series, and not one
+    # sweeping statement whose cost the assertions below cannot see.
+    assert len(reads) == 2, executed
+    for sql in reads:
+        plan = " ".join(row["detail"]
+                        for row in _explain_plan(conn, sql, first.id))
+        # Every touch of the metrics table is a SEARCH via the series index...
+        assert "idx_exec_run_metrics_series" in plan, plan
+        # ...and never a full scan of it, at any depth of the plan.
+        assert "SCAN exec_run_metrics" not in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+
+
+async def test_latest_metrics_cost_does_not_grow_with_the_point_count(store):
+    """The behavioural half of the plan assertion above.
+
+    Same one series, a hundred times the points, and `latest_metrics()`
+    must do about the same amount of work. Measured with sqlite's own
+    progress handler (VDBE instructions) rather than a wall clock, so it is
+    a statement about the plan and not about how busy the machine is.
+
+    The handler is installed on the store's connection and the REAL method
+    is awaited, so this counts whatever that call path executes -- a
+    rewrite that keeps the fast constant around but stops using it still
+    fails here.
+    """
+    conn = store.db._conn
+
+    async def _vm_steps(run_id: str) -> int:
+        ticks = 0
+
+        def _tick() -> int:
+            nonlocal ticks
+            ticks += 1
+            return 0
+
+        # `check_same_thread=False` plus `Database.run`'s lock means the
+        # statement lands on a worker thread with nothing else in flight;
+        # sqlite calls the handler from whichever thread is executing.
+        conn.set_progress_handler(_tick, 20)
+        try:
+            await store.latest_metrics([run_id])
+        finally:
+            conn.set_progress_handler(None, 0)
+        return ticks
+
+    small = await _make_run(store)
+    big = await _make_run(store)
+    await store.log_metrics(small.id, [MetricPoint("loss", 1.0, s)
+                                       for s in range(20)])
+    await store.log_metrics(big.id, [MetricPoint("loss", 1.0, s)
+                                     for s in range(2000)])
+    assert await store.latest_metrics([small.id, big.id]) == {
+        small.id: {"loss": 1.0}, big.id: {"loss": 1.0}}
+
+    # 100x the points. A sweep would cost ~100x; a seek costs a few extra
+    # b-tree levels. Generous bound -- this fails loudly on a regression to
+    # GROUP BY and never on ordinary noise.
+    cheap, dear = await _vm_steps(small.id), await _vm_steps(big.id)
+    assert cheap > 0, "progress handler never fired -- the guard is vacuous"
+    assert dear < cheap * 3, (cheap, dear)
 
 
 async def test_get_metrics_limit_requires_a_name(store):

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
+import { useRunStore } from '../../store/runStore';
 import { useI18n } from '../../i18n';
 
 // Stub LossChart so the SVG sub-tree doesn't interfere with assertions and
@@ -10,6 +11,16 @@ import { useI18n } from '../../i18n';
 vi.mock('./LossChart', () => ({
   LossChart: ({ losses, height }: { losses: number[]; height: number }) => (
     <div data-testid="loss-chart" data-len={losses.length} data-height={height} />
+  ),
+}));
+
+// The Runs tab is its own component with its own tests; here we only care
+// that the third tab exists, switches, and is fed the panel height.
+vi.mock('./RunsPanel', () => ({
+  RunsPanel: ({ panelHeight, onWatchRun }: { panelHeight: number; onWatchRun?: () => void }) => (
+    <div data-testid="runs-panel" data-height={panelHeight}>
+      <button type="button" onClick={onWatchRun}>stub-watch</button>
+    </div>
   ),
 }));
 
@@ -44,6 +55,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('test');
+  useRunStore.setState({ runs: [], total: 0, activeCount: 0 });
 });
 
 afterEach(() => {
@@ -489,6 +501,132 @@ describe('ResultsPanel — structured output kinds (#117)', () => {
     render(<ResultsPanel />);
     expect(screen.queryByAltText('output')).not.toBeInTheDocument();
     expect(screen.getByText('no payload')).toBeInTheDocument();
+  });
+});
+
+// ── #124: the Runs tab ───────────────────────────────────────────────────
+
+describe('ResultsPanel — Runs tab', () => {
+  function seedRuns(statuses: string[]) {
+    useRunStore.setState({
+      runs: statuses.map((status, i) => ({ id: `r${i}`, status })) as never,
+      total: statuses.length,
+      activeCount: statuses.filter((s) => s === 'running' || s === 'queued').length,
+    });
+  }
+
+  it('switches to the Runs tab and hands it the current panel height', () => {
+    seedLogs([makeLog({ message: 'a log line' })]);
+    render(<ResultsPanel />);
+    expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    const panel = screen.getByTestId('runs-panel');
+    expect(panel.getAttribute('data-height')).toBe('200'); // DEFAULT_HEIGHT
+    // The log content is replaced, not stacked underneath.
+    expect(screen.queryByText('a log line')).not.toBeInTheDocument();
+  });
+
+  it('is always enabled — runs exist whether or not THIS tab ran anything', () => {
+    seedLogs([]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(t('runs.tab')).closest('button')).not.toBeDisabled();
+  });
+
+  it('badges the number of ACTIVE runs, and nothing when none are going', () => {
+    seedLogs([]);
+    const { rerender } = render(<ResultsPanel />);
+    const runsBtn = () => screen.getByText(t('runs.tab')).closest('button')!;
+    // Nothing known yet: no badge at all.
+    expect(within(runsBtn()).queryByText(/\d/)).not.toBeInTheDocument();
+
+    // Runs exist but all of them are history -- still no badge, because the
+    // badge answers "is something happening", not "does history exist".
+    act(() => { seedRuns(['succeeded', 'failed']); });
+    rerender(<ResultsPanel />);
+    expect(within(runsBtn()).queryByText(/\d/)).not.toBeInTheDocument();
+
+    act(() => { seedRuns(['running', 'queued', 'succeeded']); });
+    rerender(<ResultsPanel />);
+    const badge = within(runsBtn()).getByText('2');
+    expect(badge.className).toMatch(/countBadgeActive/);
+  });
+
+  it('badges before the panel has ever been opened, from the mount-time check', () => {
+    // The list is empty because nothing has polled yet; `activeCount` came
+    // from App's bootstrap check. Without this the only affordance that
+    // reports a detached run appears only AFTER the user finds the tab.
+    seedLogs([]);
+    act(() => { useRunStore.setState({ runs: [], total: 0, activeCount: 3 }); });
+    render(<ResultsPanel />);
+    const runsBtn = screen.getByText(t('runs.tab')).closest('button')!;
+    expect(within(runsBtn).getByText('3')).toBeInTheDocument();
+  });
+
+  it('hides Clear on the Runs tab — it empties this tab log, not the runs', () => {
+    seedLogs([makeLog({ message: 'x' })]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(t('results.clear'))).toBeInTheDocument();
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    expect(screen.queryByText(t('results.clear'))).not.toBeInTheDocument();
+    // Still there when we come back.
+    fireEvent.click(screen.getByText(t('results.title')));
+    expect(screen.getByText(t('results.clear'))).toBeInTheDocument();
+  });
+
+  it('does not yank the user off Runs when training data starts arriving', () => {
+    seedLogs([makeLog({ message: 'a log line' })]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+
+    act(() => {
+      seedLogs([
+        makeLog({ message: 'a log line' }),
+        makeLog({
+          message: '',
+          kind: 'progress',
+          progress: { event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 },
+        }),
+      ]);
+    });
+    // Still on Runs; the Training tab is now enabled but was not forced.
+    expect(screen.getByTestId('runs-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('loss-chart')).not.toBeInTheDocument();
+    expect(screen.getByText(t('results.training')).closest('button')).not.toBeDisabled();
+  });
+
+  it('still auto-switches to Training from the Log tab', () => {
+    seedLogs([makeLog({ message: 'a log line' })]);
+    render(<ResultsPanel />);
+    act(() => {
+      seedLogs([
+        makeLog({
+          message: '',
+          kind: 'progress',
+          progress: { event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 },
+        }),
+      ]);
+    });
+    expect(screen.getByTestId('loss-chart')).toBeInTheDocument();
+  });
+
+  it('reveals the Execution Log when a run is watched from the Runs tab', () => {
+    seedLogs([makeLog({ message: 'a log line' })]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    fireEvent.click(screen.getByText('stub-watch'));
+    // The attach streams into the log, so that is where the user is put.
+    expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
+    expect(screen.getByText('a log line')).toBeInTheDocument();
+  });
+
+  it('hides the Runs panel while the dock is collapsed', () => {
+    seedLogs([]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    expect(screen.queryByTestId('runs-panel')).not.toBeInTheDocument();
   });
 });
 

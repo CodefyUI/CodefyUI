@@ -92,6 +92,29 @@ _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
 _ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
 
+#: Last value of every series in ONE run, by index seeks only — see
+#: ``RunStore.latest_metrics`` for why this is not a ``GROUP BY``.
+#:
+#: The recursive CTE is the standard emulation of a loose index scan, which
+#: sqlite will not do on its own: the anchor seeks the first series name,
+#: and each recursive step seeks the next one with ``MIN(name) WHERE name >
+#: previous``. Both arms, and the per-series value lookup, are covered by
+#: ``idx_exec_run_metrics_series (run_id, name, step)``.
+_LATEST_METRICS_SQL = """
+WITH RECURSIVE series(name) AS (
+    SELECT (SELECT MIN(name) FROM exec_run_metrics WHERE run_id = ?1)
+  UNION ALL
+    SELECT (SELECT MIN(name) FROM exec_run_metrics
+             WHERE run_id = ?1 AND name > series.name)
+      FROM series WHERE series.name IS NOT NULL
+)
+SELECT series.name AS name,
+       (SELECT value FROM exec_run_metrics
+         WHERE run_id = ?1 AND name = series.name
+         ORDER BY step DESC, id DESC LIMIT 1) AS value
+  FROM series WHERE series.name IS NOT NULL
+"""
+
 
 def _json_safe(value: Any) -> Any:
     """Replace every non-finite float with None, recursively."""
@@ -823,6 +846,62 @@ class RunStore:
             return conn.execute(sql, params).fetchall()
 
         return [MetricRecord.from_row(r) for r in await self.db.run(_select)]
+
+    async def latest_metrics(
+        self, run_ids: Sequence[str],
+    ) -> dict[str, dict[str, float]]:
+        """``{run_id: {series name: last value}}`` for a PAGE of runs (#124).
+
+        The Runs table wants one number per row ("final loss") and asking
+        per row would be fifty round trips per poll of the panel.
+
+        **Cost is proportional to the number of SERIES, not the number of
+        points**, which is the whole reason this is not the obvious
+        ``GROUP BY run_id, name`` with ``MAX(step)``. That form makes
+        sqlite walk every index entry for every listed run — at four
+        million points it measured ~347 ms against a panel that polls
+        every two seconds, and it gets worse for exactly the runs a user
+        cares about, because per-batch metrics are what make the table
+        big. The leapfrog below instead SEEKS: ``MIN(name) WHERE name >
+        previous`` hops from one series to the next, and each value is one
+        descending seek to the end of that series' index partition. Same
+        data in ~1 ms, and flat as the table grows (asserted by
+        ``test_latest_metrics_is_seek_bounded_not_a_table_sweep``).
+
+        Runs are queried one at a time inside a single connection callback
+        — fifty cheap seeks on one thread hop, not fifty round trips.
+
+        Ties are broken by ``id DESC`` so the answer is DETERMINISTIC. Two
+        points can share ``(name, step)``: a re-run of a step, or — the
+        real case — two nodes logging the same series name. This returns
+        the most recently written one, and therefore **collapses a name
+        shared by several nodes into a single number**. That is a deliberate
+        limit of a one-number-per-row summary; the detail chart keeps the
+        producers apart (it reads ``get_metrics``, which carries
+        ``node_id``). Without the tie-break the column would flicker
+        between producers from one poll to the next.
+
+        A series whose last point is a non-finite NULL is OMITTED rather
+        than reported as 0.0 — a diverged loss must not render as a
+        suspiciously good one. Its earlier points are untouched; only the
+        summary number is withheld.
+        """
+        ids = list(run_ids)
+        if not ids:
+            return {}
+
+        def _select(conn: sqlite3.Connection) -> dict[str, list[sqlite3.Row]]:
+            return {run_id: conn.execute(_LATEST_METRICS_SQL,
+                                         (run_id,)).fetchall()
+                    for run_id in ids}
+
+        out: dict[str, dict[str, float]] = {}
+        for run_id, rows in (await self.db.run(_select)).items():
+            values = {row["name"]: row["value"] for row in rows
+                      if row["value"] is not None}
+            if values:
+                out[run_id] = values
+        return out
 
     async def list_metric_names(self, run_id: str) -> list[str]:
         """Distinct series names for a run — the chart legend."""

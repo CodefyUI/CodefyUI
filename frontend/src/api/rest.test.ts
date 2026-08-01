@@ -29,6 +29,16 @@ import {
   fetchCodexStatus,
   startCodexLogin,
   logoutCodex,
+  getRun,
+  listRuns,
+  cancelRun,
+  deleteRun,
+  getRunEvents,
+  getRunMetrics,
+  getRunArtifacts,
+  downloadRunMetricsCsv,
+  ACTIVE_RUN_STATUSES,
+  TERMINAL_RUN_STATUSES,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -649,6 +659,215 @@ describe('download endpoints', () => {
       } as unknown as Response;
       g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
       await expect(downloadImageFile('i.png')).rejects.toThrow(/Download failed/);
+    });
+  });
+});
+
+// ── Runs (#120/#123/#124) ────────────────────────────────────────────────
+
+describe('run endpoints', () => {
+  it('exposes status vocabularies that mirror the backend', () => {
+    expect([...ACTIVE_RUN_STATUSES]).toEqual(['queued', 'running']);
+    expect([...TERMINAL_RUN_STATUSES]).toEqual([
+      'succeeded', 'failed', 'cancelled', 'interrupted',
+    ]);
+  });
+
+  describe('getRun', () => {
+    it('returns null for a run the server has never heard of', async () => {
+      mockFetch(404, {});
+      expect(await getRun('gone')).toBeNull();
+    });
+
+    it('throws on any other failure', async () => {
+      mockFetch(500, {});
+      await expect(getRun('x')).rejects.toThrow(/Failed to fetch run/);
+    });
+  });
+
+  describe('listRuns', () => {
+    it('sends no query at all when nothing is narrowed', async () => {
+      const fetchMock = mockFetch(200, { runs: [], total: 0, limit: 50, offset: 0 });
+      await listRuns();
+      expect(fetchMock).toHaveBeenCalledWith('/api/runs');
+    });
+
+    it('repeats ?status= per status rather than joining with commas', async () => {
+      const fetchMock = mockFetch(200, { runs: [], total: 0, limit: 50, offset: 0 });
+      await listRuns({ status: ['queued', 'running'], limit: 10, offset: 20 });
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/runs?status=queued&status=running&limit=10&offset=20',
+      );
+    });
+
+    it('throws when the list fails', async () => {
+      mockFetch(503, {});
+      await expect(listRuns()).rejects.toThrow(/Failed to list runs/);
+    });
+  });
+
+  describe('cancelRun', () => {
+    it('POSTs with the session token and returns the outcome', async () => {
+      const fetchMock = mockFetch(200, { run_id: 'r1', status: 'running', cancelled: true });
+      expect(await cancelRun('r1')).toEqual({
+        run_id: 'r1', status: 'running', cancelled: true,
+      });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/runs/r1/cancel');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('surfaces the backend detail on failure', async () => {
+      mockFetch(404, { detail: 'run not found' });
+      await expect(cancelRun('r1')).rejects.toThrow(/run not found/);
+    });
+
+    it('falls back to the status text when the error body is not JSON', async () => {
+      mockFetchJsonThrows(500);
+      await expect(cancelRun('r1')).rejects.toThrow(/Cancel failed/);
+    });
+  });
+
+  describe('deleteRun', () => {
+    it('DELETEs the run row with the session token', async () => {
+      const fetchMock = mockFetch(200, { run_id: 'r1', deleted: true });
+      expect(await deleteRun('r1')).toEqual({ run_id: 'r1', deleted: true });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/runs/r1');
+      expect(init.method).toBe('DELETE');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('surfaces the 409 the server sends for a live run', async () => {
+      mockFetch(409, { detail: 'queued or running; cancel it first' });
+      await expect(deleteRun('r1')).rejects.toThrow(/cancel it first/);
+    });
+
+    it('falls back to the status text when the error body is not JSON', async () => {
+      mockFetchJsonThrows(500);
+      await expect(deleteRun('r1')).rejects.toThrow(/Delete failed/);
+    });
+  });
+
+  describe('getRunEvents', () => {
+    it('defaults to no query and passes the abort signal through', async () => {
+      const fetchMock = mockFetch(200, { events: [], cursor: 0 });
+      const controller = new AbortController();
+      await getRunEvents('r1', { signal: controller.signal });
+      expect(fetchMock).toHaveBeenCalledWith('/api/runs/r1/events', {
+        signal: controller.signal,
+      });
+    });
+
+    it('carries the cursor, the long-poll wait and the page limit', async () => {
+      const fetchMock = mockFetch(200, { events: [], cursor: 7 });
+      await getRunEvents('r1', { cursor: 7, wait: 25, limit: 100 });
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        '/api/runs/r1/events?cursor=7&wait=25&limit=100',
+      );
+    });
+
+    it('throws when the run vanishes mid-follow', async () => {
+      mockFetch(404, {});
+      await expect(getRunEvents('r1')).rejects.toThrow(/Failed to fetch run events/);
+    });
+  });
+
+  describe('getRunMetrics', () => {
+    it('fetches every series, or one by name', async () => {
+      const fetchMock = mockFetch(200, { run_id: 'r1', names: [], metrics: [] });
+      await getRunMetrics('r1');
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/runs/r1/metrics');
+      await getRunMetrics('r1', 'train loss');
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/runs/r1/metrics?name=train%20loss');
+    });
+
+    it('throws when metrics are unavailable', async () => {
+      mockFetch(500, {});
+      await expect(getRunMetrics('r1')).rejects.toThrow(/Failed to fetch run metrics/);
+    });
+  });
+
+  describe('getRunArtifacts', () => {
+    it('fetches all artifacts, or one kind', async () => {
+      const fetchMock = mockFetch(200, { run_id: 'r1', artifacts: [] });
+      await getRunArtifacts('r1');
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/runs/r1/artifacts');
+      await getRunArtifacts('r1', 'checkpoint');
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/runs/r1/artifacts?kind=checkpoint');
+    });
+
+    it('throws when artifacts are unavailable', async () => {
+      mockFetch(404, {});
+      await expect(getRunArtifacts('r1')).rejects.toThrow(/Failed to fetch run artifacts/);
+    });
+  });
+
+  describe('downloadRunMetricsCsv', () => {
+    let createObjectURL: ReturnType<typeof vi.fn>;
+    let revokeObjectURL: ReturnType<typeof vi.fn>;
+    let clickSpy: ReturnType<typeof vi.spyOn>;
+
+    function mockFetchBlob(status: number, body: unknown) {
+      const response = {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: 'mock',
+        json: async () => body,
+        blob: async () => new Blob(['run_id,name\n']),
+      } as unknown as Response;
+      g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+      return g.fetch as unknown as ReturnType<typeof vi.fn>;
+    }
+
+    beforeEach(() => {
+      createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
+      revokeObjectURL = vi.fn();
+      (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
+      (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeObjectURL;
+      clickSpy = vi
+        .spyOn(HTMLAnchorElement.prototype, 'click')
+        .mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      clickSpy.mockRestore();
+      delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+      delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+    });
+
+    it('asks for CSV and saves it under a run-scoped filename', async () => {
+      const appendSpy = vi.spyOn(document.body, 'appendChild');
+      const fetchMock = mockFetchBlob(200, null);
+      await downloadRunMetricsCsv('abc123');
+      expect(fetchMock).toHaveBeenCalledWith('/api/runs/abc123/metrics?format=csv');
+      const anchor = appendSpy.mock.calls[0][0] as HTMLAnchorElement;
+      expect(anchor.download).toBe('run-abc123-metrics.csv');
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+      expect(document.body.contains(anchor)).toBe(false);
+      appendSpy.mockRestore();
+    });
+
+    it('surfaces the backend detail rather than downloading an error page', async () => {
+      mockFetchBlob(404, { detail: 'run not found' });
+      await expect(downloadRunMetricsCsv('nope')).rejects.toThrow(/run not found/);
+      expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a generic message when the error body is not JSON', async () => {
+      const response = {
+        ok: false,
+        status: 500,
+        statusText: 'mock',
+        json: async () => {
+          throw new SyntaxError('not json');
+        },
+        blob: async () => new Blob(['x']),
+      } as unknown as Response;
+      g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+      await expect(downloadRunMetricsCsv('r1')).rejects.toThrow(/Download failed/);
     });
   });
 });
