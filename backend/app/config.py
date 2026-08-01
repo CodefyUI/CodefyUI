@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     MAX_IMAGE_PIXELS: int = 25_000_000  # per-image decode budget (Decision H2)
     RUN_IO_CAP_BYTES: int = 64 * 1024   # per-field runs.inputs_json/outputs_json cap
     RUNS_RETENTION_DAYS: int = 0        # 0 = keep forever (default); >0 prunes loudly
+    # ── Run Service retention (#120) ───────────────────────────────────
+    # Keep-last-N over the exec_runs table (graph runs), applied at startup
+    # and after every run reaches a terminal state. Independent of
+    # RUNS_RETENTION_DAYS above, which is age-based and covers the
+    # unrelated publish `runs` table. Active runs are never deleted and
+    # still occupy slots, so this is a straightforward cap on the table.
+    # A negative value disables it entirely (keep forever).
+    RUN_RETENTION_KEEP_LAST: int = 200
     # Comma-separated extra Host-whitelist entries, e.g.
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.

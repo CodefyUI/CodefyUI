@@ -49,6 +49,7 @@ from .api import (
     routes_plugin_frontend,
     routes_plugins,
     routes_presets,
+    routes_runs,
     routes_system,
     ws_execution,
 )
@@ -77,6 +78,8 @@ from .core.plugin_loader import (
 )
 from .core.preset_registry import preset_registry
 from .core.run_output_store import RunOutputStore
+from .core.run_service import RunService
+from .core.run_store import RunStore
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +304,30 @@ async def lifespan(app: FastAPI):
     # on app delete.
     app.state.app_locks = {}
 
+    # ── Run Service (#120): server-owned graph runs ────────────────────
+    # Owns its own asyncio.Tasks, so it must be created after the DB and
+    # drained before it closes (see the shutdown block below).
+    run_service = RunService(
+        RunStore(db),
+        output_store=app.state.run_output_store,
+        retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
+    )
+    app.state.run_service = run_service
+    # Order matters. Recovery FIRST: nothing resumes a `running` row after a
+    # restart, and retention never deletes an active run — so an abandoned
+    # one would keep its events and metrics forever. Retiring it is what
+    # makes it prunable in the very next call. Both steps log their own
+    # counts when they do anything.
+    await run_service.recover_interrupted()
+    await run_service.prune_retention()
+
     yield
+
+    # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
+    # only database work in the process that nobody is awaiting, and
+    # `Database.close` would otherwise race a run's final writes (#119).
+    await run_service.shutdown()
+    app.state.run_service = None
 
     # Release the SQLite handle so `cdui stop` on Windows frees the DB and
     # its WAL sidecar files (spec Section 13, Windows file locking).
@@ -396,6 +422,7 @@ app.include_router(routes_models.router)
 app.include_router(routes_images.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
+app.include_router(routes_runs.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
 app.include_router(routes_apps.router)
