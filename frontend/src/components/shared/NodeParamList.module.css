@@ -6,10 +6,14 @@
   gap: 10px;
 }
 
-/* Param description / range hints */
+/* Param description / range hints.
+   Slate-500 rather than the old #555: these carry real information (what a
+   param means, what range it accepts) and #555 sat near 2:1 against both
+   surfaces this form renders on — the config panel and the darker Node
+   Detail Modal column. */
 .paramHint {
   font-size: 0.6875rem;
-  color: #555;
+  color: #64748b;
   margin-top: 2px;
   line-height: 1.3;
 }

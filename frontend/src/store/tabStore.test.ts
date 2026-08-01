@@ -961,6 +961,29 @@ describe('onNodesChange', () => {
     expect(activeTab().undoStack.length).toBe(1);
   });
 
+  it('closes an open node-detail modal when its node is removed here', () => {
+    // React Flow's Delete key emits a `remove` change straight into this
+    // reducer — it never calls `deleteNode` — so the modal id has to be
+    // cleared here too, or an undo that restores the node reopens the modal.
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().openNodeDetail('n1');
+    store().onNodesChange([{ id: 'n1', type: 'remove' }]);
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+  });
+
+  it('leaves an open node-detail modal alone when a different node is removed', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().openNodeDetail('n1');
+    store().onNodesChange([{ id: 'n2', type: 'remove' }]);
+    expect(activeTab().nodeDetailNodeId).toBe('n1');
+  });
+
   it('recalculates a bound note offset when the note itself is dragged', () => {
     store().setNodes([
       { id: 'comp', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'C', type: 'C', params: {} } },

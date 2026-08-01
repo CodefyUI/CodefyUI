@@ -484,6 +484,15 @@ describe('NodeDetailModal — header', () => {
     });
     render(<NodeDetailModal />);
     expect(screen.getByText('M')).toHaveStyle({ background: '#D4A017' });
+    expect(screen.getByText('PRESET')).toBeInTheDocument();
+  });
+
+  it('surfaces the commit/cancel keys only while the name editor is open', () => {
+    seedTab({ nodes: [node('n1', { label: 'Old' })], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    expect(screen.queryByText('Enter to apply, Esc to cancel')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Old' }));
+    expect(screen.getByText('Enter to apply, Esc to cancel')).toBeInTheDocument();
   });
 
   it('keeps the rename editor open for keys other than Enter', () => {
@@ -566,6 +575,55 @@ describe('NodeDetailModal — close paths', () => {
     });
     expect(activeTab().nodeDetailNodeId).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('closes itself when the Delete key removes the open node', () => {
+    // React Flow's own Delete key never calls `deleteNode` — it emits a
+    // `remove` change straight into `onNodesChange`. A stale id here would
+    // let an undo that restores the node pop the modal open unannounced.
+    seedTab({ nodes: [node('n1'), node('n2')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    act(() => {
+      useTabStore.getState().onNodesChange([{ type: 'remove', id: 'n1' }]);
+    });
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('leaves the modal alone when the Delete key removes a different node', () => {
+    seedTab({ nodes: [node('n1'), node('n2')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    act(() => {
+      useTabStore.getState().onNodesChange([{ type: 'remove', id: 'n2' }]);
+    });
+    expect(activeTab().nodeDetailNodeId).toBe('n1');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('restores focus to whatever had it when the modal opened', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+
+    const { unmount } = render(<NodeDetailModal />);
+    unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('does not chase focus to an element that left the page meanwhile', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const { unmount } = render(<NodeDetailModal />);
+    // The node card the user double-clicked can be re-rendered away while the
+    // modal is open; focusing a detached element must not throw or matter.
+    opener.remove();
+    expect(() => unmount()).not.toThrow();
   });
 
   it('renders nothing when the open id no longer names a node', () => {
@@ -1033,6 +1091,50 @@ describe('NodeDetailModal — parameter editing', () => {
       screen.getByText('This node has no configurable parameters'),
     ).toBeInTheDocument();
   });
+
+  it('offers the preset editor instead of claiming a preset has no parameters', () => {
+    // `addPresetNode` synthesizes `definition.params: []`, so the plain
+    // no-params message would be a lie — a preset's params live on the nodes
+    // inside it. Same branch, and same destination, as the config panel.
+    seedTab({
+      nodes: [
+        node('p1', {
+          label: 'My Preset',
+          definition: def({ node_name: 'My Preset', params: [] }),
+          data: {
+            isPreset: true,
+            presetDefinition: { nodes: [{}, {}, {}] } as never,
+          },
+        }),
+      ],
+      nodeDetailNodeId: 'p1',
+    });
+    render(<NodeDetailModal />);
+
+    expect(screen.queryByText('This node has no configurable parameters')).toBeNull();
+    expect(screen.getByText('3 nodes inside')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Configure Preset'));
+    // Hands over rather than stacking: the preset editor sits at a lower
+    // z-index and has no Escape handler of its own.
+    expect(activeTab().presetModalNodeId).toBe('p1');
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('reports zero inner nodes when a preset definition is missing', () => {
+    seedTab({
+      nodes: [
+        node('p1', {
+          definition: def({ params: [] }),
+          data: { isPreset: true, presetDefinition: undefined },
+        }),
+      ],
+      nodeDetailNodeId: 'p1',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByText('0 nodes inside')).toBeInTheDocument();
+  });
 });
 
 // ── Capture parity with the InspectorPanel ───────────────────────────────────
@@ -1137,7 +1239,7 @@ describe('NodeDetailModal — tab registry', () => {
 
   afterEach(() => {
     unregisterNodeDetailTab('extra');
-    unregisterNodeDetailTab('stats');
+    for (const spec of BUILTIN_NODE_DETAIL_TABS) unregisterNodeDetailTab(spec.id);
   });
 
   it('returns the built-ins sorted by order, filtered by isEnabled', () => {
@@ -1215,5 +1317,61 @@ describe('NodeDetailModal — tab registry', () => {
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
     expect(screen.getByText('Node statistics')).toBeInTheDocument();
+  });
+
+  it('contains a throwing tab inside the panel instead of unmounting the app', () => {
+    // Registered tabs are third-party render code; a throw must cost the
+    // panel, not the editor and the user's unsaved graph with it.
+    const boom = vi.spyOn(console, 'error').mockImplementation(() => {});
+    registerNodeDetailTab({
+      id: 'extra',
+      labelKey: 'nodeDetail.tabs.stats',
+      order: 15,
+      render: () => {
+        throw new Error('tab blew up');
+      },
+    });
+    seedTab({ nodes: [node('n1', { label: 'Still here' })], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Stats' })[0]);
+
+    expect(screen.getByText('This tab failed to render')).toBeInTheDocument();
+    expect(screen.getByText('tab blew up')).toBeInTheDocument();
+    // Header, param column and tab strip all survive, so the user can leave.
+    expect(screen.getByRole('button', { name: 'Still here' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    expect(screen.queryByText('This tab failed to render')).toBeNull();
+    boom.mockRestore();
+  });
+
+  it('survives a registry that leaves no tab enabled', () => {
+    // Nothing in the product does this, but the registry is open to third
+    // parties — the modal must still show its header and parameter form
+    // rather than crash on an absent active tab.
+    for (const spec of BUILTIN_NODE_DETAIL_TABS) {
+      registerNodeDetailTab({ ...spec, isEnabled: () => false });
+    }
+    seedTab({ nodes: [node('n1', { label: 'Alone' })], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Alone' })).toBeInTheDocument();
+    expect(screen.getByRole('tabpanel')).not.toHaveAttribute('aria-labelledby');
+  });
+
+  it('wires each tab button to the panel it controls', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    const inputsTab = screen.getByRole('tab', { name: 'Inputs' });
+    const panel = screen.getByRole('tabpanel');
+    expect(inputsTab).toHaveAttribute('id', 'node-detail-tab-inputs');
+    expect(inputsTab).toHaveAttribute('aria-controls', panel.id);
+    expect(panel).toHaveAttribute('aria-labelledby', 'node-detail-tab-inputs');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    expect(screen.getByRole('tabpanel')).toHaveAttribute(
+      'aria-labelledby',
+      'node-detail-tab-docs',
+    );
   });
 });

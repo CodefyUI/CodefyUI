@@ -815,7 +815,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           }
         }
 
-        // When a node is removed, unbind notes that were bound to it
+        // When a node is removed, unbind notes that were bound to it — and
+        // close a detail modal that was showing it.
+        //
+        // The modal has to be closed HERE, not only in `deleteNode`: React
+        // Flow's own Delete key never calls that action, it emits a `remove`
+        // change straight into this reducer. Left stale, `nodeDetailNodeId`
+        // points at a node that no longer exists — harmless while it renders
+        // nothing, but an undo that restores the node would pop the modal
+        // back open on its own.
+        let nodeDetailNodeId = tab.nodeDetailNodeId;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -825,9 +834,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
             if (!removedIds.has(n.data.boundToNodeId)) return n;
             return { ...n, data: { ...n.data, boundToNodeId: null, boundOffset: null } };
           });
+          if (nodeDetailNodeId !== null && removedIds.has(nodeDetailNodeId)) {
+            nodeDetailNodeId = null;
+          }
         }
 
-        return { nodes: updatedNodes };
+        return { nodes: updatedNodes, nodeDetailNodeId };
       }),
     });
   },

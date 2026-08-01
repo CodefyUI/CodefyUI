@@ -6,7 +6,7 @@ import { BackwardView } from './BackwardView';
 import { TokenChipsView } from './TokenChipsView';
 import { PortGroup, FlowDivider, keyOf } from './PortGroup';
 import type { PortTarget } from './PortGroup';
-import { portDataType, resolveInputSources, usePortFetches } from './portCaptures';
+import { portDataType, resolveSingleNodePorts, usePortFetches } from './portCaptures';
 import { isTensor, shapesEqual, makeHighlight } from './diff';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
@@ -87,22 +87,12 @@ export function InspectorPanel() {
     if (selectedNodeId) {
       const node = nodes.find((n) => n.id === selectedNodeId);
       if (!node) return { mode: 'none' as const };
-      // Inputs are the connected upstream ports; label them with their
-      // provenance (source node + port) since they are foreign values.
-      const inputs = resolveInputSources(node.id, edges).map((p) => {
-        const srcNode = nodes.find((n) => n.id === p.nodeId);
-        const srcLabel = srcNode?.data.label || p.nodeId.slice(0, 6);
-        return {
-          ...p,
-          displayName: `${srcLabel}.${p.port}`,
-          dataType: portDataType(nodes, p.nodeId, p.port),
-        };
-      });
-      const outputs: PortTarget[] = (node.data.definition?.outputs ?? []).map((o) => ({
-        nodeId: node.id,
-        port: o.name,
-        dataType: o.data_type,
-      }));
+      // Inputs are the connected upstream ports, labelled with their
+      // provenance (source node + port) since they are foreign values;
+      // outputs are the node's own. Resolved by the shared helper the Node
+      // Detail Modal also calls, so the two views cannot describe the same
+      // node's ports differently.
+      const { inputs, outputs } = resolveSingleNodePorts(node.id, nodes, edges);
       return {
         mode: 'single' as const,
         nodeName: node.data.label,

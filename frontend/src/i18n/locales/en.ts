@@ -576,6 +576,7 @@ const en = {
   'nodeDetail.tabs.backward': 'Backward',
   'nodeDetail.tabs.stats': 'Stats',
   'nodeDetail.tabs.docs': 'Docs',
+  'nodeDetail.tabError': 'This tab failed to render',
   'nodeDetail.inputs.title': 'Inputs ({count})',
   'nodeDetail.outputs.title': 'Outputs ({count})',
   'nodeDetail.inputs.empty': 'No inputs connected',

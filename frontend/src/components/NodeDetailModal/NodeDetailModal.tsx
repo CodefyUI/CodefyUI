@@ -8,11 +8,35 @@ import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
 import { topologicalOrder } from '../../utils/topoOrder';
 import { MathText } from '../shared/MathText';
 import { NodeParamList } from '../shared/NodeParamList';
-import { getNodeDetailTabs, type NodeDetailTabContext } from './tabs';
+import {
+  getNodeDetailTabs,
+  type NodeDetailTabContext,
+  type NodeDetailTabSpec,
+} from './tabs';
+import { TabErrorBoundary } from './TabErrorBoundary';
 import styles from './NodeDetailModal.module.css';
 
 /** Node kinds the detail modal has nothing useful to say about. */
 const EXCLUDED_NODE_TYPES = new Set(['noteNode']);
+
+/**
+ * Calls a tab spec's `render` from inside its own component.
+ *
+ * This indirection is the whole reason the error boundary works. Calling
+ * `spec.render(ctx)` directly in the modal's JSX would run third-party code
+ * during the MODAL's render — above the boundary in the tree, where React
+ * cannot catch it — so a spec that throws inline (rather than returning a
+ * component that throws) would still unmount the app root.
+ */
+function TabBody({
+  spec,
+  ctx,
+}: {
+  spec: NodeDetailTabSpec;
+  ctx: NodeDetailTabContext;
+}) {
+  return <>{spec.render(ctx)}</>;
+}
 
 /** True for elements that own the arrow keys (caret, value stepper, listbox). */
 function isTextEntry(target: EventTarget | null): boolean {
@@ -49,6 +73,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const closeNodeDetail = useTabStore((s) => s.closeNodeDetail);
   const openNodeDetail = useTabStore((s) => s.openNodeDetail);
+  const openPresetModal = useTabStore((s) => s.openPresetModal);
   const renameNode = useTabStore((s) => s.renameNode);
   const { t, tn } = useI18n();
 
@@ -89,10 +114,19 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   }, [nodeId]);
 
   // Take focus so the key handling below has somewhere to sit and the page
-  // behind the backdrop cannot be tabbed into blind.
+  // behind the backdrop cannot be tabbed into blind — then hand it back to
+  // whatever had it when the modal closes. Without the restore, a keyboard
+  // user who opened the modal with Enter lands back at the top of the
+  // document instead of on the node they were standing on.
   useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
     const timer = setTimeout(() => surfaceRef.current?.focus(), 0);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      if (previouslyFocused && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
   }, []);
 
   // One window-level handler for the modal's keyboard contract. Deciding here
@@ -129,7 +163,8 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const def = node.data.definition;
   const nodeName = def?.node_name ?? node.data.type;
   const category = def?.category ?? 'Utility';
-  const accent = node.data.isPreset ? '#D4A017' : (CATEGORY_COLORS[category] ?? '#607D8B');
+  const isPreset = Boolean(node.data.isPreset);
+  const accent = isPreset ? '#D4A017' : (CATEGORY_COLORS[category] ?? '#607D8B');
   const status = node.data.executionStatus ?? 'idle';
   const statusColor = STATUS_COLORS[status];
 
@@ -231,11 +266,19 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
                 }}
               />
             )}
+            {draftName !== null && (
+              <div className={styles.renameHint}>{t('nodeDetail.renameHint')}</div>
+            )}
             <div className={styles.meta}>
               <span className={styles.metaType}>{nodeName}</span>
               <span className={styles.categoryChip} style={{ color: accent, borderColor: accent }}>
                 {category}
               </span>
+              {isPreset && (
+                <span className={styles.presetChip} style={{ color: accent, borderColor: accent }}>
+                  {t('preset.badge')}
+                </span>
+              )}
               <span className={styles.statusChip} style={{ color: statusColor, borderColor: statusColor }}>
                 {t(`status.${status}` as const)}
               </span>
@@ -256,7 +299,33 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
         <div className={styles.body}>
           <aside className={styles.paramColumn}>
             <div className={styles.columnTitle}>{t('nodeDetail.parameters')}</div>
-            {def && def.params.length > 0 ? (
+            {isPreset ? (
+              // A preset's params live on the nodes INSIDE it — its own
+              // `definition.params` is synthesized empty, so the plain
+              // no-params message would be a lie. Same branch ConfigPanel
+              // takes, pointing at the same editor.
+              <div className={styles.presetBlock}>
+                <div className={styles.presetHint}>
+                  {t('preset.nodeCount', {
+                    count: node.data.presetDefinition?.nodes.length ?? 0,
+                  })}
+                </div>
+                <button
+                  type="button"
+                  className={styles.presetConfigureBtn}
+                  onClick={() => {
+                    // One modal at a time. The preset editor sits at a lower
+                    // z-index and has no Escape handler of its own, so
+                    // stacking them would render it *behind* this modal and
+                    // let Escape close the wrong surface.
+                    closeNodeDetail();
+                    openPresetModal(nodeId);
+                  }}
+                >
+                  {t('preset.configure')}
+                </button>
+              </div>
+            ) : def && def.params.length > 0 ? (
               <NodeParamList nodeId={nodeId} definition={def} params={node.data.params} />
             ) : (
               <div className={styles.noParams}>{t('nodeDetail.noParams')}</div>
@@ -278,9 +347,11 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
               {tabs.map((tab) => (
                 <button
                   key={tab.id}
+                  id={`node-detail-tab-${tab.id}`}
                   type="button"
                   role="tab"
                   aria-selected={current?.id === tab.id}
+                  aria-controls="node-detail-tabpanel"
                   className={`${styles.tabBtn} ${current?.id === tab.id ? styles.tabActive : ''}`}
                   onClick={() => setActiveTabId(tab.id)}
                 >
@@ -288,8 +359,26 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
                 </button>
               ))}
             </div>
-            <div className={styles.tabPanel} role="tabpanel">
-              {current?.render(ctx)}
+            <div
+              id="node-detail-tabpanel"
+              className={styles.tabPanel}
+              role="tabpanel"
+              aria-labelledby={current ? `node-detail-tab-${current.id}` : undefined}
+            >
+              {/* Registered tabs are third-party render code (#129, #131,
+                  plugins). A throw here must cost the panel, not the editor. */}
+              <TabErrorBoundary
+                resetKey={`${nodeId}:${current?.id ?? ''}`}
+                fallback={(error) => (
+                  <div className={styles.emptyState}>
+                    <div className={styles.emptyIcon}>!</div>
+                    <div>{t('nodeDetail.tabError')}</div>
+                    <div className={styles.emptyHint}>{error.message}</div>
+                  </div>
+                )}
+              >
+                {current && <TabBody spec={current} ctx={ctx} />}
+              </TabErrorBoundary>
             </div>
           </section>
         </div>

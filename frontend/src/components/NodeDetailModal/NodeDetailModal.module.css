@@ -159,6 +159,7 @@
 }
 
 .categoryChip,
+.presetChip,
 .statusChip {
   font-size: 0.625rem;
   border: 1px solid;
@@ -166,6 +167,19 @@
   padding: 0 6px;
   line-height: 1.5;
   white-space: nowrap;
+}
+
+.presetChip {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* Shown only while the name editor is open, so the commit/cancel keys are
+   discoverable without a tooltip. */
+.renameHint {
+  color: #64748b;
+  font-size: 0.625rem;
+  margin-left: -5px;
 }
 
 .closeBtn {
@@ -219,9 +233,39 @@
 }
 
 .noParams {
-  color: #475569;
+  color: #64748b;
   font-size: 0.8125rem;
   padding: 8px 0;
+}
+
+/* Preset nodes: their params live on the nodes inside, so this column offers
+   the way in rather than a parameter form. Mirrors the config panel. */
+.presetBlock {
+  margin-bottom: 16px;
+}
+
+.presetHint {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.presetConfigureBtn {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(212, 160, 23, 0.15);
+  border: 1px solid #d4a017;
+  border-radius: 6px;
+  color: #d4a017;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.presetConfigureBtn:hover {
+  background: rgba(212, 160, 23, 0.26);
 }
 
 .paramFootnote {
@@ -307,7 +351,7 @@
 }
 
 .emptyHint {
-  color: #475569;
+  color: #64748b;
   font-size: 0.6875rem;
   margin-top: 6px;
   line-height: 1.5;
@@ -328,7 +372,7 @@
 }
 
 .summaryEmpty {
-  color: #475569;
+  color: #64748b;
   font-size: 0.75rem;
 }
 
@@ -384,7 +428,7 @@
 }
 
 .docsEmpty {
-  color: #475569;
+  color: #64748b;
   font-size: 0.75rem;
 }
 
@@ -421,7 +465,7 @@
 }
 
 .docsParamMeta {
-  color: #475569;
+  color: #64748b;
   font-size: 0.6875rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   margin-top: 3px;
@@ -456,7 +500,7 @@
 }
 
 .docsPortOptional {
-  color: #475569;
+  color: #64748b;
   font-size: 0.625rem;
 }
 

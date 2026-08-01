@@ -576,6 +576,7 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.tabs.backward': '反向傳播',
   'nodeDetail.tabs.stats': '統計',
   'nodeDetail.tabs.docs': '說明',
+  'nodeDetail.tabError': '這個分頁無法顯示',
   'nodeDetail.inputs.title': '輸入 ({count})',
   'nodeDetail.outputs.title': '輸出 ({count})',
   'nodeDetail.inputs.empty': '沒有連接任何輸入',
