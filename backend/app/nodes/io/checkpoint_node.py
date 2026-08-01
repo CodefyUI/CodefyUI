@@ -112,6 +112,16 @@ class CheckpointSaverNode(BaseNode):
             # #118: without this the LR schedule restarts from scratch on
             # resume. The class name is stored alongside so the loader can
             # refuse to splice a StepLR state into a CosineAnnealingLR.
+            #
+            # The port is DataType.ANY, so anything at all can be wired into
+            # it. Say what is wrong before writing the file rather than
+            # crashing half way through serialization.
+            if not hasattr(lr_scheduler, "state_dict"):
+                raise ValueError(
+                    f"The lr_scheduler input is a {type(lr_scheduler).__name__}, "
+                    "which has no state_dict(); connect an LRScheduler node's "
+                    "'scheduler' output (or a CheckpointLoader's) to this port."
+                )
             checkpoint["scheduler_state_dict"] = lr_scheduler.state_dict()
             checkpoint["scheduler_class"] = type(lr_scheduler).__name__
 

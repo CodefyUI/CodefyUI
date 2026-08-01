@@ -25,6 +25,8 @@ from app.config import settings
 from app.nodes.io.checkpoint_node import CheckpointLoaderNode, CheckpointSaverNode
 from app.nodes.training.training_loop_node import (
     TrainingLoopNode,
+    _fast_forward_scheduler,
+    _prepare_optimizer,
     _sync_optimizer_state_device,
 )
 
@@ -282,36 +284,99 @@ def test_start_epoch_accepts_tensor_and_rejects_garbage() -> None:
         assert result["metrics"]["start_epoch"] == expected, f"start_epoch={value!r}"
 
 
-def test_optimizer_is_rebound_when_parameters_are_replaced() -> None:
-    """A structurally identical model gets the optimizer's state re-keyed.
+def test_prepare_optimizer_picks_the_documented_branch() -> None:
+    """The resume rule itself, asserted on the mode it reports.
 
-    This is the ``rebound`` branch of the resume rule: different parameter
-    *objects*, same shapes. The momentum buffers have to survive and to end up
-    attached to the new parameters.
+    The end-to-end tests below can look similar whichever branch ran, so pin
+    the decision directly: same parameter objects -> ``reused``, structurally
+    identical replacements -> ``rebound``, anything else -> ``rebuilt``.
     """
     model = _model()
     optimizer = _optimizer("sgd_momentum", model)
+
+    assert _prepare_optimizer(optimizer, model) == (optimizer, "reused")
+
+    replacement = _model()
+    rebound, mode = _prepare_optimizer(optimizer, replacement)
+    assert mode == "rebound"
+    assert rebound is optimizer, "rebinding must not swap the optimizer object"
+    tracked = [p for g in rebound.param_groups for p in g["params"]]
+    assert all(a is b for a, b in zip(tracked, replacement.parameters()))
+
+    other = nn.Linear(IN_FEATURES, OUT_CLASSES + 5)
+    stale = _optimizer("sgd_momentum", other)
+    fresh, mode = _prepare_optimizer(stale, model)
+    assert mode == "rebuilt"
+    assert fresh is not stale
+    assert type(fresh) is type(stale)
+    tracked = [p for g in fresh.param_groups for p in g["params"]]
+    assert all(a is b for a, b in zip(tracked, model.parameters()))
+
+
+# Which per-parameter state key proves the optimizer continued rather than
+# restarted, for each optimizer under test.
+_STATE_KEY = {"adam": "exp_avg", "sgd_momentum": "momentum_buffer"}
+
+
+@pytest.mark.parametrize("optimizer_kind", ["adam", "sgd_momentum"])
+def test_optimizer_is_rebound_when_parameters_are_replaced(optimizer_kind: str) -> None:
+    """A structurally identical model gets the optimizer's state re-keyed.
+
+    The ``rebound`` branch end to end: different parameter *objects*, same
+    shapes. Adam's moments and SGD's momentum buffer both have to survive and
+    end up attached to the new parameters.
+    """
+    key = _STATE_KEY[optimizer_kind]
+    model = _model()
+    optimizer = _optimizer(optimizer_kind, model)
     _train(model, optimizer, _loader(), {"epochs": 1})
-    buffers_before = [
-        s["momentum_buffer"].clone() for s in optimizer.state.values()
-    ]
+    before = [s[key].clone() for s in optimizer.state.values()]
+    assert before and all(b.abs().sum() > 0 for b in before)
 
     replacement = _model()
     replacement.load_state_dict(model.state_dict())
     assert all(a is not b for a, b in zip(model.parameters(), replacement.parameters()))
 
-    _train(replacement, optimizer, _loader(), {"epochs": 1})
+    result = _train(replacement, optimizer, _loader(), {"epochs": 1})
 
+    assert result["model"] is replacement
+    # Keyed on the NEW parameter objects: the groups were re-bound. A rebuild
+    # would have left this optimizer's state sitting on the old parameters.
     assert set(optimizer.state) == set(replacement.parameters())
-    assert len(optimizer.state) == len(buffers_before)
-    assert all(
-        s["momentum_buffer"] is not None for s in optimizer.state.values()
+    after = [s[key] for s in optimizer.state.values()]
+    assert len(after) == len(before)
+    assert all(a is not None for a in after)
+    # State continued rather than restarting from zero.
+    assert any(not torch.equal(b, a) for b, a in zip(before, after))
+
+
+def test_rebind_preserves_per_group_hyperparameters() -> None:
+    """Multi-group optimizers keep their per-group overrides and split."""
+    model = _model()
+    weight, bias = list(model.parameters())
+    optimizer = torch.optim.SGD(
+        [
+            {"params": [weight], "lr": 0.05},
+            {"params": [bias], "lr": 0.2, "momentum": 0.5},
+        ],
+        lr=0.1,
+        momentum=0.9,
     )
-    # State carried over rather than restarting from zero.
-    assert any(
-        not torch.equal(before, s["momentum_buffer"])
-        for before, s in zip(buffers_before, optimizer.state.values())
-    )
+    model(torch.zeros(2, IN_FEATURES)).sum().backward()
+    optimizer.step()
+    assert len(optimizer.state) == 2
+
+    replacement = _model()
+    rebound, mode = _prepare_optimizer(optimizer, replacement)
+
+    assert mode == "rebound"
+    assert [g["lr"] for g in rebound.param_groups] == [0.05, 0.2]
+    assert [g["momentum"] for g in rebound.param_groups] == [0.9, 0.5]
+    assert [len(g["params"]) for g in rebound.param_groups] == [1, 1]
+    new_weight, new_bias = list(replacement.parameters())
+    assert rebound.param_groups[0]["params"][0] is new_weight
+    assert rebound.param_groups[1]["params"][0] is new_bias
+    assert set(rebound.state) == {new_weight, new_bias}
 
 
 def test_optimizer_is_rebuilt_for_a_different_model() -> None:
@@ -455,6 +520,102 @@ def test_scheduler_fast_forwards_when_checkpoint_has_no_scheduler_state(
     assert second["losses"].tolist() == pytest.approx(
         straight["losses"][SCHED_SPLIT:].tolist(), rel=1e-5, abs=1e-7
     )
+
+
+def test_scheduler_ahead_of_start_epoch_warns_and_keeps_its_own_position(caplog) -> None:
+    """A schedule/epoch desync is exactly what this issue removes -- say so."""
+    import logging
+
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _scheduler("StepLR", optimizer)
+    for _ in range(5):
+        optimizer.step()
+        scheduler.step()
+    assert scheduler.last_epoch == 5
+
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        _train(
+            model, optimizer, _loader(), {"epochs": 4},
+            lr_scheduler=scheduler, start_epoch=2,
+        )
+
+    warnings_seen = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("last_epoch=5" in m and "epoch 2" in m for m in warnings_seen), warnings_seen
+    # The scheduler kept its own position rather than being rewound.
+    assert scheduler.last_epoch == 5 + 2
+
+
+def test_replay_failure_degrades_instead_of_failing_the_run(caplog) -> None:
+    """A schedule that cannot be replayed must not take the training run down.
+
+    The failure is injected rather than borrowed from a real scheduler
+    (``OneCycleLR`` raises once stepped past ``total_steps``) because a real
+    one keeps raising from inside the epoch loop too. That in-loop step is
+    unguarded on purpose -- a schedule failing during actual training is a
+    genuine misconfiguration and predates #118 -- so borrowing it would test
+    something other than the replay.
+    """
+    import logging
+
+    class _BrittleStepLR(torch.optim.lr_scheduler.StepLR):
+        """Raises for its next ``_pending_failures`` steps, then behaves.
+
+        Defaults to 0 so the ``_initial_step()`` inside ``__init__`` is not
+        the one that trips; the test arms it afterwards.
+        """
+
+        _pending_failures = 0
+
+        def step(self, *args, **kwargs):
+            if self._pending_failures > 0:
+                self._pending_failures -= 1
+                raise RuntimeError("this schedule cannot be replayed")
+            return super().step(*args, **kwargs)
+
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _BrittleStepLR(optimizer, step_size=2, gamma=0.5)
+    scheduler._pending_failures = 1
+
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        result = _train(
+            model, optimizer, _loader(), {"epochs": 5},
+            lr_scheduler=scheduler, start_epoch=3,
+        )
+
+    assert result["metrics"]["total_epochs_run"] == 2, "training carried on regardless"
+    assert result["metrics"]["start_epoch"] == 3
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("replaying epoch 1 of 3" in m for m in messages), messages
+
+
+@pytest.mark.filterwarnings("ignore:custom schedule notice")
+def test_replay_only_suppresses_the_step_order_warnings() -> None:
+    """The suppression is by message, so a real schedule warning still lands.
+
+    The marker only silences the copy this scheduler emits while being
+    *constructed*, which is outside the block under test; the recorder below
+    still sees the one raised during the replay.
+    """
+    import warnings as warnings_mod
+
+    class _NoisyStepLR(torch.optim.lr_scheduler.StepLR):
+        def get_lr(self):
+            warnings_mod.warn("custom schedule notice", UserWarning)
+            return super().get_lr()
+
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _NoisyStepLR(optimizer, step_size=2, gamma=0.5)
+
+    with warnings_mod.catch_warnings(record=True) as seen:
+        warnings_mod.simplefilter("always")
+        assert _fast_forward_scheduler(scheduler, optimizer, 2) is True
+
+    messages = [str(w.message) for w in seen]
+    assert any("custom schedule notice" in m for m in messages), messages
+    assert not any("lr_scheduler.step()" in m for m in messages), messages
 
 
 def test_reduce_lr_on_plateau_is_left_alone_by_the_fast_forward() -> None:

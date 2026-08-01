@@ -147,10 +147,12 @@ def _prepare_optimizer(optimizer: Any, model: Any) -> tuple[Any, str]:
     accepted = set(inspect.signature(optimizer_cls.__init__).parameters)
     optimizer_kwargs = {k: v for k, v in optimizer.defaults.items() if k in accepted}
     logger.warning(
-        "Optimizer %s tracks %d parameter tensors that do not match the model's %d "
-        "in count or shape, so it was built for a different model: constructing a "
-        "fresh one and discarding any optimizer state.",
-        optimizer_cls.__name__, len(tracked), len(model_params),
+        "Optimizer %s tracks %d parameter tensors that do not line up with the "
+        "model's %d (count or shape), so its state cannot be re-keyed onto this "
+        "model. Constructing a fresh %s over model.parameters() and discarding any "
+        "optimizer state. Note this also widens a deliberately partial optimizer "
+        "(e.g. one built over an unfrozen head only) to every parameter.",
+        optimizer_cls.__name__, len(tracked), len(model_params), optimizer_cls.__name__,
     )
     return optimizer_cls(model.parameters(), **optimizer_kwargs), "rebuilt"
 
@@ -180,8 +182,11 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
 
     Returns True when the scheduler was advanced. ``ReduceLROnPlateau`` is
     metric-driven and cannot be replayed without the original loss history, so
-    it is left alone with a warning.
+    it is left alone with a warning. A scheduler that raises mid-replay is
+    likewise left where it is with a warning: an unusable schedule must not
+    take the training run down with it.
     """
+    import re
     import warnings
 
     import torch.optim.lr_scheduler as sched_module
@@ -203,11 +208,31 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
             group["lr"] = base_lr
 
     with warnings.catch_warnings():
-        # The first replayed step() precedes any optimizer.step() on this
-        # scheduler instance, which torch warns about. Here it is expected.
-        warnings.simplefilter("ignore", UserWarning)
-        for _ in range(start_epoch):
-            lr_scheduler.step()
+        # The replay calls step() before this scheduler instance has seen an
+        # optimizer.step(), which torch warns about twice over. Both are
+        # expected here and only here -- suppress those two messages by name
+        # rather than every UserWarning the schedule might legitimately raise
+        # (OneCycleLR's "stepped past total_steps", say).
+        for prefix in (
+            "Detected call of `lr_scheduler.step()` before `optimizer.step()`",
+            "Seems like `optimizer.step()` has been overridden",
+        ):
+            warnings.filterwarnings(
+                "ignore", message=re.escape(prefix), category=UserWarning
+            )
+        for completed in range(start_epoch):
+            try:
+                lr_scheduler.step()
+            except Exception:  # noqa: BLE001 - a broken schedule must not fail the run
+                logger.warning(
+                    "%s raised while replaying epoch %d of %d; leaving it at "
+                    "last_epoch=%s and training on. Wire the scheduler through "
+                    "CheckpointSaver/CheckpointLoader to restore it exactly.",
+                    type(lr_scheduler).__name__, completed + 1, start_epoch,
+                    getattr(lr_scheduler, "last_epoch", "?"),
+                    exc_info=True,
+                )
+                return False
     return True
 
 
@@ -246,8 +271,22 @@ def _prepare_scheduler(
         else:
             logger.info("Re-pointed %s at the optimizer being trained", name)
 
-    if getattr(lr_scheduler, "last_epoch", 0) > 0:
-        logger.info("%s resumes at last_epoch=%d (restored state)", name, lr_scheduler.last_epoch)
+    last_epoch = getattr(lr_scheduler, "last_epoch", 0)
+    if last_epoch > 0:
+        if last_epoch != start_epoch:
+            # The desync this issue exists to eliminate: the schedule and the
+            # epoch counter disagree about where the run is. Trust the
+            # scheduler's own state (it is the only faithful record for a
+            # metric-driven or hand-built schedule) but say so loudly.
+            logger.warning(
+                "%s is at last_epoch=%d but training resumes at epoch %d. The "
+                "learning rate will follow the scheduler, not start_epoch. This "
+                "usually means the checkpoint's scheduler state and its epoch were "
+                "written at different times.",
+                name, last_epoch, start_epoch,
+            )
+        else:
+            logger.info("%s resumes at last_epoch=%d (restored state)", name, last_epoch)
     elif start_epoch > 0 and _fast_forward_scheduler(lr_scheduler, optimizer, start_epoch):
         logger.info("Fast-forwarded %s to last_epoch=%d", name, lr_scheduler.last_epoch)
 
@@ -255,6 +294,26 @@ def _prepare_scheduler(
 
 
 class TrainingLoopNode(BaseNode):
+    """Train a model, optionally resuming a previous run.
+
+    **Indexing basis (#118).** Two things are counted differently and the
+    difference is deliberate:
+
+    * *Epoch numbers are absolute* -- they index the whole training run, not
+      this call. ``epochs`` is the absolute target, the loop runs
+      ``range(start_epoch, epochs)``, and the epoch numbers in the log lines,
+      the ``epoch`` field of progress events and ``metrics["best_epoch"]`` are
+      all the absolute one. Resuming at 2 with ``epochs=4`` reports "3/4" and
+      "4/4".
+    * *Arrays are per call* -- the ``losses`` and ``val_losses`` outputs, the
+      ``losses`` field of progress events and ``metrics["lr_history"]`` cover
+      only the epochs **this** call ran. A resumed leg's ``losses`` therefore
+      holds the remaining epochs alone, not the whole history; the earlier
+      epochs live in the checkpoint's ``losses``. Map array index to absolute
+      epoch with ``metrics["start_epoch"]``, which progress events also carry
+      as ``start_epoch`` whenever it is non-zero.
+    """
+
     NODE_NAME = "TrainingLoop"
     CATEGORY = "Training"
     DESCRIPTION = (
