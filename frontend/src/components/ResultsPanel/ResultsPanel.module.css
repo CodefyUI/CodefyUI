@@ -96,6 +96,13 @@
   color: #FFC107;
 }
 
+/* Runs tab: the same count, teal while at least one run is still going. */
+.countBadgeActive {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: rgba(6, 182, 212, 0.4);
+  color: #06b6d4;
+}
+
 .clearBtn {
   font-size: 0.75rem;
   padding: 2px 8px;
@@ -293,12 +300,37 @@
 .chartContainer {
   flex: 1;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .chartSvg {
   display: block;
   width: 100%;
+}
+
+/* Legend — only rendered for the named multi-series form (#124) */
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-bottom: 4px;
+}
+
+.chartLegendItem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6875rem;
+  color: #aaa;
+  font-family: monospace;
+}
+
+.chartLegendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 /* Config grid */

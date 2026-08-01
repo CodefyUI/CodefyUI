@@ -740,6 +740,39 @@ async def test_a_diverged_loss_is_stored_as_none_not_an_error(store):
     assert [m.value for m in series] == [0.5, None, None, None, 0.25]
 
 
+async def test_latest_metrics_answers_a_whole_page_of_runs_at_once(store):
+    """The Runs table's per-row summary — one query, not one per row."""
+    first = await _make_run(store)
+    second = await _make_run(store)
+    barren = await _make_run(store)
+    await store.log_metrics(first.id, [
+        MetricPoint("train_loss", 2.0, 1), MetricPoint("train_loss", 0.5, 3),
+        MetricPoint("train_loss", 1.0, 2), MetricPoint("val_loss", 0.9, 3),
+    ])
+    await store.log_metrics(second.id, [MetricPoint("lr", 0.01, 7)])
+
+    finals = await store.latest_metrics([first.id, second.id, barren.id])
+    assert finals[first.id] == {"train_loss": 0.5, "val_loss": 0.9}
+    assert finals[second.id] == {"lr": 0.01}
+    # A run with no metrics is simply absent, not a run_id mapped to {}.
+    assert barren.id not in finals
+    # Scoping is real: asking for one run does not leak the other's series.
+    assert await store.latest_metrics([second.id]) == {second.id: {"lr": 0.01}}
+    assert await store.latest_metrics([]) == {}
+    assert await store.latest_metrics(["ghost"]) == {}
+
+
+async def test_latest_metrics_omits_a_series_whose_last_point_diverged(store):
+    """NaN reads back as NULL; reporting it as 0.0 would look like success."""
+    run = await _make_run(store)
+    await store.log_metrics(run.id, [
+        MetricPoint("train_loss", 0.5, 1),
+        MetricPoint("val_loss", 0.4, 1),
+        MetricPoint("train_loss", float("nan"), 2),
+    ])
+    assert await store.latest_metrics([run.id]) == {run.id: {"val_loss": 0.4}}
+
+
 async def test_get_metrics_limit_requires_a_name(store):
     run = await _make_run(store)
     await store.log_metrics(run.id, [MetricPoint("a", 1.0, 0),

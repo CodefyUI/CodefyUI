@@ -18,6 +18,7 @@ import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { fetchHealth } from './api/rest';
 import { useProjectStore } from './store/projectStore';
+import { useRunStore } from './store/runStore';
 import styles from './App.module.css';
 
 // Map user font-size choice to the documentElement. Setting an empty string
@@ -98,6 +99,15 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // #124: a run outlives the page that started it, so a fresh load may open
+  // onto training already in flight with nothing on screen saying so. One
+  // non-blocking toast points at the Runs panel; `checkInProgress` is itself
+  // idempotent per page load, which is what makes StrictMode's double mount
+  // produce one toast rather than two.
+  useEffect(() => {
+    void useRunStore.getState().checkInProgress();
   }, []);
 
   return (

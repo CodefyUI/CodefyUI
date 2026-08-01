@@ -1,16 +1,18 @@
 """REST surface for server-owned graph runs (#120).
 
-Six endpoints over ``RunService`` + ``RunStore``; no execution logic lives
+Eight endpoints over ``RunService`` + ``RunStore``; no execution logic lives
 here. The point of the surface is that a run's lifetime is no longer tied to
 any connection: submit from one client, close it, and query status, events
 and metrics from another.
 
-    POST /api/runs                       submit  -> {run_id, status}
-    GET  /api/runs                       list (newest first, + queue position)
-    GET  /api/runs/{id}                  one row + last event cursor
-    POST /api/runs/{id}/cancel           cooperative stop
-    GET  /api/runs/{id}/events           replay after a cursor, optional long poll
-    GET  /api/runs/{id}/metrics          series as JSON or CSV
+    POST   /api/runs                     submit  -> {run_id, status}
+    GET    /api/runs                     list (newest first, + queue position)
+    GET    /api/runs/{id}                one row + last event cursor
+    DELETE /api/runs/{id}                drop a FINISHED run and its children
+    POST   /api/runs/{id}/cancel         cooperative stop
+    GET    /api/runs/{id}/events         replay after a cursor, optional long poll
+    GET    /api/runs/{id}/metrics        series as JSON or CSV
+    GET    /api/runs/{id}/artifacts      checkpoints and other recorded files
 
 Auth follows the house rule in ``main.py`` exactly: ``auth_guard`` requires
 the session token for the two mutating routes (POST), reads are open like
@@ -128,10 +130,12 @@ async def _queue_positions(service: RunService,
 
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
-                 active: bool, last_cursor: int | None = None) -> dict[str, Any]:
+                 active: bool, last_cursor: int | None = None,
+                 final_metrics: dict[str, float] | None = None) -> dict[str, Any]:
     payload = asdict(record)
     payload["queue_position"] = queue_position
     payload["active"] = active
+    payload["final_metrics"] = final_metrics or {}
     if last_cursor is not None:
         payload["last_cursor"] = last_cursor
     return payload
@@ -211,6 +215,11 @@ async def list_runs(
 
     ``total`` is the unpaged count so a table can size itself without
     walking every page.
+
+    Each row also carries ``final_metrics`` — the last value of every series
+    the run recorded (#124). One grouped query for the whole page, so the
+    Runs table can print a final loss per row without a metrics request per
+    row; ``{}`` for a run that recorded nothing.
     """
     service = _get_service(request)
     # Validate the CLIENT's input here rather than catching ValueError off
@@ -229,11 +238,13 @@ async def list_runs(
                                             offset=offset)
     total = await service.store.count_runs(status=status)
     positions = await _queue_positions(service, records)
+    finals = await service.store.latest_metrics([r.id for r in records])
     return {
         "runs": [
             _run_payload(record,
                          queue_position=positions.get(record.id),
-                         active=service.is_active(record.id))
+                         active=service.is_active(record.id),
+                         final_metrics=finals.get(record.id))
             for record in records
         ],
         "total": total,
@@ -248,12 +259,49 @@ async def get_run(run_id: str, request: Request):
     service = _get_service(request)
     record = await _require_run(service, run_id)
     positions = await _queue_positions(service, [record])
+    finals = await service.store.latest_metrics([record.id])
     return _run_payload(
         record,
         queue_position=positions.get(record.id),
         active=service.is_active(run_id),
         last_cursor=await service.store.latest_cursor(run_id),
+        final_metrics=finals.get(record.id),
     )
+
+
+@router.delete("/{run_id}")
+async def delete_run(run_id: str, request: Request):
+    """Drop a FINISHED run; its metrics, events and artifacts cascade.
+
+    Refuses a queued or running row with a 409. That is the same policy
+    ``RunStore.prune`` already encodes ("active runs are never deleted"), and
+    it is checked against the SERVICE rather than the row's ``status``
+    string: the row is the slower of the two: a run cancelled a millisecond
+    ago is still ``running`` in SQL while its task deregisters, and a queued
+    run's place in the FIFO lives only in memory. Deleting either would
+    leave the scheduler holding a handle to a row that no longer exists.
+
+    ``deleted`` is always True here — a run that was never there is a 404,
+    not a quiet success, because the Runs panel showed the user a row and
+    "it was already gone" is information they should see.
+
+    Artifact FILES are left on disk, exactly as ``RunStore.delete_run`` says:
+    a checkpoint is the user's, not the run log's, and this endpoint is
+    history cleanup rather than a delete-my-weights button.
+    """
+    service = _get_service(request)
+    await _require_run(service, run_id)
+    if service.is_active(run_id) or service.is_queued(run_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"run '{run_id}' is queued or running; cancel it first")
+    deleted = await service.store.delete_run(run_id)
+    if not deleted:
+        # The row existed at _require_run and is gone now: another client
+        # deleted it in between. Same answer as if we had lost the race by a
+        # little more, which is what a 404 already means here.
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+    return {"run_id": run_id, "deleted": True}
 
 
 @router.post("/{run_id}/cancel")
@@ -372,5 +420,37 @@ async def get_run_metrics(
             {"node_id": point.node_id, "name": point.name, "step": point.step,
              "value": point.value, "ts": point.ts}
             for point in metrics
+        ],
+    }
+
+
+@router.get("/{run_id}/artifacts")
+async def get_run_artifacts(
+    run_id: str,
+    request: Request,
+    kind: str | None = Query(default=None),
+):
+    """Files the run recorded — checkpoints, exports, images — oldest first.
+
+    ``exec_run_artifacts`` rows also ride the event log as ``artifact``
+    events, and until now that was the only way to reach them. Mining the
+    log works for a client that watched the whole run and nothing else: the
+    Runs panel opens on a run it did NOT watch, and tailing a long run's
+    events to find three checkpoints means replaying thousands of node
+    statuses to reconstruct a list the store can answer in one indexed read.
+
+    ``kind`` is not validated against a whitelist — the vocabulary is open
+    by design (``ARTIFACT_KIND_*`` are conveniences, not a constraint), so
+    an unknown kind is an empty list rather than a 400.
+    """
+    service = _get_service(request)
+    await _require_run(service, run_id)
+    artifacts = await service.store.list_artifacts(run_id, kind=kind)
+    return {
+        "run_id": run_id,
+        "artifacts": [
+            {"id": record.id, "kind": record.kind, "path": record.path,
+             "meta": record.meta, "created_at": record.created_at}
+            for record in artifacts
         ],
     }

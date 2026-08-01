@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTabStore } from '../../store/tabStore';
+import { useRunStore, isActiveRun } from '../../store/runStore';
 import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
+import { RunsPanel } from './RunsPanel';
 import styles from './ResultsPanel.module.css';
 
 const MIN_HEIGHT = 80;
 const MAX_HEIGHT = 600;
 const DEFAULT_HEIGHT = 200;
 
-type PanelTab = 'log' | 'training';
+type PanelTab = 'log' | 'training' | 'runs';
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -62,6 +64,11 @@ export function ResultsPanel() {
 
   const setSelectedNodeId = useTabStore((s) => s.setSelectedNodeId);
 
+  // Runs are app-level, so the badge counts what the store knows rather than
+  // anything belonging to this tab.
+  const runCount = useRunStore((s) => s.runs.length);
+  const runsActive = useRunStore((s) => s.runs.some((r) => isActiveRun(r.status)));
+
   const [collapsed, setCollapsed] = useState(false);
   const [panelHeight, setPanelHeight] = useState(DEFAULT_HEIGHT);
   const [panelTab, setPanelTab] = useState<PanelTab>('log');
@@ -100,10 +107,12 @@ export function ResultsPanel() {
 
   const hasTraining = trainingData.epochs.length > 0 || trainingData.config !== null;
 
-  // Auto-switch to Training tab when first training data arrives
+  // Auto-switch to Training tab when first training data arrives — unless
+  // the user is on Runs, which they had to navigate to deliberately and
+  // which is where they watch OTHER runs from.
   useEffect(() => {
     if (hasTraining && !prevHadTraining.current) {
-      setPanelTab('training');
+      setPanelTab((current) => (current === 'runs' ? current : 'training'));
     }
     prevHadTraining.current = hasTraining;
   }, [hasTraining]);
@@ -258,15 +267,30 @@ export function ResultsPanel() {
               </span>
             )}
           </button>
+          <button type="button"
+            className={`${styles.panelTabBtn} ${panelTab === 'runs' ? styles.panelTabActive : ''}`}
+            onClick={() => setPanelTab('runs')}
+          >
+            {t('runs.tab')}
+            {runCount > 0 && (
+              <span className={`${styles.countBadge} ${runsActive ? styles.countBadgeActive : ''}`}>
+                {runCount}
+              </span>
+            )}
+          </button>
         </div>
         <div className={styles.headerRight}>
-          <button type="button"
-            onClick={clearLogs}
-            disabled={logs.length === 0}
-            className={`${styles.clearBtn} ${logs.length === 0 ? styles.clearBtnDisabled : styles.clearBtnEnabled}`}
-          >
-            {t('results.clear')}
-          </button>
+          {/* Clear empties THIS tab's log, which the Runs tab does not show
+              — offering it there would look like a way to delete runs. */}
+          {panelTab !== 'runs' && (
+            <button type="button"
+              onClick={clearLogs}
+              disabled={logs.length === 0}
+              className={`${styles.clearBtn} ${logs.length === 0 ? styles.clearBtnDisabled : styles.clearBtnEnabled}`}
+            >
+              {t('results.clear')}
+            </button>
+          )}
           <button type="button"
             onClick={toggleCollapse}
             className={styles.collapseBtn}
@@ -350,6 +374,13 @@ export function ResultsPanel() {
           )}
           <div ref={bottomRef} />
         </div>
+      )}
+
+      {!collapsed && panelTab === 'runs' && (
+        <RunsPanel
+          panelHeight={panelHeight}
+          onWatchRun={() => setPanelTab('log')}
+        />
       )}
 
       {!collapsed && panelTab === 'training' && (

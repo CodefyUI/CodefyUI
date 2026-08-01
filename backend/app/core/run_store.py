@@ -824,6 +824,46 @@ class RunStore:
 
         return [MetricRecord.from_row(r) for r in await self.db.run(_select)]
 
+    async def latest_metrics(
+        self, run_ids: Sequence[str],
+    ) -> dict[str, dict[str, float]]:
+        """``{run_id: {series name: last value}}`` for a PAGE of runs (#124).
+
+        The Runs table wants one number per row ("final loss") and asking
+        per row would be fifty round trips per poll. One grouped query over
+        ``idx_exec_run_metrics_series (run_id, name, step)`` answers the
+        whole page instead, which is the same bargain ``_queue_positions``
+        already strikes at the REST layer: a bounded extra read, and only
+        when there is something to read.
+
+        A series whose last point is a non-finite NULL is OMITTED rather
+        than reported as 0.0 — a diverged loss must not render as a
+        suspiciously good one. Its earlier points are untouched; only the
+        summary number is withheld.
+        """
+        ids = list(run_ids)
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        sql = (
+            "SELECT m.run_id, m.name, m.value FROM exec_run_metrics m "
+            "JOIN (SELECT run_id, name, MAX(step) AS step "
+            f"      FROM exec_run_metrics WHERE run_id IN ({placeholders}) "
+            "       GROUP BY run_id, name) last "
+            "  ON last.run_id = m.run_id AND last.name = m.name "
+            " AND last.step = m.step"
+        )
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(sql, ids).fetchall()
+
+        out: dict[str, dict[str, float]] = {}
+        for row in await self.db.run(_select):
+            if row["value"] is None:
+                continue
+            out.setdefault(row["run_id"], {})[row["name"]] = row["value"]
+        return out
+
     async def list_metric_names(self, run_id: str) -> list[str]:
         """Distinct series names for a run — the chart legend."""
         def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
