@@ -5,8 +5,13 @@ import styles from './ResultsPanel.module.css';
 export interface ChartSeries {
   name: string;
   points: { x: number; y: number }[];
-  /** Override the palette pick — otherwise assigned by position. */
+  /** Override the palette pick — otherwise derived from the name. */
   color?: string;
+  /**
+   * What the colour is derived from, when it should not be `name`. Lets a
+   * disambiguated label (`loss @node-a`) still take the colour of `loss`.
+   */
+  colorKey?: string;
 }
 
 /**
@@ -23,6 +28,42 @@ export const SERIES_COLORS = [
   '#AB47BC', // purple
   '#42A5F5', // blue
 ] as const;
+
+/**
+ * The series everyone charts, pinned so the common picture never moves.
+ * `train_loss` amber keeps a run's loss curve the same colour it is on the
+ * Training tab.
+ */
+const PINNED_SERIES_COLORS: Record<string, string> = {
+  train_loss: SERIES_COLORS[0],
+  loss: SERIES_COLORS[0],
+  val_loss: SERIES_COLORS[1],
+  valid_loss: SERIES_COLORS[1],
+  test_loss: SERIES_COLORS[1],
+  lr: SERIES_COLORS[2],
+  learning_rate: SERIES_COLORS[2],
+};
+
+/**
+ * A stable colour for a series NAME.
+ *
+ * Deliberately not "the palette indexed by position": series appear as the
+ * run produces them, so a `val_loss` that starts at epoch 5 would sort in
+ * ahead of `lr` and recolour it mid-run — the one thing a live chart must
+ * never do, because the reader has already learned which line is which.
+ * A name-derived colour is fixed from the first frame to the last.
+ */
+export function colorForSeries(name: string): string {
+  const pinned = PINNED_SERIES_COLORS[name];
+  if (pinned) return pinned;
+  // djb2, taken positive. Any stable hash does; this one is short and has
+  // no dependencies.
+  let hash = 5381;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) + hash + name.charCodeAt(i)) | 0;
+  }
+  return SERIES_COLORS[Math.abs(hash) % SERIES_COLORS.length];
+}
 
 interface LossChartProps {
   /**
@@ -140,8 +181,8 @@ export function LossChart({
   const formatTick = (v: number) =>
     v < 0.001 ? v.toExponential(1) : v < 1 ? v.toFixed(3) : v.toFixed(2);
 
-  const colorOf = (line: ChartSeries, i: number) =>
-    line.color ?? SERIES_COLORS[i % SERIES_COLORS.length];
+  const colorOf = (line: ChartSeries) =>
+    line.color ?? colorForSeries(line.colorKey ?? line.name);
 
   return (
     <div className={styles.chartContainer} ref={containerRef}>
@@ -150,11 +191,11 @@ export function LossChart({
           change every existing Training-tab screenshot for no information. */}
       {series && (
         <div className={styles.chartLegend}>
-          {lines.map((line, i) => (
+          {lines.map((line) => (
             <span key={line.name} className={styles.chartLegendItem}>
               <span
                 className={styles.chartLegendSwatch}
-                style={{ background: colorOf(line, i) }}
+                style={{ background: colorOf(line) }}
               />
               {line.name}
             </span>
@@ -195,13 +236,13 @@ export function LossChart({
             <polyline
               points={path.points}
               fill="none"
-              stroke={colorOf(lines[i], i)}
+              stroke={colorOf(lines[i])}
               strokeWidth={1.5}
               strokeLinejoin="round"
               strokeLinecap="round"
             />
             {path.last && (
-              <circle cx={path.last.x} cy={path.last.y} r={3} fill={colorOf(lines[i], i)} />
+              <circle cx={path.last.x} cy={path.last.y} r={3} fill={colorOf(lines[i])} />
             )}
           </g>
         ))}

@@ -112,11 +112,46 @@ export interface RunLogLine {
   tone: 'info' | 'success' | 'error' | 'warning';
 }
 
+/**
+ * Joins a metric name to its producing node id to form a series key.
+ *
+ * Two nodes in one graph may both log `loss`. Keying by name alone would
+ * interleave their points into one zig-zagging line that is not any node's
+ * loss, so the key carries both and `splitSeriesKey` takes them apart. The
+ * panel labels a series with its plain name until there is an actual
+ * collision to disambiguate.
+ *
+ * NUL as the separator because a metric name is an arbitrary string chosen
+ * by whoever wrote the node: a space, a colon or a slash could each appear
+ * in one and would split the key in the wrong place.
+ */
+export const SERIES_KEY_SEP = '\u0000';
+
+export function seriesKey(name: string, nodeId: string | null): string {
+  return nodeId ? `${name}${SERIES_KEY_SEP}${nodeId}` : name;
+}
+
+export function splitSeriesKey(key: string): { name: string; nodeId: string | null } {
+  const at = key.indexOf(SERIES_KEY_SEP);
+  return at === -1
+    ? { name: key, nodeId: null }
+    : { name: key.slice(0, at), nodeId: key.slice(at + 1) };
+}
+
 export interface RunDetail {
   runId: string;
   status: RunStatus;
   /**
-   * `name -> (step -> value)`.
+   * The run's own row, as `GET /api/runs/{id}` returned it.
+   *
+   * Held here rather than looked up in `runs` because the detail must not
+   * go blank when its run leaves the filtered list — which happens the
+   * moment a user watching a running job switches the filter, or the job
+   * finishes while `running` is selected.
+   */
+  row: RunSummary | null;
+  /**
+   * `seriesKey -> (step -> value)`.
    *
    * Keyed by step rather than an array because the seed from `/metrics` and
    * the tail from `/events` overlap: the two are read at slightly different
@@ -136,6 +171,16 @@ interface RunState {
   runs: RunSummary[];
   /** Unpaged count for the current filter, so the table can say "50 of 214". */
   total: number;
+  /**
+   * How many runs are queued or running RIGHT NOW, app-wide.
+   *
+   * Kept apart from `runs` because it has to be true before the panel has
+   * ever been opened (the tab badge is the only hint a detached run gives an
+   * unaware user) and has to stay true while a status filter is hiding the
+   * active rows. Seeded by the mount-time check, then maintained by every
+   * list poll.
+   */
+  activeCount: number;
   loading: boolean;
   error: string | null;
   filter: RunStatusFilter;
@@ -156,10 +201,12 @@ interface RunState {
   checkInProgress: () => Promise<number>;
 }
 
-function emptyDetail(runId: string, status: RunStatus): RunDetail {
+function emptyDetail(runId: string, status: RunStatus,
+                     row: RunSummary | null = null): RunDetail {
   return {
     runId,
     status,
+    row,
     series: {},
     log: [],
     artifacts: [],
@@ -223,13 +270,21 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
             series = { ...series };
             touchedSeries = true;
           }
-          series[point.name] = { ...(series[point.name] ?? {}), [point.step]: point.value };
+          const key = seriesKey(
+            point.name, typeof point.node_id === 'string' ? point.node_id : null);
+          series[key] = { ...(series[key] ?? {}), [point.step]: point.value };
         }
         break;
       }
       case 'artifact': {
         if (typeof payload.path !== 'string') break;
-        const id = typeof payload.artifact_id === 'number' ? payload.artifact_id : event.cursor;
+        // A real row id is a positive integer from sqlite. The cursor
+        // fallback is PREFIXED so a synthesised key can never collide with
+        // one — otherwise cursor 7 and artifact row 7 would deduplicate
+        // each other and one of the two would never be listed.
+        const id = typeof payload.artifact_id === 'number'
+          ? payload.artifact_id
+          : `cursor:${event.cursor}`;
         // The seed from /artifacts may already hold this row — the event log
         // and the table describe the same thing.
         if (artifacts.some((a) => a.id === id)) break;
@@ -308,11 +363,21 @@ export function reduceRunEvents(detail: RunDetail, page: RunEventsPage): RunDeta
  */
 export function toChartSeries(
   series: Record<string, Record<number, number>>,
-  names: string[],
+  keys: string[],
   maxPoints = MAX_CHART_POINTS,
-): { name: string; points: { x: number; y: number }[] }[] {
-  return names.map((name) => {
-    const steps = Object.keys(series[name] ?? {})
+): { name: string; colorKey: string; points: { x: number; y: number }[] }[] {
+  // A node id is only worth showing when it is what tells two lines apart.
+  const perName = new Map<string, number>();
+  for (const key of keys) {
+    const { name } = splitSeriesKey(key);
+    perName.set(name, (perName.get(name) ?? 0) + 1);
+  }
+  return keys.map((key) => {
+    const { name, nodeId } = splitSeriesKey(key);
+    const label = (perName.get(name) ?? 0) > 1 && nodeId
+      ? `${name} @${nodeId.slice(0, 8)}`
+      : name;
+    const steps = Object.keys(series[key] ?? {})
       .map(Number)
       .sort((a, b) => a - b);
     const stride = Math.max(1, Math.ceil(steps.length / maxPoints));
@@ -320,11 +385,17 @@ export function toChartSeries(
     if (stride > 1 && steps.length > 0 && picked[picked.length - 1] !== steps[steps.length - 1]) {
       picked.push(steps[steps.length - 1]);
     }
-    return { name, points: picked.map((x) => ({ x, y: series[name][x] })) };
+    return {
+      name: label,
+      // Colour follows the METRIC, not the disambiguated label, so a second
+      // node joining late does not recolour the first node's line.
+      colorKey: name,
+      points: picked.map((x) => ({ x, y: series[key][x] })),
+    };
   });
 }
 
-/** Series names in a stable, human order: the chart legend must not shuffle. */
+/** Series keys in a stable, human order: the chart legend must not shuffle. */
 export function seriesNames(series: Record<string, Record<number, number>>): string[] {
   return Object.keys(series).sort();
 }
@@ -357,10 +428,25 @@ async function tickList() {
   if (watchers > 0) scheduleList();
 }
 
+/**
+ * Abandon the current event follower, if any.
+ *
+ * Two mechanisms, and both are needed. `abort()` releases the parked HTTP
+ * request immediately — a 25 s long poll left dangling holds a connection
+ * open on a server with a small pool. The generation bump is what stops the
+ * LOOP: an abort only rejects the request in flight, and without the
+ * generation check the follower would simply issue the next one.
+ */
 function stopFollowing() {
   followGeneration += 1;
   followAbort?.abort();
   followAbort = null;
+}
+
+/** Follow *runId* from *cursor* under a fresh generation. */
+function startFollowing(runId: string, cursor: number) {
+  stopFollowing();
+  void follow(runId, cursor, followGeneration);
 }
 
 /**
@@ -407,6 +493,7 @@ async function follow(runId: string, startCursor: number, generation: number) {
 export const useRunStore = create<RunState>((set, get) => ({
   runs: [],
   total: 0,
+  activeCount: 0,
   loading: false,
   error: null,
   filter: 'all',
@@ -427,10 +514,24 @@ export const useRunStore = create<RunState>((set, get) => ({
         status: filter === 'all' ? undefined : [filter],
         limit: RUN_LIST_LIMIT,
       });
+      // An unfiltered page already contains every active run — the list is
+      // newest-first and an active run is by definition recent — so the
+      // badge comes free. Under a filter it does not, and a stale badge on
+      // the ONE affordance that reports detached runs is worse than one
+      // extra bounded request while the user is deliberately filtering.
+      const active = filter === 'all'
+        ? page.runs.filter((run) => ACTIVE.has(run.status)).length
+        : (await listRuns({ status: ACTIVE_RUN_STATUSES, limit: 1 })).total;
       // The filter can change while a request is in flight; a late page for
       // the previous filter must not repaint the table.
       if (get().filter !== filter) return;
-      set({ runs: page.runs, total: page.total, loading: false, error: null });
+      set({
+        runs: page.runs,
+        total: page.total,
+        activeCount: active,
+        loading: false,
+        error: null,
+      });
     } catch (err) {
       set({ loading: false, error: errorMessage(err) });
     }
@@ -443,10 +544,10 @@ export const useRunStore = create<RunState>((set, get) => ({
       set({ selectedRunId: null, detail: null });
       return;
     }
-    const known = get().runs.find((run) => run.id === runId);
+    const known = get().runs.find((run) => run.id === runId) ?? null;
     set({
       selectedRunId: runId,
-      detail: emptyDetail(runId, known?.status ?? 'running'),
+      detail: emptyDetail(runId, known?.status ?? 'running', known),
     });
 
     let run;
@@ -487,7 +588,8 @@ export const useRunStore = create<RunState>((set, get) => ({
     const series: Record<string, Record<number, number>> = {};
     for (const point of metrics?.metrics ?? []) {
       if (point.value === null || !Number.isFinite(point.value)) continue;
-      series[point.name] = { ...(series[point.name] ?? {}), [point.step]: point.value };
+      const key = seriesKey(point.name, point.node_id);
+      series[key] = { ...(series[key] ?? {}), [point.step]: point.value };
     }
 
     const startCursor = Math.max(0, run.last_cursor - LOG_TAIL_EVENTS);
@@ -496,6 +598,7 @@ export const useRunStore = create<RunState>((set, get) => ({
         detail: {
           ...state.detail,
           status: run.status,
+          row: run,
           series,
           artifacts: artifacts?.artifacts ?? [],
           cursor: startCursor,
@@ -504,10 +607,13 @@ export const useRunStore = create<RunState>((set, get) => ({
       }
       : {}));
 
-    void follow(runId, startCursor, generation);
+    // Only stream while something is on screen to stream into; `watch()`
+    // resumes from `detail.cursor` when a panel comes back.
+    if (watchers > 0) startFollowing(runId, startCursor);
   },
 
   cancel: async (runId) => {
+    if (get().busy[runId]) return;
     set((state) => ({ busy: { ...state.busy, [runId]: true } }));
     const { t } = useI18n.getState();
     try {
@@ -529,6 +635,7 @@ export const useRunStore = create<RunState>((set, get) => ({
   },
 
   remove: async (runId) => {
+    if (get().busy[runId]) return;
     set((state) => ({ busy: { ...state.busy, [runId]: true } }));
     const { t } = useI18n.getState();
     try {
@@ -551,6 +658,11 @@ export const useRunStore = create<RunState>((set, get) => ({
   },
 
   exportCsv: async (runId) => {
+    // Guarded like the other row actions: a CSV of a long run takes long
+    // enough that an impatient second click is normal, and it would start a
+    // second download of the same file.
+    if (get().busy[runId]) return;
+    set((state) => ({ busy: { ...state.busy, [runId]: true } }));
     try {
       await downloadRunMetricsCsv(runId);
     } catch (err) {
@@ -558,32 +670,68 @@ export const useRunStore = create<RunState>((set, get) => ({
         `${useI18n.getState().t('runs.toast.exportFailed')}: ${errorMessage(err)}`,
         'error',
       );
+    } finally {
+      set((state) => {
+        const busy = { ...state.busy };
+        delete busy[runId];
+        return { busy };
+      });
     }
   },
 
+  /**
+   * Register a viewer. Both readers — the list poll and the detail's event
+   * follower — live between the first `watch()` and the last release.
+   *
+   * The event follower is tied to the SAME refcount rather than to the
+   * component that opened the detail, because `selectedRunId` is app-level:
+   * `ResultsPanel` is instantiated once per canvas tab, so unmounting one
+   * of them must not abandon a follower the others are still rendering.
+   * When the last one goes the selection is kept but the network stops, and
+   * re-watching resumes from the cursor already applied — which is also
+   * what makes StrictMode's mount/unmount/mount leave a live follower
+   * behind instead of a silently dead detail.
+   */
   watch: () => {
     watchers += 1;
     if (watchers === 1) {
       set({ loading: true });
       void tickList();
+      const { selectedRunId, detail } = get();
+      if (selectedRunId !== null && detail !== null) {
+        startFollowing(selectedRunId, detail.cursor);
+      }
     }
     let released = false;
     return () => {
       if (released) return;
       released = true;
       watchers -= 1;
-      if (watchers === 0 && listTimer !== null) {
+      if (watchers > 0) return;
+      if (listTimer !== null) {
         clearTimeout(listTimer);
         listTimer = null;
       }
+      stopFollowing();
     };
   },
 
+  /**
+   * Mount-time check: how many runs are still going.
+   *
+   * Also seeds `activeCount`, which is what puts a number on the Runs tab
+   * before anyone has opened it. Without that seed the badge appears only
+   * after the first visit — precisely backwards, since the badge exists to
+   * tell a user who does not yet know that a run outlived their reload.
+   *
+   * The toast fires once per page load; the count is stored either way.
+   */
   checkInProgress: async () => {
     if (inProgressChecked) return 0;
     inProgressChecked = true;
     try {
       const page = await listRuns({ status: ACTIVE_RUN_STATUSES, limit: 1 });
+      set({ activeCount: page.total });
       if (page.total > 0) {
         toast(useI18n.getState().t('runs.toast.inProgress', { count: page.total }), 'info');
       }
@@ -606,6 +754,7 @@ export function _resetRunStoreForTesting(): void {
   useRunStore.setState({
     runs: [],
     total: 0,
+    activeCount: 0,
     loading: false,
     error: null,
     filter: 'all',

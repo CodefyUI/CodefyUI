@@ -55,7 +55,7 @@ beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('test');
-  useRunStore.setState({ runs: [], total: 0 });
+  useRunStore.setState({ runs: [], total: 0, activeCount: 0 });
 });
 
 afterEach(() => {
@@ -511,6 +511,7 @@ describe('ResultsPanel — Runs tab', () => {
     useRunStore.setState({
       runs: statuses.map((status, i) => ({ id: `r${i}`, status })) as never,
       total: statuses.length,
+      activeCount: statuses.filter((s) => s === 'running' || s === 'queued').length,
     });
   }
 
@@ -532,21 +533,34 @@ describe('ResultsPanel — Runs tab', () => {
     expect(screen.getByText(t('runs.tab')).closest('button')).not.toBeDisabled();
   });
 
-  it('badges the number of listed runs, teal only while one is still going', () => {
+  it('badges the number of ACTIVE runs, and nothing when none are going', () => {
     seedLogs([]);
     const { rerender } = render(<ResultsPanel />);
-    // No runs known: no badge at all.
     const runsBtn = () => screen.getByText(t('runs.tab')).closest('button')!;
-    expect(within(runsBtn()).queryByText('2')).not.toBeInTheDocument();
+    // Nothing known yet: no badge at all.
+    expect(within(runsBtn()).queryByText(/\d/)).not.toBeInTheDocument();
 
+    // Runs exist but all of them are history -- still no badge, because the
+    // badge answers "is something happening", not "does history exist".
     act(() => { seedRuns(['succeeded', 'failed']); });
     rerender(<ResultsPanel />);
-    const finished = within(runsBtn()).getByText('2');
-    expect(finished.className).not.toMatch(/countBadgeActive/);
+    expect(within(runsBtn()).queryByText(/\d/)).not.toBeInTheDocument();
 
-    act(() => { seedRuns(['running', 'succeeded']); });
+    act(() => { seedRuns(['running', 'queued', 'succeeded']); });
     rerender(<ResultsPanel />);
-    expect(within(runsBtn()).getByText('2').className).toMatch(/countBadgeActive/);
+    const badge = within(runsBtn()).getByText('2');
+    expect(badge.className).toMatch(/countBadgeActive/);
+  });
+
+  it('badges before the panel has ever been opened, from the mount-time check', () => {
+    // The list is empty because nothing has polled yet; `activeCount` came
+    // from App's bootstrap check. Without this the only affordance that
+    // reports a detached run appears only AFTER the user finds the tab.
+    seedLogs([]);
+    act(() => { useRunStore.setState({ runs: [], total: 0, activeCount: 3 }); });
+    render(<ResultsPanel />);
+    const runsBtn = screen.getByText(t('runs.tab')).closest('button')!;
+    expect(within(runsBtn).getByText('3')).toBeInTheDocument();
   });
 
   it('hides Clear on the Runs tab — it empties this tab log, not the runs', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { LossChart, SERIES_COLORS } from './LossChart';
+import { LossChart, SERIES_COLORS, colorForSeries } from './LossChart';
 
 /**
  * Control the ResizeObserver + clientWidth so the chart's `chartW`/`chartH`
@@ -163,13 +163,50 @@ describe('LossChart — named series', () => {
     expect(container.querySelectorAll('circle')).toHaveLength(2);
   });
 
-  it('colours series from the palette in order and shows a legend', () => {
+  it('pins the well-known series to their colours and shows a legend', () => {
     const { container } = render(<LossChart series={twoSeries} height={120} />);
     const polylines = Array.from(container.querySelectorAll('polyline'));
-    expect(polylines[0].getAttribute('stroke')).toBe(SERIES_COLORS[0]);
-    expect(polylines[1].getAttribute('stroke')).toBe(SERIES_COLORS[1]);
+    expect(polylines[0].getAttribute('stroke')).toBe(SERIES_COLORS[0]);  // amber
+    expect(polylines[1].getAttribute('stroke')).toBe(SERIES_COLORS[1]);  // teal
     expect(container.textContent).toContain('train_loss');
     expect(container.textContent).toContain('val_loss');
+  });
+
+  it('does not recolour a series when another one arrives later', () => {
+    // The headline reason colours are name-derived rather than positional:
+    // `val_loss` first appearing at epoch 5 sorts in AHEAD of `lr`, and a
+    // positional palette would swap both lines mid-run.
+    const lr = { name: 'lr', points: [{ x: 1, y: 0.01 }] };
+    const before = render(<LossChart series={[lr]} height={120} />);
+    const lrColour = before.container.querySelector('polyline')!.getAttribute('stroke');
+    before.unmount();
+
+    const after = render(
+      <LossChart series={[{ name: 'val_loss', points: [{ x: 5, y: 1 }] }, lr]} height={120} />,
+    );
+    const strokes = Array.from(after.container.querySelectorAll('polyline'))
+      .map((p) => p.getAttribute('stroke'));
+    expect(strokes[1]).toBe(lrColour);
+    expect(strokes[0]).not.toBe(lrColour);
+  });
+
+  it('gives an unknown series a colour that is stable across renders', () => {
+    const first = colorForSeries('grad_norm');
+    expect(colorForSeries('grad_norm')).toBe(first);
+    expect(SERIES_COLORS).toContain(first as never);
+    // Different names generally differ; the same name never does.
+    expect(colorForSeries('perplexity')).toBe(colorForSeries('perplexity'));
+  });
+
+  it('takes the colour from colorKey when the label was disambiguated', () => {
+    const { container } = render(
+      <LossChart
+        series={[{ name: 'loss @node-a', colorKey: 'loss', points: [{ x: 1, y: 1 }] }]}
+        height={120}
+      />,
+    );
+    expect(container.querySelector('polyline')!.getAttribute('stroke'))
+      .toBe(colorForSeries('loss'));
   });
 
   it('honours a per-series colour override', () => {

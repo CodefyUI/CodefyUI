@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTabStore } from '../../store/tabStore';
-import { useRunStore, isActiveRun } from '../../store/runStore';
+import { useRunStore } from '../../store/runStore';
 import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
@@ -64,10 +64,11 @@ export function ResultsPanel() {
 
   const setSelectedNodeId = useTabStore((s) => s.setSelectedNodeId);
 
-  // Runs are app-level, so the badge counts what the store knows rather than
-  // anything belonging to this tab.
-  const runCount = useRunStore((s) => s.runs.length);
-  const runsActive = useRunStore((s) => s.runs.some((r) => isActiveRun(r.status)));
+  // The badge counts RUNNING/QUEUED runs, app-wide — the one fact a user who
+  // has never opened the tab needs from it. `activeCount` is seeded by the
+  // mount-time check and maintained by the list poll, so the badge is right
+  // before the first visit and decays after leaving.
+  const activeRuns = useRunStore((s) => s.activeCount);
 
   const [collapsed, setCollapsed] = useState(false);
   const [panelHeight, setPanelHeight] = useState(DEFAULT_HEIGHT);
@@ -272,9 +273,9 @@ export function ResultsPanel() {
             onClick={() => setPanelTab('runs')}
           >
             {t('runs.tab')}
-            {runCount > 0 && (
-              <span className={`${styles.countBadge} ${runsActive ? styles.countBadgeActive : ''}`}>
-                {runCount}
+            {activeRuns > 0 && (
+              <span className={`${styles.countBadge} ${styles.countBadgeActive}`}>
+                {activeRuns}
               </span>
             )}
           </button>

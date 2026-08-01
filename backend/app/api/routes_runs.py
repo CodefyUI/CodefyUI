@@ -288,6 +288,12 @@ async def delete_run(run_id: str, request: Request):
     Artifact FILES are left on disk, exactly as ``RunStore.delete_run`` says:
     a checkpoint is the user's, not the run log's, and this endpoint is
     history cleanup rather than a delete-my-weights button.
+
+    Captured OUTPUTS are a different matter and DO go: ``RunOutputStore``
+    keys its in-memory tensors by the same run id, so leaving them behind
+    would keep a deleted run's activations resident until its LRU slot was
+    reused — and ``/api/execution/outputs`` would keep serving them for a
+    run that answers 404 everywhere else.
     """
     service = _get_service(request)
     await _require_run(service, run_id)
@@ -301,6 +307,9 @@ async def delete_run(run_id: str, request: Request):
         # deleted it in between. Same answer as if we had lost the race by a
         # little more, which is what a 404 already means here.
         raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
+    outputs = getattr(request.app.state, "run_output_store", None)
+    if outputs is not None:
+        await outputs.delete_run(run_id)
     return {"run_id": run_id, "deleted": True}
 
 

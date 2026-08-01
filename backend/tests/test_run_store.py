@@ -773,6 +773,89 @@ async def test_latest_metrics_omits_a_series_whose_last_point_diverged(store):
     assert await store.latest_metrics([run.id]) == {run.id: {"val_loss": 0.4}}
 
 
+async def test_latest_metrics_breaks_a_step_tie_by_write_order(store):
+    """Two points can share (name, step) -- two nodes logging `loss`, or a
+    replayed step. Without a tie-break sqlite may return either, so the
+    table's number would flicker between polls of a live run."""
+    run = await _make_run(store)
+    await store.log_metrics(run.id, [
+        MetricPoint("loss", 9.0, 1, "node-a"),
+        MetricPoint("loss", 1.0, 1, "node-b"),      # written last
+    ])
+    for _ in range(5):                              # same answer every time
+        assert await store.latest_metrics([run.id]) == {run.id: {"loss": 1.0}}
+
+    # The collapse is by NAME, so a later write from either producer wins.
+    await store.log_metric(run.id, "loss", 7.0, 1, node_id="node-a")
+    assert await store.latest_metrics([run.id]) == {run.id: {"loss": 7.0}}
+    # ...and the detail chart still sees both producers, which is where the
+    # per-node truth lives.
+    assert {m.node_id for m in await store.get_metrics(run.id)} == {
+        "node-a", "node-b"}
+
+
+async def test_latest_metrics_is_seek_bounded_not_a_table_sweep(store):
+    """The Runs panel polls this every 2 s; its cost must track the number
+    of SERIES, not the number of points.
+
+    The obvious `GROUP BY run_id, name` with MAX(step) walks every index
+    entry for every listed run (~347 ms at 4M points, measured). The
+    leapfrog CTE seeks instead. Asserted through the query plan rather than
+    a wall-clock threshold, which would be flaky on a loaded CI box.
+    """
+    from app.core.run_store import _LATEST_METRICS_SQL
+
+    plan = " ".join(r["detail"] for r in store.db._conn.execute(
+        "EXPLAIN QUERY PLAN " + _LATEST_METRICS_SQL, ("r",)).fetchall())
+    # Every touch of the metrics table is a SEARCH via the series index...
+    assert "idx_exec_run_metrics_series" in plan
+    # ...and never a full scan of it, at any depth of the plan.
+    assert "SCAN exec_run_metrics" not in plan
+    assert "TEMP B-TREE" not in plan
+
+
+async def test_latest_metrics_cost_does_not_grow_with_the_point_count(store):
+    """The behavioural half of the plan assertion above.
+
+    Same one series, a hundred times the points, and the query must do
+    about the same amount of work. Measured with sqlite's own progress
+    handler (VDBE instructions) rather than a wall clock, so it is a
+    statement about the plan and not about how busy the machine is.
+    """
+    from app.core.run_store import _LATEST_METRICS_SQL
+
+    conn = store.db._conn
+
+    def _vm_steps(run_id: str) -> int:
+        ticks = 0
+
+        def _tick() -> int:
+            nonlocal ticks
+            ticks += 1
+            return 0
+
+        conn.set_progress_handler(_tick, 20)
+        try:
+            conn.execute(_LATEST_METRICS_SQL, (run_id,)).fetchall()
+        finally:
+            conn.set_progress_handler(None, 0)
+        return ticks
+
+    small = await _make_run(store)
+    big = await _make_run(store)
+    await store.log_metrics(small.id, [MetricPoint("loss", 1.0, s)
+                                       for s in range(20)])
+    await store.log_metrics(big.id, [MetricPoint("loss", 1.0, s)
+                                     for s in range(2000)])
+    assert await store.latest_metrics([small.id, big.id]) == {
+        small.id: {"loss": 1.0}, big.id: {"loss": 1.0}}
+
+    # 100x the points. A sweep would cost ~100x; a seek costs a few extra
+    # b-tree levels. Generous bound -- this fails loudly on a regression to
+    # GROUP BY and never on ordinary noise.
+    assert _vm_steps(big.id) < _vm_steps(small.id) * 3
+
+
 async def test_get_metrics_limit_requires_a_name(store):
     run = await _make_run(store)
     await store.log_metrics(run.id, [MetricPoint("a", 1.0, 0),

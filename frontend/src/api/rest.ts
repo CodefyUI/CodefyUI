@@ -280,7 +280,12 @@ export async function getRunMetrics(
 
 /** One `exec_run_artifacts` row — a file the run wrote and wants remembered. */
 export interface RunArtifact {
-  id: number;
+  /**
+   * The `exec_run_artifacts` row id. A client that learned of an artifact
+   * from the event log rather than this endpoint may substitute a prefixed
+   * synthetic key, which is why this is not `number`.
+   */
+  id: number | string;
   /** Open vocabulary: `checkpoint`, `export`, `image`, or a node pack's own. */
   kind: string;
   /** Path as the node wrote it, relative to the data root. */

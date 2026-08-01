@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
-import { RunsPanel, formatDuration, runDevice } from './RunsPanel';
+import { render, screen, fireEvent, waitFor, within, act, createEvent } from '@testing-library/react';
+import { RunsPanel, formatDuration, formatStarted, runDevice } from './RunsPanel';
 import * as rest from '../../api/rest';
 import type { RunStatus, RunSummary } from '../../api/rest';
 import { _resetRunStoreForTesting, useRunStore } from '../../store/runStore';
@@ -215,14 +215,23 @@ describe('RunsPanel — status transitions', () => {
   });
 
   it('ticks the duration of a live run without a new poll', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const started = new Date(Date.now() - 5000).toISOString();
-    await renderPanel([
+    // Pinned clock, no `shouldAdvanceTime`: with the real clock still
+    // running underneath, "5s" is only true until the render crosses a
+    // second boundary, and the assertion would fail a few times a minute.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-01T10:00:05.000Z'));
+    const started = '2026-08-01T10:00:00.000000Z';
+    api.listRuns.mockResolvedValue(listing([
       makeRun({ id: 'a', name: 'live', status: 'running', started_at: started, finished_at: null }),
-    ]);
+    ]));
+    render(<RunsPanel panelHeight={400} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
     expect(within(rowOf('a')).getByText('5s')).toBeInTheDocument();
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-    expect(within(rowOf('a')).getByText('8s')).toBeInTheDocument();
+    // Inside the 2 s poll interval, so the only thing that moved is the clock.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(within(rowOf('a')).getByText('6s')).toBeInTheDocument();
+    expect(api.listRuns).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -347,6 +356,18 @@ describe('RunsPanel — re-attach', () => {
     fireEvent.click(within(rowOf('live-1')).getByText(t('runs.action.reattach')));
     await waitFor(() => expect(send).toHaveBeenCalled());
     expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('sends one attach for a double-click, not two', async () => {
+    // The server REPLACES an attachment rather than ignoring a duplicate, so
+    // a second attach would detach the first and replay the whole log again.
+    const { send } = stubSocket(false);
+    await renderPanel([makeRun({ id: 'live-1', status: 'running', finished_at: null })]);
+    const button = within(rowOf('live-1')).getByText(t('runs.action.reattach'));
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('offers no live-watch button for a finished run', async () => {
@@ -550,6 +571,170 @@ describe('RunsPanel — detail view', () => {
   });
 });
 
+// ── detail: multi-node series, header resilience, localized log ───────────
+
+describe('RunsPanel — detail edge cases', () => {
+  const run = makeRun({ id: 'r1', name: 'two-heads', status: 'succeeded' });
+
+  beforeEach(() => {
+    api.getRun.mockResolvedValue({ ...run, last_cursor: 1 });
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 1,
+    });
+  });
+
+  it('keeps two nodes logging the same series name on separate lines', async () => {
+    api.getRunMetrics.mockResolvedValue({
+      run_id: 'r1',
+      names: ['loss'],
+      metrics: [
+        { node_id: 'head-alpha1', name: 'loss', step: 1, value: 2 },
+        { node_id: 'head-beta22', name: 'loss', step: 1, value: 5 },
+      ],
+    });
+    await renderPanel([run]);
+    fireEvent.click(rowOf('r1'));
+    const chart = await screen.findByTestId('loss-chart');
+    // Two lines, each labelled with the node that produced it -- not one
+    // line zig-zagging between two nodes' values.
+    expect(chart.getAttribute('data-series')).toBe('loss @head-alp,loss @head-bet');
+  });
+
+  it('keeps the detail open when its run leaves the filtered list', async () => {
+    api.getRunMetrics.mockResolvedValue({ run_id: 'r1', names: [], metrics: [] });
+    await renderPanel([run]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+
+    // A filter change (or a status transition) drops it out of `runs`.
+    act(() => { useRunStore.setState({ runs: [] }); });
+    const detail = within(screen.getByTestId('run-detail'));
+    expect(detail.getByText('two-heads')).toBeInTheDocument();
+    expect(detail.getByText(t('runs.status.succeeded'))).toBeInTheDocument();
+  });
+
+  it('localizes the node status in a log line rather than printing the token', async () => {
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'r1', status: 'succeeded', active: false, cursor: 2,
+      events: [
+        { cursor: 2, type: 'node_status', ts: 't', payload: { node_id: 'n1', status: 'cached' } },
+      ],
+    });
+    useI18n.setState({ locale: 'zh-TW' });
+    await renderPanel([run]);
+    fireEvent.click(rowOf('r1'));
+    const detail = await screen.findByTestId('run-detail');
+    await waitFor(() =>
+      expect(within(detail).getByText(
+        t('runs.log.node', { node: 'n1', status: t('runs.nodeStatus.cached') }),
+      )).toBeInTheDocument(),
+    );
+    expect(within(detail).queryByText(/cached/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the raw token for a status it does not know', async () => {
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'r1', status: 'succeeded', active: false, cursor: 2,
+      events: [
+        { cursor: 2, type: 'node_status', ts: 't', payload: { node_id: 'n1', status: 'quantised' } },
+      ],
+    });
+    await renderPanel([run]);
+    fireEvent.click(rowOf('r1'));
+    const detail = await screen.findByTestId('run-detail');
+    await waitFor(() =>
+      expect(within(detail).getByText(/quantised/)).toBeInTheDocument());
+  });
+
+  it('labels the metrics x axis in the active locale', async () => {
+    api.getRunMetrics.mockResolvedValue({
+      run_id: 'r1', names: ['loss'],
+      metrics: [{ node_id: 'loop', name: 'loss', step: 1, value: 1 }],
+    });
+    useI18n.setState({ locale: 'zh-TW' });
+    await renderPanel([run]);
+    fireEvent.click(rowOf('r1'));
+    const chart = await screen.findByTestId('loss-chart');
+    expect(chart.getAttribute('data-xlabel')).toBe(t('runs.detail.step'));
+    expect(chart.getAttribute('data-xlabel')).not.toBe('step');
+  });
+
+  it('runs a backend error message through the friendly formatter', async () => {
+    // The panel shows the same rewritten text the Execution Log does, rather
+    // than a raw Python traceback line.
+    const failed = makeRun({
+      id: 'r1', name: 'boom', status: 'failed',
+      error: 'ValueError: expected 3 channels, got 1',
+    });
+    api.getRun.mockResolvedValue({ ...failed, last_cursor: 1 });
+    await renderPanel([failed]);
+    fireEvent.click(rowOf('r1'));
+    const detail = await screen.findByTestId('run-detail');
+    expect(within(detail).getByText(/expected 3 channels, got 1/).textContent)
+      .not.toContain('ValueError:');
+  });
+});
+
+// ── keyboard access ───────────────────────────────────────────────────────
+
+describe('RunsPanel — keyboard', () => {
+  it('exposes each row as a labelled button and opens it with Enter', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'mnist', status: 'running', finished_at: null })]);
+    const row = rowOf('a');
+    expect(row).toHaveAttribute('role', 'button');
+    expect(row).toHaveAttribute('tabindex', '0');
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(row.getAttribute('aria-label')).toBe(`mnist — ${t('runs.status.running')}`);
+
+    fireEvent.keyDown(row, { key: 'Enter' });
+    await waitFor(() => expect(useRunStore.getState().selectedRunId).toBe('a'));
+    expect(rowOf('a')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('opens and closes with Space, and swallows the page scroll', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'mnist' })]);
+    const row = rowOf('a');
+
+    const down = createEvent.keyDown(row, { key: ' ' });
+    fireEvent(row, down);
+    expect(down.defaultPrevented).toBe(true);
+    await waitFor(() => expect(useRunStore.getState().selectedRunId).toBe('a'));
+
+    fireEvent.keyDown(rowOf('a'), { key: ' ' });
+    await waitFor(() => expect(useRunStore.getState().selectedRunId).toBeNull());
+  });
+
+  it('ignores keys that are not an activation', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'mnist' })]);
+    fireEvent.keyDown(rowOf('a'), { key: 'ArrowDown' });
+    fireEvent.keyDown(rowOf('a'), { key: 'a' });
+    expect(useRunStore.getState().selectedRunId).toBeNull();
+  });
+});
+
+// ── busy guard, from the button's side ────────────────────────────────────
+
+describe('RunsPanel — busy rows', () => {
+  it('disables every action on a row while one of them is in flight', async () => {
+    await renderPanel([makeRun({ id: 'a', name: 'live', status: 'running', finished_at: null })]);
+    act(() => { useRunStore.setState({ busy: { a: true } }); });
+
+    const row = rowOf('a');
+    for (const label of ['runs.action.cancel', 'runs.action.reattach', 'runs.action.csv'] as const) {
+      expect(within(row).getByText(t(label))).toBeDisabled();
+    }
+  });
+
+  it('leaves other rows alone', async () => {
+    await renderPanel([
+      makeRun({ id: 'a', name: 'busy-one', status: 'running', finished_at: null }),
+      makeRun({ id: 'b', name: 'free-one', status: 'running', finished_at: null }),
+    ]);
+    act(() => { useRunStore.setState({ busy: { a: true } }); });
+    expect(within(rowOf('b')).getByText(t('runs.action.cancel'))).not.toBeDisabled();
+  });
+});
+
 // ── i18n ──────────────────────────────────────────────────────────────────
 
 describe('RunsPanel — i18n', () => {
@@ -564,6 +749,21 @@ describe('RunsPanel — i18n', () => {
 // ── pure helpers ──────────────────────────────────────────────────────────
 
 describe('RunsPanel helpers', () => {
+  it('shows a clock for today and a date for anything older', () => {
+    const now = Date.parse('2026-08-01T18:00:00.000Z');
+    const todayLocal = new Date(now);
+    todayLocal.setHours(9, 30, 15, 0);
+    expect(formatStarted(todayLocal.toISOString(), now)).toBe('09:30:15');
+
+    const older = new Date(now);
+    older.setDate(older.getDate() - 3);
+    older.setHours(14, 5, 0, 0);
+    expect(formatStarted(older.toISOString(), now)).toMatch(/^\d{2}-\d{2} 14:05$/);
+
+    expect(formatStarted(null)).toBe('-');
+    expect(formatStarted('not-a-date')).toBe('-');
+  });
+
   it('formats durations in seconds, minutes and hours', () => {
     const start = '2026-08-01T10:00:00.000000Z';
     expect(formatDuration(null, null)).toBe('-');

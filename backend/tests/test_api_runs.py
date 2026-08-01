@@ -38,6 +38,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
+from app.core.run_output_store import RunOutputStore
 from app.core.run_service import QueueLimits, RunService
 from app.core.run_store import RunProvenance, RunStore
 from app.main import app
@@ -640,6 +641,22 @@ async def test_list_rows_carry_the_last_value_of_every_series(client):
     assert detail["final_metrics"] == {"loss": 0.5}
 
 
+async def test_metrics_csv_for_a_run_with_no_series_is_header_only(client):
+    """Not an empty body and not a 404: a CSV with a header and no rows is
+    what pandas/Excel read as "zero measurements", and it keeps the panel's
+    export button honest for a run that never logged anything."""
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+
+    response = await client.get(f"/api/runs/{run_id}/metrics?format=csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.text == "run_id,node_id,name,step,value,ts\n"
+    rows = list(csv.reader(io.StringIO(response.text)))
+    assert rows == [list(("run_id", "node_id", "name", "step", "value", "ts"))]
+
+
 async def test_metrics_reject_an_unknown_format(client):
     run_id = (await client.post("/api/runs",
                                 json={"graph": _graph()})).json()["run_id"]
@@ -780,6 +797,41 @@ async def test_delete_refuses_a_queued_run_with_409(client, run_app):
     finally:
         await single.shutdown()
         app.state.run_service = run_app
+
+
+async def test_delete_also_purges_the_run_s_captured_outputs(client):
+    """RunOutputStore keys tensors by the same run id. Left behind they stay
+    resident until their LRU slot is reused, and /api/execution/outputs keeps
+    serving a run that answers 404 everywhere else."""
+    outputs = RunOutputStore(max_runs=4)
+    app.state.run_output_store = outputs
+    try:
+        run_id = (await client.post("/api/runs",
+                                    json={"graph": _graph()})).json()["run_id"]
+        await _poll_until_terminal(client, run_id)
+        await outputs.put(run_id, "print", "value", "hi")
+        assert await outputs.has_run(run_id) is True
+
+        assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+        assert await outputs.has_run(run_id) is False
+    finally:
+        delattr(app.state, "run_output_store")
+
+
+async def test_delete_works_when_no_output_store_is_wired(client):
+    """The store is optional on app.state (httpx's ASGITransport skips the
+    lifespan), so its absence must not turn a delete into a 500."""
+    saved = getattr(app.state, "run_output_store", None)
+    if saved is not None:
+        delattr(app.state, "run_output_store")
+    try:
+        run_id = (await client.post("/api/runs",
+                                    json={"graph": _graph()})).json()["run_id"]
+        await _poll_until_terminal(client, run_id)
+        assert (await client.delete(f"/api/runs/{run_id}")).status_code == 200
+    finally:
+        if saved is not None:
+            app.state.run_output_store = saved
 
 
 async def test_delete_unknown_run_is_404(client):

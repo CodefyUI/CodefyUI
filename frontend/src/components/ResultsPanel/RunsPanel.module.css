@@ -14,6 +14,10 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Columns respond to the LIST's own width, not the viewport's: the dock
+     halves when a detail opens, so a 1280px laptop gives the table ~600px
+     and a viewport breakpoint would never fire. */
+  container-type: inline-size;
 }
 
 /* ── toolbar ── */
@@ -37,11 +41,12 @@
 
 .filterBtn {
   font-size: 0.6875rem;
-  color: #777;
+  color: #8a8a8a;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 3px;
-  padding: 2px 7px;
+  min-height: 24px;
+  padding: 3px 9px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -106,6 +111,11 @@
 
 .rowSelected {
   background: rgba(77, 144, 254, 0.1);
+}
+
+.row:focus-visible {
+  outline: 2px solid #4d90fe;
+  outline-offset: -2px;
 }
 
 .rowHeader {
@@ -199,11 +209,18 @@
   background: rgba(239, 83, 80, 0.12);
 }
 
-.chip_cancelled,
-.chip_interrupted {
+/* Cancelled is a decision; interrupted is a crash that left a row behind.
+   Reading the same would hide the one the user needs to act on. */
+.chip_cancelled {
   color: #999;
   border-color: #3a3a3a;
   background: #1c1c1c;
+}
+
+.chip_interrupted {
+  color: #D9873F;
+  border-color: rgba(217, 135, 63, 0.45);
+  background: rgba(217, 135, 63, 0.12);
 }
 
 /* ── row actions ── */
@@ -222,7 +239,9 @@
   background: transparent;
   border: 1px solid #3a3a3a;
   border-radius: 3px;
-  padding: 1px 6px;
+  /* 24px tall: small enough for a dense table, large enough to hit. */
+  min-height: 24px;
+  padding: 2px 8px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -238,8 +257,11 @@
   cursor: not-allowed;
 }
 
+/* #EF5350 on the #111 panel is 4.9:1 — the resting colour has to clear
+   4.5:1 too, which the previous muted #C05C58 (3.6:1) did not. */
 .rowBtnDanger {
-  color: #C05C58;
+  color: #EF5350;
+  border-color: rgba(239, 83, 80, 0.3);
 }
 
 .rowBtnDanger:hover:not(:disabled) {
@@ -404,4 +426,31 @@
 
 .tone_warning .logText {
   color: #FFC107;
+}
+
+/* ── narrow dock ──────────────────────────────────────────────────────
+   With the detail open, a 1280px laptop leaves the table roughly 600px
+   against a ~676px minimum, which clips the actions column off the right
+   edge. Drop the least load-bearing columns instead: `started` is also in
+   the detail header, and the device is repeated on the chip row there. */
+
+@container (max-width: 720px) {
+  .row {
+    grid-template-columns:
+      minmax(80px, 200px) 84px minmax(70px, 150px) 68px 76px minmax(120px, 1fr);
+  }
+
+  .colStarted {
+    display: none;
+  }
+}
+
+@container (max-width: 560px) {
+  .row {
+    grid-template-columns: minmax(70px, 1fr) 84px 68px minmax(110px, auto);
+  }
+
+  .colDevice {
+    display: none;
+  }
 }

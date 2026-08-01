@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
+import { friendlyError } from '../../utils/errorMessages';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import {
@@ -11,7 +12,7 @@ import {
   type RunLogLine,
   type RunStatusFilter,
 } from '../../store/runStore';
-import type { RunStatus, RunSummary } from '../../api/rest';
+import type { RunSummary } from '../../api/rest';
 import { LossChart } from './LossChart';
 import styles from './RunsPanel.module.css';
 
@@ -24,9 +25,6 @@ const FILTERS: RunStatusFilter[] = [
   'cancelled',
   'interrupted',
 ];
-
-/** Statuses a live attach can do anything with. */
-const WATCHABLE = new Set<RunStatus>(['running', 'queued']);
 
 /**
  * Which series to print in the "final loss" column, in preference order.
@@ -55,6 +53,26 @@ function formatClock(iso: string | null): string {
   if (Number.isNaN(date.getTime())) return '-';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/**
+ * Start time for the table: a clock for today, a date for anything older.
+ *
+ * Runs are retained across restarts, so a column of bare clock times reads
+ * as "all of these ran this morning" when half of them are from last week.
+ */
+export function formatStarted(iso: string | null, now: number = Date.now()): string {
+  if (!iso) return '-';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '-';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const today = new Date(now);
+  const sameDay = date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+  return sameDay
+    ? `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /**
@@ -106,6 +124,15 @@ const STOP_REASON_KEY = {
   interrupted: 'runs.status.interrupted',
 } as const;
 
+/** The engine's node statuses, as they arrive on `node_status` events. */
+const NODE_STATUS_KEY = {
+  running: 'runs.nodeStatus.running',
+  completed: 'runs.nodeStatus.completed',
+  cached: 'runs.nodeStatus.cached',
+  skipped: 'runs.nodeStatus.skipped',
+  error: 'runs.nodeStatus.error',
+} as const;
+
 function LogLine({ line }: { line: RunLogLine }) {
   const { t } = useI18n();
   const text = (() => {
@@ -125,13 +152,18 @@ function LogLine({ line }: { line: RunLogLine }) {
       }
       case 'warning':
         return t('runs.log.warning', { detail: line.detail ?? '' });
-      default:
+      default: {
+        // The backend's node statuses are a small closed vocabulary; an
+        // unknown one from a newer backend falls through as its raw token
+        // rather than being dropped or rendered as a missing key.
+        const key = NODE_STATUS_KEY[line.status as keyof typeof NODE_STATUS_KEY];
         return (
           t('runs.log.node', {
             node: (line.nodeId ?? '').slice(0, 8),
-            status: line.status ?? '',
-          }) + (line.detail ? `: ${line.detail}` : '')
+            status: key ? t(key) : (line.status ?? ''),
+          }) + (line.detail ? `: ${friendlyError(line.detail)}` : '')
         );
+      }
     }
   })();
   return (
@@ -146,9 +178,14 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
   const { t } = useI18n();
   const detail = useRunStore((s) => s.detail);
   const select = useRunStore((s) => s.select);
-  const run = useRunStore((s) =>
+  // The LIST row first (a poll keeps it fresh), then the detail's own copy.
+  // A filter change or a status transition can drop the run out of `runs`
+  // while its detail is open, and a header that blanks out then would look
+  // like the run had been deleted.
+  const listRow = useRunStore((s) =>
     s.runs.find((candidate) => candidate.id === s.selectedRunId) ?? null,
   );
+  const run = listRow ?? detail?.row ?? null;
 
   const chart = useMemo(() => {
     if (!detail) return [];
@@ -192,10 +229,12 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
         </button>
       </div>
 
-      {detail.error && <div className={styles.detailError}>{detail.error}</div>}
+      {detail.error && (
+        <div className={styles.detailError}>{friendlyError(detail.error)}</div>
+      )}
       {run?.error && (
         <div className={styles.detailError}>
-          {t('runs.detail.error')}: {run.error}
+          {t('runs.detail.error')}: {friendlyError(run.error)}
         </div>
       )}
 
@@ -206,7 +245,7 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
             {detail.loading ? t('runs.loading') : t('runs.detail.noMetrics')}
           </div>
         ) : (
-          <LossChart series={chart} height={chartHeight} xLabel="step" />
+          <LossChart series={chart} height={chartHeight} xLabel={t('runs.detail.step')} />
         )}
       </div>
 
@@ -288,11 +327,17 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
   // canvas tab), started only while this tab is actually on screen.
   useEffect(() => useRunStore.getState().watch(), []);
 
-  const reattach = useCallback(async (run: RunSummary) => {
-    if (!WATCHABLE.has(run.status)) {
-      useToastStore.getState().addToast(t('runs.reattach.needsRunning'), 'warning');
-      return;
-    }
+  // A second click while the confirm or the socket handshake is pending
+  // would send a second `attach`, and the server REPLACES an attachment
+  // rather than ignoring the duplicate — the run's whole log would replay
+  // twice into a panel that was just cleared for it.
+  const attaching = useRef(false);
+
+  // No status guard: the button only renders for an active run, and one that
+  // finished between the poll and the click still attaches correctly — the
+  // server replays its whole log and ends the stream, which is exactly what
+  // "show me this run" should do.
+  const attachToRun = useCallback(async (run: RunSummary) => {
     const tab = useTabStore.getState().getActiveTab();
     // One socket holds exactly one attachment (#121), so pointing this tab
     // at another run stops the events it is currently showing. The other run
@@ -334,6 +379,16 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
     // Log, which is a tab away from the button they just pressed.
     onWatchRun?.();
   }, [t, onWatchRun]);
+
+  const reattach = useCallback(async (run: RunSummary) => {
+    if (attaching.current) return;
+    attaching.current = true;
+    try {
+      await attachToRun(run);
+    } finally {
+      attaching.current = false;
+    }
+  }, [attachToRun]);
 
   const askDelete = useCallback(async (run: RunSummary) => {
     const ok = await confirm({
@@ -381,17 +436,21 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
           </div>
         </div>
 
-        {error && <div className={styles.listError}>{error}</div>}
+        {error && <div className={styles.listError}>{friendlyError(error)}</div>}
 
-        <div className={styles.table}>
-          <div className={`${styles.row} ${styles.rowHeader}`}>
-            <span>{t('runs.col.name')}</span>
-            <span>{t('runs.col.status')}</span>
-            <span>{t('runs.col.device')}</span>
-            <span>{t('runs.col.started')}</span>
-            <span>{t('runs.col.duration')}</span>
-            <span>{t('runs.col.loss')}</span>
-            <span />
+        <div className={styles.table} role="table">
+          <div className={`${styles.row} ${styles.rowHeader}`} role="row">
+            <span role="columnheader">{t('runs.col.name')}</span>
+            <span role="columnheader">{t('runs.col.status')}</span>
+            <span role="columnheader" className={styles.colDevice}>
+              {t('runs.col.device')}
+            </span>
+            <span role="columnheader" className={styles.colStarted}>
+              {t('runs.col.started')}
+            </span>
+            <span role="columnheader">{t('runs.col.duration')}</span>
+            <span role="columnheader">{t('runs.col.loss')}</span>
+            <span role="columnheader" aria-hidden="true" />
           </div>
 
           {runs.length === 0 ? (
@@ -407,18 +466,35 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
               const loss = finalLoss(run);
               const isBusy = busy[run.id] === true;
               const active = isActiveRun(run.status);
+              const expanded = selectedRunId === run.id;
+              const toggle = () => void select(expanded ? null : run.id);
               return (
+                // Opening a run is this panel's primary interaction, so the
+                // row is a real control: focusable, Enter/Space activated,
+                // and announced with the run's name and status rather than
+                // as an unlabelled group of cells.
                 <div
                   key={run.id}
-                  className={`${styles.row} ${selectedRunId === run.id ? styles.rowSelected : ''}`}
-                  onClick={() => void select(selectedRunId === run.id ? null : run.id)}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expanded}
+                  aria-label={`${run.name || t('runs.unnamed')} — ${t(`runs.status.${run.status}`)}`}
+                  className={`${styles.row} ${expanded ? styles.rowSelected : ''}`}
+                  onClick={toggle}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    // Space scrolls the table otherwise, and Enter would also
+                    // reach a parent handler.
+                    e.preventDefault();
+                    toggle();
+                  }}
                   data-run-id={run.id}
                 >
                   <span className={styles.nameCell} title={run.name ?? run.id}>
                     {run.name || t('runs.unnamed')}
                   </span>
                   <StatusChip run={run} />
-                  <span className={styles.mono}>
+                  <span className={`${styles.mono} ${styles.colDevice}`}>
                     {runDevice(run)}
                     {run.status === 'queued' && (
                       <span className={styles.queuePos}>
@@ -430,7 +506,9 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                       </span>
                     )}
                   </span>
-                  <span className={styles.mono}>{formatClock(run.started_at)}</span>
+                  <span className={`${styles.mono} ${styles.colStarted}`}>
+                    {formatStarted(run.started_at, clock)}
+                  </span>
                   <span className={styles.mono}>
                     {formatDuration(run.started_at, run.finished_at, clock)}
                   </span>
@@ -455,6 +533,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                         <button
                           type="button"
                           className={styles.rowBtn}
+                          disabled={isBusy}
                           onClick={() => void reattach(run)}
                           title={t('runs.action.reattachTitle')}
                         >
@@ -465,6 +544,7 @@ export function RunsPanel({ panelHeight, onWatchRun }: RunsPanelProps) {
                     <button
                       type="button"
                       className={styles.rowBtn}
+                      disabled={isBusy}
                       onClick={() => void exportCsv(run.id)}
                       title={t('runs.action.csvTitle')}
                     >

@@ -10,7 +10,9 @@ import {
   _resetRunStoreForTesting,
   isActiveRun,
   reduceRunEvents,
+  seriesKey,
   seriesNames,
+  splitSeriesKey,
   toChartSeries,
   useRunStore,
   type RunDetail,
@@ -82,6 +84,7 @@ function emptyDetail(overrides: Partial<RunDetail> = {}): RunDetail {
   return {
     runId: 'r1',
     status: 'running',
+    row: null,
     series: {},
     log: [],
     artifacts: [],
@@ -235,13 +238,14 @@ describe('runStore — selecting a run', () => {
     await useRunStore.getState().select('r1');
     const detail = useRunStore.getState().detail!;
     expect(useRunStore.getState().selectedRunId).toBe('r1');
-    expect(detail.series).toEqual({ train_loss: { 1: 2, 2: 1 } });
+    expect(detail.series).toEqual({ [seriesKey('train_loss', 'loop')]: { 1: 2, 2: 1 } });
     expect(detail.artifacts.map((a) => a.id)).toEqual([4]);
     expect(detail.loading).toBe(false);
   });
 
   it('starts the event follower a tail-length behind the head, not from zero', async () => {
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 5000 });
+    useRunStore.getState().watch();
     await useRunStore.getState().select('r1');
     await vi.waitFor(() => expect(api.getRunEvents).toHaveBeenCalled());
     expect(api.getRunEvents.mock.calls[0][1]).toMatchObject({
@@ -252,6 +256,7 @@ describe('runStore — selecting a run', () => {
 
   it('replays a short run from the very beginning', async () => {
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 9 });
+    useRunStore.getState().watch();
     await useRunStore.getState().select('r1');
     await vi.waitFor(() => expect(api.getRunEvents).toHaveBeenCalled());
     expect(api.getRunEvents.mock.calls[0][1]).toMatchObject({ cursor: 0 });
@@ -311,6 +316,25 @@ describe('runStore — selecting a run', () => {
 // ── the event follower ────────────────────────────────────────────────────
 
 describe('runStore — following events', () => {
+  /**
+   * A follower only runs while something is watching, so every test here
+   * registers a viewer first. Released by `_resetRunStoreForTesting`.
+   *
+   * Timers are faked throughout: the loop's only real waits are
+   * `FOLLOW_IDLE_MS` sleeps, and asserting "it did NOT poll again" by
+   * sleeping 10 ms of wall clock proves nothing — the next iteration was
+   * 500 ms away regardless.
+   */
+  let releaseWatcher: () => void = () => {};
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    releaseWatcher = useRunStore.getState().watch();
+  });
+
+  /** Let queued microtasks (a resolved fetch, a `set`) run to completion. */
+  const settle = () => vi.advanceTimersByTimeAsync(0);
+
   it('folds a live page into the open detail and stops when the run is over', async () => {
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1', status: 'running' }), last_cursor: 0 });
     api.getRunEvents
@@ -321,22 +345,22 @@ describe('runStore — following events', () => {
           { cursor: 2, type: 'execution_complete', ts: 't', payload: null },
         ],
       }))
-      .mockResolvedValueOnce(eventsPage({ status: 'succeeded', active: false, cursor: 2 }));
+      .mockResolvedValue(eventsPage({ status: 'succeeded', active: false, cursor: 2 }));
 
     await useRunStore.getState().select('r1');
-    await vi.waitFor(() => {
-      expect(useRunStore.getState().detail!.series).toEqual({ train_loss: { 1: 0.9 } });
-    });
-    await vi.waitFor(() => expect(api.getRunEvents).toHaveBeenCalledTimes(2));
-    // Terminal status + an empty page: nothing more can arrive, so it stops.
-    const calls = api.getRunEvents.mock.calls.length;
-    await new Promise((r) => setTimeout(r, 10));
-    expect(api.getRunEvents).toHaveBeenCalledTimes(calls);
+    await settle();
+    expect(useRunStore.getState().detail!.series).toEqual({ train_loss: { 1: 0.9 } });
+    expect(api.getRunEvents).toHaveBeenCalledTimes(2);
+
+    // Terminal status + a page that did not advance: nothing more can ever
+    // arrive. A whole minute of timers must not produce another request.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.getRunEvents).toHaveBeenCalledTimes(2);
   });
 
   it('stops rather than busy-waits when a terminal page stops advancing', async () => {
-    // The same page over and over: the first one advances the cursor, the
-    // second cannot, and a terminal run that made no progress is over.
+    // The same page over and over: the first advances the cursor, the second
+    // cannot, and a terminal run that made no progress is over.
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 4 });
     api.getRunEvents.mockResolvedValue(eventsPage({
       status: 'succeeded',
@@ -345,20 +369,21 @@ describe('runStore — following events', () => {
       events: [{ cursor: 4, type: 'execution_complete', ts: 't', payload: null }],
     }));
     await useRunStore.getState().select('r1');
-    await vi.waitFor(() => expect(api.getRunEvents).toHaveBeenCalledTimes(2));
-    await new Promise((r) => setTimeout(r, 40));
+    await settle();
+    expect(api.getRunEvents).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(api.getRunEvents).toHaveBeenCalledTimes(2);
     // And the replayed event was applied exactly once.
     expect(useRunStore.getState().detail!.log).toHaveLength(1);
   });
 
   it('backs off instead of hammering when an ACTIVE run returns no progress', async () => {
-    vi.useFakeTimers();
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1', status: 'running' }), last_cursor: 0 });
     api.getRunEvents.mockResolvedValue(eventsPage({ status: 'running', cursor: 0 }));
 
     await useRunStore.getState().select('r1');
-    await vi.advanceTimersByTimeAsync(0);
+    await settle();
     expect(api.getRunEvents).toHaveBeenCalledTimes(1);
     // Without the backoff this loop would have run thousands of times by now.
     await vi.advanceTimersByTimeAsync(FOLLOW_IDLE_MS - 1);
@@ -367,15 +392,96 @@ describe('runStore — following events', () => {
     expect(api.getRunEvents).toHaveBeenCalledTimes(2);
   });
 
-  it('stops following when the follower is aborted by a new selection', async () => {
+  it('gives up on the run when a request fails or is aborted', async () => {
     api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 0 });
     api.getRunEvents.mockRejectedValue(
       Object.assign(new Error('aborted'), { name: 'AbortError' }),
     );
     await useRunStore.getState().select('r1');
-    await vi.waitFor(() => expect(api.getRunEvents).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 10));
+    await settle();
     expect(api.getRunEvents).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.getRunEvents).toHaveBeenCalledTimes(1);
+  });
+
+  // ── the generation guard and the abort are both load-bearing ───────────
+
+  it('leaves no second follower behind when the selection changes', async () => {
+    // Without the generation bump, selecting r2 would leave the r1 loop
+    // running: aborting only rejects the request in flight, and the loop
+    // would simply issue the next one.
+    api.getRun.mockImplementation(async (id: string) =>
+      ({ ...makeRun({ id, status: 'running' }), last_cursor: 0 }));
+    api.getRunEvents.mockImplementation(async (id: string) =>
+      eventsPage({ run_id: id, status: 'running', cursor: 0 }));
+
+    await useRunStore.getState().select('r1');
+    await settle();
+    await useRunStore.getState().select('r2');
+    await settle();
+    api.getRunEvents.mockClear();
+
+    // Two turns of the backoff. One follower means exactly two requests, and
+    // all of them for r2.
+    await vi.advanceTimersByTimeAsync(FOLLOW_IDLE_MS * 2 + 10);
+    const ids = api.getRunEvents.mock.calls.map((call) => call[0]);
+    expect(new Set(ids)).toEqual(new Set(['r2']));
+    expect(ids).toHaveLength(2);
+  });
+
+  it('aborts the parked request when the last viewer leaves', async () => {
+    // A 25 s long poll left dangling holds a connection open on a server
+    // with a small pool, so releasing must cancel it rather than wait it out.
+    const signals: AbortSignal[] = [];
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1', status: 'running' }), last_cursor: 0 });
+    api.getRunEvents.mockImplementation((_id: string, opts?: { signal?: AbortSignal }) => {
+      if (opts?.signal) signals.push(opts.signal);
+      return new Promise(() => {});     // parked, exactly like the server does
+    });
+
+    const second = useRunStore.getState().watch();
+    await useRunStore.getState().select('r1');
+    await settle();
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+
+    second();
+    expect(signals[0].aborted).toBe(false);   // one viewer still there
+    releaseWatcher();                         // the last one leaves
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it('resumes from the applied cursor when a viewer comes back', async () => {
+    // StrictMode mounts, unmounts and remounts every effect. A follower that
+    // did not come back would leave the detail frozen with no sign of it.
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1', status: 'running' }), last_cursor: 300 });
+    api.getRunEvents.mockResolvedValue(eventsPage({ status: 'running', cursor: 350 }));
+
+    const release = useRunStore.getState().watch();
+    await useRunStore.getState().select('r1');
+    await settle();
+    expect(api.getRunEvents.mock.calls[0][1]).toMatchObject({ cursor: 100 });
+
+    release();
+    releaseWatcher();                    // unmount: no viewers left
+    api.getRunEvents.mockClear();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.getRunEvents).not.toHaveBeenCalled();
+
+    useRunStore.getState().watch();      // remount
+    await settle();
+    // Picks up where it left off — not from the tail start, and not from 0.
+    expect(api.getRunEvents.mock.calls[0][1]).toMatchObject({ cursor: 350 });
+  });
+
+  it('does not start a follower for a selection made while nothing is watching', async () => {
+    releaseWatcher();
+    api.getRun.mockResolvedValue({ ...makeRun({ id: 'r1' }), last_cursor: 5 });
+    await useRunStore.getState().select('r1');
+    await settle();
+    expect(api.getRunEvents).not.toHaveBeenCalled();
+    // The detail is still populated, so opening the panel shows it at once.
+    expect(useRunStore.getState().detail!.cursor).toBe(0);
   });
 });
 
@@ -463,7 +569,7 @@ describe('reduceRunEvents', () => {
     const next = reduceRunEvents(emptyDetail(), eventsPage({
       events: [{ cursor: 42, type: 'artifact', ts: 't', payload: { path: 'a.pt' } }],
     }));
-    expect(next.artifacts[0]).toMatchObject({ id: 42, kind: 'artifact' });
+    expect(next.artifacts[0]).toMatchObject({ id: 'cursor:42', kind: 'artifact' });
   });
 
   it('turns lifecycle events into structured log lines with the right tone', () => {
@@ -572,8 +678,32 @@ describe('toChartSeries', () => {
     expect(series.points).toEqual([{ x: 1, y: 1 }, { x: 2, y: 2 }]);
   });
 
+  it('labels a series plainly until two nodes share the name', () => {
+    const solo = seriesKey('train_loss', 'loop');
+    expect(toChartSeries({ [solo]: { 1: 1 } }, [solo])[0].name).toBe('train_loss');
+
+    const a = seriesKey('loss', 'node-aaaaaaaaaa');
+    const b = seriesKey('loss', 'node-bbbbbbbbbb');
+    const both = toChartSeries({ [a]: { 1: 1 }, [b]: { 1: 2 } }, [a, b]);
+    expect(both.map((s) => s.name)).toEqual(['loss @node-aaa', 'loss @node-bbb']);
+    // ...and both still colour as `loss`, so one arriving late does not
+    // recolour the other.
+    expect(both.map((s) => s.colorKey)).toEqual(['loss', 'loss']);
+  });
+
+  it('round-trips a series key, including names containing separators', () => {
+    for (const name of ['loss', 'val loss', 'a:b/c', 'train_loss']) {
+      expect(splitSeriesKey(seriesKey(name, 'node-1')))
+        .toEqual({ name, nodeId: 'node-1' });
+    }
+    expect(splitSeriesKey(seriesKey('loss', null)))
+      .toEqual({ name: 'loss', nodeId: null });
+  });
+
   it('returns an empty series for a name with no points', () => {
-    expect(toChartSeries({}, ['loss'])).toEqual([{ name: 'loss', points: [] }]);
+    expect(toChartSeries({}, ['loss'])).toEqual([
+      { name: 'loss', colorKey: 'loss', points: [] },
+    ]);
   });
 
   it('names series in a stable sorted order so the legend cannot shuffle', () => {
@@ -648,6 +778,123 @@ describe('runStore — row actions', () => {
     api.downloadRunMetricsCsv.mockRejectedValue(new Error('404'));
     await useRunStore.getState().exportCsv('r1');
     expect(useToastStore.getState().toasts[0]).toMatchObject({ type: 'error' });
+  });
+});
+
+// ── the busy guard ────────────────────────────────────────────────────────
+
+describe('runStore — the busy guard', () => {
+  /** A request the test releases by hand, so `busy` can be observed set. */
+  function pending<T>() {
+    let release!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { release = res; reject = rej; });
+    return { promise, release, reject };
+  }
+
+  it('marks the run busy for the duration of a cancel and clears it after', async () => {
+    const gate = pending<{ run_id: string; status: RunStatus; cancelled: boolean }>();
+    api.cancelRun.mockReturnValue(gate.promise);
+
+    const inFlight = useRunStore.getState().cancel('r1');
+    expect(useRunStore.getState().busy).toEqual({ r1: true });
+
+    gate.release({ run_id: 'r1', status: 'running', cancelled: true });
+    await inFlight;
+    expect(useRunStore.getState().busy).toEqual({});
+  });
+
+  it('ignores a second click while the first action is still in flight', async () => {
+    // The buttons are disabled while busy, but a keyboard repeat or a
+    // double-click can still land two events before React re-renders.
+    const gate = pending<{ run_id: string; status: RunStatus; cancelled: boolean }>();
+    api.cancelRun.mockReturnValue(gate.promise);
+
+    const first = useRunStore.getState().cancel('r1');
+    await useRunStore.getState().cancel('r1');
+    expect(api.cancelRun).toHaveBeenCalledTimes(1);
+
+    gate.release({ run_id: 'r1', status: 'running', cancelled: true });
+    await first;
+  });
+
+  it('guards delete and CSV export the same way', async () => {
+    const del = pending<{ run_id: string; deleted: boolean }>();
+    api.deleteRun.mockReturnValue(del.promise);
+    const first = useRunStore.getState().remove('r1');
+    await useRunStore.getState().remove('r1');
+    expect(api.deleteRun).toHaveBeenCalledTimes(1);
+    del.release({ run_id: 'r1', deleted: true });
+    await first;
+
+    const csv = pending<void>();
+    api.downloadRunMetricsCsv.mockReturnValue(csv.promise);
+    const exporting = useRunStore.getState().exportCsv('r1');
+    expect(useRunStore.getState().busy).toEqual({ r1: true });
+    await useRunStore.getState().exportCsv('r1');
+    expect(api.downloadRunMetricsCsv).toHaveBeenCalledTimes(1);
+    csv.release();
+    await exporting;
+    expect(useRunStore.getState().busy).toEqual({});
+  });
+
+  it('guards each run separately', async () => {
+    const gate = pending<{ run_id: string; status: RunStatus; cancelled: boolean }>();
+    api.cancelRun.mockReturnValueOnce(gate.promise);
+    const first = useRunStore.getState().cancel('r1');
+    await useRunStore.getState().cancel('r2');
+    expect(api.cancelRun).toHaveBeenCalledTimes(2);
+    gate.release({ run_id: 'r1', status: 'running', cancelled: true });
+    await first;
+  });
+});
+
+// ── the active-run badge ──────────────────────────────────────────────────
+
+describe('runStore — activeCount', () => {
+  it('is seeded by the mount-time check, before any list has loaded', async () => {
+    api.listRuns.mockResolvedValue(page([], 3));
+    await useRunStore.getState().checkInProgress();
+    expect(useRunStore.getState().activeCount).toBe(3);
+    expect(useRunStore.getState().runs).toEqual([]);   // nothing listed yet
+  });
+
+  it('comes free from an unfiltered page, with no extra request', async () => {
+    api.listRuns.mockResolvedValue(page([
+      makeRun({ id: 'a', status: 'running' }),
+      makeRun({ id: 'b', status: 'queued' }),
+      makeRun({ id: 'c', status: 'succeeded' }),
+    ]));
+    await useRunStore.getState().refresh();
+    expect(useRunStore.getState().activeCount).toBe(2);
+    expect(api.listRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays true under a filter that hides every active run', async () => {
+    // The badge is the only thing telling a user a detached run exists, so
+    // it must not read zero just because they filtered to `failed`.
+    api.listRuns
+      .mockResolvedValueOnce(page([makeRun({ id: 'f', status: 'failed' })]))
+      .mockResolvedValueOnce(page([], 4));
+    useRunStore.setState({ filter: 'failed' });
+    await useRunStore.getState().refresh();
+
+    expect(useRunStore.getState().runs.map((r) => r.id)).toEqual(['f']);
+    expect(useRunStore.getState().activeCount).toBe(4);
+    expect(api.listRuns).toHaveBeenNthCalledWith(2, {
+      status: rest.ACTIVE_RUN_STATUSES,
+      limit: 1,
+    });
+  });
+
+  it('decays to zero once the runs finish', async () => {
+    api.listRuns.mockResolvedValue(page([makeRun({ id: 'a', status: 'running' })]));
+    await useRunStore.getState().refresh();
+    expect(useRunStore.getState().activeCount).toBe(1);
+
+    api.listRuns.mockResolvedValue(page([makeRun({ id: 'a', status: 'succeeded' })]));
+    await useRunStore.getState().refresh();
+    expect(useRunStore.getState().activeCount).toBe(0);
   });
 });
 
