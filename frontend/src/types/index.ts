@@ -108,7 +108,19 @@ export interface NodeData {
   [key: string]: unknown;
 }
 
-export type ExecutionStatus = 'idle' | 'running' | 'completed' | 'error' | 'skipped' | 'cached';
+// 'interrupted' (core#122): the node polled context.should_stop() inside its
+// own loop, saved what it had and returned PARTIAL outputs. Distinct from
+// 'error' (it did not fail) and from 'completed' (it did not finish), and
+// distinct from a node that never ran at all — which is what it would look
+// like without an entry here.
+export type ExecutionStatus =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'error'
+  | 'skipped'
+  | 'cached'
+  | 'interrupted';
 
 // @xyflow/react v12 expects the generic to be a full Node type (not the data
 // payload). Use this alias wherever a component types its props or a store

@@ -707,6 +707,11 @@ async def execute_graph(
     # context.
     outbox = context.outbox if context is not None else EventOutbox()
     outbox.bind(asyncio.get_running_loop())
+    if context is not None:
+        # A fact about THIS run, not a request: whether anything durable is
+        # listening. Nodes read it through ``can_record_artifacts`` before
+        # creating a file they would otherwise orphan.
+        context.signals_recorded = on_signal is not None
     deliver_lock = asyncio.Lock()
 
     def _signal_node_id(node_id: str | None) -> str | None:
@@ -1012,6 +1017,12 @@ async def execute_graph(
         # the interrupt checkpoint's artifact signal sitting in the outbox,
         # and losing it would mean a checkpoint on disk that no run row
         # knows about.
+        #
+        # This flush is the second half of ArtifactSignal's tail-safety
+        # obligation (see its docstring). Drop-oldest means the newest
+        # survive, so a signal whose loss has consequences outside
+        # observability must be queued LAST by its producer and drained
+        # here; nothing may be enqueued after this point.
         outbox.unbind()
         try:
             await _deliver()

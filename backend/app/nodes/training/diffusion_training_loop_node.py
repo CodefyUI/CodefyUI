@@ -122,7 +122,10 @@ class DiffusionTrainingLoopNode(BaseNode):
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
         total_batches = loader_length(loader)
-        stopped_at_batch: int | None = None
+        # Mirrors TrainingLoop's marker, phase included: without it a stop
+        # BETWEEN epochs and a stop on the FIRST batch of one both report
+        # batch=0 and cannot be told apart.
+        stopped_at: dict[str, Any] | None = None
 
         epoch_losses: list[float] = []
         for epoch in range(epochs):
@@ -132,7 +135,7 @@ class DiffusionTrainingLoopNode(BaseNode):
                 # is 200 epochs of a CPU U-Net, so "Stop works" is not a
                 # nicety on this node.
                 if should_stop():
-                    stopped_at_batch = batch_index
+                    stopped_at = {"phase": "train", "batch": batch_index}
                     break
                 x0 = batch[0] if isinstance(batch, (list, tuple)) else batch
                 x0 = x0.to(device).float()
@@ -153,7 +156,7 @@ class DiffusionTrainingLoopNode(BaseNode):
                                "batch": batch_index + 1,
                                "total_batches": total_batches,
                                "loss": round(batch_loss, 6)})
-            if stopped_at_batch is not None:
+            if stopped_at is not None:
                 break
             avg = running / max(batches, 1)
             epoch_losses.append(avg)
@@ -165,12 +168,12 @@ class DiffusionTrainingLoopNode(BaseNode):
                 progress_callback({"event": "epoch", "epoch": epoch + 1, "total_epochs": epochs,
                                    "loss": round(avg, 6), "losses": [round(l, 6) for l in epoch_losses]})
             if should_stop():
-                stopped_at_batch = 0
+                stopped_at = {"phase": "epoch", "batch": 0}
                 break
 
         losses_tensor = torch.tensor(epoch_losses, dtype=torch.float32)
         result: dict[str, Any] = {"model": model, "losses": losses_tensor}
-        if stopped_at_batch is not None:
+        if stopped_at is not None:
             # The optimizer is built inside this node, so the checkpoint is
             # not resumable through the CheckpointLoader -> start_epoch
             # wiring the generic TrainingLoop offers (there is no start_epoch
@@ -179,11 +182,11 @@ class DiffusionTrainingLoopNode(BaseNode):
             # ModelLoader can put them back into a fresh run.
             checkpoint_path = save_interrupt_checkpoint(
                 context, model, optimizer,
-                epoch=len(epoch_losses), batch=stopped_at_batch,
+                epoch=len(epoch_losses), batch=stopped_at["batch"],
                 losses=losses_tensor,
             )
             result.update(interrupted_result(
-                epoch=len(epoch_losses), batch=stopped_at_batch,
-                checkpoint_path=checkpoint_path,
+                epoch=len(epoch_losses), batch=stopped_at["batch"],
+                checkpoint_path=checkpoint_path, phase=stopped_at["phase"],
             ))
         return result

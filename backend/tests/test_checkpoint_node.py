@@ -242,3 +242,47 @@ def test_loader_reports_no_scheduler_when_none_wired():
         assert res["epoch"] == 3
     finally:
         (settings.MODELS_DIR / target).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Atomic write (#122)
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_save_leaves_the_previous_checkpoint_intact(tmp_path, monkeypatch):
+    """A crash mid-``torch.save`` must not truncate the file already there.
+
+    A checkpoint is only ever read after something went wrong, so "the save
+    that died left an unloadable file" is the worst possible failure mode.
+    ``write_checkpoint`` stages to a sibling temp file and ``os.replace``s
+    it, which is atomic on the same volume.
+    """
+    from app.core import checkpoints
+
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    model, opt = _model_and_opt()
+    target = checkpoints.write_checkpoint("run.pt", model, opt, epoch=1)
+    good = target.read_bytes()
+
+    real_save = torch.save
+
+    def exploding_save(obj, path, *args, **kwargs):
+        # Write a partial file first, exactly as a disk-full or a killed
+        # process would, then fail.
+        with open(path, "wb") as fh:
+            fh.write(b"truncated")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(torch, "save", exploding_save)
+    with pytest.raises(RuntimeError, match="disk full"):
+        checkpoints.write_checkpoint("run.pt", model, opt, epoch=2)
+
+    monkeypatch.setattr(torch, "save", real_save)
+    assert target.read_bytes() == good, "the good checkpoint was clobbered"
+    assert list(models.glob("*.tmp")) == [], "staging debris was left behind"
+    # ...and it still loads.
+    restored = torch.load(str(target), map_location="cpu", weights_only=True)
+    assert restored["epoch"] == 1

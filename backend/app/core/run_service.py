@@ -1413,14 +1413,27 @@ class RunService:
     async def cancel(self, run_id: str) -> CancelOutcome | None:
         """Ask a run to stop. ``None`` when the run does not exist.
 
-        COOPERATIVE, never ``Task.cancel``: the ``ExecutionContext`` flag is
-        set and the engine unwinds at its next checkpoint (between nodes and
-        between levels). A node already executing in a worker thread runs to
-        completion first — a training node with a 90-second epoch stops after
-        that epoch, not mid-backward — because there is no safe way to
-        interrupt arbitrary third-party node code, and killing the task
-        outright is what leaves half-written rows and wedged CUDA state.
-        Cancellation is therefore ACKNOWLEDGED here and OBSERVED on the row.
+        COOPERATIVE, never ``Task.cancel``: this sets the
+        ``ExecutionContext`` flag, and where the run actually stops depends
+        on what it is doing.
+
+        - **Inside a long-loop node** (``TrainingLoop``,
+          ``DiffusionTrainingLoop``, ``EvaluateModel``, ``DDPMSampler``,
+          ``Map``): within ONE ITERATION. Since #122 those nodes poll
+          ``context.should_stop()`` every batch/step/item, then return their
+          partial outputs — a training node also writes an interrupt
+          checkpoint on the way out. Stopping a multi-hour training is a
+          matter of a batch, not of the epoch it is in.
+        - **Inside any other node**: at the node boundary, as before. The
+          node runs to the end of its ``run_in_executor`` call and the
+          engine unwinds at its next checkpoint (between nodes, between
+          levels, and after the last level). There is no safe way to
+          interrupt arbitrary third-party node code, and killing the task
+          outright is what leaves half-written rows and wedged CUDA state.
+
+        Either way the answer here is an ACKNOWLEDGEMENT — the flag is set,
+        and the outcome is OBSERVED on the row when the run unwinds. What
+        #122 changed is how long that takes for the nodes where it mattered.
 
         A run that never started (a ``queued`` row — #123's lane, or an
         orphan) is retired directly through the guarded ``mark_finished``, so

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import torch
@@ -239,16 +240,32 @@ def _register_test_nodes():
 
 
 @pytest.fixture(autouse=True)
-def _clean_interrupt_dir():
-    """Remove the interrupt checkpoints these tests write."""
+def interrupt_dir(tmp_path, monkeypatch):
+    """Point MODELS_DIR at a per-test directory; yield its interrupt folder.
+
+    Redirecting the whole setting rather than diffing the shared
+    ``MODELS_DIR`` afterwards: a set-difference over a directory two workers
+    are writing to is a race under ``pytest-xdist``, and it can only clean up
+    files it can attribute. An isolated root makes "no file was written" an
+    assertion this file can actually make (see the contract-runner test) and
+    leaves nothing behind either way.
+    """
     from app.core.checkpoints import INTERRUPT_DIRNAME
 
-    directory = settings.MODELS_DIR / INTERRUPT_DIRNAME
-    before = set(directory.glob("*.pt")) if directory.exists() else set()
-    yield
-    if directory.exists():
-        for path in set(directory.glob("*.pt")) - before:
-            path.unlink(missing_ok=True)
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+    return models / INTERRUPT_DIRNAME
+
+
+def _recording_context(**kwargs) -> ExecutionContext:
+    """A context that records artifacts, as a real run's does.
+
+    ``signals_recorded`` is set by ``execute_graph`` from its ``on_signal``,
+    so a test calling ``execute()`` directly has to say so — and a node only
+    writes an interrupt checkpoint when something will record the row.
+    """
+    return ExecutionContext(signals_recorded=True, **kwargs)
 
 
 def _training_graph(*, epochs: int, source_params: dict | None = None,
@@ -345,7 +362,7 @@ async def test_an_interrupted_node_reports_interrupted_and_partial_outputs():
 
 def test_interrupt_marker_carries_where_it_stopped():
     """The result marker, straight off ``execute`` with a pre-cancelled context."""
-    ctx = ExecutionContext()
+    ctx = _recording_context()
     ctx.cancel()
     model = nn.Linear(IN_FEATURES, OUT_CLASSES)
     result = TrainingLoopNode().execute(
@@ -404,7 +421,11 @@ class _StopAfterEpochs(ExecutionContext):
             self.cancel()
 
 
-def test_interrupt_checkpoint_resumes_with_loss_continuity():
+def _scheduler(optimizer):
+    return torch.optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.5)
+
+
+def test_interrupt_checkpoint_resumes_with_loss_continuity(interrupt_dir):
     """4 epochs straight == 2 epochs, Stop, resume from the interrupt file.
 
     The resume goes through the #118 path exactly as a user would wire it:
@@ -413,23 +434,33 @@ def test_interrupt_checkpoint_resumes_with_loss_continuity():
     epochs' losses have to match the straight run's tail — that is what
     "loss continuity" means, and it is only true if the optimizer state and
     the epoch counter both survived.
+
+    An ``StepLR`` rides along on both legs, so the LR SCHEDULE has to survive
+    the interruption too: the interrupt checkpoint stores the scheduler state
+    (#118's key), ``CheckpointLoader`` restores it, and the resumed leg's
+    ``lr_history`` must equal the straight run's tail. Without that the
+    resumed run trains the remaining epochs at the wrong learning rate and
+    the loss comparison below would be the only thing to notice — quietly,
+    and only for schedules that decay fast enough.
     """
     loader = _loader()
     loss_fn = nn.CrossEntropyLoss()
 
     straight_model = _fresh_model()
+    straight_opt = torch.optim.SGD(straight_model.parameters(), lr=0.1,
+                                   momentum=0.9)
     straight = TrainingLoopNode().execute(
         {"model": straight_model, "dataloader": loader, "loss_fn": loss_fn,
-         "optimizer": torch.optim.SGD(straight_model.parameters(), lr=0.1,
-                                      momentum=0.9)},
+         "optimizer": straight_opt, "lr_scheduler": _scheduler(straight_opt)},
         {"epochs": 4, "device": "cpu"},
     )
 
     # ── leg 1: stop after two epochs ─────────────────────────────────────
-    ctx = _StopAfterEpochs()
+    ctx = _StopAfterEpochs(signals_recorded=True)
     ctx.arm(2)
     model = _fresh_model()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    scheduler = _scheduler(optimizer)
 
     def on_progress(payload):
         if payload.get("event") == "epoch":
@@ -437,7 +468,7 @@ def test_interrupt_checkpoint_resumes_with_loss_continuity():
 
     first = TrainingLoopNode().execute(
         {"model": model, "dataloader": loader, "loss_fn": loss_fn,
-         "optimizer": optimizer},
+         "optimizer": optimizer, "lr_scheduler": scheduler},
         {"epochs": 4, "device": "cpu"},
         progress_callback=on_progress,
         context=ctx,
@@ -447,6 +478,9 @@ def test_interrupt_checkpoint_resumes_with_loss_continuity():
     assert first["metrics"]["total_epochs_run"] == 2
     checkpoint_path = first["metrics"]["interrupt_checkpoint"]
     assert checkpoint_path, "no interrupt checkpoint was written"
+    # Staged through a temp file and renamed: one .pt, no debris.
+    assert [p.name for p in interrupt_dir.iterdir()] == [
+        Path(checkpoint_path).name]
 
     # The artifact row is queued on the context for the run service.
     artifacts = [s for s in ctx.outbox.drain()[0]
@@ -457,27 +491,156 @@ def test_interrupt_checkpoint_resumes_with_loss_continuity():
 
     # ── leg 2: resume through CheckpointLoader -> start_epoch ────────────
     resumed_model = _fresh_model()
+    resumed_opt = torch.optim.SGD(resumed_model.parameters(), lr=0.1,
+                                  momentum=0.9)
+    resumed_sched = _scheduler(resumed_opt)
     restored = CheckpointLoaderNode().execute(
-        {"model": resumed_model,
-         "optimizer": torch.optim.SGD(resumed_model.parameters(), lr=0.1,
-                                      momentum=0.9)},
+        {"model": resumed_model, "optimizer": resumed_opt,
+         "lr_scheduler": resumed_sched},
         {"path": checkpoint_path, "device": "cpu"},
     )
     assert restored["epoch"] == 2
+    assert resumed_sched.last_epoch == 2, "the schedule did not survive"
 
     second = TrainingLoopNode().execute(
         {"model": restored["model"], "dataloader": loader, "loss_fn": loss_fn,
-         "optimizer": restored["optimizer"], "start_epoch": restored["epoch"]},
+         "optimizer": restored["optimizer"],
+         "lr_scheduler": restored["lr_scheduler"],
+         "start_epoch": restored["epoch"]},
         {"epochs": 4, "device": "cpu"},
     )
 
     assert second["metrics"]["total_epochs_run"] == 2
     assert second["metrics"]["start_epoch"] == 2
+    assert second["metrics"]["lr_history"] == pytest.approx(
+        straight["metrics"]["lr_history"][2:], rel=1e-9)
     assert second["losses"].tolist() == pytest.approx(
         straight["losses"][2:].tolist(), **TOL)
     for key, value in straight["model"].state_dict().items():
         assert torch.allclose(value, second["model"].state_dict()[key],
                               rtol=1e-5, atol=1e-7), key
+
+
+def _training_preset(name: str = "_InterruptiblePipeline") -> dict:
+    """A two-node preset: TrainingLoop feeding a Print.
+
+    Two nodes rather than one so "never rolls up to completed" has something
+    to be true about — the preset only reports ``completed`` once EVERY
+    internal node has finished, and a single-node preset would satisfy that
+    vacuously on any status that increments the done count.
+    """
+    return {
+        "preset_name": name,
+        "category": "Test",
+        "description": "",
+        "tags": [],
+        "nodes": [
+            {"id": "train", "type": "TrainingLoop",
+             "params": {"epochs": 10, "device": "cpu"}},
+            {"id": "show", "type": "Print", "params": {"label": "metrics"}},
+        ],
+        "edges": [
+            {"source": "train", "target": "show",
+             "sourceHandle": "metrics", "targetHandle": "value"},
+        ],
+        "exposed_inputs": [
+            {"name": port, "internal_node": "train", "internal_port": port,
+             "data_type": "ANY", "description": ""}
+            for port in ("model", "dataloader", "optimizer", "loss_fn")
+        ],
+        "exposed_outputs": [],
+        "exposed_params": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_preset_containing_a_stopped_node_settles_interrupted():
+    """A preset whose training node stopped must not report ``completed``.
+
+    ``_emit_preset_aware`` rolls internal node statuses up into one preset
+    status, and ``completed`` is emitted once the done count reaches the
+    internal node count. ``interrupted`` has to settle the preset the way
+    ``error`` does — otherwise a stopped training pipeline shows a green
+    preset, which is the exact opposite of what happened.
+    """
+    from app.core.graph_engine import build_preset_fallback
+
+    ctx = ExecutionContext()
+    statuses: list[tuple[str, str]] = []
+    running = asyncio.Event()
+
+    async def on_progress(node_id, status, data):
+        if status == "progress":
+            if (data or {}).get("event") == "epoch":
+                running.set()
+            return
+        statuses.append((node_id, status))
+
+    preset = _training_preset()
+    nodes = [
+        _start_node(),
+        {"id": "inputs", "type": "_TrainingInputs",
+         "data": {"params": {"samples": 64, "batch_size": 8, "delay": 0.01}}},
+        {"id": "pipeline", "type": f"preset:{preset['preset_name']}",
+         "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+    ]
+    edges = [_trigger("et", "start", "inputs")] + [
+        {"id": f"e-{port}", "source": "inputs", "target": "pipeline",
+         "sourceHandle": port, "targetHandle": port}
+        for port in ("model", "dataloader", "optimizer", "loss_fn")
+    ]
+
+    task = asyncio.create_task(execute_graph(
+        nodes, edges, on_progress=on_progress, context=ctx,
+        preset_fallback=build_preset_fallback([preset]),
+    ))
+    await asyncio.wait_for(running.wait(), timeout=30.0)
+    ctx.cancel()
+    with pytest.raises(CancellationError):
+        await asyncio.wait_for(task, timeout=30.0)
+
+    preset_statuses = [s for nid, s in statuses if nid == "pipeline"]
+    assert "interrupted" in preset_statuses
+    assert "completed" not in preset_statuses
+    # The internal node ids never surface; the roll-up is the whole point.
+    assert not any(nid.startswith("pipeline__") for nid, _ in statuses)
+
+
+@pytest.mark.asyncio
+async def test_no_checkpoint_is_written_when_the_run_records_no_artifacts(
+    interrupt_dir,
+):
+    """The REST contract runner's shape: cancel, and leave NO orphan file.
+
+    ``execute_contract_run`` cancels its context on a timeout and passes no
+    ``on_signal``, so an ``ArtifactSignal`` would be discarded — and the
+    ``.pt`` beside it would have no row, no index and no sweeper, growing a
+    model-sized hole on every timeout. This drives the engine the same way
+    (``on_signal=None``) because that argument IS the mechanism; the route
+    adds nothing to it.
+    """
+    ctx = ExecutionContext()
+    running = asyncio.Event()
+
+    async def on_progress(node_id, status, data):
+        if status == "progress" and (data or {}).get("event") == "epoch":
+            running.set()
+
+    nodes, edges = _training_graph(
+        epochs=10, source_params={"samples": 32, "batch_size": 8,
+                                  "delay": 0.0})
+    task = asyncio.create_task(
+        execute_graph(nodes, edges, on_progress=on_progress, context=ctx))
+    await asyncio.wait_for(running.wait(), timeout=30.0)
+    # The engine stamped the capability from its (absent) on_signal.
+    assert ctx.can_record_artifacts() is False
+    ctx.cancel()
+    with pytest.raises(CancellationError):
+        await asyncio.wait_for(task, timeout=30.0)
+
+    assert not interrupt_dir.exists() or list(interrupt_dir.iterdir()) == [], (
+        "an interrupted run with nowhere to record the row still wrote a file"
+    )
 
 
 def test_mid_epoch_interrupt_replays_the_partial_epoch(monkeypatch):
@@ -492,7 +655,7 @@ def test_mid_epoch_interrupt_replays_the_partial_epoch(monkeypatch):
     with the real 0.5 s floor a loop this fast emits one frame in total.
     """
     monkeypatch.setattr("app.core.loop_control.PROGRESS_MIN_INTERVAL_S", 0.0)
-    ctx = ExecutionContext()
+    ctx = _recording_context()
     model = _fresh_model()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     batches_seen = {"n": 0}
@@ -592,11 +755,12 @@ def test_batch_metrics_are_opt_in():
         return [s.name for s in ctx.outbox.drain()[0]]
 
     off = run(False)
-    assert off == ["train_loss", "train_loss"]
+    assert off == ["train_loss", "lr", "train_loss", "lr"]
 
     on = run(True)
     assert on.count("train_loss_batch") == 8, "4 batches x 2 epochs"
     assert on.count("train_loss") == 2
+    assert on.count("lr") == 2
 
 
 def test_validation_loss_is_logged_when_present():
@@ -612,8 +776,71 @@ def test_validation_loss_is_logged_when_present():
     )
     points = ctx.outbox.drain()[0]
     assert [(p.name, p.step) for p in points] == [
-        ("train_loss", 1), ("val_loss", 1), ("train_loss", 2), ("val_loss", 2),
+        ("train_loss", 1), ("val_loss", 1), ("lr", 1),
+        ("train_loss", 2), ("val_loss", 2), ("lr", 2),
     ]
+
+
+def test_every_previously_inferred_series_is_still_logged():
+    """Explicit logging must not silently drop a series inference gave us.
+
+    ``_collect_metrics`` stands down per NODE, so the moment TrainingLoop
+    logs anything explicitly, NOTHING in its epoch progress payload is mined
+    any more. Everything ``scalar_metrics`` used to take from that payload —
+    ``lr`` and, under early stopping, ``patience_counter`` and
+    ``best_epoch`` — therefore has to be logged by hand. ``loss`` is the one
+    deliberate change: it is ``train_loss`` now.
+    """
+    model = _fresh_model()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    ctx = ExecutionContext()
+    payloads: list[dict] = []
+
+    TrainingLoopNode().execute(
+        {"model": model, "dataloader": _loader(n=24, batch_size=6),
+         "val_dataloader": _loader(n=12, batch_size=6),
+         "loss_fn": nn.CrossEntropyLoss(), "optimizer": optimizer,
+         "lr_scheduler": _scheduler(optimizer)},
+        {"epochs": 3, "device": "cpu", "early_stopping_patience": 5},
+        progress_callback=payloads.append,
+        context=ctx,
+    )
+
+    logged = {p.name for p in ctx.outbox.drain()[0]}
+    # What inference WOULD have produced from the epoch payloads.
+    from app.core.run_service import scalar_metrics
+
+    inferable = {
+        point.name
+        for payload in payloads if payload.get("event") == "epoch"
+        for point in scalar_metrics(payload, node_id=None, step=1)
+    }
+    assert inferable == {"loss", "val_loss", "lr", "patience_counter",
+                         "best_epoch"}
+    assert logged == (inferable - {"loss"}) | {"train_loss"}
+
+
+def test_lr_series_tracks_the_schedule():
+    """The `lr` series exists for a TrainingLoop run and follows the LR."""
+    model = _fresh_model()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    ctx = ExecutionContext()
+
+    result = TrainingLoopNode().execute(
+        {"model": model, "dataloader": _loader(n=24, batch_size=6),
+         "loss_fn": nn.CrossEntropyLoss(), "optimizer": optimizer,
+         "lr_scheduler": _scheduler(optimizer)},
+        {"epochs": 4, "device": "cpu"},
+        context=ctx,
+    )
+
+    lr_points = [p for p in ctx.outbox.drain()[0] if p.name == "lr"]
+    assert [p.step for p in lr_points] == [1, 2, 3, 4]
+    assert [p.value for p in lr_points] == pytest.approx(
+        result["metrics"]["lr_history"], rel=1e-9)
+    assert lr_points[0].value != lr_points[-1].value, (
+        "StepLR should have decayed; a constant series proves nothing"
+    )
 
 
 # ── the other long-loop nodes ─────────────────────────────────────────────
@@ -693,7 +920,7 @@ def test_diffusion_training_loop_stops_between_batches():
             flat = x.reshape(x.shape[0], -1)
             return self.lin(flat).reshape(x.shape)
 
-    ctx = ExecutionContext()
+    ctx = _recording_context()
     images = torch.randn(16, 1, 2, 2, generator=torch.Generator().manual_seed(0))
     dataset = torch.utils.data.TensorDataset(images, torch.zeros(16))
 
@@ -708,9 +935,13 @@ def test_diffusion_training_loop_stops_between_batches():
         context=ctx,
     )
 
-    assert result[INTERRUPTED_KEY]["epoch"] == 2
+    marker = result[INTERRUPTED_KEY]
+    assert marker["epoch"] == 2
+    # The phase tells a stop BETWEEN epochs apart from one on the first
+    # batch of an epoch; both report batch=0.
+    assert marker["phase"] == "epoch" and marker["batch"] == 0
     assert result["losses"].numel() == 2, "500 epochs were asked for"
-    assert result[INTERRUPTED_KEY]["checkpoint_path"]
+    assert marker["checkpoint_path"]
     names = [s.name for s in ctx.outbox.drain()[0] if hasattr(s, "name")]
     assert names == ["train_loss", "train_loss"]
 

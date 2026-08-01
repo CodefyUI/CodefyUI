@@ -58,6 +58,7 @@ const en = {
   'status.error': 'Error',
   'status.skipped': 'Skipped',
   'status.cached': 'Cached',
+  'status.interrupted': 'Interrupted',
 
   // Connection (WebSocket reconnect surface)
   'connection.lost': 'Connection lost — reconnecting…',

@@ -153,6 +153,9 @@ describe('PresetNode', () => {
     ['completed', 'rgb(76, 175, 80)'],
     ['error', 'rgb(244, 67, 54)'],
     ['cached', 'rgb(33, 150, 243)'],
+    // core#122: a preset settles 'interrupted' when an internal node stopped
+    // early — it must never roll up to the green 'completed'.
+    ['interrupted', 'rgb(255, 143, 0)'],
   ] as const)('uses the %s status border when unselected', (status, rgb) => {
     const { container } = renderPreset(
       presetData({ executionStatus: status, error: status === 'error' ? 'x' : undefined }),

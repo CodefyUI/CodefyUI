@@ -71,7 +71,11 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
           ? STATUS_COLORS.error
           : data.executionStatus === 'cached'
             ? STATUS_COLORS.cached
-            : 'transparent';
+            : // core#122: a preset settles 'interrupted' when any internal
+              // node stopped early — it never rolls up to 'completed'.
+              data.executionStatus === 'interrupted'
+              ? STATUS_COLORS.interrupted
+              : 'transparent';
 
   const borderColor = selected
     ? '#ffffff'

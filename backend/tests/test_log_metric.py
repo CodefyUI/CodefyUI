@@ -163,6 +163,47 @@ async def test_put_from_another_thread_wakes_the_loop():
 
 
 @pytest.mark.asyncio
+async def test_a_redundant_wake_up_is_skipped_without_losing_anything():
+    """A put onto an already-armed outbox must not schedule a second poke.
+
+    ``call_soon_threadsafe`` is real loop work — a lock plus a self-pipe
+    write — and a per-batch producer would pay for it on every batch while
+    the consumer is busy. Skipping it is only safe because the pending wake
+    drains EVERYTHING queued since, which is the second half of this test.
+    """
+    outbox = EventOutbox(capacity=16)
+    loop = asyncio.get_running_loop()
+    outbox.bind(loop)
+
+    pokes = 0
+    real = loop.call_soon_threadsafe
+
+    def counting(callback, *args, **kwargs):
+        nonlocal pokes
+        pokes += 1
+        return real(callback, *args, **kwargs)
+
+    loop.call_soon_threadsafe = counting     # type: ignore[method-assign]
+    try:
+        outbox.put(MetricSignal("loss", 1.0, 1))
+        assert pokes == 1, "the first put has to arm the waker"
+        await asyncio.sleep(0)               # let the scheduled set() run
+        for step in range(2, 6):
+            outbox.put(MetricSignal("loss", 1.0, step))
+        assert pokes == 1, "the waker was already set; those were redundant"
+
+        items, dropped = outbox.drain()
+        assert [s.step for s in items] == [1, 2, 3, 4, 5]
+        assert dropped == 0
+
+        # The drain cleared the waker, so the next put re-arms it.
+        outbox.put(MetricSignal("loss", 1.0, 6))
+        assert pokes == 2
+    finally:
+        del loop.call_soon_threadsafe        # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_bind_rearms_for_items_queued_before_the_run():
     """Nothing queued before ``bind`` may be stranded until the next put."""
     outbox = EventOutbox(capacity=4)
@@ -232,11 +273,15 @@ async def test_metrics_logged_from_an_executor_thread_reach_the_loop():
     context = ExecutionContext()
     nodes, edges = _graph(count=4, artifact=True)
 
+    assert context.can_record_artifacts() is False, "nothing has run yet"
     outputs = await execute_graph(nodes, edges, context=context,
                                   on_signal=signals.append)
 
     assert outputs["logger"]["value"] != seen_loop_thread, (
         "the node did not run in a worker thread; this test proves nothing"
+    )
+    assert context.can_record_artifacts() is True, (
+        "the engine must stamp the capability from its on_signal"
     )
     metrics = [s for s in signals if isinstance(s, MetricSignal)]
     assert [s.step for s in metrics] == [1, 2, 3, 4], "order must be preserved"
@@ -309,9 +354,15 @@ async def test_overflow_reports_a_dropped_count_and_keeps_the_run_healthy():
 
 @pytest.mark.asyncio
 async def test_signals_are_discarded_without_a_consumer():
-    """No ``on_signal`` (the canvas REST path) is a no-op, not a crash."""
+    """No ``on_signal`` (the REST contract runner) is a no-op, not a crash.
+
+    And the run says so: ``can_record_artifacts`` is how a node about to
+    write a FILE alongside its artifact row finds out that the row has
+    nowhere to go — see ``loop_control.save_interrupt_checkpoint``.
+    """
     context = ExecutionContext()
     nodes, edges = _graph(count=3, artifact=True)
     outputs = await execute_graph(nodes, edges, context=context)
     assert outputs["logger"]["value"]
+    assert context.can_record_artifacts() is False
     assert context.outbox.drain() == ([], 0), "the engine drained on the way out"

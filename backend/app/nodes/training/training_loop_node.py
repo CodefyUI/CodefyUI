@@ -333,6 +333,15 @@ class TrainingLoopNode(BaseNode):
     One consequence worth knowing: an interruption during VALIDATION leaves
     ``val_losses`` one entry shorter than ``losses``, because that epoch's
     training finished and its validation did not.
+
+    **Metrics (#122).** Per epoch, stepped by the ABSOLUTE epoch number:
+    ``train_loss``, ``lr``, ``val_loss`` when a validation loader is wired,
+    and ``patience_counter``/``best_epoch`` when early stopping is on. Under
+    the ``batch_metrics`` option, ``train_loss_batch`` per batch, stepped by
+    the global batch index. Note the rename: the series the run service used
+    to INFER from the epoch progress payload was called ``loss``; it is
+    ``train_loss`` now, which is the same number under a name that lines up
+    with ``val_loss``.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -652,10 +661,23 @@ class TrainingLoopNode(BaseNode):
             # #122: the durable series, logged BEFORE the progress frame so
             # the run service knows this node reports its own metrics and
             # stops inferring duplicates from the payload below.
+            #
+            # Because inference stands down per NODE, this list has to cover
+            # everything ``scalar_metrics`` used to mine out of the epoch
+            # payload, or a series would silently disappear. That payload
+            # yields lr, loss, val_loss and -- when early stopping is on --
+            # patience_counter and best_epoch. All of them are here; the one
+            # deliberate change is that ``loss`` is now ``train_loss``, which
+            # names the same number and lines up with ``val_loss``.
             if context is not None:
                 context.log_metric("train_loss", avg_train_loss, epoch + 1)
                 if avg_val_loss is not None:
                     context.log_metric("val_loss", avg_val_loss, epoch + 1)
+                context.log_metric("lr", current_lr, epoch + 1)
+                if patience > 0:
+                    context.log_metric("patience_counter", patience_counter,
+                                       epoch + 1)
+                    context.log_metric("best_epoch", best_epoch, epoch + 1)
 
             if progress_callback:
                 progress_data = {

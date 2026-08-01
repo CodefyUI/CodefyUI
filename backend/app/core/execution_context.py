@@ -81,6 +81,17 @@ class ArtifactSignal:
     Registering an artifact is a database write, which a worker thread
     cannot do; the node writes the FILE synchronously and hands the ROW over
     here.
+
+    **Tail-safety obligation.** This is the one signal type whose loss has a
+    consequence outside observability: a dropped artifact row means a file
+    on disk that nothing indexes and no retention sweep will ever find. The
+    outbox drops the OLDEST item, so the rule for a producer is *queue an
+    ArtifactSignal LAST* — after the last progress frame, immediately before
+    returning — and never follow it with a burst. Every current producer
+    obeys this by construction: ``save_interrupt_checkpoint`` runs on the
+    way out of an interrupted node, and the engine's ``finally`` flush drains
+    the outbox before the pump stops. A future producer that wants to log an
+    artifact mid-loop has to solve this first.
     """
 
     kind: str
@@ -114,6 +125,12 @@ INTERRUPTED_KEY = "__interrupted__"
 #: loop is busy persisting an event -- hundreds of items -- not for holding
 #: a whole run's metrics, which belong in ``exec_run_metrics``.
 DEFAULT_OUTBOX_CAPACITY = 1024
+
+#: How long an UNBOUND outbox's ``wait`` sleeps before looking again. Only
+#: reached by a pump started before ``bind`` (or left running after
+#: ``unbind``), which is a window of microseconds in practice; the point is
+#: that such a pump neither spins nor hangs.
+UNBOUND_POLL_S = 0.05
 
 
 class EventOutbox:
@@ -170,6 +187,20 @@ class EventOutbox:
 
         Deliberately total: a metric API that can raise is a metric API that
         eventually kills a six-hour training run.
+
+        The lock covers the queue mutation and the read of the wake-up
+        handles, and nothing else. ``call_soon_threadsafe`` happens OUTSIDE
+        it: it takes the loop's own internal lock and writes to the
+        self-pipe, and holding two locks in an order the loop never
+        reciprocates is how a deadlock gets invented. Nothing is lost by
+        releasing first -- the item is already in the deque, so a drain that
+        wins the race simply takes it and the poke lands as a harmless
+        spurious wake.
+
+        The poke is also skipped when the waker is ALREADY set: the consumer
+        has not drained since the last one, so a second poke is loop work
+        with no effect. (An in-flight poke that has not executed yet still
+        reads as unset, so this only ever skips a genuinely redundant one.)
         """
         with self._lock:
             if len(self._items) >= self._capacity:
@@ -177,13 +208,15 @@ class EventOutbox:
                 self._dropped += 1
             self._items.append(signal)
             loop, waker = self._loop, self._waker
-            if loop is not None and waker is not None:
-                try:
-                    loop.call_soon_threadsafe(waker.set)
-                except RuntimeError:
-                    # The loop closed under us. The items stay buffered; a
-                    # final drain still finds them.
-                    pass
+            if waker is not None and waker.is_set():
+                loop = None
+        if loop is not None and waker is not None:
+            try:
+                loop.call_soon_threadsafe(waker.set)
+            except RuntimeError:
+                # The loop closed under us. The items stay buffered; a final
+                # drain still finds them.
+                pass
 
     def drain(self) -> tuple[list[Any], int]:
         """Take everything queued plus the drop count since the last drain."""
@@ -198,13 +231,20 @@ class EventOutbox:
     async def wait(self) -> None:
         """Block the caller until something is queued.
 
+        **Precondition: exactly one consumer awaits this.** ``asyncio.Event``
+        supports any number of waiters, but the drain contract does not --
+        two pumps would both wake and race for the lock, each taking half the
+        queue and delivering it interleaved with the other's half. The engine
+        creates exactly one pump task per run, and that is the only caller.
+
         An unbound outbox has nothing to wake it, so this yields on a short
         sleep rather than parking forever -- a pump started before
         :meth:`bind` must not spin, and must not hang either.
         """
-        waker = self._waker
+        with self._lock:
+            waker = self._waker
         if waker is None:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(UNBOUND_POLL_S)
             return
         await waker.wait()
 
@@ -234,6 +274,15 @@ class ExecutionContext:
     #: Worker-thread -> loop hand-off for progress, metrics and artifacts.
     #: Shared by every node of the run; ``graph_engine`` binds and drains it.
     outbox: EventOutbox = field(default_factory=EventOutbox)
+
+    #: Whether anything DURABLY records what nodes log. ``graph_engine`` sets
+    #: it at the start of each run from whether it was given an
+    #: ``on_signal`` consumer, so it is a fact about THIS run rather than a
+    #: request. False on every path that has nowhere to put a signal: the
+    #: REST contract runner, the exported Python script, a bare
+    #: ``execute_graph`` in a test. See :meth:`can_record_artifacts` for the
+    #: one place it changes behaviour rather than just discarding.
+    signals_recorded: bool = False
 
     # Global compute device ("cpu" / "cuda" / "mps") for the whole run. Already
     # resolved (availability-checked) at the execution entry point. Tensor-
@@ -330,6 +379,19 @@ class ExecutionContext:
             node_id=node_id or self.current_node_id or None,
         ))
 
+    def can_record_artifacts(self) -> bool:
+        """True when :meth:`log_artifact` actually lands somewhere durable.
+
+        A capability check, and the ONE place where "no consumer" has to
+        change behaviour rather than silently discard. A dropped metric is a
+        missing point on a chart; a dropped artifact row is a FILE on disk
+        that no row references and no retention sweep will ever remove. A
+        node that is about to write such a file asks first, and does not
+        write it when the answer is no -- see
+        ``loop_control.save_interrupt_checkpoint``.
+        """
+        return self.signals_recorded
+
     def log_artifact(
         self,
         kind: str,
@@ -343,6 +405,10 @@ class ExecutionContext:
         this only hands the ROW to the loop, which inserts it into
         ``exec_run_artifacts``. *kind* is an open vocabulary --
         ``checkpoint``, ``export``, ``image`` are the ones core uses.
+
+        Check :meth:`can_record_artifacts` BEFORE creating the file: this
+        call is a no-op-with-a-drop when nothing is listening, and the file
+        would outlive the run with nothing pointing at it.
         """
         self.outbox.put(ArtifactSignal(
             kind=str(kind), path=str(path), meta=meta,
