@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useI18n } from '../../i18n';
 import styles from './HistogramPlot.module.css';
 
 /** One bar. `x0`/`x1` are the bin edges for a continuous histogram. */
@@ -53,6 +54,7 @@ export function HistogramPlot({
   className,
   ariaLabel,
 }: HistogramPlotProps) {
+  const { t } = useI18n();
   const [hover, setHover] = useState<HoverState | null>(null);
 
   const { rects, maxCount } = useMemo(() => {
@@ -74,7 +76,7 @@ export function HistogramPlot({
   if (bars.length === 0) {
     return (
       <div className={`${styles.empty} ${className ?? ''}`} style={{ width, height }}>
-        <span>no distribution</span>
+        <span>{t('plot.noDistribution')}</span>
       </div>
     );
   }
@@ -122,7 +124,9 @@ export function HistogramPlot({
       {(axisMin !== undefined || axisMax !== undefined) && (
         <div className={styles.axisRow} style={{ width }}>
           <span>{axisMin}</span>
-          <span className={styles.axisPeak}>peak {maxCount.toLocaleString()}</span>
+          <span className={styles.axisPeak}>
+            {t('plot.peak', { count: maxCount.toLocaleString() })}
+          </span>
           <span>{axisMax}</span>
         </div>
       )}

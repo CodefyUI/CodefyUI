@@ -16,6 +16,7 @@ import styles from './StatsTab.module.css';
 
 interface StatsFetchState {
   loading: boolean;
+  /** Localized message, or null. */
   error: string | null;
   data: PortStats | null;
 }
@@ -36,6 +37,12 @@ export function usePortStats(
   ports: readonly PortTarget[],
 ): StatsMap {
   const [stats, setStats] = useState<StatsMap>({});
+  // The server's 404 detail carries the Record-outputs hint in English. It is
+  // the one error here whose cause we know exactly, so it gets the localized
+  // wording rather than a raw server string in the middle of a zh-TW panel.
+  const { t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const portsRef = useRef(ports);
   portsRef.current = ports;
@@ -66,7 +73,9 @@ export function usePortStats(
           // An abort is this component going away, not a failure to report.
           if (controller.signal.aborted) return;
           const message =
-            e instanceof StatsNotCapturedError ? e.message : (e as Error).message;
+            e instanceof StatsNotCapturedError
+              ? tRef.current('nodeDetail.stats.notCaptured')
+              : (e as Error).message;
           setStats((prev) => ({
             ...prev,
             [key]: { loading: false, error: message, data: null },

@@ -92,4 +92,43 @@ describe('HistogramPlot', () => {
     render(<HistogramPlot bars={bars} ariaLabel="Class balance" />);
     expect(screen.getByLabelText('Class balance')).toBeInTheDocument();
   });
+
+  // ── boundaries ────────────────────────────────────────────────────────────
+
+  it('draws no bars when every bin is empty, and does not divide by zero', () => {
+    const empty = [
+      { label: 'a', count: 0 },
+      { label: 'b', count: 0 },
+    ];
+    const { container } = render(<HistogramPlot bars={empty} axisMin="0" axisMax="1" />);
+    expect(barRects(container)).toHaveLength(0);
+    // An all-zero histogram is a real answer (an all-NaN slice), not an error.
+    expect(screen.queryByText('no distribution')).toBeNull();
+    expect(screen.getByText('peak 0')).toBeInTheDocument();
+  });
+
+  it('renders the degenerate single-bin histogram of a constant tensor', () => {
+    const { container } = render(
+      <HistogramPlot bars={[{ label: '[2.5, 2.5]', count: 100 }]} height={80} />,
+    );
+    const rects = barRects(container);
+    expect(rects).toHaveLength(1);
+    expect(Number(rects[0].getAttribute('height'))).toBe(80);
+  });
+
+  it('drops the tooltip when the bars change out from under it', () => {
+    const { container, rerender } = render(<HistogramPlot bars={bars} />);
+    fireEvent.mouseEnter(container.querySelectorAll('rect[fill="transparent"]')[2]);
+    expect(screen.getByText('[2, 3)')).toBeInTheDocument();
+
+    // A refetch can swap a 64-bin histogram for a 2-bar class balance.
+    rerender(<HistogramPlot bars={[{ label: 'only', count: 1 }]} />);
+    expect(screen.queryByText('[2, 3)')).toBeNull();
+  });
+
+  it('localizes its own strings', () => {
+    // The repo's plots were previously the one place hard-coded English lived.
+    render(<HistogramPlot bars={[]} />);
+    expect(screen.getByText('no distribution')).toBeInTheDocument();
+  });
 });

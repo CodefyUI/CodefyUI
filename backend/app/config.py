@@ -131,19 +131,26 @@ class Settings(BaseSettings):
     # sampled NaN count is not an answer anybody can debug with.
     #
     # 4M is a measured number, not a round one: quantiles need a sort, and
-    # torch.sort runs ~0.18us/element (0.7s at 4M, 3s at 16M, 9s at 50M),
-    # while torch.quantile refuses inputs over 16.7M outright. So 4M is the
-    # largest tensor this can summarise EXACTLY while still feeling like a
-    # click. Raising it buys exactness and pays in seconds, linearly.
+    # torch.sort runs ~0.18us/element (0.7s at 4M, 3s at 16M, 9s at 50M). So
+    # 4M is the largest tensor this can summarise EXACTLY while still feeling
+    # like a click. Raising it buys exactness and pays in seconds, linearly.
+    # (torch.quantile additionally refuses inputs over 16.7M, but that is a
+    # corroborating observation, not the binding constraint — this module
+    # sorts and interpolates itself precisely so it is not bound by it.)
     STATS_SAMPLE_THRESHOLD: int = 4_000_000
     # Elements in that sample. 1M sorts in ~0.17s and pins a quantile to
     # about 0.1% in probability space — far finer than a 64-bar histogram
     # can draw, so the chart is never the thing the sample limits.
     STATS_SAMPLE_SIZE: int = 1_000_000
     # Byte budget for the computed-stats LRU. BYTES, not entries: one payload
-    # ranges from ~1.5 KB (a 64-bin histogram) to ~50 KB (a wide tabular
+    # ranges from ~2 KB (a 64-bin histogram) to ~50 KB (a wide tabular
     # summary), so an entry count would be a limit in name only. 8 MB holds
     # hundreds of ports; a run's worth of inspection never approaches it.
+    #
+    # Measured as SERIALIZED size, which is what the response costs and what
+    # #135 will bound everywhere. Resident size is some multiple of it —
+    # Python dicts, str keys and boxed floats run roughly 5-10x — so read this
+    # as a cap on payload volume, not as an RSS guarantee.
     STATS_CACHE_MAX_BYTES: int = 8 * 1024 * 1024
 
     NODES_DIR: Path = Path(__file__).parent / "nodes"

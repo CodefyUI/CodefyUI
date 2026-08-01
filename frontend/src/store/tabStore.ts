@@ -113,6 +113,15 @@ export interface TabState {
    * every tab so a list-of-ports tab can scroll to the one that was asked for.
    */
   nodeDetailPort: string | null;
+  /**
+   * Bumped on every `openNodeDetail` call. The modal watches it so a SECOND
+   * deep link into the node it is already showing still lands: following
+   * "View stats" from another edge into the same consumer changes neither the
+   * node id nor the requested tab, and an effect keyed on those alone would
+   * see nothing happen and leave the user on whatever tab they had wandered
+   * to (#129).
+   */
+  nodeDetailRequest: number;
   // undo/redo
   undoStack: UndoSnapshot[];
   redoStack: UndoSnapshot[];
@@ -162,6 +171,7 @@ function createTabState(id: string, name: string): TabState {
     nodeDetailNodeId: null,
     nodeDetailTab: null,
     nodeDetailPort: null,
+    nodeDetailRequest: 0,
     undoStack: [],
     redoStack: [],
     dirtyNodeIds: new Set(),
@@ -1062,11 +1072,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // default tab rather than wherever the link went.
   openNodeDetail: (id, target) =>
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodeDetailNodeId: id,
         selectedNodeId: id,
         nodeDetailTab: target?.tab ?? null,
         nodeDetailPort: target?.port ?? null,
+        nodeDetailRequest: tab.nodeDetailRequest + 1,
       })),
     }),
 

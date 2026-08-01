@@ -29,9 +29,11 @@ never disagree.
 Why the threshold is 4M and not something rounder
 -------------------------------------------------
 Quantiles need a sort, and ``torch.sort`` costs ~0.18 µs/element (measured on
-a 16-thread CPU): 0.7 s at 4M, 3 s at 16M, 9 s at 50M. ``torch.quantile``
-refuses inputs over 16.7M outright. 4M is therefore the largest tensor this
-can summarise exactly while still feeling like a click rather than a job.
+a 16-thread CPU): 0.7 s at 4M, 3 s at 16M, 9 s at 50M. 4M is therefore the
+largest tensor this can summarise exactly while still feeling like a click
+rather than a job. (``torch.quantile`` also refuses inputs over 16.7M, which
+is why :func:`_quantiles_by_sort` interpolates by hand rather than calling it
+— corroborating evidence for the number, not the reason for it.)
 
 An earlier draft kept the threshold at 50M and estimated quantiles above 4M by
 inverting a 16384-bin histogram — O(n), no sort. That is more accurate than
@@ -77,10 +79,22 @@ CLASS_BALANCE_MAX = 64
 TOP_K = 10
 
 #: Elements per chunk in the full-tensor passes. Bounds the temporaries those
-#: passes allocate (a bool mask, an int64 cast) to ~64 MB for any tensor that
-#: has an axis to split on — see :func:`_split_axis` for the one shape that
-#: does not, a single element.
+#: passes allocate (a bool mask, an int64 cast) to ~64 MB. When one slice of
+#: the first splittable axis is itself over budget, :func:`_iter_chunks`
+#: recurses onto the next axis, so the only shape that exceeds this is a
+#: single element with no axis to split at all.
 CHUNK_ELEMENTS = 8_000_000
+
+#: Rows scanned when working out which columns a list-of-records has. Bounded
+#: separately from the cell budget because discovering names is itself a
+#: Python loop over every key of every row; a column that first appears after
+#: this many records is not described.
+RECORD_NAME_PROBE_ROWS = 1_000
+
+#: Cap on one ``top`` value's rendered length. A text column can hold whole
+#: paragraphs, and ten of those across sixty columns is the difference between
+#: a 2 KB payload and a 600 KB one.
+TOP_VALUE_MAX_CHARS = 120
 
 #: Ceiling on the ``torch.unique`` fallback that catches label tensors whose
 #: values are few but far apart. Above this the fallback is skipped rather
@@ -172,7 +186,17 @@ def _iter_chunks(t: Any, chunk_elements: int = CHUNK_ELEMENTS) -> Iterator[Any]:
     per_slice = max(1, t.numel() // length)
     step = max(1, chunk_elements // per_slice)
     for start in range(0, length, step):
-        yield t.narrow(axis, start, min(step, length - start))
+        piece = t.narrow(axis, start, min(step, length - start))
+        if piece.numel() > chunk_elements and piece.shape[axis] == 1:
+            # One slice of this axis is already over budget — a `[1, 3, 16384,
+            # 16384]` image batch splits into three 268M-element pieces, and
+            # `_scan_tensor` would then build a bool mask over each. Hand the
+            # piece back to the next splittable axis. Terminating: this branch
+            # only runs once `step` has collapsed to a single slice, so every
+            # recursion retires one axis.
+            yield from _iter_chunks(piece, chunk_elements)
+        else:
+            yield piece
 
 
 def _dtype_kind(t: Any) -> str:
@@ -277,13 +301,27 @@ def _flat_view(t: Any) -> Any:
         return t.reshape(-1)
 
 
-def _narrow_for_sampling(t: Any, target: int) -> Any:
+def _narrow_for_sampling(t: Any, target: int, seed: int) -> Any:
     """Pre-thin a non-contiguous tensor before flattening it.
 
     Flattening a non-contiguous 2 GB tensor copies 2 GB, which is exactly the
-    allocation a sampled path must not make. Striding along {@link _split_axis}
-    first is a view, so only the survivors get copied.
+    allocation a sampled path must not make. Keeping a subset of slices along
+    {@link _split_axis} first means only the survivors get copied.
+
+    The slices are CHOSEN AT RANDOM, not strided. An earlier version kept every
+    n-th slice, which on a ``[1, 64, 1024, 1024]`` activation meant channels
+    0, 16, 32 and 48 and nothing else — a systematically selected quarter of
+    the data reported under ``"sampled": true``, which reads as an unbiased
+    draw. Any axis that carries structure (channel, class, time) would have
+    been summarised from whichever slices the stride happened to land on.
+
+    Drawn with ``randint`` rather than ``randperm`` because the axis can be
+    long: a permutation of 500M rows is a 4 GB allocation to pick four of them.
+    ``unique`` sorts and de-duplicates, so the survivors stay in order and no
+    slice is counted twice.
     """
+    import torch
+
     if t.is_contiguous() or t.numel() <= target * 4:
         return t
     axis = _split_axis(t)
@@ -294,8 +332,12 @@ def _narrow_for_sampling(t: Any, target: int) -> Any:
     keep = max(1, -(-target * 4 // per_slice))
     if keep >= length:
         return t
-    step = max(1, length // keep)
-    return t[(slice(None),) * axis + (slice(None, None, step),)]
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    picks = torch.unique(
+        torch.randint(0, length, (keep,), generator=generator, dtype=torch.long)
+    )
+    return t.index_select(axis, picks.to(t.device))
 
 
 def _seeded_sample(flat: Any, size: int, seed: int) -> Any:
@@ -434,7 +476,7 @@ def _tensor_stats(
     # ── the working set: what the distribution stats actually read ──────────
     sampled = numel > sample_threshold
     if sampled:
-        narrowed = _narrow_for_sampling(t, sample_size)
+        narrowed = _narrow_for_sampling(t, sample_size, seed)
         work = _seeded_sample(_flat_view(narrowed), sample_size, seed)
     else:
         work = _flat_view(t)
@@ -524,6 +566,16 @@ def _is_missing(v: Any) -> bool:
     return v is None or (isinstance(v, float) and not math.isfinite(v))
 
 
+def _top_value(v: Any) -> str | int | float | bool:
+    """One `top` entry, with long text cut to a length a table can show."""
+    if isinstance(v, (int, float, bool)):
+        return v
+    text = v if isinstance(v, str) else str(v)
+    if len(text) <= TOP_VALUE_MAX_CHARS:
+        return text
+    return text[:TOP_VALUE_MAX_CHARS] + "..."
+
+
 def _column_stats(name: str, values: list[Any], max_rows: int) -> dict[str, Any]:
     """count / unique / top-k / missing for one column, plus numeric moments.
 
@@ -585,11 +637,7 @@ def _column_stats(name: str, values: list[Any], max_rows: int) -> dict[str, Any]
         "count": len(scanned) - missing,
         "missing": missing,
         "unique": len(counter),
-        "top": [
-            {"value": v if isinstance(v, (str, int, float, bool)) else str(v),
-             "count": c}
-            for v, c in top
-        ],
+        "top": [{"value": _top_value(v), "count": c} for v, c in top],
         "mean": None,
         "min": None,
         "max": None,
@@ -600,6 +648,18 @@ def _column_stats(name: str, values: list[Any], max_rows: int) -> dict[str, Any]
         column["min"] = _num(min(numeric))
         column["max"] = _num(max(numeric))
     return column
+
+
+def _row_budget(columns: int, max_rows: int) -> int:
+    """Rows to scan PER COLUMN, given a budget over the whole table.
+
+    The column walk is interpreted Python, so a 64-column table at 200k rows
+    each would be 12.8M dict operations - seconds of wall clock for a summary
+    that is supposed to be instant. Spreading the budget keeps the cost flat in
+    the column count, with a floor so a very wide table still sees enough rows
+    per column for its top-k to mean something.
+    """
+    return max(1000, max_rows // max(1, columns)) if columns else max_rows
 
 
 def _as_columns(
@@ -621,10 +681,10 @@ def _as_columns(
     if isinstance(value, dict):
         if not value:
             return [], 0, 0
-        columns: list[tuple[str, list[Any]]] = []
         rows = 0
         # Distinct dict keys can share a `str()` (1 and "1"). Left alone they
         # become two columns with one name and a duplicate React key.
+        keep: list[tuple[str, Any]] = []
         names: list[str] = []
         seen: set[str] = set()
         for key, cells in value.items():
@@ -636,28 +696,33 @@ def _as_columns(
                 continue
             seen.add(name)
             names.append(name)
-            if len(columns) < max_columns:
-                columns.append((name, list(cells[:max_rows])))
+            if len(keep) < max_columns:
+                keep.append((name, cells))
+        budget = _row_budget(len(keep), max_rows)
+        columns = [(name, list(cells[:budget])) for name, cells in keep]
         return columns, rows, len(names)
 
     if isinstance(value, (list, tuple)):
         if len(value) == 0:
             return [], 0, 0
-        head = value[:max_rows]
-        if all(isinstance(row, dict) for row in head):
+        probe = value[:RECORD_NAME_PROBE_ROWS]
+        if all(isinstance(row, dict) for row in probe):
             record_names: list[str] = []
             seen_names: set[str] = set()
-            for row in head:
+            for row in probe:
                 for key in row:
                     if str(key) not in seen_names:
                         seen_names.add(str(key))
                         record_names.append(str(key))
             kept = record_names[:max_columns]
+            budget = _row_budget(len(kept), max_rows)
+            head = value[:budget]
             columns = [(name, [row.get(name) for row in head]) for name in kept]
             return columns, len(value), len(record_names)
         primitive = (str, int, float, bool, type(None))
-        if all(isinstance(x, primitive) for x in head):
-            return [("values", list(head))], len(value), 1
+        if all(isinstance(x, primitive) for x in probe):
+            budget = _row_budget(1, max_rows)
+            return [("values", list(value[:budget]))], len(value), 1
     return None
 
 

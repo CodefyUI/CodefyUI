@@ -122,7 +122,8 @@ export async function fetchGradIndex(
 /** A fixed-bin histogram: `bins` counts between `bins + 1` edges. */
 export interface StatsHistogram {
   bins: number;
-  edges: number[];
+  /** Nullable like every other float here — a non-finite edge reports `null`. */
+  edges: (number | null)[];
   counts: number[];
 }
 

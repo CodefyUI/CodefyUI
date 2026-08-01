@@ -351,7 +351,9 @@ describe('StatsTab', () => {
     ).toBeInTheDocument();
   });
 
-  it("surfaces the server's not-captured hint", async () => {
+  it('localizes the not-captured hint instead of echoing the server', async () => {
+    // The server detail is English by construction; the one error whose cause
+    // is known exactly gets the translated wording.
     mockStats.mockRejectedValue(
       new StatsNotCapturedError(
         "nothing captured for 'n1.out' in run 'run1'. Turn on Record outputs (the Rec toggle in the toolbar) and re-run the graph to capture port data.",
@@ -359,14 +361,33 @@ describe('StatsTab', () => {
     );
     render(<StatsTab ctx={ctx()} />);
     await waitFor(() =>
-      expect(screen.getAllByText(/Turn on Record outputs/).length).toBe(2),
+      expect(
+        screen.getAllByText('Nothing captured for this port — re-run with Rec on'),
+      ).toHaveLength(2),
     );
+    expect(screen.queryByText(/Rec toggle in the toolbar/)).toBeNull();
   });
 
   it('reports an unexpected failure without blanking the tab', async () => {
     mockStats.mockRejectedValue(new Error('boom'));
     render(<StatsTab ctx={ctx()} />);
     await waitFor(() => expect(screen.getAllByText('boom').length).toBe(2));
+  });
+
+  it('aborts the previous round when the port set changes', async () => {
+    const signals: AbortSignal[] = [];
+    mockStats.mockImplementation(async (_r, _n, _p, opts) => {
+      if (opts?.signal) signals.push(opts.signal);
+      return tensorStats();
+    });
+    const { rerender } = render(<StatsTab ctx={ctx()} />);
+    await waitFor(() => expect(signals.length).toBe(2));
+
+    // Dropping the edge drops the input port, so the set changes.
+    rerender(<StatsTab ctx={ctx({ edges: [] })} />);
+    await waitFor(() => expect(signals.length).toBeGreaterThan(2));
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[signals.length - 1].aborted).toBe(false);
   });
 
   it('aborts in-flight requests when the tab unmounts', async () => {

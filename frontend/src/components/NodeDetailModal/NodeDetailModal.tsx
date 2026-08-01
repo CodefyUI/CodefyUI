@@ -81,7 +81,12 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const edges = activeTab.edges;
   const node = nodes.find((n) => n.id === nodeId) as Node<NodeData> | undefined;
 
-  const [activeTabId, setActiveTabId] = useState('inputs');
+  // Seeded from the request rather than defaulted to 'inputs' and corrected by
+  // the effect below: a deep-linked Stats tab that mounts one commit late
+  // mounts the Inputs tab first, and the Inputs tab fetches.
+  const [activeTabId, setActiveTabId] = useState(
+    () => activeTab.nodeDetailTab ?? 'inputs',
+  );
   const [draftName, setDraftName] = useState<string | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -110,16 +115,21 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   // node's draft over the new node's header.
   //
   // `requestedTab` is the deep link from `openNodeDetail(id, { tab })` (#129).
-  // Listing it as a dependency is what makes a SECOND deep link land while
-  // the modal is already open on that node — following "View stats" from
-  // another edge into the same consumer changes nothing else the effect
-  // watches. It does not fight a manual tab switch, because clicking a tab
-  // changes local state and leaves the store's request alone.
+  // The effect keys on the request NONCE, not on the tab id: following "View
+  // stats" from a second edge into the consumer already on screen changes
+  // neither the node nor the requested tab, so an effect watching only those
+  // would decide nothing had happened and strand the user on whatever tab
+  // they had moved to. It still does not fight a manual tab switch, because
+  // clicking a tab changes local state and leaves the store's request alone.
   const requestedTab = activeTab.nodeDetailTab;
+  const requestNonce = activeTab.nodeDetailRequest;
   useEffect(() => {
     setDraftName(null);
     setActiveTabId(requestedTab ?? 'inputs');
-  }, [nodeId, requestedTab]);
+    // `requestedTab` is read, not watched — the nonce already changes on every
+    // open, and listing both would re-run twice for one request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, requestNonce]);
 
   // Take focus so the key handling below has somewhere to sit and the page
   // behind the backdrop cannot be tabbed into blind — then hand it back to

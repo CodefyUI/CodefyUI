@@ -641,6 +641,7 @@ const en = {
   'nodeDetail.stats.top': 'Most common',
   'nodeDetail.stats.columnsTruncated': 'Showing {shown} of {total} columns',
   'nodeDetail.stats.unsupported': 'No statistics for this value type ({type})',
+  'nodeDetail.stats.notCaptured': 'Nothing captured for this port — re-run with Rec on',
   'nodeDetail.docs.description': 'Description',
   'nodeDetail.docs.noDescription': 'This node ships no description.',
   'nodeDetail.docs.params': 'Parameters',
@@ -654,6 +655,10 @@ const en = {
 
   // Edge data tooltip
   'edge.viewStats': 'View stats',
+
+  // Shared plots
+  'plot.noDistribution': 'no distribution',
+  'plot.peak': 'peak {count}',
 } as const;
 
 export type TranslationKey = keyof typeof en;

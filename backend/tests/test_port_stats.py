@@ -146,6 +146,18 @@ def test_all_nan_tensor_reports_none_rather_than_nan():
     _assert_json_safe(stats)
 
 
+def test_inf_only_tensor_reports_none_rather_than_inf():
+    t = torch.tensor([float("inf"), -float("inf"), float("inf")])
+    stats = compute_port_stats(t)
+    assert stats["inf_count"] == 3
+    assert stats["nan_count"] == 0
+    assert stats["min"] is None
+    assert stats["max"] is None
+    assert stats["mean"] is None
+    assert stats["histogram"] is None
+    _assert_json_safe(stats)
+
+
 def test_empty_tensor_is_described_not_crashed():
     stats = compute_port_stats(torch.zeros(0))
     assert stats["kind"] == "tensor"
@@ -231,12 +243,54 @@ def test_a_single_sample_activation_is_still_chunked_and_thinned():
     assert max(c.numel() for c in chunks) <= 40 * 40 * 64
     assert sum(c.numel() for c in chunks) == t.numel()
 
-    thinned = _narrow_for_sampling(t, 1000)
+    thinned = _narrow_for_sampling(t, 1000, 0)
     assert thinned.numel() < t.numel()
 
     stats = compute_port_stats(t, sample_threshold=1000, sample_size=512)
     assert stats["count"] == t.numel()
     assert stats["sampled"] is True
+
+
+def test_thinning_a_structured_axis_does_not_pick_a_stride():
+    """A fixed stride would summarise whichever slices it happened to land on.
+
+    Row i is drawn from N(i, 1), so the split axis carries all the signal. The
+    old ``t[::step]`` kept rows 0, 16, 32, 48 of 64 and reported their mean —
+    a systematically chosen quarter of the data under ``"sampled": true``.
+    """
+    rows = 64
+    t = torch.stack([torch.randn(4096) + i for i in range(rows)]).t()
+    assert not t.is_contiguous()
+    true_mean = (rows - 1) / 2  # 31.5
+
+    stats = compute_port_stats(t, sample_threshold=1000, sample_size=4096)
+    assert stats["sampled"] is True
+    assert stats["mean"] == pytest.approx(true_mean, abs=3.0)
+
+
+def test_thinning_stays_deterministic_under_a_seed():
+    t = torch.stack([torch.randn(2048) + i for i in range(64)]).t()
+    a = compute_port_stats(t, sample_threshold=1000, sample_size=2048, seed=7)
+    b = compute_port_stats(t, sample_threshold=1000, sample_size=2048, seed=7)
+    assert a == b
+
+
+def test_one_oversized_slice_recurses_onto_the_next_axis():
+    """A single slice bigger than the budget used to be yielded whole.
+
+    ``[1, 3, H, W]`` splits on the channel axis into three slices; each is far
+    over budget, and ``_scan_tensor`` then builds a bool mask over the whole
+    thing. The chunker has to keep going.
+    """
+    from app.core.port_stats import _iter_chunks
+
+    t = torch.zeros(1, 3, 1024, 1024).permute(0, 2, 3, 1)
+    assert not t.is_contiguous()
+
+    budget = 100_000
+    chunks = list(_iter_chunks(t, chunk_elements=budget))
+    assert sum(c.numel() for c in chunks) == t.numel()
+    assert max(c.numel() for c in chunks) <= budget
 
 
 def test_sampling_handles_non_contiguous_tensors():
@@ -377,6 +431,21 @@ def test_wide_integer_tensor_uses_a_histogram():
     assert sum(stats["histogram"]["counts"]) == CLASS_BALANCE_MAX * 4
 
 
+def test_exactly_sixty_four_distinct_values_is_still_class_balance():
+    t = torch.arange(CLASS_BALANCE_MAX, dtype=torch.int64)
+    stats = compute_port_stats(t)
+    assert stats["value_counts"] is not None
+    assert len(stats["value_counts"]) == CLASS_BALANCE_MAX
+    assert stats["histogram"] is None
+
+
+def test_sixty_five_distinct_values_tips_over_to_a_histogram():
+    t = torch.arange(CLASS_BALANCE_MAX + 1, dtype=torch.int64)
+    stats = compute_port_stats(t)
+    assert stats["value_counts"] is None
+    assert stats["histogram"] is not None
+
+
 def test_negative_integer_labels():
     t = torch.tensor([-1, -1, 0, 1], dtype=torch.int64)
     stats = compute_port_stats(t)
@@ -483,20 +552,58 @@ def test_row_cap_applies_before_the_table_is_materialised():
     Transposing a ten-million-row CSV in full costs a gigabyte of list slots
     and seconds on the GIL, all to build rows the summary then discards.
     """
-    from app.core.port_stats import _as_columns
+    from app.core.port_stats import _as_columns, _row_budget
 
     records = [{"a": i, "b": i} for i in range(50_000)]
-    columns, rows, column_count = _as_columns(records, max_rows=100, max_columns=8)
+    columns, rows, column_count = _as_columns(records, max_rows=8000, max_columns=8)
     assert rows == 50_000  # the reported total stays honest
     assert column_count == 2
-    assert all(len(cells) == 100 for _, cells in columns)
+    assert all(len(cells) == _row_budget(2, 8000) for _, cells in columns)
 
     columnar = {f"c{i}": list(range(50_000)) for i in range(20)}
-    columns, rows, column_count = _as_columns(columnar, max_rows=100, max_columns=4)
+    columns, rows, column_count = _as_columns(columnar, max_rows=8000, max_columns=4)
     assert rows == 50_000
     assert column_count == 20
     assert len(columns) == 4
-    assert all(len(cells) == 100 for _, cells in columns)
+    assert all(len(cells) == _row_budget(4, 8000) for _, cells in columns)
+
+
+def test_the_row_budget_is_applied_before_the_transpose_not_after():
+    """The old order built every column at the whole-table budget, then cut.
+
+    Counted through a list subclass, because "we sliced early" is only
+    observable as cells never read. 64 columns x 200k rows is 12.8M reads to
+    produce cells the summary then throws away.
+    """
+    from app.core.port_stats import _as_columns
+
+    reads = 0
+
+    class CountingDict(dict):
+        def get(self, key, default=None):  # noqa: A003 - dict API
+            nonlocal reads
+            reads += 1
+            return super().get(key, default)
+
+    records = [CountingDict({f"c{i}": 1 for i in range(64)}) for _ in range(20_000)]
+    columns, rows, column_count = _as_columns(records, max_rows=64_000, max_columns=64)
+
+    assert rows == 20_000
+    assert column_count == 64
+    # Budget is 64_000 // 64 = 1000 rows per column, over 64 columns.
+    assert reads == 64 * 1000
+    assert all(len(cells) == 1000 for _, cells in columns)
+
+
+def test_long_top_values_are_truncated():
+    from app.core.port_stats import TOP_VALUE_MAX_CHARS
+
+    essay = "x" * 5000
+    stats = compute_port_stats({"notes": [essay, essay, "short"]})
+    top = stats["columns"][0]["top"]
+    assert len(top[0]["value"]) <= TOP_VALUE_MAX_CHARS + 3
+    assert top[0]["value"].endswith("...")
+    assert len(_assert_json_safe(stats)) < 2000
 
 
 def test_duplicate_stringified_keys_collapse_to_one_column():

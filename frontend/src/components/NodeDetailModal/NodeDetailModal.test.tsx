@@ -930,6 +930,47 @@ describe('NodeDetailModal — tabs', () => {
     );
   });
 
+  it('honours a SECOND deep link into the node already on screen', () => {
+    // Following "View stats" from another edge into the same consumer changes
+    // neither the node id nor the requested tab — only the request nonce.
+    seedTab({ nodes: [node('n1'), node('n2')] });
+    act(() => {
+      useTabStore.getState().openNodeDetail('n1', { tab: 'stats', port: 'a::x' });
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    expect(screen.getByRole('tab', { name: 'Docs' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    act(() => {
+      useTabStore.getState().openNodeDetail('n1', { tab: 'stats', port: 'b::y' });
+    });
+    expect(screen.getByRole('tab', { name: 'Stats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(activeTab().nodeDetailPort).toBe('b::y');
+  });
+
+  it('mounts straight onto the deep-linked tab, never Inputs first', () => {
+    // A one-commit-late correction still mounts the Inputs tab, and the Inputs
+    // tab fetches every port before it is thrown away.
+    seedTab({
+      nodes: [node('n1')],
+      nodeDetailNodeId: 'n1',
+      nodeDetailTab: 'docs',
+      lastRunId: 'run1',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByRole('tab', { name: 'Docs' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(mockOutput).not.toHaveBeenCalled();
+  });
+
   it('hands the requested port to every tab as focusPort', () => {
     const seen: (string | null)[] = [];
     registerNodeDetailTab({

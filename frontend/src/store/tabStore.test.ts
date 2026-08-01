@@ -1006,6 +1006,17 @@ describe('onNodesChange', () => {
     expect(activeTab().nodeDetailPort).toBeNull();
   });
 
+  it('bumps the request nonce on every open, target or not', () => {
+    const start = activeTab().nodeDetailRequest;
+    store().openNodeDetail('n1', { tab: 'stats', port: 'src::out' });
+    const first = activeTab().nodeDetailRequest;
+    expect(first).toBeGreaterThan(start);
+
+    // Same node, same tab: only the nonce says anything happened.
+    store().openNodeDetail('n1', { tab: 'stats', port: 'other::out' });
+    expect(activeTab().nodeDetailRequest).toBeGreaterThan(first);
+  });
+
   it('clears the deep link on close', () => {
     store().openNodeDetail('n1', { tab: 'stats', port: 'src::out' });
     store().closeNodeDetail();

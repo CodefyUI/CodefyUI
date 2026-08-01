@@ -638,6 +638,7 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.stats.top': '最常出現',
   'nodeDetail.stats.columnsTruncated': '顯示 {total} 欄中的 {shown} 欄',
   'nodeDetail.stats.unsupported': '此資料型別（{type}）沒有可用的統計',
+  'nodeDetail.stats.notCaptured': '這個連接埠沒有擷取到資料 — 開啟 Rec 後重新執行',
   'nodeDetail.docs.description': '說明',
   'nodeDetail.docs.noDescription': '這個節點沒有附說明文字。',
   'nodeDetail.docs.params': '參數',
@@ -651,6 +652,10 @@ const zhTW: Record<TranslationKey, string> = {
 
   // Edge data tooltip
   'edge.viewStats': '查看統計',
+
+  // Shared plots
+  'plot.noDistribution': '沒有分佈資料',
+  'plot.peak': '最高 {count}',
 };
 
 export default zhTW;
