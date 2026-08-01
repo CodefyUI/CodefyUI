@@ -172,6 +172,20 @@ describe('ChartView', () => {
     expect(screen.getAllByText('step')).toHaveLength(1);
   });
 
+  it('omits the axis footer entirely when it would be empty', () => {
+    // A line chart with only x_label has nothing to put there, since x is
+    // suppressed — the row must not render as a bare strip of padding.
+    const { container } = render(
+      <ChartView
+        chart={{ kind: 'line', series: [{ name: 's', points: [[0, 1]] }], x_label: 'step' }}
+      />,
+    );
+    const footer = [...container.querySelectorAll('div')].find(
+      (d) => d.className.includes('axes'),
+    );
+    expect(footer).toBeUndefined();
+  });
+
   it('renders an empty bar chart without crashing', () => {
     const { container } = render(<ChartView chart={{ kind: 'bar', bars: [] }} />);
     expect(kindOf(container)).toBe('bar');

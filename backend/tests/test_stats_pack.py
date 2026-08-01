@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from textwrap import dedent
 
@@ -144,56 +145,79 @@ def test_rediscovery_does_not_duplicate_or_drop_nodes(isolated_lockfile):
     assert sorted(registry.nodes) == [f"stats:{name}" for name in NODE_NAMES]
 
 
-def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path, monkeypatch):
+def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path):
     """The acceptance criterion, exercised the way a plugin author lives it.
 
-    Copies the pack to a temp dir, runs a node, EDITS the source, reloads
-    through ``rediscover_all`` — the same call ``POST /api/plugins/reload``
-    makes — and re-runs. Discovering a pristine pack twice would pass even if
-    reload could not pick up a change, which is the only thing anyone actually
-    wants from it.
+    Copies the pack to a temp dir, runs a node, EDITS the source, reloads, and
+    re-runs. Discovering a pristine pack twice would pass even if reload could
+    not see a change, which is the only thing anyone wants from it.
+
+    The reload here is exactly what ``rediscover_all`` does — the function
+    behind ``POST /api/plugins/reload`` — for a plugin:
+    ``install_plugin_finder`` then ``discover(force_reload=True)``. There is no
+    ``purge_plugin_modules`` call because production does not make one:
+    ``force_reload`` re-imports through ``importlib.reload``, which re-reads
+    the file, and that is sufficient on its own.
+
+    The copy is installed under a DIFFERENT plugin id. ``conftest`` binds
+    ``cdui_plugins.stats`` to the real in-repo pack for the whole session, so
+    reusing that id would silently rebind a session-wide namespace to a temp
+    directory — a global-state mutation that also forces a purge the real
+    reload path never needs. A fresh id keeps the test honest and inert.
     """
+    plugin_id = "statscopy"
     user_root = tmp_path / "userdata" / "plugins"
-    pack = user_root / "stats"
+    pack = user_root / plugin_id
     shutil.copytree(_PACK_DIR, pack)
-    monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: user_root)
-
-    lockfile = {
-        "schema": 1,
-        "plugins": {"stats": {"source_kind": "user", "source": "stats", "enabled": True}},
-    }
-    monkeypatch.setattr(plugin_loader, "load_lockfile", lambda: lockfile)
-
-    registry = NodeRegistry()
-
-    def reload_pack() -> None:
-        plugin_loader.purge_plugin_modules("stats")
-        plugin_loader.install_plugin_finder(
-            plugin_loader.plugins_builtin_root(), user_root, lockfile
-        )
-        registry.clear()
-        registry.discover(pack / "nodes", "cdui_plugins.stats.nodes", force_reload=True)
-
-    reload_pack()
-    describe = registry.get("stats:Stats-Describe")
-    before = describe().execute({"table": torch.zeros((3, 1))}, {})
-    assert before["row_labels"][0] == "count"
-
-    # The edit: rename the first statistic. Small, but only a genuine re-import
-    # of the changed file can make it visible.
-    source = pack / "nodes" / "stats_describe_node.py"
-    source.write_text(
-        source.read_text(encoding="utf-8").replace(
-            '["count", "mean", "std", "min"]', '["N_ROWS", "mean", "std", "min"]'
-        ),
+    manifest = pack / "cdui.plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('id              = "stats"',
+                                                     f'id              = "{plugin_id}"'),
         encoding="utf-8",
     )
 
-    reload_pack()
-    after = registry.get("stats:Stats-Describe")
-    assert after is not describe, "reload must hand back a freshly imported class"
-    assert after().execute({"table": torch.zeros((3, 1))}, {})["row_labels"][0] == "N_ROWS"
-    assert len(registry.nodes) == 8, "an edit must not duplicate or drop nodes"
+    lockfile = {
+        "schema": 1,
+        "plugins": {plugin_id: {"source_kind": "user", "enabled": True}},
+    }
+    registry = NodeRegistry()
+    package = f"cdui_plugins.{plugin_id}.nodes"
+
+    def reload_pack() -> int:
+        """The plugin half of rediscover_all, verbatim."""
+        pairs = plugin_loader.install_plugin_finder(
+            plugin_loader.plugins_builtin_root(), user_root, lockfile
+        )
+        registry.clear()
+        return sum(
+            registry.discover(nodes_dir, pkg, force_reload=True)
+            for nodes_dir, pkg in pairs
+        )
+
+    try:
+        assert reload_pack() == 8
+        describe = registry.get(f"{plugin_id}:Stats-Describe")
+        assert describe().execute({"table": torch.zeros((3, 1))}, {})["row_labels"][0] == "count"
+
+        # The edit: rename the first statistic. Small, but only a genuine
+        # re-read of the changed file can make it visible.
+        source = pack / "nodes" / "stats_describe_node.py"
+        source.write_text(
+            source.read_text(encoding="utf-8").replace(
+                '["count", "mean", "std", "min"]', '["N_ROWS", "mean", "std", "min"]'
+            ),
+            encoding="utf-8",
+        )
+
+        assert reload_pack() == 8, "an edit must not duplicate or drop nodes"
+        after = registry.get(f"{plugin_id}:Stats-Describe")
+        assert after is not describe, "reload must hand back a freshly imported class"
+        assert after().execute({"table": torch.zeros((3, 1))}, {})["row_labels"][0] == "N_ROWS"
+    finally:
+        # The only global state this test created. The real `stats` namespace
+        # conftest installed is untouched either way.
+        plugin_loader.purge_plugin_modules(plugin_id)
+        sys.modules.pop(f"cdui_plugins.{plugin_id}", None)
 
 
 def test_node_types_are_namespaced_so_saved_graphs_are_unambiguous(

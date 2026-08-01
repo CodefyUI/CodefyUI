@@ -128,19 +128,22 @@ export function ChartView({ chart, width = 420, height = 180, className }: Chart
     );
   }
 
+  const showY = Boolean(chart.y_label);
+  const showX = Boolean(chart.x_label) && chart.kind !== 'line';
+
   return (
     <div className={`${styles.wrapper} ${className ?? ''}`} data-chart-kind={chart.kind}>
       {chart.title && <div className={styles.title}>{chart.title}</div>}
       {chart.note && <div className={styles.note}>{chart.note}</div>}
       <div className={styles.body}>{body}</div>
-      {(chart.x_label || chart.y_label) && (
+      {/* LossChart already prints x under its own axis, so repeating it here
+          would caption the same axis twice — which means a line chart with
+          only an x_label has nothing to show, and the row must not render at
+          all rather than as an empty strip of padding. */}
+      {(showY || showX) && (
         <div className={styles.axes}>
-          {chart.y_label && <span className={styles.axisY}>{chart.y_label}</span>}
-          {/* LossChart already prints x under its own axis, so showing it
-              again here would caption the same axis twice. */}
-          {chart.x_label && chart.kind !== 'line' && (
-            <span className={styles.axisX}>{chart.x_label}</span>
-          )}
+          {showY && <span className={styles.axisY}>{chart.y_label}</span>}
+          {showX && <span className={styles.axisX}>{chart.x_label}</span>}
         </div>
       )}
     </div>
