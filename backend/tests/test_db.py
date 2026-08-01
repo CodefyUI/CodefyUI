@@ -9,12 +9,15 @@ WAL / busy_timeout / foreign_keys pragmas.
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import logging
 import sqlite3
+import threading
 
 import pytest
 
-from app.core.db import Database, utc_now_iso
+from app.core.db import Database, transaction, utc_now_iso
 from app.core.migrations import MIGRATIONS, iter_statements
 
 
@@ -23,13 +26,19 @@ def test_connect_migrates_empty_file(tmp_path):
     db.connect()
     try:
         assert db._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 2
+            == len(MIGRATIONS) == 3
         names = {
             r[0] for r in db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        # Publish (001/002) plus the Run Service store (003). The literal
+        # count above is a deliberate tripwire: adding a migration should
+        # make someone extend this set too. Per-table schema assertions
+        # live with each subsystem (test_provenance / test_run_store).
         assert {"apps", "app_versions", "api_keys", "runs"} <= names
+        assert {"exec_runs", "exec_run_metrics", "exec_run_events",
+                "exec_run_artifacts"} <= names
     finally:
         db.close()
 
@@ -85,6 +94,67 @@ def test_failed_migration_rolls_back_atomically(tmp_path, monkeypatch):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+# ── transaction() ────────────────────────────────────────────────────────
+
+
+def test_transaction_commits_on_success(tmp_path):
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    try:
+        with transaction(db._conn) as conn:
+            conn.execute(
+                "INSERT INTO api_keys (name, prefix, token_hash, created_at) "
+                "VALUES ('t', 'cdui_a', ?, ?)", ("h" * 64, utc_now_iso()))
+        assert db._conn.in_transaction is False   # no dangling transaction
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM api_keys").fetchone()[0] == 1
+    finally:
+        db.close()
+
+
+def test_transaction_rolls_back_every_statement_on_failure(tmp_path):
+    # The multi-statement guarantee: the first INSERT must not survive a
+    # failure in the second (this is exactly what RunStore's batched metric
+    # flush and cursor allocation rely on).
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            with transaction(db._conn) as conn:
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('a', 'p', ?, ?)",
+                    ("h" * 64, utc_now_iso()))
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('b', 'p', ?, ?)",   # duplicate hash
+                    ("h" * 64, utc_now_iso()))
+        assert db._conn.in_transaction is False   # no dangling transaction
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM api_keys").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_transaction_takes_the_write_lock_up_front(tmp_path):
+    # IMMEDIATE, not DEFERRED: the lock must be held before the block's
+    # first read, which is what makes a read-then-write cursor allocation
+    # safe against a second connection.
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    other = sqlite3.connect(str(tmp_path / "codefyui.db"),
+                            isolation_level=None)
+    other.execute("PRAGMA busy_timeout=0")
+    try:
+        with transaction(db._conn) as conn:
+            conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()
+            with pytest.raises(sqlite3.OperationalError, match="locked|busy"):
+                other.execute("BEGIN IMMEDIATE")
+    finally:
+        other.close()
+        db.close()
 
 
 def test_iter_statements_handles_comments_and_multistatement():
@@ -181,6 +251,138 @@ async def test_run_seam_executes_and_returns(tmp_path):
 
         assert await db.run(_count) == 1
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_run_waits_for_the_worker_thread(tmp_path):
+    # A cancelled db.run must NOT release the lock while its fn is still
+    # executing: the abandoned thread would keep driving BEGIN/COMMIT on the
+    # SHARED connection, and the next caller's write would be swallowed by
+    # someone else's ROLLBACK, swept into their COMMIT, or refused with
+    # "cannot start a transaction within a transaction".
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _slow(conn: sqlite3.Connection) -> None:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO api_keys (name, prefix, token_hash, created_at) "
+                "VALUES ('slow', 'p', ?, ?)", ("a" * 64, utc_now_iso()))
+            inside.set()
+            release.wait(10)
+
+    try:
+        task = asyncio.create_task(db.run(_slow))
+        await asyncio.to_thread(inside.wait, 10)   # thread is mid-transaction
+        task.cancel()
+        await asyncio.sleep(0.05)                  # let cancellation settle
+        assert db._lock.locked()                   # lock NOT handed over yet
+        assert not task.done()
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert db._conn.in_transaction is False
+
+        # The next caller gets a quiet connection and its write survives.
+        def _next(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('next', 'p', ?, ?)",
+                    ("b" * 64, utc_now_iso()))
+            return conn.execute(
+                "SELECT COUNT(*) FROM api_keys").fetchone()[0]
+
+        assert await db.run(_next) == 2
+    finally:
+        release.set()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_sweep_cannot_cancel_the_worker(tmp_path):
+    # asyncio's teardown cancels EVERY entry of all_tasks(). If the worker
+    # were a Task (what ensure_future(to_thread(...)) builds) the sweep
+    # would cancel it directly: done() flips True while the thread is still
+    # mid-transaction and the lock goes early -- the same bug as above
+    # through a second door. run_in_executor hands back a Future, which the
+    # sweep cannot see.
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _slow(conn: sqlite3.Connection) -> None:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO api_keys (name, prefix, token_hash, created_at) "
+                "VALUES ('slow', 'p', ?, ?)", ("a" * 64, utc_now_iso()))
+            inside.set()
+            release.wait(10)
+
+    try:
+        task = asyncio.create_task(db.run(_slow))
+        await asyncio.to_thread(inside.wait, 10)
+
+        current = asyncio.current_task()
+        for pending in asyncio.all_tasks():
+            if pending is not current:
+                pending.cancel()
+        await asyncio.sleep(0.05)
+        assert db._lock.locked()          # connection still private
+        assert db._conn.in_transaction    # ...and the thread still owns it
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert db._conn.in_transaction is False
+        assert await db.run(lambda c: c.execute(
+            "SELECT COUNT(*) FROM api_keys").fetchone()[0]) == 1
+    finally:
+        release.set()
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_does_not_leak_an_unretrieved_exception(
+        tmp_path, caplog):
+    # End-to-end guard on the fn-raises-AND-caller-cancelled path: the lock
+    # comes back, CancelledError wins over the worker's error, and asyncio
+    # logs nothing. Honest about its own reach: this passes with or without
+    # Database.run's explicit worker.exception(), because shield's
+    # _inner_done_callback already retrieves the inner exception when the
+    # outer was cancelled. It is the OBSERVABLE that is pinned here (no
+    # "never retrieved" noise, whatever the mechanism), so a refactor that
+    # drops the shield and forgets the retrieval is caught.
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _boom(conn: sqlite3.Connection) -> None:
+        inside.set()
+        release.wait(10)
+        raise sqlite3.OperationalError("worker blew up")
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            task = asyncio.create_task(db.run(_boom))
+            await asyncio.to_thread(inside.wait, 10)
+            task.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert db._lock.locked() is False
+            del task
+            gc.collect()
+            await asyncio.sleep(0)      # let any handler callback land
+        assert "never retrieved" not in caplog.text
+    finally:
+        release.set()
         db.close()
 
 

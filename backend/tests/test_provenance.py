@@ -44,16 +44,20 @@ def _user_version(db: Database) -> int:
 
 
 def test_migration_002_columns_and_idempotent(tmp_path):
+    # Fully-migrated head, not the literal 2: later migrations (003+) belong
+    # to other subsystems and must not make this provenance test a liar.
+    from app.core.migrations import MIGRATIONS
+
     db = Database(tmp_path / "p.db")
     db.connect()
-    assert _user_version(db) == 2
+    assert _user_version(db) == len(MIGRATIONS)
     cols = _table_columns(db, "app_versions")
     assert "git_commit" in cols and "git_dirty" in cols
     db.close()
     # Re-connecting an already-migrated DB is a no-op (user_version gate).
     db2 = Database(tmp_path / "p.db")
     db2.connect()
-    assert _user_version(db2) == 2
+    assert _user_version(db2) == len(MIGRATIONS)
     db2.close()
 
 

@@ -17,12 +17,15 @@ Decision A2 contract, verbatim:
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 from .migrations import MIGRATIONS, iter_statements
 
@@ -40,6 +43,41 @@ def utc_now_iso() -> str:
     the runs ``before=`` cursor) is lexicographically correct.
     """
     return datetime.now(timezone.utc).strftime(_TIMESTAMP_FORMAT)
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """``BEGIN IMMEDIATE`` … ``COMMIT``, rolling back on any exception.
+
+    The inline form of this (``BEGIN IMMEDIATE`` / try / ``COMMIT`` /
+    except ``BaseException`` / ``ROLLBACK`` / re-raise) is already the house
+    idiom in ``routes_apps.py`` and ``_apply_migrations``; this is the same
+    thing factored out for the modules that need it in several places.
+    Those two existing call sites are deliberately left inline — rewriting
+    shipped transaction code is not worth the risk in an unrelated change,
+    so the two forms coexist until something else has to touch them.
+
+    IMMEDIATE, not the default DEFERRED: the write lock is taken up front,
+    so a read-then-write inside the block (``SELECT MAX(...) + 1`` then
+    ``INSERT``) cannot interleave with another writer. DEFERRED would
+    upgrade the lock only at the INSERT, leaving the read stale.
+
+    Only usable because ``Database.connect`` passes ``isolation_level=None``
+    — sqlite3's default would emit its own implicit BEGIN and de-atomize
+    this.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            # A failed COMMIT can already have rolled the transaction back;
+            # never let that mask the original error on its way out.
+            pass
+        raise
 
 
 class Database:
@@ -105,12 +143,70 @@ class Database:
         THE seam: every route-level DB operation goes through here (one
         sync fn, one ``to_thread``, one lock — Decision A2). Multi-statement
         transactions live INSIDE ``fn`` with explicit BEGIN/COMMIT/ROLLBACK.
+
+        Cancelling the caller does NOT abandon the worker
+        --------------------------------------------------
+        ``asyncio.to_thread`` cancellation cancels the *awaiter*, never the
+        thread — a running sqlite3 statement cannot be interrupted. A bare
+        ``await asyncio.to_thread(...)`` would therefore unwind the
+        ``async with`` and RELEASE THE LOCK while ``fn`` was still executing
+        on the shared connection, so the next caller would land in the
+        middle of someone else's transaction: its writes silently swallowed
+        by that transaction's ROLLBACK, swept into its COMMIT, or refused
+        with "cannot start a transaction within a transaction".
+
+        So the cancellation is absorbed (``shield``) and re-raised only once
+        the thread has finished and the transaction is settled. The loop
+        handles repeated cancellation — during shutdown a task can be
+        cancelled more than once, and every one of those must be held until
+        the connection is quiet. ``shield`` ALONE is not enough: the outer
+        await still raises immediately and the lock still goes early.
+
+        The worker is a bare Future, not a Task, and that is load-bearing
+        rather than stylistic. ``asyncio``'s shutdown sweep cancels every
+        entry of ``asyncio.all_tasks()``; ``asyncio.to_thread`` is a
+        coroutine, so scheduling it produces a Task that the sweep would
+        cancel DIRECTLY — flipping ``done()`` to True while the thread is
+        still mid-transaction, which walks straight back into the bug above
+        through a second door. ``run_in_executor`` returns a Future, which
+        is not in ``all_tasks()``; nothing else holds a reference to it, so
+        the only cancellable thing left is our own shield. (Verified: under
+        a blanket cancel the Task reports cancelled and the Future does
+        not.) ``copy_context`` keeps the contextvar propagation that
+        ``to_thread`` gave us for free.
+
+        The delay is bounded by how long ``fn`` runs. Note that
+        ``PRAGMA busy_timeout=5000`` does NOT cap that: it caps how long a
+        statement waits for a lock held by ANOTHER connection, not how long
+        one takes to execute. A large DELETE takes as long as it takes.
         """
         async with self._lock:
             conn = self._conn
             if conn is None:
                 raise RuntimeError("Database is not connected")
-            return await asyncio.to_thread(fn, conn)
+            ctx = contextvars.copy_context()
+            worker = asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(ctx.run, fn, conn))
+            cancellation: BaseException | None = None
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError as exc:
+                    cancellation = exc       # ours: the worker is unreachable
+                except BaseException:
+                    break                    # worker failed; re-raised below
+            if cancellation is not None:
+                if not worker.cancelled():
+                    # Retrieve any worker error before raising the
+                    # cancellation instead, so Future.__del__ never routes
+                    # it to the loop's exception handler ("Future exception
+                    # was never retrieved") at a later GC. Belt and braces:
+                    # shield's own _inner_done_callback already calls
+                    # inner.exception() when the outer was cancelled, so
+                    # this only matters if the shield ever goes away.
+                    worker.exception()
+                raise cancellation
+            return worker.result()
 
     async def prune_runs(self, retention_days: int, *, force: bool = False) -> int:
         """Delete runs older than ``retention_days`` days; 0 disables.
