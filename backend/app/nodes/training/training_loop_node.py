@@ -210,9 +210,10 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
     with warnings.catch_warnings():
         # The replay calls step() before this scheduler instance has seen an
         # optimizer.step(), which torch warns about twice over. Both are
-        # expected here and only here -- suppress those two messages by name
-        # rather than every UserWarning the schedule might legitimately raise
-        # (OneCycleLR's "stepped past total_steps", say).
+        # expected here and only here -- so suppress those two messages by
+        # name. A blanket UserWarning filter would also swallow whatever the
+        # schedule itself (or a plugin's custom scheduler) has to say, which
+        # the user needs to see.
         for prefix in (
             "Detected call of `lr_scheduler.step()` before `optimizer.step()`",
             "Seems like `optimizer.step()` has been overridden",
