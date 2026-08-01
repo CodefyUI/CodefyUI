@@ -41,8 +41,21 @@ class MapNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        progress_callback: Any | None = None,
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
         from ...core.graph_engine import topological_sort
+        from ...core.loop_control import (
+            EVENT_BATCH,
+            ProgressThrottle,
+            interrupted_result,
+            stop_checker,
+        )
         from ...core.node_registry import registry as node_registry
         from ...core.preset_registry import preset_registry
 
@@ -87,8 +100,19 @@ class MapNode(BaseNode):
                 (edge["source"], edge["sourceHandle"], edge["targetHandle"])
             )
 
+        # #122: the outer loop runs a WHOLE subgraph per item, so its cost is
+        # len(items) x the subgraph -- easily the longest loop in the engine.
+        # The check is per item rather than per inner node: one subgraph pass
+        # is the unit of work that leaves consistent state behind.
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        stopped_at_item: int | None = None
+
         results = []
         for i, item in enumerate(items):
+            if should_stop():
+                stopped_at_item = i
+                break
             node_outputs: dict[str, dict[str, Any]] = {}
 
             for node_id in order:
@@ -114,5 +138,12 @@ class MapNode(BaseNode):
                 raise ValueError(f"Subgraph did not produce output for item {i}")
             results.append(out)
             logger.info("Map item %d/%d complete", i + 1, len(items))
+            throttle.emit({"event": EVENT_BATCH, "batch": i + 1,
+                           "total_batches": len(items)})
 
-        return {"results": results, "count": float(len(results))}
+        result: dict[str, Any] = {"results": results,
+                                  "count": float(len(results))}
+        if stopped_at_item is not None:
+            result.update(interrupted_result(batch=stopped_at_item,
+                                             total_items=len(items)))
+        return result

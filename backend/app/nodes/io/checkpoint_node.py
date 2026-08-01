@@ -1,28 +1,10 @@
 """Save / load a full training checkpoint.
 
-Checkpoint payload format
--------------------------
-A checkpoint is a plain dict written with ``torch.save`` and read back with
-``torch.load(..., weights_only=True)``. Every key is optional on read; the
-loader must degrade gracefully when one is missing so that checkpoints written
-by an older CodefyUI keep working.
-
-===========================  ============================================
-key                          contents
-===========================  ============================================
-``epoch``                    int, the epoch the checkpoint was taken at
-``model_state_dict``         ``model.state_dict()``
-``optimizer_state_dict``     ``optimizer.state_dict()``
-``losses``                   optional tensor of per-epoch training losses
-``scheduler_state_dict``     optional ``lr_scheduler.state_dict()`` (#118)
-``scheduler_class``          optional class name guarding the restore (#118)
-===========================  ============================================
-
-**The format is append-only.** New keys are added with ``.get()`` on the read
-side and never made mandatory, so a newer loader reads an older checkpoint and
-an older loader ignores what it does not know. Everything stored must survive
-``weights_only=True`` unpickling, i.e. tensors and plain Python containers --
-no arbitrary objects.
+The payload format, the path rules and the writer itself live in
+``core.checkpoints`` since #122 -- the interrupt path of every long-running
+training node writes the same files, and one format needs one definition.
+Read that module's docstring for the key table; these two nodes are the
+graph-facing wrapper around it.
 """
 
 import logging
@@ -77,61 +59,18 @@ class CheckpointSaverNode(BaseNode):
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-        import torch
-        from pathlib import Path
-
-        from ...config import settings
+        from ...core.checkpoints import write_checkpoint
 
         model = inputs["model"]
-        optimizer = inputs["optimizer"]
-        losses = inputs.get("losses")
-        lr_scheduler = inputs.get("lr_scheduler")
-        path = params.get("path", "checkpoint.pt")
-        epoch = params.get("epoch", 0)
-
-        p = Path(path)
-        if not p.is_absolute():
-            p = settings.MODELS_DIR / p
-        p = p.resolve()
-
-        # Restrict writes to project data directory
-        data_root = settings.MODELS_DIR.parent.resolve()
-        if not p.is_relative_to(data_root):
-            raise ValueError("Output path must be within the project data directory")
-
-        p.parent.mkdir(parents=True, exist_ok=True)
-
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        }
-        if losses is not None:
-            checkpoint["losses"] = losses
-        if lr_scheduler is not None:
-            # #118: without this the LR schedule restarts from scratch on
-            # resume. The class name is stored alongside so the loader can
-            # refuse to splice a StepLR state into a CosineAnnealingLR.
-            #
-            # The port is DataType.ANY, so anything at all can be wired into
-            # it. Say what is wrong before writing the file rather than
-            # crashing half way through serialization.
-            if not hasattr(lr_scheduler, "state_dict"):
-                raise ValueError(
-                    f"The lr_scheduler input is a {type(lr_scheduler).__name__}, "
-                    "which has no state_dict(); connect an LRScheduler node's "
-                    "'scheduler' output (or a CheckpointLoader's) to this port."
-                )
-            checkpoint["scheduler_state_dict"] = lr_scheduler.state_dict()
-            checkpoint["scheduler_class"] = type(lr_scheduler).__name__
-
-        torch.save(checkpoint, str(p))
-        logger.info(
-            "Saved checkpoint to %s (epoch=%d, scheduler=%s)",
-            p, epoch, checkpoint.get("scheduler_class", "none"),
+        target = write_checkpoint(
+            params.get("path", "checkpoint.pt"),
+            model,
+            inputs["optimizer"],
+            epoch=params.get("epoch", 0),
+            losses=inputs.get("losses"),
+            lr_scheduler=inputs.get("lr_scheduler"),
         )
-
-        return {"path": str(p), "model": model}
+        return {"path": str(target), "model": model}
 
 
 class CheckpointLoaderNode(BaseNode):
@@ -187,10 +126,8 @@ class CheckpointLoaderNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
-        from pathlib import Path
 
-        from ...config import settings
-
+        from ...core.checkpoints import resolve_checkpoint_path
         from ...core.device_utils import is_mps_device, resolve_node_device, to_device
 
         model = inputs["model"]
@@ -199,15 +136,14 @@ class CheckpointLoaderNode(BaseNode):
         path = params.get("path", "checkpoint.pt")
         device = resolve_node_device(params.get("device"), context)
 
-        p = Path(path)
-        if not p.is_absolute():
-            p = settings.MODELS_DIR / p
-        p = p.resolve()
-
-        # Restrict reads to project data directory
-        data_root = settings.MODELS_DIR.parent.resolve()
-        if not p.is_relative_to(data_root):
-            raise ValueError("Checkpoint file path must be within the project data directory")
+        # Same rules as the saver: relative to MODELS_DIR, never outside the
+        # project data directory.
+        try:
+            p = resolve_checkpoint_path(path)
+        except ValueError:
+            raise ValueError(
+                "Checkpoint file path must be within the project data directory"
+            ) from None
 
         if not p.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {p}")

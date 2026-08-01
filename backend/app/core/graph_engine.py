@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import logging
@@ -16,6 +17,16 @@ from .backward_pass import (
     run_backward,
     select_backward_target,
     zero_module_grads,
+)
+from .execution_context import (
+    INTERRUPTED_KEY,
+    ArtifactSignal,
+    CancellationError,
+    DroppedSignal,
+    EventOutbox,
+    ExecutionContext,
+    MetricSignal,
+    ProgressSignal,
 )
 from .node_base import BaseNode
 from .node_registry import registry
@@ -551,6 +562,7 @@ async def execute_graph(
     output_store: "RunOutputStore | None" = None,
     record_outputs: bool = False,
     preset_fallback: dict | None = None,
+    on_signal: Callable[[Any], Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -571,9 +583,30 @@ async def execute_graph(
             ``output_store`` for later retrieval via the REST endpoint.
         preset_fallback: Graph-embedded preset definitions (ID6), consulted
             when the server's preset registry lacks a referenced preset.
-    """
-    from .execution_context import CancellationError
+        on_signal: Callback for everything a node reports that is NOT a node
+            status — ``MetricSignal`` (``context.log_metric``),
+            ``ArtifactSignal`` (``context.log_artifact``) and
+            ``DroppedSignal`` (the outbox shed load). Called on the loop, one
+            at a time, in the order the nodes produced them. Omitting it
+            simply discards those signals; only ``RunService`` has somewhere
+            durable to put them.
 
+    Progress and metric delivery (#122)
+    -----------------------------------
+    Nodes report from an executor thread, and until #122 the bridge did
+    ``run_coroutine_threadsafe(...).result(timeout=10)`` -- the training
+    thread blocked until the loop had persisted the event. Now the bridge
+    APPENDS to ``context.outbox`` (bounded, drop-oldest, lock-free from the
+    node's point of view) and a single pump task drains it on the loop, so a
+    per-batch producer never pays for the consumer.
+
+    One pump, not one per node, because ordering is the whole contract of an
+    event log: a single consumer delivers signals in the order they were
+    produced, across every node running in parallel. The other half of that
+    ordering guarantee is the inline drain right after a node's future
+    resolves -- without it a node's queued progress would land AFTER its own
+    ``completed``.
+    """
     expanded_nodes, expanded_edges, internal_to_preset = prepare_executable_graph(
         nodes,
         edges,
@@ -624,6 +657,8 @@ async def execute_graph(
         - First running/cached → emit preset 'running'
         - Every completed/cached/skipped increments done count; emit 'completed' only on last
         - 'error' emits immediately (preset failed)
+        - 'interrupted' likewise: a preset whose training node stopped early
+          did not complete, so it must never roll up to 'completed'
         - 'progress' passes through as-is with the preset ID (so live charts still work)
         Non-preset nodes pass through unchanged.
         """
@@ -641,9 +676,9 @@ async def execute_graph(
             await _maybe_await(on_progress(preset_id, "progress", data))
             return
 
-        if status == "error":
-            # Any internal failure fails the whole preset immediately
-            await _maybe_await(on_progress(preset_id, "error", data))
+        if status in ("error", "interrupted"):
+            # Any internal failure or early stop settles the whole preset
+            await _maybe_await(on_progress(preset_id, status, data))
             return
 
         if status == "running":
@@ -663,6 +698,67 @@ async def execute_graph(
 
     max_workers = context.max_workers if context else 4
     semaphore = asyncio.Semaphore(max_workers)
+
+    # ── worker-thread → loop delivery ────────────────────────────────────
+    #
+    # A context-less run (the device smoke script, a bare execute_graph in a
+    # test) still gets an outbox so the progress bridge has one code path;
+    # nodes just have no way to reach it, since log_metric hangs off the
+    # context.
+    outbox = context.outbox if context is not None else EventOutbox()
+    outbox.bind(asyncio.get_running_loop())
+    deliver_lock = asyncio.Lock()
+
+    def _signal_node_id(node_id: str | None) -> str | None:
+        """Report a preset's id, never its internals — as progress does."""
+        if node_id is None:
+            return None
+        return internal_to_preset.get(node_id, node_id)
+
+    async def _deliver() -> None:
+        """Dispatch one drain's worth of signals. Serialised, hence ordered.
+
+        The lock is what makes "one consumer" true even though both the pump
+        task and each finishing node call this: they take turns, and a
+        caller that finds the queue empty returns immediately.
+        """
+        async with deliver_lock:
+            signals, dropped = outbox.drain()
+            if dropped:
+                logger.warning(
+                    "run %s: dropped %d progress/metric signal(s); the "
+                    "producer outran the consumer", run_id or "-", dropped,
+                )
+                if on_signal is not None:
+                    await _maybe_await(on_signal(DroppedSignal(dropped)))
+            for signal in signals:
+                if isinstance(signal, ProgressSignal):
+                    await _emit_preset_aware(
+                        signal.node_id, "progress", signal.payload)
+                elif on_signal is None:
+                    continue
+                elif isinstance(signal, MetricSignal):
+                    await _maybe_await(on_signal(MetricSignal(
+                        name=signal.name, value=signal.value,
+                        step=signal.step,
+                        node_id=_signal_node_id(signal.node_id))))
+                elif isinstance(signal, ArtifactSignal):
+                    await _maybe_await(on_signal(ArtifactSignal(
+                        kind=signal.kind, path=signal.path, meta=signal.meta,
+                        node_id=_signal_node_id(signal.node_id))))
+                else:  # pragma: no cover - a node pack's own signal type
+                    await _maybe_await(on_signal(signal))
+
+    async def _pump() -> None:
+        """Deliver signals while the loop is idle. Lives as long as the run."""
+        while True:
+            await outbox.wait()
+            try:
+                await _deliver()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - observability must not kill a run
+                logger.warning("signal delivery failed", exc_info=True)
 
     async def _execute_single_node(node_id: str) -> None:
         """Execute one node with cancellation, caching, and error recovery."""
@@ -748,17 +844,13 @@ async def execute_graph(
                     instance = node_cls()
                     loop = asyncio.get_event_loop()
 
-                    # Thread-safe progress bridge: sync thread → async on_progress
+                    # Thread-safe progress bridge: worker thread → outbox →
+                    # the loop-side pump. NON-BLOCKING since #122; a node
+                    # reporting every batch must not be paced by sqlite.
                     def _progress_bridge(data: dict) -> None:
                         if on_progress:
-                            future = asyncio.run_coroutine_threadsafe(
-                                _emit_preset_aware(node_id, "progress", data),
-                                loop,
-                            )
-                            try:
-                                future.result(timeout=10)
-                            except Exception:
-                                pass
+                            outbox.put(ProgressSignal(node_id=node_id,
+                                                      payload=data))
 
                     # Tell stateful nodes which node-id they belong to.
                     if context is not None:
@@ -773,6 +865,23 @@ async def execute_graph(
                         context=context,
                     )
                     result = await loop.run_in_executor(None, fn)
+                    # Everything this node queued goes out BEFORE its
+                    # terminal status, which the queue alone does not
+                    # guarantee: the pump might not have been scheduled yet.
+                    #
+                    # Guarded like the pre-#122 bridge's swallowed
+                    # ``future.result(timeout=10)``: a failure to REPORT on a
+                    # node that has already produced its result must not
+                    # bubble into the retry path below and train the whole
+                    # thing over again.
+                    try:
+                        await _deliver()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "signal delivery failed after node %s", node_id,
+                            exc_info=True)
                 outputs[node_id] = result
                 # A3: capture floating tensors for the upcoming backward pass.
                 if context is not None and getattr(context, "backward_mode", False):
@@ -809,7 +918,12 @@ async def execute_graph(
                                     "tensor_keys": list(step.tensors.keys()),
                                 },
                             )
-                await _emit_preset_aware(node_id, "completed", result)
+                # A node that stopped on ``context.should_stop()`` returns
+                # partial outputs and says so; it did not complete.
+                terminal = ("interrupted"
+                            if isinstance(result, dict)
+                            and result.get(INTERRUPTED_KEY) else "completed")
+                await _emit_preset_aware(node_id, terminal, result)
                 return
             except Exception as e:
                 last_error = e
@@ -829,59 +943,86 @@ async def execute_graph(
             node_errors[node_id] = str(last_error)
             await _emit_preset_aware(node_id, "error", error_detail)
 
-    # Before the forward pass: zero any accumulated gradients on persisted
-    # modules so backward_mode doesn't keep summing across runs.
-    if context is not None and getattr(context, "backward_mode", False):
-        zero_module_grads(context.node_state_store, context.graph_id)
+    pump_task = asyncio.create_task(_pump(), name=f"outbox-pump:{run_id or '-'}")
+    try:
+        # Before the forward pass: zero any accumulated gradients on persisted
+        # modules so backward_mode doesn't keep summing across runs.
+        if context is not None and getattr(context, "backward_mode", False):
+            zero_module_grads(context.node_state_store, context.graph_id)
 
-    # Execute level by level
-    for level in levels:
+        # Execute level by level
+        for level in levels:
+            if context and context.cancelled:
+                raise CancellationError()
+
+            if len(level) == 1:
+                await _execute_single_node(level[0])
+            else:
+                # Run independent nodes in this level concurrently
+                tasks = [asyncio.create_task(_execute_single_node(nid)) for nid in level]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for i, result in enumerate(results):
+                    if isinstance(result, CancellationError):
+                        raise result
+                    if isinstance(result, Exception):
+                        if error_mode == "fail_fast":
+                            # Cancel remaining tasks
+                            for t in tasks:
+                                t.cancel()
+                            raise result
+
+        # A stop that arrived during the LAST level has no next iteration to
+        # be caught by (#122). Without this, a graph whose final node is the
+        # training loop would return normally and the run would be filed
+        # ``succeeded`` — after the user pressed Stop and the node returned
+        # partial results saying so.
         if context and context.cancelled:
             raise CancellationError()
 
-        if len(level) == 1:
-            await _execute_single_node(level[0])
-        else:
-            # Run independent nodes in this level concurrently
-            tasks = [asyncio.create_task(_execute_single_node(nid)) for nid in level]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for i, result in enumerate(results):
-                if isinstance(result, CancellationError):
-                    raise result
-                if isinstance(result, Exception):
-                    if error_mode == "fail_fast":
-                        # Cancel remaining tasks
-                        for t in tasks:
-                            t.cancel()
-                        raise result
+        # A3: post-forward backward pass + gradient capture.
+        if (
+            context is not None
+            and getattr(context, "backward_mode", False)
+            and run_id
+            and output_store is not None
+        ):
+            target = select_backward_target(
+                expanded_nodes,
+                outputs,
+                auto_backward=getattr(context, "auto_backward", False),
+            )
+            if target is not None:
+                loss, _label = target
+                try:
+                    run_backward(loss)
+                    await capture_grads(
+                        context.grad_targets,
+                        context.node_state_store,
+                        context.graph_id,
+                        run_id,
+                        output_store,
+                    )
+                except Exception as exc:  # backward errors shouldn't kill the run
+                    logger.warning("backward pass failed: %s", exc)
 
-    # A3: post-forward backward pass + gradient capture.
-    if (
-        context is not None
-        and getattr(context, "backward_mode", False)
-        and run_id
-        and output_store is not None
-    ):
-        target = select_backward_target(
-            expanded_nodes,
-            outputs,
-            auto_backward=getattr(context, "auto_backward", False),
-        )
-        if target is not None:
-            loss, _label = target
-            try:
-                run_backward(loss)
-                await capture_grads(
-                    context.grad_targets,
-                    context.node_state_store,
-                    context.graph_id,
-                    run_id,
-                    output_store,
-                )
-            except Exception as exc:  # backward errors shouldn't kill the run
-                logger.warning("backward pass failed: %s", exc)
-
-    return outputs
+        return outputs
+    finally:
+        # Unbind first (sync, cannot fail), then flush what is still queued
+        # BEFORE stopping the pump: a run that unwound on cancellation has
+        # the interrupt checkpoint's artifact signal sitting in the outbox,
+        # and losing it would mean a checkpoint on disk that no run row
+        # knows about.
+        outbox.unbind()
+        try:
+            await _deliver()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a lost event must not mask the outcome
+            logger.warning("final signal flush failed", exc_info=True)
+        finally:
+            pump_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump_task
 
 
 async def _maybe_await(val: Any) -> Any:
@@ -890,8 +1031,10 @@ async def _maybe_await(val: Any) -> Any:
     return val
 
 
-# Avoid circular import at module level — these are imported lazily inside execute_graph
+# Annotation-only imports: these two would close an import cycle at module
+# level. ``execution_context`` no longer needs to be one of them — #122 needs
+# ``EventOutbox`` and the signal types at RUNTIME here, and that module
+# imports nothing from this one.
 if False:  # TYPE_CHECKING
     from .cache import ExecutionCache
-    from .execution_context import ExecutionContext
     from .run_output_store import RunOutputStore

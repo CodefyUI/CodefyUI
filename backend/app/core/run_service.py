@@ -17,7 +17,9 @@ responsibilities, and nothing else:
   submitted run starts immediately.
 - **observe** — every engine callback is appended to ``exec_run_events`` and
   fanned out to live subscribers; scalar progress values are batched into
-  ``exec_run_metrics``.
+  ``exec_run_metrics``. Since #122 the same path also carries what nodes
+  report DIRECTLY from their worker threads — ``context.log_metric`` and
+  ``context.log_artifact`` — through ``_signal_bridge``.
 - **cancel** — cooperative, via the ``ExecutionContext`` flag (never
   ``Task.cancel``; see ``cancel``).
 - **survive** — startup recovery retires rows a dead process left
@@ -68,7 +70,13 @@ from ..config import settings
 from .cache import ExecutionCache
 from .db import utc_now_iso
 from .device_utils import resolve_device
-from .execution_context import CancellationError, ExecutionContext
+from .execution_context import (
+    ArtifactSignal,
+    CancellationError,
+    DroppedSignal,
+    ExecutionContext,
+    MetricSignal,
+)
 from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
 from .node_state_store import NodeStateStore
 from .output_entries import build_node_output_entries, declared_image_ports
@@ -102,6 +110,26 @@ EVENT_NODE_STATUS = "node_status"
 EVENT_RUN_COMPLETED = "execution_complete"
 EVENT_RUN_FAILED = "execution_error"
 EVENT_RUN_STOPPED = "execution_stopped"
+
+#: #122's additions. New TYPES rather than new node_status payloads, because
+#: neither is about a node changing state: a client that only knows the five
+#: types above ignores them (the WS bridge is
+#: ``{"type": event.type, **payload}`` for every type), and a client that
+#: wants live charts subscribes to ``metric`` instead of re-deriving series
+#: from progress frames.
+#:
+#: ``metric`` carries a whole FLUSH, not one point: the batcher already
+#: groups points by size or by 0.5 s, and reusing that cadence is what keeps
+#: a per-batch series from writing one event row per batch. Payload is
+#: ``{"points": [{"name", "value", "step", "node_id"}, ...]}``, emitted only
+#: after the points are durable.
+EVENT_METRIC = "metric"
+#: One row appended to ``exec_run_artifacts``: ``{"kind", "path", "meta",
+#: "node_id"}``. The interrupt checkpoint is the first producer.
+EVENT_ARTIFACT = "artifact"
+#: Something was lost or degraded but the run continues:
+#: ``{"kind": <what>, ...}``. Today the only kind is ``dropped_signals``.
+EVENT_WARNING = "run_warning"
 
 #: ``execution_stopped`` payload discriminator. The WS protocol has one
 #: "stopped" frame; the run ROW distinguishes cancelled from interrupted,
@@ -170,9 +198,22 @@ DEVICE_PATTERN = re.compile(r"^(cpu|auto|cuda(:\d+)?|mps(:\d+)?)$")
 
 #: Progress-payload keys that describe the LOOP, not a measurement. Turning
 #: ``epoch`` into a series named "epoch" whose value equals its own step is
-#: noise; ``total_epochs`` is a constant repeated once per point.
+#: noise; ``total_epochs`` is a constant repeated once per point. #122 added
+#: the per-batch pair for exactly the same reason.
 NON_METRIC_KEYS = frozenset({"event", "step", "epoch", "total_epochs",
-                             "start_epoch"})
+                             "start_epoch", "batch", "total_batches"})
+
+#: Progress ``event`` values whose payload must NOT be mined for metrics.
+#: A per-batch frame (#122) is throttled by WALL CLOCK, so several of them
+#: legitimately share one step and their count depends on how fast the
+#: machine is -- turning that into rows would make the series a measure of
+#: the hardware. The node logs the authoritative per-batch series itself,
+#: through ``context.log_metric`` under its ``batch_metrics`` option.
+#:
+#: Mirrors ``core.loop_control.EVENT_BATCH``; not imported from there
+#: because this module must not depend on the node-side toolkit, and the
+#: string is the wire contract either way.
+NON_METRIC_EVENTS = frozenset({"batch"})
 
 #: Flush thresholds for the metric batcher (see ``_flush_metrics``).
 METRIC_FLUSH_MAX_POINTS = 64
@@ -573,8 +614,15 @@ def scalar_metrics(
     not a measurement), as are strings, lists and nested objects — a
     ``losses`` array is per-batch detail that belongs in the event payload,
     not as one row per element in the metrics table.
+
+    This is INFERENCE, and it exists for nodes that report progress but
+    know nothing about metrics. A node that calls ``context.log_metric``
+    says what it means; see ``RunService._collect_metrics``, which stops
+    inferring from a node the moment that node speaks for itself.
     """
     if not isinstance(payload, dict):
+        return []
+    if payload.get("event") in NON_METRIC_EVENTS:
         return []
     points: list[MetricPoint] = []
     for key, value in payload.items():
@@ -730,6 +778,11 @@ class _ActiveRun:
     pending_metrics: list[MetricPoint] = field(default_factory=list)
     last_metric_step: int = 0
     last_flush_monotonic: float = field(default_factory=time.monotonic)
+    #: Nodes that have logged an EXPLICIT metric (#122). Progress payloads
+    #: from these are no longer mined by ``scalar_metrics`` — otherwise a
+    #: training loop that logs ``val_loss`` and also puts ``val_loss`` in its
+    #: epoch payload would write the same point twice.
+    explicit_metric_nodes: set[str] = field(default_factory=set)
 
     def close(self) -> None:
         """End every subscription and wake every poller. Sync — never fails."""
@@ -972,6 +1025,7 @@ class RunService:
                 graph["nodes"],
                 graph["edges"],
                 on_progress=self._progress_bridge(active, graph["nodes"]),
+                on_signal=self._signal_bridge(active),
                 context=active.context,
                 error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),
                 max_retries=int(options.get("max_retries", 0)),
@@ -1072,6 +1126,73 @@ class RunService:
                 await self._flush_metrics(active)
 
         return on_progress
+
+    def _signal_bridge(
+        self, active: _ActiveRun,
+    ) -> Callable[[Any], Any]:
+        """Build the engine's ``on_signal`` callback for one run (#122).
+
+        Everything a node reports that is not a node status arrives here,
+        already serialised onto the loop by the engine's single pump — so
+        this can await the database without a lock and without reordering
+        anything.
+
+        Nothing in here is allowed to raise. A metric, an artifact row and a
+        dropped-signal notice are all observability; a run must not fail
+        because the thing describing it did.
+        """
+        async def on_signal(signal: Any) -> None:
+            try:
+                if isinstance(signal, MetricSignal):
+                    await self._record_metric(active, signal)
+                elif isinstance(signal, ArtifactSignal):
+                    await self._record_artifact(active, signal)
+                elif isinstance(signal, DroppedSignal):
+                    await self._emit(active.run_id, EVENT_WARNING, {
+                        "kind": "dropped_signals", "count": signal.count,
+                        "detail": ("progress/metric signals were dropped to "
+                                   "keep the run's outbox bounded; the "
+                                   "series may have gaps"),
+                    })
+                else:  # pragma: no cover - a node pack's own signal type
+                    logger.debug("run %s: ignoring unknown signal %r",
+                                 active.run_id, type(signal).__name__)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("run %s: could not record a %s", active.run_id,
+                               type(signal).__name__, exc_info=True)
+
+        return on_signal
+
+    async def _record_metric(
+        self, active: _ActiveRun, signal: MetricSignal,
+    ) -> None:
+        """Buffer one explicitly-logged point and claim the node for it."""
+        active.explicit_metric_nodes.add(signal.node_id or "")
+        active.pending_metrics.append(MetricPoint(
+            name=signal.name, value=signal.value, step=signal.step,
+            node_id=signal.node_id))
+        await self._flush_metrics(active)
+
+    async def _record_artifact(
+        self, active: _ActiveRun, signal: ArtifactSignal,
+    ) -> None:
+        """Register a file the run produced, then announce it.
+
+        Store first: an ``artifact`` event pointing at a row that failed to
+        insert would send a client looking for something that is not there.
+        """
+        meta = signal.meta
+        if signal.node_id:
+            meta = {**(meta or {}), "node_id": signal.node_id}
+        record = await self.store.add_artifact(
+            active.run_id, signal.kind, signal.path, meta=meta)
+        await self._emit(active.run_id, EVENT_ARTIFACT, {
+            "artifact_id": record.id, "kind": record.kind,
+            "path": record.path, "meta": record.meta,
+            "node_id": signal.node_id,
+        })
 
     # ── events ────────────────────────────────────────────────────────────
 
@@ -1226,6 +1347,18 @@ class RunService:
     def _collect_metrics(
         self, active: _ActiveRun, node_id: str, payload: Any,
     ) -> None:
+        """Infer series from a progress payload — unless the node speaks.
+
+        Explicit beats inferred (#122). ``TrainingLoop`` logs ``train_loss``
+        and ``val_loss`` through ``context.log_metric`` AND keeps
+        ``loss``/``val_loss`` in its epoch payload for the live chart that
+        has always read them; mining both would file every validation loss
+        twice. The first explicit point from a node retires the inference
+        for that node, which also leaves every node that has no metric API
+        (a plugin, a chart pack) working exactly as it did.
+        """
+        if node_id in active.explicit_metric_nodes:
+            return
         step = metric_step(payload, fallback=active.last_metric_step + 1)
         active.last_metric_step = step
         active.pending_metrics.extend(
@@ -1242,6 +1375,12 @@ class RunService:
         sitting for ``metric_flush_interval_s`` — the second rule is what
         keeps a live chart current on a slow producer, checked on the emit
         path so no timer task is needed. ``force`` drains it at terminal.
+
+        A successful flush emits ONE ``metric`` event for the whole batch
+        (#122). Per point would mean a durable event row per training batch
+        under ``batch_metrics``; per flush reuses a cadence that is already
+        bounded by size and by time. Emitted AFTER the write, so the event
+        never advertises a point that did not land.
         """
         if not active.pending_metrics:
             return 0
@@ -1254,13 +1393,20 @@ class RunService:
         batch, active.pending_metrics = active.pending_metrics, []
         active.last_flush_monotonic = now
         try:
-            return await self.store.log_metrics(active.run_id, batch)
+            written = await self.store.log_metrics(active.run_id, batch)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("run %s: metric flush failed (%d point(s) lost)",
                            active.run_id, len(batch), exc_info=True)
             return 0
+        if written:
+            await self._emit(active.run_id, EVENT_METRIC, {"points": [
+                {"name": p.name, "value": p.value, "step": p.step,
+                 "node_id": p.node_id}
+                for p in batch
+            ]})
+        return written
 
     # ── cancel ────────────────────────────────────────────────────────────
 
