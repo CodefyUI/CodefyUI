@@ -39,14 +39,33 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from ..core.run_service import RunService, RunServiceUnavailable, RunSubmitError
-from ..core.run_store import STATUS_QUEUED, EventRecord, MetricRecord, RunRecord
+from ..core.run_service import (
+    RunService,
+    RunServiceUnavailable,
+    RunSubmitError,
+    json_size,
+)
+from ..core.run_store import (
+    RUN_STATUSES,
+    STATUS_QUEUED,
+    EventRecord,
+    MetricRecord,
+    RunRecord,
+)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 #: Upper bound for one queue-position sweep. A queue deeper than this is
 #: #123's problem, not a reason to scan the whole table on every poll.
 _QUEUE_SCAN_LIMIT = 1000
+
+#: Byte budget for ONE /events response. The per-event cap
+#: (RUN_EVENT_PAYLOAD_CAP_BYTES) bounds a single payload; this bounds the
+#: page, so ``limit`` cannot multiply the two into a response nobody asked
+#: for. A short page is already normal — the cursor says where to resume —
+#: so stopping early costs the client one extra round trip and nothing else.
+#: Far above any honest page (ordinary events are a couple of KB).
+_EVENTS_RESPONSE_CAP_BYTES = 4 * 1024 * 1024
 
 _CSV_COLUMNS = ("run_id", "node_id", "name", "step", "value", "ts")
 
@@ -107,6 +126,25 @@ def _event_payload(event: EventRecord) -> dict[str, Any]:
             "payload": event.payload, "ts": event.ts}
 
 
+def _bounded_events(events: list[EventRecord]) -> list[dict[str, Any]]:
+    """Serialise events up to the response byte budget, in cursor order.
+
+    Always yields at least one event so an oversized single event can never
+    wedge a follower's cursor. Costs one size measurement per event on the
+    read path; /events is polled far less often than events are produced,
+    and the alternative — trusting ``limit`` alone — makes the response size
+    a product of two independently-configured numbers.
+    """
+    out: list[dict[str, Any]] = []
+    total = 0
+    for event in events:
+        total += json_size(event.payload)
+        if out and total > _EVENTS_RESPONSE_CAP_BYTES:
+            break
+        out.append(_event_payload(event))
+    return out
+
+
 async def _require_run(service: RunService, run_id: str) -> RunRecord:
     record = await service.store.get_run(run_id)
     if record is None:
@@ -146,12 +184,21 @@ async def list_runs(
     walking every page.
     """
     service = _get_service(request)
-    try:
-        records = await service.store.list_runs(status=status, limit=limit,
-                                                offset=offset)
-        total = await service.store.count_runs(status=status)
-    except ValueError as exc:            # unknown status in the filter
-        raise HTTPException(status_code=400, detail=str(exc))
+    # Validate the CLIENT's input here rather than catching ValueError off
+    # the store call: the store raises the same exception type for a corrupt
+    # `options` column, and blaming the caller with a 400 for the server's
+    # own bad row would send whoever debugs it in exactly the wrong
+    # direction. A corrupt row now surfaces as the 500 it is.
+    if status is not None:
+        unknown = sorted(set(status) - RUN_STATUSES)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown run status {unknown}; expected one of "
+                       f"{sorted(RUN_STATUSES)}")
+    records = await service.store.list_runs(status=status, limit=limit,
+                                            offset=offset)
+    total = await service.store.count_runs(status=status)
     positions = await _queue_positions(service, records)
     return {
         "runs": [
@@ -213,6 +260,10 @@ async def get_run_events(
     comes first, so a finished run answers immediately regardless of
     ``wait``. The returned ``cursor`` is where to resume, and never moves
     backwards on an empty page.
+
+    A page can come back SHORTER than ``limit`` even when more events exist:
+    the response also has a byte budget. Resume from ``cursor`` — which is
+    what a follower does anyway — and the next page continues.
     """
     service = _get_service(request)
     record = await _require_run(service, run_id)
@@ -221,12 +272,16 @@ async def get_run_events(
     if wait > 0:
         # The status may well have changed while we were parked.
         record = await service.store.get_run(run_id) or record
+    page = _bounded_events(events)
     return {
         "run_id": run_id,
         "status": record.status,
         "active": service.is_active(run_id),
-        "events": [_event_payload(event) for event in events],
-        "cursor": events[-1].cursor if events else cursor,
+        "events": page,
+        # The cursor tracks what was actually RETURNED, not what was read:
+        # a byte-budgeted short page must not tell a follower to skip the
+        # events it did not receive.
+        "cursor": page[-1]["cursor"] if page else cursor,
     }
 
 

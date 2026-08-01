@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import time
 from typing import Any
 
@@ -28,7 +29,14 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, session_token
 from app.core.db import Database
-from app.core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from app.core.node_base import (
+    MEDIA_IMAGE,
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+)
 from app.core.node_registry import registry
 from app.core.run_service import RunService
 from app.core.run_store import RunProvenance, RunStore
@@ -86,12 +94,46 @@ class _ApiMetricsNode(BaseNode):
         return {"value": inputs.get("value")}
 
 
+class _ApiImageNode(BaseNode):
+    NODE_NAME = "_ApiImage"
+    CATEGORY = "Test"
+    DESCRIPTION = "Emits a declared base64 image"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [
+            PortDefinition(name="value", data_type=DataType.ANY),
+            PortDefinition(name="image", data_type=DataType.ANY,
+                           media=MEDIA_IMAGE),
+        ]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [ParamDefinition(name="size", param_type=ParamType.INT,
+                                default=64)]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": inputs.get("value"),
+                "image": "A" * int(params.get("size", 64))}
+
+
+_TEST_NODES = {
+    "_ApiSlow": _ApiSlowNode,
+    "_ApiMetrics": _ApiMetricsNode,
+    "_ApiImage": _ApiImageNode,
+}
+
+
 @pytest.fixture(autouse=True)
 def _register_test_nodes():
-    registry._nodes["_ApiSlow"] = _ApiSlowNode
-    registry._nodes["_ApiMetrics"] = _ApiMetricsNode
+    registry._nodes.update(_TEST_NODES)
     yield
-    for name in ("_ApiSlow", "_ApiMetrics"):
+    for name in _TEST_NODES:
         registry._nodes.pop(name, None)
 
 
@@ -268,9 +310,11 @@ async def test_submit_records_normalized_options(client):
 @pytest.mark.parametrize("payload,expected", [
     ({"graph": {"nodes": []}}, 400),
     ({"graph": {"edges": []}}, 400),
-    ({"graph": _graph(), "options": {"devcie": "cuda"}}, 400),
+    ({"graph": _graph(), "options": {"devcie": "cuda"}}, 400),   # bad key
+    ({"graph": _graph(), "options": {"device": "cudda"}}, 400),  # bad value
     ({"graph": _graph(), "options": {"seed": -5}}, 400),
     ({"graph": _graph(), "options": "nope"}, 400),
+    ({"graph": _graph(), "name": "x" * 65}, 400),
     ({"options": {}}, 422),                       # graph is required
     ({"graph": "not-an-object"}, 422),
 ])
@@ -296,13 +340,22 @@ async def test_submit_during_shutdown_is_503(client, run_app):
 
 
 async def test_endpoints_503_without_a_wired_service():
+    # Restore whatever was on app.state: the module-level app is shared with
+    # every other test module, so a test that strips it must put it back
+    # even when the assertions fail.
+    saved = {name: getattr(app.state, name)
+             for name in ("db", "run_service") if hasattr(app.state, name)}
     for attribute in ("db", "run_service"):
         if hasattr(app.state, attribute):
             delattr(app.state, attribute)
-    async with _new_client() as http:
-        assert (await http.get("/api/runs")).status_code == 503
-        assert (await http.post(
-            "/api/runs", json={"graph": _graph()})).status_code == 503
+    try:
+        async with _new_client() as http:
+            assert (await http.get("/api/runs")).status_code == 503
+            assert (await http.post(
+                "/api/runs", json={"graph": _graph()})).status_code == 503
+    finally:
+        for name, value in saved.items():
+            setattr(app.state, name, value)
 
 
 # ── list / get ────────────────────────────────────────────────────────────
@@ -447,6 +500,55 @@ async def test_events_long_poll_wakes_on_the_next_event(client):
     assert later.json()["events"], "timed out instead of waking"
     assert elapsed < 9.0, "woke on the timeout, not on the event"
     await _poll_until_terminal(client, run_id)
+
+
+async def test_oversized_image_events_are_served_elided(client):
+    """The DB never stores the blob, so the API never serves it."""
+    run_id = (await client.post("/api/runs", json={
+        "graph": _graph("_ApiImage", {"size": 200_000})})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+
+    body = (await client.get(f"/api/runs/{run_id}/events")).json()
+    images = [entry
+              for event in body["events"] if event["type"] == "node_status"
+              for entry in (event["payload"].get("outputs") or [])
+              if entry.get("output_kind") == "image"]
+    assert images, "the declared image port produced no entry at all"
+    assert images[0]["elided"] is True
+    assert images[0]["port"] == "image"        # placeholder still placeable
+    assert images[0]["bytes"] > 200_000
+    assert len(response_text := json.dumps(body)) < 200_000, response_text[:200]
+
+
+async def test_events_response_is_byte_bounded(client, monkeypatch):
+    """`limit` alone must not multiply into an unbounded response body.
+
+    A short page is normal — the cursor says where to resume — so the whole
+    log is still reachable, one bounded page at a time, with no gaps.
+    """
+    from app.api import routes_runs
+
+    monkeypatch.setattr(routes_runs, "_EVENTS_RESPONSE_CAP_BYTES", 400)
+    run_id = (await client.post("/api/runs", json={
+        "graph": _graph("_ApiImage", {"size": 300})})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+
+    seen: list[dict[str, Any]] = []
+    cursor = 0
+    for _ in range(50):
+        page = (await client.get(
+            f"/api/runs/{run_id}/events?cursor={cursor}&limit=2000")).json()
+        if not page["events"]:
+            break
+        assert len(page["events"]) < 8, "the byte budget did not bound the page"
+        # The cursor tracks what was RETURNED, so resuming skips nothing.
+        assert page["cursor"] == page["events"][-1]["cursor"]
+        seen.extend(page["events"])
+        cursor = page["cursor"]
+
+    assert len(seen) >= 8, "the run should have produced more than one page"
+    assert [event["cursor"] for event in seen] == list(range(1, len(seen) + 1))
+    assert seen[-1]["type"] == "execution_complete"
 
 
 async def test_events_reject_an_out_of_range_wait(client):

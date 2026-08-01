@@ -51,14 +51,33 @@ class Settings(BaseSettings):
     MAX_IMAGE_PIXELS: int = 25_000_000  # per-image decode budget (Decision H2)
     RUN_IO_CAP_BYTES: int = 64 * 1024   # per-field runs.inputs_json/outputs_json cap
     RUNS_RETENTION_DAYS: int = 0        # 0 = keep forever (default); >0 prunes loudly
-    # ── Run Service retention (#120) ───────────────────────────────────
+    # ── Run Service retention + limits (#120) ──────────────────────────
     # Keep-last-N over the exec_runs table (graph runs), applied at startup
     # and after every run reaches a terminal state. Independent of
     # RUNS_RETENTION_DAYS above, which is age-based and covers the
     # unrelated publish `runs` table. Active runs are never deleted and
     # still occupy slots, so this is a straightforward cap on the table.
-    # A negative value disables it entirely (keep forever).
+    #
+    # MIND THE INVERTED ZERO, it is deliberate and not a typo: for the
+    # age-based knob above, 0 means "no cutoff" -> keep forever; for this
+    # count-based one, 0 is a real count -> keep zero finished runs, i.e.
+    # delete them all. Disabling THIS one takes a NEGATIVE value. Two
+    # different policies over two different tables; neither borrows the
+    # other's sentinel.
     RUN_RETENTION_KEEP_LAST: int = 200
+    # Per-event ceiling on what exec_run_events stores (and fans out).
+    # Retention counts runs, not bytes, so without this one graph emitting
+    # base64 PNGs on every node -- or a training payload carrying a
+    # per-batch array that grows each epoch -- can put hundreds of MB into
+    # the database for a single run, with record_outputs OFF. Over-cap
+    # output entries are replaced by an elision marker that keeps
+    # output_kind and port so a UI still knows something was there. 128 KB
+    # is twice the publish path's RUN_IO_CAP_BYTES because a node_status
+    # payload is a whole node's summary (several ports, each embedding up
+    # to 256 values) rather than one API field; measured honest payloads
+    # sit well under 20 KB, so the headroom means elision only ever fires
+    # on genuinely unbounded content. <= 0 disables the cap.
+    RUN_EVENT_PAYLOAD_CAP_BYTES: int = 128 * 1024
     # Comma-separated extra Host-whitelist entries, e.g.
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.

@@ -24,7 +24,14 @@ from typing import Any
 import pytest
 
 from app.core.db import Database
-from app.core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from app.core.node_base import (
+    MEDIA_IMAGE,
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+)
 from app.core.node_registry import registry
 from app.core.run_service import (
     EVENT_NODE_STATUS,
@@ -37,6 +44,9 @@ from app.core.run_service import (
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
+    cap_event_payload,
+    json_size,
+    normalize_name,
     normalize_options,
 )
 from app.core.run_store import (
@@ -115,6 +125,59 @@ class _RunMetricsNode(BaseNode):
         return {"value": inputs.get("value")}
 
 
+class _RunNanNode(BaseNode):
+    """Emits a diverged (NaN) scalar — the JSON-token hazard."""
+
+    NODE_NAME = "_RunNan"
+    CATEGORY = "Test"
+    DESCRIPTION = "Emits a NaN progress scalar"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any],
+                progress_callback=None) -> dict[str, Any]:
+        if progress_callback:
+            progress_callback({"event": "epoch", "epoch": 1,
+                               "loss": float("nan")})
+        return {"value": inputs.get("value")}
+
+
+class _RunImageNode(BaseNode):
+    """DECLARES an image port and returns a base64 blob of a given size."""
+
+    NODE_NAME = "_RunImage"
+    CATEGORY = "Test"
+    DESCRIPTION = "Emits a declared base64 image"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [
+            PortDefinition(name="value", data_type=DataType.ANY),
+            PortDefinition(name="image", data_type=DataType.ANY,
+                           media=MEDIA_IMAGE),
+        ]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [ParamDefinition(name="size", param_type=ParamType.INT,
+                                default=64)]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": inputs.get("value"),
+                "image": "A" * int(params.get("size", 64))}
+
+
 class _RunBoomNode(BaseNode):
     """Raises — drives the failed-run path."""
 
@@ -135,13 +198,20 @@ class _RunBoomNode(BaseNode):
         raise RuntimeError("boom: intentional run-service test failure")
 
 
+_TEST_NODES = {
+    "_RunSlow": _RunSlowNode,
+    "_RunMetrics": _RunMetricsNode,
+    "_RunNan": _RunNanNode,
+    "_RunImage": _RunImageNode,
+    "_RunBoom": _RunBoomNode,
+}
+
+
 @pytest.fixture(autouse=True)
 def _register_test_nodes():
-    registry._nodes["_RunSlow"] = _RunSlowNode
-    registry._nodes["_RunMetrics"] = _RunMetricsNode
-    registry._nodes["_RunBoom"] = _RunBoomNode
+    registry._nodes.update(_TEST_NODES)
     yield
-    for name in ("_RunSlow", "_RunMetrics", "_RunBoom"):
+    for name in _TEST_NODES:
         registry._nodes.pop(name, None)
 
 
@@ -371,8 +441,18 @@ def test_options_accept_every_documented_key():
     }) == {"device": "cuda", "seed": 7, "record_outputs": True, "lane": "gpu"}
 
 
+@pytest.mark.parametrize("device", ["cpu", "auto", "cuda", "cuda:1", "mps",
+                                    "mps:0", " CUDA:0 "])
+def test_options_accept_the_known_device_vocabulary(device):
+    assert normalize_options({"device": device})["device"] == device.strip().lower()
+
+
 @pytest.mark.parametrize("bad", [
-    {"devcie": "cpu"},              # typo -> loud, not silently ignored
+    {"devcie": "cpu"},              # key typo -> loud, not silently ignored
+    {"device": "cudda"},            # VALUE typo -> equally loud
+    {"device": "gpu"},
+    {"device": "cuda:"},
+    {"device": "cuda:x"},
     {"device": 3},
     {"device": ""},
     {"seed": -1},
@@ -387,6 +467,16 @@ def test_options_accept_every_documented_key():
 def test_options_reject_bad_input(bad):
     with pytest.raises(RunSubmitError):
         normalize_options(bad)
+
+
+def test_name_is_normalized_and_bounded():
+    assert normalize_name(None) is None
+    assert normalize_name("   ") is None          # blank means unnamed
+    assert normalize_name("  sweep 3 ") == "sweep 3"
+    assert normalize_name("x" * 64) == "x" * 64
+    for bad in ("x" * 65, 7):
+        with pytest.raises(RunSubmitError):
+            normalize_name(bad)
 
 
 async def test_submit_rejects_a_malformed_graph(service):
@@ -566,6 +656,107 @@ async def test_long_poll_wakes_on_the_next_event(store, service):
     await _await_terminal(store, submitted.run_id)
 
 
+# ── event payload bounds ──────────────────────────────────────────────────
+
+
+def test_cap_leaves_ordinary_payloads_untouched():
+    payload = {"node_id": "n", "status": "completed", "outputs": [
+        {"output_kind": "text", "text": "hello"},
+        {"output_kind": "tensor_summary", "tensor_summary": {"v": [1, 2, 3]}},
+    ]}
+    assert cap_event_payload(payload, cap_bytes=64 * 1024) is payload
+    assert cap_event_payload(payload, cap_bytes=0) is payload      # disabled
+
+
+def test_cap_elides_an_oversized_entry_but_keeps_its_identity():
+    big = {"output_kind": "image", "port": "image",
+           "image": {"format": "png", "encoding": "base64", "data": "A" * 5000}}
+    small = {"output_kind": "text", "text": "kept"}
+    capped = cap_event_payload(
+        {"node_id": "n", "status": "completed", "outputs": [big, small]},
+        cap_bytes=2000)
+
+    assert json_size(capped) <= 2000
+    elided, intact = capped["outputs"]
+    # Enough identity survives for a UI to draw a placeholder in the right
+    # slot, and nothing pretends to still be an image payload.
+    assert elided["output_kind"] == "image" and elided["port"] == "image"
+    assert elided["elided"] is True and elided["bytes"] > 5000
+    assert "image" not in elided
+    assert intact == small                       # the small one is untouched
+    assert capped["node_id"] == "n"              # envelope survives
+
+
+def test_cap_falls_back_to_a_marker_when_there_is_nothing_to_trim():
+    capped = cap_event_payload({"error": "x" * 5000, "run_id": "r"},
+                               cap_bytes=500)
+    assert capped["elided"] is True
+    assert capped["run_id"] == "r"               # identity kept
+    assert "error" not in capped
+    assert json_size(capped) <= 500
+
+
+async def test_an_oversized_image_event_is_stored_elided(store):
+    svc = RunService(store, event_payload_cap_bytes=2000)
+    try:
+        submitted = await svc.submit(_graph("_RunImage",
+                                            params={"size": 20000}))
+        await _await_terminal(store, submitted.run_id)
+        events = await store.get_events(submitted.run_id)
+        images = [entry
+                  for event in events if event.type == EVENT_NODE_STATUS
+                  for entry in (event.payload.get("outputs") or [])
+                  if entry.get("output_kind") == "image"]
+        assert images, "the declared image port produced no entry at all"
+        assert all(entry.get("elided") is True for entry in images)
+        assert all(json_size(event.payload) <= 2000 for event in events)
+    finally:
+        await svc.shutdown()
+
+
+async def test_a_small_image_event_is_stored_intact(store, service):
+    submitted = await service.submit(_graph("_RunImage", params={"size": 64}))
+    await _await_terminal(store, submitted.run_id)
+    events = await store.get_events(submitted.run_id)
+    images = [entry
+              for event in events if event.type == EVENT_NODE_STATUS
+              for entry in (event.payload.get("outputs") or [])
+              if entry.get("output_kind") == "image"]
+    assert len(images) == 1
+    assert images[0]["image"]["data"] == "A" * 64
+    assert "elided" not in images[0]
+
+
+async def test_non_finite_scalars_never_reach_a_subscriber(store, service):
+    """A NaN on the wire is a token JSON.parse rejects — it must not fan out."""
+    submitted = await service.submit(_graph("_RunNan"))
+    received: list[Any] = []
+    async with service.subscribe(submitted.run_id) as subscription:
+        while True:
+            event = await asyncio.wait_for(subscription.queue.get(), timeout=10)
+            if event is None:
+                break
+            received.append(event)
+
+    progress = [entry
+                for event in received if event.type == EVENT_NODE_STATUS
+                for entry in (event.payload.get("outputs") or [])
+                if entry.get("output_kind") == "progress"]
+    assert progress, "no progress event was fanned out"
+    assert progress[0]["progress"]["loss"] is None
+
+    # And the stored copy says exactly the same thing.
+    stored = [entry
+              for event in await store.get_events(submitted.run_id)
+              for entry in ((event.payload or {}).get("outputs") or [])
+              if entry.get("output_kind") == "progress"]
+    assert stored[0]["progress"]["loss"] is None
+    # The METRIC still records the point at its step, as a NULL value, so a
+    # chart shows the break where the training diverged.
+    points = await store.get_metrics(submitted.run_id, name="loss")
+    assert [(p.step, p.value) for p in points] == [(1, None)]
+
+
 # ── metrics ───────────────────────────────────────────────────────────────
 
 
@@ -708,6 +899,67 @@ async def test_submit_is_refused_after_shutdown(store):
     await svc.shutdown()
     with pytest.raises(RunServiceUnavailable, match="shutting down"):
         await svc.submit(_graph())
+
+
+async def test_submit_racing_shutdown_cannot_escape_the_drain(
+    store, monkeypatch,
+):
+    """A submit parked in create_run when shutdown starts must be refused.
+
+    Otherwise it resumes AFTER shutdown snapshotted the registry, registers
+    a task nobody drains, and the lifespan closes the database underneath it
+    — precisely the race this whole issue exists to close.
+    """
+    svc = RunService(store)
+    reached_db = asyncio.Event()
+    release = asyncio.Event()
+    original = RunStore.create_run
+
+    async def stalling_create(self, **kwargs):
+        record = await original(self, **kwargs)
+        reached_db.set()
+        await release.wait()
+        return record
+
+    monkeypatch.setattr(RunStore, "create_run", stalling_create)
+    task = asyncio.create_task(svc.submit(_graph()))
+    await asyncio.wait_for(reached_db.wait(), timeout=5)
+
+    await svc.shutdown()                 # snapshots a registry without it
+    release.set()
+    with pytest.raises(RunServiceUnavailable):
+        await task
+
+    assert svc.active_run_ids() == []
+    rows = await store.list_runs()
+    assert [row.status for row in rows] == ["queued"]
+    assert await svc.recover_interrupted() == 1
+
+
+async def test_cancel_during_finalize_does_not_claim_a_cancel(
+    store, service, monkeypatch,
+):
+    """Once the outcome is decided, a cancel must not report that it won."""
+    in_finalize = asyncio.Event()
+    release = asyncio.Event()
+    original = RunService._flush_metrics
+
+    async def stalling_flush(self, active, *, force=False):
+        if force:                        # the terminal flush, once per run
+            in_finalize.set()
+            await release.wait()
+        return await original(self, active, force=force)
+
+    monkeypatch.setattr(RunService, "_flush_metrics", stalling_flush)
+    submitted = await service.submit(_graph())
+    await asyncio.wait_for(in_finalize.wait(), timeout=10)
+
+    outcome = await service.cancel(submitted.run_id)
+    assert outcome is not None and outcome.cancelled is False
+
+    release.set()
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
 
 
 async def test_a_cancelled_submit_never_strands_a_registry_entry(

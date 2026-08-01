@@ -44,7 +44,9 @@ two id shapes for one run is how outputs stop being findable.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -66,6 +68,7 @@ from .run_store import (
     EventRecord,
     MetricPoint,
     RunStore,
+    json_safe,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,7 +107,18 @@ OPTION_KEYS = frozenset({"device", "seed", "record_outputs", "lane"})
 #: a label carried through to ``exec_runs.options`` unchanged.
 DEFAULT_LANE = "queued"
 MAX_LANE_LENGTH = 64
+MAX_NAME_LENGTH = 64
 MAX_SEED = 2 ** 32 - 1
+
+#: The device vocabulary ``resolve_device`` actually understands. Validated
+#: as a VALUE, not just a key: strict option keys exist to stop a typo from
+#: silently running forty minutes on the wrong device, and ``{"device":
+#: "cudda"}`` defeats that entirely if only the key is checked — it sails
+#: through, hits ``resolve_device``'s unknown-value branch, and degrades to
+#: CPU with nothing but a log line. ``auto`` is accepted because the canvas
+#: device selector emits it; note that ``resolve_device`` currently maps it
+#: to CPU (pre-existing behaviour, deliberately not changed here).
+DEVICE_PATTERN = re.compile(r"^(cpu|auto|cuda(:\d+)?|mps(:\d+)?)$")
 
 #: Progress-payload keys that describe the LOOP, not a measurement. Turning
 #: ``epoch`` into a series named "epoch" whose value equals its own step is
@@ -115,6 +129,11 @@ NON_METRIC_KEYS = frozenset({"event", "step", "epoch", "total_epochs",
 #: Flush thresholds for the metric batcher (see ``_flush_metrics``).
 METRIC_FLUSH_MAX_POINTS = 64
 METRIC_FLUSH_INTERVAL_S = 0.5
+
+#: Default per-event payload ceiling; overridden from
+#: ``settings.RUN_EVENT_PAYLOAD_CAP_BYTES`` in the lifespan. See
+#: ``cap_event_payload`` for what "over cap" does.
+EVENT_PAYLOAD_CAP_BYTES = 128 * 1024
 
 #: How long ``shutdown`` lets a run stop cooperatively before hard-cancelling.
 DEFAULT_SHUTDOWN_GRACE_S = 5.0
@@ -183,6 +202,11 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     device = raw.get("device", "cpu")
     if not isinstance(device, str) or not device.strip():
         raise RunSubmitError("device must be a non-empty string")
+    device = device.strip().lower()
+    if DEVICE_PATTERN.match(device) is None:
+        raise RunSubmitError(
+            f"unknown device {device!r}; expected cpu, auto, cuda, cuda:N, "
+            "mps or mps:N")
 
     seed = raw.get("seed")
     if seed is not None:
@@ -203,11 +227,31 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         raise RunSubmitError(f"lane must be at most {MAX_LANE_LENGTH} chars")
 
     return {
-        "device": device.strip().lower(),
+        "device": device,
         "seed": seed,
         "record_outputs": record_outputs,
         "lane": lane.strip(),
     }
+
+
+def normalize_name(raw: Any) -> str | None:
+    """Validate the optional run label. Bounded like ``lane``.
+
+    A run name is display text on a list row, not a document: an unbounded
+    one would be stored on every row and re-sent on every poll of the Runs
+    panel. Blank (or whitespace-only) means unnamed, stored as SQL NULL
+    rather than an empty string nobody can tell apart from "not set".
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise RunSubmitError(f"name must be a string, got {type(raw).__name__}")
+    name = raw.strip()
+    if not name:
+        return None
+    if len(name) > MAX_NAME_LENGTH:
+        raise RunSubmitError(f"name must be at most {MAX_NAME_LENGTH} chars")
+    return name
 
 
 def normalize_graph(raw: Any) -> dict[str, Any]:
@@ -238,6 +282,94 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     if not isinstance(presets, list):
         raise RunSubmitError("graph.presets must be a list")
     return {"nodes": nodes, "edges": edges, "presets": presets}
+
+
+def json_size(value: Any) -> int:
+    """Bytes this value would occupy as a stored JSON column.
+
+    Matches ``run_store._dumps``' encoding (compact separators, the default
+    ``ensure_ascii=True``), so the number is the real storage cost and not
+    an estimate. ``ensure_ascii`` also means every character encodes to one
+    byte, which is why ``len`` of the string is the byte count with no
+    encode step. ``default=str`` keeps MEASURING from ever raising on
+    something exotic — a sizer that throws would fail the run it was only
+    trying to bound.
+    """
+    try:
+        return len(json.dumps(value, separators=(",", ":"), default=str))
+    except (TypeError, ValueError, RecursionError):  # pragma: no cover
+        return 0
+
+
+def _elide_entry(entry: Any, budget_bytes: int) -> Any:
+    """Replace one over-budget output entry with a placeholder.
+
+    ``output_kind`` and ``port`` survive so a UI can render "image, elided"
+    in the right slot rather than a hole. The payload key (``image``,
+    ``tensor_summary``, …) is DROPPED rather than stuffed with a marker
+    object: a consumer that reads ``entry["text"]`` expecting a string must
+    not silently receive a dict instead. ``"elided" in entry`` is the check.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    size = json_size(entry)
+    if size <= budget_bytes:
+        return entry
+    elided: dict[str, Any] = {"output_kind": entry.get("output_kind"),
+                              "elided": True, "bytes": size,
+                              "cap_bytes": budget_bytes}
+    if "port" in entry:
+        elided["port"] = entry["port"]
+    return elided
+
+
+def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
+    """Bound one event payload before it becomes a durable row.
+
+    Retention counts RUNS, not bytes. Nothing else stops a graph whose nodes
+    emit base64 PNGs (#117 image entries are the full image) from writing
+    hundreds of megabytes of ``exec_run_events`` for a single run — with
+    ``record_outputs`` off, because this path is the live status stream, not
+    the output capture. Same for a training payload whose per-batch array
+    grows every epoch.
+
+    Three steps, cheapest first:
+
+    1. Measure once. Under cap — the overwhelmingly common case, an ordinary
+       ``node_status`` is a couple of KB — and the payload is returned
+       untouched, having cost exactly one ``json.dumps``.
+    2. Over cap, elide the output entries that are pulling more than their
+       equal share of the budget. Equal share, rather than the whole cap,
+       so a payload made of several medium entries degrades entry by entry
+       instead of collapsing wholesale.
+    3. Still over — nothing left to trim, e.g. a single enormous ``error``
+       string — and the payload collapses to a marker that keeps the
+       identifying keys. Losing the body beats refusing the event.
+
+    ``cap_bytes <= 0`` disables the whole thing.
+    """
+    if cap_bytes <= 0 or payload is None:
+        return payload
+    size = json_size(payload)
+    if size <= cap_bytes:
+        return payload
+
+    entries = payload.get("outputs") if isinstance(payload, dict) else None
+    if isinstance(entries, list) and entries:
+        budget = max(1, cap_bytes // len(entries))
+        payload = {**payload,
+                   "outputs": [_elide_entry(e, budget) for e in entries]}
+        size = json_size(payload)
+        if size <= cap_bytes:
+            return payload
+
+    marker: dict[str, Any] = {"elided": True, "bytes": size,
+                              "cap_bytes": cap_bytes}
+    if isinstance(payload, dict):
+        for key in ("node_id", "status", "run_id", "reason"):
+            if key in payload:
+                marker[key] = payload[key]
+    return marker
 
 
 def scalar_metrics(
@@ -395,8 +527,14 @@ class _ActiveRun:
     #: away). Set BEFORE the context flag so the unwinding task can tell the
     #: two apart — they are different facts about why a run stopped.
     stop_reason: str | None = None
+    #: True once the OUTCOME is decided — set on entry to ``_finalize``,
+    #: before any of its awaits. A cancel arriving after this cannot change
+    #: anything, so it must not claim it did.
+    terminating: bool = False
     #: True once the terminal event is durable. Long pollers stop waiting on
     #: this, not on registry removal, which happens a few statements later.
+    #: Strictly after ``terminating``: between the two the closing event is
+    #: still being written, and a poller should keep waiting for it.
     finished: bool = False
     pending_metrics: list[MetricPoint] = field(default_factory=list)
     last_metric_step: int = 0
@@ -438,6 +576,7 @@ class RunService:
         *,
         output_store: RunOutputStore | None = None,
         retention_keep_last: int | None = None,
+        event_payload_cap_bytes: int = EVENT_PAYLOAD_CAP_BYTES,
         shutdown_grace_s: float = DEFAULT_SHUTDOWN_GRACE_S,
         subscriber_queue_size: int = DEFAULT_SUBSCRIBER_QUEUE_SIZE,
         metric_flush_max_points: int = METRIC_FLUSH_MAX_POINTS,
@@ -446,6 +585,7 @@ class RunService:
         self.store = store
         self._output_store = output_store
         self._retention_keep_last = retention_keep_last
+        self._event_payload_cap_bytes = event_payload_cap_bytes
         self._shutdown_grace_s = shutdown_grace_s
         self._subscriber_queue_size = subscriber_queue_size
         self._metric_flush_max_points = metric_flush_max_points
@@ -494,11 +634,12 @@ class RunService:
             raise RunServiceUnavailable("run service is shutting down")
         normalized_graph = normalize_graph(graph)
         normalized_options = normalize_options(options)
+        normalized_name = normalize_name(name)
 
         record = await self.store.create_run(
             graph_snapshot=normalized_graph,
             options=normalized_options,
-            name=name,
+            name=normalized_name,
             status=STATUS_QUEUED,
         )
         # ── #123 inserts scheduling HERE ─────────────────────────────────
@@ -521,7 +662,19 @@ class RunService:
         The reported status is therefore a promise the task fulfils on its
         first step; a client that reads the row in that microsecond sees
         ``queued``, which is simply true.
+
+        The shutdown re-check is not redundant with ``submit``'s. That one
+        happens before ``create_run`` awaits (provenance capture can shell
+        out to git), and ``shutdown`` snapshots the registry at any await —
+        so a submit parked in that window would resume here and register a
+        task nobody drains, with ``main.py`` closing the database underneath
+        it. Refusing here leaves the durable ``queued`` row for startup
+        recovery, exactly like a cancelled submit.
         """
+        if self._shutting_down:
+            raise RunServiceUnavailable(
+                "run service began shutting down while the run was being "
+                "persisted; it stays queued and will be retired at startup")
         context = ExecutionContext(
             execution_id=run_id,
             device=resolve_device(options.get("device")),
@@ -553,11 +706,13 @@ class RunService:
     ) -> None:
         """The server-owned task. Nothing outside this module awaits it.
 
-        A hard ``Task.cancel`` (shutdown's last resort) is BaseException and
-        therefore skips every ``except`` below AND the finalizer, leaving the
-        row ``running`` for the next boot's recovery to retire. That is
-        deliberate: a forcibly-killed run must not write a tidy terminal
-        status it cannot vouch for. Everything else — including a broken
+        A hard ``Task.cancel`` (shutdown's last resort) is BaseException, so
+        it skips every ``except`` below and with them ``_finalize`` — the
+        row stays ``running`` for the next boot's recovery to retire, which
+        is deliberate: a forcibly-killed run must not write a tidy terminal
+        status it cannot vouch for. The ``finally`` still runs (that is what
+        closes subscriptions and deregisters the run); only the terminal
+        bookkeeping is skipped. Everything else — including a broken
         database — is caught, because an unretrieved task exception is a
         silent death nobody would ever see.
         """
@@ -638,7 +793,13 @@ class RunService:
         row (so an event-log follower never sees a finished row with no
         closing frame), and ``finished`` set before the row write so a long
         poller woken by the terminal event does not go back to sleep.
+
+        ``terminating`` is set FIRST, before any await: from here the
+        outcome is decided, and a cancel that arrives during the metric
+        flush must not report that it cancelled a run about to file
+        ``succeeded``.
         """
+        active.terminating = True
         await self._flush_metrics(active, force=True)
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
@@ -707,10 +868,25 @@ class RunService:
         an append cancelled AFTER its COMMIT leaves a durable event whose
         cursor is lost here, which is safe precisely because every consumer
         re-reads the tail from the store rather than trusting this return.
+
+        Subscribers receive EXACTLY the object that was stored — sanitised
+        (``json_safe``: no NaN/Infinity, which are CPython tokens that
+        ``JSON.parse`` rejects, and which would otherwise reach #121's
+        WebSocket) and capped (``cap_event_payload``). The tempting
+        alternative — store the capped copy, push the full one, since
+        subscribers are in-process — is rejected because it would break the
+        drop-tolerance contract: a subscriber is told that when it lags it
+        may re-read the tail from the store "and lose nothing". If the live
+        copy carried more than the stored one, a lagging consumer would
+        silently get a DIFFERENT payload, so a UI would show an image live
+        and a placeholder after any hiccup. One payload, one truth; #121 can
+        revisit the split deliberately if it ever needs the full frame.
         """
         stamp = utc_now_iso()
+        stored = cap_event_payload(json_safe(payload),
+                                   cap_bytes=self._event_payload_cap_bytes)
         try:
-            cursor = await self.store.append_event(run_id, event_type, payload,
+            cursor = await self.store.append_event(run_id, event_type, stored,
                                                    ts=stamp)
         except asyncio.CancelledError:
             raise
@@ -720,7 +896,7 @@ class RunService:
             self._wake(run_id)
             return None
         record = EventRecord(run_id=run_id, cursor=cursor, type=event_type,
-                             payload=payload, ts=stamp)
+                             payload=stored, ts=stamp)
         self._fan_out(run_id, record)
         return record
 
@@ -862,13 +1038,15 @@ class RunService:
         orphan) is retired directly through the guarded ``mark_finished``, so
         a cancel racing a start cannot rewrite a run that is already going.
 
-        The ``finished`` check is what keeps the answer truthful in the
-        window between a run writing its terminal row and being removed from
-        the registry: a registry hit alone would report "cancelled: true" for
-        a run that had already succeeded.
+        The ``terminating`` check is what keeps the answer truthful once a
+        run's outcome is decided but it is still in the registry — from the
+        first line of ``_finalize`` (before the metric flush and the
+        terminal event, both of which await) until the task deregisters
+        itself. A registry hit alone would report "cancelled: true" for a
+        run that is on its way to filing ``succeeded``.
         """
         active = self._runs.get(run_id)
-        if active is not None and not active.finished:
+        if active is not None and not active.terminating:
             if active.stop_reason is None:
                 active.stop_reason = STOP_REASON_CANCELLED
             active.context.cancel()

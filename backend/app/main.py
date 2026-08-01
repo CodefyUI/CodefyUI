@@ -311,6 +311,7 @@ async def lifespan(app: FastAPI):
         RunStore(db),
         output_store=app.state.run_output_store,
         retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
+        event_payload_cap_bytes=settings.RUN_EVENT_PAYLOAD_CAP_BYTES,
     )
     app.state.run_service = run_service
     # Order matters. Recovery FIRST: nothing resumes a `running` row after a
