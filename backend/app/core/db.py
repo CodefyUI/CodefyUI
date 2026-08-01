@@ -17,6 +17,8 @@ Decision A2 contract, verbatim:
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import sqlite3
 import time
@@ -160,24 +162,49 @@ class Database:
         the connection is quiet. ``shield`` ALONE is not enough: the outer
         await still raises immediately and the lock still goes early.
 
-        The cost is bounded: cancelling a DB call now takes as long as the
-        statement in flight, which ``PRAGMA busy_timeout=5000`` caps.
+        The worker is a bare Future, not a Task, and that is load-bearing
+        rather than stylistic. ``asyncio``'s shutdown sweep cancels every
+        entry of ``asyncio.all_tasks()``; ``asyncio.to_thread`` is a
+        coroutine, so scheduling it produces a Task that the sweep would
+        cancel DIRECTLY — flipping ``done()`` to True while the thread is
+        still mid-transaction, which walks straight back into the bug above
+        through a second door. ``run_in_executor`` returns a Future, which
+        is not in ``all_tasks()``; nothing else holds a reference to it, so
+        the only cancellable thing left is our own shield. (Verified: under
+        a blanket cancel the Task reports cancelled and the Future does
+        not.) ``copy_context`` keeps the contextvar propagation that
+        ``to_thread`` gave us for free.
+
+        The delay is bounded by how long ``fn`` runs. Note that
+        ``PRAGMA busy_timeout=5000`` does NOT cap that: it caps how long a
+        statement waits for a lock held by ANOTHER connection, not how long
+        one takes to execute. A large DELETE takes as long as it takes.
         """
         async with self._lock:
             conn = self._conn
             if conn is None:
                 raise RuntimeError("Database is not connected")
-            worker = asyncio.ensure_future(asyncio.to_thread(fn, conn))
+            ctx = contextvars.copy_context()
+            worker = asyncio.get_running_loop().run_in_executor(
+                None, functools.partial(ctx.run, fn, conn))
             cancellation: BaseException | None = None
             while not worker.done():
                 try:
                     await asyncio.shield(worker)
                 except asyncio.CancelledError as exc:
-                    if not worker.done():
-                        cancellation = exc   # ours, not the worker's
+                    cancellation = exc       # ours: the worker is unreachable
                 except BaseException:
-                    pass                     # worker.result() re-raises below
+                    break                    # worker failed; re-raised below
             if cancellation is not None:
+                if not worker.cancelled():
+                    # Retrieve any worker error before raising the
+                    # cancellation instead, so Future.__del__ never routes
+                    # it to the loop's exception handler ("Future exception
+                    # was never retrieved") at a later GC. Belt and braces:
+                    # shield's own _inner_done_callback already calls
+                    # inner.exception() when the outer was cancelled, so
+                    # this only matters if the shield ever goes away.
+                    worker.exception()
                 raise cancellation
             return worker.result()
 

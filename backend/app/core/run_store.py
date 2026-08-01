@@ -369,10 +369,17 @@ class RunStore:
         if provenance is None:
             provenance = await asyncio.to_thread(RunProvenance.capture)
 
+        # Sanitize ONCE, up front, and build both the row and the returned
+        # record from the same copy. Storing _dumps(raw) while returning the
+        # caller's raw dict would make create_run(...).options differ from
+        # get_run(...).options for a non-finite value — and the returned
+        # record is what a REST layer serialises straight into its response,
+        # which would put a NaN token back on the wire. Copying also stops
+        # the record from aliasing a dict the caller can still mutate.
         record = RunRecord(
             id=run_id or uuid4().hex,
             name=name,
-            options=options if options is not None else {},
+            options=_json_safe(options) if options is not None else {},
             status=status,
             error=None,
             queue_key=queue_key,
@@ -381,7 +388,7 @@ class RunStore:
             finished_at=None,
             git_commit=provenance.git_commit,
             git_dirty=provenance.git_dirty,
-            plugin_pins=provenance.plugin_pins,
+            plugin_pins=_json_safe(provenance.plugin_pins),
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -413,7 +420,15 @@ class RunStore:
         return None if row is None else RunRecord.from_row(row)
 
     async def get_graph_snapshot(self, run_id: str) -> dict[str, Any] | None:
-        """The submitted graph, fetched on demand (not part of ``RunRecord``)."""
+        """The submitted graph, fetched on demand (not part of ``RunRecord``).
+
+        JSON-normalised, not byte-preserved: the graph round-trips through
+        ``json.dumps``/``loads``, so key order and formatting are not the
+        submitted bytes, tuples come back as lists, and a non-finite float
+        comes back as null. Unlike ``app_versions.graph_json``, which stores
+        the exact saved-file bytes, this is a re-execution input, not a
+        signable artifact.
+        """
         def _select(conn: sqlite3.Connection) -> str | None:
             row = conn.execute(
                 "SELECT graph_snapshot FROM exec_runs WHERE id = ?",
@@ -518,9 +533,28 @@ class RunStore:
         return await self.db.run(_update) > 0
 
     async def mark_finished(
-        self, run_id: str, status: str, *, error: str | None = None,
+        self,
+        run_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        expected: Sequence[str] = tuple(sorted(ACTIVE_STATUSES)),
     ) -> bool:
-        """Move a run to a terminal status and stamp ``finished_at``.
+        """Move an ACTIVE run to a terminal status and stamp ``finished_at``.
+
+        Returns True only if the transition actually happened. It does not
+        happen when the run does not exist, or when its status is not in
+        *expected* — which by default means a run that already finished.
+        That guard is the point: a cancel racing a completion is normal
+        (the user hits Stop as the last epoch lands), and without it the
+        late writer wins and a succeeded run is filed forever as cancelled.
+        The same rule already protects ``interrupt_active_runs``.
+
+        A caller that genuinely means to overwrite a terminal row — a
+        correction, a re-classification — passes *expected* explicitly.
+        Distinguishing "no such run" from "already finished" needs a
+        ``get_run``; this returns one boolean on purpose, because both mean
+        "your write did not land".
 
         *error* is written as given, including None — the finishing caller
         holds the authoritative outcome. ``started_at`` is left alone, so a
@@ -530,13 +564,21 @@ class RunStore:
             raise ValueError(
                 f"{status!r} is not a terminal status; expected one of "
                 f"{sorted(TERMINAL_STATUSES)}")
+        allowed = tuple(expected)
+        if not allowed:
+            return False
+        unknown = sorted(set(allowed) - RUN_STATUSES)
+        if unknown:
+            raise ValueError(
+                f"unknown run status {unknown}; expected a subset of "
+                f"{sorted(RUN_STATUSES)}")
         stamp = utc_now_iso()
 
         def _update(conn: sqlite3.Connection) -> int:
             return conn.execute(
                 "UPDATE exec_runs SET status = ?, error = ?, finished_at = ? "
-                "WHERE id = ?",
-                (status, error, stamp, run_id),
+                f"WHERE id = ? AND status IN ({','.join('?' * len(allowed))})",
+                (status, error, stamp, run_id, *allowed),
             ).rowcount
 
         return await self.db.run(_update) > 0
@@ -626,8 +668,12 @@ class RunStore:
         attempt may already be in the log.
 
         *payload* is any JSON-serialisable value; None stores SQL NULL.
-        Pass *ts* when the caller needs the exact stamp it will fan out to
-        subscribers, otherwise the store stamps it.
+        Note that an omitted payload and an explicit JSON ``null`` are
+        therefore INDISTINGUISHABLE on read — both come back as None. An
+        event type that needs to tell those apart must wrap the value
+        (``{"value": None}``) rather than pass it bare. Pass *ts* when the
+        caller needs the exact stamp it will fan out to subscribers,
+        otherwise the store stamps it.
         """
         stamp = ts or utc_now_iso()
         encoded = None if payload is None else _dumps(payload)
@@ -784,8 +830,13 @@ class RunStore:
     async def add_artifact(
         self, run_id: str, kind: str, path: str, *, meta: Any = None,
     ) -> ArtifactRecord:
-        """Register a file a run produced. *kind* is an open vocabulary."""
+        """Register a file a run produced. *kind* is an open vocabulary.
+
+        *meta* is sanitized once and both stored and returned from that
+        copy, so the returned record always equals what a re-read gives.
+        """
         created_at = utc_now_iso()
+        meta = _json_safe(meta)
         encoded = None if meta is None else _dumps(meta)
 
         def _insert(conn: sqlite3.Connection) -> int:

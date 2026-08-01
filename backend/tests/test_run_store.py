@@ -256,6 +256,24 @@ def test_event_replay_and_cursor_allocation_are_index_served(db):
         assert "TEMP B-TREE" not in plan
 
 
+def test_metric_reads_are_index_served(db):
+    """The chart queries, in the exact form get_metrics/list_metric_names
+    emit. `ORDER BY name, step, id` is chosen to match the index; a future
+    reorder to `ts` or `step, name` would still be correct but would sort
+    the whole series on every poll of a live run."""
+    for sql, params in (
+        ("SELECT run_id, node_id, name, step, value, ts FROM exec_run_metrics "
+         "WHERE run_id = ? AND name = ? ORDER BY name, step, id", ("r", "a")),
+        ("SELECT DISTINCT name FROM exec_run_metrics WHERE run_id = ? "
+         "ORDER BY name", ("r",)),
+    ):
+        plan = " ".join(r["detail"] for r in db._conn.execute(
+            "EXPLAIN QUERY PLAN " + sql, params).fetchall())
+        assert "idx_exec_run_metrics_series" in plan
+        assert "SCAN exec_run_metrics" not in plan
+        assert "TEMP B-TREE" not in plan
+
+
 def test_status_vocabulary_is_not_pinned_in_sql(db):
     """No CHECK constraint on `status`: SQLite cannot ALTER one away, and
     the queue/sweep issues may add lifecycle states. Enforcement is the
@@ -415,6 +433,39 @@ async def test_cancelling_a_queued_run_leaves_started_at_null(store):
     cancelled = await store.get_run(run.id)
     assert cancelled.started_at is None
     assert cancelled.finished_at is not None
+
+
+async def test_a_late_cancel_cannot_rewrite_a_finished_run(store):
+    """The Stop-button race: the user hits cancel as the last epoch lands.
+
+    Without a precondition the late writer wins and a run that actually
+    succeeded is filed forever as cancelled -- with a finished_at from the
+    wrong moment.
+    """
+    run = await _make_run(store)
+    await store.mark_running(run.id)
+    assert await store.mark_finished(run.id, "succeeded") is True
+    settled = await store.get_run(run.id)
+
+    assert await store.mark_finished(run.id, "cancelled") is False
+    unchanged = await store.get_run(run.id)
+    assert unchanged.status == "succeeded"
+    assert unchanged.finished_at == settled.finished_at
+    assert unchanged.error is None
+
+
+async def test_mark_finished_can_be_forced_with_an_explicit_expected(store):
+    run = await _make_run(store)
+    await store.mark_finished(run.id, "succeeded")
+    assert await store.mark_finished(
+        run.id, "failed", error="found later",
+        expected=["succeeded"]) is True
+    fixed = await store.get_run(run.id)
+    assert (fixed.status, fixed.error) == ("failed", "found later")
+
+    assert await store.mark_finished(run.id, "failed", expected=[]) is False
+    with pytest.raises(ValueError, match="status"):
+        await store.mark_finished(run.id, "failed", expected=["nope"])
 
 
 async def test_mark_finished_rejects_a_non_terminal_status(store):
@@ -726,6 +777,34 @@ async def test_artifact_meta_and_options_are_also_json_safe(store):
     assert art.id > 0
 
 
+async def test_returned_records_equal_what_a_reread_gives(store):
+    """The RETURN VALUE must be sanitized too, not just the stored row.
+
+    #120 serialises the record it got back straight into its response, so
+    a create_run(...) that still held the caller's raw NaN would put the
+    non-JSON token back on the wire that this store just removed.
+    """
+    created = await store.create_run(
+        graph_snapshot={}, options={"lr": float("nan"), "epochs": 3},
+        provenance=RunProvenance())
+    assert created.options == {"lr": None, "epochs": 3}
+    assert created == await store.get_run(created.id)
+
+    art = await store.add_artifact(created.id, "checkpoint", "c.pt",
+                                   meta={"loss": float("-inf"), "epoch": 1})
+    assert art.meta == {"loss": None, "epoch": 1}
+    assert art == (await store.list_artifacts(created.id))[0]
+
+
+async def test_create_run_does_not_alias_the_callers_dict(store):
+    options = {"device": "cpu"}
+    created = await store.create_run(graph_snapshot={}, options=options,
+                                     provenance=RunProvenance())
+    options["device"] = "cuda"          # caller keeps using its own dict
+    assert created.options == {"device": "cpu"}
+    assert (await store.get_run(created.id)).options == {"device": "cpu"}
+
+
 # ── 5. artifacts ──────────────────────────────────────────────────────────
 
 
@@ -890,17 +969,15 @@ async def test_provenance_skips_git_outside_project_mode(store, monkeypatch):
     assert run.plugin_pins == {}
 
 
-def test_capture_uses_the_real_git_helper_and_the_project_dir():
+def test_capture_binds_the_real_git_helper():
     """Wiring check without spawning git.
 
     Asserting `capture(x) == git_provenance(x)` against the live checkout
     would be both tautological and flaky: `dirty` is whatever the working
     tree looks like at that instant, so anything writing into the repo
-    between the two calls reddens the test. Prove the binding by identity,
-    and prove the argument with a spy.
+    between the two calls reddens the test. Prove the binding by identity;
+    the companion test below proves the argument.
     """
-    from pathlib import Path
-
     from app.core import project, run_store
 
     assert run_store.git_provenance is project.git_provenance
