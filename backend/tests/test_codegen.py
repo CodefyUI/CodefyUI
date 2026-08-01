@@ -1462,4 +1462,6 @@ def test_export_notes_a_bypassed_node_that_leads_nowhere():
     script = generate_python(nodes, edges, name="leaf")
     _compile_check(script)
     assert "# BYPASSED node 'drop' ('Dropout')" in script
-    assert "#     (nothing was wired through it)" in script
+    # Its input IS still wired (TensorCreate -> drop); what is missing is a
+    # consumer, and the note has to say that and not the opposite.
+    assert "#     (nothing downstream consumed it)" in script

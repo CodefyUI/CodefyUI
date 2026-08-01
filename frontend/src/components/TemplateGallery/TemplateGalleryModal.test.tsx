@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TemplateGalleryModal, exampleSourceLabel } from './TemplateGalleryModal';
+import { useDialogStore } from '../../store/dialogStore';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
@@ -55,7 +56,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useUIStore.setState({ templateGalleryOpen: false });
+  useUIStore.setState({ templateGalleryOpen: false, shortcutsModalOpen: false });
+  useDialogStore.setState({ active: null });
   vi.restoreAllMocks();
 });
 
@@ -189,9 +191,14 @@ describe('TemplateGalleryModal', () => {
 
     render(<TemplateGalleryModal />);
     await waitFor(() => expect(within(grid()).getByText('Template')).toBeInTheDocument());
-    fireEvent.doubleClick(within(grid()).getByText('Template'));
+    const card = within(grid()).getByText('Template');
+    // Two rapid double-clicks: the second must not start a second load, or
+    // the user gets two tabs (and one of them after the modal has closed).
+    fireEvent.doubleClick(card);
+    fireEvent.doubleClick(card);
 
     await waitFor(() => expect(store().tabs).toHaveLength(2));
+    expect(mockedRest.loadExample).toHaveBeenCalledTimes(1);
     expect(mockedRest.loadExample).toHaveBeenCalledWith('u/1');
   });
 
@@ -222,6 +229,28 @@ describe('TemplateGalleryModal', () => {
   it('closes on Escape', async () => {
     render(<TemplateGalleryModal />);
     await screen.findByText('No examples available');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useUIStore.getState().templateGalleryOpen).toBe(false);
+  });
+
+  it('leaves Escape alone while something is stacked above it', async () => {
+    render(<TemplateGalleryModal />);
+    await screen.findByText('No examples available');
+
+    // The shortcuts modal (`?`) renders over whatever is showing and has no
+    // Escape handler of its own — closing the gallery underneath it would
+    // dismiss the surface the user is NOT looking at.
+    useUIStore.setState({ shortcutsModalOpen: true });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
+    useUIStore.setState({ shortcutsModalOpen: false });
+
+    // Same for a confirm/prompt dialog.
+    useDialogStore.setState({ active: { kind: 'confirm', title: 'x' } as never });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
+    useDialogStore.setState({ active: null });
+
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().templateGalleryOpen).toBe(false);
   });

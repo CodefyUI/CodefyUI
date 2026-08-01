@@ -83,7 +83,7 @@ export function resolveNodeComponentType(nodeType: string): string {
 }
 
 /**
- * xyflow component types that cannot be bypassed (core#128).
+ * xyflow COMPONENT types that cannot be bypassed (core#128).
  *
  * `noteNode` is an annotation with no execution to skip; `start` is the
  * trigger marker that defines an entry point (muting it would silently strip
@@ -93,9 +93,25 @@ export function resolveNodeComponentType(nodeType: string): string {
  */
 const NON_BYPASSABLE_NODE_TYPES = new Set(['noteNode', 'start', 'presetNode']);
 
+/**
+ * GRAPH node types that cannot be bypassed, checked against `data.type`.
+ *
+ * These two render as ordinary `baseNode` cards, so the component-type set
+ * above cannot see them. They declare the graph's I/O contract, which
+ * `derive_contract` / `check_wiring` read from the RAW graph — muting one
+ * would leave a published app advertising an input or output the run cannot
+ * honour. The backend refuses them for the same reason; this keeps the
+ * canvas from offering an action that can only end in a validation error.
+ */
+const NON_BYPASSABLE_GRAPH_TYPES = new Set(['GraphInput', 'GraphOutput']);
+
 /** Whether the bypass toggle applies to this canvas node. */
-export function isBypassable(node: { type?: string } | undefined | null): boolean {
-  return !!node && !NON_BYPASSABLE_NODE_TYPES.has(node.type ?? '');
+export function isBypassable(
+  node: { type?: string; data?: { type?: string } } | undefined | null,
+): boolean {
+  if (!node) return false;
+  if (NON_BYPASSABLE_NODE_TYPES.has(node.type ?? '')) return false;
+  return !NON_BYPASSABLE_GRAPH_TYPES.has(node.data?.type ?? '');
 }
 
 export const DATA_TYPE_COLORS: Record<string, string> = {

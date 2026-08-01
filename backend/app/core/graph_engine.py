@@ -210,6 +210,11 @@ class BypassResolution:
     edges: list[dict]
     errors: list[str] = field(default_factory=list)
     links: list[BypassLink] = field(default_factory=list)
+    #: ``(target_id, target_handle) -> bypassed node id`` for every edge the
+    #: resolution DROPPED because the bypass had nothing to forward. Lets the
+    #: resulting "Missing required input" name the mute that caused it, rather
+    #: than pointing at a port the user never touched.
+    dropped: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
@@ -217,7 +222,14 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
 
     Port matching rule (ComfyUI's, spelled out): for output port ``o``, the
     forwarded input is the FIRST declared input ``i`` with
-    ``is_compatible(i.data_type, o.data_type)``. Then:
+    ``is_compatible(i.data_type, o.data_type)``.
+
+    ``is_compatible`` is deliberately WIDER than the issue's literal "same
+    DataType": it is the very predicate the edge validator uses, so an input
+    the bypass forwards can only produce an edge validation would already have
+    accepted (ANY absorbs everything; IMAGE flows into TENSOR). Requiring
+    strict equality would refuse pass-throughs the graph could legally have
+    been wired with in the first place. Then:
 
     * matched input is wired  -> every edge leaving ``o`` is re-pointed at
       whatever fed ``i`` (recursively, so chains of bypassed nodes collapse);
@@ -240,19 +252,37 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
     errors: list[str] = []
     links: list[BypassLink] = []
 
-    # Two kinds of bypassed node are left in place rather than resolved:
+    # Imported lazily: api_contract imports find_entry_points from THIS module,
+    # so a top-level import would close a cycle. One source of truth beats
+    # re-spelling the two type names here.
+    from .api_contract import GRAPH_INPUT_TYPE, GRAPH_OUTPUT_TYPE
+
+    # Three kinds of bypassed node are left in place rather than resolved:
     #
     #  - a preset instance, whose ports come from the preset definition and
     #    whose body is expanded elsewhere. Refused loudly (the canvas does not
     #    offer bypass on presets; a hand-edited file might).
+    #  - a GraphInput / GraphOutput, which declares the graph's I/O CONTRACT.
+    #    `derive_contract` and `check_wiring` scan the raw graph, so silently
+    #    deleting one here would leave a published app advertising an output
+    #    the run cannot produce. GraphOutput is the sharp case: it declares no
+    #    output ports at all, so nothing would ever call `_forward` on it and
+    #    no pass-through error would fire. Refused for the same reason presets
+    #    are — bypass has no meaning for a node that IS the signature.
     #  - an unregistered node type, whose ports cannot be read at all. Left
     #    alone so the caller reports "Unknown node type", which is the real
     #    problem, instead of a confusing pass-through complaint.
+    contract_types = (GRAPH_INPUT_TYPE, GRAPH_OUTPUT_TYPE)
     active: dict[str, dict] = {}
     for node_id, node in bypassed.items():
         node_type = str(node.get("type", ""))
         if node_type.startswith("preset:"):
             errors.append(f"Bypass is not supported on preset node {node_id}")
+        elif node_type in contract_types:
+            errors.append(
+                f"Bypass is not supported on {node_type} node {node_id}: it "
+                "declares the graph's I/O contract"
+            )
         elif registry.get(node_type) is not None:
             active[node_id] = node
         # else: unregistered type — left in place on purpose (see above).
@@ -290,10 +320,14 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
     def _forward(node_id: str, out_port: str) -> tuple[str, str] | None:
         """The (source, handle) a bypassed output forwards, or None.
 
-        The memo is seeded with ``None`` BEFORE recursing, which is also the
-        cycle guard: bypassed nodes wired in a loop re-enter, short-circuit to
-        ``None``, and leave the cycle itself for validate_graph to report.
-        It is what keeps the error below to one line per port, too.
+        The memo is seeded with ``None`` BEFORE recursing, which doubles as
+        the cycle guard: bypassed nodes wired in a ring re-enter, short-circuit
+        to ``None``, and the recursion terminates. Note that validate_graph
+        will NOT go on to report that cycle — the nodes forming it no longer
+        exist by then. Every edge leaving the ring is simply dropped, so what
+        the user sees is a missing input on whatever consumed it, attributed
+        to the mute via ``dropped`` below. Seeding also keeps the
+        no-compatible-input error to one line per port.
         """
         key = (node_id, out_port)
         if key in resolved:
@@ -303,7 +337,10 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
         inputs, outputs = _ports(node_id)
         output = next((p for p in outputs if p.name == out_port), None)
         if output is None:
-            return None  # unknown handle; edge validation reports it
+            # An edge naming a source handle this node does not declare. Edge
+            # validation will never see it either (the node and the edge are
+            # both about to go), so it lands as a missing input downstream.
+            return None
 
         match = next(
             (p for p in inputs if is_compatible(p.data_type, output.data_type)),
@@ -363,6 +400,7 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
         return out
 
     new_edges: list[dict] = []
+    dropped: dict[tuple[str, str], str] = {}
     for edge in edges:
         edge_type = edge.get("type", "data")
         source, target = edge["source"], edge["target"]
@@ -384,6 +422,9 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
                 continue  # a bypassed node emits nothing, triggers included
             forwarded = _forward(source, edge.get("sourceHandle", ""))
             if forwarded is None:
+                # Nothing to carry across. Remember who caused it so the
+                # missing input this creates can name the mute.
+                dropped[(target, edge.get("targetHandle", ""))] = source
                 continue
             rewired = dict(edge)
             rewired["source"], rewired["sourceHandle"] = forwarded
@@ -393,7 +434,7 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
         new_edges.append(edge)
 
     new_nodes = [n for n in nodes if n["id"] not in active]
-    return BypassResolution(new_nodes, new_edges, errors, links)
+    return BypassResolution(new_nodes, new_edges, errors, links, dropped)
 
 
 def validate_graph(
@@ -451,8 +492,16 @@ def validate_graph(
         node_cls = registry.get(node["type"])
         for inp in node_cls.define_inputs():
             if not inp.optional and (node["id"], inp.name) not in connected_inputs:
+                # A port left unconnected BY A BYPASS reads as the user's own
+                # wiring mistake unless the message says otherwise (core#128).
+                cause = resolution.dropped.get((node["id"], inp.name))
                 errors.append(
                     f"Missing required input '{inp.name}' on node {node['id']} ({node['type']})"
+                    + (
+                        f" (input dropped because '{cause}' is bypassed)"
+                        if cause
+                        else ""
+                    )
                 )
 
     # 3. Parameter range validation (skip preset nodes)

@@ -2229,3 +2229,63 @@ describe('insertGraph', () => {
     expect(inserted.data.error).toBeUndefined();
   });
 });
+
+
+describe('bypass — graph I/O contract nodes (core#128 review)', () => {
+  beforeEach(resetToSingleTab);
+
+  it('toggleNodeBypass refuses GraphInput and GraphOutput', () => {
+    store().setNodes([
+      bnode('gi', { data: { label: 'gi', type: 'GraphInput', params: {} } }),
+      bnode('go', { data: { label: 'go', type: 'GraphOutput', params: {} } }),
+    ]);
+    store().toggleNodeBypass('gi');
+    store().toggleNodeBypass('go');
+    expect(activeTab().nodes.every((n) => n.data.bypassed === undefined)).toBe(true);
+  });
+
+  it('toggleBypassForSelection skips them and falls through', () => {
+    store().setNodes([
+      bnode('go', { selected: true, data: { label: 'go', type: 'GraphOutput', params: {} } }),
+    ]);
+    // false is what lets Ctrl+B reach the sidebar instead of doing nothing.
+    expect(store().toggleBypassForSelection()).toBe(false);
+    expect(activeTab().nodes[0].data.bypassed).toBeUndefined();
+  });
+
+  it('still bypasses an ordinary node sharing the selection with a contract node', () => {
+    store().setNodes([
+      bnode('go', { selected: true, data: { label: 'go', type: 'GraphOutput', params: {} } }),
+      bnode('drop', { selected: true }),
+    ]);
+    expect(store().toggleBypassForSelection()).toBe(true);
+    const byId = Object.fromEntries(activeTab().nodes.map((n) => [n.id, n.data.bypassed]));
+    expect(byId).toEqual({ go: undefined, drop: true });
+  });
+});
+
+
+describe('insertGraph — viewport fit (core#128 review)', () => {
+  beforeEach(() => {
+    resetToSingleTab();
+    useUIStore.setState({ layoutFitRequest: null });
+  });
+
+  it('asks the canvas to fit the inserted block, not the whole graph', () => {
+    // Without this, a template dropped below a graph the user has panned
+    // away from lands entirely off-screen and the insert looks like a no-op.
+    store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
+    store().insertGraph([bnode('t1', { position: { x: 900, y: 900 } })], []);
+
+    const request = useUIStore.getState().layoutFitRequest;
+    expect(request).not.toBeNull();
+    const inserted = activeTab().nodes.find((n) => n.selected)!;
+    expect(request!.bounds.x).toBe(inserted.position.x);
+    expect(request!.bounds.y).toBe(inserted.position.y);
+  });
+
+  it('does not request a fit for an empty template', () => {
+    store().insertGraph([], []);
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+  });
+});

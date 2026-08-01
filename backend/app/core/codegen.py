@@ -676,7 +676,10 @@ def generate_python(
         ]
         node_links = links_by_node.get(node_id, [])
         if not node_links:
-            lines.append("#     (nothing was wired through it)")
+            # A pass-through is only ever resolved for an output something
+            # downstream reads, so an empty link list means nothing consumed
+            # this node -- it says nothing about what was wired INTO it.
+            lines.append("#     (nothing downstream consumed it)")
             return lines
         stand_in = _slug(node_id, "node")
         for link in node_links:

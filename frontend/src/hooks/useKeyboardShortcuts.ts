@@ -97,7 +97,9 @@ export function useKeyboardShortcuts() {
       // Ctrl+Shift+B (handled above) is the unconditional sidebar toggle, so
       // there is always a chord that does the sidebar regardless of what is
       // selected. Both are listed in the shortcuts modal.
-      if (mod && !e.shiftKey && e.key === 'b') {
+      // `toLowerCase` because Caps Lock alone reports 'B' with shiftKey
+      // false — without it the chord silently stops working.
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'b') {
         e.preventDefault();
         if (useTabStore.getState().toggleBypassForSelection()) return;
         useUIStore.getState().toggleSidebarCollapsed();

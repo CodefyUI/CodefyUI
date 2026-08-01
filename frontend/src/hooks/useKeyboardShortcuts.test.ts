@@ -180,6 +180,14 @@ describe('useKeyboardShortcuts', () => {
     expect(toggleSidebarCollapsed).toHaveBeenCalledTimes(1);
   });
 
+  it('plain Ctrl+B survives Caps Lock (uppercase key, shiftKey false)', () => {
+    toggleBypassForSelection.mockReturnValue(true);
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 'B', ctrlKey: true });
+    expect(toggleBypassForSelection).toHaveBeenCalledTimes(1);
+    expect(toggleSidebarCollapsed).not.toHaveBeenCalled();
+  });
+
   it('Ctrl+B is ignored while typing in an input', () => {
     renderHook(() => useKeyboardShortcuts());
     const input = document.createElement('input');

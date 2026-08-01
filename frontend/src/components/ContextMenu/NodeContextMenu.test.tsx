@@ -393,4 +393,21 @@ describe('useNodeContextMenuItems — bypass', () => {
       expect(result.current[2].dividerAfter).toBe(true);
     }
   });
+
+  it('omits the entry for the graph I/O contract nodes (core#128 review)', () => {
+    // GraphInput/GraphOutput render as ordinary baseNode cards, so the
+    // component-type check cannot see them — the real node type can. Muting
+    // one would leave a published contract advertising an input or output
+    // the run cannot honour, which the backend refuses outright.
+    for (const graphType of ['GraphInput', 'GraphOutput']) {
+      seedNode('n1', { data: { label: 'n1', type: graphType, params: {} } });
+      const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+      expect(result.current.map((i) => i.label)).toEqual([
+        'Open details',
+        'Rename',
+        'Duplicate',
+        'Delete',
+      ]);
+    }
+  });
 });

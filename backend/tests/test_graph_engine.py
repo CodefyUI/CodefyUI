@@ -696,3 +696,175 @@ def test_bypass_records_the_pass_through_links_it_applied():
     assert (link.node_id, link.node_type) == ("drop", "Dropout")
     assert (link.output, link.input) == ("tensor", "tensor")
     assert (link.source, link.source_handle) == ("make", "tensor")
+
+
+def test_bypass_is_refused_on_the_graph_io_contract_nodes():
+    """GraphInput/GraphOutput ARE the signature; muting one cannot be silent.
+
+    GraphOutput is the sharp case: it declares no output ports, so nothing
+    would ever ask what it forwards and no pass-through error would fire --
+    it would simply vanish, leaving a published contract advertising an
+    output the run cannot produce.
+    """
+    from app.core.graph_engine import prepare_executable_graph, resolve_bypass
+
+    nodes = [
+        _start_node(),
+        _node("make", "TensorCreate", shape="2,2", fill="ones"),
+        _bypassed(_node("out", "GraphOutput", name="result")),
+    ]
+    edges = [
+        _trigger("et", "start", "make"),
+        _data_edge("e1", "make", "tensor", "out", "value"),
+    ]
+
+    assert any(
+        "Bypass is not supported on GraphOutput node out" in e
+        for e in validate_graph(nodes, edges)
+    )
+    # Refused means LEFT IN PLACE: the contract layer still sees the node.
+    assert "out" in {n["id"] for n in resolve_bypass(nodes, edges).nodes}
+
+    with pytest.raises(GraphValidationError, match="not supported on GraphOutput"):
+        prepare_executable_graph(nodes, edges)
+
+
+def test_bypass_is_refused_on_a_graph_input_node():
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _bypassed(_node("in", "GraphInput", name="x", type="string")),
+        _node("show", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "in"),
+        _data_edge("e1", "in", "value", "show", "value"),
+    ]
+    assert any(
+        "Bypass is not supported on GraphInput node in" in e
+        for e in validate_graph(nodes, edges)
+    )
+    with pytest.raises(GraphValidationError, match="not supported on GraphInput"):
+        prepare_executable_graph(nodes, edges)
+
+
+def test_bypass_forwards_the_first_matching_input_of_several():
+    """Lerp takes tensor_a, tensor_b, alpha and emits one TENSOR.
+
+    All three inputs are equally compatible, so this pins WHICH one
+    positional first-match picks: the earliest declared, tensor_a.
+    """
+    from app.core.graph_engine import resolve_bypass
+
+    nodes = [
+        _start_node(),
+        _node("a", "TensorCreate", shape="2,2", fill="ones"),
+        _node("b", "TensorCreate", shape="2,2", fill="zeros"),
+        _bypassed(_node("mix", "Lerp", alpha=0.5)),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "a"),
+        _data_edge("e1", "a", "tensor", "mix", "tensor_a"),
+        _data_edge("e2", "b", "tensor", "mix", "tensor_b"),
+        _data_edge("e3", "mix", "tensor", "out", "value"),
+    ]
+    resolution = resolve_bypass(nodes, edges)
+
+    assert resolution.errors == []
+    assert [(link.input, link.source) for link in resolution.links] == [("tensor_a", "a")]
+    rewired = [e for e in resolution.edges if e["target"] == "out"]
+    assert (rewired[0]["source"], rewired[0]["sourceHandle"]) == ("a", "tensor")
+
+
+def test_bypass_resolves_each_output_of_a_multi_output_node_by_type():
+    """TrainTestSplit emits x_train/x_test (TENSOR) and y_train/y_test (LIST).
+
+    Each output picks the first input its OWN type is compatible with, so the
+    two consumed here resolve to different inputs -- and to different source
+    ports of the same upstream node.
+    """
+    from app.core.graph_engine import resolve_bypass
+
+    nodes = [
+        _start_node(),
+        _node("csv", "CSVReader", path="data/samples/iris.csv", target_column="species"),
+        _bypassed(_node("split", "TrainTestSplit")),
+        _node("o1", "Print", label="a"),
+        _node("o2", "Print", label="b"),
+    ]
+    edges = [
+        _trigger("et", "start", "csv"),
+        _data_edge("e1", "csv", "tensor", "split", "features"),
+        _data_edge("e2", "csv", "labels", "split", "labels"),
+        _data_edge("e3", "split", "x_train", "o1", "value"),
+        _data_edge("e4", "split", "y_test", "o2", "value"),
+    ]
+    resolution = resolve_bypass(nodes, edges)
+
+    assert resolution.errors == []
+    assert sorted(
+        (link.output, link.input, link.source_handle) for link in resolution.links
+    ) == [
+        ("x_train", "features", "tensor"),
+        ("y_test", "labels", "labels"),
+    ]
+
+
+def test_bypass_matching_is_wider_than_equality_when_a_port_is_any():
+    """Switch: selector (SCALAR), input_0..3 (ANY) -> output (ANY).
+
+    ``is_compatible`` -- the edge validator's own predicate -- accepts SCALAR
+    into ANY, so positional first-match takes `selector`, not `input_0`.
+    Surprising at a glance and deliberately pinned: the rule is positional
+    over a WIDE compatibility test, exactly as ComfyUI's is, and a strict
+    same-DataType rule would refuse pass-throughs the graph could legally
+    have been wired with.
+    """
+    from app.core.graph_engine import resolve_bypass
+
+    nodes = [
+        _start_node(),
+        _node("sel", "TensorCreate", shape="1", fill="ones"),
+        _node("a", "TensorCreate", shape="2,2", fill="ones"),
+        _bypassed(_node("sw", "Switch")),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "sel"),
+        _data_edge("e1", "sel", "tensor", "sw", "selector"),
+        _data_edge("e2", "a", "tensor", "sw", "input_0"),
+        _data_edge("e3", "sw", "output", "out", "value"),
+    ]
+    resolution = resolve_bypass(nodes, edges)
+
+    assert resolution.errors == []
+    assert [(link.input, link.source) for link in resolution.links] == [("selector", "sel")]
+
+
+def test_a_missing_input_caused_by_a_bypass_names_the_bypass():
+    """Otherwise the error reads as a port the user forgot to wire."""
+    nodes = [
+        _start_node(),
+        _bypassed(_node("drop", "Dropout", p=0.5)),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "drop"),
+        _data_edge("e1", "drop", "tensor", "out", "value"),
+    ]
+    errors = validate_graph(nodes, edges)
+    assert any(
+        "Missing required input 'value' on node out" in e
+        and "input dropped because 'drop' is bypassed" in e
+        for e in errors
+    ), errors
+
+
+def test_an_ordinary_missing_input_carries_no_bypass_attribution():
+    nodes = [_start_node(), _node("out", "Print", label="tail")]
+    edges = [_trigger("et", "start", "out")]
+    errors = validate_graph(nodes, edges)
+    assert any("Missing required input 'value' on node out" in e for e in errors)
+    assert not any("is bypassed" in e for e in errors), errors

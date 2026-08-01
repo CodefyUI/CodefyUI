@@ -1334,6 +1334,15 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         edges: [...t.edges, ...newEdges],
       })),
     });
+
+    // The block is placed below the existing graph, which on a canvas the
+    // user has panned or zoomed into can be entirely off-screen — an insert
+    // that looks like it did nothing. Reuse auto-layout's one-shot fit
+    // request so the viewport lands on what just arrived.
+    const inserted = nodesBoundingBox(newNodes as Node[]);
+    if (inserted && inserted.width > 0 && inserted.height > 0) {
+      useUIStore.getState().requestLayoutFit(inserted);
+    }
   },
 
   // ── Note actions ──
@@ -1667,9 +1676,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     // Bypassed nodes are dropped from the RESULT but not from the walk
     // (core#128). This list becomes the backend's `changed_nodes` — a
     // force-re-execute hint — and a bypassed node is never executed, so
-    // naming one says nothing. Dirtiness still travels THROUGH it to
-    // whatever consumes its pass-through, which is why the BFS above is
-    // unfiltered: bypassing a node is exactly what makes its consumers stale.
+    // naming one says nothing.
+    //
+    // `markDirty` upstream of this stays unconditional, and that is REQUIRED,
+    // not merely conservative: a param can change a bypassed node's own PORT
+    // SET (define_outputs_dynamic — Split's `chunks` is the live example), so
+    // editing a muted node's params can change which input each output
+    // forwards, and therefore what its consumers receive. Skipping the mark
+    // would leave those consumers on cached values computed from the old
+    // pass-through. Dirtiness travelling THROUGH the node is the same story,
+    // which is why the BFS above is unfiltered.
     const bypassed = new Set(
       tab.nodes.filter((n) => n.data.bypassed).map((n) => n.id),
     );

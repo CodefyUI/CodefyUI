@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { insertExample, openExampleInNewTab } from '../../utils/openExample';
+import { useDialogStore } from '../../store/dialogStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
@@ -79,9 +80,12 @@ function TemplateGalleryBody() {
     load();
   }, [load]);
 
-  // Take focus so Escape lands here and the page behind the backdrop cannot
-  // be tabbed into blind; hand it back on close, the way the node detail
-  // modal (#127) does.
+  // Move focus onto the surface so the keyboard starts inside the modal
+  // rather than wherever it was on the page behind, and hand it back on
+  // close — the way the node detail modal (#127) does. This is NOT a focus
+  // trap: Tab can still walk out into the page underneath. Left that way on
+  // purpose, so the two modals behave identically; trapping is worth doing,
+  // but as one change to both rather than a divergence here.
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const timer = setTimeout(() => surfaceRef.current?.focus(), 0);
@@ -96,6 +100,13 @@ function TemplateGalleryBody() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // Something can sit ON TOP of the gallery — a confirm/prompt dialog, or
+      // the shortcuts modal, which `?` opens over whatever is showing and
+      // which has no Escape handler of its own. Closing the surface
+      // UNDERNEATH the one the user is looking at is the bug this guards.
+      // Same check `useKeyboardShortcuts` makes before answering Enter.
+      if (useDialogStore.getState().active !== null) return;
+      if (useUIStore.getState().shortcutsModalOpen) return;
       e.preventDefault();
       close();
     };
@@ -131,9 +142,15 @@ function TemplateGalleryBody() {
     [close],
   );
 
+  // `busy` gates this as well as the detail buttons: a double-click lands two
+  // events, and the second must not start a second load (two tabs, or a tab
+  // opened after the modal has already closed).
   const openInNewTab = useCallback(
-    (path: string) => void take(() => openExampleInNewTab(path)),
-    [take],
+    (path: string) => {
+      if (busy) return;
+      void take(() => openExampleInNewTab(path));
+    },
+    [busy, take],
   );
 
   return createPortal(
