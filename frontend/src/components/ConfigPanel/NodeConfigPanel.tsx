@@ -1,17 +1,15 @@
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { ParamField } from '../shared/ParamField';
+import { NodeParamList } from '../shared/NodeParamList';
 import { MathText } from '../shared/MathText';
 import { CATEGORY_COLORS } from '../../styles/theme';
-import { isParamVisible } from '../../utils';
 import styles from './NodeConfigPanel.module.css';
 
 export function NodeConfigPanel() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const nodes = activeTab.nodes;
   const selectedNodeId = activeTab.selectedNodeId;
-  const updateNodeParams = useTabStore((s) => s.updateNodeParams);
   const openPresetModal = useTabStore((s) => s.openPresetModal);
   const isCanvasPanning = useUIStore((s) => s.isCanvasPanning);
   const { t, tn } = useI18n();
@@ -19,11 +17,6 @@ export function NodeConfigPanel() {
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const def = selectedNode?.data.definition;
   const nodeName = def?.node_name ?? '';
-
-  const handleChange = (paramName: string, value: any) => {
-    if (!selectedNodeId) return;
-    updateNodeParams(selectedNodeId, { [paramName]: value });
-  };
 
   if (!selectedNode) return null;
 
@@ -84,33 +77,11 @@ export function NodeConfigPanel() {
         {!isPreset && def && def.params.length > 0 ? (
           <div>
             <div className={styles.sectionHeader}>{t('config.parameters')}</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {def.params
-                .filter((param) => isParamVisible(param, selectedNode.data.params))
-                .map((param) => (
-                <div key={param.name}>
-                  <ParamField
-                    param={param}
-                    value={selectedNode.data.params[param.name]}
-                    onChange={handleChange}
-                    siblingParams={selectedNode.data.params}
-                  />
-                  {param.description && (
-                    <div className={styles.paramHint}>
-                      {tn(nodeName, `param.${param.name}`, param.description)}
-                    </div>
-                  )}
-                  {(param.min_value !== null || param.max_value !== null) && (
-                    <div className={styles.paramHint}>
-                      {t('config.range', {
-                        min: param.min_value !== null ? param.min_value : '-∞',
-                        max: param.max_value !== null ? param.max_value : '+∞',
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+            <NodeParamList
+              nodeId={selectedNodeId}
+              definition={def}
+              params={selectedNode.data.params}
+            />
           </div>
         ) : !isPreset ? (
           <div className={styles.noParams}>{t('config.noParams')}</div>

@@ -67,11 +67,19 @@ export function useNodeContextMenuItems(
     onDelete: (id: string) => void;
     onRename: (id: string) => void;
     onDuplicate: (id: string) => void;
+    onOpenDetails: (id: string) => void;
   },
 ) {
   const { t } = useI18n();
 
   return [
+    // First, and divided off from the edit actions: it is the only entry that
+    // opens something rather than changing the graph.
+    {
+      label: t('contextMenu.openDetails'),
+      action: () => callbacks.onOpenDetails(nodeId),
+      dividerAfter: true,
+    },
     { label: t('contextMenu.rename'), action: () => callbacks.onRename(nodeId), dividerAfter: false },
     { label: t('contextMenu.duplicate'), action: () => callbacks.onDuplicate(nodeId), dividerAfter: true },
     { label: t('contextMenu.delete'), action: () => callbacks.onDelete(nodeId), color: '#F44336' },

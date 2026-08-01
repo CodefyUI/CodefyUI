@@ -108,6 +108,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const deleteNode = useTabStore((s) => s.deleteNode);
   const duplicateNode = useTabStore((s) => s.duplicateNode);
   const renameNode = useTabStore((s) => s.renameNode);
+  const openNodeDetail = useTabStore((s) => s.openNodeDetail);
   const { t } = useI18n();
   const gridSnapEnabled = useUIStore((s) => s.gridSnapEnabled);
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
@@ -564,6 +565,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     onDelete: deleteNode,
     onRename: handleRename,
     onDuplicate: duplicateNode,
+    onOpenDetails: openNodeDetail,
   });
 
   const noteMenuItems = useNoteContextMenuItems(contextMenu?.nodeId ?? '', {

@@ -44,6 +44,9 @@ vi.mock('./components/PresetModal/PresetConfigModal', () => ({
 vi.mock('./components/SubgraphEditor/SubgraphEditorModal', () => ({
   SubgraphEditorModal: () => <div data-testid="subgraph-modal" />,
 }));
+vi.mock('./components/NodeDetailModal/NodeDetailModal', () => ({
+  NodeDetailModal: () => <div data-testid="node-detail-modal" />,
+}));
 vi.mock('./components/shared/Toast', () => ({
   ToastContainer: () => <div data-testid="toast-container" />,
 }));
@@ -116,6 +119,7 @@ describe('App', () => {
     expect(screen.getByTestId('tabbar')).toBeTruthy();
     expect(screen.getByTestId('preset-modal')).toBeTruthy();
     expect(screen.getByTestId('subgraph-modal')).toBeTruthy();
+    expect(screen.getByTestId('node-detail-modal')).toBeTruthy();
     expect(screen.getByTestId('toast-container')).toBeTruthy();
     expect(screen.getByTestId('shortcuts-modal')).toBeTruthy();
     expect(screen.getByTestId('dialog-container')).toBeTruthy();

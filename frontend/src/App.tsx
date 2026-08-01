@@ -9,6 +9,7 @@ import { InspectorPanel } from './components/InspectorPanel/InspectorPanel';
 import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
 import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorModal';
+import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
@@ -133,6 +134,7 @@ function App() {
       {hasActiveTab && <TabContent tabId={activeTabId} />}
       <PresetConfigModal />
       <SubgraphEditorModal />
+      <NodeDetailModal />
       <ToastContainer />
       <ShortcutsModal />
       <DialogContainer />

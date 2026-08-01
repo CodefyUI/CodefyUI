@@ -96,6 +96,12 @@ export interface TabState {
   selectedNodeId: string | null;
   presetModalNodeId: string | null;
   subgraphModalNodeId: string | null;
+  /**
+   * Node whose detail modal (#127) is open, or null. Transient like the other
+   * two modal ids above — never persisted, so a reload lands on the canvas
+   * rather than on top of a modal the user has no memory of opening.
+   */
+  nodeDetailNodeId: string | null;
   // undo/redo
   undoStack: UndoSnapshot[];
   redoStack: UndoSnapshot[];
@@ -142,6 +148,7 @@ function createTabState(id: string, name: string): TabState {
     selectedNodeId: null,
     presetModalNodeId: null,
     subgraphModalNodeId: null,
+    nodeDetailNodeId: null,
     undoStack: [],
     redoStack: [],
     dirtyNodeIds: new Set(),
@@ -199,6 +206,8 @@ interface TabStoreState {
   closePresetModal: () => void;
   openSubgraphModal: (id: string) => void;
   closeSubgraphModal: () => void;
+  openNodeDetail: (id: string) => void;
+  closeNodeDetail: () => void;
   updateSubgraphLayers: (nodeId: string, layersJson: string) => void;
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
@@ -806,7 +815,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           }
         }
 
-        // When a node is removed, unbind notes that were bound to it
+        // When a node is removed, unbind notes that were bound to it — and
+        // close a detail modal that was showing it.
+        //
+        // The modal has to be closed HERE, not only in `deleteNode`: React
+        // Flow's own Delete key never calls that action, it emits a `remove`
+        // change straight into this reducer. Left stale, `nodeDetailNodeId`
+        // points at a node that no longer exists — harmless while it renders
+        // nothing, but an undo that restores the node would pop the modal
+        // back open on its own.
+        let nodeDetailNodeId = tab.nodeDetailNodeId;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -816,9 +834,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
             if (!removedIds.has(n.data.boundToNodeId)) return n;
             return { ...n, data: { ...n.data, boundToNodeId: null, boundOffset: null } };
           });
+          if (nodeDetailNodeId !== null && removedIds.has(nodeDetailNodeId)) {
+            nodeDetailNodeId = null;
+          }
         }
 
-        return { nodes: updatedNodes };
+        return { nodes: updatedNodes, nodeDetailNodeId };
       }),
     });
   },
@@ -961,6 +982,22 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   closeSubgraphModal: () =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ subgraphModalNodeId: null })) }),
 
+  // Opening the detail modal also selects the node, in ONE commit. Every entry
+  // point (double-click, context menu, Enter, the modal's own prev/next
+  // arrows) therefore leaves the canvas, the config panel and the Inspector
+  // pointing at the same node the modal is showing — which is what makes
+  // stepping through a graph with the arrow keys read as a walkthrough.
+  openNodeDetail: (id) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+        nodeDetailNodeId: id,
+        selectedNodeId: id,
+      })),
+    }),
+
+  closeNodeDetail: () =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ nodeDetailNodeId: null })) }),
+
   updateSubgraphLayers: (nodeId, layersJson) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
@@ -1002,6 +1039,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         selectedNodeId: null,
         presetModalNodeId: null,
         subgraphModalNodeId: null,
+        nodeDetailNodeId: null,
         // A cleared canvas is a fresh, unbound graph. Drop the metadata tied
         // to the previously-open graph so the next save doesn't silently
         // overwrite that file with stale description / segment overlays.
@@ -1094,6 +1132,10 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           ),
         edges: tab.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
         selectedNodeId: tab.selectedNodeId === nodeId ? null : tab.selectedNodeId,
+        // A detail modal showing the node that just vanished has nothing left
+        // to render, so close it rather than leave an empty shell on screen.
+        nodeDetailNodeId:
+          tab.nodeDetailNodeId === nodeId ? null : tab.nodeDetailNodeId,
         // Drop any Teaching Inspector segment whose head/tail was this node —
         // it can never resolve a path once an endpoint is gone.
         segmentGroups: tab.segmentGroups.filter(
