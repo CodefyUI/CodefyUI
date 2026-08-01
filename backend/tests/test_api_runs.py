@@ -302,8 +302,14 @@ async def test_submit_records_normalized_options(client):
         "graph": _graph(), "options": {"seed": 3, "lane": "gpu"}})
     run_id = response.json()["run_id"]
     record = await _poll_until_terminal(client, run_id)
-    assert record["options"] == {"device": "cpu", "seed": 3,
-                                 "record_outputs": False, "lane": "gpu"}
+    # The full effective configuration, not just what the client sent, so a
+    # stored run stays readable without knowing which defaults were in force.
+    assert record["options"] == {
+        "device": "cpu", "seed": 3, "lane": "gpu", "graph_id": "",
+        "error_mode": "fail_fast", "max_retries": 0, "record_outputs": False,
+        "verbose": False, "weights_persistent": False, "backward_mode": False,
+        "auto_backward": False,
+    }
     assert record["queue_key"] == "cpu"
 
 
@@ -526,9 +532,9 @@ async def test_events_response_is_byte_bounded(client, monkeypatch):
     A short page is normal — the cursor says where to resume — so the whole
     log is still reachable, one bounded page at a time, with no gaps.
     """
-    from app.api import routes_runs
+    from app.config import settings as app_settings
 
-    monkeypatch.setattr(routes_runs, "_EVENTS_RESPONSE_CAP_BYTES", 400)
+    monkeypatch.setattr(app_settings, "RUN_EVENTS_RESPONSE_CAP_BYTES", 400)
     run_id = (await client.post("/api/runs", json={
         "graph": _graph("_ApiImage", {"size": 300})})).json()["run_id"]
     await _poll_until_terminal(client, run_id)

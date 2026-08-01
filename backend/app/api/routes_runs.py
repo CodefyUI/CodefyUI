@@ -39,6 +39,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ..config import settings
 from ..core.run_service import (
     RunService,
     RunServiceUnavailable,
@@ -58,14 +59,6 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 #: Upper bound for one queue-position sweep. A queue deeper than this is
 #: #123's problem, not a reason to scan the whole table on every poll.
 _QUEUE_SCAN_LIMIT = 1000
-
-#: Byte budget for ONE /events response. The per-event cap
-#: (RUN_EVENT_PAYLOAD_CAP_BYTES) bounds a single payload; this bounds the
-#: page, so ``limit`` cannot multiply the two into a response nobody asked
-#: for. A short page is already normal — the cursor says where to resume —
-#: so stopping early costs the client one extra round trip and nothing else.
-#: Far above any honest page (ordinary events are a couple of KB).
-_EVENTS_RESPONSE_CAP_BYTES = 4 * 1024 * 1024
 
 _CSV_COLUMNS = ("run_id", "node_id", "name", "step", "value", "ts")
 
@@ -134,12 +127,17 @@ def _bounded_events(events: list[EventRecord]) -> list[dict[str, Any]]:
     read path; /events is polled far less often than events are produced,
     and the alternative — trusting ``limit`` alone — makes the response size
     a product of two independently-configured numbers.
+
+    The budget is read from ``settings`` per call rather than captured in a
+    module constant, so ``CODEFYUI_RUN_EVENTS_RESPONSE_CAP_BYTES`` actually
+    reaches it — the previous literal here could not be configured at all.
     """
+    cap_bytes = settings.RUN_EVENTS_RESPONSE_CAP_BYTES
     out: list[dict[str, Any]] = []
     total = 0
     for event in events:
         total += json_size(event.payload)
-        if out and total > _EVENTS_RESPONSE_CAP_BYTES:
+        if out and total > cap_bytes:
             break
         out.append(_event_payload(event))
     return out

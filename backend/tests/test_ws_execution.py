@@ -1,4 +1,13 @@
-"""Tests for WebSocket execution endpoint."""
+"""Tests for WebSocket execution endpoint.
+
+Since #121 the socket is a VIEW over ``RunService``: ``execute`` submits on
+the interactive lane and auto-attaches, and every frame is replayed off the
+durable event log. The *semantics* asserted here are unchanged (that is the
+canvas-parity requirement) — what changed is that the endpoint now needs a
+run service on ``app.state``, which the lifespan provides in production and
+the fixture below provides here. Attach/detach/cancel live in
+``test_ws_attach.py``.
+"""
 
 import json
 
@@ -9,6 +18,9 @@ from httpx_ws.transport import ASGIWebSocketTransport
 
 from app.config import settings
 from app.core.auth import TOKEN_QUERY_PARAM, session_token
+from app.core.db import Database
+from app.core.run_service import RunService
+from app.core.run_store import RunStore
 from app.main import app
 
 # Host that's in the production whitelist (see ``init_allowed_hosts`` in
@@ -17,6 +29,30 @@ from app.main import app
 # DNS-rebinding hole, but the test transport doesn't go through DNS.
 _BASE_URL = f"http://127.0.0.1:{settings.PORT}"
 _WS_PATH_WITH_TOKEN = f"/ws/execution?{TOKEN_QUERY_PARAM}={session_token()}"
+
+
+@pytest.fixture(autouse=True)
+async def _run_service(tmp_path):
+    """Per-test Database + RunService on app.state (the lifespan's job).
+
+    Autouse so the module is self-contained: ASGI transports never run the
+    lifespan, and a service left on ``app.state`` by another test module
+    would silently share its database with these tests. Teardown drains the
+    service BEFORE closing the database, exactly as ``main.lifespan`` does.
+    """
+    database = Database(tmp_path / "codefyui.db")
+    database.connect()
+    service = RunService(RunStore(database))
+    app.state.db = database
+    app.state.run_service = service
+    try:
+        yield service
+    finally:
+        await service.shutdown()
+        database.close()
+        for attribute in ("db", "run_service"):
+            if hasattr(app.state, attribute):
+                delattr(app.state, attribute)
 
 
 @pytest.mark.asyncio

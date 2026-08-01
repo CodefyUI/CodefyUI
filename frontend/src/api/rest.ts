@@ -65,6 +65,36 @@ export async function fetchDevices(): Promise<DevicesResponse> {
   return res.json();
 }
 
+/** One row of `exec_runs` as `GET /api/runs/{id}` returns it (#120). */
+export interface RunInfo {
+  id: string;
+  name: string | null;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Highest event cursor issued so far — where a follower should resume. */
+  last_cursor: number;
+  /** Whether THIS server process is currently driving the run. */
+  active: boolean;
+}
+
+/**
+ * Fetch one run, or `null` when the server has never heard of it.
+ *
+ * A 404 is an ordinary answer here rather than an error: the caller is a
+ * page-load re-attach check (#121) asking "is the run this tab was watching
+ * still going?", and a run pruned by retention, or one from a previous
+ * install, is simply a "no".
+ */
+export async function getRun(runId: string): Promise<RunInfo | null> {
+  const res = await fetch(`${BASE_URL}/runs/${encodeURIComponent(runId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to fetch run: ${res.statusText}`);
+  return res.json();
+}
+
 export async function validateGraph(nodes: any[], edges: any[], presets: any[] = []) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',

@@ -46,7 +46,11 @@ The trade-off is deliberate — a graph that starts from a file reader re-reads 
 
 ## Stopping
 
-Click **Stop** to cancel an in-flight run. The WebSocket connection also reconnects automatically if it drops mid-session.
+Click **Stop** to cancel an in-flight run. **Stop is the only thing that cancels a run.**
+
+Closing the browser tab, navigating away, or losing the connection no longer stops anything: the run lives on the server, not in the socket. When you come back, the tab reconnects to the run it was watching, replays everything you missed into the results panel, and carries on following it live — so a long training job survives a reload, a laptop lid, or a flaky Wi-Fi hop.
+
+Cancelling is cooperative rather than immediate: a node already mid-epoch finishes that epoch first, because there is no safe way to interrupt arbitrary node code partway through. The run then stops at the next node boundary and is recorded as `cancelled`.
 
 ## Beyond the browser
 

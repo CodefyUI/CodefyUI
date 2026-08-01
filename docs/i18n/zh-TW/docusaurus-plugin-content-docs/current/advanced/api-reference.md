@@ -51,7 +51,7 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 | `/api/execution/outputs/{run_id}/{node_id}/__grad_index` | GET | 已捕獲的梯度 metadata（檢視器 → Backward 分頁）。 |
 | `/api/execution/state/reset` | POST | 重設已保存的層權重（單節點或整張圖）。 |
 | `/api/execution/state/list` | GET | 列出有多少模組被保存（診斷用）。 |
-| `/ws/execution` | WebSocket | 即時圖執行（接受 `run_id`、`record_outputs`、圖內嵌 `presets`）。 |
+| `/ws/execution` | WebSocket | run 的訂閱視圖：`execute` 啟動一個 run，`attach` 從指定 cursor 重播事件記錄再接著即時追蹤，`detach` 取消訂閱，`cancel` 停止 run。關閉連線不會取消 run。 |
 
 :::note WebSocket 驗證
 執行 WebSocket 以查詢參數的形式取得其工作階段 token，因為瀏覽器無法在 WebSocket 交握時設定自訂標頭。前端會為你處理這件事。

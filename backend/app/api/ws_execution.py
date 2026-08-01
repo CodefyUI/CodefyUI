@@ -1,8 +1,54 @@
+"""``/ws/execution`` — an attach/subscribe VIEW over the Run Service (#121).
+
+The socket used to *be* the run. It created the ``asyncio.Task``, held the
+only reference to it, and cancelled it on ``WebSocketDisconnect``: closing a
+browser tab killed a six-hour training job, and a flaky Wi-Fi hop did the
+same. #120 moved ownership into ``core.run_service``; this module is what is
+left over once that is true — a projection of one run's durable event log
+onto one socket.
+
+Protocol v2
+-----------
+Client -> server (``action``):
+
+``execute``   Legacy shape, unchanged, and still the only thing the canvas
+              sends to start work. Internally: ``RunService.submit(...,
+              options.lane="interactive", session=<this socket's state>)``
+              followed by an automatic attach from cursor 0.
+``attach``    ``{run_id, cursor?}`` — replay ``exec_run_events`` after
+              *cursor*, then live-tail. This is what a reloaded tab sends.
+``detach``    Stop forwarding. **Never cancels.** So does closing the
+              socket, which is the entire point of the wave.
+``cancel``    ``{run_id?}`` — the ONLY way to stop a run. Defaults to the
+              attached one. (``stop`` is kept as a deprecated alias because
+              a prebuilt frontend from before this change still sends it.)
+``clear_cache`` Drop this socket's ``ExecutionCache``.
+
+Server -> client: every frame of a run's event log, verbatim, as
+``{"type": <event type>, **payload, "run_id", "cursor"}`` — the durable log
+IS the wire vocabulary (see ``run_service``'s event-vocabulary block), so
+replayed history and live progress are indistinguishable to the client,
+which is what makes re-attach transparent. Plus three transport frames the
+log has no opinion about: ``attached``, ``detached``, ``cancel_ack``, and
+the pre-existing ``cache_cleared`` / ``error``.
+
+The replay/live boundary
+------------------------
+The one genuinely hard part, and the reason ``RunService.subscribe`` and
+``RunStore.get_events`` are shaped the way they are. See ``_pump``.
+
+One socket, one attachment
+--------------------------
+Deliberately not a multiplexer (the issue says so): a tab has one socket and
+watches one run. Attaching again replaces the previous attachment — it does
+not cancel the previous RUN.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 from urllib.parse import urlparse
@@ -17,225 +63,417 @@ from ..core.auth import (
     session_token,
 )
 from ..core.cache import ExecutionCache
-from ..core.device_utils import resolve_device
-from ..core.execution_context import CancellationError, ExecutionContext
-from ..core.graph_engine import (
-    GraphValidationError,
-    build_preset_fallback,
-    execute_graph,
+from ..core.run_service import (
+    LANE_INTERACTIVE,
+    EVENT_RUN_STOPPED,
+    InteractiveSession,
+    RunService,
+    RunServiceUnavailable,
+    RunSubmitError,
 )
-from ..core.node_base import MEDIA_IMAGE
-from ..core.node_registry import registry
+from ..core.run_store import EventRecord
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# ── node_status output contract (#117) ──────────────────────────────────
-# Every renderable payload a node produces rides in ``msg["outputs"]`` as
-# ``{"output_kind": <kind>, <kind>: <payload>}`` (plus ``"port"`` when the
-# payload came from a named output port). Kinds are plain strings, not a
-# closed enum, so a later node pack can add its own (e.g. "chart") without
-# a core release.
-#
-# This replaces two guessing games: the WS layer sniffing "long alphanumeric
-# string => base64 PNG" (which mislabelled ordinary long text as an image),
-# and the frontend smuggling images/progress through the log stream as
-# ``__IMAGE__:`` / ``__PROGRESS__:`` prefixed strings.
-OUTPUT_KIND_TEXT = "text"
-OUTPUT_KIND_IMAGE = "image"
-OUTPUT_KIND_PROGRESS = "progress"
-OUTPUT_KIND_TENSOR_SUMMARY = "tensor_summary"
+# ── protocol constants ──────────────────────────────────────────────────
 
-# Statuses whose payload is a finished node result worth summarizing.
-_STATUSES_WITH_RESULT = ("completed", "cached")
+ACTION_EXECUTE = "execute"
+ACTION_ATTACH = "attach"
+ACTION_DETACH = "detach"
+ACTION_CANCEL = "cancel"
+#: Pre-v2 name for ``cancel``. A prebuilt frontend tarball from before this
+#: release sends it, and those users update the backend first.
+ACTION_STOP = "stop"
+ACTION_CLEAR_CACHE = "clear_cache"
+
+#: How many stored events one replay query pulls. Bounded so a run with
+#: 50k events streams out instead of materialising in one list; the loop
+#: keeps going until the log is exhausted, so this is purely a memory knob.
+REPLAY_PAGE_SIZE = 500
 
 
-def _summarize_single(value: Any) -> dict[str, Any]:
-    """Generate a human-readable summary for a single output value."""
-    try:
-        import torch
+def _frame(record: EventRecord) -> dict[str, Any]:
+    """One stored event as a wire message.
 
-        if isinstance(value, torch.Tensor):
-            summary: dict[str, Any] = {
-                "type": "tensor",
-                "shape": list(value.shape),
-                "dtype": str(value.dtype),
-            }
-            if value.numel() > 0 and value.is_floating_point():
-                summary["min"] = round(float(value.min()), 4)
-                summary["max"] = round(float(value.max()), 4)
-                summary["mean"] = round(float(value.mean()), 4)
-            elif value.numel() > 0:
-                summary["min"] = int(value.min())
-                summary["max"] = int(value.max())
-            # Embed values for small tensors so per-node viz (e.g. the
-            # embedding scatter plot) can render without a separate REST
-            # round-trip. Larger tensors keep going through /api/execution/outputs.
-            if value.numel() <= 256:
-                summary["values"] = value.detach().cpu().tolist()
-            return summary
-        if isinstance(value, torch.nn.Module):
-            param_count = sum(p.numel() for p in value.parameters())
-            return {
-                "type": "model",
-                "class": value.__class__.__name__,
-                "params": param_count,
-                "trainable": sum(p.numel() for p in value.parameters() if p.requires_grad),
-            }
-    except ImportError:
-        pass
-    if isinstance(value, (int, float, bool)):
-        return {"type": "scalar", "value": value}
-    if isinstance(value, str):
-        summary: dict[str, Any] = {"type": "string", "value": value[:200]}
-        rel = _models_dir_relative(value)
-        if rel is not None:
-            summary["download_path"] = rel
-        return summary
-    if isinstance(value, (list, tuple)):
-        out: dict[str, Any] = {
-            "type": "list",
-            "length": len(value),
-            "repr": repr(value)[:200],
-        }
-        # Embed values for short primitive lists so per-node UIs (e.g. the
-        # tokenizer viz) can render chips without a separate REST round-trip.
-        # The Inspector full-fidelity view still uses /api/execution/outputs.
-        if len(value) <= 256:
-            primitive_types = (str, int, float, bool, type(None))
-            if all(isinstance(x, primitive_types) for x in value):
-                out["values"] = list(value)
-            elif all(
-                isinstance(x, (list, tuple))
-                and len(x) == 2
-                and all(isinstance(y, (int, float)) for y in x)
-                for x in value
-            ):
-                out["values"] = [list(x) for x in value]
-        return out
-    return {"type": type(value).__name__, "repr": repr(value)[:200]}
+    The payload is spread FIRST so the transport keys always win: ``run_id``
+    is also inside the ``execution_start`` payload (same value), and a
+    future event type must never be able to shadow the ``cursor`` a client
+    resumes from.
 
+    ``cursor`` rides on every frame so a client can re-attach exactly where
+    it left off after a reconnect, instead of replaying history it has
+    already rendered. ``run_id`` says which run a frame describes — needed
+    by a client that watches several runs, and useful in a log either way.
 
-def _models_dir_relative(value: str) -> str | None:
-    """If *value* points to an existing file under ``MODELS_DIR``, return
-    the relative path (POSIX-style) so the frontend can build a download URL.
-    Returns ``None`` otherwise — keeps the check silent on any unexpected input.
+    A client does NOT have to filter on it: ``attach`` awaits the previous
+    pump's cancellation before sending ``attached``, so every frame of the
+    old run precedes the acknowledgement of the new one on a single ordered
+    socket. Re-attaching cannot interleave two runs.
     """
-    try:
-        p = Path(value).resolve()
-        if not p.is_file():
-            return None
-        models_dir = settings.MODELS_DIR.resolve()
-        if not p.is_relative_to(models_dir):
-            return None
-        return p.relative_to(models_dir).as_posix()
-    except (OSError, ValueError):
-        return None
+    payload = record.payload if isinstance(record.payload, dict) else {}
+    return {**payload, "type": record.type, "run_id": record.run_id,
+            "cursor": record.cursor}
 
 
-def _summarize_outputs(result: dict[str, Any]) -> dict[str, Any]:
-    """Summarize all output ports of a node result."""
-    summary = {}
-    for key, val in result.items():
-        if key.startswith("__"):
-            continue
-        summary[key] = _summarize_single(val)
-    return summary
+def _error(message: str) -> dict[str, Any]:
+    return {"type": "error", "error": message}
 
 
-def declared_image_ports(nodes: list[Any]) -> dict[str, list[str]]:
-    """Map ``node id -> output ports the node DECLARES as image media``.
+class _ExecutionSocket:
+    """One WebSocket's state: its cache, its attachment, its send lock."""
 
-    Resolved from the registry once per execute action, so the hot progress
-    path only does a dict lookup. Nodes the registry does not know (presets,
-    typos) and malformed entries are silently skipped: an unresolvable node
-    simply has no declared media, which is the safe answer.
-    """
-    ports: dict[str, list[str]] = {}
-    if not isinstance(nodes, list):
-        return ports
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = node.get("id")
-        node_type = node.get("type")
-        if not node_id or not node_type:
-            continue
-        node_cls = registry.get(node_type)
-        if node_cls is None:
-            continue
-        params = (node.get("data") or {}).get("params") or {}
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+        # Per SOCKET, exactly as before this change — a reload always got a
+        # fresh cache, and still does. It is lent to every run this socket
+        # starts, which is what makes "edit one node, hit Run, only that
+        # subtree re-executes" work across Run clicks.
+        self._cache = ExecutionCache()
+        self._run_id: str | None = None
+        self._pump: asyncio.Task[None] | None = None
+        # The pump and the receive loop both send. Starlette's send is not
+        # re-entrant, and interleaved frames would be malformed JSON on the
+        # wire rather than merely out of order.
+        self._send_lock = asyncio.Lock()
+
+    # ── plumbing ────────────────────────────────────────────────────────
+
+    @property
+    def _service(self) -> RunService | None:
+        """The process's run service, or None if the lifespan never ran.
+
+        Read per action rather than checked at handshake time: the socket
+        accepts, and answers ``clear_cache`` and unknown actions, without a
+        run service. That keeps the auth/origin contract testable on its own
+        and keeps this module honest about what it actually needs a service
+        FOR.
+        """
+        return getattr(self._ws.app.state, "run_service", None)
+
+    async def _send(self, message: dict[str, Any]) -> None:
+        async with self._send_lock:
+            await self._ws.send_text(json.dumps(message))
+
+    # ── attachment ──────────────────────────────────────────────────────
+
+    async def _replay(self, run_id: str, after_cursor: int) -> int:
+        """Send every stored event after *after_cursor*; return the last one.
+
+        Returns *after_cursor* unchanged when there is nothing to send, so
+        the caller can use the result as "everything up to here has been
+        delivered" without a special case.
+        """
+        service = self._service
+        if service is None:  # pragma: no cover - shutdown race only
+            return after_cursor
+        while True:
+            events = await service.store.get_events(
+                run_id, after_cursor=after_cursor, limit=REPLAY_PAGE_SIZE)
+            for record in events:
+                await self._send(_frame(record))
+                after_cursor = record.cursor
+            if len(events) < REPLAY_PAGE_SIZE:
+                return after_cursor
+
+    async def _pump_events(self, run_id: str, cursor: int) -> None:
+        """Replay from *cursor*, then live-tail. No gap, no duplicate.
+
+        The ordering is the whole design:
+
+        1. **Subscribe first.** From this line on, every event the run emits
+           is either queued for us or counted as dropped. Subscribing after
+           the replay would leave a window in which an event lands after the
+           final ``get_events`` page and before the queue exists — the gap
+           this issue exists to make impossible.
+        2. **Then replay** the durable log from *cursor* to its end. Events
+           emitted DURING that read are already safe in the queue, so the
+           read has no deadline and pages freely.
+        3. **Then drain the queue, skipping ``cursor <= sent``.** That
+           filter is the de-duplicator: the overlap between "what the
+           replay read" and "what the queue caught" is exactly the events
+           whose cursors we have already sent, and cursors are gapless and
+           strictly increasing (``RunStore.append_event``), so the
+           comparison is total.
+        4. **Re-read the tail whenever the queue reports drops.** The
+           subscription is bounded and drops rather than applying
+           backpressure — a stalled browser must never slow the run feeding
+           it — and the store is the source of truth it is dropping in
+           favour of. ``take_dropped`` resets, so each drop episode causes
+           exactly one catch-up.
+        5. **Re-read once more at the end.** ``close`` sets ``closed`` even
+           when the end-of-run sentinel itself is dropped by a full queue,
+           and the terminal event may have been dropped with it. This last
+           read is what guarantees a client always receives the frame that
+           tells it the run is over.
+
+        A subscription to a run that is already finished (or that this
+        process never owned) comes back closed; step 2 alone then delivers
+        the complete history, which is exactly right for a tab reopened
+        after the run ended.
+        """
+        service = self._service
+        if service is None:  # pragma: no cover - shutdown race only
+            return
         try:
-            definitions = node_cls.define_outputs_dynamic(params)
-        except Exception:  # pragma: no cover - defensive: bad third-party node
-            logger.debug("define_outputs_dynamic failed for %s", node_type, exc_info=True)
-            continue
-        declared = [p.name for p in definitions if getattr(p, "media", None) == MEDIA_IMAGE]
-        if declared:
-            ports[node_id] = declared
-    return ports
+            async with service.subscribe(run_id) as subscription:
+                sent = await self._replay(run_id, cursor)
+                while not (subscription.closed and subscription.queue.empty()):
+                    record = await subscription.queue.get()
+                    if record is None:
+                        break
+                    # Two independent triggers for the same catch-up. The
+                    # drop counter is the expected one; the cursor gap is a
+                    # backstop, because ``_emit`` documents one way an event
+                    # can become durable without ever being fanned out (an
+                    # append cancelled after its COMMIT). Cursors are
+                    # gapless, so "skipped a number" is a complete detector
+                    # whatever the cause. ``take_dropped`` is FIRST so its
+                    # counter is always consumed, never short-circuited.
+                    if subscription.take_dropped() or record.cursor > sent + 1:
+                        sent = await self._replay(run_id, sent)
+                    if record.cursor <= sent:
+                        continue
+                    await self._send(_frame(record))
+                    sent = record.cursor
+                await self._replay(run_id, sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Two very different failures land here, and the RUN survives
+            # both — this coroutine only ever reads. Telling them apart by
+            # exception type is guesswork, so we let the SOCKET answer:
+            # trying to report the failure either works (the socket is
+            # alive, the client is now on "Running" with nothing coming, and
+            # needs to hear about it) or fails in turn (the socket is what
+            # went away, which is ordinary and not worth a warning).
+            try:
+                await self._send(_error(
+                    f"lost the event stream for run {run_id}; re-attach to "
+                    "resume"))
+            except Exception:
+                logger.debug("run %s: event pump stopped, the socket went "
+                             "away", run_id, exc_info=True)
+            else:
+                logger.warning(
+                    "run %s: event pump failed; the client is no longer "
+                    "following it", run_id, exc_info=True)
 
+    async def attach(self, run_id: str, cursor: int, status: str) -> None:
+        """Point this socket at *run_id*, replacing any previous attachment."""
+        await self.detach(notify=False)
+        self._run_id = run_id
+        await self._send({"type": "attached", "run_id": run_id,
+                          "cursor": cursor, "status": status})
+        self._pump = asyncio.create_task(self._pump_events(run_id, cursor),
+                                         name=f"ws-attach:{run_id}")
 
-def build_node_output_entries(
-    status: str,
-    result: dict[str, Any] | None,
-    image_ports: Sequence[str] = (),
-) -> list[dict[str, Any]]:
-    """Build the typed ``outputs`` list for one ``node_status`` message.
+    async def detach(self, *, notify: bool = True) -> None:
+        """Stop forwarding. NEVER cancels the run — that is the whole point.
 
-    ``image_ports`` are the output port names this node *declared* as image
-    media (see :func:`declared_image_ports`). Values on any other port stay
-    plain data no matter what they look like -- there is deliberately no
-    length or character-class inspection anywhere in this function.
-    """
-    if not result:
-        return []
+        Cancels the pump TASK, which unsubscribes and returns. The run keeps
+        running, keeps writing events, and is waiting to be re-attached to.
+        """
+        task, self._pump = self._pump, None
+        run_id, self._run_id = self._run_id, None
+        if task is not None and not task.done():
+            task.cancel()
+            # ``asyncio.wait`` rather than ``await task``: it returns the
+            # pump's CancelledError as a result instead of raising it, so
+            # there is no ``except CancelledError`` here to also swallow a
+            # cancellation aimed at THIS coroutine (uvicorn shutting the
+            # connection down). Consuming our own cancellation would leave
+            # the handler running past it, back into ``receive_text``.
+            await asyncio.wait({task})
+        if notify and run_id is not None:
+            await self._send({"type": "detached", "run_id": run_id})
 
-    # A "progress" status carries a live training event, nothing else.
-    if status == "progress":
-        return [{"output_kind": OUTPUT_KIND_PROGRESS, OUTPUT_KIND_PROGRESS: result}]
+    # ── actions ─────────────────────────────────────────────────────────
 
-    if status not in _STATUSES_WITH_RESULT:
-        return []
+    async def handle_execute(self, data: dict[str, Any]) -> None:
+        """Legacy ``execute``: submit on the interactive lane, then attach.
 
-    entries: list[dict[str, Any]] = []
+        Every field of the pre-v2 message keeps its meaning and its default.
+        The educational flags become ``options`` (persisted, so the row
+        describes the run); the cache, the dirty-node hint and the module
+        store become the ``InteractiveSession`` (process-local, and the
+        reason canvas semantics survive the move to a server-owned run).
 
-    # Log output (Print node etc.) is text, and says so.
-    if "__log__" in result:
-        entries.append(
-            {"output_kind": OUTPUT_KIND_TEXT, OUTPUT_KIND_TEXT: str(result["__log__"])}
-        )
+        A run already attached here is DETACHED, not cancelled: this socket
+        stops watching it and starts watching the new one. Cancelling would
+        put back the exact behaviour #120 removed, and the canvas already
+        disables Run while a run is in flight.
+        """
+        service = self._service
+        if service is None:
+            await self._send(_error("run service not initialised"))
+            return
 
-    # Declared image ports. A declared port that produced nothing this run is
-    # skipped rather than announced as an empty image.
-    for port in image_ports:
-        value = result.get(port)
-        if not isinstance(value, str) or not value:
-            continue
-        entries.append(
-            {
-                "output_kind": OUTPUT_KIND_IMAGE,
-                "port": port,
-                OUTPUT_KIND_IMAGE: {
-                    # MEDIA_IMAGE's contract (see node_base): base64 PNG.
-                    "format": "png",
-                    "encoding": "base64",
-                    "data": value,
-                },
-            }
-        )
-
-    # Per-port summaries for edge inspection. Emitted on "cached" too so the
-    # edge tooltip and Inspector still populate when a node is served from
-    # ExecutionCache.
-    entries.append(
-        {
-            "output_kind": OUTPUT_KIND_TENSOR_SUMMARY,
-            OUTPUT_KIND_TENSOR_SUMMARY: _summarize_outputs(result),
+        graph = {
+            "nodes": data.get("nodes", []),
+            "edges": data.get("edges", []),
+            # Graph-embedded presets (#84): portable graphs carry their own
+            # presets[]; consulted when the local registry lacks one.
+            "presets": data.get("presets", []),
         }
-    )
-    return entries
+        options = {
+            "lane": LANE_INTERACTIVE,
+            "device": data.get("device") or "cpu",
+            "record_outputs": bool(data.get("record_outputs", False)),
+            "error_mode": data.get("error_mode", "fail_fast"),
+            "max_retries": data.get("max_retries", 0),
+            # Educational feature flags. The defaults below are the pre-v2
+            # ones verbatim, including weights_persistent defaulting to
+            # TRUE here (the canvas keeps its weights) where the service's
+            # own default is False (a server-owned run is isolated).
+            "verbose": bool(data.get("verbose_mode", False)),
+            "graph_id": str(data.get("graph_id", "") or ""),
+            "weights_persistent": bool(data.get("weights_persistent", True)),
+            "backward_mode": bool(data.get("backward_mode", False)),
+            "auto_backward": bool(data.get("auto_backward", False)),
+        }
+        changed = data.get("changed_nodes")
+        session = InteractiveSession(
+            cache=self._cache,
+            changed_nodes=tuple(changed) if isinstance(changed, list) else (),
+            node_state_store=getattr(self._ws.app.state, "node_state_store",
+                                     None),
+        )
+
+        try:
+            result = await service.submit(graph, options=options,
+                                          session=session)
+        except (RunSubmitError, RunServiceUnavailable) as exc:
+            # The pre-v2 handler reported a graph the engine refused as
+            # ``execution_error``; an envelope it refuses is the same class
+            # of thing to a user, so it reads the same on the canvas.
+            await self._send({"type": "execution_error", "error": str(exc)})
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # ``submit`` writes a row before it starts anything, so a sick
+            # database (or provenance capture) fails HERE, on the receive
+            # loop — where the pre-v2 handler could not fail because it did
+            # its work inside a task. Letting it escape would tear the
+            # socket down with a 1011 and leave the canvas spinning; the
+            # user gets the same red banner any other failed run gets, and
+            # the socket survives to be used again.
+            logger.exception("execute failed before the run could start")
+            await self._send({"type": "execution_error", "error": str(exc)})
+            return
+
+        # From cursor 0: the run was created microseconds ago, so this is
+        # both "the whole log" and "nothing yet" — whichever the run task
+        # has managed to write by the time the pump reads it.
+        await self.attach(result.run_id, 0, result.status)
+
+    async def handle_attach(self, data: dict[str, Any]) -> None:
+        service = self._service
+        if service is None:
+            await self._send(_error("run service not initialised"))
+            return
+        run_id = data.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            await self._send(_error("attach requires a run_id"))
+            return
+        cursor = data.get("cursor", 0)
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            await self._send(_error("attach cursor must be an integer >= 0"))
+            return
+        record = await service.store.get_run(run_id)
+        if record is None:
+            await self._send(_error(f"run '{run_id}' not found"))
+            return
+        # A cursor past the end of the log is always a client bug — an
+        # off-by-one, or a cursor kept from a DIFFERENT run. Accepting it
+        # would attach successfully and then deliver nothing, which looks
+        # exactly like a healthy attach to a quiet run: the worst possible
+        # failure mode for a client whose whole job is following along.
+        latest = await service.store.latest_cursor(run_id)
+        if cursor > latest:
+            await self._send(_error(
+                f"attach cursor {cursor} is past the end of run '{run_id}' "
+                f"(latest cursor {latest})"))
+            return
+        await self.attach(run_id, cursor, record.status)
+
+    async def handle_cancel(self, data: dict[str, Any]) -> None:
+        """The only path that stops a run.
+
+        Answers with ``cancel_ack`` immediately — cancellation is
+        cooperative (a node in a 90-second epoch finishes that epoch first),
+        so the acknowledgement and the ``execution_stopped`` frame are
+        genuinely different moments and a UI wants both.
+
+        When there is nothing to cancel — no attachment, or a run this
+        server has never heard of — it still emits ``execution_stopped`` so
+        a canvas stuck on "Running" unsticks. It does NOT emit one for a run
+        that merely finished already: that run's real terminal frame is in
+        the log, and inventing a second one would overwrite "completed" with
+        "cancelled" in the UI.
+        """
+        service = self._service
+        run_id = data.get("run_id") or self._run_id
+        if service is None or not isinstance(run_id, str) or not run_id:
+            await self._send({"type": EVENT_RUN_STOPPED,
+                              "reason": "not_running"})
+            return
+        outcome = await service.cancel(run_id)
+        if outcome is None:
+            await self._send({"type": EVENT_RUN_STOPPED,
+                              "reason": "not_running", "run_id": run_id})
+            return
+        await self._send({"type": "cancel_ack", "run_id": outcome.run_id,
+                          "status": outcome.status,
+                          "cancelled": outcome.cancelled})
+
+    async def handle_clear_cache(self) -> None:
+        self._cache.clear()
+        await self._send({"type": "cache_cleared"})
+
+    # ── the loop ────────────────────────────────────────────────────────
+
+    async def serve(self) -> None:
+        """Read actions until the client goes away.
+
+        Every handler runs INLINE here, unlike the pre-v2 loop which pushed
+        the whole run into a task, so one failing action must not be able to
+        end the connection. Anything unexpected is answered and the loop
+        continues — a socket that dies on a bad message would take a healthy
+        attachment (and the user's view of a running job) with it.
+        """
+        while True:
+            raw = await self._ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                await self._send(_error("malformed message: expected JSON"))
+                continue
+            if not isinstance(data, dict):
+                await self._send(_error("malformed message: expected an object"))
+                continue
+
+            action = data.get("action")
+            try:
+                if action == ACTION_EXECUTE:
+                    await self.handle_execute(data)
+                elif action == ACTION_ATTACH:
+                    await self.handle_attach(data)
+                elif action == ACTION_DETACH:
+                    await self.detach()
+                elif action in (ACTION_CANCEL, ACTION_STOP):
+                    await self.handle_cancel(data)
+                elif action == ACTION_CLEAR_CACHE:
+                    await self.handle_clear_cache()
+                else:
+                    await self._send(_error(f"Unknown action: {action}"))
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                raise
+            except Exception as exc:
+                logger.exception("ws action %r failed", action)
+                await self._send(_error(f"{action} failed: {exc}"))
 
 
 @router.websocket("/ws/execution")
@@ -272,123 +510,14 @@ async def websocket_execution(ws: WebSocket):
 
     await ws.accept()
 
-    current_task: asyncio.Task | None = None
-    current_context: ExecutionContext | None = None
-    cache = ExecutionCache()
-
+    socket = _ExecutionSocket(ws)
     try:
-        while True:
-            raw = await ws.receive_text()
-            data = json.loads(raw)
-
-            action = data.get("action")
-            if action == "execute":
-                # Cancel any existing execution first
-                if current_task and not current_task.done():
-                    if current_context:
-                        current_context.cancel()
-                    current_task.cancel()
-
-                nodes = data.get("nodes", [])
-                edges = data.get("edges", [])
-                # Graph-embedded presets (#84): portable graphs carry their
-                # own presets[]; consulted when the local registry lacks one.
-                preset_fallback = build_preset_fallback(data.get("presets", []))
-                error_mode = data.get("error_mode", "fail_fast")
-                max_retries = data.get("max_retries", 0)
-                changed_nodes = data.get("changed_nodes")  # partial re-execution hint
-                run_id = data.get("run_id")
-                record_outputs = bool(data.get("record_outputs", False))
-                output_store = getattr(ws.app.state, "run_output_store", None)
-
-                # Educational feature flags. Default values keep behaviour
-                # unchanged for clients that don't send them.
-                verbose_mode = bool(data.get("verbose_mode", False))
-                graph_id = str(data.get("graph_id", "") or "")
-                weights_persistent = bool(data.get("weights_persistent", True))
-                backward_mode = bool(data.get("backward_mode", False))
-                auto_backward = bool(data.get("auto_backward", False))
-                node_state_store = getattr(ws.app.state, "node_state_store", None)
-
-                # Global compute device. resolve_device falls back to CPU (with
-                # a warning) when an unavailable backend is requested, so a
-                # client that asks for "mps" on a CUDA box still runs.
-                device = resolve_device(data.get("device"))
-
-                current_context = ExecutionContext(
-                    device=device,
-                    verbose=verbose_mode,
-                    graph_id=graph_id,
-                    weights_persistent=weights_persistent,
-                    node_state_store=node_state_store,
-                    backward_mode=backward_mode,
-                    auto_backward=auto_backward,
-                )
-
-                # Declared image ports, resolved once per run (#117).
-                image_ports = declared_image_ports(nodes)
-
-                async def on_progress(node_id: str, status: str, result: dict[str, Any] | None) -> None:
-                    msg: dict[str, Any] = {
-                        "type": "node_status",
-                        "node_id": node_id,
-                        "status": status,
-                    }
-                    if result and status == "error":
-                        msg["error"] = result.get("error", "")
-                    outputs = build_node_output_entries(
-                        status, result, image_ports.get(node_id, ())
-                    )
-                    if outputs:
-                        msg["outputs"] = outputs
-                    await ws.send_text(json.dumps(msg))
-
-                async def _run() -> None:
-                    try:
-                        start_msg: dict[str, Any] = {"type": "execution_start"}
-                        if run_id:
-                            start_msg["run_id"] = run_id
-                        await ws.send_text(json.dumps(start_msg))
-                        await execute_graph(
-                            nodes,
-                            edges,
-                            on_progress=on_progress,
-                            context=current_context,
-                            error_mode=error_mode,
-                            max_retries=max_retries,
-                            cache=cache,
-                            changed_nodes=changed_nodes,
-                            run_id=run_id,
-                            output_store=output_store,
-                            record_outputs=record_outputs,
-                            preset_fallback=preset_fallback,
-                        )
-                        await ws.send_text(json.dumps({"type": "execution_complete"}))
-                    except CancellationError:
-                        await ws.send_text(json.dumps({"type": "execution_stopped"}))
-                    except GraphValidationError as e:
-                        await ws.send_text(json.dumps({"type": "execution_error", "error": str(e)}))
-                    except Exception as e:
-                        await ws.send_text(json.dumps({"type": "execution_error", "error": str(e)}))
-
-                current_task = asyncio.create_task(_run())
-
-            elif action == "stop":
-                if current_context:
-                    current_context.cancel()
-                if current_task and not current_task.done():
-                    current_task.cancel()
-                else:
-                    await ws.send_text(json.dumps({"type": "execution_stopped"}))
-
-            elif action == "clear_cache":
-                cache.clear()
-                await ws.send_text(json.dumps({"type": "cache_cleared"}))
-
-            else:
-                await ws.send_text(json.dumps({"type": "error", "error": f"Unknown action: {action}"}))
+        await socket.serve()
     except WebSocketDisconnect:
-        if current_context:
-            current_context.cancel()
-        if current_task and not current_task.done():
-            current_task.cancel()
+        pass
+    finally:
+        # UNSUBSCRIBE ONLY. The headline behaviour of the whole wave lives
+        # in this one line not calling ``service.cancel``: the tab is gone,
+        # the training is not.
+        await socket.detach(notify=False)
+

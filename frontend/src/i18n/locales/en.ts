@@ -221,6 +221,9 @@ const en = {
   // Execution errors
   'execution.error.noEntryPoints': 'No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from.',
 
+  // Re-attach (#121): the run kept going while the tab was closed.
+  'execution.reattached': 'Reconnected to a run that is still in progress',
+
   // Node palette — control category / start node
   'palette.category.control': 'Control',
   'palette.start.description': 'Marks an execution entry point. Connect to the first node of a script.',

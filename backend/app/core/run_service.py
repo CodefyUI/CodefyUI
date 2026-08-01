@@ -25,12 +25,24 @@ responsibilities, and nothing else:
 
 Layering
 --------
-``core`` never imports ``api``… with one deliberate, function-local
-exception: the #117 output-entry builders currently live in
-``api/ws_execution.py``. They are imported lazily in ``_progress_bridge``
-rather than duplicated, because a second copy of that logic is exactly the
-drift #117 removed. #121 rewrites the WS handler on top of this service and
-should move those two helpers into ``core`` at that point.
+``core`` never imports ``api``. The one exception #120 shipped — a
+function-local import of the #117 output-entry builders out of
+``api/ws_execution.py`` — is gone: #121 moved them to
+``core.output_entries``, where they belong now that the WebSocket is a
+*view* over this service rather than the thing that produces node_status.
+
+Lanes
+-----
+``options["lane"]`` labels where a run came from. ``queued`` (the default)
+is a server-owned, fully isolated run — the shape #123's FIFO queue will
+schedule. ``interactive`` is the canvas: a live editor session that expects
+its ``nn.Module`` weights, its execution cache and its captured outputs to
+carry across Run clicks. Those things are process-local by nature and
+cannot be reconstructed from a stored row, so they do NOT ride in
+``options``; the submitter hands them over as an :class:`InteractiveSession`
+and the service refuses one on any other lane. Isolation is therefore the
+DEFAULT and statefulness is a capability you must pass in, rather than a
+flag anyone can set.
 
 Ids
 ---
@@ -53,10 +65,13 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, NamedTuple
 
 from ..config import settings
+from .cache import ExecutionCache
 from .db import utc_now_iso
 from .device_utils import resolve_device
 from .execution_context import CancellationError, ExecutionContext
 from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
+from .node_state_store import NodeStateStore
+from .output_entries import build_node_output_entries, declared_image_ports
 from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
@@ -99,16 +114,49 @@ STOP_REASON_INTERRUPTED = "interrupted"
 #: The complete option vocabulary. Unknown keys are REJECTED rather than
 #: ignored: ``{"devcie": "cuda"}`` silently running on CPU for forty minutes
 #: is the failure mode this closes. Extending the set is a one-line additive
-#: change — #121 (canvas flags: verbose/backward/graph_id) and #123 (queue
-#: priority) will each do exactly that, deliberately.
-OPTION_KEYS = frozenset({"device", "seed", "record_outputs", "lane"})
+#: change — #121 added the canvas flags below and #123 (queue priority) will
+#: do the same, deliberately.
+#:
+#: Everything here is JSON and lands verbatim in ``exec_runs.options``, so a
+#: stored run fully describes its own configuration. Process-local
+#: collaborators (an execution cache, the module store) are NOT options; see
+#: :class:`InteractiveSession`.
+OPTION_KEYS = frozenset({
+    "device", "seed", "record_outputs", "lane",
+    # Canvas/teaching flags (#121). They mirror the fields the WebSocket
+    # execute message has carried since the A1-A3 educational features and
+    # map 1:1 onto ``ExecutionContext``.
+    "verbose", "graph_id", "weights_persistent", "backward_mode",
+    "auto_backward",
+    # Engine error policy, likewise straight off the execute message.
+    "error_mode", "max_retries",
+})
 
 #: Default lane. Named for #123's queue; no queue exists yet, so today it is
 #: a label carried through to ``exec_runs.options`` unchanged.
 DEFAULT_LANE = "queued"
+
+#: The canvas lane. Two things follow from it, and nothing else does yet:
+#: it is the only lane that may carry an :class:`InteractiveSession`, and
+#: #123 will let it bypass the FIFO queue so a six-hour training job cannot
+#: block a classroom demo.
+LANE_INTERACTIVE = "interactive"
+
 MAX_LANE_LENGTH = 64
 MAX_NAME_LENGTH = 64
+MAX_GRAPH_ID_LENGTH = 128
 MAX_SEED = 2 ** 32 - 1
+
+#: ``graph_engine.execute_graph``'s error policies, validated as a value for
+#: the same reason ``device`` is: a typo'd ``"fail-fast"`` would silently
+#: become "continue past every failure" and the run would report success
+#: over a graph half of which never executed.
+ERROR_MODES = frozenset({"fail_fast", "continue", "retry"})
+DEFAULT_ERROR_MODE = "fail_fast"
+
+#: Retry ceiling. ``retry`` mode re-runs a failing node ``max_retries``
+#: times; unbounded, one client typo parks a worker thread forever.
+MAX_RETRIES_LIMIT = 10
 
 #: The device vocabulary ``resolve_device`` actually understands. Validated
 #: as a VALUE, not just a key: strict option keys exist to stop a typo from
@@ -129,11 +177,6 @@ NON_METRIC_KEYS = frozenset({"event", "step", "epoch", "total_epochs",
 #: Flush thresholds for the metric batcher (see ``_flush_metrics``).
 METRIC_FLUSH_MAX_POINTS = 64
 METRIC_FLUSH_INTERVAL_S = 0.5
-
-#: Default per-event payload ceiling; overridden from
-#: ``settings.RUN_EVENT_PAYLOAD_CAP_BYTES`` in the lifespan. See
-#: ``cap_event_payload`` for what "over cap" does.
-EVENT_PAYLOAD_CAP_BYTES = 128 * 1024
 
 #: How long ``shutdown`` lets a run stop cooperatively before hard-cancelling.
 DEFAULT_SHUTDOWN_GRACE_S = 5.0
@@ -173,6 +216,43 @@ class CancelOutcome(NamedTuple):
     run_id: str
     status: str
     cancelled: bool
+
+
+@dataclass(frozen=True)
+class InteractiveSession:
+    """One canvas connection's process-local state, lent to a run (#121).
+
+    Everything here is a live Python object that cannot be written to
+    ``exec_runs`` and cannot be rebuilt from it, which is precisely why it
+    is a separate argument rather than three more ``options`` keys: a stored
+    run must describe itself completely, and "shared an ``nn.Module`` with
+    whatever else that browser tab ran" is not a describable configuration.
+
+    Held by the WebSocket handler for the lifetime of a SOCKET, not of a
+    run. That is what makes the teaching loop work the way it always has —
+    click Run twice and the second execution reuses the first's weights and
+    its cached upstream nodes — while the run itself now outlives the
+    socket. A reconnect legitimately starts a fresh cache, exactly as a
+    page reload always did.
+
+    Accepted only on :data:`LANE_INTERACTIVE` (``submit`` rejects it
+    otherwise), so "which runs are stateful" stays answerable from the
+    stored row.
+
+    Fields:
+      ``cache`` — cross-run ``ExecutionCache``; ``changed_nodes`` is
+      meaningless without it, since forcing a re-run only matters where a
+      cache hit would otherwise have been served.
+      ``changed_nodes`` — the canvas's dirty-node hint for partial
+      re-execution.
+      ``node_state_store`` — the process-global persistent-module store.
+      Reaches ``StatefulModuleMixin`` only when ``weights_persistent`` is
+      also set.
+    """
+
+    cache: ExecutionCache | None = None
+    changed_nodes: tuple[str, ...] = ()
+    node_state_store: NodeStateStore | None = None
 
 
 def normalize_options(raw: Any) -> dict[str, Any]:
@@ -216,21 +296,55 @@ def normalize_options(raw: Any) -> dict[str, Any]:
         if not 0 <= seed <= MAX_SEED:
             raise RunSubmitError(f"seed must be between 0 and {MAX_SEED}")
 
-    record_outputs = raw.get("record_outputs", False)
-    if not isinstance(record_outputs, bool):
-        raise RunSubmitError("record_outputs must be true or false")
-
     lane = raw.get("lane", DEFAULT_LANE)
     if not isinstance(lane, str) or not lane.strip():
         raise RunSubmitError("lane must be a non-empty string")
     if len(lane) > MAX_LANE_LENGTH:
         raise RunSubmitError(f"lane must be at most {MAX_LANE_LENGTH} chars")
 
+    graph_id = raw.get("graph_id", "")
+    if not isinstance(graph_id, str):
+        raise RunSubmitError(
+            f"graph_id must be a string, got {type(graph_id).__name__}")
+    if len(graph_id) > MAX_GRAPH_ID_LENGTH:
+        raise RunSubmitError(
+            f"graph_id must be at most {MAX_GRAPH_ID_LENGTH} chars")
+
+    error_mode = raw.get("error_mode", DEFAULT_ERROR_MODE)
+    if error_mode not in ERROR_MODES:
+        raise RunSubmitError(
+            f"unknown error_mode {error_mode!r}; expected one of "
+            f"{sorted(ERROR_MODES)}")
+
+    max_retries = raw.get("max_retries", 0)
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+        raise RunSubmitError("max_retries must be an integer")
+    if not 0 <= max_retries <= MAX_RETRIES_LIMIT:
+        raise RunSubmitError(
+            f"max_retries must be between 0 and {MAX_RETRIES_LIMIT}")
+
+    # ``weights_persistent`` defaults to FALSE here while
+    # ``ExecutionContext``'s own default is True, and that inversion is
+    # deliberate: a server-owned run is isolated unless someone asks
+    # otherwise, whereas the dataclass predates run isolation. Asking is
+    # also not enough on its own — without an InteractiveSession there is no
+    # module store to persist into, so the flag simply has no effect.
+    flags = {}
+    for key in ("record_outputs", "verbose", "weights_persistent",
+                "backward_mode", "auto_backward"):
+        value = raw.get(key, False)
+        if not isinstance(value, bool):
+            raise RunSubmitError(f"{key} must be true or false")
+        flags[key] = value
+
     return {
         "device": device,
         "seed": seed,
-        "record_outputs": record_outputs,
         "lane": lane.strip(),
+        "graph_id": graph_id,
+        "error_mode": error_mode,
+        "max_retries": max_retries,
+        **flags,
     }
 
 
@@ -323,6 +437,75 @@ def _elide_entry(entry: Any, budget_bytes: int) -> Any:
     return elided
 
 
+#: Appended to a string that was cut short. ASCII by construction, so its
+#: contribution to the encoded payload is exactly ``len`` bytes.
+TRUNCATION_MARKER = "... [truncated]"
+
+
+def _fit_prefix(value: str, budget_bytes: int) -> str:
+    """The LONGEST prefix of *value* whose JSON encoding fits the budget.
+
+    Binary search rather than ``value[:budget_bytes]`` because
+    ``ensure_ascii=True`` (``run_store._dumps``' encoding, which
+    ``json_size`` mirrors) makes one source character cost anywhere from 1
+    to 12 bytes — a CJK traceback sliced by character count would still
+    blow the cap and collapse to the marker this exists to avoid. The
+    encoded size is monotonic in the prefix length, so the search is exact;
+    it costs ~log2(len) measurements and only ever runs on the rare
+    over-cap path.
+    """
+    low, high = 0, len(value)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if json_size(value[:mid]) <= budget_bytes:
+            low = mid
+        else:
+            high = mid - 1
+    return value[:low]
+
+
+def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, Any]:
+    """Cut over-long top-level strings down to a head + marker.
+
+    The bug this fixes: an ``execution_error`` carrying a 200 KB traceback
+    has no ``outputs`` to elide, so it fell straight through to the marker
+    and the user got a red banner with NO message — on the one payload
+    where the text is the entire point. A first paragraph of a traceback is
+    almost always enough to diagnose the failure; nothing is.
+
+    Largest string first, re-measuring after each: the budget for one
+    string is the cap minus everything else in the payload AS IT NOW
+    STANDS, so a payload with several strings spends its bytes where they
+    are actually needed instead of splitting them evenly between a 200 KB
+    ``error`` and a 6-character ``status``.
+
+    Two whole-payload measurements per string sounds expensive, and would
+    be if the key count were open-ended. It is not: every payload reaching
+    here is built by ``_progress_bridge`` or ``_finalize`` and has at most a
+    handful of top-level keys (``node_id``, ``status``, ``error``,
+    ``outputs``, ``reason``, ``run_id``). Nothing a client sends becomes a
+    key here.
+    """
+    keys = sorted((k for k, v in payload.items() if isinstance(v, str)),
+                  key=lambda k: len(payload[k]), reverse=True)
+    out = dict(payload)
+    for key in keys:
+        if json_size(out) <= cap_bytes:
+            break
+        room = (cap_bytes - json_size({**out, key: ""})
+                - len(TRUNCATION_MARKER))
+        if room <= 0:
+            continue
+        kept = _fit_prefix(out[key], room)
+        # Only when the result is genuinely SHORTER. With a tiny budget the
+        # marker can outweigh what it replaces ("ok" -> "o... [truncated]"),
+        # and growing a payload that is already over cap helps nobody — the
+        # marker fallback is the right answer for that one.
+        if len(kept) + len(TRUNCATION_MARKER) < len(out[key]):
+            out[key] = kept + TRUNCATION_MARKER
+    return out
+
+
 def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
     """Bound one event payload before it becomes a durable row.
 
@@ -333,7 +516,7 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
     the output capture. Same for a training payload whose per-batch array
     grows every epoch.
 
-    Three steps, cheapest first:
+    Four steps, cheapest first, each preserving more meaning than the next:
 
     1. Measure once. Under cap — the overwhelmingly common case, an ordinary
        ``node_status`` is a couple of KB — and the payload is returned
@@ -342,9 +525,11 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
        equal share of the budget. Equal share, rather than the whole cap,
        so a payload made of several medium entries degrades entry by entry
        instead of collapsing wholesale.
-    3. Still over — nothing left to trim, e.g. a single enormous ``error``
-       string — and the payload collapses to a marker that keeps the
-       identifying keys. Losing the body beats refusing the event.
+    3. Still over, and the weight is in a top-level string (an ``error``
+       with a giant traceback): keep its head and mark it truncated.
+    4. Still over — nothing left to trim — and the payload collapses to a
+       marker that keeps the identifying keys. Losing the body beats
+       refusing the event.
 
     ``cap_bytes <= 0`` disables the whole thing.
     """
@@ -354,11 +539,17 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
     if size <= cap_bytes:
         return payload
 
-    entries = payload.get("outputs") if isinstance(payload, dict) else None
-    if isinstance(entries, list) and entries:
-        budget = max(1, cap_bytes // len(entries))
-        payload = {**payload,
-                   "outputs": [_elide_entry(e, budget) for e in entries]}
+    if isinstance(payload, dict):
+        entries = payload.get("outputs")
+        if isinstance(entries, list) and entries:
+            budget = max(1, cap_bytes // len(entries))
+            payload = {**payload,
+                       "outputs": [_elide_entry(e, budget) for e in entries]}
+            size = json_size(payload)
+            if size <= cap_bytes:
+                return payload
+
+        payload = _truncate_strings(payload, cap_bytes=cap_bytes)
         size = json_size(payload)
         if size <= cap_bytes:
             return payload
@@ -550,13 +741,6 @@ class _ActiveRun:
         self.signal.notify()
 
 
-def _output_entry_builders() -> tuple[Callable[..., Any], Callable[..., Any]]:
-    """The #117 output-entry helpers, imported lazily (see module docstring)."""
-    from ..api.ws_execution import build_node_output_entries, declared_image_ports
-
-    return build_node_output_entries, declared_image_ports
-
-
 # ── the service ───────────────────────────────────────────────────────────
 
 
@@ -576,7 +760,7 @@ class RunService:
         *,
         output_store: RunOutputStore | None = None,
         retention_keep_last: int | None = None,
-        event_payload_cap_bytes: int = EVENT_PAYLOAD_CAP_BYTES,
+        event_payload_cap_bytes: int | None = None,
         shutdown_grace_s: float = DEFAULT_SHUTDOWN_GRACE_S,
         subscriber_queue_size: int = DEFAULT_SUBSCRIBER_QUEUE_SIZE,
         metric_flush_max_points: int = METRIC_FLUSH_MAX_POINTS,
@@ -585,7 +769,17 @@ class RunService:
         self.store = store
         self._output_store = output_store
         self._retention_keep_last = retention_keep_last
-        self._event_payload_cap_bytes = event_payload_cap_bytes
+        # ONE source for the ceiling, read HERE rather than defaulted to a
+        # module constant: #120 shipped two independent copies of
+        # ``128 * 1024`` (this module's and the setting's) that nothing kept
+        # in step, so raising ``CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`` moved
+        # only the lifespan-constructed service and left every other caller
+        # — tests, scripts, a future CLI — on the stale number. A default
+        # argument would not fix it either: it is evaluated at import time,
+        # before anything can override the setting.
+        self._event_payload_cap_bytes = (
+            settings.RUN_EVENT_PAYLOAD_CAP_BYTES
+            if event_payload_cap_bytes is None else event_payload_cap_bytes)
         self._shutdown_grace_s = shutdown_grace_s
         self._subscriber_queue_size = subscriber_queue_size
         self._metric_flush_max_points = metric_flush_max_points
@@ -615,6 +809,7 @@ class RunService:
         *,
         options: Any = None,
         name: str | None = None,
+        session: InteractiveSession | None = None,
     ) -> SubmitResult:
         """Persist a run, then start it. Raises ``RunSubmitError`` on input.
 
@@ -628,13 +823,24 @@ class RunService:
         extra work is re-reading the graph with
         ``store.get_graph_snapshot(run_id)``, since a deferred start cannot
         rely on the submitting request still being in memory. Nothing else in
-        this module assumes immediacy.
+        this module assumes immediacy. (A queued INTERACTIVE run is the one
+        case that cannot be deferred, because *session* is in memory and
+        nowhere else — which is exactly why that lane bypasses the queue.)
+
+        *session* is the canvas's process-local state; see
+        :class:`InteractiveSession`. Passing one on any other lane is a
+        submit error rather than a silent no-op: it would mean a run that
+        behaves statefully while its stored row says ``queued``.
         """
         if self._shutting_down:
             raise RunServiceUnavailable("run service is shutting down")
         normalized_graph = normalize_graph(graph)
         normalized_options = normalize_options(options)
         normalized_name = normalize_name(name)
+        if session is not None and normalized_options["lane"] != LANE_INTERACTIVE:
+            raise RunSubmitError(
+                f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
+                f"got {normalized_options['lane']!r}")
 
         record = await self.store.create_run(
             graph_snapshot=normalized_graph,
@@ -642,11 +848,13 @@ class RunService:
             name=normalized_name,
             status=STATUS_QUEUED,
         )
-        # ── #123 inserts scheduling HERE ─────────────────────────────────
-        return self._start(record.id, normalized_graph, normalized_options)
+        # ── #123 inserts scheduling HERE (interactive lane skips it) ─────
+        return self._start(record.id, normalized_graph, normalized_options,
+                           session)
 
     def _start(
         self, run_id: str, graph: dict[str, Any], options: dict[str, Any],
+        session: InteractiveSession | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -679,15 +887,20 @@ class RunService:
             execution_id=run_id,
             device=resolve_device(options.get("device")),
             max_workers=settings.MAX_PARALLEL_NODES,
-            # A server-owned run is an isolated, reproducible unit: its
-            # stored graph_snapshot + options must fully describe what ran.
-            # Inheriting live nn.Module weights from a previous run would
-            # make that description a lie, and two concurrent runs of the
-            # same graph would train one shared module. The canvas's
-            # keep-training workflow keeps working over the WS path; #121
-            # re-introduces it here as an explicit option.
-            weights_persistent=False,
-            node_state_store=None,
+            verbose=bool(options.get("verbose")),
+            graph_id=str(options.get("graph_id") or ""),
+            backward_mode=bool(options.get("backward_mode")),
+            auto_backward=bool(options.get("auto_backward")),
+            # A server-owned run is an isolated, reproducible unit by
+            # default: its stored graph_snapshot + options must fully
+            # describe what ran, and inheriting live nn.Module weights from
+            # a previous run would make that description a lie. The canvas
+            # opts out by handing over the module store in its
+            # InteractiveSession — a capability, not a flag, so a run
+            # nobody lent one to is isolated whatever its options say.
+            weights_persistent=bool(options.get("weights_persistent")),
+            node_state_store=(None if session is None
+                              else session.node_state_store),
         )
         active = _ActiveRun(
             run_id=run_id, context=context, signal=_Broadcast(),
@@ -695,14 +908,14 @@ class RunService:
         )
         self._runs[run_id] = active
         active.task = asyncio.create_task(
-            self._drive(active, graph, options), name=f"run:{run_id}")
+            self._drive(active, graph, options, session), name=f"run:{run_id}")
         return SubmitResult(run_id=run_id, status=STATUS_RUNNING)
 
     # ── the run task ──────────────────────────────────────────────────────
 
     async def _drive(
         self, active: _ActiveRun, graph: dict[str, Any],
-        options: dict[str, Any],
+        options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> None:
         """The server-owned task. Nothing outside this module awaits it.
 
@@ -720,7 +933,8 @@ class RunService:
         try:
             if not await self._begin(active):
                 return
-            status, error = await self._execute(active, graph, options)
+            status, error = await self._execute(active, graph, options,
+                                                session)
             await self._finalize(active, status, error)
         except asyncio.CancelledError:
             raise
@@ -749,7 +963,7 @@ class RunService:
 
     async def _execute(
         self, active: _ActiveRun, graph: dict[str, Any],
-        options: dict[str, Any],
+        options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> tuple[str, str | None]:
         """Run the graph and classify the outcome. Never raises but cancel."""
         try:
@@ -759,10 +973,17 @@ class RunService:
                 graph["edges"],
                 on_progress=self._progress_bridge(active, graph["nodes"]),
                 context=active.context,
-                # No ExecutionCache: nothing is re-executed within a run, and
-                # sharing one ACROSS runs would serve a later run stale
-                # tensors under a matching key.
-                cache=None,
+                error_mode=options.get("error_mode", DEFAULT_ERROR_MODE),
+                max_retries=int(options.get("max_retries", 0)),
+                # No ExecutionCache by default: nothing is re-executed
+                # within a run, and sharing one ACROSS server-owned runs
+                # would serve a later run stale tensors under a matching
+                # key. The canvas lends its own — one per socket, cleared by
+                # the same reconnect that always cleared it — because
+                # incremental re-execution IS the editing loop.
+                cache=None if session is None else session.cache,
+                changed_nodes=(None if session is None
+                               else list(session.changed_nodes) or None),
                 run_id=active.run_id,
                 output_store=self._output_store,
                 record_outputs=active.record_outputs,
@@ -833,7 +1054,6 @@ class RunService:
         The message body is byte-for-byte what ``ws_execution`` puts on the
         wire minus its ``type`` key — see the event-vocabulary block above.
         """
-        build_entries, declared_image_ports = _output_entry_builders()
         image_ports = declared_image_ports(nodes)
 
         async def on_progress(
@@ -842,7 +1062,8 @@ class RunService:
             message: dict[str, Any] = {"node_id": node_id, "status": status}
             if result and status == "error":
                 message["error"] = result.get("error", "")
-            entries = build_entries(status, result, image_ports.get(node_id, ()))
+            entries = build_node_output_entries(
+                status, result, image_ports.get(node_id, ()))
             if entries:
                 message["outputs"] = entries
             await self._emit(active.run_id, EVENT_NODE_STATUS, message)
@@ -879,8 +1100,29 @@ class RunService:
         may re-read the tail from the store "and lose nothing". If the live
         copy carried more than the stored one, a lagging consumer would
         silently get a DIFFERENT payload, so a UI would show an image live
-        and a placeholder after any hiccup. One payload, one truth; #121 can
-        revisit the split deliberately if it ever needs the full frame.
+        and a placeholder after any hiccup. One payload, one truth; #121
+        looked at the split again and kept it.
+
+        No write-behind buffer (#121, measured)
+        --------------------------------------
+        One transaction per event, on a path where a training thread is
+        blocked in ``run_coroutine_threadsafe(...).result()`` until it
+        returns, invites the obvious "batch the progress writes" reflex. It
+        was measured instead of assumed: 300 realistic ``node_status``
+        progress payloads through ``append_event`` on the WAL-mode database
+        cost a MEAN of 0.68 ms, p95 0.92 ms, p99 1.46 ms, max 1.71 ms. The
+        producers are throttled per epoch today (#122 adds a 0.5 s floor),
+        so an interactive run spends well under a millisecond per second of
+        wall clock here — three orders of magnitude below the epoch it is
+        reporting on.
+
+        Against that, a write-behind buffer would have to keep the attach
+        contract intact: cursors are allocated INSIDE the transaction, so a
+        buffered event has no cursor to fan out, and a re-attaching client
+        that re-read the tail would legitimately not find events a
+        subscriber had already been shown — the gapless-cursor guarantee
+        #121 depends on. Real cost, no measured benefit; deferred with the
+        numbers rather than "for now".
         """
         stamp = utc_now_iso()
         stored = cap_event_payload(json_safe(payload),

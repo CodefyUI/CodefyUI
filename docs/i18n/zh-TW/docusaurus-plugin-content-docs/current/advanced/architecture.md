@@ -19,7 +19,7 @@ backend/    Python 3.10+ · FastAPI · PyTorch
 |-----------|--------|
 | **後端權威** | `GET /api/nodes` 回傳每一個節點定義。新增一個後端節點即可讓它自動出現在 UI 中——無需修改前端。 |
 | **單一 BaseNode 元件** | 一個 React 元件渲染所有節點類型，由後端定義參數化。 |
-| **WebSocket 執行** | `ws://host/ws/execution` 串流每個節點的狀態；REST 處理圖的 CRUD 與輸出抓取。 |
+| **WebSocket 執行** | `ws://host/ws/execution` 是伺服器端 run 的*視圖*：即時串流每個節點的狀態，也能從任意 cursor 重播 run 的事件記錄，讓重新連線的分頁無縫接上。run 本身由 run service 擁有，不屬於連線。 |
 | **拓撲排序執行** | 使用 Kahn 演算法進行 DAG 排序 + 循環偵測，並對獨立節點進行平行執行。 |
 
 ## 執行流程
