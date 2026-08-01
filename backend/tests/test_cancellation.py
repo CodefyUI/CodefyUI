@@ -626,9 +626,14 @@ async def test_no_checkpoint_is_written_when_the_run_records_no_artifacts(
         if status == "progress" and (data or {}).get("event") == "epoch":
             running.set()
 
+    # 0.01 like every sibling of this await-a-frame-then-cancel shape, and
+    # for the same reason: with a zero delay the 10 epochs can finish before
+    # the loop gets around to running the cancel, and the assertion below
+    # fails with DID-NOT-RAISE for reasons having nothing to do with
+    # checkpoints. 8 batches x 10 ms leaves ~700 ms of headroom.
     nodes, edges = _training_graph(
-        epochs=10, source_params={"samples": 32, "batch_size": 8,
-                                  "delay": 0.0})
+        epochs=10, source_params={"samples": 64, "batch_size": 8,
+                                  "delay": 0.01})
     task = asyncio.create_task(
         execute_graph(nodes, edges, on_progress=on_progress, context=ctx))
     await asyncio.wait_for(running.wait(), timeout=30.0)
