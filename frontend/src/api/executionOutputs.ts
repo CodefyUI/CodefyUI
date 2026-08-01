@@ -116,3 +116,96 @@ export async function fetchGradIndex(
   if (!res.ok) throw new Error(`fetchGradIndex failed: ${await readDetail(res)}`);
   return res.json();
 }
+
+// ── Port statistics (#129) ───────────────────────────────────────────────────
+
+/** A fixed-bin histogram: `bins` counts between `bins + 1` edges. */
+export interface StatsHistogram {
+  bins: number;
+  edges: number[];
+  counts: number[];
+}
+
+/** One class in an integer tensor's class balance. */
+export interface StatsValueCount {
+  value: number | boolean;
+  count: number;
+}
+
+/** Per-column summary for a tabular value (columnar dict, records, or list). */
+export interface StatsColumn {
+  name: string;
+  dtype: 'int' | 'float' | 'str' | 'bool' | 'mixed' | 'empty';
+  count: number;
+  missing: number;
+  unique: number;
+  top: { value: string | number | boolean; count: number }[];
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+}
+
+/**
+ * What `GET /api/execution/outputs/{run}/{node}/{port}/stats` returns.
+ *
+ * Every numeric field is `null` rather than NaN when the statistic is
+ * undefined — an all-NaN tensor has no mean, and the server says so with
+ * `null` instead of a token no JSON parser accepts.
+ *
+ * `sampled` covers the DISTRIBUTION only. `count`, `min`, `max`, `nan_count`,
+ * `inf_count`, `zero_frac` and `value_counts` are exact at any size.
+ */
+export interface PortStats {
+  run_id: string;
+  node_id: string;
+  port: string;
+  kind: 'tensor' | 'tabular' | 'unsupported';
+  sampled?: boolean;
+  sample_size?: number | null;
+
+  // kind === 'tensor'
+  shape?: number[];
+  dtype?: string;
+  device?: string;
+  count?: number;
+  mean?: number | null;
+  std?: number | null;
+  min?: number | null;
+  max?: number | null;
+  quantiles?: Record<string, number | null>;
+  nan_count?: number;
+  inf_count?: number;
+  zero_frac?: number | null;
+  histogram?: StatsHistogram | null;
+  value_counts?: StatsValueCount[] | null;
+
+  // kind === 'tabular'
+  rows?: number;
+  column_count?: number;
+  columns_truncated?: boolean;
+  columns?: StatsColumn[];
+
+  // kind === 'unsupported'
+  type?: string;
+}
+
+/** 404 from the stats endpoint — carries the server's "turn on Rec" hint. */
+export class StatsNotCapturedError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'StatsNotCapturedError';
+  }
+}
+
+export async function fetchPortStats(
+  runId: string,
+  nodeId: string,
+  port: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<PortStats> {
+  const url = `${BASE_URL}/${encodeURIComponent(runId)}/${encodeURIComponent(nodeId)}/${encodeURIComponent(port)}/stats`;
+  const res = await fetch(url, { signal: opts.signal });
+  if (res.status === 404) throw new StatsNotCapturedError(await readDetail(res));
+  if (!res.ok) throw new Error(`fetchPortStats failed: ${await readDetail(res)}`);
+  return res.json();
+}

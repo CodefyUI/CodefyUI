@@ -3,6 +3,7 @@
 import pytest
 import torch
 
+from app.core.port_stats import PortStatsCache
 from app.core.run_output_store import RunOutputStore
 from app.main import app
 
@@ -223,3 +224,187 @@ async def test_string_output(test_client):
     body = resp.json()
     assert body["type"] == "string"
     assert body["value"] == "hello"
+
+
+# ── /stats (#129) ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _fresh_stats_cache():
+    """A per-test stats LRU, so hit/miss counters start at zero."""
+    app.state.port_stats_cache = PortStatsCache(max_bytes=1024 * 1024)
+    yield
+
+
+@pytest.mark.asyncio
+async def test_stats_for_a_tensor(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.arange(100, dtype=torch.float32))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["run_id"] == "r1"
+    assert body["node_id"] == "n1"
+    assert body["port"] == "out"
+    assert body["kind"] == "tensor"
+    assert body["shape"] == [100]
+    assert body["dtype"] == "torch.float32"
+    assert body["count"] == 100
+    assert body["sampled"] is False
+    assert body["mean"] == pytest.approx(49.5)
+    assert body["quantiles"]["p50"] == pytest.approx(49.5)
+    assert body["histogram"]["bins"] == 64
+    assert sum(body["histogram"]["counts"]) == 100
+
+
+@pytest.mark.asyncio
+async def test_stats_for_integer_labels_returns_class_balance(test_client):
+    store = app.state.run_output_store
+    labels = torch.tensor([0] * 7 + [1] * 3, dtype=torch.int64)
+    await store.put("r1", "n1", "labels", labels)
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/labels/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["histogram"] is None
+    assert body["value_counts"] == [
+        {"value": 0, "count": 7},
+        {"value": 1, "count": 3},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stats_survives_a_nan_tensor(test_client):
+    """The whole point of the endpoint: a diverged tensor must not 500.
+
+    Starlette renders with ``allow_nan=False``, so a leaked NaN would be a
+    broken response rather than a bad number.
+    """
+    store = app.state.run_output_store
+    t = torch.tensor([float("nan"), float("inf"), 1.0, 2.0])
+    await store.put("r1", "n1", "out", t)
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["nan_count"] == 1
+    assert body["inf_count"] == 1
+    assert body["mean"] == pytest.approx(1.5)
+    assert "NaN" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_stats_for_a_label_list(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "labels", ["a", "b", "a"])
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/labels/stats")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "tabular"
+    assert body["rows"] == 3
+    assert body["columns"][0]["unique"] == 2
+
+
+@pytest.mark.asyncio
+async def test_stats_for_an_unsupported_value(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "model", torch.nn.Linear(2, 2))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/model/stats")
+    assert resp.status_code == 200
+    assert resp.json()["kind"] == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_stats_unknown_run_404s_with_a_record_hint(test_client):
+    resp = await test_client.get("/api/execution/outputs/ghost/n1/out/stats")
+    assert resp.status_code == 404
+    assert "Record outputs" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_stats_unknown_port_404s_with_a_record_hint(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.ones(2))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/missing/stats")
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert "n1.missing" in detail
+    assert "Record outputs" in detail
+
+
+@pytest.mark.asyncio
+async def test_stats_are_cached_per_port(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.ones(64))
+
+    first = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+    second = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+
+    assert first.json() == second.json()
+    cache = app.state.port_stats_cache
+    assert cache.hits == 1
+    assert cache.misses == 1
+
+
+@pytest.mark.asyncio
+async def test_replacing_a_value_does_not_serve_the_stale_stat(test_client):
+    """A node inside a loop rewrites one port during a single run.
+
+    Deliberately looped, and deliberately dropping every reference to the
+    previous tensor before building the next: torch's caching allocator then
+    reuses the freed block, so iteration N gets iteration N-2's address with
+    the same shape and dtype. Any cache keyed on the object rather than on the
+    store's write serial answers with the older tensor's mean here — two
+    iterations alone never collide, so a two-step test proves nothing.
+    """
+    store = app.state.run_output_store
+    for i in range(6):
+        await store.put("r1", "n1", "out", torch.full((512, 512), float(i)))
+        resp = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+        assert resp.status_code == 200
+        assert resp.json()["mean"] == pytest.approx(float(i)), f"stale at i={i}"
+
+
+@pytest.mark.asyncio
+async def test_stats_sample_above_the_threshold(test_client, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "STATS_SAMPLE_THRESHOLD", 100)
+    monkeypatch.setattr(settings, "STATS_SAMPLE_SIZE", 50)
+
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.arange(1000, dtype=torch.float32))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+    body = resp.json()
+    assert body["sampled"] is True
+    assert body["sample_size"] == 50
+    assert body["count"] == 1000
+    # Exact at any size — sampling never touches the extremes.
+    assert body["min"] == pytest.approx(0.0)
+    assert body["max"] == pytest.approx(999.0)
+
+
+@pytest.mark.asyncio
+async def test_stats_payload_stays_small(test_client):
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "out", torch.randn(200_000))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/out/stats")
+    assert resp.status_code == 200
+    assert len(resp.content) < 100_000
+
+
+@pytest.mark.asyncio
+async def test_stats_route_does_not_shadow_the_value_route(test_client):
+    """A port literally named 'stats' still serves its value, not statistics."""
+    store = app.state.run_output_store
+    await store.put("r1", "n1", "stats", torch.ones(2))
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/stats")
+    assert resp.status_code == 200
+    assert resp.json()["type"] == "tensor"

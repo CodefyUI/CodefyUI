@@ -984,6 +984,36 @@ describe('onNodesChange', () => {
     expect(activeTab().nodeDetailNodeId).toBe('n1');
   });
 
+  // ── deep-linking a tab and a port (#129) ──────────────────────────────────
+
+  it('opens the detail modal with no tab or port requested by default', () => {
+    store().openNodeDetail('n1');
+    expect(activeTab().nodeDetailTab).toBeNull();
+    expect(activeTab().nodeDetailPort).toBeNull();
+  });
+
+  it('records the requested tab and port when one is given', () => {
+    store().openNodeDetail('n1', { tab: 'stats', port: 'src::out' });
+    expect(activeTab().nodeDetailNodeId).toBe('n1');
+    expect(activeTab().nodeDetailTab).toBe('stats');
+    expect(activeTab().nodeDetailPort).toBe('src::out');
+  });
+
+  it('clears a previous deep link when the modal is opened plainly', () => {
+    store().openNodeDetail('n1', { tab: 'stats', port: 'src::out' });
+    store().openNodeDetail('n2');
+    expect(activeTab().nodeDetailTab).toBeNull();
+    expect(activeTab().nodeDetailPort).toBeNull();
+  });
+
+  it('clears the deep link on close', () => {
+    store().openNodeDetail('n1', { tab: 'stats', port: 'src::out' });
+    store().closeNodeDetail();
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+    expect(activeTab().nodeDetailTab).toBeNull();
+    expect(activeTab().nodeDetailPort).toBeNull();
+  });
+
   it('recalculates a bound note offset when the note itself is dragged', () => {
     store().setNodes([
       { id: 'comp', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'C', type: 'C', params: {} } },

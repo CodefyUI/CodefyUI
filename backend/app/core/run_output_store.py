@@ -20,8 +20,12 @@ from typing import Any
 class RunOutputStore:
     def __init__(self, max_runs: int = 20) -> None:
         self._max_runs = max_runs
-        self._store: dict[str, dict[str, dict[str, Any]]] = {}
+        # Each slot holds ``(value, write_serial)``. See ``get_with_version``
+        # for why the serial exists; ``get`` unwraps it, so every caller that
+        # only wants the value is unaffected.
+        self._store: dict[str, dict[str, dict[str, tuple[Any, int]]]] = {}
         self._order: deque[str] = deque()
+        self._writes = 0
         self._lock = asyncio.Lock()
 
     async def put(self, run_id: str, node_id: str, port: str, value: Any) -> None:
@@ -35,9 +39,27 @@ class RunOutputStore:
             nodes = self._store[run_id]
             if node_id not in nodes:
                 nodes[node_id] = {}
-            nodes[node_id][port] = value
+            self._writes += 1
+            nodes[node_id][port] = (value, self._writes)
 
     async def get(self, run_id: str, node_id: str, port: str) -> Any | None:
+        async with self._lock:
+            slot = self._store.get(run_id, {}).get(node_id, {}).get(port)
+            return None if slot is None else slot[0]
+
+    async def get_with_version(
+        self, run_id: str, node_id: str, port: str
+    ) -> tuple[Any, int] | None:
+        """The value plus the write serial that produced it, or None.
+
+        The serial is what makes it safe to memoise anything DERIVED from a
+        captured value (see ``port_stats``). Object identity is not: a node
+        inside a loop overwrites one port several times in a run, and torch's
+        caching allocator hands the freed block straight to the replacement —
+        so the new tensor can carry the old one's ``data_ptr``, ``shape`` and
+        ``dtype`` and be indistinguishable from it. The serial only ever goes
+        up, so a cache keyed on it cannot answer for a value that is gone.
+        """
         async with self._lock:
             return self._store.get(run_id, {}).get(node_id, {}).get(port)
 

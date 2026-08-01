@@ -94,7 +94,14 @@ function node(id: string, over: Partial<Node<NodeData>> = {}): Node<NodeData> {
   } as Node<NodeData>;
 }
 
-function setTab(partial: Partial<{ nodes: Node<NodeData>[]; edges: Edge[]; outputSummaries: any }>) {
+function setTab(
+  partial: Partial<{
+    nodes: Node<NodeData>[];
+    edges: Edge[];
+    outputSummaries: any;
+    lastRunId: string | null;
+  }>,
+) {
   useTabStore.setState((s) => ({
     tabs: s.tabs.map((t) =>
       t.id === TAB_ID ? { ...t, ...partial } : t,
@@ -566,6 +573,49 @@ describe('click handlers', () => {
       fireEvent.keyDown(document, { key: 'Escape' });
     });
     expect(screen.queryByText('Type')).toBeNull();
+  });
+
+  // ── "View stats" (#129) ───────────────────────────────────────────────────
+
+  it('offers no stats link on an edge tooltip before anything has run', () => {
+    setTab({
+      nodes: [node('a'), node('b')],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out' }],
+      outputSummaries: { a: { out: { type: 'Tensor', shape: [2] } } },
+      lastRunId: null,
+    });
+    renderCanvas();
+    act(() =>
+      captured.rf.onEdgeClick({ clientX: 10, clientY: 10 } as any, {
+        id: 'e1', source: 'a', target: 'b', sourceHandle: 'out',
+      }),
+    );
+    expect(screen.queryByRole('button', { name: /View stats/ })).toBeNull();
+  });
+
+  it('opens the consumer node on the Stats tab, pointed at the edge port', () => {
+    setTab({
+      nodes: [node('a'), node('b')],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'out' }],
+      outputSummaries: { a: { out: { type: 'Tensor', shape: [2] } } },
+      lastRunId: 'run1',
+    });
+    renderCanvas();
+    act(() =>
+      captured.rf.onEdgeClick({ clientX: 10, clientY: 10 } as any, {
+        id: 'e1', source: 'a', target: 'b', sourceHandle: 'out',
+      }),
+    );
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /View stats/ }));
+    });
+    expect(activeTab().nodeDetailNodeId).toBe('b');
+    expect(activeTab().nodeDetailTab).toBe('stats');
+    // The port is named by its PRODUCER, which is how the Stats tab resolves
+    // it back to the capture the run actually stored.
+    expect(activeTab().nodeDetailPort).toBe('a::out');
+    // The tooltip gets out of the way once it has handed over.
+    expect(screen.queryByRole('button', { name: /View stats/ })).toBeNull();
   });
 
   it('uses id-slice fallbacks for labels when nodes are missing/unlabeled', () => {

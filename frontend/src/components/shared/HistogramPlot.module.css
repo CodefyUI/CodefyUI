@@ -1,0 +1,78 @@
+.wrapper {
+  position: relative;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  padding: 6px 6px 4px;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.svg {
+  display: block;
+  overflow: visible;
+}
+
+.bar {
+  fill: #0e7490;
+  transition: fill 0.12s ease;
+}
+
+.barActive {
+  fill: #67e8f9;
+}
+
+.baseline {
+  stroke: #2a2a2a;
+  stroke-width: 1;
+}
+
+.axisRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9px;
+  color: #666;
+}
+
+.axisPeak {
+  color: #4b5563;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #161616;
+  border: 1px dashed #2a2a2a;
+  border-radius: 4px;
+  color: #666;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10000;
+  background: #0a0f17;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: #eee;
+  pointer-events: none;
+  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
+}
+
+.tooltipLabel {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.tooltipCount {
+  margin-top: 2px;
+  font-weight: 600;
+}

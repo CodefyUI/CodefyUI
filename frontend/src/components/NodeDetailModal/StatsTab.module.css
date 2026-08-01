@@ -1,0 +1,219 @@
+.group {
+  margin-bottom: 14px;
+}
+
+.groupTitle {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.portBlock {
+  border: 1px solid #232323;
+  border-radius: 6px;
+  background: #131313;
+  padding: 8px 10px 10px;
+  margin-bottom: 8px;
+}
+
+/* The port an edge tooltip pointed at. A ring rather than a background so the
+   block still reads as one of the list, just the one you asked for. */
+.portFocused {
+  border-color: #0e7490;
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.35);
+}
+
+.portHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.portDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.portName {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #e5e7eb;
+}
+
+.sampledChip {
+  margin-left: auto;
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid #b45309;
+  color: #fbbf24;
+  white-space: nowrap;
+}
+
+/* ── health strip ─────────────────────────────────────────────────────── */
+
+.healthRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.healthBadge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #1b1b1b;
+  border: 1px solid #2a2a2a;
+  color: #9ca3af;
+}
+
+.healthBadge b {
+  color: #d1d5db;
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.healthAlert {
+  border-color: #b91c1c;
+  background: rgba(185, 28, 28, 0.16);
+  color: #fca5a5;
+}
+
+.healthAlert b {
+  color: #fecaca;
+}
+
+/* ── stat grid ────────────────────────────────────────────────────────── */
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 4px 10px;
+}
+
+.statCell,
+.quantileCell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.statLabel {
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.statValue {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── quantiles + charts ───────────────────────────────────────────────── */
+
+.blockTitle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin: 10px 0 4px;
+}
+
+.quantileRow {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.chartBlock {
+  margin-top: 4px;
+}
+
+.quantileBlock {
+  min-width: 0;
+}
+
+/* ── tabular ──────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.table th {
+  text-align: left;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6b7280;
+  font-weight: 500;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid #262626;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid #1c1c1c;
+  color: #d1d5db;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.colName {
+  color: #e5e7eb;
+}
+
+.colType {
+  color: #67e8f9;
+}
+
+.colMissing {
+  color: #fbbf24;
+}
+
+.colTop {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── misc ─────────────────────────────────────────────────────────────── */
+
+.muted {
+  font-size: 11px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.note {
+  font-size: 10px;
+  color: #9ca3af;
+  margin-bottom: 6px;
+}
+
+.error {
+  font-size: 11px;
+  color: #fca5a5;
+  line-height: 1.5;
+}

@@ -28,6 +28,12 @@ export interface NodeDetailTabContext {
   recordOutputs: boolean;
   /** Per-node, per-port summaries streamed during the last run. */
   outputSummaries: Record<string, Record<string, OutputSummary>>;
+  /**
+   * A specific port the modal was opened *about*, as `nodeId::port` — set when
+   * the edge tooltip's "View stats" link opened it, null otherwise. A tab that
+   * lists many ports scrolls to this one and rings it (#129).
+   */
+  focusPort: string | null;
 }
 
 export interface NodeDetailTabSpec {
@@ -97,7 +103,7 @@ export const BUILTIN_NODE_DETAIL_TABS: readonly NodeDetailTabSpec[] = [
     id: 'stats',
     labelKey: 'nodeDetail.tabs.stats',
     order: 50,
-    render: () => <StatsTab />,
+    render: (ctx) => <StatsTab key={`${ctx.runId}:${ctx.nodeId}`} ctx={ctx} />,
   },
   {
     id: 'docs',
@@ -114,9 +120,14 @@ const extraTabs = new Map<string, NodeDetailTabSpec>();
  * Add a tab to the Node Detail Modal, or replace a built-in one.
  *
  * Registering an id that already exists as a built-in REPLACES it while
- * keeping its slot — which is how P3-14 turns the placeholder `stats` tab into
- * a real one without touching this file, and how a code-editor tab lands next
- * to the others. Registering a new id inserts it by `order`.
+ * keeping its slot — which is how a code-editor tab lands next to the others,
+ * and how a plugin swaps one out. Registering a new id inserts it by `order`.
+ *
+ * (#129 filled the `stats` placeholder in the array above rather than through
+ * here: `StatsTab` is imported BY this module, so registering from it would
+ * make the two files circular, and the alternative — a side-effect-only module
+ * imported at the app root — would leave the tab unregistered in every test
+ * that renders the modal without the app. Third-party code still uses this.)
  *
  * Call at module scope from the feature's own module; the modal reads the
  * registry on every render, so a tab registered before the modal opens is

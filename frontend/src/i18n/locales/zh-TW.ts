@@ -612,7 +612,32 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.captures.summaryTitle': '上一次執行的形狀',
   'nodeDetail.captures.noSummary': '這個節點還沒有任何紀錄',
   'nodeDetail.stats.title': '節點統計',
-  'nodeDetail.stats.placeholder': '執行時間、記憶體與參數量會在後續版本加進這裡。',
+  'nodeDetail.stats.loading': '計算中…',
+  'nodeDetail.stats.shape': '形狀',
+  'nodeDetail.stats.dtype': '資料型別',
+  'nodeDetail.stats.device': '裝置',
+  'nodeDetail.stats.count': '元素數',
+  'nodeDetail.stats.mean': '平均',
+  'nodeDetail.stats.std': '標準差',
+  'nodeDetail.stats.min': '最小值',
+  'nodeDetail.stats.max': '最大值',
+  'nodeDetail.stats.nan': 'NaN',
+  'nodeDetail.stats.inf': 'Inf',
+  'nodeDetail.stats.zeros': '零值',
+  'nodeDetail.stats.quantiles': '分位數',
+  'nodeDetail.stats.distribution': '分佈',
+  'nodeDetail.stats.classBalance': '類別分佈',
+  'nodeDetail.stats.sampled': '取樣 {size}',
+  'nodeDetail.stats.sampledNote':
+    '平均、標準差、分位數與直方圖來自這個大小的取樣；元素數、最小值、最大值、NaN/Inf 數量與類別分佈則是精確值。',
+  'nodeDetail.stats.rows': '列數',
+  'nodeDetail.stats.columns': '欄數',
+  'nodeDetail.stats.column': '欄位',
+  'nodeDetail.stats.missing': '缺失',
+  'nodeDetail.stats.unique': '相異值',
+  'nodeDetail.stats.top': '最常出現',
+  'nodeDetail.stats.columnsTruncated': '顯示 {total} 欄中的 {shown} 欄',
+  'nodeDetail.stats.unsupported': '此資料型別（{type}）沒有可用的統計',
   'nodeDetail.docs.description': '說明',
   'nodeDetail.docs.noDescription': '這個節點沒有附說明文字。',
   'nodeDetail.docs.params': '參數',
@@ -623,6 +648,9 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.docs.default': '預設值',
   'nodeDetail.docs.options': '選項',
   'nodeDetail.docs.range': '範圍',
+
+  // Edge data tooltip
+  'edge.viewStats': '查看統計',
 };
 
 export default zhTW;

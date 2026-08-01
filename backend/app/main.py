@@ -68,6 +68,7 @@ from .core.db import Database
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
+from .core.port_stats import PortStatsCache
 from .core import plugin_loader
 from .core.plugin_loader import (
     MANIFEST_FILENAME,
@@ -284,6 +285,13 @@ async def lifespan(app: FastAPI):
 
     # In-memory store for captured per-run node outputs (Teaching Inspector)
     app.state.run_output_store = RunOutputStore(max_runs=20)
+
+    # Memoised /stats payloads for those captures (#129). Bounded by BYTES —
+    # a stat payload ranges from ~1.5 KB to ~50 KB, so an entry count would
+    # be a limit in name only.
+    app.state.port_stats_cache = PortStatsCache(
+        max_bytes=settings.STATS_CACHE_MAX_BYTES
+    )
 
     # Persistent ``nn.Module`` instances per (graph, node, structure-hash).
     # Lifetime: server process. Survives Run clicks; lost on restart.

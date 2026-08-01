@@ -888,13 +888,13 @@ describe('NodeDetailModal — tabs', () => {
     expect(mockGradIndex).toHaveBeenCalledWith('run1', 'n1');
   });
 
-  it('renders the Stats placeholder that P3-14 will replace', () => {
-    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+  it('shows the Stats tab pre-run empty state before anything has run', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: null });
     render(<NodeDetailModal />);
     fireEvent.click(screen.getByRole('tab', { name: 'Stats' }));
     expect(screen.getByText('Node statistics')).toBeInTheDocument();
     expect(
-      screen.getByText('Timing, memory and parameter counts arrive here in a later release.'),
+      screen.getByText('Run the graph with Rec on to capture this node’s values'),
     ).toBeInTheDocument();
   });
 
@@ -906,6 +906,51 @@ describe('NodeDetailModal — tabs', () => {
 
     fireEvent.click(screen.getByLabelText('Next node'));
     expect(screen.getByRole('tab', { name: 'Inputs' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  // ── deep link from the edge tooltip (#129) ─────────────────────────────────
+
+  it('opens on the tab the caller asked for', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', nodeDetailTab: 'stats' });
+    render(<NodeDetailModal />);
+    expect(screen.getByRole('tab', { name: 'Stats' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('lets the user leave the deep-linked tab without being dragged back', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', nodeDetailTab: 'stats' });
+    const { rerender } = render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Docs' }));
+    rerender(<NodeDetailModal />);
+    expect(screen.getByRole('tab', { name: 'Docs' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('hands the requested port to every tab as focusPort', () => {
+    const seen: (string | null)[] = [];
+    registerNodeDetailTab({
+      id: 'probe',
+      labelKey: 'nodeDetail.tabs.docs',
+      order: 1,
+      render: (c) => {
+        seen.push(c.focusPort);
+        return <div data-testid="probe" />;
+      },
+    });
+    seedTab({
+      nodes: [node('n1')],
+      nodeDetailNodeId: 'n1',
+      nodeDetailTab: 'probe',
+      nodeDetailPort: 'src::out',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByTestId('probe')).toBeInTheDocument();
+    expect(seen).toContain('src::out');
+    unregisterNodeDetailTab('probe');
   });
 
   it('falls back to the first tab when the selected one disappears', () => {
@@ -1248,6 +1293,7 @@ describe('NodeDetailModal — tab registry', () => {
       edges: [],
       recordOutputs: true,
       outputSummaries: {},
+      focusPort: null,
       ...over,
     };
   }

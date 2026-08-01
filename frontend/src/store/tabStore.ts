@@ -102,6 +102,17 @@ export interface TabState {
    * rather than on top of a modal the user has no memory of opening.
    */
   nodeDetailNodeId: string | null;
+  /**
+   * Tab id the detail modal should open on, or null for its default (#129).
+   * Set by the edge tooltip's "View stats" link; every other entry point
+   * writes null, so a deep link never becomes sticky.
+   */
+  nodeDetailTab: string | null;
+  /**
+   * Port the modal was opened *about*, as `nodeId::port`, or null. Handed to
+   * every tab so a list-of-ports tab can scroll to the one that was asked for.
+   */
+  nodeDetailPort: string | null;
   // undo/redo
   undoStack: UndoSnapshot[];
   redoStack: UndoSnapshot[];
@@ -149,6 +160,8 @@ function createTabState(id: string, name: string): TabState {
     presetModalNodeId: null,
     subgraphModalNodeId: null,
     nodeDetailNodeId: null,
+    nodeDetailTab: null,
+    nodeDetailPort: null,
     undoStack: [],
     redoStack: [],
     dirtyNodeIds: new Set(),
@@ -206,7 +219,7 @@ interface TabStoreState {
   closePresetModal: () => void;
   openSubgraphModal: (id: string) => void;
   closeSubgraphModal: () => void;
-  openNodeDetail: (id: string) => void;
+  openNodeDetail: (id: string, target?: { tab?: string; port?: string }) => void;
   closeNodeDetail: () => void;
   updateSubgraphLayers: (nodeId: string, layersJson: string) => void;
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
@@ -1043,16 +1056,28 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // arrows) therefore leaves the canvas, the config panel and the Inspector
   // pointing at the same node the modal is showing — which is what makes
   // stepping through a graph with the arrow keys read as a walkthrough.
-  openNodeDetail: (id) =>
+  // `target` deep-links a tab and a port (#129: the edge tooltip's "View
+  // stats"). Both are written unconditionally — an omitted target CLEARS
+  // them, so opening a node normally after following a deep link lands on the
+  // default tab rather than wherever the link went.
+  openNodeDetail: (id, target) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
         nodeDetailNodeId: id,
         selectedNodeId: id,
+        nodeDetailTab: target?.tab ?? null,
+        nodeDetailPort: target?.port ?? null,
       })),
     }),
 
   closeNodeDetail: () =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ nodeDetailNodeId: null })) }),
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+        nodeDetailNodeId: null,
+        nodeDetailTab: null,
+        nodeDetailPort: null,
+      })),
+    }),
 
   updateSubgraphLayers: (nodeId, layersJson) =>
     set({

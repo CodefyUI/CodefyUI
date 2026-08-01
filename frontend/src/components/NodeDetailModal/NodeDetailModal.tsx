@@ -108,10 +108,18 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
 
   // Leaving the name editor open across a node change would show the previous
   // node's draft over the new node's header.
+  //
+  // `requestedTab` is the deep link from `openNodeDetail(id, { tab })` (#129).
+  // Listing it as a dependency is what makes a SECOND deep link land while
+  // the modal is already open on that node — following "View stats" from
+  // another edge into the same consumer changes nothing else the effect
+  // watches. It does not fight a manual tab switch, because clicking a tab
+  // changes local state and leaves the store's request alone.
+  const requestedTab = activeTab.nodeDetailTab;
   useEffect(() => {
     setDraftName(null);
-    setActiveTabId('inputs');
-  }, [nodeId]);
+    setActiveTabId(requestedTab ?? 'inputs');
+  }, [nodeId, requestedTab]);
 
   // Take focus so the key handling below has somewhere to sit and the page
   // behind the backdrop cannot be tabbed into blind — then hand it back to
@@ -184,6 +192,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
     edges,
     recordOutputs: activeTab.recordOutputs,
     outputSummaries: activeTab.outputSummaries,
+    focusPort: activeTab.nodeDetailPort,
   };
 
   const tabs = getNodeDetailTabs(ctx);
