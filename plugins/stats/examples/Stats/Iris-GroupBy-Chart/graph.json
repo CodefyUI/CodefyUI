@@ -1,0 +1,79 @@
+{
+  "name": "Group by species, then chart it",
+  "description": "CSV -> GroupBy -> Chart. The species column becomes the grouping key (CSVReader's `labels` output is exactly the per-row label list Stats-GroupByAggregate wants), every numeric column is averaged per species, and Stats-ChartView draws the mean petal length as a bar per species. The same grouped table is printed as text alongside, so the chart and the numbers agree in front of you.",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": { "x": -260, "y": 60 },
+      "data": { "params": {} }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "include_columns": "",
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "group",
+      "type": "stats:Stats-GroupByAggregate",
+      "position": { "x": 320, "y": 0 },
+      "data": {
+        "params": {
+          "group_by": "",
+          "agg": "mean",
+          "agg_overrides": ""
+        }
+      }
+    },
+    {
+      "id": "chart",
+      "type": "stats:Stats-ChartView",
+      "position": { "x": 660, "y": -80 },
+      "data": {
+        "params": {
+          "kind": "bar",
+          "title": "Mean petal length by species",
+          "columns_filter": "petal length (cm) [mean]"
+        }
+      }
+    },
+    {
+      "id": "view",
+      "type": "stats:Stats-TableView",
+      "position": { "x": 660, "y": 140 },
+      "data": {
+        "params": {
+          "max_rows": 10,
+          "precision": 3,
+          "title": "Per-species means"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig",
+      "source": "start-1",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    { "id": "g_t", "source": "csv", "target": "group", "sourceHandle": "tensor", "targetHandle": "table" },
+    { "id": "g_c", "source": "csv", "target": "group", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "g_k", "source": "csv", "target": "group", "sourceHandle": "labels", "targetHandle": "keys" },
+    { "id": "c_t", "source": "group", "target": "chart", "sourceHandle": "table", "targetHandle": "table" },
+    { "id": "c_c", "source": "group", "target": "chart", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "c_r", "source": "group", "target": "chart", "sourceHandle": "row_labels", "targetHandle": "row_labels" },
+    { "id": "v_t", "source": "group", "target": "view", "sourceHandle": "table", "targetHandle": "table" },
+    { "id": "v_c", "source": "group", "target": "view", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "v_r", "source": "group", "target": "view", "sourceHandle": "row_labels", "targetHandle": "row_labels" }
+  ]
+}

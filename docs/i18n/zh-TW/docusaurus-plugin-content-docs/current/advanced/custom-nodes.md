@@ -75,6 +75,33 @@ def define_outputs(cls):
 
 宣告是**必要的**——系統不會去檢查你的值長什麼樣子來猜它是不是圖片。沒有宣告的連接埠，不論多像圖片都仍然是一般資料。正是這一點，讓長文字輸出（LLM 的回答、token 傾印）不會被當成圖片、渲染成一張壞掉的圖。
 
+## 在執行結果面板畫圖表
+
+`media=MEDIA_CHART` 是同一套機制，用來畫圖表。連接埠的值是一份 JSON **圖表規格**（一個普通的 dict），由編輯器用自己的 SVG 元件繪製，因此圖表會套用主題、可以滑鼠停留查看數值，而且放大也不會糊掉——這些都是固定尺寸的 PNG 做不到的：
+
+```python
+from app.core.node_base import MEDIA_CHART, BaseNode, DataType, PortDefinition
+
+@classmethod
+def define_outputs(cls):
+    return [
+        PortDefinition(name="chart", data_type=DataType.ANY, media=MEDIA_CHART),
+    ]
+
+def execute(self, inputs, params, progress_callback=None, *, context=None):
+    return {"chart": {
+        "kind": "bar",                       # bar | line | scatter | heatmap
+        "title": "各品種的平均花瓣長度",
+        "bars": [{"label": "setosa", "value": 1.462}],
+    }}
+```
+
+規格裡的每個數字都必須是有限的、原生的 Python `float` 或 `int`：執行事件是以 `allow_nan=False` 序列化的，而 `numpy.float32` 根本無法被 JSON 序列化。規格也要小——`node_status` 訊息超過 128 KB 就會整份被省略標記取代。各種 `kind` 的完整欄位參考，請見 [stats 外掛包的 README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md)，那就是本機制的參考實作。
+
+### 自訂你自己的媒體種類
+
+這兩種 media 都沒有被特別寫死。解析器只認連接埠宣告的那個字串，而且只要連接埠的值是非空的 dict 就會原封不動送出。因此一個外掛包宣告 `media="waveform"`，瀏覽器端就已經會收到 `{"output_kind": "waveform", ...}`；只有*繪製*它才需要改前端。遇到不認識的種類時，編輯器會直接忽略，而不是壞掉。
+
 :::tip
 需要封裝既有節點而不是撰寫新行為嗎？使用**[預設模組](./presets)**。想以可安裝的套件與他人分享節點嗎？建立一個**[外掛包](./plugins)**。
 :::

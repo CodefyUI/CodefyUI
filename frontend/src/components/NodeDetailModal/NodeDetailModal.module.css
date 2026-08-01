@@ -376,6 +376,26 @@
   padding-top: 10px;
 }
 
+/* Charts a node emitted this run (#130), above its captured port values. */
+.chartBlock {
+  display: flex;
+  flex-direction: column;
+  /* Hug the chart instead of stretching to the panel width — a flex column
+     stretches its children by default, which left the plot stranded against
+     the right edge of a full-width card. */
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chartBlockTitle {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .summaryTitle {
   font-size: 0.6875rem;
   font-weight: 700;

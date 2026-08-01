@@ -1,0 +1,58 @@
+/* Matches the shared-plot wrapper used by HistogramPlot and ScatterPlot, so a
+   chart output entry sits in the panel like every other plot in the app. */
+.wrapper {
+  display: inline-block;
+  max-width: 100%;
+  padding: 8px 10px 10px;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+}
+
+.title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ccc;
+  margin-bottom: 2px;
+}
+
+.note {
+  font-size: 10px;
+  font-style: italic;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+/* Wide charts scroll inside the card rather than widening the panel. */
+.body {
+  overflow-x: auto;
+  max-width: 100%;
+  /* Keep the plot against the card's leading edge; HeatmapPlot's own grid
+     otherwise centres itself in whatever width it is handed. */
+  display: flex;
+  justify-content: flex-start;
+}
+
+.axes {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 9px;
+  color: #6b7280;
+}
+
+.axisY {
+  font-style: italic;
+}
+
+.axisX {
+  margin-left: auto;
+}
+
+.unknown {
+  padding: 12px 8px;
+  font-size: 11px;
+  font-style: italic;
+  color: #6b7280;
+}

@@ -1,0 +1,62 @@
+{
+  "name": "Iris describe(): the whole table in one node",
+  "description": "Reads the bundled iris.csv and hands it to Stats-Describe, which reproduces pandas' describe() — count, mean, std, min, 25/50/75%, max for every numeric column. Stats-TableView prints the result in the Results panel with its statistic names down the side. This is the shortest path from a CSV to knowing what is in it.",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": { "x": -260, "y": 40 },
+      "data": { "params": {} }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "include_columns": "",
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "describe",
+      "type": "stats:Stats-Describe",
+      "position": { "x": 320, "y": 0 },
+      "data": {
+        "params": {
+          "axis": "columns",
+          "percentiles": "25,50,75"
+        }
+      }
+    },
+    {
+      "id": "view",
+      "type": "stats:Stats-TableView",
+      "position": { "x": 640, "y": 0 },
+      "data": {
+        "params": {
+          "max_rows": 20,
+          "precision": 4,
+          "title": "Iris - describe()"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig",
+      "source": "start-1",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    { "id": "e_t", "source": "csv", "target": "describe", "sourceHandle": "tensor", "targetHandle": "table" },
+    { "id": "e_c", "source": "csv", "target": "describe", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "v_t", "source": "describe", "target": "view", "sourceHandle": "table", "targetHandle": "table" },
+    { "id": "v_c", "source": "describe", "target": "view", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "v_r", "source": "describe", "target": "view", "sourceHandle": "row_labels", "targetHandle": "row_labels" }
+  ]
+}

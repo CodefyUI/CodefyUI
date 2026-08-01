@@ -403,7 +403,8 @@ describe('useGraphExecution - node_status handler', () => {
         outputs: [
           null,
           'nonsense',
-          { output_kind: 'chart', chart: { series: [] } }, // a future kind
+          { output_kind: 'waveform', waveform: { hz: 440 } }, // a future kind
+          { output_kind: 'chart', chart: { series: [] } }, // chart with no kind
           { output_kind: 'image' }, // no payload
           { output_kind: 'text', text: '' }, // empty text
         ],
@@ -412,6 +413,66 @@ describe('useGraphExecution - node_status handler', () => {
     const tab = tabById('t1');
     expect(tab.logs.some((l: any) => l.kind === 'image')).toBe(false);
     expect(tab.logs.some((l: any) => l.kind === 'text')).toBe(false);
+    expect(tab.logs.some((l: any) => l.kind === 'chart')).toBe(false);
+  });
+
+  // ── Chart output entries (#130) ────────────────────────────────────────
+  it('turns a chart output into a chart log entry carrying its spec', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    const spec = {
+      kind: 'heatmap',
+      title: 'Confusion matrix',
+      matrix: [[1, 0], [0, 1]],
+      row_labels: ['a', 'b'],
+      col_labels: ['a', 'b'],
+      vmin: 0,
+      vmax: 1,
+    };
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [{ output_kind: 'chart', port: 'chart', chart: spec }],
+      });
+    });
+    const entry = tabById('t1').logs.find((l: any) => l.kind === 'chart');
+    expect(entry.nodeId).toBe('n1');
+    expect(entry.chart).toEqual({ ...spec, port: 'chart' });
+  });
+
+  it('appends one entry per chart when a node emits several', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'chart', port: 'a', chart: { kind: 'bar', bars: [] } },
+          { output_kind: 'chart', port: 'b', chart: { kind: 'line', series: [] } },
+        ],
+      });
+    });
+    const charts = tabById('t1').logs.filter((l: any) => l.kind === 'chart');
+    expect(charts.map((l: any) => l.chart.kind)).toEqual(['bar', 'line']);
+  });
+
+  it('keeps a chart alongside the text a node emits with it', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'text', text: 'rendered table' },
+          { output_kind: 'chart', chart: { kind: 'bar', bars: [] } },
+        ],
+      });
+    });
+    const kinds = tabById('t1').logs.map((l: any) => l.kind).filter(Boolean);
+    expect(kinds).toEqual(['text', 'chart']);
   });
 
   // ── Deprecated flat fields (remove one release after #117) ──────────────

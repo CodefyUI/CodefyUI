@@ -656,6 +656,12 @@ const zhTW: Record<TranslationKey, string> = {
   // Shared plots
   'plot.noDistribution': '沒有分佈資料',
   'plot.peak': '最高 {count}',
+
+  // Chart output entries (#130)
+  'chart.bar': '長條圖',
+  'chart.series': '數列',
+  'chart.unknownKind': '這種圖表類型（{kind}）需要更新版的編輯器',
+  'nodeDetail.captures.charts': '圖表（{count}）',
 };
 
 export default zhTW;

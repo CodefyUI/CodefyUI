@@ -28,6 +28,14 @@ interface HeatmapPlotProps {
    * the raw weight.
    */
   normalizePerRow?: boolean;
+  /**
+   * `[min, max]` the colour ramp spans. Defaults to `[0, 1]`, which is right
+   * for attention weights — the only data this component saw before #130 —
+   * and wrong for everything else: a confusion matrix of counts would render
+   * every non-zero cell at full brightness. Tooltips keep showing the RAW
+   * value, so pinning the scale never changes what the numbers say.
+   */
+  valueRange?: [number, number];
 }
 
 interface HoverCell {
@@ -119,6 +127,7 @@ interface SinglePanelProps {
   causalMasked: boolean;
   headIndex?: number;
   normalizePerRow: boolean;
+  valueRange?: [number, number];
   onHover: (cell: HoverCell | null) => void;
 }
 
@@ -132,6 +141,7 @@ function SinglePanel({
   causalMasked,
   headIndex,
   normalizePerRow,
+  valueRange,
   onHover,
 }: SinglePanelProps) {
   const n = matrix.length;
@@ -277,6 +287,11 @@ function SinglePanel({
                   ? Math.max(0, Math.min(1, (v - min) / range))
                   : 0.5; // truly-uniform row — neutral signal, no peak
               }
+            } else if (valueRange) {
+              const [lo, hi] = valueRange;
+              // A degenerate range (every cell equal) has no gradient to
+              // show; mid-ramp reads as "uniform", not as "all maximal".
+              colorT = hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
             } else {
               colorT = Math.max(0, Math.min(1, v));
             }
@@ -362,6 +377,7 @@ export function HeatmapPlot({
   className,
   onExpand,
   normalizePerRow = false,
+  valueRange,
 }: HeatmapPlotProps) {
   const [hover, setHover] = useState<HoverCell | null>(null);
 
@@ -421,6 +437,7 @@ export function HeatmapPlot({
             causalMasked={p.causalMasked}
             headIndex={p.head}
             normalizePerRow={normalizePerRow}
+            valueRange={valueRange}
             onHover={setHover}
           />
         ))}

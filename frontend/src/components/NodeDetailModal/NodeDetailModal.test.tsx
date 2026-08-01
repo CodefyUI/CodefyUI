@@ -1340,6 +1340,101 @@ describe('NodeDetailModal — capture parity with InspectorPanel', () => {
 
 // ── Tab registry (container contract for #129 / #131) ────────────────────────
 
+// ── #130: charts a node emitted, on its Outputs tab ──────────────────────────
+// A chart rides the node_status stream rather than the captures API, so the
+// tab reads it from the tab's log. That is also why it shows with Record
+// outputs off, when the port fetches below it have nothing.
+
+describe('NodeDetailModal — chart outputs (#130)', () => {
+  function chartLog(nodeId: string, chart: Record<string, unknown>) {
+    return {
+      timestamp: 1_700_000_000_000,
+      nodeId,
+      message: '',
+      type: 'info' as const,
+      kind: 'chart' as const,
+      chart: chart as any,
+    };
+  }
+
+  const CONFUSION = {
+    kind: 'heatmap',
+    title: 'Confusion matrix',
+    matrix: [[13, 0], [1, 12]],
+    row_labels: ['setosa', 'versicolor'],
+    col_labels: ['setosa', 'versicolor'],
+    vmin: 0,
+    vmax: 13,
+  };
+
+  it('renders a confusion matrix as a heatmap on the Outputs tab', async () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['matrix']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [chartLog('n1', CONFUSION)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    expect(screen.getByText('Charts (1)')).toBeInTheDocument();
+    // The modal renders through a portal, so query the document, not the root.
+    expect(document.querySelector('[data-chart-kind="heatmap"]')).toBeInTheDocument();
+    expect(document.querySelectorAll('rect[data-i]')).toHaveLength(4);
+    expect(screen.getByText('Confusion matrix')).toBeInTheDocument();
+    // The captured ports still render underneath.
+    await waitFor(() => expect(screen.getByText('shape [2, 2]')).toBeInTheDocument());
+  });
+
+  it('shows only the charts belonging to the node being inspected', () => {
+    seedTab({
+      nodes: [node('n1'), node('n2')],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [
+        chartLog('n1', { kind: 'bar', title: 'Mine', bars: [] }),
+        chartLog('n2', { kind: 'bar', title: 'Someone else', bars: [] }),
+      ],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    expect(screen.getByText('Mine')).toBeInTheDocument();
+    expect(screen.queryByText('Someone else')).toBeNull();
+  });
+
+  it('keeps charts off the Inputs tab', () => {
+    seedTab({
+      nodes: [node('n1')],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [chartLog('n1', CONFUSION)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Inputs' }));
+    expect(screen.queryByText('Charts (1)')).toBeNull();
+  });
+
+  it('shows the chart before a run has captured anything', () => {
+    seedTab({
+      nodes: [node('n1')],
+      nodeDetailNodeId: 'n1',
+      lastRunId: null,
+      logs: [chartLog('n1', CONFUSION)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(document.querySelector('[data-chart-kind="heatmap"]')).toBeInTheDocument();
+  });
+
+  it('renders no chart block when the node emitted none', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1', lastRunId: 'run1', logs: [] });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.queryByText(/^Charts \(/)).toBeNull();
+  });
+});
+
 describe('NodeDetailModal — tab registry', () => {
   function ctx(over: Partial<NodeDetailTabContext> = {}): NodeDetailTabContext {
     const n = node('n1');

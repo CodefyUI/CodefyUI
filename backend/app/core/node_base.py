@@ -48,6 +48,21 @@ class ParamType(str, Enum):
 # declare a new kind rather than overload this one.
 MEDIA_IMAGE = "image"
 
+# ``MEDIA_CHART`` contract (#130): the port's value is a JSON-safe chart
+# *spec* — a dict the client renders with its own plotting components, so the
+# picture is crisp, themed and hoverable instead of a server-rendered PNG.
+#
+#   {"kind": "bar" | "line" | "scatter" | "heatmap",   # required
+#    "title": str, "x_label": str, "y_label": str,     # optional captions
+#    ...payload keys for that kind}
+#
+# Every number in the spec must be finite: the run store serialises events
+# with ``allow_nan=False``, so a NaN would be rewritten to ``null`` and the
+# renderer would draw a hole. Producers substitute a real value (usually 0.0)
+# and say so in the caption. See ``plugins/stats/README.md`` for the per-kind
+# payload keys.
+MEDIA_CHART = "chart"
+
 
 @dataclass
 class PortDefinition:

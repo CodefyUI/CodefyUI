@@ -1,0 +1,80 @@
+{
+  "name": "Confusion matrix as a heatmap",
+  "description": "Trains a shallow decision tree on 70% of iris, predicts the held-out 30%, and feeds those predictions plus the true labels to Stats-ConfusionMatrix. The matrix arrives as a labelled heatmap in the Results panel and in the node's detail view, so a confusion between versicolor and virginica is a bright off-diagonal cell rather than a number to hunt for. Switch `normalize` to `true` to read per-class recall straight off the diagonal.",
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "Start",
+      "position": { "x": -260, "y": 60 },
+      "data": { "params": {} }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "include_columns": "",
+          "skip_header": true
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": { "x": 300, "y": 0 },
+      "data": {
+        "params": { "test_size": 0.3, "seed": 42, "stratify": true }
+      }
+    },
+    {
+      "id": "tree",
+      "type": "DecisionTreeClassifier",
+      "position": { "x": 600, "y": 0 },
+      "data": {
+        "params": { "max_depth": 3, "criterion": "gini", "random_state": 42 }
+      }
+    },
+    {
+      "id": "cm",
+      "type": "stats:Stats-ConfusionMatrix",
+      "position": { "x": 900, "y": 0 },
+      "data": {
+        "params": {
+          "normalize": "none",
+          "class_names": "",
+          "title": "Iris - decision tree, held-out 30%"
+        }
+      }
+    },
+    {
+      "id": "view",
+      "type": "stats:Stats-TableView",
+      "position": { "x": 1220, "y": 120 },
+      "data": {
+        "params": { "max_rows": 10, "precision": 0, "title": "Counts (rows = true, columns = predicted)" }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig",
+      "source": "start-1",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    { "id": "s_f", "source": "csv", "target": "split", "sourceHandle": "tensor", "targetHandle": "features" },
+    { "id": "s_l", "source": "csv", "target": "split", "sourceHandle": "labels", "targetHandle": "labels" },
+    { "id": "t_x", "source": "split", "target": "tree", "sourceHandle": "x_train", "targetHandle": "x_train" },
+    { "id": "t_y", "source": "split", "target": "tree", "sourceHandle": "y_train", "targetHandle": "y_train" },
+    { "id": "t_q", "source": "split", "target": "tree", "sourceHandle": "x_test", "targetHandle": "x_query" },
+    { "id": "m_p", "source": "tree", "target": "cm", "sourceHandle": "predictions", "targetHandle": "predictions" },
+    { "id": "m_l", "source": "split", "target": "cm", "sourceHandle": "y_test", "targetHandle": "labels" },
+    { "id": "v_t", "source": "cm", "target": "view", "sourceHandle": "matrix", "targetHandle": "table" },
+    { "id": "v_c", "source": "cm", "target": "view", "sourceHandle": "columns", "targetHandle": "columns" },
+    { "id": "v_r", "source": "cm", "target": "view", "sourceHandle": "row_labels", "targetHandle": "row_labels" }
+  ]
+}
