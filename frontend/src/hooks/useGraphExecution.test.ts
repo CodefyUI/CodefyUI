@@ -3,6 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useGraphExecution } from './useGraphExecution';
 import { useTabStore } from '../store/tabStore';
+import {
+  discardTabNodeUpdates,
+  flushTabNodeUpdates,
+} from '../store/nodeUpdateQueue';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 
@@ -108,10 +112,23 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  // Node status/progress are frame-buffered since #125; anything a test left
+  // queued must not leak into the next one's store.
+  discardTabNodeUpdates();
 });
 
 function tabById(id: string): any {
   return useTabStore.getState().tabs.find((t) => t.id === id);
+}
+
+/**
+ * Commit the frame buffer (#125). `node_status` no longer writes straight to
+ * the store — it accumulates and lands once per animation frame — so a test
+ * that asserts on node DATA has to run the frame first. Log assertions need
+ * nothing: logs are still appended synchronously.
+ */
+function flushFrame() {
+  act(() => flushTabNodeUpdates());
 }
 
 // ── WS listener attachment (the useEffect) ────────────────────────────────────
@@ -193,6 +210,7 @@ describe('useGraphExecution - node_status handler', () => {
         outputs: [{ output_kind: 'progress', progress: { event: 'epoch', value: 1 } }],
       });
     });
+    flushFrame();
 
     const tab = tabById('t1');
     expect(tab.nodes[0].data.progress).toEqual({ event: 'epoch', value: 1 });
@@ -214,6 +232,7 @@ describe('useGraphExecution - node_status handler', () => {
         outputs: [{ output_kind: 'progress', progress: { event: 'batch', value: 5 } }],
       });
     });
+    flushFrame();
 
     const tab = tabById('t1');
     expect(tab.nodes[0].data.progress).toEqual({ event: 'batch', value: 5 });
@@ -227,6 +246,7 @@ describe('useGraphExecution - node_status handler', () => {
     act(() => {
       ws.emit('node_status', { node_id: 'n1', status: 'running' });
     });
+    flushFrame();
     const tab = tabById('t1');
     expect(tab.nodes[0].data.executionStatus).toBe('running');
     // running is suppressed — no "Node ... running" log.
@@ -430,12 +450,59 @@ describe('useGraphExecution - node_status handler', () => {
         progress: { event: 'config', config: { lr: 0.1 } },
       });
     });
+    flushFrame();
     const tab = tabById('t1');
     expect(tab.nodes[0].data.progress).toEqual({ event: 'config', config: { lr: 0.1 } });
     expect(tab.logs.find((l: any) => l.kind === 'progress').progress).toEqual({
       event: 'config',
       config: { lr: 0.1 },
     });
+  });
+
+  // #125 acceptance: a burst of frames must cost ONE nodes-array rebuild.
+  // Before the frame buffer, each `node_status` rebuilt the array on its own,
+  // and React Flow re-diffed every node in the graph once per event.
+  it('rebuilds the nodes array once for a burst of node_status frames', () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [
+          { id: 'n1', data: { label: 'One' } },
+          { id: 'n2', data: { label: 'Two' } },
+        ],
+        edges: [],
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    let rebuilds = 0;
+    let previous = tabById('t1').nodes;
+    const unsubscribe = useTabStore.subscribe((state) => {
+      const nodes = state.tabs.find((t) => t.id === 't1')?.nodes;
+      if (nodes && nodes !== previous) {
+        previous = nodes;
+        rebuilds += 1;
+      }
+    });
+
+    act(() => {
+      for (let i = 0; i < 25; i += 1) {
+        ws.emit('node_status', {
+          node_id: i % 2 === 0 ? 'n1' : 'n2',
+          status: 'progress',
+          outputs: [{ output_kind: 'progress', progress: { event: 'batch', value: i } }],
+        });
+      }
+    });
+    expect(rebuilds).toBe(0);
+
+    flushFrame();
+    expect(rebuilds).toBe(1);
+    unsubscribe();
+
+    const tab = tabById('t1');
+    expect(tab.nodes[0].data.progress).toEqual({ event: 'batch', value: 24 });
+    expect(tab.nodes[1].data.progress).toEqual({ event: 'batch', value: 23 });
   });
 });
 

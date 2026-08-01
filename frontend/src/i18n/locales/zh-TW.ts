@@ -443,6 +443,8 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.layoutMode.aria': '排版模式',
   'toolbar.language.aria': '語言',
   'persistence.quotaError': '無法儲存分頁 — 瀏覽器儲存空間已滿。',
+  'persistence.storageUnavailable':
+    '瀏覽器儲存空間無法運作 — 畫面上的分頁可能不是最新的，新的變更也可能不會被儲存。關閉這個分頁前，請先把需要的東西匯出。',
 
   // 專案範圍的分頁持久化（ID10）：標題徽章 + 跨專案儲存拒絕
   'project.badge.title': '目前的專案目錄',

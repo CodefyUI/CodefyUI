@@ -51,15 +51,28 @@ function RightColumn() {
   );
 }
 
+/**
+ * The editor surface for whichever tab is active.
+ *
+ * Exactly ONE of these is ever mounted (#125). Before, App rendered a
+ * TabContent per tab and hid the inactive ones with `display: none` — five
+ * tabs of a 200-node graph meant a thousand mounted node components, five
+ * React Flow stores each re-diffing on every store commit, and five copies
+ * of the palette and panels re-rendering in lockstep. Worse, every one of
+ * those hidden canvases rendered the ACTIVE tab's nodes anyway (each child
+ * selects by `activeTabId`, not by its own tab), so the duplicates were not
+ * even showing different graphs.
+ *
+ * It is rendered WITHOUT a `key` on purpose: React then reuses this instance
+ * across tab switches, so the `<ReactFlowProvider>` (and the node
+ * measurements, panel sizes and palette state inside it) survives the
+ * switch instead of being torn down and rebuilt. The one thing that model
+ * does not carry across for free is the viewport — a single provider has a
+ * single pan/zoom — so FlowCanvas hands it over explicitly per tab.
+ */
 function TabContent({ tabId }: { tabId: string }) {
-  const activeTabId = useTabStore((s) => s.activeTabId);
-  const isActive = tabId === activeTabId;
-
   return (
-    <div
-      className={styles.tabContent}
-      style={{ display: isActive ? 'flex' : 'none' }}
-    >
+    <div className={styles.tabContent}>
       <div className={styles.tabInner}>
         <ReactFlowProvider>
           <NodePalette />
@@ -78,7 +91,10 @@ function TabContent({ tabId }: { tabId: string }) {
 
 function App() {
   useKeyboardShortcuts();
-  const tabs = useTabStore((s) => s.tabs);
+  const activeTabId = useTabStore((s) => s.activeTabId);
+  const hasActiveTab = useTabStore((s) =>
+    s.tabs.some((t) => t.id === s.activeTabId),
+  );
   const fontSize = useUIStore((s) => s.fontSize);
 
   useEffect(() => {
@@ -114,9 +130,7 @@ function App() {
     <div className={styles.root}>
       <Toolbar />
       <TabBar />
-      {tabs.map((tab) => (
-        <TabContent key={tab.id} tabId={tab.id} />
-      ))}
+      {hasActiveTab && <TabContent tabId={activeTabId} />}
       <PresetConfigModal />
       <SubgraphEditorModal />
       <ToastContainer />

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import App from './App';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
@@ -23,7 +23,11 @@ vi.mock('./components/Sidebar/NodePalette', () => ({
   NodePalette: () => <div data-testid="node-palette" />,
 }));
 vi.mock('./components/Canvas/FlowCanvas', () => ({
-  FlowCanvas: () => <div data-testid="flow-canvas" />,
+  // Echoes the tabId prop so the single-mount tests can assert WHICH tab the
+  // one mounted canvas is for.
+  FlowCanvas: ({ tabId }: { tabId?: string }) => (
+    <div data-testid="flow-canvas" data-tab-id={tabId} />
+  ),
 }));
 vi.mock('./components/ConfigPanel/NodeConfigPanel', () => ({
   NodeConfigPanel: () => <div data-testid="config-panel" />,
@@ -124,18 +128,37 @@ describe('App', () => {
     expect(screen.getByTestId('results-panel')).toBeTruthy();
   });
 
-  it('renders one TabContent per tab and shows only the active one', () => {
-    useTabStore.getState().addTab('Tab 2'); // Tab 2 becomes active
-    const { container } = render(<App />);
-    // Two canvases (one per tab).
-    expect(screen.getAllByTestId('flow-canvas')).toHaveLength(2);
+  // #125: only the ACTIVE tab's editor surface is mounted. It used to render
+  // one TabContent per tab and hide the inactive ones with display:none,
+  // which mounted every tab's canvas, palette and panels at once.
+  it('mounts exactly one editor surface no matter how many tabs exist', () => {
+    useTabStore.getState().addTab('Tab 2');
+    useTabStore.getState().addTab('Tab 3'); // Tab 3 becomes active
+    render(<App />);
+    expect(screen.getAllByTestId('flow-canvas')).toHaveLength(1);
+    expect(screen.getAllByTestId('node-palette')).toHaveLength(1);
+    expect(screen.getAllByTestId('results-panel')).toHaveLength(1);
+  });
 
-    // The tabContent wrappers toggle display; exactly one is flex, one is none.
-    const displays = Array.from(container.querySelectorAll('div'))
-      .filter((d) => d.style.display === 'flex' || d.style.display === 'none')
-      .map((d) => d.style.display);
-    expect(displays.filter((d) => d === 'flex')).toHaveLength(1);
-    expect(displays.filter((d) => d === 'none')).toHaveLength(1);
+  it('hands the active tab id to the mounted canvas and follows tab switches', () => {
+    const first = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('Tab 2');
+    const second = useTabStore.getState().activeTabId;
+
+    render(<App />);
+    expect(screen.getByTestId('flow-canvas').dataset.tabId).toBe(second);
+
+    act(() => {
+      useTabStore.getState().setActiveTab(first);
+    });
+    expect(screen.getByTestId('flow-canvas').dataset.tabId).toBe(first);
+  });
+
+  it('renders nothing for the editor surface when no tab is active', () => {
+    // Defensive: a store mid-rehydration can briefly name a tab that is gone.
+    useTabStore.setState({ activeTabId: 'missing' });
+    render(<App />);
+    expect(screen.queryByTestId('flow-canvas')).toBeNull();
   });
 
   // ── RightColumn conditional rendering ───────────────────────────────────────
@@ -220,16 +243,27 @@ describe('App', () => {
     expect(useKeyboardShortcuts).toHaveBeenCalled();
   });
 
-  it('keeps the active TabContent visible (display:flex) for the active tab only', () => {
-    const tabId = useTabStore.getState().activeTabId;
-    const { container } = render(<App />);
-    // With a single tab it is active → its content is flex.
-    const flexContents = Array.from(container.querySelectorAll('div')).filter(
-      (d) => d.style.display === 'flex',
-    );
-    expect(flexContents.length).toBeGreaterThanOrEqual(1);
-    // Switching active away (no other tab) keeps it active; sanity: id unchanged.
-    expect(useTabStore.getState().activeTabId).toBe(tabId);
+  // #125 replaced the display:none toggle with mounting only the active tab,
+  // so visibility is no longer an inline style to assert on. What survives of
+  // the old contract is that switching tabs keeps exactly one surface up and
+  // does NOT tear the ReactFlowProvider down (TabContent renders without a
+  // `key`, so React reuses the instance across the switch).
+  it('reuses the same TabContent instance across a tab switch', () => {
+    const first = useTabStore.getState().activeTabId;
+    useTabStore.getState().addTab('Tab 2');
+    render(<App />);
+    // TabContent renders without a `key`, so React reuses the instance --
+    // and with it the ReactFlowProvider, node measurements and panel state --
+    // rather than tearing the whole editor down on every switch. A remount
+    // would have produced a different DOM node here.
+    const canvasBefore = screen.getByTestId('flow-canvas');
+
+    act(() => {
+      useTabStore.getState().setActiveTab(first);
+    });
+    expect(screen.getAllByTestId('flow-canvas')).toHaveLength(1);
+    expect(screen.getByTestId('flow-canvas')).toBe(canvasBefore);
+    expect(canvasBefore.dataset.tabId).toBe(first);
   });
 
   // -- Health bootstrap -> per-project rehydration (Task 13 review gap, ID10) --

@@ -442,6 +442,8 @@ const en = {
   'toolbar.layoutMode.aria': 'Layout mode',
   'toolbar.language.aria': 'Language',
   'persistence.quotaError': 'Could not save tabs — browser storage is full.',
+  'persistence.storageUnavailable':
+    'Browser storage is not working — the tabs shown may be out of date, and new changes may not be saved. Export anything you need before closing this tab.',
 
   // Per-project tab scoping (ID10): header badge + cross-project save refusal.
   'project.badge.title': 'Active project directory',

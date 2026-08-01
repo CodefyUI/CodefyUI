@@ -2,12 +2,15 @@ import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import { generateId, buildFlowNode } from '../utils';
+import { forgetViewport } from '../utils/viewportMemory';
+import { idbAvailable } from '../utils/idb';
+import { readSnapshot, writeSnapshot } from './tabPersistence';
 import { autoLayoutWithTargets, nodesBoundingBox, type LayoutMode } from '../utils/autoLayout';
 import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup } from '../types';
 import { ExecutionWebSocket } from '../api/ws';
 import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
-import { useI18n } from '../i18n';
+import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 
 // ── Per-tab state ──
@@ -54,6 +57,18 @@ interface UndoSnapshot {
 }
 
 const MAX_UNDO = 50;
+
+/**
+ * Batched execution updates: tabId -> nodeId -> patch (#125).
+ *
+ * The patch type itself lives in `nodeUpdateQueue`, which owns the frame
+ * coalescing; the store only knows how to apply a batch. Imported as a type
+ * so the module graph stays one-directional (queue -> store) at runtime.
+ */
+export type PendingNodeUpdates = Map<
+  string,
+  Map<string, import('./nodeUpdateQueue').PendingNodePatch>
+>;
 
 export interface TabState {
   id: string;
@@ -231,6 +246,7 @@ interface TabStoreState {
   getTab: (id: string) => TabState | undefined;
 
   // execution actions for specific tab (used by WS handlers)
+  applyTabNodeUpdates: (updates: PendingNodeUpdates) => void;
   setTabNodeExecutionStatus: (tabId: string, nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   setTabNodeProgress: (tabId: string, nodeId: string, progress: NodeProgress) => void;
   setTabOutputSummary: (tabId: string, nodeId: string, summary: Record<string, OutputSummary>) => void;
@@ -362,7 +378,18 @@ function stripNodeSecretsForPersist(
   });
 }
 
-// ── LocalStorage persistence ──
+// ── Persistence ──
+//
+// Two tiers since #125. IndexedDB is the store of record: one record per tab,
+// structured-cloned rather than stringified, with no practical size limit.
+// localStorage is what the app used before, and stays on as (a) the source
+// the first IndexedDB load migrates FROM, and (b) the write target when
+// IndexedDB is unavailable — private-browsing modes, sandboxed frames, and
+// jsdom, which has none at all.
+//
+// Both tiers key off the same project-scoped `_storageKey()`, and both store
+// the same `PersistedTab` shape, so the migration is a straight copy and a
+// downgrade still finds the last blob localStorage held.
 
 const STORAGE_KEY_BASE = 'codefyui-tabs';
 
@@ -374,7 +401,11 @@ function _storageKey(): string {
   return pid ? `${STORAGE_KEY_BASE}::${pid}` : STORAGE_KEY_BASE;
 }
 
-interface PersistedTab {
+/**
+ * One tab as it is written to storage. Exported because `tabPersistence`
+ * stores these as individual IndexedDB records (#125) and needs the shape.
+ */
+export interface PersistedTab {
   id: string;
   name: string;
   description?: string;
@@ -399,62 +430,186 @@ interface PersistedTab {
   autoBackward?: boolean;
 }
 
-// Throttle the user-facing quota toast so a big graph editing session
-// doesn't burst N toasts when localStorage fills up. One per minute is
-// plenty to surface "your work isn't being saved".
-let _lastQuotaWarn = 0;
+// Throttle the user-facing persistence warnings so a long editing session
+// doesn't burst N toasts while storage stays broken. One per minute is plenty
+// to surface "your work isn't being saved". Keyed by message, so a failing
+// READ and a failing WRITE cannot silence each other — they are different
+// problems with different advice.
+const _lastPersistenceWarn = new Map<string, number>();
 
-function saveTabs(tabs: TabState[], activeTabId: string) {
+function warnPersistence(messageKey: TranslationKey): void {
+  const now = Date.now();
+  if (now - (_lastPersistenceWarn.get(messageKey) ?? 0) <= 60_000) return;
+  // Opened before the toast is attempted, so a throwing i18n/toast layer
+  // cannot turn this into a per-save retry loop.
+  _lastPersistenceWarn.set(messageKey, now);
   try {
-    const data: { tabs: PersistedTab[]; activeTabId: string } = {
-      activeTabId,
-      tabs: tabs.map((t) => ({
-        id: t.id,
-        name: t.name,
-        description: t.description,
-        currentGraphFile: t.currentGraphFile,
-        // Only persisted when set, so non-project localStorage is byte-identical.
-        ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
-        // Only persisted when true, so an editable graph's localStorage shape
-        // stays byte-identical to before this task.
-        ...(t.readOnly ? { readOnly: true } : {}),
-        // Never persist SECRET param values (typed API keys) to localStorage:
-        // they must not survive a page refresh — the field is "Session only".
-        nodes: stripNodeSecretsForPersist(t.nodes),
-        edges: t.edges,
-        segmentGroups: t.segmentGroups,
-        // Only while the run might still be in flight, so a finished run's
-        // id never survives a reload: the Inspector's captured outputs live
-        // in a process-lifetime store, and pointing it at a run whose
-        // outputs are gone would replace "not run yet" with an empty view.
-        // Keeps localStorage byte-identical for an idle tab, too.
-        ...(t.status === 'running' && t.lastRunId
-          ? { lastRunId: t.lastRunId }
-          : {}),
-        recordOutputs: t.recordOutputs,
-        verboseMode: t.verboseMode,
-        graphId: t.graphId,
-        weightsPersistent: t.weightsPersistent,
-        backwardMode: t.backwardMode,
-        autoBackward: t.autoBackward,
-      })),
-    };
-    localStorage.setItem(_storageKey(), JSON.stringify(data));
+    useToastStore.getState().addToast(useI18n.getState().t(messageKey), 'error');
+  } catch {
+    /* toast/i18n not initialised yet — nothing useful to do here */
+  }
+}
+
+/** Build the storage record for one tab. */
+function buildPersistedTab(t: TabState): PersistedTab {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    currentGraphFile: t.currentGraphFile,
+    // Only persisted when set, so non-project localStorage is byte-identical.
+    ...(t.projectOrigin != null ? { projectOrigin: t.projectOrigin } : {}),
+    // Only persisted when true, so an editable graph's localStorage shape
+    // stays byte-identical to before this task.
+    ...(t.readOnly ? { readOnly: true } : {}),
+    // Never persist SECRET param values (typed API keys): they must not
+    // survive a page refresh — the field is "Session only".
+    nodes: stripNodeSecretsForPersist(t.nodes),
+    edges: t.edges,
+    segmentGroups: t.segmentGroups,
+    // Only while the run might still be in flight, so a finished run's
+    // id never survives a reload: the Inspector's captured outputs live
+    // in a process-lifetime store, and pointing it at a run whose
+    // outputs are gone would replace "not run yet" with an empty view.
+    // Keeps localStorage byte-identical for an idle tab, too.
+    ...(t.status === 'running' && t.lastRunId ? { lastRunId: t.lastRunId } : {}),
+    recordOutputs: t.recordOutputs,
+    verboseMode: t.verboseMode,
+    graphId: t.graphId,
+    weightsPersistent: t.weightsPersistent,
+    backwardMode: t.backwardMode,
+    autoBackward: t.autoBackward,
+  };
+}
+
+// Last record built per tab, with the exact inputs it was built from (#125).
+//
+// `buildPersistedTab` walks every node (secret stripping), so before this
+// cache a five-tab workspace re-walked all five graphs every 250ms because
+// ONE of them moved a node. Every field a record reads is either an array the
+// store replaces immutably on change — so a reference compare is exact — or a
+// scalar, and the scalars are folded into one signature string. A cache hit
+// returns the SAME record object, which is also how `tabPersistence`
+// recognises a tab it has already made durable and skips writing it.
+interface TabRecordCacheEntry {
+  nodes: Node<NodeData>[];
+  edges: Edge[];
+  segmentGroups: SegmentGroup[];
+  scalars: string;
+  record: PersistedTab;
+}
+let _recordCache = new Map<string, TabRecordCacheEntry>();
+
+// JSON, not a joined string: `name`, `description` and the file/project paths
+// are free text, and any separator character they could contain would let two
+// different tabs produce the same signature — a save that never happens.
+function scalarSignature(t: TabState): string {
+  return JSON.stringify([
+    t.name,
+    t.description,
+    t.currentGraphFile ?? '',
+    t.projectOrigin ?? '',
+    t.readOnly ? '1' : '0',
+    t.status,
+    t.lastRunId ?? '',
+    t.recordOutputs ? '1' : '0',
+    t.verboseMode ? '1' : '0',
+    t.graphId,
+    t.weightsPersistent ? '1' : '0',
+    t.backwardMode ? '1' : '0',
+    t.autoBackward ? '1' : '0',
+  ]);
+}
+
+function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
+  const next = new Map<string, TabRecordCacheEntry>();
+  const records = tabs.map((t) => {
+    const scalars = scalarSignature(t);
+    const cached = _recordCache.get(t.id);
+    const entry: TabRecordCacheEntry =
+      cached &&
+      cached.nodes === t.nodes &&
+      cached.edges === t.edges &&
+      cached.segmentGroups === t.segmentGroups &&
+      cached.scalars === scalars
+        ? cached
+        : {
+            nodes: t.nodes,
+            edges: t.edges,
+            segmentGroups: t.segmentGroups,
+            scalars,
+            record: buildPersistedTab(t),
+          };
+    next.set(t.id, entry);
+    return entry.record;
+  });
+  // Rebuilt rather than mutated so a closed tab's entry cannot linger.
+  _recordCache = next;
+  return records;
+}
+
+/** The pre-#125 write path: one JSON blob under the scoped key. */
+function saveTabsToLocalStorage(records: PersistedTab[], activeTabId: string) {
+  try {
+    localStorage.setItem(
+      _storageKey(),
+      JSON.stringify({ activeTabId, tabs: records }),
+    );
   } catch {
     // QuotaExceededError / SecurityError / private mode etc. The README
     // promises auto-save; failing silently lets the user lose work without
-    // realising. Surface once per minute at most.
-    const now = Date.now();
-    if (now - _lastQuotaWarn > 60_000) {
-      _lastQuotaWarn = now;
-      try {
-        const message = useI18n.getState().t('persistence.quotaError');
-        useToastStore.getState().addToast(message, 'error');
-      } catch {
-        /* toast/i18n not initialised yet — nothing useful to do here */
-      }
-    }
+    // realising.
+    warnPersistence('persistence.quotaError');
   }
+}
+
+// IndexedDB writes are asynchronous while the debounce that triggers them is
+// not, so saves are chained rather than fired concurrently. Two overlapping
+// writes would still both name the whole tab set (last one wins), but the
+// durability bookkeeping in `tabPersistence` assumes it sees them in order.
+let _idbWriteChain: Promise<void> = Promise.resolve();
+
+function saveTabs(tabs: TabState[], activeTabId: string) {
+  const records = persistedTabsFor(tabs);
+  if (!idbAvailable()) {
+    saveTabsToLocalStorage(records, activeTabId);
+    return;
+  }
+  const scope = _storageKey();
+  _idbWriteChain = _idbWriteChain
+    .then(() => writeSnapshot(scope, records, activeTabId))
+    .catch(() => {
+      // IndexedDB was there a moment ago and is not now (a version upgrade
+      // from another tab, a corrupted database, a browser that revoked
+      // storage). Autosave is a promise to the user, so fall back to the
+      // tier that may still work rather than dropping the save.
+      saveTabsToLocalStorage(records, activeTabId);
+    });
+}
+
+/** Rebuild one `TabState` from its record, over a base carrying live fields. */
+function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
+  return {
+    ...base,
+    name: t.name,
+    description: t.description ?? '',
+    currentGraphFile: t.currentGraphFile ?? null,
+    projectOrigin: t.projectOrigin ?? null,
+    readOnly: t.readOnly ?? false,
+    nodes: t.nodes ?? [],
+    edges: t.edges ?? [],
+    segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
+    lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
+    recordOutputs: t.recordOutputs ?? true,
+    verboseMode: t.verboseMode ?? false,
+    // Preserve persisted graphId — required so backend NodeStateStore
+    // keeps weights linked to this tab across sessions. Falls back to
+    // the freshly generated UUID for legacy tabs.
+    graphId: t.graphId ?? base.graphId,
+    weightsPersistent: t.weightsPersistent ?? true,
+    backwardMode: t.backwardMode ?? false,
+    autoBackward: t.autoBackward ?? false,
+  };
 }
 
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
@@ -463,29 +618,9 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
     if (raw) {
       const data = JSON.parse(raw);
       if (Array.isArray(data.tabs) && data.tabs.length > 0) {
-        const tabs: TabState[] = data.tabs.map((t: PersistedTab) => {
-          const base = createTabState(t.id, t.name);
-          return {
-            ...base,
-            description: t.description ?? '',
-            currentGraphFile: t.currentGraphFile ?? null,
-            projectOrigin: t.projectOrigin ?? null,
-            readOnly: t.readOnly ?? false,
-            nodes: t.nodes ?? [],
-            edges: t.edges ?? [],
-            segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
-            lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
-            recordOutputs: t.recordOutputs ?? true,
-            verboseMode: t.verboseMode ?? false,
-            // Preserve persisted graphId — required so backend NodeStateStore
-            // keeps weights linked to this tab across sessions. Falls back to
-            // the freshly generated UUID for legacy tabs.
-            graphId: t.graphId ?? base.graphId,
-            weightsPersistent: t.weightsPersistent ?? true,
-            backwardMode: t.backwardMode ?? false,
-            autoBackward: t.autoBackward ?? false,
-          };
-        });
+        const tabs: TabState[] = data.tabs.map((t: PersistedTab) =>
+          tabFromPersisted(t, createTabState(t.id, t.name)),
+        );
         const activeTabId = tabs.some((t) => t.id === data.activeTabId)
           ? data.activeTabId
           : tabs[0].id;
@@ -522,6 +657,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
     const tab = tabs.find((t) => t.id === id);
     if (tab) tab.ws.disconnect();
+    // The shared canvas keeps each tab's pan/zoom keyed by id (#125); a
+    // closed tab's entry would otherwise outlive it for the whole session.
+    forgetViewport(id);
 
     const remaining = tabs.filter((t) => t.id !== id);
     const newActive = activeTabId === id
@@ -545,10 +683,17 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ readOnly: v })) }),
 
   rehydrateForProject: (projectId) => {
-    // Non-project mode keeps the import-time base-key tabs untouched.
-    if (projectId === null) return;
-    const loaded = loadTabs(); // reads the now-scoped key
-    set({ tabs: loaded.tabs, activeTabId: loaded.activeTabId });
+    // Non-project mode keeps the import-time base-key tabs untouched — its
+    // scope was already hydrated at import, and re-reading the base key here
+    // would throw away edits made since.
+    if (projectId !== null) {
+      const loaded = loadTabs(); // reads the now-scoped key
+      set({ tabs: loaded.tabs, activeTabId: loaded.activeTabId });
+      // The synchronous read above only sees localStorage. IndexedDB holds
+      // this project's real tabs (and receives them if this is the first load
+      // after the upgrade); it answers a round-trip later and wins.
+      _startHydration();
+    }
   },
   stampActiveTabProject: (projectId) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ projectOrigin: projectId })) }),
@@ -599,7 +744,18 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           (c): c is Extract<NodeChange, { type: 'position' }> =>
             c.type === 'position' && (c as { position?: unknown }).position != null,
         );
-        if (posChanges.length > 0) {
+        // Bound notes ride along with their parent, which costs up to two more
+        // passes over the WHOLE array on every pointer move of a drag — and
+        // `map` allocates a fresh array even when it returns every element
+        // unchanged. Most graphs (certainly the large ones that make a drag
+        // frame expensive) have no bound note at all, so check once and skip
+        // both passes: `some` short-circuits and allocates nothing (#125).
+        const hasBoundNotes =
+          posChanges.length > 0 &&
+          updatedNodes.some(
+            (n) => n.type === 'noteNode' && n.data.boundToNodeId && n.data.boundOffset,
+          );
+        if (hasBoundNotes) {
           const movedIds = new Set(posChanges.map((c) => c.id));
 
           // 1) If a bound note was dragged, update its offset relative to parent
@@ -1129,12 +1285,38 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   },
 
   // ── Undo/Redo ──
+  //
+  // Snapshots are SHALLOW array copies, not deep clones (#125).
+  //
+  // Why the deep clone was unnecessary: every writer in this store replaces
+  // what it changes rather than mutating it — `nodes.map(n => ({...n, data:
+  // {...n.data, ...}}))` and friends, without exception — and React Flow does
+  // the same with the arrays we hand it (`applyNodeChanges` builds a new
+  // array, shallow-copies only the elements a change touches, and never
+  // writes through `element.data`). So a node object reachable from a
+  // snapshot can never be modified in place; the only way its contents can
+  // change is by the live array being replaced, which leaves the snapshot's
+  // array pointing at the old objects. Copying the ARRAY is what the
+  // snapshot needs, and that is all it needs.
+  //
+  // Why it was actively harmful: at ~1 KB of JSON per node, a 300-node graph
+  // paid a full stringify + parse on every drag start and every delete —
+  // on the interaction's critical path. It was also lossy (JSON drops
+  // `undefined`-valued keys such as `data.error`) and it detached each node's
+  // `data.definition` from the shared registry object. And because deep
+  // clones fail React Flow's `userNode === internals.userNode` identity
+  // check, every undo forced it to re-adopt all N nodes; shallow snapshots
+  // restore untouched nodes by identity.
+  //
+  // A fresh `[...]` rather than the bare reference: the arrays are never
+  // mutated, so aliasing is harmless today, but `undo()` promotes a
+  // snapshot's array to being the live one and a copy costs a pointer memcpy.
 
   pushUndoSnapshot: () => {
     const tab = get().getActiveTab();
     const snapshot: UndoSnapshot = {
-      nodes: JSON.parse(JSON.stringify(tab.nodes)),
-      edges: JSON.parse(JSON.stringify(tab.edges)),
+      nodes: [...tab.nodes],
+      edges: [...tab.edges],
     };
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
@@ -1148,8 +1330,8 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const tab = get().getActiveTab();
     if (tab.undoStack.length === 0) return;
     const current: UndoSnapshot = {
-      nodes: JSON.parse(JSON.stringify(tab.nodes)),
-      edges: JSON.parse(JSON.stringify(tab.edges)),
+      nodes: [...tab.nodes],
+      edges: [...tab.edges],
     };
     const prev = tab.undoStack[tab.undoStack.length - 1];
     set({
@@ -1166,8 +1348,8 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const tab = get().getActiveTab();
     if (tab.redoStack.length === 0) return;
     const current: UndoSnapshot = {
-      nodes: JSON.parse(JSON.stringify(tab.nodes)),
-      edges: JSON.parse(JSON.stringify(tab.edges)),
+      nodes: [...tab.nodes],
+      edges: [...tab.edges],
     };
     const next = tab.redoStack[tab.redoStack.length - 1];
     set({
@@ -1305,27 +1487,58 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   // ── Tab-specific execution actions (WS handlers target a specific tab) ──
 
-  setTabNodeExecutionStatus: (tabId, nodeId, status, error) =>
-    set({
-      tabs: updateTab(get().tabs, tabId, (tab) => ({
-        nodes: tab.nodes.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, executionStatus: status, error } }
-            : n
-        ),
-      })),
+  // The single write path for streamed execution state (#125). One call
+  // rebuilds each affected tab's nodes array exactly once, no matter how
+  // many nodes or how many events the batch covers, and leaves untouched
+  // nodes referentially identical so React Flow re-diffs only what moved.
+  // Live runs reach it through `nodeUpdateQueue`, which buffers a frame's
+  // worth of events into one batch.
+  applyTabNodeUpdates: (updates) =>
+    set((state) => {
+      let anyTabChanged = false;
+      const tabs = state.tabs.map((tab) => {
+        const patches = updates.get(tab.id);
+        if (!patches || patches.size === 0) return tab;
+        let changed = false;
+        const nodes = tab.nodes.map((n) => {
+          const patch = patches.get(n.id);
+          if (!patch) return n;
+          changed = true;
+          const data = { ...n.data };
+          if (patch.status) {
+            data.executionStatus = patch.status.executionStatus;
+            data.error = patch.status.error;
+          }
+          if (patch.progress) data.progress = patch.progress;
+          return { ...n, data };
+        });
+        if (!changed) return tab;
+        anyTabChanged = true;
+        return { ...tab, nodes };
+      });
+      // A batch naming only stale tabs/nodes (a run whose graph was edited
+      // mid-flight) leaves `tabs` out of the patch entirely, so the array
+      // reference every selector reads is preserved. Zustand still runs its
+      // listeners — an empty patch is not a no-op at that level — but no
+      // selector sees a change, so nothing re-renders and React Flow is not
+      // handed a new nodes array to diff.
+      return anyTabChanged ? { tabs } : {};
     }),
 
+  // Immediate single-node forms over the same applier. Nothing in the live
+  // app calls them any more — the WS handler batches through
+  // `nodeUpdateQueue` — and they are kept deliberately, for two callers that
+  // are not the live path: the perf harness drives them as its pre-#125
+  // comparison (writing straight through, once per event, which is what these
+  // measure), and tests that assert on one node's outcome should not have to
+  // build a nested Map to set it up. Retire them only if both go away.
+  setTabNodeExecutionStatus: (tabId, nodeId, status, error) =>
+    get().applyTabNodeUpdates(
+      new Map([[tabId, new Map([[nodeId, { status: { executionStatus: status, error } }]])]]),
+    ),
+
   setTabNodeProgress: (tabId, nodeId, progress) =>
-    set({
-      tabs: updateTab(get().tabs, tabId, (tab) => ({
-        nodes: tab.nodes.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, progress } }
-            : n
-        ),
-      })),
-    }),
+    get().applyTabNodeUpdates(new Map([[tabId, new Map([[nodeId, { progress }]])]])),
 
   setTabOutputSummary: (tabId, nodeId, summary) =>
     set({
@@ -1444,14 +1657,137 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }),
 }));
 
-// ── Auto-save to localStorage ──
+// ── Loading the IndexedDB tier ──
+//
+// `loadTabs()` above runs at import and reads localStorage, because the store
+// has to exist before React renders and IndexedDB cannot be read
+// synchronously. That result is a placeholder in the IndexedDB era: whatever
+// the pre-#125 build last wrote, which may be nothing, and which is not
+// updated any more once IndexedDB takes over. Hydration below is what makes
+// the real state appear, one IndexedDB round-trip later.
+
+/** What a hydration attempt did, for tests and for the caller's logging. */
+export type HydrationOutcome =
+  /** No IndexedDB here (jsdom, private mode, sandboxed frame). */
+  | 'unavailable'
+  /** IndexedDB held this scope's tabs; the store now shows them. */
+  | 'loaded'
+  /** Nothing in IndexedDB yet; localStorage's tabs were copied across. */
+  | 'migrated'
+  /** Nothing in either tier; the default tab was written as the seed. */
+  | 'seeded'
+  /** The storage scope moved while reading; the result was thrown away. */
+  | 'superseded'
+  /** IndexedDB is present but unusable; localStorage stays authoritative. */
+  | 'failed';
+
+// How many hydrations are in flight. A debounced save that fires inside that
+// window would write the PRE-hydration tabs over the records being read — the
+// classic rehydrate/autosave race — so it defers instead. A counter rather
+// than a flag because the import-time hydration can still be running when a
+// resolved project starts a second one, and the first to finish must not
+// declare the window closed.
+let _hydrationsInFlight = 0;
+
+/**
+ * Bring the tab tree in line with IndexedDB for the current storage scope,
+ * migrating localStorage's contents on the first run that finds it empty.
+ *
+ * Called at import for the base scope and again once a project resolves, and
+ * exported so tests can await it.
+ *
+ * Never rejects — but a failure here is NOT benign, and the toast it raises
+ * is the only thing that says so. Once a workspace has migrated, localStorage
+ * is frozen at migration-day content: it is still read, never written. So a
+ * failed READ (Firefox private mode, a corrupted database, storage evicted
+ * under pressure — `idbAvailable()` is true in all three) puts those old tabs
+ * on screen, accepts edits against them, routes the saves to the localStorage
+ * fallback, and lets the next healthy session load IndexedDB and discard the
+ * lot. The user has to know to export before that happens.
+ */
+export async function hydrateTabsFromPersistence(): Promise<HydrationOutcome> {
+  if (!idbAvailable()) return 'unavailable';
+  const scope = _storageKey();
+  _hydrationsInFlight += 1;
+  try {
+    const snapshot = await readSnapshot(scope);
+
+    // The scope can move out from under this read. The base scope's hydration
+    // starts at import; a resolved project switches the scope as soon as
+    // /api/health answers, which can easily beat an IndexedDB round-trip.
+    // Applying now would replace the project's graphs with the base ones —
+    // and on the migrate branch it would write the project's tabs INTO the
+    // base scope. Both are silent data loss, so a stale read is discarded.
+    if (scope !== _storageKey()) return 'superseded';
+
+    if (snapshot) {
+      // Reuse the live tab object for any id already on screen. A tab's
+      // record covers what is on disk; its socket, logs, undo stacks and
+      // run cursor are session state that hydration has no business
+      // recreating — and re-creating the socket would strand the WS
+      // handlers `useGraphExecution` already attached to the old one.
+      const existing = new Map(
+        useTabStore.getState().tabs.map((t) => [t.id, t] as const),
+      );
+      const tabs = snapshot.tabs.map((rec) =>
+        tabFromPersisted(rec, existing.get(rec.id) ?? createTabState(rec.id, rec.name)),
+      );
+      useTabStore.setState({ tabs, activeTabId: snapshot.activeTabId });
+      return 'loaded';
+    }
+
+    // Nothing under this scope in IndexedDB. Whatever `loadTabs()` put in the
+    // store IS the pre-#125 state (or a fresh default), so writing it across
+    // is the migration — one copy, on the first load after upgrading.
+    const hadLegacy = localStorage.getItem(scope) !== null;
+    const state = useTabStore.getState();
+    await writeSnapshot(scope, persistedTabsFor(state.tabs), state.activeTabId);
+    // The legacy blob is deliberately left where it is: an in-place downgrade
+    // to a build without this code still opens the graph it last saw, and the
+    // load path above still reads it for one release. It stops being updated
+    // from here on, so IndexedDB is the only tier that stays current.
+    return hadLegacy ? 'migrated' : 'seeded';
+  } catch {
+    // See the note above: silence here reads to the user as "nothing to
+    // restore" and costs them the session's work at the next healthy load.
+    warnPersistence('persistence.storageUnavailable');
+    return 'failed';
+  } finally {
+    _hydrationsInFlight -= 1;
+  }
+}
+
+// The most recent hydration, so callers (and tests) can wait for the tab tree
+// to be real rather than guessing at a timeout.
+let _lastHydration: Promise<HydrationOutcome> = Promise.resolve('unavailable');
+
+function _startHydration(): void {
+  _lastHydration = hydrateTabsFromPersistence();
+}
+
+/**
+ * Resolves once the newest hydration attempt has settled.
+ *
+ * No production caller, deliberately: acting on a bad outcome is
+ * `hydrateTabsFromPersistence`'s own job (it raises the toast at the point of
+ * failure, where the reason is still in scope), so nothing has to remember to
+ * await this and check. It exists so tests can be deterministic about a step
+ * that is otherwise only observable as "the tabs changed a bit later", and so
+ * a future caller that genuinely needs to sequence against hydration has a
+ * handle rather than a timeout.
+ */
+export function whenTabsHydrated(): Promise<HydrationOutcome> {
+  return _lastHydration;
+}
+
+// ── Auto-save ──
 //
 // React Flow fires a state change per pointer event during a drag, and
 // status updates from the backend stream tick it many times per run. Writing
-// (and JSON-stringifying) the whole tab tree on every tick wastes CPU and
-// can stutter visibly on large graphs. We collapse a burst of changes into
-// a single trailing-edge save; the actual `saveTabs` call reads fresh state
-// at fire time so we never persist a stale snapshot.
+// the whole tab tree on every tick wastes CPU and can stutter visibly on
+// large graphs. We collapse a burst of changes into a single trailing-edge
+// save; the actual `saveTabs` call reads fresh state at fire time so we never
+// persist a stale snapshot.
 const SAVE_DEBOUNCE_MS = 250;
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1459,6 +1795,12 @@ function _scheduleSave() {
   if (_saveTimer !== null) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
+    if (_hydrationsInFlight > 0) {
+      // Re-arm rather than save. Hydration always settles (it swallows its
+      // own failures), so this defers by one window, not forever.
+      _scheduleSave();
+      return;
+    }
     const s = useTabStore.getState();
     saveTabs(s.tabs, s.activeTabId);
   }, SAVE_DEBOUNCE_MS);
@@ -1467,3 +1809,9 @@ function _scheduleSave() {
 useTabStore.subscribe(() => {
   _scheduleSave();
 });
+
+// Start the IndexedDB read for the base scope immediately, so a non-project
+// session has its real tabs before the first paint of the canvas rather than
+// after a REST round-trip. Project mode repeats this from
+// `rehydrateForProject` once the scope is actually known.
+_startHydration();
