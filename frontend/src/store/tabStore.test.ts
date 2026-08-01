@@ -437,6 +437,131 @@ describe('param updates', () => {
     expect(bAfter.data.params).toEqual({ p1: 5, p2: 'x' });
   });
 
+  it('drops edges hanging off an output port a param edit removed', () => {
+    // core#131: shrinking Split's chunk count must not leave an edge on a
+    // handle that no longer renders — invisible on the canvas, fatal at the
+    // backend validator.
+    const splitDef = makeDef({
+      node_name: 'Split',
+      outputs: [
+        { name: 'chunk_0', data_type: 'TENSOR', description: '', optional: false },
+        { name: 'chunk_1', data_type: 'TENSOR', description: '', optional: false },
+      ],
+      params: [
+        { name: 'chunks', param_type: 'int', default: 2, description: '', options: [], min_value: 1, max_value: 32 },
+      ],
+    });
+    store().addNode(splitDef, { x: 0, y: 0 });
+    store().addNode(makeDef({ node_name: 'Print' }), { x: 200, y: 0 });
+    const [split, sink] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              edges: [
+                { id: 'keep', source: split.id, target: sink.id, sourceHandle: 'chunk_0', targetHandle: 'value' },
+                { id: 'drop', source: split.id, target: sink.id, sourceHandle: 'chunk_2', targetHandle: 'other' },
+              ],
+            }
+          : tab,
+      ),
+    });
+    store().updateNodeParams(split.id, { chunks: 3 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['keep', 'drop']);
+
+    store().updateNodeParams(split.id, { chunks: 2 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['keep']);
+  });
+
+  it('drops edges into an input port a param edit removed, and dirties the consumer', () => {
+    const scriptDef = makeDef({
+      node_name: 'PythonScript',
+      inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
+      outputs: [{ name: 'out1', data_type: 'ANY', description: '', optional: false }],
+      params: [
+        { name: 'input_ports', param_type: 'int', default: 1, description: '', options: [], min_value: 1, max_value: 8 },
+        { name: 'output_ports', param_type: 'int', default: 1, description: '', options: [], min_value: 1, max_value: 8 },
+      ],
+    });
+    store().addNode(makeDef({ node_name: 'Source' }), { x: 0, y: 0 });
+    store().addNode(scriptDef, { x: 200, y: 0 });
+    store().addNode(makeDef({ node_name: 'Print' }), { x: 400, y: 0 });
+    const [source, script, sink] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              edges: [
+                { id: 'in1', source: source.id, target: script.id, sourceHandle: 'value', targetHandle: 'in1' },
+                { id: 'in2', source: source.id, target: script.id, sourceHandle: 'value', targetHandle: 'in2' },
+                { id: 'out2', source: script.id, target: sink.id, sourceHandle: 'out2', targetHandle: 'value' },
+              ],
+            }
+          : tab,
+      ),
+    });
+    store().updateNodeParams(script.id, { input_ports: 2, output_ports: 2 });
+    expect(activeTab().edges.map((e) => e.id).sort()).toEqual(['in1', 'in2', 'out2']);
+
+    store().clearDirty();
+    store().updateNodeParams(script.id, { input_ports: 1, output_ports: 1 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['in1']);
+    // The consumer that just lost its input is dirty in its own right: with
+    // the edge gone, the dirty walk can no longer reach it from the script.
+    expect([...activeTab().dirtyNodeIds].sort()).toEqual([script.id, sink.id].sort());
+  });
+
+  it('never drops a trigger edge when ports change', () => {
+    const scriptDef = makeDef({
+      node_name: 'PythonScript',
+      inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
+      outputs: [{ name: 'out1', data_type: 'ANY', description: '', optional: false }],
+      params: [
+        { name: 'input_ports', param_type: 'int', default: 1, description: '', options: [], min_value: 1, max_value: 8 },
+      ],
+    });
+    store().addNode(makeDef({ node_name: 'Start' }), { x: 0, y: 0 });
+    store().addNode(scriptDef, { x: 200, y: 0 });
+    const [start, script] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              edges: [
+                { id: 't', source: start.id, target: script.id, sourceHandle: 'trigger', targetHandle: '__trigger', type: 'trigger' },
+              ],
+            }
+          : tab,
+      ),
+    });
+    store().updateNodeParams(script.id, { input_ports: 4 });
+    store().updateNodeParams(script.id, { input_ports: 1 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['t']);
+  });
+
+  it('leaves edges alone for a node whose ports do not depend on params', () => {
+    store().addNode(makeDef({ node_name: 'Add' }), { x: 0, y: 0 });
+    store().addNode(makeDef({ node_name: 'Print' }), { x: 200, y: 0 });
+    const [a, b] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              edges: [
+                { id: 'e', source: a.id, target: b.id, sourceHandle: 'whatever', targetHandle: 'value' },
+              ],
+            }
+          : tab,
+      ),
+    });
+    store().updateNodeParams(a.id, { p1: 42 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['e']);
+  });
+
   it('updatePresetInternalParam updates a nested internal param', () => {
     store().addPresetNode(makePreset(), { x: 0, y: 0 });
     const id = activeTab().nodes[0].id;

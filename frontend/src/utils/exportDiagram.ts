@@ -2,7 +2,7 @@ import dagre from '@dagrejs/dagre';
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, PortDefinition } from '../types';
 import { CATEGORY_COLORS } from '../styles/theme';
-import { getPortColor, resolveDynamicOutputs } from './index';
+import { getPortColor, resolveDynamicInputs, resolveDynamicOutputs } from './index';
 
 /**
  * Render the active tab's graph as a standalone, self-contained SVG showing
@@ -163,7 +163,7 @@ function buildEntry(node: Node<NodeData>): Entry {
   const isStart = isStartNode(node);
   // A Start node is a pure entry marker: just a green box with an outgoing
   // line, so its ports (the trigger) are not shown.
-  const inputs = isStart ? [] : (def?.inputs ?? []);
+  const inputs = isStart ? [] : resolveDynamicInputs(def, node.data.params);
   const outputs = isStart ? [] : resolveDynamicOutputs(def, node.data.params);
   const label = nodeLabel(node);
   // Inputs and outputs are stacked in separate rows (a single column), so the

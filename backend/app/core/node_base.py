@@ -37,6 +37,12 @@ class ParamType(str, Enum):
     # never persists the value; the save endpoint and the publish pre-flight
     # both scrub SECRET params to "" so saved graphs never contain secrets.
     SECRET = "secret"
+    # Multi-line Python source (core#131). The editor renders a real code
+    # editor with syntax highlighting instead of a one-line text input, and
+    # the node card shows the first lines as a preview. The value is still an
+    # ordinary string param, so it participates in the cache key and in saved
+    # graph JSON like any other.
+    CODE = "code"
 
 
 # Renderable-media kinds a port may declare (#117). Plain strings rather
@@ -134,6 +140,25 @@ class BaseNode(ABC):
         registry) keep using the static method.
         """
         return cls.define_outputs()
+
+    @classmethod
+    def define_inputs_dynamic(
+        cls,
+        params: dict[str, Any] | None = None,
+    ) -> list[PortDefinition]:
+        """Per-instance input ports. The mirror of ``define_outputs_dynamic``.
+
+        Added for ``PythonScriptNode`` (core#131), whose ``input_ports`` param
+        decides how many ``inN`` ports exist. Everything written before it
+        varies only its outputs, so the default delegates to the static
+        ``define_inputs()`` and nothing had to change.
+
+        Overriders carry the same contract as the outputs form: tolerate
+        ``None``/``{}``/garbage param values, clamp rather than raise, and
+        keep ``define_inputs()`` returning the port set for the DEFAULT
+        params, because that is what the palette template shows.
+        """
+        return cls.define_inputs()
 
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:

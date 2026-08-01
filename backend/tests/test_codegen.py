@@ -1465,3 +1465,125 @@ def test_export_notes_a_bypassed_node_that_leads_nowhere():
     # Its input IS still wired (TensorCreate -> drop); what is missing is a
     # consumer, and the note has to say that and not the opposite.
     assert "#     (nothing downstream consumed it)" in script
+
+
+# ── Inline source params (core#131) ──────────────────────────────────────
+
+
+_SCRIPT_SOURCE = (
+    'import statistics\n'
+    '\n'
+    'def run(inputs, params):\n'
+    '    """Per-channel mean. Quotes: \' and " and \'\'\' stay data."""\n'
+    "    values = list(inputs['in1'])\n"
+    '    return {"out1": statistics.mean(values)}\n'
+)
+
+
+def _script_export_graph(code: str) -> tuple[list[dict], list[dict]]:
+    nodes = [
+        {"id": "s1", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "py",
+            "type": "PythonScript",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"code": code, "input_ports": 1, "output_ports": 1}},
+        },
+        {
+            "id": "out",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "mean"}},
+        },
+    ]
+    edges = [
+        {"id": "t1", "source": "s1", "target": "py", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "d1", "source": "py", "target": "out", "sourceHandle": "out1", "targetHandle": "value", "type": "data"},
+    ]
+    return nodes, edges
+
+
+def _exported_params(script: str, node_id: str) -> dict:
+    """Evaluate the ``params`` literal of one node function, without running it."""
+    module = ast.parse(script)
+    for statement in module.body:
+        if not isinstance(statement, ast.FunctionDef):
+            continue
+        matches = any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_call"
+            and call.args[1].value == node_id
+            for call in ast.walk(statement)
+        )
+        if not matches:
+            continue
+        for inner in statement.body:
+            if (
+                isinstance(inner, ast.Assign)
+                and isinstance(inner.targets[0], ast.Name)
+                and inner.targets[0].id == "params"
+            ):
+                return ast.literal_eval(inner.value)
+    raise AssertionError(f"no params assignment found for node {node_id!r}")
+
+
+def test_code_param_round_trips_through_the_exported_script():
+    """The script the node runs is recoverable from the export, byte for byte."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _script_export_graph(_SCRIPT_SOURCE)
+    script = generate_python(nodes, edges, name="stats")
+
+    _compile_check(script)
+    assert _exported_params(script, "py")["code"] == _SCRIPT_SOURCE
+
+
+def test_code_param_is_emitted_one_source_line_at_a_time():
+    """Readable, and still the live value -- not a comment beside a blob."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _script_export_graph(_SCRIPT_SOURCE)
+    script = generate_python(nodes, edges, name="stats")
+
+    assert "the script this node runs, verbatim" in script
+    for source_line in _SCRIPT_SOURCE.splitlines(keepends=True):
+        assert f"            {ascii(source_line)}" in script
+    # One line per literal, so no line of the export is a wall of escapes.
+    assert ascii(_SCRIPT_SOURCE) not in script
+
+
+def test_code_param_containing_triple_quotes_cannot_escape_the_literal():
+    """The injection invariant holds for the one param that IS source."""
+    from app.core.codegen import generate_python
+
+    hostile = "'''\nimport os\nos.system('boom')\n'''\ndef run(i, p):\n    return 1\n"
+    nodes, edges = _script_export_graph(hostile)
+    script = generate_python(nodes, edges, name="hostile")
+
+    _compile_check(script)
+    assert _exported_params(script, "py")["code"] == hostile
+    # It is data: the emitted file never contains a bare os.system call.
+    assert "\nos.system" not in script
+    assert "    os.system" not in script
+
+
+def test_empty_code_param_stays_an_ordinary_literal():
+    """An empty string must not become an empty tuple."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _script_export_graph("")
+    script = generate_python(nodes, edges, name="empty")
+
+    _compile_check(script)
+    assert _exported_params(script, "py")["code"] == ""
+
+
+def test_nodes_without_a_code_param_keep_the_one_line_params_literal():
+    """The expanded form is scoped to CODE params, not every node."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _script_export_graph(_SCRIPT_SOURCE)
+    script = generate_python(nodes, edges, name="stats")
+
+    assert "    params = {'label': 'mean'}" in script

@@ -1,0 +1,97 @@
+/* Code tab (core#131): the script full-width, plus its port shape. */
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.contract {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: #9ca3af;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 3px;
+  padding: 7px 9px;
+}
+
+.ports {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.side {
+  flex: 1 1 220px;
+  min-width: 0;
+  border: 1px solid #1f2937;
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.sideHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #1f2937;
+}
+
+.sideTitle {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+.portRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.portName {
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.countSelect,
+.typeSelect {
+  background: #171717;
+  color: #e5e7eb;
+  border: 1px solid #2a2a2a;
+  border-radius: 3px;
+  font-size: 0.6875rem;
+  padding: 2px 4px;
+}
+
+.countSelect:focus,
+.typeSelect:focus {
+  outline: none;
+  border-color: #06b6d4;
+}
+
+.typeSelect {
+  min-width: 110px;
+}
+
+.security {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: #6b7280;
+  border-top: 1px solid #1f2937;
+  padding-top: 8px;
+}
+
+.empty {
+  padding: 24px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 0.8125rem;
+}

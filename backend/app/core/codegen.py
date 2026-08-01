@@ -41,6 +41,8 @@ from .graph_engine import (
     resolve_bypass,
     topological_sort,
 )
+from .node_base import ParamType
+from .node_registry import registry
 from .secret_params import scrub_graph_secrets
 
 
@@ -125,6 +127,71 @@ def _literal(value: Any) -> str:
 def _comment_text(text: str) -> str:
     """Make arbitrary text safe for a ``#`` comment (single printable line)."""
     return re.sub(r"[^\x20-\x7e]", "?", text)
+
+
+# ── Inline source params (core#131) ──────────────────────────────────────
+
+
+def _code_param_names(node_type: str) -> set[str]:
+    """Params of *node_type* declared as ``ParamType.CODE``.
+
+    Those hold Python the *user* wrote -- the PythonScript node's body today.
+    Collapsed onto one line by ``_literal`` they are an unreadable wall of
+    ``\\n`` escapes, which is a poor thing to hand someone who exported their
+    graph precisely to read and edit it.
+    """
+    node_cls = registry.get(node_type)
+    if node_cls is None:
+        return set()
+    try:
+        return {
+            param.name
+            for param in node_cls.define_params()
+            if param.param_type == ParamType.CODE
+        }
+    except Exception:  # noqa: BLE001 - a node class that cannot describe
+        return set()   # itself must not break the whole export
+
+
+def _emit_params(params: dict, node_type: str, node_id: str) -> list[str]:
+    """Emit the ``params = {...}`` assignment for one node function.
+
+    Ordinary params stay a one-line literal. A ``CODE`` param is spelled out
+    one SOURCE line per string literal, under a provenance comment, so the
+    script reads as the script -- and stays the live value the node runs, not
+    a stale copy in a comment: edit a line here and the exported graph runs
+    the edit.
+
+    Injection safety is unchanged from every other value in this file. The
+    lines are ``ascii()`` literals, never raw source, so a ``'''`` or a
+    newline inside the user's code cannot terminate the literal and become
+    program text.
+    """
+    code_names = _code_param_names(node_type) & set(params)
+    inline = {
+        name for name in code_names
+        if isinstance(params[name], str) and params[name]
+    }
+    if not inline:
+        return [f"    params = {_literal(params)}"]
+
+    lines = ["    params = {"]
+    for key, value in params.items():
+        if key not in inline:
+            lines.append(f"        {_literal(key)}: {_literal(value)},")
+            continue
+        lines.append(
+            f"        # ---- {_literal(key)} of node {_literal(node_id)}: "
+            "the script this node runs, verbatim ----"
+        )
+        lines.append(f"        {_literal(key)}: (")
+        lines.extend(
+            f"            {_literal(source_line)}"
+            for source_line in value.splitlines(keepends=True)
+        )
+        lines.append("        ),")
+    lines.append("    }")
+    return lines
 
 
 # ── Static script scaffolding ────────────────────────────────────────────
@@ -744,7 +811,7 @@ def generate_python(
 
         call_args = [_literal(node_type), _literal(node_id)]
         if params or is_graph_input:
-            lines.append(f"    params = {_literal(params)}")
+            lines.extend(_emit_params(params, node_type, node_id))
             call_args.append("params")
         else:
             call_args.append("{}")

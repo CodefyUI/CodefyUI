@@ -354,6 +354,36 @@ export async function downloadRunMetricsCsv(runId: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+/** Verdict on one in-canvas script, from `POST /api/nodes/script/validate`. */
+export interface ScriptValidation {
+  ok: boolean;
+  error: string | null;
+  /** 1-based line the rejection points at, when the server knows it. */
+  line: number | null;
+  /** Whether a module-level `def run(...)` exists yet. */
+  defines_run: boolean;
+  /** The server's Tier-0 import allowlist, so the UI never hard-codes it. */
+  allowed_modules: string[];
+}
+
+/**
+ * Check a PythonScript body against the server's Tier-0 policy (core#131).
+ *
+ * The gate is an AST walk, so it can only live on the server; the editor
+ * calls this while the user types so a rejected import is a banner rather
+ * than a failed run. A policy REJECTION comes back as `ok: false` with 200 —
+ * only a transport failure throws.
+ */
+export async function validateScript(code: string): Promise<ScriptValidation> {
+  const res = await apiFetch(`${BASE_URL}/nodes/script/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) throw new Error(`Script validation failed: ${res.statusText}`);
+  return res.json();
+}
+
 export async function validateGraph(nodes: any[], edges: any[], presets: any[] = []) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',

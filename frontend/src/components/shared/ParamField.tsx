@@ -11,6 +11,7 @@ import {
 import { useI18n, type TranslationKey } from '../../i18n';
 import { useToastStore } from '../../store/toastStore';
 import { TensorGridEditor } from '../ConfigPanel/TensorGridEditor';
+import { ScriptCodeField } from './ScriptCodeField';
 import styles from './ParamField.module.css';
 
 interface ParamFieldProps {
@@ -277,6 +278,17 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
 
   if (param.param_type === 'secret') {
     return <SecretField param={param} value={value} onChange={onChange} displayLabel={displayLabel} />;
+  }
+
+  if (param.param_type === 'code') {
+    return (
+      <ScriptCodeField
+        param={param}
+        value={value}
+        onChange={onChange}
+        displayLabel={displayLabel}
+      />
+    );
   }
 
   // Default: string

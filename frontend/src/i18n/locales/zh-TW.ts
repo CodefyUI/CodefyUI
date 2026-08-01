@@ -151,6 +151,8 @@ const zhTW: Record<TranslationKey, string> = {
   'node.error': '錯誤：{error}',
   'node.bypassed': '略過',
   'node.bypassed.title': '已略過：這個節點不會執行，輸入會直接傳給下游',
+  'node.code.empty': '（尚未輸入程式碼）',
+  'node.code.moreLines': '還有 {count} 行',
 
   // Results Panel
   'results.title': '執行紀錄',
@@ -265,6 +267,15 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.uploadFailed': '上傳失敗',
   'paramField.downloadFailed': '下載失敗',
   'paramField.secretHint': '僅本次工作階段有效，存檔時會清除。建議改用環境變數。',
+
+  // ParamField（畫布內 Python，core#131）
+  'paramField.code.checking': '檢查中…',
+  'paramField.code.ok': '通過檢查',
+  'paramField.code.rejected': '不允許',
+  'paramField.code.unavailable': '無法檢查',
+  'paramField.code.atLine': '第 {line} 行：',
+  'paramField.code.noRun': '尚未定義 run(inputs, params)，執行流程時這個節點會失敗。',
+  'paramField.code.allowed': '可匯入的模組：{modules}',
 
   // Grid Snap
   'toolbar.gridSnap.on': '吸附 ON',
@@ -595,12 +606,21 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.renameHint': '按 Enter 套用，按 Esc 取消',
   'nodeDetail.parameters': '參數',
   'nodeDetail.noParams': '這個節點沒有可以設定的參數',
+  'nodeDetail.tabs.code': '程式碼',
   'nodeDetail.tabs.inputs': '輸入',
   'nodeDetail.tabs.outputs': '輸出',
   'nodeDetail.tabs.steps': '步驟',
   'nodeDetail.tabs.backward': '反向傳播',
   'nodeDetail.tabs.stats': '統計',
   'nodeDetail.tabs.docs': '說明',
+  'nodeDetail.code.title': '程式碼',
+  'nodeDetail.code.contract': 'def run(inputs, params) -> dict：inputs 只包含有連線的連接埠（in1、in2…），回傳 {"out1": 值}；直接回傳單一值時會當作 out1。',
+  'nodeDetail.code.security': '這是防護欄，不是沙箱：可匯入的模組有限、明顯的逃逸手法會被擋下，但程式碼仍以你的權限在 CodefyUI 行程內執行。只執行你信任的程式碼。',
+  'nodeDetail.code.inputs': '輸入連接埠',
+  'nodeDetail.code.outputs': '輸出連接埠',
+  'nodeDetail.code.inputCount': '輸入連接埠數量',
+  'nodeDetail.code.outputCount': '輸出連接埠數量',
+  'nodeDetail.code.unavailable': '這個節點沒有程式碼參數',
   'nodeDetail.tabError': '這個分頁無法顯示',
   'nodeDetail.inputs.title': '輸入 ({count})',
   'nodeDetail.outputs.title': '輸出 ({count})',

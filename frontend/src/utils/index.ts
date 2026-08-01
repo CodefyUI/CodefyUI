@@ -157,10 +157,45 @@ export function isParamVisible(
 
 const SPLIT_MAX_CHUNKS = 32;
 
+/** Mirrors `python_script_node.MAX_PORTS`. */
+export const SCRIPT_MAX_PORTS = 8;
+
 function bareName(qualifiedName: string): string {
   const idx = qualifiedName.lastIndexOf(':');
   return idx >= 0 ? qualifiedName.slice(idx + 1) : qualifiedName;
 }
+
+/** Clamp a param into `1..max`, tolerating strings, NaN and undefined. */
+function clampCount(raw: unknown, fallback: number, max: number): number {
+  const parsed = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
+  return Math.max(1, Math.min(max, Number.isFinite(parsed) ? Math.floor(parsed) : fallback));
+}
+
+/**
+ * Per-port data types from a comma-separated param, repeating the last entry.
+ *
+ * Mirrors `python_script_node.resolve_port_types`: a short list must not
+ * leave newly-added ports untyped, and an unknown name falls back to the
+ * default rather than colouring a handle after a type that does not exist.
+ */
+function resolvePortTypes(raw: unknown, count: number, fallback: string): string[] {
+  const names = String(raw ?? '')
+    .split(',')
+    .map((part) => part.trim().toUpperCase())
+    .filter(Boolean);
+  return Array.from({ length: count }, (_, i) => {
+    const name = names[i] ?? names[names.length - 1] ?? '';
+    // DATA_TYPE_COLORS is the set of types the canvas can draw, and it
+    // excludes TRIGGER — which is control flow, never a script's data port.
+    return name && DATA_TYPE_COLORS[name] ? name : fallback;
+  });
+}
+
+/**
+ * Data types a per-port select may offer. Everything the canvas can draw,
+ * which is every backend `DataType` except TRIGGER.
+ */
+export const SELECTABLE_DATA_TYPES: string[] = Object.keys(DATA_TYPE_COLORS);
 
 /**
  * Resolve a node's *live* output ports, expanding param-driven nodes whose
@@ -168,9 +203,11 @@ function bareName(qualifiedName: string): string {
  * `BaseNode.define_outputs_dynamic` mechanism so palette template and live
  * canvas agree on what handles exist.
  *
- * For nodes whose ports don't depend on params (every node except Split as
- * of writing) this just returns `definition.outputs` verbatim. New
- * dynamic-port nodes added in the future should add a clause here.
+ * For nodes whose ports don't depend on params this returns
+ * `definition.outputs` VERBATIM — the same array reference, which callers
+ * (see `tabStore.updateNodeParams`) use as a cheap "nothing can have
+ * changed" check. New dynamic-port nodes add a clause here, and must keep
+ * that identity property for every node they do not handle.
  */
 export function resolveDynamicOutputs(
   definition: import('../types').NodeDefinition | undefined,
@@ -179,12 +216,7 @@ export function resolveDynamicOutputs(
   if (!definition) return [];
   const bare = bareName(definition.node_name);
   if (bare === 'Split') {
-    const raw = params?.chunks;
-    const parsed = typeof raw === 'number' ? raw : parseInt(String(raw ?? ''), 10);
-    const chunks = Math.max(
-      1,
-      Math.min(SPLIT_MAX_CHUNKS, Number.isFinite(parsed) ? Math.floor(parsed) : 2),
-    );
+    const chunks = clampCount(params?.chunks, 2, SPLIT_MAX_CHUNKS);
     return Array.from({ length: chunks }, (_, i) => ({
       name: `chunk_${i}`,
       data_type: 'TENSOR',
@@ -192,7 +224,42 @@ export function resolveDynamicOutputs(
       optional: false,
     }));
   }
+  if (bare === 'PythonScript') {
+    const count = clampCount(params?.output_ports, 1, SCRIPT_MAX_PORTS);
+    const types = resolvePortTypes(params?.output_types, count, 'ANY');
+    return Array.from({ length: count }, (_, i) => ({
+      name: `out${i + 1}`,
+      data_type: types[i],
+      description: `return {'out${i + 1}': ...}`,
+      optional: false,
+    }));
+  }
   return definition.outputs;
+}
+
+/**
+ * Resolve a node's *live* input ports. The mirror of
+ * `resolveDynamicOutputs`, for the backend's `define_inputs_dynamic`.
+ *
+ * Only PythonScript varies its inputs today; everything else returns
+ * `definition.inputs` verbatim (same reference — see above).
+ */
+export function resolveDynamicInputs(
+  definition: import('../types').NodeDefinition | undefined,
+  params: Record<string, unknown> | undefined,
+): import('../types').PortDefinition[] {
+  if (!definition) return [];
+  if (bareName(definition.node_name) === 'PythonScript') {
+    const count = clampCount(params?.input_ports, 1, SCRIPT_MAX_PORTS);
+    const types = resolvePortTypes(params?.input_types, count, 'TENSOR');
+    return Array.from({ length: count }, (_, i) => ({
+      name: `in${i + 1}`,
+      data_type: types[i],
+      description: `inputs['in${i + 1}']`,
+      optional: true,
+    }));
+  }
+  return definition.inputs;
 }
 
 /**

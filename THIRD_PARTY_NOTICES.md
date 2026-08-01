@@ -11,9 +11,10 @@ because that asset redistributes compiled third-party code.
 
 License information below was verified on 2026-07-18 against the installed
 packages (the `license` field of each package's `package.json` for npm
-packages, and installed distribution metadata for Python packages). Versions
-listed are the versions verified at that time; the authoritative version
-ranges are `frontend/package.json` and `backend/pyproject.toml`.
+packages, and installed distribution metadata for Python packages), and
+re-verified for the CodeMirror packages on 2026-08-02. Versions listed are
+the versions verified at that time; the authoritative version ranges are
+`frontend/package.json` and `backend/pyproject.toml`.
 
 ## 1. Frontend dependencies (redistributed in compiled form)
 
@@ -23,7 +24,13 @@ that bundle and are therefore redistributed with every release.
 
 | Package | Verified version | License | Upstream |
 |---------|------------------|---------|----------|
+| @codemirror/commands | 6.10.4 | MIT | https://github.com/codemirror/commands |
+| @codemirror/lang-python | 6.2.1 | MIT | https://github.com/codemirror/lang-python |
+| @codemirror/language | 6.12.4 | MIT | https://github.com/codemirror/language |
+| @codemirror/state | 6.7.1 | MIT | https://github.com/codemirror/state |
+| @codemirror/view | 6.43.7 | MIT | https://github.com/codemirror/view |
 | @dagrejs/dagre | 3.0.0 | MIT | https://github.com/dagrejs/dagre |
+| @lezer/highlight | 1.2.3 | MIT | https://github.com/lezer-parser/highlight |
 | @xyflow/react (React Flow) | 12.10.1 | MIT | https://github.com/xyflow/xyflow |
 | katex | 0.16.45 | MIT | https://github.com/KaTeX/KaTeX |
 | react | 19.2.4 | MIT | https://github.com/facebook/react |
@@ -36,10 +43,16 @@ resolved by `frontend/pnpm-lock.yaml`) was checked with
 `pnpm licenses list --prod`. Every package in the closure is licensed under
 one of:
 
-- MIT (all packages not listed below);
+- MIT (all packages not listed below, including every `@codemirror/*` and
+  `@lezer/*` package pulled in by the code editor, plus `style-mod`,
+  `w3c-keyname`, `crelt`, and `@marijn/find-cluster-break`);
 - ISC (the D3 modules d3-color, d3-dispatch, d3-drag, d3-interpolate,
   d3-selection, d3-timer, d3-transition, d3-zoom);
 - BSD-3-Clause (d3-ease).
+
+The CodeMirror code is compiled into a SEPARATE, lazily-loaded chunk
+(`assets/codemirrorSetup-*.js`) rather than the entry bundle, but it ships
+inside `frontend-dist.tar.gz` all the same and is listed above accordingly.
 
 ### 1.1 KaTeX and bundled fonts
 
