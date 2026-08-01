@@ -684,19 +684,51 @@ async def test_detach_unsubscribes_without_cancelling(run_env):
             assert (await _recv(ws))["type"] == "cache_cleared"
 
 
-async def test_a_second_execute_detaches_rather_than_cancels(run_env):
-    """Submitting again does not kill the run this socket was watching."""
+async def test_a_second_execute_is_refused_and_never_cancels(run_env):
+    """One run per socket (#123) — and the refusal still does not kill it.
+
+    Before #123 the second execute STARTED a second run sharing this
+    socket's ``ExecutionCache`` and module store; the disabled Run button
+    was the only thing preventing it, which is the gap #121 disclosed. It is
+    now refused by the service, so no client can provoke the overlap.
+
+    What has not changed is the property this test has always been about: a
+    second execute never cancels the run this socket was watching. The
+    socket also stays attached to it, because ``handle_execute`` only
+    re-attaches after a submit it accepted.
+    """
     async with _client() as client:
         async with aconnect_ws(_WS_PATH, client) as ws:
             first = await _execute(ws, _graph("_WsSlow", {"seconds": 0.6}))
+            assert first["type"] == "attached"
             await _recv_until(ws, "execution_start")
+
             second = await _execute(ws, _graph())
-            assert second["run_id"] != first["run_id"]
-            await _recv_until(ws, "execution_complete")
+            assert second["type"] == "execution_error"
+            assert "session" in second["error"]
 
             record = await _await_terminal(run_env.store, first["run_id"])
             assert record.status == "succeeded", \
                 "the first run was cancelled by the second execute"
+            # Refused before anything was persisted: no orphan row.
+            assert len(await run_env.store.list_runs()) == 1
+
+
+async def test_a_second_execute_is_accepted_once_the_first_is_over(run_env):
+    """Clicking Run again after a run finishes must work immediately.
+
+    The canvas re-enables its Run button on ``execution_complete``, so the
+    session has to be free by the time that frame lands — see
+    ``RunService._release_admission``.
+    """
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            first = await _execute(ws, _graph())
+            await _recv_until(ws, "execution_complete")
+            second = await _execute(ws, _graph())
+            assert second["type"] == "attached"
+            assert second["run_id"] != first["run_id"]
+            await _recv_until(ws, "execution_complete")
 
 
 # ── 4. cancel is the only stop ────────────────────────────────────────────

@@ -302,8 +302,15 @@ class _ExecutionSocket:
 
         A run already attached here is DETACHED, not cancelled: this socket
         stops watching it and starts watching the new one. Cancelling would
-        put back the exact behaviour #120 removed, and the canvas already
-        disables Run while a run is in flight.
+        put back the exact behaviour #120 removed.
+
+        Since #123 that only arises once the previous run has ENDED. While
+        one is still in flight the service refuses the submit outright —
+        two runs behind one socket's ``ExecutionCache`` would serve each
+        other half-built tensors, the hazard #121 disclosed and left to the
+        canvas's disabled Run button. The refusal arrives as
+        ``execution_error`` and this socket stays attached to the run that
+        is actually going, which is the more useful of the two.
         """
         service = self._service
         if service is None:

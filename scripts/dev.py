@@ -28,6 +28,19 @@
                 環境時自動改為只輸出一次。
                 旗標：[秒] 或 -w [秒]    自訂刷新間隔（如 cdui status 1）
                       --once / -1       只輸出一次
+    run         把圖檔送到執行中的伺服器排隊執行（server-owned run）
+                每個裝置一條 FIFO 佇列；關掉 terminal 也不會中斷。
+                用法：cdui run <graph.json> [旗標]
+                旗標：--name <字串>     Runs 面板顯示的名稱
+                      --device <裝置>   cpu | auto | cuda | cuda:N | mps
+                                        （預設 cpu；解析後的裝置就是佇列 key）
+                      --seed <n>        隨機種子
+                      --record-outputs  保留節點輸出供事後檢視
+                      --wait            串流進度直到結束（預設）
+                      --detach          只印出 run id 就離開
+                      --timeout <秒>    等待上限（0 = 不限；逾時後 run 仍繼續）
+                      --host / --port   伺服器位址（預設沿用上次 start 的）
+                離線、不需要伺服器的單次執行請用 backend/run_graph.py。
     stop        停止所有服務（含背景伺服器）
     test        執行 backend 測試
     clean       移除虛擬環境、node_modules 與 frontend/dist
@@ -1973,6 +1986,336 @@ def _terminate_posix(pid: int) -> None:
     _signal_group(signal.SIGKILL)
 
 
+# ── cdui run: submit a graph to the running server (#123) ────────────────────
+#
+# Deliberately a CLIENT, not a runner. `backend/run_graph.py` still executes a
+# graph in-process with no server at all, and stays the answer for a box with
+# no daemon. This command is the other half: the graph goes to the SERVER, so
+# it joins the per-device queue, survives the terminal that submitted it, and
+# shows up in the Runs panel next to everything the canvas started. Submitting
+# five overnight jobs and closing the laptop is the workflow it exists for.
+
+#: How long one long-poll of /events parks server-side. Five seconds keeps a
+#: Ctrl+C responsive without turning the tail into a busy loop; the server
+#: returns the moment an event lands, so this is a ceiling, not a cadence.
+RUN_POLL_WAIT_S = 5.0
+
+#: Statuses that mean the run is over. Mirrors run_store.TERMINAL_STATUSES —
+#: not imported from it because this command must work when the backend
+#: package cannot be imported (no venv yet), and the vocabulary is the REST
+#: contract either way.
+RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled",
+                                   "interrupted"})
+
+
+def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
+    """Parse the flags of `cdui run`. Real argparse, like `cdui install`.
+
+    Takes the tail as a PARAMETER rather than reading ``sys.argv`` so it can
+    be tested without patching global state — the same reason
+    ``_parse_install_args`` does.
+    """
+    p = argparse.ArgumentParser(
+        prog=prog,
+        description=(
+            "Submit a saved graph file to the running CodefyUI server. The "
+            "run is owned by the server: it joins that device's queue, "
+            "survives this terminal, and is visible in the Runs panel."
+        ),
+    )
+    p.add_argument("graph", help="path to a graph .json file")
+    p.add_argument("--name", default=None,
+                   help="label for the run (shown in the Runs panel)")
+    p.add_argument("--device", default="cpu",
+                   help="cpu | auto | cuda | cuda:N | mps (default: cpu). "
+                        "The RESOLVED device is the queue this run joins.")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed for random / numpy / torch")
+    p.add_argument("--record-outputs", action="store_true",
+                   help="capture node outputs for later inspection")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--wait", dest="wait", action="store_true", default=True,
+                      help="stream progress and exit with the run (default)")
+    mode.add_argument("--detach", dest="wait", action="store_false",
+                      help="print the run id and exit 0 immediately")
+    p.add_argument("--timeout", type=float, default=0.0,
+                   help="give up waiting after N seconds (0 = no limit). The "
+                        "run keeps going on the server.")
+    p.add_argument("--host", default=None, help="server host (default: the "
+                                                "last-started server)")
+    p.add_argument("--port", type=int, default=None, help="server port")
+    return p.parse_args(argv_tail)
+
+
+def _session_token() -> "str | None":
+    """The running server's session token, or None if it cannot be read.
+
+    Same file, same env override and same failure mode as the plugin CLI's
+    reader (``scripts/plugins.py``): a rotated-per-process 0600 file under the
+    user-data dir. Duplicated rather than imported so `cdui run` does not drag
+    the whole plugin CLI (and its imports) in for fifteen lines.
+
+    Call ``_apply_dev_env()`` first — in a dev clone the token lives in
+    ``<repo>/.codefyui_dev/`` and reading the global one would authenticate
+    against a server that is not the one running.
+    """
+    try:
+        from platformdirs import user_data_dir  # noqa: PLC0415 — needs venv
+    except ImportError:
+        return None
+    override = os.environ.get("CODEFYUI_USER_DATA_DIR")
+    base = (Path(override) if override
+            else Path(user_data_dir("codefyui", appauthor=False)))
+    try:
+        return (base / "session.token").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _api_request(url: str, host: str, *, token: "str | None" = None,
+                 body: "dict | None" = None, timeout: float = 30.0) -> tuple:
+    """One API call. Returns ``(status, parsed_body)``; ``(0, None)`` if down.
+
+    The Host header is set explicitly because the server whitelists hosts and
+    we always connect on loopback, which is always whitelisted — matching what
+    the plugin and project CLIs already do. A 4xx/5xx comes back as a status
+    plus its parsed ``detail`` rather than an exception, so callers report the
+    server's own message instead of "HTTP Error 400: Bad Request".
+    """
+    headers = {"User-Agent": "cdui-run", "Host": host}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(data))
+    if token:
+        headers["X-CodefyUI-Token"] = token
+    req = Request(url, data=data, headers=headers,
+                  method="POST" if body is not None else "GET")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            return resp.status, (json.loads(raw) if raw else None)
+    except HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8", "replace"))
+        except (ValueError, OSError):
+            return e.code, None
+    except (URLError, TimeoutError, OSError, ValueError):
+        return 0, None
+
+
+def _run_submit_body(args) -> dict:
+    """The POST /api/runs envelope for parsed args. Pure — hence testable.
+
+    ``lane`` is left unset on purpose: the server's default IS the queued
+    lane, and naming it here would hardcode a policy this command has no
+    opinion about. ``interactive`` is the canvas's, and carries process-local
+    state a CLI has none of.
+    """
+    graph = json.loads(Path(args.graph).read_text(encoding="utf-8"))
+    options = {"device": args.device, "record_outputs": bool(
+        getattr(args, "record_outputs", False))}
+    if args.seed is not None:
+        options["seed"] = args.seed
+    body = {"graph": graph, "options": options}
+    if args.name:
+        body["name"] = args.name
+    return body
+
+
+def _run_status_color(status: str) -> str:
+    if status == "succeeded":
+        return GREEN
+    if status == "failed":
+        return RED
+    if status in ("cancelled", "interrupted"):
+        return YELLOW
+    return CYAN
+
+
+def _render_run_event(event: dict) -> None:
+    """Print one event from the run's log. ASCII + the house glyph set only."""
+    kind = event.get("type")
+    payload = event.get("payload") or {}
+    if kind == "execution_start":
+        print(f"  {CYAN}▸ {t('開始執行', 'started')}{RESET}")
+    elif kind == "node_status":
+        _render_node_status(payload)
+    elif kind == "run_warning":
+        print(f"  {YELLOW}! {payload.get('detail') or payload.get('kind')}"
+              f"{RESET}")
+    elif kind == "artifact":
+        print(f"  {GRAY}+ {payload.get('kind')}: {payload.get('path')}{RESET}")
+    elif kind == "execution_complete":
+        print(f"  {GREEN}✓ {t('執行完成', 'run complete')}{RESET}")
+    elif kind == "execution_error":
+        print(f"  {RED}✗ {payload.get('error') or t('執行失敗', 'run failed')}"
+              f"{RESET}")
+    elif kind == "execution_stopped":
+        print(f"  {YELLOW}○ {t('已停止', 'stopped')} "
+              f"({payload.get('reason', '?')}){RESET}")
+
+
+def _render_node_status(payload: dict) -> None:
+    node = payload.get("node_id", "?")
+    status = payload.get("status")
+    if status == "progress":
+        detail = _format_progress(payload)
+        if detail:
+            print(f"    {DIM}{node}{RESET}  {detail}")
+    elif status == "completed":
+        print(f"  {GREEN}✓{RESET} {node}")
+    elif status == "cached":
+        print(f"  {GRAY}= {node} {t('（快取）', '(cached)')}{RESET}")
+    elif status == "skipped":
+        print(f"  {GRAY}- {node} {t('（略過）', '(skipped)')}{RESET}")
+    elif status == "error":
+        print(f"  {RED}✗{RESET} {node}: {payload.get('error', '')}")
+
+
+def _format_progress(payload: dict) -> str:
+    """A progress payload as one compact line, loop counters first.
+
+    Everything numeric that is not a loop counter is a measurement, which is
+    the same rule the server uses to decide what becomes a metric series — so
+    what the terminal shows and what the charts record cannot drift.
+    """
+    counters = []
+    for key in ("epoch", "step", "batch"):
+        value = payload.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total = payload.get(f"total_{key}s")
+            counters.append(f"{key} {value:g}"
+                            + (f"/{total:g}" if isinstance(total, (int, float))
+                               else ""))
+    skip = {"epoch", "step", "batch", "total_epochs", "total_batches",
+            "total_steps", "start_epoch", "event"}
+    metrics = [f"{k}={v:.4g}" for k, v in payload.items()
+               if k not in skip and isinstance(v, (int, float))
+               and not isinstance(v, bool)]
+    return "  ".join(counters + metrics)
+
+
+def _tail_run(base: str, host: str, run_id: str, timeout: float) -> str:
+    """Follow a run to its end, printing as it goes. Returns its final status.
+
+    Long-polls ``/events`` from a cursor, so this is event-driven rather than
+    a sleep loop — and the server parks a poll on a QUEUED run properly, so
+    waiting for a device costs no requests. Returns the last status seen when
+    *timeout* runs out: the run keeps going server-side, which is the point of
+    a server-owned run, and the caller says so.
+    """
+    cursor = 0
+    status = "queued"
+    announced_queue = False
+    deadline = (time.monotonic() + timeout) if timeout > 0 else None
+    while True:
+        code, body = _api_request(
+            f"{base}/api/runs/{run_id}/events?cursor={cursor}"
+            f"&wait={RUN_POLL_WAIT_S}", host,
+            timeout=RUN_POLL_WAIT_S + 25.0)
+        if code == 0 or body is None:
+            err("與伺服器的連線中斷；run 仍在伺服器上執行",
+                "lost the connection to the server; the run is still going")
+            return status
+        status = body.get("status", status)
+        for event in body.get("events") or []:
+            _render_run_event(event)
+        cursor = body.get("cursor", cursor)
+        if status in RUN_TERMINAL_STATUSES:
+            return status
+        if status == "queued" and not announced_queue:
+            announced_queue = _announce_queue_position(base, host, run_id)
+        if deadline is not None and time.monotonic() > deadline:
+            warn(f"等待逾時（{timeout:g}s）；run 仍在伺服器上執行",
+                 f"stopped waiting after {timeout:g}s; the run continues on "
+                 "the server")
+            return status
+
+
+def _announce_queue_position(base: str, host: str, run_id: str) -> bool:
+    """Say where in line a queued run is. True once it has been reported."""
+    code, body = _api_request(f"{base}/api/runs/{run_id}", host, timeout=10.0)
+    if code != 200 or not isinstance(body, dict):
+        return False
+    position = body.get("queue_position")
+    if position is None:
+        return False
+    device = body.get("queue_key") or "?"
+    print(f"  {YELLOW}○ {t('排隊中', 'queued')}{RESET}  "
+          f"{t('位置', 'position')} {position} {t('於', 'on')} {device}")
+    return True
+
+
+def run_graph() -> None:
+    """`cdui run <graph.json>` — submit a graph to the running server.
+
+    Named ``run_graph`` because ``run`` is this module's subprocess helper.
+    Registered as ``COMMANDS["run"]``, like ``install_command``.
+    """
+    args = _parse_run_args(sys.argv[2:])
+    _apply_dev_env()
+
+    path = Path(args.graph)
+    if not path.is_file():
+        err(f"找不到圖檔：{path}", f"no such graph file: {path}")
+        sys.exit(1)
+    try:
+        body = _run_submit_body(args)
+    except (OSError, ValueError) as e:
+        err(f"無法讀取圖檔：{e}", f"could not read the graph file: {e}")
+        sys.exit(1)
+
+    addr_host, addr_port = _server_addr()
+    host = _probe_host(args.host if args.host is not None else addr_host)
+    port = args.port if args.port is not None else addr_port
+    base = f"http://{host}:{port}"
+    netloc = f"{host}:{port}"
+
+    token = _session_token()
+    if token is None:
+        err("找不到 session token — 伺服器沒有在執行？先執行 cdui start",
+            "no session token found -- is the server running? Run `cdui start`")
+        sys.exit(1)
+
+    code, response = _api_request(f"{base}/api/runs", netloc, token=token,
+                                  body=body)
+    if code == 0:
+        err(f"無法連線到 {base}", f"cannot reach {base}")
+        sys.exit(1)
+    if code != 200 or not isinstance(response, dict):
+        detail = (response or {}).get("detail") if isinstance(response, dict) \
+            else None
+        err(f"提交失敗（HTTP {code}）：{detail or ''}",
+            f"submit failed (HTTP {code}): {detail or ''}")
+        sys.exit(1)
+
+    run_id = response.get("run_id", "")
+    status = response.get("status", "queued")
+    print()
+    section("提交執行", "Run submitted")
+    _kv(t("Run ID", "Run ID"), run_id)
+    _kv(t("圖檔", "Graph"), str(path))
+    _kv(t("裝置", "Device"), args.device)
+    if args.name:
+        _kv(t("名稱", "Name"), args.name)
+    _kv(t("狀態", "Status"),
+        f"{_run_status_color(status)}{status}{RESET}")
+
+    if not args.wait:
+        print(f"  {DIM}{t('追蹤進度', 'follow it with')}: "
+              f"cdui status  |  {base}{RESET}")
+        return
+
+    print()
+    final = _tail_run(base, netloc, run_id, args.timeout)
+    print()
+    _kv(t("結果", "Result"), f"{_run_status_color(final)}{final}{RESET}")
+    if final != "succeeded":
+        sys.exit(1)
+
+
 def test() -> None:
     pytest = _require_venv_tool("pytest")
     run([pytest], cwd=BACKEND_DIR)
@@ -2017,6 +2360,9 @@ COMMANDS = {
     "dev": dev,
     "start": start,
     "status": status,
+    # NOT `run`: that name is this module's subprocess helper. Same shim
+    # pattern as install -> install_command.
+    "run": run_graph,
     "stop": stop,
     "test": test,
     "clean": clean,

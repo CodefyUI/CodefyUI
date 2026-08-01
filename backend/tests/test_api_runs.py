@@ -402,6 +402,20 @@ async def test_list_reports_queue_position_for_queued_rows(client, run_app):
     assert positions == {first.id: 1, second.id: 2}
 
 
+async def test_queue_position_is_counted_within_each_device(client, run_app):
+    """Per queue_key, not global (#123): a CPU run is not "fourth" because
+    three CUDA runs happen to have been submitted first."""
+    made = []
+    for queue_key in ("cuda:0", "cuda:0", "cpu", "cuda:1", "cpu"):
+        made.append((queue_key, await run_app.store.create_run(
+            graph_snapshot=_graph(), options={}, queue_key=queue_key,
+            provenance=RunProvenance())))
+
+    body = (await client.get("/api/runs?status=queued")).json()
+    positions = {run["id"]: run["queue_position"] for run in body["runs"]}
+    assert [positions[record.id] for _key, record in made] == [1, 2, 1, 1, 2]
+
+
 async def test_list_rejects_an_unknown_status(client):
     assert (await client.get("/api/runs?status=nope")).status_code == 400
 
