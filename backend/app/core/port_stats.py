@@ -318,7 +318,11 @@ def _narrow_for_sampling(t: Any, target: int, seed: int) -> Any:
     Drawn with ``randint`` rather than ``randperm`` because the axis can be
     long: a permutation of 500M rows is a 4 GB allocation to pick four of them.
     ``unique`` sorts and de-duplicates, so the survivors stay in order and no
-    slice is counted twice.
+    slice is counted twice — which does mean the count can come out below
+    ``keep`` when the draw collides. Deterministic for a seed, and harmless:
+    this only sizes the pool, and ``_seeded_sample`` then draws exactly
+    ``sample_size`` elements from it with replacement, so the reported
+    ``sample_size`` is unaffected.
     """
     import torch
 
@@ -733,13 +737,10 @@ def _tabular_stats(
     *,
     max_rows: int,
 ) -> dict[str, Any]:
-    # ``max_rows`` is a budget over the whole TABLE, not per column. The column
-    # walk is interpreted Python, so a 64-column table at 200k rows each would
-    # be 12.8M dict operations — seconds of wall clock for a summary that is
-    # supposed to be instant. Spreading the budget keeps the cost flat in the
-    # column count, with a floor so a very wide table still sees enough rows
-    # per column for its top-k to mean something.
-    per_column = max(1000, max_rows // max(1, len(columns))) if columns else max_rows
+    # The same budget `_as_columns` already sliced to. Shared through the
+    # helper rather than restated here, so the number of cells actually
+    # scanned and the number reported as `sample_size` cannot drift apart.
+    per_column = _row_budget(len(columns), max_rows)
     sampled = rows > per_column
     return {
         "kind": "tabular",

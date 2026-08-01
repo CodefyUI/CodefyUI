@@ -955,10 +955,13 @@ describe('NodeDetailModal — tabs', () => {
   });
 
   it('mounts straight onto the deep-linked tab, never Inputs first', () => {
-    // A one-commit-late correction still mounts the Inputs tab, and the Inputs
-    // tab fetches every port before it is thrown away.
+    // A one-commit-late correction still MOUNTS the Inputs tab, and the Inputs
+    // tab fetches every connected port before being thrown away. The node
+    // therefore needs a real wired input — with no edges `usePortFetches`
+    // bails on an empty port set and the assertion below proves nothing.
     seedTab({
-      nodes: [node('n1')],
+      nodes: [node('src'), node('n1')],
+      edges: [edge('e1', 'src', 'n1')],
       nodeDetailNodeId: 'n1',
       nodeDetailTab: 'docs',
       lastRunId: 'run1',
@@ -969,6 +972,20 @@ describe('NodeDetailModal — tabs', () => {
       'true',
     );
     expect(mockOutput).not.toHaveBeenCalled();
+  });
+
+  it('the previous test is not vacuous: Inputs first DOES fetch', () => {
+    // Guards the guard. Same fixture, no deep link, so the modal opens on
+    // Inputs and the wired port is fetched — which is exactly what mounting
+    // Inputs before correcting to Docs would have done.
+    seedTab({
+      nodes: [node('src'), node('n1')],
+      edges: [edge('e1', 'src', 'n1')],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+    });
+    render(<NodeDetailModal />);
+    expect(mockOutput).toHaveBeenCalledWith('run1', 'src', 'out');
   });
 
   it('hands the requested port to every tab as focusPort', () => {

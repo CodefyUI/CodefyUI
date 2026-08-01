@@ -251,46 +251,83 @@ def test_a_single_sample_activation_is_still_chunked_and_thinned():
     assert stats["sampled"] is True
 
 
-def test_thinning_a_structured_axis_does_not_pick_a_stride():
-    """A fixed stride would summarise whichever slices it happened to land on.
+def _periodic_axis_tensor(rows: int = 64, cols: int = 4096, period: int = 16):
+    """Non-contiguous, with periodic structure ON the axis thinning splits.
 
-    Row i is drawn from N(i, 1), so the split axis carries all the signal. The
-    old ``t[::step]`` kept rows 0, 16, 32, 48 of 64 and reported their mean —
-    a systematically chosen quarter of the data under ``"sampled": true``.
+    Row ``i`` is entirely ``1.0`` when ``i % period == 0`` and ``0.0``
+    otherwise, so the true mean is ``1 / period``. Built transposed so
+    :func:`_split_axis` picks the 64-long structured axis rather than the long
+    featureless one - get that backwards and a stride looks unbiased, because
+    it is then striding across the axis that carries no signal.
     """
-    rows = 64
-    t = torch.stack([torch.randn(4096) + i for i in range(rows)]).t()
-    assert not t.is_contiguous()
-    true_mean = (rows - 1) / 2  # 31.5
+    per_row = [1.0 if i % period == 0 else 0.0 for i in range(rows)]
+    base = torch.stack([torch.full((cols,), v) for v in per_row], dim=1)
+    return base.t()
 
-    stats = compute_port_stats(t, sample_threshold=1000, sample_size=4096)
-    assert stats["sampled"] is True
-    assert stats["mean"] == pytest.approx(true_mean, abs=3.0)
+
+def test_thinning_a_structured_axis_does_not_pick_a_stride():
+    """A fixed stride reports whichever slices it happens to land on.
+
+    The old ``t[::step]`` kept 4 of 64 rows at a step of 16 - every one of them
+    a spike row - and reported a mean of 1.0 for data whose mean is 0.0625,
+    under ``"sampled": true``. Aliasing is the failure a stride has and a draw
+    does not, which is why this fixture is periodic rather than a ramp: a
+    stride estimates a ramp perfectly well, so a ramp proves nothing.
+    """
+    from app.core.port_stats import _split_axis
+
+    t = _periodic_axis_tensor()
+    assert not t.is_contiguous()
+    assert _split_axis(t) == 0, "the structured axis must be the split axis"
+    assert t.mean().item() == pytest.approx(1 / 16)
+
+    for seed in range(6):
+        stats = compute_port_stats(
+            t, sample_threshold=1000, sample_size=4096, seed=seed
+        )
+        assert stats["sampled"] is True
+        # The stride returns exactly 1.0 for every seed; a draw of 4 rows from
+        # 64 lands on all four spikes with probability ~1.5e-5.
+        assert stats["mean"] < 0.5, f"seed {seed} looks strided: {stats['mean']}"
 
 
 def test_thinning_stays_deterministic_under_a_seed():
-    t = torch.stack([torch.randn(2048) + i for i in range(64)]).t()
+    t = _periodic_axis_tensor(cols=2048)
     a = compute_port_stats(t, sample_threshold=1000, sample_size=2048, seed=7)
     b = compute_port_stats(t, sample_threshold=1000, sample_size=2048, seed=7)
     assert a == b
 
 
-def test_one_oversized_slice_recurses_onto_the_next_axis():
-    """A single slice bigger than the budget used to be yielded whole.
+@pytest.mark.parametrize(
+    "make, budget",
+    [
+        # Split axis is the 3-long channel dim, so one slice is 40k elements
+        # against a 10k budget - the pre-fix chunker yielded it whole.
+        (lambda: torch.zeros(1, 3, 200, 400)[:, :, :, ::2], 10_000),
+        # Still over budget after the first recursion, so it has to go again.
+        (lambda: torch.zeros(1, 3, 4, 20_000)[:, :, :, ::2], 1_000),
+    ],
+    ids=["one-oversized-slice", "two-level-recursion"],
+)
+def test_an_oversized_slice_recurses_onto_the_next_axis(make, budget):
+    """A slice bigger than the budget used to be yielded whole.
 
-    ``[1, 3, H, W]`` splits on the channel axis into three slices; each is far
-    over budget, and ``_scan_tensor`` then builds a bool mask over the whole
-    thing. The chunker has to keep going.
+    ``step`` clamps to 1 once a single slice already exceeds the budget, and
+    the pre-fix chunker then handed that slice on - ``_scan_tensor`` would
+    build a bool mask over all of it, which is the allocation chunking exists
+    to prevent. Measured pre-fix: 40k-element chunks against both budgets.
     """
     from app.core.port_stats import _iter_chunks
 
-    t = torch.zeros(1, 3, 1024, 1024).permute(0, 2, 3, 1)
+    t = make()
     assert not t.is_contiguous()
 
-    budget = 100_000
     chunks = list(_iter_chunks(t, chunk_elements=budget))
-    assert sum(c.numel() for c in chunks) == t.numel()
     assert max(c.numel() for c in chunks) <= budget
+    # Nothing skipped or double-counted, however deep the recursion went.
+    assert sum(c.numel() for c in chunks) == t.numel()
+    assert len(chunks) >= t.numel() // budget
+
 
 
 def test_sampling_handles_non_contiguous_tensors():
