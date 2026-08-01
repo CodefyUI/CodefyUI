@@ -29,6 +29,24 @@ const LOG_TYPE_BG = {
   success: 'rgba(76,175,80,0.05)',
 } as const;
 
+// ── DEPRECATED magic prefixes (remove one release after #117) ────────────
+// Before #117 progress events and images had no place in the message
+// schema, so they were smuggled through the log stream as prefixed strings
+// and parsed back out here. Log entries now carry `kind` + a typed payload.
+// This parsing stays for one release so a frontend built from source still
+// renders when it is talking to an older prebuilt backend.
+const LEGACY_PROGRESS_PREFIX = '__PROGRESS__:';
+const LEGACY_IMAGE_PREFIX = '__IMAGE__:';
+
+function legacyProgress(message: string): Record<string, any> | null {
+  if (!message.startsWith(LEGACY_PROGRESS_PREFIX)) return null;
+  try {
+    return JSON.parse(message.slice(LEGACY_PROGRESS_PREFIX.length));
+  } catch {
+    return null;
+  }
+}
+
 export function ResultsPanel() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const logs = activeTab.logs;
@@ -52,26 +70,24 @@ export function ResultsPanel() {
   const colDragging = useRef(false);
   const rowDragging = useRef(false);
 
-  // Parse training data from logs
+  // Read the training series off the structured progress entries (#117).
   const trainingData = useMemo(() => {
     const epochs: { epoch: number; total: number; loss: number; ts: number }[] = [];
     let config: Record<string, any> | null = null;
 
     for (const entry of logs) {
-      if (!entry.message.startsWith('__PROGRESS__:')) continue;
-      try {
-        const p = JSON.parse(entry.message.slice('__PROGRESS__:'.length));
-        if (p.event === 'config' && p.config) {
-          config = p.config;
-        } else if (p.event === 'epoch') {
-          epochs.push({
-            epoch: p.epoch,
-            total: p.total_epochs,
-            loss: p.loss,
-            ts: entry.timestamp,
-          });
-        }
-      } catch { /* ignore */ }
+      const p = entry.kind === 'progress' ? entry.progress : legacyProgress(entry.message);
+      if (!p) continue;
+      if (p.event === 'config' && p.config) {
+        config = p.config;
+      } else if (p.event === 'epoch') {
+        epochs.push({
+          epoch: p.epoch,
+          total: p.total_epochs,
+          loss: p.loss,
+          ts: entry.timestamp,
+        });
+      }
     }
     return { epochs, config };
   }, [logs]);
@@ -88,7 +104,7 @@ export function ResultsPanel() {
 
   // Only non-progress logs for the Log tab
   const filteredLogs = useMemo(
-    () => logs.filter((e) => !e.message.startsWith('__PROGRESS__:')),
+    () => logs.filter((e) => e.kind !== 'progress' && !e.message.startsWith(LEGACY_PROGRESS_PREFIX)),
     [logs],
   );
 
@@ -295,9 +311,16 @@ export function ResultsPanel() {
                         {String(entry.nodeId).slice(0, 8)}
                       </span>
                     )}
-                    {entry.message.startsWith('__IMAGE__:') ? (
+                    {entry.kind === 'image' && entry.image?.data ? (
                       <img
-                        src={`data:image/png;base64,${entry.message.slice('__IMAGE__:'.length)}`}
+                        src={`data:image/${entry.image.format};base64,${entry.image.data}`}
+                        alt="output"
+                        className={styles.logImage}
+                      />
+                    ) : entry.message.startsWith(LEGACY_IMAGE_PREFIX) ? (
+                      // DEPRECATED (see LEGACY_IMAGE_PREFIX above).
+                      <img
+                        src={`data:image/png;base64,${entry.message.slice(LEGACY_IMAGE_PREFIX.length)}`}
                         alt="output"
                         className={styles.logImage}
                       />

@@ -13,6 +13,12 @@ vi.mock('./LossChart', () => ({
   ),
 }));
 
+/**
+ * DEPRECATED (remove one release after #117, together with the parsing in
+ * ResultsPanel). Builds the legacy magic-prefixed progress string that
+ * pre-#117 frontends smuggled through the log stream. New code seeds
+ * `{ kind: 'progress', progress: {...} }` entries instead.
+ */
 function progress(obj: Record<string, unknown>): string {
   return '__PROGRESS__:' + JSON.stringify(obj);
 }
@@ -106,7 +112,8 @@ describe('ResultsPanel — log tab basics', () => {
     expect(screen.queryByText('oops')).not.toBeInTheDocument();
   });
 
-  it('renders an image entry as an <img> with a base64 data URL', () => {
+  // DEPRECATED (remove one release after #117): legacy prefixed image entry.
+  it('renders a legacy __IMAGE__ entry as an <img> with a base64 data URL', () => {
     seedLogs([makeLog({ message: '__IMAGE__:QUJD' })]);
     render(<ResultsPanel />);
     const img = screen.getByAltText('output') as HTMLImageElement;
@@ -385,5 +392,134 @@ describe('ResultsPanel — training column dividers (drag handlers)', () => {
     });
     spy.mockRestore();
     expect(document.body.style.cursor).toBe('');
+  });
+});
+
+// ── #117: structured output kinds ────────────────────────────────────────
+// The backend now tags every renderable payload with an `output_kind` and
+// useGraphExecution turns those into typed LogEntry fields. ResultsPanel
+// renders from those fields instead of sniffing magic string prefixes.
+
+describe('ResultsPanel — structured output kinds (#117)', () => {
+  function imageLog(data: string, format = 'png'): LogEntry {
+    return makeLog({
+      message: '',
+      kind: 'image',
+      image: { format, encoding: 'base64', data },
+    });
+  }
+
+  it('renders a kind="image" entry as an <img> built from its payload', () => {
+    seedLogs([imageLog('QUJD')]);
+    render(<ResultsPanel />);
+    const img = screen.getByAltText('output') as HTMLImageElement;
+    expect(img.src).toBe('data:image/png;base64,QUJD');
+  });
+
+  it('honours the payload format when building the data URL', () => {
+    seedLogs([imageLog('PHN2Zy8+', 'svg+xml')]);
+    render(<ResultsPanel />);
+    const img = screen.getByAltText('output') as HTMLImageElement;
+    expect(img.src).toBe('data:image/svg+xml;base64,PHN2Zy8+');
+  });
+
+  it('renders a 500-char alphanumeric text output as text, not a broken image', () => {
+    // Headline regression for #117: the backend used to sniff this exact
+    // shape (len > 200, alphanumeric prefix) and ship it as a base64 PNG.
+    const longText = 'TokenIds0123456789abcdef'.repeat(21).slice(0, 500);
+    expect(longText).toHaveLength(500);
+    seedLogs([makeLog({ message: longText, kind: 'text' })]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(longText)).toBeInTheDocument();
+    expect(screen.queryByAltText('output')).not.toBeInTheDocument();
+  });
+
+  it('renders CJK prose output as text (str.isalnum() is True for CJK)', () => {
+    const cjk = '注意力機制讓模型在每一步都能回頭看整個序列'.repeat(25).slice(0, 500);
+    seedLogs([makeLog({ message: cjk, kind: 'text' })]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(cjk)).toBeInTheDocument();
+    expect(screen.queryByAltText('output')).not.toBeInTheDocument();
+  });
+
+  it('drives the training tab from kind="progress" entries and hides them from the log', () => {
+    seedLogs([
+      makeLog({ message: 'plain line' }),
+      makeLog({
+        message: '',
+        kind: 'progress',
+        progress: { event: 'config', config: { lr: 0.05 } },
+      }),
+      makeLog({
+        timestamp: 1000,
+        message: '',
+        kind: 'progress',
+        progress: { event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.9 },
+      }),
+      makeLog({
+        timestamp: 3000,
+        message: '',
+        kind: 'progress',
+        progress: { event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.3 },
+      }),
+    ]);
+    render(<ResultsPanel />);
+    // Auto-switched to the training tab with both epochs charted.
+    const trainingTabBtn = screen.getByText(t('results.training')).closest('button')!;
+    expect(within(trainingTabBtn).getByText('2')).toBeInTheDocument();
+    expect(screen.getByTestId('loss-chart').getAttribute('data-len')).toBe('2');
+    expect(screen.getByText('0.050000')).toBeInTheDocument(); // config lr
+    expect(screen.getByText('2.0s')).toBeInTheDocument(); // (3000-1000)/1000
+    // The log tab shows only the plain line — progress entries are filtered.
+    fireEvent.click(screen.getByText(t('results.title')));
+    expect(screen.getByText('plain line')).toBeInTheDocument();
+    const logTabBtn = screen.getByText(t('results.title')).closest('button')!;
+    expect(within(logTabBtn).getByText('1')).toBeInTheDocument();
+  });
+
+  it('ignores a kind="progress" entry with no payload', () => {
+    seedLogs([makeLog({ message: '', kind: 'progress' }), makeLog({ message: 'kept' })]);
+    render(<ResultsPanel />);
+    expect(screen.getByText(t('results.training')).closest('button')!).toBeDisabled();
+    expect(screen.getByText('kept')).toBeInTheDocument();
+  });
+
+  it('ignores a kind="image" entry with no payload and falls back to the message', () => {
+    seedLogs([makeLog({ message: 'no payload', kind: 'image' })]);
+    render(<ResultsPanel />);
+    expect(screen.queryByAltText('output')).not.toBeInTheDocument();
+    expect(screen.getByText('no payload')).toBeInTheDocument();
+  });
+});
+
+describe('ResultsPanel — legacy magic prefixes (deprecated, #117)', () => {
+  // Kept for one release so a frontend running against a pre-#117 backend
+  // still renders. Delete this block together with the parsing it covers.
+  it('still parses a mix of legacy prefixes and structured entries', () => {
+    seedLogs([
+      makeLog({ message: '__IMAGE__:TEdD' }),
+      makeLog({
+        message: '',
+        kind: 'image',
+        image: { format: 'png', encoding: 'base64', data: 'QUJD' },
+      }),
+      makeLog({ timestamp: 1000, message: progress({ event: 'epoch', epoch: 1, total_epochs: 2, loss: 0.5 }) }),
+      makeLog({
+        timestamp: 2000,
+        message: '',
+        kind: 'progress',
+        progress: { event: 'epoch', epoch: 2, total_epochs: 2, loss: 0.25 },
+      }),
+    ]);
+    render(<ResultsPanel />);
+    // Both progress sources feed one epoch series.
+    expect(screen.getByTestId('loss-chart').getAttribute('data-len')).toBe('2');
+    // Both image sources render.
+    fireEvent.click(screen.getByText(t('results.title')));
+    const imgs = screen.getAllByAltText('output') as HTMLImageElement[];
+    expect(imgs.map((i) => i.src)).toEqual([
+      'data:image/png;base64,TEdD',
+      'data:image/png;base64,QUJD',
+    ]);
   });
 });

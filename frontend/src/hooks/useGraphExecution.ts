@@ -49,17 +49,34 @@ export function useGraphExecution() {
         const data = raw as any;
         const store = useTabStore.getState();
 
-        if (data.status === 'progress' && data.progress) {
-          const p = data.progress;
-          store.setTabNodeProgress(tabId, data.node_id, p);
-          if (p.event === 'epoch' || p.event === 'config') {
-            store.addTabLog(tabId, {
-              nodeId: data.node_id,
-              message: `__PROGRESS__:${JSON.stringify(p)}`,
-              type: 'info',
-            });
+        // #117: the backend declares every renderable payload in `outputs`
+        // as `{ output_kind, [output_kind]: payload }`. Unknown kinds are
+        // skipped so a newer backend never breaks this handler.
+        const outputs: any[] = Array.isArray(data.outputs) ? data.outputs : [];
+        const ofKind = (kind: string) =>
+          outputs.filter((o) => o && typeof o === 'object' && o.output_kind === kind);
+        const firstOf = (kind: string) => ofKind(kind)[0];
+
+        // DEPRECATED (remove one release after #117): a frontend built from
+        // source can meet an older prebuilt backend that still sends these
+        // flat fields — and that guessed `image` from the string's length.
+        const legacy = outputs.length === 0 ? data : {};
+
+        if (data.status === 'progress') {
+          const p = firstOf('progress')?.progress ?? legacy.progress;
+          if (p) {
+            store.setTabNodeProgress(tabId, data.node_id, p);
+            if (p.event === 'epoch' || p.event === 'config') {
+              store.addTabLog(tabId, {
+                nodeId: data.node_id,
+                message: '',
+                kind: 'progress',
+                progress: p,
+                type: 'info',
+              });
+            }
+            return;
           }
-          return;
         }
 
         store.setTabNodeExecutionStatus(tabId, data.node_id, data.status, data.error);
@@ -83,18 +100,41 @@ export function useGraphExecution() {
           });
         }
 
-        if (data.log) {
-          store.addTabLog(tabId, { nodeId: data.node_id, message: data.log, type: 'info' });
-        }
-        if (data.image) {
+        const text = firstOf('text')?.text ?? legacy.log;
+        if (text) {
           store.addTabLog(tabId, {
             nodeId: data.node_id,
-            message: `__IMAGE__:${data.image}`,
+            message: String(text),
+            kind: 'text',
             type: 'info',
           });
         }
-        if (data.output_summary) {
-          store.setTabOutputSummary(tabId, data.node_id, data.output_summary);
+
+        const imageEntries = ofKind('image');
+        // Legacy backends sent a bare base64 string with no container info.
+        if (typeof legacy.image === 'string' && legacy.image) {
+          imageEntries.push({ image: { format: 'png', encoding: 'base64', data: legacy.image } });
+        }
+        for (const entry of imageEntries) {
+          const payload = entry.image;
+          if (!payload?.data) continue;
+          store.addTabLog(tabId, {
+            nodeId: data.node_id,
+            message: '',
+            kind: 'image',
+            image: {
+              format: payload.format ?? 'png',
+              encoding: payload.encoding ?? 'base64',
+              data: payload.data,
+              ...(entry.port ? { port: entry.port } : {}),
+            },
+            type: 'info',
+          });
+        }
+
+        const summary = firstOf('tensor_summary')?.tensor_summary ?? legacy.output_summary;
+        if (summary) {
+          store.setTabOutputSummary(tabId, data.node_id, summary);
         }
       };
 

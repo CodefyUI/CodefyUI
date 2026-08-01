@@ -39,12 +39,29 @@ class ParamType(str, Enum):
     SECRET = "secret"
 
 
+# Renderable-media kinds a port may declare (#117). Plain strings rather
+# than a closed Enum so plugins and later node packs can introduce their own
+# kind without a core release.
+#
+# ``MEDIA_IMAGE`` contract: the port's value is a base64-encoded PNG string
+# (no ``data:`` prefix). A node that wants a different container should
+# declare a new kind rather than overload this one.
+MEDIA_IMAGE = "image"
+
+
 @dataclass
 class PortDefinition:
     name: str
     data_type: DataType
     description: str = ""
     optional: bool = False
+    # Declares that this port carries renderable media rather than plain
+    # data, so the transport layer never has to guess. Before #117 the WS
+    # layer sniffed "string longer than 200 chars whose first 20 chars are
+    # alphanumeric => base64 PNG", which mislabelled ordinary long text (an
+    # LLM answer, CJK prose, a token dump) as a broken image. Declaring is
+    # the node's job; nothing downstream may infer it from the value.
+    media: str | None = None
 
 
 @dataclass

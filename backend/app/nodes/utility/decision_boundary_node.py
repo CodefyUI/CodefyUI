@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...core.node_base import (
+    MEDIA_IMAGE,
     BaseNode,
     DataType,
     ParamDefinition,
@@ -42,7 +43,12 @@ class DecisionBoundaryNode(BaseNode):
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="image", data_type=DataType.STRING, description="base64 編碼的 PNG 決策邊界圖。"),
+            PortDefinition(
+                name="image",
+                data_type=DataType.STRING,
+                description="base64 編碼的 PNG 決策邊界圖。",
+                media=MEDIA_IMAGE,
+            ),
         ]
 
     @classmethod

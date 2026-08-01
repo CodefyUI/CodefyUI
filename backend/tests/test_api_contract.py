@@ -607,3 +607,185 @@ def test_serialize_ndarray_zero_dim_keeps_empty_shape():
     assert tagged["__type__"] == "tensor"
     assert tagged["shape"] == []
     assert tagged["values"] == 7.5
+
+
+# ── WS node_status output contract (#117) ────────────────────────────────
+# The node_status wire shape is a contract in its own right: nodes DECLARE
+# what a port carries (PortDefinition.media) and the WS layer turns declared
+# outputs into typed `{"output_kind": K, K: payload}` entries. Nothing in
+# this path is allowed to sniff a value's length or character class.
+
+from app.api.ws_execution import (  # noqa: E402
+    OUTPUT_KIND_IMAGE,
+    OUTPUT_KIND_PROGRESS,
+    OUTPUT_KIND_TENSOR_SUMMARY,
+    OUTPUT_KIND_TEXT,
+    build_node_output_entries,
+    declared_image_ports,
+)
+from app.core.node_base import (  # noqa: E402
+    MEDIA_IMAGE,
+    BaseNode,
+    DataType,
+    PortDefinition,
+)
+
+
+class _PlotLikeNode(BaseNode):
+    """Declares one image port and one plain-string port."""
+
+    NODE_NAME = "_ContractPlotLike"
+    CATEGORY = "Test"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [
+            PortDefinition(name="image", data_type=DataType.STRING, media=MEDIA_IMAGE),
+            PortDefinition(name="caption", data_type=DataType.STRING),
+        ]
+
+    def execute(self, inputs, params, progress_callback=None, *, context=None):
+        return {"image": "", "caption": ""}
+
+
+def _kinds(entries: list[dict]) -> list[str]:
+    return [e["output_kind"] for e in entries]
+
+
+@pytest.fixture
+def plot_like_node_type(monkeypatch, registry_with_nodes) -> str:
+    """Register _PlotLikeNode for one test only.
+
+    monkeypatch.setitem restores the registry afterwards so the synthetic
+    node never shows up in `GET /api/nodes` assertions elsewhere.
+    """
+    monkeypatch.setitem(registry_with_nodes._nodes, _PlotLikeNode.NODE_NAME, _PlotLikeNode)
+    return _PlotLikeNode.NODE_NAME
+
+
+def test_port_definition_media_defaults_to_none():
+    # Ports are plain data unless a node explicitly opts in.
+    assert PortDefinition(name="x", data_type=DataType.STRING).media is None
+    assert (
+        PortDefinition(name="x", data_type=DataType.STRING, media=MEDIA_IMAGE).media
+        == "image"
+    )
+
+
+def test_declared_image_ports_lists_only_declared_ports(plot_like_node_type):
+    ports = declared_image_ports([
+        {"id": "a", "type": plot_like_node_type, "data": {"params": {}}},
+        {"id": "b", "type": "Print", "data": {"params": {}}},
+    ])
+    # Only the node that declares media=image is listed, and only that port.
+    assert ports == {"a": ["image"]}
+
+
+def test_declared_image_ports_ignores_unknown_and_malformed_nodes():
+    ports = declared_image_ports([
+        {"id": "x", "type": "NoSuchNodeType"},
+        {"id": "y"},              # no type
+        {"type": "Print"},        # no id
+        "not-a-dict",
+        {"id": "z", "type": "preset:Whatever"},
+    ])
+    assert ports == {}
+
+
+def test_build_output_entries_progress_carries_the_event():
+    event = {"event": "epoch", "epoch": 1, "total_epochs": 3, "loss": 0.5}
+    entries = build_node_output_entries("progress", event, ())
+    assert entries == [{"output_kind": OUTPUT_KIND_PROGRESS, "progress": event}]
+
+
+def test_build_output_entries_text_comes_from_the_log_channel():
+    entries = build_node_output_entries("completed", {"value": 1, "__log__": "hi"}, ())
+    assert _kinds(entries) == [OUTPUT_KIND_TEXT, OUTPUT_KIND_TENSOR_SUMMARY]
+    assert entries[0]["text"] == "hi"
+    # Dunder keys never leak into the summary.
+    assert set(entries[1][OUTPUT_KIND_TENSOR_SUMMARY]) == {"value"}
+
+
+def test_build_output_entries_declared_image_port_produces_an_image_entry():
+    b64 = _tiny_png_base64()
+    entries = build_node_output_entries("completed", {"image": b64}, ["image"])
+    assert _kinds(entries) == [OUTPUT_KIND_IMAGE, OUTPUT_KIND_TENSOR_SUMMARY]
+    img = entries[0]
+    assert img["port"] == "image"
+    assert img["image"] == {"format": "png", "encoding": "base64", "data": b64}
+
+
+@pytest.mark.parametrize(
+    "long_text",
+    [
+        # A token-id / hash dump: plain ASCII alphanumerics.
+        ("TokenIds0123456789abcdef" * 21)[:500],
+        # Traditional Chinese prose from an LLM node: no spaces at all, and
+        # ``str.isalnum()`` is True for CJK, so this always tripped the sniff.
+        ("注意力機制讓模型在每一步都能回頭看整個序列" * 25)[:500],
+    ],
+    ids=["ascii-token-dump", "cjk-prose"],
+)
+def test_build_output_entries_long_alphanumeric_text_is_never_an_image(long_text):
+    """Headline regression for #117.
+
+    A 500-char alphanumeric string (an LLM node's answer, a tokenizer dump)
+    used to trip ``len(val) > 200 and val[:20].isalnum()`` and be shipped to
+    the browser as a base64 PNG, rendering as a broken image. With declared
+    media there is no port to attach it to, so it stays a string output.
+    """
+    # Exactly the shape the pre-#117 sniff claimed was a base64 PNG.
+    assert len(long_text) == 500 and long_text[:20].isalnum()
+
+    entries = build_node_output_entries("completed", {"answer": long_text}, ())
+    assert OUTPUT_KIND_IMAGE not in _kinds(entries)
+    summary = entries[0][OUTPUT_KIND_TENSOR_SUMMARY]
+    assert summary["answer"]["type"] == "string"
+
+
+def test_build_output_entries_undeclared_port_never_becomes_an_image():
+    # Even a genuinely base64-looking value stays plain data without a
+    # declaration — declaring is the node's job, not the transport's.
+    entries = build_node_output_entries("completed", {"blob": _tiny_png_base64()}, ())
+    assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
+
+
+def test_build_output_entries_declared_port_with_no_value_is_skipped():
+    entries = build_node_output_entries("completed", {"image": ""}, ["image"])
+    assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
+    entries = build_node_output_entries("completed", {"other": "x"}, ["image"])
+    assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
+    entries = build_node_output_entries("completed", {"image": 42}, ["image"])
+    assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
+
+
+def test_build_output_entries_cached_status_matches_completed():
+    result = {"image": _tiny_png_base64(), "__log__": "from cache"}
+    assert _kinds(build_node_output_entries("cached", result, ["image"])) == _kinds(
+        build_node_output_entries("completed", result, ["image"])
+    )
+
+
+def test_build_output_entries_non_terminal_statuses_are_empty():
+    for status in ("running", "skipped", "error"):
+        assert build_node_output_entries(status, {"value": 1}, ["image"]) == []
+    assert build_node_output_entries("completed", None, ["image"]) == []
+    assert build_node_output_entries("progress", None, ()) == []
+
+
+def test_every_output_entry_stores_its_payload_under_the_matching_key():
+    result = {"image": _tiny_png_base64(), "__log__": "hi", "value": 1}
+    entries = build_node_output_entries("completed", result, ["image"])
+    entries += build_node_output_entries("progress", {"event": "epoch"}, ())
+    for entry in entries:
+        assert entry["output_kind"] in {
+            OUTPUT_KIND_TEXT,
+            OUTPUT_KIND_IMAGE,
+            OUTPUT_KIND_PROGRESS,
+            OUTPUT_KIND_TENSOR_SUMMARY,
+        }
+        assert entry["output_kind"] in entry
