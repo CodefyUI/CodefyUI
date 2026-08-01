@@ -22,25 +22,26 @@ produces no output entries at all; the builders belong to the run, not to
 one transport.
 
 Pure functions over plain dicts, with exactly one dependency on live server
-state: :func:`declared_image_ports` asks the node registry what a node
+state: :func:`declared_media_ports` asks the node registry what a node
 declares. Nothing here touches a socket, a request or a database.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import settings
-from .node_base import MEDIA_IMAGE
+from .node_base import MEDIA_CHART, MEDIA_IMAGE
 from .node_registry import registry
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_KIND_TEXT = "text"
 OUTPUT_KIND_IMAGE = "image"
+OUTPUT_KIND_CHART = "chart"
 OUTPUT_KIND_PROGRESS = "progress"
 OUTPUT_KIND_TENSOR_SUMMARY = "tensor_summary"
 
@@ -144,15 +145,22 @@ def _summarize_outputs(result: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def declared_image_ports(nodes: list[Any]) -> dict[str, list[str]]:
-    """Map ``node id -> output ports the node DECLARES as image media``.
+def declared_media_ports(nodes: list[Any]) -> dict[str, dict[str, list[str]]]:
+    """Map ``node id -> {media kind -> output ports declaring it}``.
 
     Resolved from the registry once per run, so the hot progress path only
     does a dict lookup. Nodes the registry does not know (presets, typos)
     and malformed entries are silently skipped: an unresolvable node simply
     has no declared media, which is the safe answer.
+
+    The media kind is whatever string the port declared — this function does
+    not know the vocabulary and never filters on it. That is what makes the
+    "a node pack can add its own kind without a core release" promise in the
+    module docstring true rather than aspirational (#130): a third-party pack
+    declaring ``media="waveform"`` reaches the wire as
+    ``{"output_kind": "waveform", ...}`` with no change here.
     """
-    ports: dict[str, list[str]] = {}
+    ports: dict[str, dict[str, list[str]]] = {}
     if not isinstance(nodes, list):
         return ports
     for node in nodes:
@@ -171,26 +179,83 @@ def declared_image_ports(nodes: list[Any]) -> dict[str, list[str]]:
         except Exception:  # pragma: no cover - defensive: bad third-party node
             logger.debug("define_outputs_dynamic failed for %s", node_type, exc_info=True)
             continue
-        declared = [p.name for p in definitions if getattr(p, "media", None) == MEDIA_IMAGE]
+        declared: dict[str, list[str]] = {}
+        for port in definitions:
+            kind = getattr(port, "media", None)
+            if isinstance(kind, str) and kind:
+                declared.setdefault(kind, []).append(port.name)
         if declared:
             ports[node_id] = declared
     return ports
 
 
+def _image_payload(value: Any) -> dict[str, Any] | None:
+    """Wrap a MEDIA_IMAGE port value in its container, or skip it."""
+    if not isinstance(value, str) or not value:
+        return None
+    # MEDIA_IMAGE's contract (see node_base): base64 PNG.
+    return {"format": "png", "encoding": "base64", "data": value}
+
+
+def _object_payload(value: Any) -> dict[str, Any] | None:
+    """Default envelope: ship a JSON-object port value through untouched.
+
+    Used by MEDIA_CHART and by any kind core has never heard of. A value that
+    is not a non-empty dict is skipped rather than shipped, so a declared port
+    that produced nothing this run is silently absent instead of arriving as
+    an empty picture — the same rule the image branch has always used.
+    """
+    if not isinstance(value, dict) or not value:
+        return None
+    return value
+
+
+#: Per-kind envelope builders. A kind absent from this map falls back to
+#: :func:`_object_payload`, which is why adding a kind needs no entry here
+#: unless its payload needs a container the node's raw value does not have.
+_MEDIA_PAYLOADS: dict[str, Callable[[Any], dict[str, Any] | None]] = {
+    MEDIA_IMAGE: _image_payload,
+    MEDIA_CHART: _object_payload,
+}
+
+#: Keys an entry dict already uses for its own bookkeeping. Since an entry
+#: stores its payload under a key NAMED BY THE KIND, a third-party pack
+#: declaring ``media="port"`` would overwrite the port name, and one declaring
+#: ``media="elided"`` would forge the marker ``run_store`` writes when a
+#: payload exceeds the size cap — making an intact entry read as truncated, or
+#: vice versa. Refused rather than silently renamed: a kind that collides is a
+#: bug in the declaring pack, and quietly serving it under another name would
+#: hide that from its author.
+_RESERVED_ENTRY_KEYS = frozenset(
+    {"output_kind", "port", "elided", "bytes", "cap_bytes"}
+)
+
+
 def build_node_output_entries(
     status: str,
     result: dict[str, Any] | None,
-    image_ports: Sequence[str] = (),
+    media_ports: Mapping[str, Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the typed ``outputs`` list for one ``node_status`` message.
 
-    ``image_ports`` are the output port names this node *declared* as image
-    media (see :func:`declared_image_ports`). Values on any other port stay
-    plain data no matter what they look like -- there is deliberately no
-    length or character-class inspection anywhere in this function.
+    ``media_ports`` maps a media kind to the output port names this node
+    *declared* for it (see :func:`declared_media_ports`). Values on any other
+    port stay plain data no matter what they look like -- there is
+    deliberately no length or character-class inspection anywhere in this
+    function.
     """
     if not result:
         return []
+
+    # A Sequence here is the pre-#130 signature (a bare list of image ports).
+    # Left unguarded, iterating a string yields its characters and a list
+    # yields port names used as media kinds -- either way the caller gets
+    # plausible-looking nonsense instead of an error.
+    if media_ports is not None and not isinstance(media_ports, Mapping):
+        raise TypeError(
+            "media_ports must be a mapping of media kind -> port names, e.g. "
+            f"{{'image': ['plot']}}; got {type(media_ports).__name__}"
+        )
 
     # A "progress" status carries a live training event, nothing else.
     if status == "progress":
@@ -207,24 +272,22 @@ def build_node_output_entries(
             {"output_kind": OUTPUT_KIND_TEXT, OUTPUT_KIND_TEXT: str(result["__log__"])}
         )
 
-    # Declared image ports. A declared port that produced nothing this run is
-    # skipped rather than announced as an empty image.
-    for port in image_ports:
-        value = result.get(port)
-        if not isinstance(value, str) or not value:
+    # Declared media ports, kind by kind. A declared port that produced
+    # nothing this run is skipped rather than announced as an empty payload.
+    for kind, port_names in (media_ports or {}).items():
+        if kind in _RESERVED_ENTRY_KEYS:
+            logger.warning(
+                "skipping media kind %r: it collides with a reserved entry key "
+                "(%s). Rename the kind in the declaring node pack.",
+                kind, ", ".join(sorted(_RESERVED_ENTRY_KEYS)),
+            )
             continue
-        entries.append(
-            {
-                "output_kind": OUTPUT_KIND_IMAGE,
-                "port": port,
-                OUTPUT_KIND_IMAGE: {
-                    # MEDIA_IMAGE's contract (see node_base): base64 PNG.
-                    "format": "png",
-                    "encoding": "base64",
-                    "data": value,
-                },
-            }
-        )
+        envelope = _MEDIA_PAYLOADS.get(kind, _object_payload)
+        for port in port_names:
+            payload = envelope(result.get(port))
+            if payload is None:
+                continue
+            entries.append({"output_kind": kind, "port": port, kind: payload})
 
     # Per-port summaries for edge inspection. Emitted on "cached" too so the
     # edge tooltip and Inspector still populate when a node is served from

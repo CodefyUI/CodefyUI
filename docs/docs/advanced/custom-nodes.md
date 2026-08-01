@@ -75,6 +75,33 @@ def define_outputs(cls):
 
 Declaring is mandatory — nothing inspects your values to work out what they are. An undeclared port stays plain data no matter how much it looks like an image, which is what keeps a long text output (an LLM answer, a token dump) from being rendered as a broken picture.
 
+## Drawing a chart in the results panel
+
+`media=MEDIA_CHART` is the same mechanism for plots. The port's value is a JSON **chart spec** — a plain dict — which the editor draws with its own SVG components, so the picture is themed, hoverable, and sharp at any zoom instead of a fixed-size PNG:
+
+```python
+from app.core.node_base import MEDIA_CHART, BaseNode, DataType, PortDefinition
+
+@classmethod
+def define_outputs(cls):
+    return [
+        PortDefinition(name="chart", data_type=DataType.ANY, media=MEDIA_CHART),
+    ]
+
+def execute(self, inputs, params, progress_callback=None, *, context=None):
+    return {"chart": {
+        "kind": "bar",                       # bar | line | scatter | heatmap
+        "title": "Mean petal length by species",
+        "bars": [{"label": "setosa", "value": 1.462}],
+    }}
+```
+
+Every number in a spec must be a finite, plain Python `float` or `int`: run events are serialised with `allow_nan=False`, and a `numpy.float32` is not JSON-serialisable at all. Keep specs small — a `node_status` payload over 128 KB is replaced by an elision marker. The full per-kind payload reference lives in the [stats pack's README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md), which is the reference implementation.
+
+### Your own media kind
+
+Neither kind is special-cased. The resolver keys on whatever string a port declares, and any port value that is a non-empty dict is shipped through untouched, so a pack declaring `media="waveform"` already arrives in the browser as `{"output_kind": "waveform", ...}`. Only *rendering* it needs a frontend change; an editor that does not know a kind ignores it rather than breaking.
+
 :::tip
 Need to package existing nodes rather than write new behavior? Use a **[preset](./presets)**. Want to share nodes with others as an installable bundle? Build a **[plugin pack](./plugins)**.
 :::

@@ -119,7 +119,7 @@ from .execution_context import (
 )
 from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
 from .node_state_store import NodeStateStore
-from .output_entries import build_node_output_entries, declared_image_ports
+from .output_entries import build_node_output_entries, declared_media_ports
 from .run_output_store import RunOutputStore
 from .run_store import (
     STATUS_CANCELLED,
@@ -1722,7 +1722,7 @@ class RunService:
         The message body is byte-for-byte what ``ws_execution`` puts on the
         wire minus its ``type`` key — see the event-vocabulary block above.
         """
-        image_ports = declared_image_ports(nodes)
+        media_ports = declared_media_ports(nodes)
 
         async def on_progress(
             node_id: str, status: str, result: dict[str, Any] | None,
@@ -1731,7 +1731,7 @@ class RunService:
             if result and status == "error":
                 message["error"] = result.get("error", "")
             entries = build_node_output_entries(
-                status, result, image_ports.get(node_id, ()))
+                status, result, media_ports.get(node_id))
             if entries:
                 message["outputs"] = entries
             await self._emit(active.run_id, EVENT_NODE_STATUS, message)

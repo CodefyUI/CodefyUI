@@ -21,7 +21,7 @@ import { useProjectStore } from './projectStore';
  * render, so a later node pack can add its own kind; unknown kinds are
  * ignored by the panel rather than rendered wrong.
  */
-export type LogKind = 'text' | 'image' | 'progress';
+export type LogKind = 'text' | 'image' | 'progress' | 'chart';
 
 /** Base64 media payload of a `kind: 'image'` entry. */
 export interface LogImagePayload {
@@ -30,6 +30,44 @@ export interface LogImagePayload {
   encoding: string;
   data: string;
   /** Output port the image came from, when the backend named one. */
+  port?: string;
+}
+
+/**
+ * Chart spec of a `kind: 'chart'` entry (#130) — the payload a port declaring
+ * `media=MEDIA_CHART` produced, verbatim.
+ *
+ * Deliberately NOT a discriminated union over `kind`: the backend's kinds are
+ * open strings, so a pack can ship a fifth one, and a union would make that
+ * payload unrepresentable rather than merely unrendered. `ChartView` switches
+ * on `kind` and renders nothing for one it does not know.
+ *
+ * Every number here is finite by the producer's contract — run events are
+ * serialised with `allow_nan=False`, so a NaN would already have become
+ * `null` upstream. See `plugins/stats/README.md`.
+ */
+export interface LogChartPayload {
+  kind: string;
+  title?: string;
+  x_label?: string;
+  y_label?: string;
+  /** Downsampling / substitution notice, shown under the title. */
+  note?: string;
+  /** `kind: 'bar'` */
+  bars?: { label: string; value: number }[];
+  /** `kind: 'line'` — each series' points are `[x, y]` pairs. */
+  series?: { name: string; points: [number, number][] }[];
+  /** `kind: 'scatter'` */
+  points?: { x: number; y: number; label?: string; cluster?: number }[];
+  /** `kind: 'heatmap'` */
+  matrix?: number[][];
+  row_labels?: string[];
+  col_labels?: string[];
+  /** Colour-scale bounds — the scale to read against, not the data's extent. */
+  vmin?: number;
+  vmax?: number;
+  colormap?: string;
+  /** Output port the chart came from, when the backend named one. */
   port?: string;
 }
 
@@ -49,6 +87,8 @@ export interface LogEntry {
   image?: LogImagePayload;
   /** Set when `kind === 'progress'` — the raw progress event. */
   progress?: Record<string, any>;
+  /** Set when `kind === 'chart'` (#130) — the spec to draw. */
+  chart?: LogChartPayload;
 }
 
 interface UndoSnapshot {

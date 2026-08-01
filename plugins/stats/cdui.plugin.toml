@@ -1,0 +1,11 @@
+[plugin]
+id              = "stats"
+name            = "Stats — 描述統計與圖表"
+version         = "0.1.0"
+description     = "Descriptive statistics as single nodes: Describe, GroupByAggregate, Histogram, Percentile, Correlation and ConfusionMatrix, plus TableView / ChartView display nodes that render bar, line, scatter and heatmap charts client-side. Pure numpy/torch — no pandas at runtime, no security overrides."
+schema_version  = 1
+requires_codefyui = ">=1.4.0"
+
+[content]
+nodes_dir    = "nodes"
+examples_dir = "examples"

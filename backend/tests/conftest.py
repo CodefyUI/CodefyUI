@@ -38,11 +38,16 @@ settings.DB_PATH = Path(tempfile.mkdtemp(prefix="codefyui-test-db-")) / "codefyu
 # ASGITransport doesn't always go through it).
 init_allowed_hosts(settings.HOST, settings.PORT)
 
-# Register the in-repo chapter plugin packs in the synthetic `cdui_plugins`
-# namespace AT CONFTEST IMPORT TIME, before any test_*.py module is collected.
-# Tests for Edu nodes import them from `cdui_plugins.{foundations,deep,rl}.nodes.*`
-# — those imports happen during pytest's collection pass, which runs after conftest
-# is imported, so the namespace must exist by then.
+# In-repo plugin packs the test suite loads. One tuple, three consumers (the
+# namespace install below and the two registry-discovery paths further down):
+# a pack missing from any one of them fails in a different, confusing way —
+# an ImportError at collection, or a node type the graph engine cannot find.
+_BUILTIN_TEST_PACKS = ("foundations", "deep", "rl", "stats")
+
+# Register those packs in the synthetic `cdui_plugins` namespace AT CONFTEST
+# IMPORT TIME, before any test_*.py module is collected. Pack node tests import
+# from `cdui_plugins.<pack>.nodes.*` during pytest's collection pass, which runs
+# after conftest is imported, so the namespace must exist by then.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 purge_all_plugin_modules()
 install_plugin_finder(
@@ -51,12 +56,37 @@ install_plugin_finder(
     lockfile={
         "schema": 1,
         "plugins": {
-            "foundations": {"source_kind": "builtin", "source": "foundations"},
-            "deep": {"source_kind": "builtin", "source": "deep"},
-            "rl": {"source_kind": "builtin", "source": "rl"},
+            pack: {"source_kind": "builtin", "source": pack}
+            for pack in _BUILTIN_TEST_PACKS
         },
     },
 )
+
+
+def _discover_builtin_packs() -> None:
+    """Register every in-repo pack's nodes into the global registry.
+
+    ``force_reload`` is left off deliberately: re-registering hands back the
+    same class objects, so a test holding an ``is`` comparison against one
+    still passes.
+    """
+    for plugin_id in _BUILTIN_TEST_PACKS:
+        plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
+        if plugin_nodes.exists():
+            registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
+
+
+def _packs_missing_from_registry() -> bool:
+    """True when a pack this suite needs has no nodes registered.
+
+    ``rediscover_all`` — which ``POST /api/plugins/reload`` runs — rebuilds the
+    registry from the machine's REAL lockfile, not from the synthetic one this
+    file installs. A pack that is not installed on the developer's machine (or
+    on CI, where the lockfile is empty) is therefore silently dropped, and
+    every later test that resolves a node BY TYPE gets "Unknown node type".
+    """
+    registered = {key.split(":", 1)[0] for key in registry._nodes if ":" in key}
+    return any(pack not in registered for pack in _BUILTIN_TEST_PACKS)
 
 
 @pytest.fixture(autouse=True)
@@ -99,11 +129,7 @@ def registry_with_nodes() -> NodeRegistry:
     if len(registry.nodes) == 0:
         registry.discover(settings.NODES_DIR, "app.nodes")
         registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
-        # Plugin nodes — the three direction packs (foundations / deep / rl).
-        for plugin_id in ("foundations", "deep", "rl"):
-            plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
-            if plugin_nodes.exists():
-                registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
+        _discover_builtin_packs()
         preset_registry.discover(settings.PRESETS_DIR, registry)
     registry._nodes["_TestSource"] = _TestSourceNode
     return registry
@@ -117,6 +143,13 @@ def _ensure_registry_intact(registry_with_nodes):
     clears every registry entry, including the manually-injected
     ``_TestSource`` synthetic node and the built-ins. Without this safety net,
     ws-execution tests that follow such a test see "Unknown node type".
+
+    The plugin packs are checked separately from the built-ins because a
+    reload does not lose them the same way: it re-registers the built-ins from
+    ``NODES_DIR`` and then the packs from the real lockfile, so ``Start`` comes
+    back while an uninstalled pack does not. Testing only for ``Start`` made
+    the suite pass or fail on collection order — a pack test sorting before
+    ``test_plugin_api`` was fine, one sorting after was not.
     """
     if "_TestSource" not in registry._nodes:
         registry._nodes["_TestSource"] = _TestSourceNode
@@ -124,11 +157,9 @@ def _ensure_registry_intact(registry_with_nodes):
         # Wholesale rebuild — registry was nuked by an earlier reload.
         registry.discover(settings.NODES_DIR, "app.nodes")
         registry.discover(settings.CUSTOM_NODES_DIR, "app.custom_nodes")
-        for plugin_id in ("foundations", "deep", "rl"):
-            plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
-            if plugin_nodes.exists():
-                registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
         registry._nodes["_TestSource"] = _TestSourceNode
+    if _packs_missing_from_registry():
+        _discover_builtin_packs()
     yield
 
 

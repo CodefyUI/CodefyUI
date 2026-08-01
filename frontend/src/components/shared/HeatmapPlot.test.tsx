@@ -363,4 +363,54 @@ describe('HeatmapPlot', () => {
     const cell00 = container.querySelector('rect[data-i="0"][data-j="0"]');
     expect(cell00?.getAttribute('data-color-t')).toBe('0.000');
   });
+
+  // ── valueRange (#130) ─────────────────────────────────────────────────────
+  // Attention weights are already in [0, 1]; a confusion matrix of counts is
+  // not, and clamping it there would paint every non-zero cell full brightness.
+
+  function colorT(container: HTMLElement, i: number, j: number): string | null {
+    return container
+      .querySelector(`rect[data-i="${i}"][data-j="${j}"]`)
+      ?.getAttribute('data-color-t') ?? null;
+  }
+
+  it('clamps to 0..1 when no valueRange is given (the attention default)', () => {
+    const { container } = render(<HeatmapPlot data={[[13, 1]]} />);
+    expect(colorT(container, 0, 0)).toBe('1.000');
+    expect(colorT(container, 0, 1)).toBe('1.000');
+  });
+
+  it('stretches the ramp across valueRange instead', () => {
+    const { container } = render(<HeatmapPlot data={[[13, 1]]} valueRange={[0, 13]} />);
+    expect(colorT(container, 0, 0)).toBe('1.000');
+    expect(Number(colorT(container, 0, 1))).toBeCloseTo(1 / 13, 3);
+  });
+
+  it('maps a diverging range so zero lands mid-ramp', () => {
+    const { container } = render(
+      <HeatmapPlot data={[[-1, 0, 1]]} valueRange={[-1, 1]} />,
+    );
+    expect(colorT(container, 0, 0)).toBe('0.000');
+    expect(colorT(container, 0, 1)).toBe('0.500');
+    expect(colorT(container, 0, 2)).toBe('1.000');
+  });
+
+  it('clamps values outside the declared range rather than overflowing', () => {
+    const { container } = render(<HeatmapPlot data={[[-5, 99]]} valueRange={[0, 10]} />);
+    expect(colorT(container, 0, 0)).toBe('0.000');
+    expect(colorT(container, 0, 1)).toBe('1.000');
+  });
+
+  it('renders a degenerate range mid-ramp, not fully bright', () => {
+    const { container } = render(<HeatmapPlot data={[[7, 7]]} valueRange={[7, 7]} />);
+    expect(colorT(container, 0, 0)).toBe('0.500');
+  });
+
+  it('lets normalizePerRow win over valueRange', () => {
+    const { container } = render(
+      <HeatmapPlot data={[[2, 4]]} valueRange={[0, 100]} normalizePerRow />,
+    );
+    // Per-row min-max stretch: the row's own max reaches the top of the ramp.
+    expect(colorT(container, 0, 1)).toBe('1.000');
+  });
 });

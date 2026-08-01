@@ -22,6 +22,13 @@
       "path": "plugins/deep",
       "chapters": ["C3", "C4", "C6"]
     },
+    "stats": {
+      "name": "Stats — 描述統計與圖表",
+      "description": "Descriptive statistics as single nodes instead of hand-wired tensor ops: Stats-Describe (pandas-compatible describe table), Stats-GroupByAggregate (mean/sum/count/min/max/std per group), Stats-Histogram, Stats-Percentile, Stats-Correlation (pearson / spearman, pairwise NaN drop), Stats-ConfusionMatrix (normalize none/true/pred/all), plus Stats-TableView and Stats-ChartView which render bar / line / scatter / heatmap charts in the Results panel. Pure numpy + torch.",
+      "kind": "builtin",
+      "path": "plugins/stats",
+      "tags": ["statistics", "chart", "table", "eda", "confusion-matrix"]
+    },
     "rl": {
       "name": "Reinforcement Learning — 強化學習",
       "description": "Reinforcement-learning teaching nodes for hands-on module I5: Edu-PolicyGradient, Edu-PPOClip, Edu-GRPO, Edu-PreferenceLoss. Each RL update is exposed as softmax → gather → baseline → ratio → clip → loss.",

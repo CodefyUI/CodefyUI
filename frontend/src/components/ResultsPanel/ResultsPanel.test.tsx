@@ -529,6 +529,72 @@ describe('ResultsPanel — structured output kinds (#117)', () => {
   });
 });
 
+// ── #130: chart output entries ───────────────────────────────────────────
+// A node declaring `media=MEDIA_CHART` ships a JSON spec, and the panel draws
+// it with the app's own SVG plots rather than showing a server-rendered PNG.
+
+describe('ResultsPanel — chart output entries (#130)', () => {
+  function chartLog(chart: Record<string, unknown>): LogEntry {
+    return makeLog({ message: '', kind: 'chart', chart: chart as any });
+  }
+
+  it('draws a kind="chart" entry in the log', () => {
+    seedLogs([
+      chartLog({
+        kind: 'bar',
+        title: 'Mean petal length',
+        bars: [{ label: 'setosa', value: 1.46 }],
+      }),
+    ]);
+    const { container } = render(<ResultsPanel />);
+    expect(screen.getByText('Mean petal length')).toBeInTheDocument();
+    expect(container.querySelector('[data-chart-kind="bar"]')).toBeInTheDocument();
+    expect(container.querySelector('rect[data-label="setosa"]')).toBeInTheDocument();
+  });
+
+  it('renders a confusion matrix as a heatmap with its class labels', () => {
+    seedLogs([
+      chartLog({
+        kind: 'heatmap',
+        title: 'Confusion matrix',
+        matrix: [[13, 0], [1, 12]],
+        row_labels: ['setosa', 'versicolor'],
+        col_labels: ['setosa', 'versicolor'],
+        vmin: 0,
+        vmax: 13,
+      }),
+    ]);
+    const { container } = render(<ResultsPanel />);
+    expect(container.querySelector('[data-chart-kind="heatmap"]')).toBeInTheDocument();
+    expect(container.querySelectorAll('rect[data-i]')).toHaveLength(4);
+    expect(screen.getAllByText('setosa').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows a chart entry alongside the text a node emitted with it', () => {
+    seedLogs([
+      makeLog({ message: 'rendered table', kind: 'text' }),
+      chartLog({ kind: 'bar', bars: [{ label: 'a', value: 1 }] }),
+    ]);
+    const { container } = render(<ResultsPanel />);
+    expect(screen.getByText('rendered table')).toBeInTheDocument();
+    expect(container.querySelector('[data-chart-kind="bar"]')).toBeInTheDocument();
+  });
+
+  it('ignores a kind="chart" entry with no spec and falls back to the message', () => {
+    seedLogs([makeLog({ message: 'no payload', kind: 'chart' })]);
+    const { container } = render(<ResultsPanel />);
+    expect(container.querySelector('[data-chart-kind]')).not.toBeInTheDocument();
+    expect(screen.getByText('no payload')).toBeInTheDocument();
+  });
+
+  it('counts chart entries in the log tab badge like any other entry', () => {
+    seedLogs([chartLog({ kind: 'bar', bars: [] }), chartLog({ kind: 'bar', bars: [] })]);
+    render(<ResultsPanel />);
+    const logTabBtn = screen.getByText(t('results.title')).closest('button')!;
+    expect(within(logTabBtn).getByText('2')).toBeInTheDocument();
+  });
+});
+
 // ── #124: the Runs tab ───────────────────────────────────────────────────
 
 describe('ResultsPanel — Runs tab', () => {

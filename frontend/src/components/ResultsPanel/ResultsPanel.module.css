@@ -218,6 +218,14 @@
   margin-bottom: 2px;
 }
 
+/* Chart output entry (#130). The card brings its own frame, so this only has
+   to keep it from stretching the log row. */
+.logChart {
+  margin-top: 2px;
+  margin-bottom: 2px;
+  max-width: 100%;
+}
+
 /* Log message text */
 .logMessage {
   font-size: 0.8125rem;

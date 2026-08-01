@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n';
 import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
 import { RunsPanel } from './RunsPanel';
+import { ChartView } from '../shared/ChartView';
 import styles from './ResultsPanel.module.css';
 
 const MIN_HEIGHT = 80;
@@ -357,7 +358,9 @@ export function ResultsPanel() {
                         {String(entry.nodeId).slice(0, 8)}
                       </span>
                     )}
-                    {entry.kind === 'image' && entry.image?.data ? (
+                    {entry.kind === 'chart' && entry.chart?.kind ? (
+                      <ChartView chart={entry.chart} className={styles.logChart} />
+                    ) : entry.kind === 'image' && entry.image?.data ? (
                       <img
                         src={`data:image/${entry.image.format};base64,${entry.image.data}`}
                         alt="output"

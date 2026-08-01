@@ -659,6 +659,13 @@ const en = {
   // Shared plots
   'plot.noDistribution': 'no distribution',
   'plot.peak': 'peak {count}',
+
+  // Chart output entries (#130)
+  'chart.bar': 'Bar chart',
+  'chart.series': 'series',
+  'chart.unknownKind': 'This chart kind ({kind}) needs a newer editor',
+  'chart.malformed': 'This {kind} chart arrived without its data',
+  'nodeDetail.captures.charts': 'Charts ({count})',
 } as const;
 
 export type TranslationKey = keyof typeof en;

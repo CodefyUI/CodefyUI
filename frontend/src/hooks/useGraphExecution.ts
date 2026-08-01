@@ -190,6 +190,20 @@ export function useGraphExecution() {
           });
         }
 
+        // #130: a chart entry carries a spec the client draws itself. No
+        // legacy fallback — the kind postdates the flat-field era entirely.
+        for (const entry of ofKind('chart')) {
+          const payload = entry.chart;
+          if (!payload?.kind) continue;
+          store.addTabLog(tabId, {
+            nodeId: data.node_id,
+            message: '',
+            kind: 'chart',
+            chart: { ...payload, ...(entry.port ? { port: entry.port } : {}) },
+            type: 'info',
+          });
+        }
+
         const summary = firstOf('tensor_summary')?.tensor_summary ?? legacy.output_summary;
         if (summary) {
           store.setTabOutputSummary(tabId, data.node_id, summary);
