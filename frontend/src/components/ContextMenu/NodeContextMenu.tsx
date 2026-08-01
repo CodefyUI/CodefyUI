@@ -1,5 +1,6 @@
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
+import { isBypassable } from '../../utils';
 import styles from './NodeContextMenu.module.css';
 
 export interface ContextMenuPosition {
@@ -71,6 +72,13 @@ export function useNodeContextMenuItems(
   },
 ) {
   const { t } = useI18n();
+  const toggleNodeBypass = useTabStore((s) => s.toggleNodeBypass);
+  const node = useTabStore((s) => {
+    const tab = s.tabs.find((tt) => tt.id === s.activeTabId);
+    return tab?.nodes.find((n) => n.id === nodeId);
+  });
+  const bypassable = isBypassable(node);
+  const bypassed = node?.data.bypassed === true;
 
   return [
     // First, and divided off from the edit actions: it is the only entry that
@@ -81,7 +89,19 @@ export function useNodeContextMenuItems(
       dividerAfter: true,
     },
     { label: t('contextMenu.rename'), action: () => callbacks.onRename(nodeId), dividerAfter: false },
-    { label: t('contextMenu.duplicate'), action: () => callbacks.onDuplicate(nodeId), dividerAfter: true },
+    { label: t('contextMenu.duplicate'), action: () => callbacks.onDuplicate(nodeId), dividerAfter: !bypassable },
+    // Bypass (core#128) sits with the edit actions, not next to Delete: it
+    // changes what runs, it does not remove anything. Absent entirely for the
+    // node kinds bypass does not apply to (notes, Start, presets) rather than
+    // shown greyed out — an entry that can never do anything is noise.
+    ...(bypassable
+      ? [{
+          label: bypassed ? t('contextMenu.unbypass') : t('contextMenu.bypass'),
+          action: () => toggleNodeBypass(nodeId),
+          color: bypassed ? '#22d3ee' : undefined,
+          dividerAfter: true,
+        }]
+      : []),
     { label: t('contextMenu.delete'), action: () => callbacks.onDelete(nodeId), color: '#F44336' },
   ];
 }

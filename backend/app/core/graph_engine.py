@@ -7,6 +7,7 @@ import inspect
 import logging
 import traceback
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..config import settings
@@ -151,6 +152,250 @@ def expand_presets(
     return expanded_nodes, expanded_edges, internal_to_preset
 
 
+# ── Bypass / mute (core#128) ─────────────────────────────────────────────
+#
+# A node the user has bypassed on the canvas carries ``data.bypassed = True``.
+# It is not executed; instead every one of its output ports forwards the value
+# that arrived on the first type-compatible input port, so downstream nodes see
+# the graph as if the bypassed node were not there. This mirrors ComfyUI's
+# Ctrl+B, and — like ComfyUI — the match is made on the node's own DECLARED
+# port types, positionally, first match wins.
+#
+# Resolution happens once, structurally: `resolve_bypass` removes the node and
+# rewires its outgoing edges to whatever fed the matched input. Everything
+# downstream of that (reachability, validation, topological order, the Python
+# exporter) therefore needs no bypass awareness at all — it simply never sees
+# the node.
+
+BYPASS_KEY = "bypassed"
+
+
+def _is_bypassed(node: dict) -> bool:
+    data = node.get("data")
+    return bool(data.get(BYPASS_KEY)) if isinstance(data, dict) else False
+
+
+def _type_name(data_type: Any) -> str:
+    """Readable port type for an error message, enum or bare string."""
+    return str(getattr(data_type, "value", data_type))
+
+
+@dataclass(frozen=True)
+class BypassLink:
+    """One resolved pass-through: ``node_id.output`` came from ``source``.
+
+    ``source`` is the nearest NON-bypassed producer, so a chain of bypassed
+    nodes collapses to the value's real origin. Collected for the Python
+    exporter, which comments each bypass with the assignment it stands in for.
+    """
+
+    node_id: str
+    node_type: str
+    output: str
+    input: str
+    source: str
+    source_handle: str
+
+
+@dataclass
+class BypassResolution:
+    """Result of :func:`resolve_bypass` — a graph with no bypassed nodes left.
+
+    ``nodes``/``edges`` are the SAME objects that went in when the graph has
+    no bypassed node, so the overwhelmingly common case costs one scan and no
+    allocation.
+    """
+
+    nodes: list[dict]
+    edges: list[dict]
+    errors: list[str] = field(default_factory=list)
+    links: list[BypassLink] = field(default_factory=list)
+
+
+def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
+    """Remove bypassed nodes, forwarding each output from a matching input.
+
+    Port matching rule (ComfyUI's, spelled out): for output port ``o``, the
+    forwarded input is the FIRST declared input ``i`` with
+    ``is_compatible(i.data_type, o.data_type)``. Then:
+
+    * matched input is wired  -> every edge leaving ``o`` is re-pointed at
+      whatever fed ``i`` (recursively, so chains of bypassed nodes collapse);
+    * matched input is empty  -> the edges leaving ``o`` are dropped, and the
+      downstream node reports the missing input like any unconnected port;
+    * no compatible input     -> an error naming the incompatibility, because
+      silently dropping the edge would hide a wiring mistake.
+
+    Incoming TRIGGER edges are re-pointed at the first non-bypassed node the
+    bypassed one feeds, so bypassing an entry point does not silently leave
+    the graph with none.
+
+    Never raises. Callers decide what an error means: ``validate_graph``
+    reports it, ``prepare_executable_graph`` refuses to run.
+    """
+    bypassed = {n["id"]: n for n in nodes if _is_bypassed(n)}
+    if not bypassed:
+        return BypassResolution(nodes, edges)
+
+    errors: list[str] = []
+    links: list[BypassLink] = []
+
+    # Two kinds of bypassed node are left in place rather than resolved:
+    #
+    #  - a preset instance, whose ports come from the preset definition and
+    #    whose body is expanded elsewhere. Refused loudly (the canvas does not
+    #    offer bypass on presets; a hand-edited file might).
+    #  - an unregistered node type, whose ports cannot be read at all. Left
+    #    alone so the caller reports "Unknown node type", which is the real
+    #    problem, instead of a confusing pass-through complaint.
+    active: dict[str, dict] = {}
+    for node_id, node in bypassed.items():
+        node_type = str(node.get("type", ""))
+        if node_type.startswith("preset:"):
+            errors.append(f"Bypass is not supported on preset node {node_id}")
+        elif registry.get(node_type) is not None:
+            active[node_id] = node
+        # else: unregistered type — left in place on purpose (see above).
+    if not active:
+        return BypassResolution(nodes, edges, errors)
+
+    # Last edge into a handle wins, matching how the engine builds a node's
+    # inputs dict (later writes to `inputs[tgt_handle]` overwrite earlier ones).
+    incoming: dict[tuple[str, str], tuple[str, str]] = {}
+    data_out: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        if edge.get("type", "data") != "data":
+            continue
+        incoming[(edge["target"], edge.get("targetHandle", ""))] = (
+            edge["source"],
+            edge.get("sourceHandle", ""),
+        )
+        data_out[edge["source"]].append(edge["target"])
+
+    ports: dict[str, tuple[list, list]] = {}
+
+    def _ports(node_id: str) -> tuple[list, list]:
+        if node_id not in ports:
+            node = active[node_id]
+            node_cls = registry.get(node["type"])
+            params = node.get("data", {}).get("params", {})
+            ports[node_id] = (
+                node_cls.define_inputs(),
+                node_cls.define_outputs_dynamic(params),
+            )
+        return ports[node_id]
+
+    resolved: dict[tuple[str, str], tuple[str, str] | None] = {}
+
+    def _forward(node_id: str, out_port: str) -> tuple[str, str] | None:
+        """The (source, handle) a bypassed output forwards, or None.
+
+        The memo is seeded with ``None`` BEFORE recursing, which is also the
+        cycle guard: bypassed nodes wired in a loop re-enter, short-circuit to
+        ``None``, and leave the cycle itself for validate_graph to report.
+        It is what keeps the error below to one line per port, too.
+        """
+        key = (node_id, out_port)
+        if key in resolved:
+            return resolved[key]
+        resolved[key] = None  # provisional
+
+        inputs, outputs = _ports(node_id)
+        output = next((p for p in outputs if p.name == out_port), None)
+        if output is None:
+            return None  # unknown handle; edge validation reports it
+
+        match = next(
+            (p for p in inputs if is_compatible(p.data_type, output.data_type)),
+            None,
+        )
+        if match is None:
+            declared = ", ".join(
+                f"{p.name} ({_type_name(p.data_type)})" for p in inputs
+            )
+            errors.append(
+                f"Bypassed node {node_id} ({active[node_id].get('type', '')}): "
+                f"output '{out_port}' ({_type_name(output.data_type)}) has no "
+                f"type-compatible input to forward "
+                f"(inputs: {declared or 'none'})"
+            )
+            return None
+
+        upstream = incoming.get((node_id, match.name))
+        if upstream is None:
+            return None  # nothing wired in; downstream input stays unconnected
+
+        source, handle = upstream
+        if source in active:
+            upstream = _forward(source, handle)
+            if upstream is None:
+                return None
+            source, handle = upstream
+
+        resolved[key] = (source, handle)
+        links.append(
+            BypassLink(
+                node_id=node_id,
+                node_type=str(active[node_id].get("type", "")),
+                output=out_port,
+                input=match.name,
+                source=source,
+                source_handle=handle,
+            )
+        )
+        return resolved[key]
+
+    def _trigger_targets(node_id: str) -> list[str]:
+        """First non-bypassed nodes downstream, in breadth-first edge order."""
+        out: list[str] = []
+        seen = {node_id}
+        queue = deque([node_id])
+        while queue:
+            current = queue.popleft()
+            for nxt in data_out.get(current, []):
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                if nxt in active:
+                    queue.append(nxt)
+                else:
+                    out.append(nxt)
+        return out
+
+    new_edges: list[dict] = []
+    for edge in edges:
+        edge_type = edge.get("type", "data")
+        source, target = edge["source"], edge["target"]
+
+        if target in active:
+            # Consumed by the pass-through map — except a trigger, which is a
+            # marker rather than a value and moves on to what the node fed.
+            if edge_type == "trigger":
+                for index, downstream in enumerate(_trigger_targets(target)):
+                    moved = dict(edge)
+                    moved["target"] = downstream
+                    if "id" in moved:
+                        moved["id"] = f"{moved['id']}:bypass:{index}"
+                    new_edges.append(moved)
+            continue
+
+        if source in active:
+            if edge_type == "trigger":
+                continue  # a bypassed node emits nothing, triggers included
+            forwarded = _forward(source, edge.get("sourceHandle", ""))
+            if forwarded is None:
+                continue
+            rewired = dict(edge)
+            rewired["source"], rewired["sourceHandle"] = forwarded
+            new_edges.append(rewired)
+            continue
+
+        new_edges.append(edge)
+
+    new_nodes = [n for n in nodes if n["id"] not in active]
+    return BypassResolution(new_nodes, new_edges, errors, links)
+
+
 def validate_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -161,8 +406,15 @@ def validate_graph(
     ``preset_fallback`` (ID6) lets a graph-embedded preset (one the
     server's registry does not know) validate as present -- see
     ``build_preset_fallback``.
+
+    Bypassed nodes (core#128) are resolved away first, so every check below
+    runs against the graph that would actually execute: a node whose only
+    upstream is bypassed is checked against what the bypass forwards, not
+    against the node the user muted.
     """
-    errors: list[str] = []
+    resolution = resolve_bypass(nodes, edges)
+    errors: list[str] = list(resolution.errors)
+    nodes, edges = resolution.nodes, resolution.edges
     node_map = {n["id"]: n for n in nodes}
 
     # --- Node-level validation (standalone, before edge checks) ---
@@ -473,12 +725,27 @@ def prepare_executable_graph(
     *,
     preset_fallback: dict | None = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
-    """Expand presets, prune draft components, and validate runtime input.
+    """Expand presets, resolve bypass, prune drafts, and validate.
 
     This is the structural preflight used immediately before execution. It is
     also safe for callers such as Python export that need the exact same preset
     grouping and draft-pruning semantics without actually running any nodes.
     """
+
+    # Presets expand into a sub-graph whose ports come from the preset
+    # definition rather than a node class, so the pass-through rule has nothing
+    # to match on. Refuse before expansion, where the preset node still exists
+    # to be named.
+    bypassed_presets = [
+        node["id"]
+        for node in nodes
+        if _is_bypassed(node) and str(node.get("type", "")).startswith("preset:")
+    ]
+    if bypassed_presets:
+        raise GraphValidationError(
+            "Bypass is not supported on preset node(s): "
+            + ", ".join(sorted(bypassed_presets))
+        )
 
     internal_to_preset: dict[str, str] = {}
     expanded_nodes, expanded_edges = nodes, edges
@@ -500,6 +767,14 @@ def prepare_executable_graph(
         for node in expanded_nodes
     ):
         raise GraphValidationError("Preset nesting exceeds the maximum depth of 10")
+
+    # Bypass BEFORE reachability: a bypassed node is not part of the graph, so
+    # what is reachable, what the topological order is, and what the exporter
+    # emits are all decided on the graph the user actually asked to run.
+    bypass = resolve_bypass(expanded_nodes, expanded_edges)
+    if bypass.errors:
+        raise GraphValidationError("; ".join(bypass.errors))
+    expanded_nodes, expanded_edges = bypass.nodes, bypass.edges
 
     entry_ids = find_entry_points(expanded_nodes, expanded_edges)
     if not entry_ids:

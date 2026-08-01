@@ -465,6 +465,12 @@ export interface ExampleSummary {
   path: string;
   node_count: number;
   edge_count: number;
+  /**
+   * Where the example ships from: `builtin`, or `plugin:<id>` for one a
+   * plugin pack contributed. The gallery (core#128) shows it so an example
+   * can be traced back to the pack that has to stay installed for it to work.
+   */
+  source: string;
 }
 
 export async function listExamples(): Promise<ExampleSummary[]> {

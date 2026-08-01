@@ -17,7 +17,12 @@ export function ShortcutsModal() {
     { keys: `${mod}+C`, action: t('shortcuts.copy') },
     { keys: `${mod}+V`, action: t('shortcuts.paste') },
     { keys: 'Delete', action: t('shortcuts.delete') },
+    // Ctrl+B is context-sensitive (core#128), so both halves are listed —
+    // and the unconditional sidebar chord right after them, because a user
+    // who only ever wanted the sidebar needs to know it still exists.
+    { keys: `${mod}+B`, action: t('shortcuts.bypass') },
     { keys: `${mod}+B`, action: t('shortcuts.toggleSidebar') },
+    { keys: `${mod}+Shift+B`, action: t('shortcuts.toggleSidebarAlways') },
     { keys: t('shortcuts.doubleClickKey'), action: t('shortcuts.quickSearch') },
     { keys: '?', action: t('shortcuts.help') },
   ];

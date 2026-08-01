@@ -82,6 +82,22 @@ export function resolveNodeComponentType(nodeType: string): string {
   return nodeType.includes(':') ? 'pluginNode' : 'baseNode';
 }
 
+/**
+ * xyflow component types that cannot be bypassed (core#128).
+ *
+ * `noteNode` is an annotation with no execution to skip; `start` is the
+ * trigger marker that defines an entry point (muting it would silently strip
+ * the graph's only entry); `presetNode` expands into a sub-graph whose ports
+ * come from the preset definition, so there is nothing for the engine's
+ * pass-through rule to match on — the backend refuses it explicitly.
+ */
+const NON_BYPASSABLE_NODE_TYPES = new Set(['noteNode', 'start', 'presetNode']);
+
+/** Whether the bypass toggle applies to this canvas node. */
+export function isBypassable(node: { type?: string } | undefined | null): boolean {
+  return !!node && !NON_BYPASSABLE_NODE_TYPES.has(node.type ?? '');
+}
+
 export const DATA_TYPE_COLORS: Record<string, string> = {
   TENSOR: '#4CAF50',
   MODEL: '#2196F3',
@@ -275,6 +291,9 @@ export function resolveSerializedNodes(
         params,
         definition: def ?? { node_name: nodeType, category: 'Utility', description: '', inputs: [], outputs: [], params: [] },
         executionStatus: 'idle' as const,
+        // Only set when muted, so a graph with no bypass carries no flag at
+        // all — the same asymmetry getSerializedGraph writes with (core#128).
+        ...(raw.data?.bypassed ? { bypassed: true } : {}),
       },
     };
   });

@@ -101,6 +101,28 @@ const en = {
   'templates.noMatch': 'No matching examples',
   'templates.hint': 'Click an example to open it',
 
+  // Template gallery modal (core#128)
+  'gallery.open': 'Templates',
+  // Used where the word "Templates" is already on screen as a heading (the
+  // sidebar tab, the empty-canvas overlay), so the two never read as the same
+  // control.
+  'gallery.browse': 'Browse all templates',
+  'gallery.open.title': 'Browse every built-in and plugin example',
+  'gallery.title': 'Template Gallery',
+  'gallery.subtitle': 'Open one in a new tab, or insert it into this canvas',
+  'gallery.search': 'Search templates...',
+  'gallery.close': 'Close template gallery',
+  'gallery.list': 'Template list',
+  'gallery.detail': 'Template details',
+  'gallery.detailEmpty': 'Select a template to see what it contains',
+  'gallery.noDescription': 'This template ships no description.',
+  'gallery.edgeCount': '{count} connections',
+  'gallery.sourceBuiltin': 'Built-in example',
+  'gallery.sourcePlugin': 'From plugin pack "{plugin}"',
+  'gallery.openNewTab': 'Open in new tab',
+  'gallery.insert': 'Insert into this canvas',
+  'gallery.insertHint': 'Inserted nodes get fresh ids and are placed below your current graph, so nothing is overwritten. One undo removes them.',
+
   // Sidebar: Custom & Plugins tab (#126)
   'customTab.section.nodes': 'Custom Nodes',
   'customTab.section.plugins': 'Plugins',
@@ -128,6 +150,8 @@ const en = {
   'node.completed': 'Completed',
   'node.cached': 'Cached',
   'node.error': 'Error: {error}',
+  'node.bypassed': 'BYPASS',
+  'node.bypassed.title': 'Bypassed: this node is skipped and passes its input straight through',
 
   // Results Panel
   'results.title': 'Execution Log',
@@ -164,6 +188,8 @@ const en = {
   'contextMenu.rename.prompt': 'Enter a new name for this node:',
   'contextMenu.addTextNote': 'Add Text Note',
   'contextMenu.addImageNote': 'Add Image Note',
+  'contextMenu.bypass': 'Bypass',
+  'contextMenu.unbypass': 'Remove Bypass',
 
   // Notes
   'note.placeholder': 'Click to edit...',
@@ -274,7 +300,9 @@ const en = {
   'shortcuts.copy': 'Copy selected nodes',
   'shortcuts.paste': 'Paste nodes',
   'shortcuts.delete': 'Delete selected',
-  'shortcuts.toggleSidebar': 'Collapse / expand sidebar',
+  'shortcuts.bypass': 'Bypass / un-bypass the selected node(s)',
+  'shortcuts.toggleSidebar': 'Collapse / expand sidebar (when no node is selected)',
+  'shortcuts.toggleSidebarAlways': 'Collapse / expand sidebar (always)',
   'shortcuts.quickSearch': 'Quick node search',
   'shortcuts.help': 'Show this help',
   'shortcuts.doubleClickKey': 'Double-click',

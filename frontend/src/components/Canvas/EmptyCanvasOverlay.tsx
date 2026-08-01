@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useI18n, type TranslationKey } from '../../i18n';
 import { openExample } from '../../utils/openExample';
+import { useUIStore } from '../../store/uiStore';
 import { listExamples } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
@@ -156,6 +157,18 @@ export function EmptyCanvasOverlay() {
       <div className={styles.inner}>
         <div className={styles.title}>{t('empty.title')}</div>
         <div className={styles.subtitle}>{t('empty.subtitle')}</div>
+
+        {/* The curated sections below stay the fast path; this is the way to
+            the full, searchable list — the same modal the toolbar and the
+            sidebar's Templates tab open (core#128). */}
+        <button
+          type="button"
+          className={styles.browseButton}
+          onClick={() => useUIStore.getState().openTemplateGallery()}
+          title={t('gallery.open.title')}
+        >
+          {t('gallery.browse')}
+        </button>
 
         {loading && (
           <div className={styles.hint}>{t('empty.loading')}</div>

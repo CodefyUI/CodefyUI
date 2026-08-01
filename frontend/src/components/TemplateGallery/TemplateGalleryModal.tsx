@@ -1,0 +1,296 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { listExamples, type ExampleSummary } from '../../api/rest';
+import { insertExample, openExampleInNewTab } from '../../utils/openExample';
+import { useUIStore } from '../../store/uiStore';
+import { useI18n } from '../../i18n';
+import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
+// The sidebar's Templates tab (#126) already owns the category order every
+// example surface is expected to share; importing it keeps the modal's grid
+// and the tab's list in the same sequence by construction rather than by
+// two copies of the same sort staying in step.
+import {
+  exampleCategoryLabel,
+  groupExamplesByCategory,
+} from '../Sidebar/TemplatesTab';
+import styles from './TemplateGalleryModal.module.css';
+
+/** Human-readable origin: a built-in example, or the pack that ships it. */
+export function exampleSourceLabel(example: ExampleSummary): string | null {
+  const source = example.source ?? '';
+  if (source.startsWith('plugin:')) return source.slice('plugin:'.length);
+  return null;
+}
+
+function matches(example: ExampleSummary, query: string): boolean {
+  return (
+    example.name.toLowerCase().includes(query) ||
+    example.description.toLowerCase().includes(query) ||
+    example.category.toLowerCase().includes(query) ||
+    (example.source ?? '').toLowerCase().includes(query)
+  );
+}
+
+/**
+ * The full example browser (core#128).
+ *
+ * Reachable at any time — toolbar, sidebar Templates tab, empty-canvas
+ * overlay — which is the whole point: before this, the ~30 shipped examples
+ * were visible only on an empty canvas, so the moment you had a graph they
+ * became unreachable.
+ *
+ * Two ways to take one: open it in a NEW tab (leaving the current graph
+ * alone), or insert it into the CURRENT canvas, which remaps every incoming
+ * id and drops the block clear of what is already there.
+ *
+ * Mounted once at the app root and driven by `uiStore.templateGalleryOpen`.
+ */
+export function TemplateGalleryModal() {
+  const open = useUIStore((s) => s.templateGalleryOpen);
+  if (!open) return null;
+  return <TemplateGalleryBody />;
+}
+
+function TemplateGalleryBody() {
+  const close = useUIStore((s) => s.closeTemplateGallery);
+  const { t } = useI18n();
+
+  const [examples, setExamples] = useState<ExampleSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [chosenPath, setChosenPath] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    listExamples()
+      .then(setExamples)
+      .catch((e: Error) => {
+        setExamples([]);
+        setError(e.message);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Take focus so Escape lands here and the page behind the backdrop cannot
+  // be tabbed into blind; hand it back on close, the way the node detail
+  // modal (#127) does.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const timer = setTimeout(() => surfaceRef.current?.focus(), 0);
+    return () => {
+      clearTimeout(timer);
+      if (previouslyFocused && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [close]);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? examples.filter((e) => matches(e, q)) : examples;
+  }, [examples, query]);
+
+  const groups = useMemo(() => groupExamplesByCategory(visible), [visible]);
+
+  // The detail pane always describes something as long as anything is
+  // listed: a search that filters the chosen example away falls back to the
+  // first remaining one rather than emptying the pane.
+  const chosen =
+    visible.find((e) => e.path === chosenPath) ?? visible[0] ?? null;
+
+  const take = useCallback(
+    async (run: () => Promise<boolean>) => {
+      setBusy(true);
+      try {
+        // Closing regardless of outcome: a failure has already surfaced its
+        // own toast, and leaving the modal up over it just hides the message.
+        await run();
+      } finally {
+        setBusy(false);
+        close();
+      }
+    },
+    [close],
+  );
+
+  const openInNewTab = useCallback(
+    (path: string) => void take(() => openExampleInNewTab(path)),
+    [take],
+  );
+
+  return createPortal(
+    <div
+      className={styles.backdrop}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
+    >
+      <div
+        ref={surfaceRef}
+        className={styles.modal}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('gallery.title')}
+        tabIndex={-1}
+      >
+        <div className={styles.header}>
+          <div className={styles.titleBlock}>
+            <div className={styles.title}>{t('gallery.title')}</div>
+            <div className={styles.subtitle}>{t('gallery.subtitle')}</div>
+          </div>
+          <input
+            type="search"
+            className={styles.search}
+            placeholder={t('gallery.search')}
+            aria-label={t('gallery.search')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button
+            type="button"
+            className={styles.closeBtn}
+            onClick={close}
+            title={t('gallery.close')}
+            aria-label={t('gallery.close')}
+          >
+            &#215;
+          </button>
+        </div>
+
+        <div className={styles.body}>
+          {/* A named <section> so the card list is one addressable region,
+              distinct from the detail pane that repeats the chosen name. */}
+          <section className={styles.grid} aria-label={t('gallery.list')}>
+            {loading && <div className={styles.stateMessage}>{t('templates.loading')}</div>}
+
+            {!loading && error && (
+              <div className={styles.stateMessage}>
+                <div className={styles.errorText}>
+                  {t('templates.loadFail', { error })}
+                </div>
+                <button type="button" className={styles.retryBtn} onClick={load}>
+                  {t('palette.retry')}
+                </button>
+              </div>
+            )}
+
+            {!loading && !error && groups.length === 0 && (
+              <div className={styles.stateMessage}>
+                {query ? t('templates.noMatch') : t('templates.empty')}
+              </div>
+            )}
+
+            {!loading && !error &&
+              groups.map(({ category, items }) => {
+                const color =
+                  EXAMPLE_CATEGORY_COLORS[category] ?? EXAMPLE_CATEGORY_FALLBACK;
+                return (
+                  <section key={category} className={styles.section}>
+                    <h3 className={styles.sectionTitle} style={{ color }}>
+                      <span className={styles.sectionDot} style={{ background: color }} />
+                      {exampleCategoryLabel(category)}
+                      <span className={styles.sectionCount}>{items.length}</span>
+                    </h3>
+                    <div className={styles.cards}>
+                      {items.map((example) => (
+                        <button
+                          key={example.path}
+                          type="button"
+                          className={`${styles.card} ${
+                            chosen?.path === example.path ? styles.cardActive : ''
+                          }`}
+                          aria-pressed={chosen?.path === example.path}
+                          onClick={() => setChosenPath(example.path)}
+                          onDoubleClick={() => openInNewTab(example.path)}
+                        >
+                          <span className={styles.cardName}>{example.name}</span>
+                          <span className={styles.cardDesc}>{example.description}</span>
+                          <span className={styles.cardFooter}>
+                            <span
+                              className={styles.cardChip}
+                              style={{ color, borderColor: color }}
+                            >
+                              {exampleCategoryLabel(category)}
+                            </span>
+                            <span className={styles.cardCount}>
+                              {t('empty.nodeCount', { count: example.node_count })}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+          </section>
+
+          <aside className={styles.detail} aria-label={t('gallery.detail')}>
+            {chosen === null ? (
+              <div className={styles.detailEmpty}>{t('gallery.detailEmpty')}</div>
+            ) : (
+              <>
+                {/* Only the prose scrolls. The actions below stay pinned, so a
+                    long description can never push "Open in new tab" out of
+                    reach on a short window. */}
+                <div className={styles.detailScroll}>
+                  <div className={styles.detailName}>{chosen.name}</div>
+                  <div className={styles.detailMeta}>
+                    <span>{exampleCategoryLabel(chosen.category)}</span>
+                    <span>{t('empty.nodeCount', { count: chosen.node_count })}</span>
+                    <span>{t('gallery.edgeCount', { count: chosen.edge_count })}</span>
+                  </div>
+                  <div className={styles.detailSource}>
+                    {exampleSourceLabel(chosen)
+                      ? t('gallery.sourcePlugin', { plugin: exampleSourceLabel(chosen)! })
+                      : t('gallery.sourceBuiltin')}
+                  </div>
+                  <p className={styles.detailDesc}>
+                    {chosen.description || t('gallery.noDescription')}
+                  </p>
+                </div>
+                <div className={styles.detailActions}>
+                  <button
+                    type="button"
+                    className={styles.primaryBtn}
+                    disabled={busy}
+                    onClick={() => openInNewTab(chosen.path)}
+                  >
+                    {t('gallery.openNewTab')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryBtn}
+                    disabled={busy}
+                    onClick={() => void take(() => insertExample(chosen.path))}
+                  >
+                    {t('gallery.insert')}
+                  </button>
+                  <div className={styles.detailHint}>{t('gallery.insertHint')}</div>
+                </div>
+              </>
+            )}
+          </aside>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

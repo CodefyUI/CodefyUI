@@ -279,6 +279,14 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
                   {t('preset.badge')}
                 </span>
               )}
+              {/* core#128: the canvas card is greyed out and struck through,
+                  but the modal covers it — without this chip the params on
+                  screen would read as though they still affect a run. */}
+              {node.data.bypassed && (
+                <span className={styles.bypassChip} title={t('node.bypassed.title')}>
+                  {t('node.bypassed')}
+                </span>
+              )}
               <span className={styles.statusChip} style={{ color: statusColor, borderColor: statusColor }}>
                 {t(`status.${status}` as const)}
               </span>

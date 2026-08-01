@@ -49,6 +49,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
   const isSequentialModel = data.type === 'SequentialModel';
   const isDraggingTrigger = draggingSourceType === 'TRIGGER';
+  // core#128: muted in place. The card stays fully interactive (you have to
+  // be able to select it to un-mute it) — only its look says "skipped".
+  const isBypassed = data.bypassed === true;
 
   // True when this exact handle is the originally-connected endpoint of an
   // in-progress edge-reconnect drag; it shows a red "detaching" ring warning
@@ -175,7 +178,8 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`${styles.node}${isTriggerTarget ? ` ${styles.entryPoint}` : ''}${isDraggingTrigger ? ` ${styles.triggerDropTarget}` : ''}`}
+      className={`${styles.node}${isTriggerTarget ? ` ${styles.entryPoint}` : ''}${isDraggingTrigger ? ` ${styles.triggerDropTarget}` : ''}${isBypassed ? ` ${styles.bypassed}` : ''}`}
+      data-bypassed={isBypassed || undefined}
       style={{
         '--border-color': borderColor,
         boxShadow: selected
@@ -210,6 +214,11 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
         <span className={styles.headerLabel}>
           {data.label}
         </span>
+        {isBypassed && (
+          <span className={styles.bypassBadge} title={t('node.bypassed.title')}>
+            {t('node.bypassed')}
+          </span>
+        )}
         <span className={styles.headerCategory}>
           {category}
         </span>

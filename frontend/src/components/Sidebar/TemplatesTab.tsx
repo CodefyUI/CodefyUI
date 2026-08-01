@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listExamples, type ExampleSummary } from '../../api/rest';
 import { openExample } from '../../utils/openExample';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
 import { RefreshIcon } from '../shared/Icons';
@@ -73,9 +74,11 @@ function ExampleItem({ example }: { example: ExampleSummary }) {
  * `GET /api/examples/list` (#126).
  *
  * Deliberately thumbnail-less: this is the always-available list view, and the
- * richer gallery is the empty-canvas overlay's job (and, later, #128's modal —
- * which should call the same `openExample` helper this does, so an example
- * opens the same way from every surface).
+ * richer gallery is the empty-canvas overlay's job — and core#128's modal,
+ * which the footer button below opens. Both call the same `openExample`
+ * helper this does, so an example opens the same way from every surface, and
+ * both group by category through `groupExamplesByCategory` (exported for
+ * exactly that reason) so the two never drift out of order.
  *
  * Examples are fetched per mount rather than cached in a store: the sidebar
  * only mounts this tab while it is the selected one, and the list changes
@@ -172,7 +175,17 @@ export function TemplatesTab() {
         )}
       </div>
 
-      <div className={styles.footer}>{t('templates.hint')}</div>
+      <div className={styles.footer}>
+        <button
+          type="button"
+          className={tabStyles.browseButton}
+          onClick={() => useUIStore.getState().openTemplateGallery()}
+          title={t('gallery.open.title')}
+        >
+          {t('gallery.browse')}
+        </button>
+        <div className={tabStyles.footerHint}>{t('templates.hint')}</div>
+      </div>
     </>
   );
 }

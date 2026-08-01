@@ -465,3 +465,234 @@ async def test_execute_graph_skips_draft_components():
     results = await execute_graph(nodes, edges)
     assert "live" in results
     assert "draft" not in results
+
+
+# ── Bypass / mute (core#128) ─────────────────────────────────────────────
+#
+# A bypassed node is removed from the executable graph and each of its
+# outputs forwards the first type-compatible input, ComfyUI-style. The tests
+# below cover the shapes that matter: a straight chain, a fan-out, a chain of
+# two bypassed nodes, and the failure modes (no compatible input, nothing
+# wired into the matched input).
+
+
+def _bypassed(node):
+    """Mark a node dict as bypassed, mirroring what the canvas serializes."""
+    node.setdefault("data", {})["bypassed"] = True
+    return node
+
+
+def _node(nid, ntype, **params):
+    return {"id": nid, "type": ntype, "data": {"params": params}}
+
+
+def _data_edge(eid, src, src_handle, tgt, tgt_handle):
+    return {
+        "id": eid,
+        "source": src,
+        "target": tgt,
+        "sourceHandle": src_handle,
+        "targetHandle": tgt_handle,
+        "type": "data",
+    }
+
+
+def _chain_with_bypassed_dropout(bypass=True):
+    """Start -> TensorCreate -> Dropout(bypassed?) -> Print."""
+    dropout = _node("drop", "Dropout", p=0.5)
+    if bypass:
+        _bypassed(dropout)
+    nodes = [
+        _start_node(),
+        _node("make", "TensorCreate", shape="2,2", fill="ones"),
+        dropout,
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "make"),
+        _data_edge("e1", "make", "tensor", "drop", "tensor"),
+        _data_edge("e2", "drop", "tensor", "out", "value"),
+    ]
+    return nodes, edges
+
+
+def test_bypass_removes_the_node_and_rewires_downstream():
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes, edges = _chain_with_bypassed_dropout()
+    exec_nodes, exec_edges, _ = prepare_executable_graph(nodes, edges)
+
+    assert "drop" not in {n["id"] for n in exec_nodes}
+    rewired = [e for e in exec_edges if e["target"] == "out"]
+    assert len(rewired) == 1
+    assert rewired[0]["source"] == "make"
+    assert rewired[0]["sourceHandle"] == "tensor"
+    assert rewired[0]["targetHandle"] == "value"
+
+
+def test_bypass_leaves_a_clean_graph_untouched_by_identity():
+    """No bypassed node -> the very same list objects come back out."""
+    from app.core.graph_engine import resolve_bypass
+
+    nodes, edges = _chain_with_bypassed_dropout(bypass=False)
+    resolution = resolve_bypass(nodes, edges)
+    assert resolution.nodes is nodes
+    assert resolution.edges is edges
+    assert resolution.errors == []
+
+
+@pytest.mark.asyncio
+async def test_bypassed_mid_chain_node_runs_as_if_absent():
+    nodes, edges = _chain_with_bypassed_dropout()
+    results = await execute_graph(nodes, edges)
+
+    assert "drop" not in results
+    # Pass-through is by reference: Print received exactly what TensorCreate
+    # produced, with no Dropout in between.
+    assert results["out"]["value"] is results["make"]["tensor"]
+
+
+@pytest.mark.asyncio
+async def test_un_bypassing_restores_the_node():
+    nodes, edges = _chain_with_bypassed_dropout(bypass=False)
+    results = await execute_graph(nodes, edges)
+
+    assert "drop" in results
+    assert results["out"]["value"] is not results["make"]["tensor"]
+
+
+@pytest.mark.asyncio
+async def test_bypass_fans_out_to_every_consumer():
+    nodes, edges = _chain_with_bypassed_dropout()
+    nodes.append(_node("out2", "Print", label="second"))
+    edges.append(_data_edge("e3", "drop", "tensor", "out2", "value"))
+
+    results = await execute_graph(nodes, edges)
+    assert results["out"]["value"] is results["make"]["tensor"]
+    assert results["out2"]["value"] is results["make"]["tensor"]
+
+
+@pytest.mark.asyncio
+async def test_a_chain_of_bypassed_nodes_resolves_to_the_original_source():
+    nodes = [
+        _start_node(),
+        _node("make", "TensorCreate", shape="2,2", fill="ones"),
+        _bypassed(_node("d1", "Dropout", p=0.5)),
+        _bypassed(_node("d2", "Dropout", p=0.5)),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "make"),
+        _data_edge("e1", "make", "tensor", "d1", "tensor"),
+        _data_edge("e2", "d1", "tensor", "d2", "tensor"),
+        _data_edge("e3", "d2", "tensor", "out", "value"),
+    ]
+    results = await execute_graph(nodes, edges)
+
+    assert "d1" not in results and "d2" not in results
+    assert results["out"]["value"] is results["make"]["tensor"]
+
+
+def test_bypass_with_no_type_compatible_input_is_a_validation_error():
+    """DataLoader takes DATASET and emits DATALOADER -- nothing to forward."""
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("ds", "Dataset"),
+        _bypassed(_node("dl", "DataLoader")),
+        _node("loop", "TrainingLoop"),
+    ]
+    edges = [
+        _trigger("et", "start", "ds"),
+        _data_edge("e1", "ds", "dataset", "dl", "dataset"),
+        _data_edge("e2", "dl", "dataloader", "loop", "dataloader"),
+    ]
+
+    errors = validate_graph(nodes, edges)
+    assert any(
+        "dl" in e and "no type-compatible input" in e and "dataloader" in e
+        for e in errors
+    ), errors
+
+    with pytest.raises(GraphValidationError, match="no type-compatible input"):
+        prepare_executable_graph(nodes, edges)
+
+
+def test_bypass_whose_matched_input_is_unconnected_leaves_downstream_unwired():
+    """Nothing flows into the bypassed node, so its consumer loses its input."""
+    nodes = [
+        _start_node(),
+        _bypassed(_node("drop", "Dropout", p=0.5)),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "drop"),
+        _data_edge("e1", "drop", "tensor", "out", "value"),
+    ]
+    errors = validate_graph(nodes, edges)
+    assert any("Missing required input 'value'" in e and "out" in e for e in errors), errors
+
+
+def test_bypassing_a_trigger_target_repoints_the_trigger_downstream():
+    """A bypassed entry point hands its trigger to what it fed."""
+    from app.core.graph_engine import find_entry_points, resolve_bypass
+
+    nodes = [
+        _start_node(),
+        _bypassed(_node("drop", "Dropout", p=0.5)),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "drop"),
+        _data_edge("e1", "drop", "tensor", "out", "value"),
+    ]
+    resolution = resolve_bypass(nodes, edges)
+
+    triggers = [e for e in resolution.edges if e.get("type") == "trigger"]
+    assert [e["target"] for e in triggers] == ["out"]
+    assert find_entry_points(resolution.nodes, resolution.edges) == ["out"]
+
+
+def test_bypass_is_refused_on_a_preset_node():
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _bypassed({"id": "p1", "type": "preset:Whatever", "data": {"params": {}}}),
+    ]
+    edges = [_trigger("et", "start", "p1")]
+
+    assert any("not supported on preset node" in e for e in validate_graph(nodes, edges))
+    with pytest.raises(GraphValidationError, match="not supported on preset node"):
+        prepare_executable_graph(nodes, edges)
+
+
+def test_bypass_on_an_unknown_node_type_reports_the_unknown_type():
+    """The real problem is the missing node class, not the pass-through."""
+    nodes = [
+        _start_node(),
+        _bypassed(_node("ghost", "NotARealNode")),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("et", "start", "ghost"),
+        _data_edge("e1", "ghost", "value", "out", "value"),
+    ]
+    errors = validate_graph(nodes, edges)
+    assert any("Unknown node type: NotARealNode" in e for e in errors), errors
+    assert not any("no type-compatible input" in e for e in errors), errors
+
+
+def test_bypass_records_the_pass_through_links_it_applied():
+    """The link list is what the Python exporter comments the bypass with."""
+    from app.core.graph_engine import resolve_bypass
+
+    nodes, edges = _chain_with_bypassed_dropout()
+    resolution = resolve_bypass(nodes, edges)
+
+    assert len(resolution.links) == 1
+    link = resolution.links[0]
+    assert (link.node_id, link.node_type) == ("drop", "Dropout")
+    assert (link.output, link.input) == ("tensor", "tensor")
+    assert (link.source, link.source_handle) == ("make", "tensor")

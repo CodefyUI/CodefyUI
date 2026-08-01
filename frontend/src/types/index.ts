@@ -97,6 +97,13 @@ export interface NodeData {
   isPreset?: boolean;
   presetDefinition?: PresetDefinition;
   internalParams?: Record<string, Record<string, any>>;
+  /**
+   * ComfyUI-style bypass (core#128). A bypassed node is not executed: the
+   * engine removes it and forwards, per output port, the value that arrived
+   * on the first type-compatible input. Serialized with the graph, so a saved
+   * file remembers what was muted.
+   */
+  bypassed?: boolean;
   // Note-specific fields (present only when node.type === 'noteNode')
   noteKind?: 'text' | 'image';
   noteContent?: string;

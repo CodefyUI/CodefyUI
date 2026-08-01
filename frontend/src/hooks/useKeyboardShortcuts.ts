@@ -70,10 +70,36 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      // Ctrl+B / Cmd+B — Collapse/expand the left sidebar to its icon rail
-      // (#126). Shift excluded so future Ctrl+Shift+B combinations stay free.
+      // Ctrl+Shift+B / Cmd+Shift+B — Collapse/expand the left sidebar,
+      // unconditionally. See the note on Ctrl+B below for why this exists.
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        useUIStore.getState().toggleSidebarCollapsed();
+        return;
+      }
+
+      // Ctrl+B / Cmd+B — CONTEXT-SENSITIVE (core#128).
+      //
+      // Two features want this chord. #126 gave it to the sidebar (VS Code's
+      // binding); ComfyUI — which is where anyone reaching for "mute this
+      // node" learned the gesture — gives it to bypass, and every graph
+      // editor this one is measured against agrees. Neither could simply be
+      // moved without breaking the muscle memory it was chosen for.
+      //
+      // Resolution: the selection decides. With a bypassable node selected
+      // the canvas has the keyboard's attention and Ctrl+B means bypass;
+      // with nothing selected there is no bypass to perform and it means the
+      // sidebar, exactly as before. `toggleBypassForSelection` returning
+      // false is what makes that fall-through total — a selection of only
+      // notes / Start / preset nodes lands on the sidebar rather than doing
+      // nothing at all.
+      //
+      // Ctrl+Shift+B (handled above) is the unconditional sidebar toggle, so
+      // there is always a chord that does the sidebar regardless of what is
+      // selected. Both are listed in the shortcuts modal.
       if (mod && !e.shiftKey && e.key === 'b') {
         e.preventDefault();
+        if (useTabStore.getState().toggleBypassForSelection()) return;
         useUIStore.getState().toggleSidebarCollapsed();
         return;
       }

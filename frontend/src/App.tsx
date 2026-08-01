@@ -10,6 +10,7 @@ import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
 import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
+import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
@@ -135,6 +136,7 @@ function App() {
       <PresetConfigModal />
       <SubgraphEditorModal />
       <NodeDetailModal />
+      <TemplateGalleryModal />
       <ToastContainer />
       <ShortcutsModal />
       <DialogContainer />

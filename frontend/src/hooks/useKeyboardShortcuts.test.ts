@@ -18,6 +18,7 @@ let pasteNodes: ReturnType<typeof vi.fn>;
 let applyLayout: ReturnType<typeof vi.fn>;
 let toggleShortcutsModal: ReturnType<typeof vi.fn>;
 let toggleSidebarCollapsed: ReturnType<typeof vi.fn>;
+let toggleBypassForSelection: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   undo = vi.fn();
@@ -27,9 +28,14 @@ beforeEach(() => {
   applyLayout = vi.fn();
   toggleShortcutsModal = vi.fn();
   toggleSidebarCollapsed = vi.fn();
+  // Defaults to "nothing bypassable was selected", so mod+B falls through to
+  // the sidebar unless a test says otherwise (core#128).
+  toggleBypassForSelection = vi.fn().mockReturnValue(false);
 
   // Override only the actions exercised here; leave the rest of the store intact.
-  useTabStore.setState({ undo, redo, copySelectedNodes, pasteNodes, applyLayout } as any);
+  useTabStore.setState({
+    undo, redo, copySelectedNodes, pasteNodes, applyLayout, toggleBypassForSelection,
+  } as any);
   useUIStore.setState({
     toggleShortcutsModal,
     toggleSidebarCollapsed,
@@ -129,23 +135,49 @@ describe('useKeyboardShortcuts', () => {
     expect(saveActiveGraph).not.toHaveBeenCalled();
   });
 
-  it('Ctrl+B toggles the sidebar and prevents default', () => {
+  // ── mod+B, the contested chord (core#128) ──
+  //
+  // #126 gave Ctrl+B to the sidebar; ComfyUI users reach for it to bypass a
+  // node. It is now context-sensitive: bypass when the selection has one,
+  // sidebar when it does not, with Ctrl+Shift+B as the unconditional sidebar
+  // toggle. `toggleBypassForSelection`'s return value is the switch.
+
+  it('Ctrl+B toggles the sidebar when nothing bypassable is selected', () => {
     renderHook(() => useKeyboardShortcuts());
     const e = dispatchKey({ key: 'b', ctrlKey: true });
+    expect(toggleBypassForSelection).toHaveBeenCalledTimes(1);
     expect(toggleSidebarCollapsed).toHaveBeenCalledTimes(1);
     expect(e.defaultPrevented).toBe(true);
   });
 
-  it('Cmd+B (metaKey) also toggles the sidebar', () => {
+  it('Cmd+B (metaKey) behaves the same way', () => {
     renderHook(() => useKeyboardShortcuts());
     dispatchKey({ key: 'b', metaKey: true });
     expect(toggleSidebarCollapsed).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+Shift+B does not toggle the sidebar (shiftKey excluded)', () => {
+  it('Ctrl+B bypasses instead of touching the sidebar when a node is selected', () => {
+    toggleBypassForSelection.mockReturnValue(true);
     renderHook(() => useKeyboardShortcuts());
-    dispatchKey({ key: 'b', ctrlKey: true, shiftKey: true });
+    const e = dispatchKey({ key: 'b', ctrlKey: true });
+    expect(toggleBypassForSelection).toHaveBeenCalledTimes(1);
     expect(toggleSidebarCollapsed).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('Ctrl+Shift+B always toggles the sidebar, selection or not', () => {
+    toggleBypassForSelection.mockReturnValue(true);
+    renderHook(() => useKeyboardShortcuts());
+    const e = dispatchKey({ key: 'b', ctrlKey: true, shiftKey: true });
+    expect(toggleSidebarCollapsed).toHaveBeenCalledTimes(1);
+    expect(toggleBypassForSelection).not.toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('Ctrl+Shift+B matches an uppercase key value too', () => {
+    renderHook(() => useKeyboardShortcuts());
+    dispatchKey({ key: 'B', ctrlKey: true, shiftKey: true });
+    expect(toggleSidebarCollapsed).toHaveBeenCalledTimes(1);
   });
 
   it('Ctrl+B is ignored while typing in an input', () => {

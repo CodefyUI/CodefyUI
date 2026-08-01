@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
-import { generateId, buildFlowNode } from '../utils';
+import { generateId, buildFlowNode, isBypassable } from '../utils';
 import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
@@ -222,6 +222,20 @@ interface TabStoreState {
   duplicateNode: (nodeId: string) => void;
   renameNode: (nodeId: string, newLabel: string) => void;
   applyLayout: (mode: LayoutMode) => void;
+  /** Toggle ComfyUI-style bypass on one node (core#128). */
+  toggleNodeBypass: (nodeId: string) => void;
+  /**
+   * Toggle bypass across the canvas selection. Returns false when nothing in
+   * the selection can be bypassed, which is what lets Ctrl+B fall through to
+   * the sidebar shortcut instead of doing nothing at all.
+   */
+  toggleBypassForSelection: () => boolean;
+  /**
+   * Merge a template's nodes/edges into the active tab (core#128).
+   * Paste-style: fresh ids, placed clear of what is already on the canvas,
+   * one undo step for the whole insertion.
+   */
+  insertGraph: (nodes: Node<NodeData>[], edges: Edge[]) => void;
 
   // note actions
   addNote: (kind: 'text' | 'image', position: { x: number; y: number }) => void;
@@ -307,6 +321,48 @@ function roundOffset(
 // Round an optional pixel dimension (note width/height), tolerating undefined.
 function roundDimension(v: number | undefined): number | undefined {
   return typeof v === 'number' ? Math.round(v) : v;
+}
+
+// ── Bypass (core#128) ──
+//
+// One patch builder for both entry points (single node, whole selection) so
+// the node write and the dirty marking always land in the SAME commit — two
+// separate `set` calls would re-render the canvas twice per keypress.
+function bypassPatch(
+  tab: TabState,
+  ids: ReadonlySet<string>,
+  bypassed: boolean,
+): Partial<TabState> {
+  const dirtyNodeIds = new Set(tab.dirtyNodeIds);
+  for (const id of ids) dirtyNodeIds.add(id);
+  return {
+    nodes: tab.nodes.map((n) =>
+      ids.has(n.id) ? { ...n, data: { ...n.data, bypassed } } : n,
+    ),
+    dirtyNodeIds,
+  };
+}
+
+/** Gap between the existing graph and an inserted template, in flow pixels. */
+const INSERT_GAP = 96;
+
+/**
+ * Where to drop an inserted template so it lands clear of the current graph:
+ * left-aligned with what is already there, one gap below its lowest node. The
+ * template keeps its own internal layout — only the whole block moves.
+ */
+function insertionOffset(
+  existing: Node<NodeData>[],
+  incoming: Node<NodeData>[],
+): { x: number; y: number } {
+  const target = nodesBoundingBox(existing as Node[]);
+  const source = nodesBoundingBox(incoming as Node[]);
+  // An empty canvas (or a template with nothing in it) needs no move at all.
+  if (!target || !source) return { x: 0, y: 0 };
+  return {
+    x: target.x - source.x,
+    y: target.y + target.height + INSERT_GAP - source.y,
+  };
 }
 
 // Replace every SECRET-typed param value with '' so secrets (e.g. an LLM API
@@ -1096,6 +1152,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           ...(n.data.isPreset
             ? { internalParams: stripSecretInternalParams(n.data.internalParams, n.data.presetDefinition) }
             : {}),
+          // Written only when muted (core#128), so a graph nobody has
+          // bypassed anything in serializes byte-identically to before.
+          ...(n.data.bypassed ? { bypassed: true } : {}),
         },
       };
     });
@@ -1177,6 +1236,102 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         nodes: tab.nodes.map((n) =>
           n.id === nodeId ? { ...n, data: { ...n.data, label: newLabel } } : n
         ),
+      })),
+    });
+  },
+
+  // ── Bypass (core#128) ──
+
+  toggleNodeBypass: (nodeId) => {
+    const tab = get().getActiveTab();
+    const node = tab.nodes.find((n) => n.id === nodeId);
+    if (!node || !isBypassable(node)) return;
+    get().pushUndoSnapshot();
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (t) =>
+        bypassPatch(t, new Set([nodeId]), !node.data.bypassed),
+      ),
+    });
+  },
+
+  toggleBypassForSelection: () => {
+    const tab = get().getActiveTab();
+    // React Flow's own multi-selection first. A plain click sets BOTH
+    // `selected` and `selectedNodeId`, so the fallback only matters for
+    // selections made programmatically (a modal, a test, a plugin).
+    const marked = tab.nodes.filter((n) => n.selected);
+    const pool = marked.length > 0
+      ? marked
+      : tab.nodes.filter((n) => n.id === tab.selectedNodeId);
+    const targets = pool.filter(isBypassable);
+    if (targets.length === 0) return false;
+    // A mixed selection becomes uniform: mute everything unless all of it is
+    // already muted, in which case the whole selection comes back. Same rule
+    // ComfyUI applies, and it makes the shortcut its own inverse.
+    const bypassed = targets.some((n) => !n.data.bypassed);
+    const ids = new Set(targets.map((n) => n.id));
+    get().pushUndoSnapshot();
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (t) =>
+        bypassPatch(t, ids, bypassed),
+      ),
+    });
+    return true;
+  },
+
+  // ── Template insertion (core#128) ──
+
+  insertGraph: (incomingNodes, incomingEdges) => {
+    if (incomingNodes.length === 0) return;
+    const tab = get().getActiveTab();
+    get().pushUndoSnapshot();
+
+    // Every incoming id is remapped, unconditionally. A template ships
+    // whatever ids its author saved ("node_1", "conv"), and two templates —
+    // or a template and the current graph — routinely collide; reusing an
+    // incoming id would silently replace the node already wearing it.
+    const idMap = new Map<string, string>();
+    for (const node of incomingNodes) idMap.set(node.id, generateId());
+
+    const offset = insertionOffset(tab.nodes, incomingNodes);
+
+    const newNodes: Node<NodeData>[] = incomingNodes.map((node) => {
+      const data: NodeData = { ...node.data, executionStatus: 'idle', error: undefined };
+      if (node.type === 'noteNode' && data.boundToNodeId) {
+        const remapped = idMap.get(data.boundToNodeId);
+        data.boundToNodeId = remapped ?? null;
+        if (!remapped) data.boundOffset = null;
+      }
+      return {
+        ...node,
+        id: idMap.get(node.id)!,
+        position: {
+          x: node.position.x + offset.x,
+          y: node.position.y + offset.y,
+        },
+        selected: true,
+        data,
+      };
+    });
+
+    const newEdges: Edge[] = incomingEdges
+      // An edge naming a node the template did not ship would dangle over the
+      // existing graph, so it is dropped rather than remapped to nothing.
+      .filter((e) => idMap.has(e.source) && idMap.has(e.target))
+      .map((e) => ({
+        ...e,
+        id: generateId(),
+        source: idMap.get(e.source)!,
+        target: idMap.get(e.target)!,
+      }));
+
+    // Selecting exactly what was inserted (and nothing else) is what makes
+    // "insert, then drag/lay-out the new block" work as one gesture — the
+    // same thing paste does.
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
+        nodes: [...t.nodes.map((n) => ({ ...n, selected: false })), ...newNodes],
+        edges: [...t.edges, ...newEdges],
       })),
     });
   },
@@ -1509,7 +1664,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         }
       }
     }
-    return [...result];
+    // Bypassed nodes are dropped from the RESULT but not from the walk
+    // (core#128). This list becomes the backend's `changed_nodes` — a
+    // force-re-execute hint — and a bypassed node is never executed, so
+    // naming one says nothing. Dirtiness still travels THROUGH it to
+    // whatever consumes its pass-through, which is why the BFS above is
+    // unfiltered: bypassing a node is exactly what makes its consumers stale.
+    const bypassed = new Set(
+      tab.nodes.filter((n) => n.data.bypassed).map((n) => n.id),
+    );
+    return [...result].filter((id) => !bypassed.has(id));
   },
 
   // ── Execution actions (active tab) ──

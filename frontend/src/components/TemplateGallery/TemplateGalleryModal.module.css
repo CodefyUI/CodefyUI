@@ -1,0 +1,384 @@
+/* TemplateGalleryModal.module.css — the always-reachable example browser
+   (core#128). Same Crafted-dark surface as the node detail modal (#127):
+   layered gradient panel, teal accent, monospace meta. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.68);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 3vh 3vw;
+}
+
+.modal {
+  width: 84vw;
+  max-width: 1180px;
+  height: 82vh;
+  min-width: 320px;
+  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  box-shadow:
+    0 30px 70px -20px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  flex-shrink: 0;
+  background: rgba(10, 15, 23, 0.72);
+  border-bottom: 2px solid #06b6d4;
+}
+
+.titleBlock {
+  min-width: 0;
+}
+
+.title {
+  color: #e5e7eb;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.subtitle {
+  color: #64748b;
+  font-size: 0.6875rem;
+  margin-top: 2px;
+}
+
+.search {
+  margin-left: auto;
+  width: 240px;
+  max-width: 40%;
+  padding: 5px 9px;
+  background: #0a0f17;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  color: #e5e7eb;
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.search:focus {
+  border-color: #06b6d4;
+}
+
+.closeBtn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.closeBtn:hover {
+  background: rgba(244, 67, 54, 0.14);
+  border-color: #f44336;
+  color: #ff7b72;
+}
+
+/* ── Body: card grid left, detail right ─────────────────────────────────── */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.grid {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 14px 16px 20px;
+}
+
+.stateMessage {
+  color: #64748b;
+  font-size: 0.8125rem;
+  padding: 28px 4px;
+  text-align: center;
+}
+
+.errorText {
+  color: #f44336;
+  margin-bottom: 10px;
+}
+
+.retryBtn {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+  background: #1f2937;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.retryBtn:hover {
+  border-color: #06b6d4;
+  color: #22d3ee;
+}
+
+.section {
+  margin-bottom: 18px;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 8px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sectionDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sectionCount {
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  text-align: left;
+  background: #131b26;
+  border: 1px solid #1f2937;
+  border-radius: 7px;
+  cursor: pointer;
+  color: inherit;
+  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.card:hover {
+  background: #16202d;
+  border-color: #334155;
+}
+
+.cardActive {
+  border-color: #06b6d4;
+  box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.35);
+}
+
+.cardName {
+  color: #e5e7eb;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardDesc {
+  color: #64748b;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  /* Two lines, then ellipsis — the detail pane carries the full text. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2em;
+}
+
+.cardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.cardChip {
+  font-size: 0.5625rem;
+  border: 1px solid;
+  border-radius: 9px;
+  padding: 0 6px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardCount {
+  color: #475569;
+  font-size: 0.625rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+/* ── Detail pane ────────────────────────────────────────────────────────── */
+
+.detail {
+  width: 290px;
+  flex-shrink: 0;
+  border-left: 1px solid #1f2937;
+  background: rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  padding: 16px 16px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The scrolling half. Keeping the overflow here rather than on `.detail`
+   is what pins the action buttons: however long the description, they stay
+   at the bottom of the pane instead of being pushed below the fold. */
+.detailScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.detailEmpty {
+  color: #64748b;
+  font-size: 0.8125rem;
+}
+
+.detailName {
+  color: #e5e7eb;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.detailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 0.6875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.detailSource {
+  margin-top: 6px;
+  color: #475569;
+  font-size: 0.6875rem;
+}
+
+.detailDesc {
+  margin: 12px 0 0;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.detailActions {
+  flex-shrink: 0;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #1f2937;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.primaryBtn,
+.secondaryBtn {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.primaryBtn {
+  background: rgba(6, 182, 212, 0.16);
+  border: 1px solid #06b6d4;
+  color: #22d3ee;
+}
+
+.primaryBtn:hover:not(:disabled) {
+  background: rgba(6, 182, 212, 0.28);
+}
+
+.secondaryBtn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+}
+
+.secondaryBtn:hover:not(:disabled) {
+  border-color: #06b6d4;
+  color: #22d3ee;
+}
+
+.primaryBtn:disabled,
+.secondaryBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.detailHint {
+  color: #64748b;
+  font-size: 0.625rem;
+  line-height: 1.5;
+}
+
+/* Narrow viewports: the detail pane drops below the grid rather than
+   squeezing the cards to one column of unreadable width. */
+@media (max-width: 860px) {
+  .body {
+    flex-direction: column;
+  }
+
+  .detail {
+    width: auto;
+    border-left: none;
+    border-top: 1px solid #1f2937;
+    max-height: 42%;
+  }
+
+  .search {
+    width: 150px;
+  }
+}
