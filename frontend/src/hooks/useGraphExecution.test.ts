@@ -174,14 +174,17 @@ describe('useGraphExecution - node_status handler', () => {
       ws.emit('node_status', {
         node_id: 'n1',
         status: 'progress',
-        progress: { event: 'epoch', value: 1 },
+        outputs: [{ output_kind: 'progress', progress: { event: 'epoch', value: 1 } }],
       });
     });
 
     const tab = tabById('t1');
     expect(tab.nodes[0].data.progress).toEqual({ event: 'epoch', value: 1 });
-    // epoch event → a __PROGRESS__ log is appended.
-    expect(tab.logs.some((l: any) => l.message.startsWith('__PROGRESS__:'))).toBe(true);
+    // epoch event → a structured progress log entry is appended (#117).
+    const entry = tab.logs.find((l: any) => l.kind === 'progress');
+    expect(entry.progress).toEqual({ event: 'epoch', value: 1 });
+    // ...and never a magic-prefixed string.
+    expect(tab.logs.some((l: any) => l.message.startsWith('__PROGRESS__:'))).toBe(false);
   });
 
   it('handles progress events WITHOUT epoch/config (no progress log)', () => {
@@ -192,13 +195,13 @@ describe('useGraphExecution - node_status handler', () => {
       ws.emit('node_status', {
         node_id: 'n1',
         status: 'progress',
-        progress: { event: 'batch', value: 5 },
+        outputs: [{ output_kind: 'progress', progress: { event: 'batch', value: 5 } }],
       });
     });
 
     const tab = tabById('t1');
     expect(tab.nodes[0].data.progress).toEqual({ event: 'batch', value: 5 });
-    expect(tab.logs.some((l: any) => l.message.startsWith('__PROGRESS__:'))).toBe(false);
+    expect(tab.logs.some((l: any) => l.kind === 'progress')).toBe(false);
   });
 
   it('suppresses logs for running status but updates node status', () => {
@@ -266,7 +269,120 @@ describe('useGraphExecution - node_status handler', () => {
     expect(log.message).toBe('Node abcdefgh completed');
   });
 
-  it('appends log, image and output_summary side-channels', () => {
+  it('routes structured text / image / tensor_summary outputs (#117)', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'text', text: 'hello log' },
+          {
+            output_kind: 'image',
+            port: 'image',
+            image: { format: 'png', encoding: 'base64', data: 'QUJD' },
+          },
+          { output_kind: 'tensor_summary', tensor_summary: { out: { shape: [1] } } },
+        ],
+      });
+    });
+    const tab = tabById('t1');
+    const text = tab.logs.find((l: any) => l.message === 'hello log');
+    expect(text.kind).toBe('text');
+    const img = tab.logs.find((l: any) => l.kind === 'image');
+    expect(img.image).toEqual({
+      format: 'png',
+      encoding: 'base64',
+      data: 'QUJD',
+      port: 'image',
+    });
+    // No magic prefix is ever produced any more.
+    expect(tab.logs.some((l: any) => l.message.startsWith('__IMAGE__:'))).toBe(false);
+    expect(tab.outputSummaries.n1).toEqual({ out: { shape: [1] } });
+  });
+
+  it('appends one log entry per text output, in backend order', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'text', text: 'first line' },
+          { output_kind: 'text', text: 'second line' },
+        ],
+      });
+    });
+    const texts = tabById('t1').logs.filter((l: any) => l.kind === 'text');
+    expect(texts.map((l: any) => l.message)).toEqual(['first line', 'second line']);
+  });
+
+  it('appends one log entry per image output when a node declares several', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'image', port: 'a', image: { format: 'png', encoding: 'base64', data: 'AA' } },
+          { output_kind: 'image', port: 'b', image: { format: 'png', encoding: 'base64', data: 'BB' } },
+        ],
+      });
+    });
+    const imgs = tabById('t1').logs.filter((l: any) => l.kind === 'image');
+    expect(imgs.map((l: any) => l.image.data)).toEqual(['AA', 'BB']);
+  });
+
+  it('never turns a long alphanumeric text output into an image (#117)', () => {
+    // Headline regression: the pre-#117 backend sniffed this exact shape and
+    // sent it as `image`, so the panel rendered a broken <img>.
+    const longText = 'TokenIds0123456789abcdef'.repeat(21).slice(0, 500);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'text', text: longText },
+          { output_kind: 'tensor_summary', tensor_summary: { answer: { type: 'string' } } },
+        ],
+      });
+    });
+    const tab = tabById('t1');
+    expect(tab.logs.some((l: any) => l.kind === 'image')).toBe(false);
+    expect(tab.logs.find((l: any) => l.message === longText).kind).toBe('text');
+  });
+
+  it('skips malformed / unknown output entries without throwing', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          null,
+          'nonsense',
+          { output_kind: 'chart', chart: { series: [] } }, // a future kind
+          { output_kind: 'image' }, // no payload
+          { output_kind: 'text', text: '' }, // empty text
+        ],
+      });
+    });
+    const tab = tabById('t1');
+    expect(tab.logs.some((l: any) => l.kind === 'image')).toBe(false);
+    expect(tab.logs.some((l: any) => l.kind === 'text')).toBe(false);
+  });
+
+  // ── Deprecated flat fields (remove one release after #117) ──────────────
+  // A frontend built from source can talk to an older prebuilt backend that
+  // still sends `log` / `image` / `progress` / `output_summary` at the top
+  // level (and guessed the image). Keep reading them for one release.
+  it('still reads the legacy flat log / image / output_summary fields', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
     act(() => {
@@ -274,14 +390,36 @@ describe('useGraphExecution - node_status handler', () => {
         node_id: 'n1',
         status: 'completed',
         log: 'hello log',
-        image: 'data:img',
+        image: 'QUJD',
         output_summary: { out: { shape: [1] } },
       });
     });
     const tab = tabById('t1');
-    expect(tab.logs.some((l: any) => l.message === 'hello log')).toBe(true);
-    expect(tab.logs.some((l: any) => l.message === '__IMAGE__:data:img')).toBe(true);
+    expect(tab.logs.find((l: any) => l.message === 'hello log').kind).toBe('text');
+    expect(tab.logs.find((l: any) => l.kind === 'image').image).toEqual({
+      format: 'png',
+      encoding: 'base64',
+      data: 'QUJD',
+    });
     expect(tab.outputSummaries.n1).toEqual({ out: { shape: [1] } });
+  });
+
+  it('still reads the legacy flat progress field', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'progress',
+        progress: { event: 'config', config: { lr: 0.1 } },
+      });
+    });
+    const tab = tabById('t1');
+    expect(tab.nodes[0].data.progress).toEqual({ event: 'config', config: { lr: 0.1 } });
+    expect(tab.logs.find((l: any) => l.kind === 'progress').progress).toEqual({
+      event: 'config',
+      config: { lr: 0.1 },
+    });
   });
 });
 

@@ -269,3 +269,158 @@ async def test_ws_rejects_bad_host_header():
             async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as _ws:
                 pass
         assert exc_info.value.code == 4003
+
+
+# ── node_status output contract (#117) ─────────────────────────────────
+# Before #117 the WS layer guessed: any completed output that was a string
+# longer than 200 chars whose first 20 chars were alphanumeric got shipped
+# as ``msg["image"]``. These tests pin the replacement: nodes DECLARE image
+# ports, and every renderable payload rides in ``outputs`` tagged with an
+# ``output_kind``.
+
+
+async def _run_graph(ws, nodes, edges, limit: int = 40) -> list[dict]:
+    """Send an execute action and drain messages up to the terminal event."""
+    await ws.send_text(json.dumps({"action": "execute", "nodes": nodes, "edges": edges}))
+    messages: list[dict] = []
+    for _ in range(limit):
+        msg = json.loads(await ws.receive_text())
+        messages.append(msg)
+        if msg["type"] in ("execution_complete", "execution_error"):
+            break
+    errors = [m for m in messages if m["type"] == "execution_error"]
+    assert not errors, f"unexpected execution_error: {errors}"
+    return messages
+
+
+def _status_msg(messages: list[dict], node_id: str, status: str) -> dict:
+    for m in messages:
+        if m["type"] == "node_status" and m.get("node_id") == node_id and m["status"] == status:
+            return m
+    raise AssertionError(f"no node_status {node_id}/{status} in {messages}")
+
+
+def _entries(msg: dict, kind: str) -> list[dict]:
+    return [e for e in msg.get("outputs", []) if e.get("output_kind") == kind]
+
+
+@pytest.mark.asyncio
+async def test_ws_long_alphanumeric_text_output_is_not_an_image():
+    """Headline regression for #117.
+
+    A node emitting a 500-char alphanumeric string (an LLM answer, a token-id
+    dump, CJK prose -- ``str.isalnum()`` is True for CJK) must come back as
+    text/summary data, never as an image the browser tries to decode as a PNG.
+    """
+    long_text = ("TokenIds0123456789abcdef" * 21)[:500]
+    # Exactly the shape the pre-#117 sniff claimed was a base64 PNG.
+    assert len(long_text) > 200 and long_text[:20].isalnum()
+
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            messages = await _run_graph(
+                ws,
+                nodes=[
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {"val": long_text}}},
+                    {"id": "2", "type": "Print", "data": {"params": {}}},
+                ],
+                edges=[
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                    {"source": "1", "target": "2",
+                     "sourceHandle": "value", "targetHandle": "value"},
+                ],
+            )
+
+    source_done = _status_msg(messages, "1", "completed")
+    # The old heuristic field is gone entirely...
+    assert "image" not in source_done
+    # ...and no output entry claims to be an image.
+    assert _entries(source_done, "image") == []
+    # The value still round-trips as a string summary.
+    summary = _entries(source_done, "tensor_summary")[0]["tensor_summary"]
+    assert summary["value"]["type"] == "string"
+
+    # Print's log rides as a typed text output, not a magic-prefixed string.
+    print_done = _status_msg(messages, "2", "completed")
+    text_entries = _entries(print_done, "text")
+    assert [e["text"] for e in text_entries] == [long_text]
+
+    # The pre-#117 flat fields are deliberately gone from every frame:
+    # `outputs` is the single channel, so nothing is duplicated on the wire.
+    # (The frontend still *reads* them, for the one-release window in which it
+    # may be talking to an older prebuilt backend -- but we never send them.)
+    for msg in messages:
+        if msg["type"] != "node_status":
+            continue
+        for removed in ("log", "image", "progress", "output_summary"):
+            assert removed not in msg, f"{removed!r} still emitted in {msg}"
+
+
+@pytest.mark.asyncio
+async def test_ws_declared_image_port_emits_a_typed_image_output():
+    """Visualize declares ``media="image"``, so its base64 PNG is announced."""
+    import base64
+
+    pytest.importorskip("matplotlib")
+
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            messages = await _run_graph(
+                ws,
+                nodes=[
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource",
+                     "data": {"params": {"val": [1.0, 2.0, 3.0]}}},
+                    {"id": "2", "type": "Visualize", "data": {"params": {"title": "t"}}},
+                ],
+                edges=[
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                    {"source": "1", "target": "2",
+                     "sourceHandle": "value", "targetHandle": "data"},
+                ],
+            )
+
+    viz_done = _status_msg(messages, "2", "completed")
+    image_entries = _entries(viz_done, "image")
+    assert len(image_entries) == 1
+    entry = image_entries[0]
+    assert entry["port"] == "image"
+    assert entry["image"]["format"] == "png"
+    assert entry["image"]["encoding"] == "base64"
+    # The payload really is a PNG, not a truncated summary.
+    assert base64.b64decode(entry["image"]["data"])[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.mark.asyncio
+async def test_ws_running_status_carries_no_output_entries():
+    """Only terminal statuses carry outputs; `running` stays a bare signal."""
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            messages = await _run_graph(
+                ws,
+                nodes=[
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                ],
+                edges=[
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                ],
+            )
+
+    running = _status_msg(messages, "1", "running")
+    assert "outputs" not in running
+    completed = _status_msg(messages, "1", "completed")
+    assert _entries(completed, "tensor_summary")

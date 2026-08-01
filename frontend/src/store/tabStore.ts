@@ -12,11 +12,40 @@ import { useProjectStore } from './projectStore';
 
 // ── Per-tab state ──
 
+/**
+ * What a log entry carries, mirroring the backend's `output_kind` (#117).
+ * A plain string enum, not a closed union of everything the app will ever
+ * render, so a later node pack can add its own kind; unknown kinds are
+ * ignored by the panel rather than rendered wrong.
+ */
+export type LogKind = 'text' | 'image' | 'progress';
+
+/** Base64 media payload of a `kind: 'image'` entry. */
+export interface LogImagePayload {
+  /** Image subtype for the data URL (`png`, `svg+xml`, ...). */
+  format: string;
+  encoding: string;
+  data: string;
+  /** Output port the image came from, when the backend named one. */
+  port?: string;
+}
+
 export interface LogEntry {
   timestamp: number;
   nodeId?: string;
   message: string;
   type: 'info' | 'error' | 'success';
+  /**
+   * Structured payload kind (#117). Absent means a plain text message
+   * (an app-generated line such as "Execution started"). Before #117
+   * images and progress events were smuggled through `message` as
+   * `__IMAGE__:` / `__PROGRESS__:` prefixed strings.
+   */
+  kind?: LogKind;
+  /** Set when `kind === 'image'`. */
+  image?: LogImagePayload;
+  /** Set when `kind === 'progress'` — the raw progress event. */
+  progress?: Record<string, any>;
 }
 
 interface UndoSnapshot {

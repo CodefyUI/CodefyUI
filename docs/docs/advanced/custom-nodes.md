@@ -46,7 +46,7 @@ The node appears in the palette immediately. You can also use the **Custom Node 
 | `NODE_NAME` | Unique identifier used in graph JSON (e.g. `"MyNode"`). |
 | `CATEGORY` | Palette grouping and color. |
 | `DESCRIPTION` | User-facing help text (LaTeX is supported). |
-| `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional`. |
+| `define_inputs()` / `define_outputs()` | Return `PortDefinition` lists — each has a `name`, a `data_type`, and optional `description` / `optional` / `media`. |
 | `define_params()` | Return `ParamDefinition` lists — `int`, `float`, `string`, `bool`, `select`, file pickers, `tensor_grid`, or `secret`, with `default`, `options`, `min_value`/`max_value`, and `visible_when`. A `secret` param (e.g. an API key) is masked in the editor and its value is **never persisted** — it is blanked on save, export, and publish, so use an environment variable to supply it to published apps. |
 | `define_outputs_dynamic(params)` | Optional — vary output ports by parameter values. |
 | `execute(self, inputs, params, *, context=...)` | The work. Returns a dict keyed by output port name. |
@@ -54,6 +54,26 @@ The node appears in the palette immediately. You can also use the **Custom Node 
 ## Data types
 
 Ports use the shared `DataType` enum: `TENSOR`, `MODEL`, `DATASET`, `DATALOADER`, `OPTIMIZER`, `LOSS_FN`, `SCALAR`, `STRING`, `IMAGE`, `LIST`, `ANY`, `TRIGGER`. Matching types make an edge valid; the `TRIGGER` type drives execution order from [`Start`](/usage/first-graph) nodes.
+
+## Showing an image in the results panel
+
+A node that returns a picture must **declare** it with `media=MEDIA_IMAGE` on the output port. The value on that port is then a base64-encoded PNG string (no `data:` prefix), and the results panel renders it as an image:
+
+```python
+from app.core.node_base import MEDIA_IMAGE, BaseNode, DataType, PortDefinition
+
+@classmethod
+def define_outputs(cls):
+    return [
+        PortDefinition(
+            name="image",
+            data_type=DataType.STRING,
+            media=MEDIA_IMAGE,
+        ),
+    ]
+```
+
+Declaring is mandatory — nothing inspects your values to work out what they are. An undeclared port stays plain data no matter how much it looks like an image, which is what keeps a long text output (an LLM answer, a token dump) from being rendered as a broken picture.
 
 :::tip
 Need to package existing nodes rather than write new behavior? Use a **[preset](./presets)**. Want to share nodes with others as an installable bundle? Build a **[plugin pack](./plugins)**.

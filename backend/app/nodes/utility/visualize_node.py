@@ -1,6 +1,13 @@
 from typing import Any
 
-from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.node_base import (
+    MEDIA_IMAGE,
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+)
 
 
 class VisualizeNode(BaseNode):
@@ -17,7 +24,12 @@ class VisualizeNode(BaseNode):
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="image", data_type=DataType.STRING, description="Base64-encoded PNG image string"),
+            PortDefinition(
+                name="image",
+                data_type=DataType.STRING,
+                description="Base64-encoded PNG image string",
+                media=MEDIA_IMAGE,
+            ),
         ]
 
     @classmethod

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,31 @@ from ..core.graph_engine import (
     build_preset_fallback,
     execute_graph,
 )
+from ..core.node_base import MEDIA_IMAGE
+from ..core.node_registry import registry
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ── node_status output contract (#117) ──────────────────────────────────
+# Every renderable payload a node produces rides in ``msg["outputs"]`` as
+# ``{"output_kind": <kind>, <kind>: <payload>}`` (plus ``"port"`` when the
+# payload came from a named output port). Kinds are plain strings, not a
+# closed enum, so a later node pack can add its own (e.g. "chart") without
+# a core release.
+#
+# This replaces two guessing games: the WS layer sniffing "long alphanumeric
+# string => base64 PNG" (which mislabelled ordinary long text as an image),
+# and the frontend smuggling images/progress through the log stream as
+# ``__IMAGE__:`` / ``__PROGRESS__:`` prefixed strings.
+OUTPUT_KIND_TEXT = "text"
+OUTPUT_KIND_IMAGE = "image"
+OUTPUT_KIND_PROGRESS = "progress"
+OUTPUT_KIND_TENSOR_SUMMARY = "tensor_summary"
+
+# Statuses whose payload is a finished node result worth summarizing.
+_STATUSES_WITH_RESULT = ("completed", "cached")
 
 
 def _summarize_single(value: Any) -> dict[str, Any]:
@@ -122,6 +144,100 @@ def _summarize_outputs(result: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def declared_image_ports(nodes: list[Any]) -> dict[str, list[str]]:
+    """Map ``node id -> output ports the node DECLARES as image media``.
+
+    Resolved from the registry once per execute action, so the hot progress
+    path only does a dict lookup. Nodes the registry does not know (presets,
+    typos) and malformed entries are silently skipped: an unresolvable node
+    simply has no declared media, which is the safe answer.
+    """
+    ports: dict[str, list[str]] = {}
+    if not isinstance(nodes, list):
+        return ports
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id")
+        node_type = node.get("type")
+        if not node_id or not node_type:
+            continue
+        node_cls = registry.get(node_type)
+        if node_cls is None:
+            continue
+        params = (node.get("data") or {}).get("params") or {}
+        try:
+            definitions = node_cls.define_outputs_dynamic(params)
+        except Exception:  # pragma: no cover - defensive: bad third-party node
+            logger.debug("define_outputs_dynamic failed for %s", node_type, exc_info=True)
+            continue
+        declared = [p.name for p in definitions if getattr(p, "media", None) == MEDIA_IMAGE]
+        if declared:
+            ports[node_id] = declared
+    return ports
+
+
+def build_node_output_entries(
+    status: str,
+    result: dict[str, Any] | None,
+    image_ports: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Build the typed ``outputs`` list for one ``node_status`` message.
+
+    ``image_ports`` are the output port names this node *declared* as image
+    media (see :func:`declared_image_ports`). Values on any other port stay
+    plain data no matter what they look like -- there is deliberately no
+    length or character-class inspection anywhere in this function.
+    """
+    if not result:
+        return []
+
+    # A "progress" status carries a live training event, nothing else.
+    if status == "progress":
+        return [{"output_kind": OUTPUT_KIND_PROGRESS, OUTPUT_KIND_PROGRESS: result}]
+
+    if status not in _STATUSES_WITH_RESULT:
+        return []
+
+    entries: list[dict[str, Any]] = []
+
+    # Log output (Print node etc.) is text, and says so.
+    if "__log__" in result:
+        entries.append(
+            {"output_kind": OUTPUT_KIND_TEXT, OUTPUT_KIND_TEXT: str(result["__log__"])}
+        )
+
+    # Declared image ports. A declared port that produced nothing this run is
+    # skipped rather than announced as an empty image.
+    for port in image_ports:
+        value = result.get(port)
+        if not isinstance(value, str) or not value:
+            continue
+        entries.append(
+            {
+                "output_kind": OUTPUT_KIND_IMAGE,
+                "port": port,
+                OUTPUT_KIND_IMAGE: {
+                    # MEDIA_IMAGE's contract (see node_base): base64 PNG.
+                    "format": "png",
+                    "encoding": "base64",
+                    "data": value,
+                },
+            }
+        )
+
+    # Per-port summaries for edge inspection. Emitted on "cached" too so the
+    # edge tooltip and Inspector still populate when a node is served from
+    # ExecutionCache.
+    entries.append(
+        {
+            "output_kind": OUTPUT_KIND_TENSOR_SUMMARY,
+            OUTPUT_KIND_TENSOR_SUMMARY: _summarize_outputs(result),
+        }
+    )
+    return entries
+
+
 @router.websocket("/ws/execution")
 async def websocket_execution(ws: WebSocket):
     # Host header check (DNS rebinding defence). Browsers tricked into
@@ -209,6 +325,9 @@ async def websocket_execution(ws: WebSocket):
                     auto_backward=auto_backward,
                 )
 
+                # Declared image ports, resolved once per run (#117).
+                image_ports = declared_image_ports(nodes)
+
                 async def on_progress(node_id: str, status: str, result: dict[str, Any] | None) -> None:
                     msg: dict[str, Any] = {
                         "type": "node_status",
@@ -217,24 +336,11 @@ async def websocket_execution(ws: WebSocket):
                     }
                     if result and status == "error":
                         msg["error"] = result.get("error", "")
-                    if result and status == "progress":
-                        msg["progress"] = result
-                    if result and status in ("completed", "cached"):
-                        # Forward log output (from Print node etc.)
-                        if "__log__" in result:
-                            msg["log"] = str(result["__log__"])
-                        # Forward base64 image data so the frontend can display it
-                        for key, val in result.items():
-                            if key.startswith("__"):
-                                continue
-                            if isinstance(val, str) and len(val) > 200 and val[:20].isalnum():
-                                msg["image"] = val
-                                break
-                        # Generate output summaries for edge inspection.
-                        # Forwarded on both "completed" and "cached" so the
-                        # frontend edge tooltip + Inspector still populate
-                        # when nodes are served from ExecutionCache.
-                        msg["output_summary"] = _summarize_outputs(result)
+                    outputs = build_node_output_entries(
+                        status, result, image_ports.get(node_id, ())
+                    )
+                    if outputs:
+                        msg["outputs"] = outputs
                     await ws.send_text(json.dumps(msg))
 
                 async def _run() -> None:
