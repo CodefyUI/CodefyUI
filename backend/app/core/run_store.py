@@ -104,6 +104,15 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+#: Public alias. ``run_service`` fans an event out to in-process subscribers
+#: as well as storing it, and the two copies MUST agree — a NaN that reaches
+#: a subscriber but not the stored row would put a bare ``NaN`` token (a
+#: CPython extension, not JSON) on the WebSocket, where ``JSON.parse``
+#: rejects it. Exported rather than reimplemented so the sanitisation stays
+#: defined exactly once, by the module that owns what "storable" means.
+json_safe = _json_safe
+
+
 def _dumps(value: Any) -> str:
     """Compact JSON for a storage column. Always valid JSON.
 
