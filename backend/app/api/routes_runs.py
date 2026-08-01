@@ -101,12 +101,23 @@ async def _queue_positions(service: RunService,
     process that died before ``recover_interrupted`` ran still gets an
     honest place in line instead of a null.
 
-    Costs one extra query, and only when a queued row is actually present.
+    Costs one extra indexed query per request, and only when a queued row is
+    actually present — nothing to pay while the queues are empty, which is
+    the common case, and one bounded scan when the Runs panel is polling a
+    backlog.
+
+    Past ``_QUEUE_SCAN_LIMIT`` the answer is ``None`` for everyone rather
+    than a number. ``list_runs`` is NEWEST-first, so a truncated scan drops
+    the OLDEST rows — the ones actually at the front — and every position
+    computed from what is left would be confidently too small. "We cannot
+    say" is the honest answer; a wrong rank is worse than no rank.
     """
     if not any(record.status == STATUS_QUEUED for record in records):
         return {}
     queued = await service.store.list_runs(status=STATUS_QUEUED,
                                            limit=_QUEUE_SCAN_LIMIT)
+    if len(queued) >= _QUEUE_SCAN_LIMIT:
+        return {}
     # list_runs is newest-first; a queue is served oldest-first.
     depth: dict[str | None, int] = {}
     positions: dict[str, int] = {}

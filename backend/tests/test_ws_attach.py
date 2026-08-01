@@ -706,6 +706,18 @@ async def test_a_second_execute_is_refused_and_never_cancels(run_env):
             second = await _execute(ws, _graph())
             assert second["type"] == "execution_error"
             assert "session" in second["error"]
+            # Flagged as a REFUSAL, not a run outcome: nothing started and
+            # nothing failed. A canvas that treated it as a failure would
+            # re-enable Run and disable Stop while the first run is still
+            # going, taking away the ability to stop what is on screen.
+            assert second["rejected"] is True
+            assert second["run_id"] == first["run_id"]
+
+            # Still attached to the FIRST run: its frames keep arriving on
+            # this socket, which is what makes staying attached the useful
+            # behaviour rather than merely the safe one.
+            completion = (await _recv_until(ws, "execution_complete"))[-1]
+            assert completion["run_id"] == first["run_id"]
 
             record = await _await_terminal(run_env.store, first["run_id"])
             assert record.status == "succeeded", \

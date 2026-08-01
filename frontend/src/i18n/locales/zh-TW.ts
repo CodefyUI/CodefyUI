@@ -227,6 +227,10 @@ const zhTW: Record<TranslationKey, string> = {
   // Re-attach (#121): the run kept going while the tab was closed.
   'execution.reattached': '已重新連上仍在執行中的工作',
 
+  // Refused submit (#123). NOT a failure: nothing started, and the run this
+  // tab is already following keeps going.
+  'execution.rejected': '這次執行沒有啟動 — 伺服器正在跑這個分頁的上一個工作。它仍在執行中，請等它結束或按停止。',
+
   // Node palette — control category / start node
   'palette.category.control': '控制',
   'palette.start.description': '標記執行的起點。連接到你想執行的第一個節點。',

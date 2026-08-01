@@ -33,13 +33,16 @@
                 用法：cdui run <graph.json> [旗標]
                 旗標：--name <字串>     Runs 面板顯示的名稱
                       --device <裝置>   cpu | auto | cuda | cuda:N | mps
-                                        （預設 cpu；解析後的裝置就是佇列 key）
+                                        （預設 auto，目前會解析成 cpu；
+                                        解析後的裝置就是佇列 key）
                       --seed <n>        隨機種子
                       --record-outputs  保留節點輸出供事後檢視
                       --wait            串流進度直到結束（預設）
                       --detach          只印出 run id 就離開
                       --timeout <秒>    等待上限（0 = 不限；逾時後 run 仍繼續）
                       --host / --port   伺服器位址（預設沿用上次 start 的）
+                離開碼：0 成功、1 失敗/取消/無法送出、2 參數錯誤、130 Ctrl+C
+                （Ctrl+C 只是停止跟隨，run 仍在伺服器上繼續執行）。
                 離線、不需要伺服器的單次執行請用 backend/run_graph.py。
     stop        停止所有服務（含背景伺服器）
     test        執行 backend 測試
@@ -2007,6 +2010,14 @@ RUN_POLL_WAIT_S = 5.0
 RUN_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled",
                                    "interrupted"})
 
+#: Ceiling on the post-terminal drain (see ``_drain_run_events``).
+RUN_DRAIN_MAX_PAGES = 20
+
+#: Shell convention for "killed by SIGINT" (128 + 2). `cdui run --wait` uses
+#: it so a Ctrl+C is distinguishable from a run that actually failed — the
+#: run is still going on the server, and a script must not read that as one.
+EXIT_INTERRUPTED = 130
+
 
 def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
     """Parse the flags of `cdui run`. Real argparse, like `cdui install`.
@@ -2026,9 +2037,10 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
     p.add_argument("graph", help="path to a graph .json file")
     p.add_argument("--name", default=None,
                    help="label for the run (shown in the Runs panel)")
-    p.add_argument("--device", default="cpu",
-                   help="cpu | auto | cuda | cuda:N | mps (default: cpu). "
-                        "The RESOLVED device is the queue this run joins.")
+    p.add_argument("--device", default="auto",
+                   help="cpu | auto | cuda | cuda:N | mps (default: auto, "
+                        "which the server currently resolves to cpu). The "
+                        "RESOLVED device is the queue this run joins.")
     p.add_argument("--seed", type=int, default=None,
                    help="seed for random / numpy / torch")
     p.add_argument("--record-outputs", action="store_true",
@@ -2224,6 +2236,7 @@ def _tail_run(base: str, host: str, run_id: str, timeout: float) -> str:
             _render_run_event(event)
         cursor = body.get("cursor", cursor)
         if status in RUN_TERMINAL_STATUSES:
+            _drain_run_events(base, host, run_id, cursor)
             return status
         if status == "queued" and not announced_queue:
             announced_queue = _announce_queue_position(base, host, run_id)
@@ -2232,6 +2245,31 @@ def _tail_run(base: str, host: str, run_id: str, timeout: float) -> str:
                  f"stopped waiting after {timeout:g}s; the run continues on "
                  "the server")
             return status
+
+
+def _drain_run_events(base: str, host: str, run_id: str, cursor: int) -> None:
+    """Print whatever is left in the log after the run reached a terminal.
+
+    A page is bounded by BYTES as well as by ``limit``, so the poll that
+    first saw the terminal status may have been cut short — and the event it
+    cut is quite often the ``execution_error`` carrying the traceback, i.e.
+    exactly the line the user ran the command to read. Terminal status makes
+    the log final, so these polls do not wait: they read what is there and
+    stop when a page comes back empty.
+
+    Bounded so a server that somehow never stops producing cannot park the
+    command here; the exit code is already decided by the status either way.
+    """
+    for _ in range(RUN_DRAIN_MAX_PAGES):
+        code, body = _api_request(
+            f"{base}/api/runs/{run_id}/events?cursor={cursor}&wait=0", host,
+            timeout=30.0)
+        events = (body or {}).get("events") or []
+        if code != 200 or not events:
+            return
+        for event in events:
+            _render_run_event(event)
+        cursor = body.get("cursor", cursor)
 
 
 def _announce_queue_position(base: str, host: str, run_id: str) -> bool:
@@ -2309,7 +2347,20 @@ def run_graph() -> None:
         return
 
     print()
-    final = _tail_run(base, netloc, run_id, args.timeout)
+    try:
+        final = _tail_run(base, netloc, run_id, args.timeout)
+    except KeyboardInterrupt:
+        # Ctrl+C stops WATCHING, never the run — the whole point of a
+        # server-owned run, and what the docs promise. Caught here rather
+        # than left to the interpreter because the interrupt lands inside
+        # ``urlopen`` and would otherwise print a socket traceback over the
+        # progress output, which reads exactly like a crash.
+        print()
+        warn("已停止跟隨；run 仍在伺服器上執行",
+             "stopped following; the run continues on the server")
+        print(f"  {DIM}{t('重新跟隨', 'follow it again with')}: "
+              f"cdui status  |  {base}{RESET}")
+        sys.exit(EXIT_INTERRUPTED)
     print()
     _kv(t("結果", "Result"), f"{_run_status_color(final)}{final}{RESET}")
     if final != "succeeded":

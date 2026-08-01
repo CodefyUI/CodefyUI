@@ -460,6 +460,46 @@ describe('useGraphExecution - lifecycle events', () => {
     expect(tab.logs.some((l: any) => l.message === 'Execution error: kaboom')).toBe(true);
   });
 
+  // #123: a REFUSED submit is not a run outcome. The server turned a click
+  // down without starting anything, and the run this tab is already
+  // following is still executing — so falling through to `error` would
+  // re-enable Run and disable Stop mid-run.
+  it('a rejected execution_error keeps the tab running and only logs a notice', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => ws.emit('execution_start', { run_id: 'run-1' }));
+    expect(tabById('t1').status).toBe('running');
+
+    act(() =>
+      ws.emit('execution_error', {
+        error: 'this editor session already has a run in flight',
+        rejected: true,
+        run_id: 'run-1',
+      }),
+    );
+
+    const tab = tabById('t1');
+    // Still running: Run stays disabled and Stop stays enabled, both of
+    // which are derived from this status.
+    expect(tab.status).toBe('running');
+    expect(tab.lastRunId).toBe('run-1');
+    const notice = tab.logs[tab.logs.length - 1];
+    expect(notice.type).toBe('info');
+    expect(notice.message).toContain('was not started');
+    expect(notice.message).toContain('already has a run in flight');
+    expect(tab.logs.some((l: any) => l.type === 'error')).toBe(false);
+  });
+
+  it('a rejected execution_error warns the user with a toast', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => ws.emit('execution_error', { error: 'busy', rejected: true }));
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts.length).toBe(1);
+    expect(toasts[0].type).toBe('warning');
+    expect(toasts[0].message).toContain('was not started');
+  });
+
   it('execution_start sets status running and records run_id when a string', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());

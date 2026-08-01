@@ -225,6 +225,10 @@ const en = {
   // Re-attach (#121): the run kept going while the tab was closed.
   'execution.reattached': 'Reconnected to a run that is still in progress',
 
+  // Refused submit (#123). NOT a failure: nothing started, and the run this
+  // tab is already following keeps going.
+  'execution.rejected': 'This run was not started — the server is already busy with this tab\'s run. It is still going; wait for it to finish or press Stop.',
+
   // Node palette — control category / start node
   'palette.category.control': 'Control',
   'palette.start.description': 'Marks an execution entry point. Connect to the first node of a script.',

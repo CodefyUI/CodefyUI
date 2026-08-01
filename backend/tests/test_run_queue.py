@@ -50,6 +50,7 @@ from app.core.run_service import (
     QueueLimits,
     RunService,
     RunServiceUnavailable,
+    canonical_queue_key,
     parse_queue_overrides,
 )
 from app.core.run_store import (
@@ -79,12 +80,17 @@ class _Probe:
         self.started: list[str] = []
         self.inflight = 0
         self.peak: dict[str, int] = {}
+        #: Peak across ALL keys. The per-key counter is labelled by the
+        #: probe's own param, so it cannot see two ALIASES of one device
+        #: overlapping; this can.
+        self.peak_total = 0
 
     def enter(self, label: str, device: str) -> None:
         with self.lock:
             self.started.append(label)
             self.inflight += 1
             self.peak[device] = max(self.peak.get(device, 0), self.inflight)
+            self.peak_total = max(self.peak_total, self.inflight)
 
     def leave(self) -> None:
         with self.lock:
@@ -170,6 +176,11 @@ def fake_devices(monkeypatch):
     monkeypatch.setattr(
         run_service_module, "resolve_device",
         lambda requested: (requested or "cpu").strip().lower() or "cpu")
+    # Bare ``cuda`` canonicalises to the process's current device; pin it
+    # so these tests mean the same thing on a CI box with no GPU and on a
+    # workstation whose current device is not 0.
+    monkeypatch.setattr(run_service_module, "_current_cuda_index",
+                        lambda: 0)
 
 
 @pytest.fixture
@@ -284,9 +295,34 @@ def test_limits_default_by_device_class():
     limits = QueueLimits(cpu=2, gpu=1)
     assert limits.for_key("cpu") == 2
     # Everything that is not cpu is treated as an accelerator, including a
-    # backend nobody has added yet.
-    for key in ("cuda", "cuda:0", "cuda:7", "mps", "mps:0", "xpu"):
+    # backend nobody has added yet. (``cuda`` / ``mps`` never reach here as
+    # keys — see canonical_queue_key — but the classification is by prefix,
+    # not by an allowlist, so it holds for them too.)
+    for key in ("cuda:0", "cuda:7", "mps:0", "xpu"):
         assert limits.for_key(key) == 1
+
+
+def test_device_aliases_canonicalise_onto_one_key():
+    """``cuda`` and ``cuda:0`` are one card, so they must be one queue."""
+    assert canonical_queue_key("cuda") == "cuda:0"
+    assert canonical_queue_key("mps") == "mps:0"
+    # Already canonical, and a genuinely different card stays different.
+    assert canonical_queue_key("cuda:0") == "cuda:0"
+    assert canonical_queue_key("cuda:1") == "cuda:1"
+    assert canonical_queue_key("mps:0") == "mps:0"
+    assert canonical_queue_key("cpu") == "cpu"
+
+
+def test_a_bare_cuda_follows_the_process_current_device(monkeypatch):
+    """Not hardcoded 0: a bare ``cuda`` means whatever torch means by it.
+
+    Pinning 0 would recreate the very collision this exists to close on any
+    process whose current device is not 0 — ``cuda`` would be filed under
+    ``cuda:0`` while actually running on card 1.
+    """
+    monkeypatch.setattr(run_service_module, "_current_cuda_index", lambda: 3)
+    assert canonical_queue_key("cuda") == "cuda:3"
+    assert canonical_queue_key("cuda:0") == "cuda:0"
 
 
 def test_limits_overrides_beat_the_class_default():
@@ -420,6 +456,38 @@ async def test_a_saturated_gpu_does_not_delay_a_cpu_run(service, store, probe):
 
     for result in gpu:
         await _await_terminal(store, result.run_id)
+
+
+async def test_bare_cuda_and_cuda0_share_one_queue(service, store, probe):
+    """The regression: two aliases of one card must not run concurrently.
+
+    ``resolve_device`` returns both strings verbatim, so without
+    canonicalisation these become two independent FIFOs over one GPU, each
+    admitting its own run — and the two fight over the same VRAM, which is
+    precisely what a cap of 1 exists to prevent.
+    """
+    bare = await _submit(service, "bare", device="cuda", seconds=0.2)
+    indexed = await _submit(service, "indexed", device="cuda:0", seconds=0.2)
+
+    assert bare.status == STATUS_RUNNING
+    assert indexed.status == STATUS_QUEUED, \
+        "cuda and cuda:0 were scheduled as two independent queues"
+    assert list(service.queue_snapshot()) == ["cuda:0"]
+
+    for result in (bare, indexed):
+        record = await _await_terminal(store, result.run_id)
+        # Both rows record the SAME canonical key, so a later reader cannot
+        # tell them apart by device either.
+        assert record.queue_key == "cuda:0"
+    assert probe.peak_total == 1
+    assert probe.started == ["bare", "indexed"]
+
+
+async def test_bare_mps_and_mps0_share_one_queue(service):
+    first = await _submit(service, "a", device="mps", seconds=0.3)
+    second = await _submit(service, "b", device="mps:0", seconds=0.3)
+    assert (first.status, second.status) == (STATUS_RUNNING, STATUS_QUEUED)
+    assert list(service.queue_snapshot()) == ["mps:0"]
 
 
 async def test_each_device_keeps_its_own_line(service):

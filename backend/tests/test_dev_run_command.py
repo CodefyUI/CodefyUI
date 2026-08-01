@@ -80,7 +80,10 @@ class _FakeServer:
             if hit:
                 status, payload = (answers.pop(0) if len(answers) > 1
                                    else answers[0])
-                if isinstance(payload, Exception):
+                # BaseException, not Exception: KeyboardInterrupt is one of
+                # the things a test needs to be able to inject here, and it
+                # is deliberately outside the Exception hierarchy.
+                if isinstance(payload, BaseException):
                     raise payload
                 return _FakeResp(status, payload)
         raise AssertionError(f"unexpected request to {url}")
@@ -144,6 +147,9 @@ def test_submit_body_omits_what_was_not_asked_for(graph_file):
     # The lane is the SERVER's default. Naming it here would hardcode a
     # policy the CLI has no opinion about.
     assert "lane" not in body["options"]
+    # `auto` is what the signature promises; the server maps it to cpu, and
+    # the CLI does not second-guess that mapping locally.
+    assert body["options"]["device"] == "auto"
 
 
 def test_submit_body_is_accepted_by_the_server_contract(graph_file):
@@ -340,6 +346,77 @@ def test_wait_gives_up_at_the_timeout_without_killing_the_run(
     assert "the run continues on the server" in captured.err
     # No cancel was sent: a client giving up must not stop a server-owned run.
     assert not any("/cancel" in r.full_url for r in server.requests)
+
+
+def test_ctrl_c_while_waiting_leaves_the_run_alone_and_exits_130(
+        monkeypatch, graph_file, capsys):
+    """Ctrl+C stops WATCHING. It must not print a socket traceback over the
+    progress output, and it must not read as a failed run."""
+    server = (_FakeServer()
+              .on("=/api/runs", (200, {"run_id": "r1", "status": "running"}))
+              .on("/events", (0, KeyboardInterrupt())))
+    monkeypatch.setattr(dev, "urlopen", server)
+    monkeypatch.setattr(sys, "argv", _argv(graph_file))
+
+    with pytest.raises(SystemExit) as exc:
+        dev.run_graph()
+    assert exc.value.code == dev.EXIT_INTERRUPTED == 130
+    captured = capsys.readouterr()
+    assert "stopped following" in captured.err
+    assert "the run continues on the server" in captured.err
+    # No cancel was sent: interrupting the client must not stop the run.
+    assert not any("/cancel" in r.full_url for r in server.requests)
+
+
+def test_a_terminal_page_is_drained_so_the_error_text_prints(monkeypatch,
+                                                             graph_file,
+                                                             capsys):
+    """A page is byte-bounded, so the poll that first sees the terminal
+    status can be cut short — often right before the traceback."""
+    server = (_FakeServer()
+              .on("=/api/runs", (200, {"run_id": "r1", "status": "running"}))
+              .on("/events",
+                  # Terminal status, but the page stopped before the error.
+                  (200, {"run_id": "r1", "status": "failed", "active": False,
+                         "events": [{"cursor": 1, "type": "node_status",
+                                     "payload": {"node_id": "n1",
+                                                 "status": "completed"},
+                                     "ts": "now"}],
+                         "cursor": 1}),
+                  (200, {"run_id": "r1", "status": "failed", "active": False,
+                         "events": [{"cursor": 2, "type": "execution_error",
+                                     "payload": {"error": "the real reason"},
+                                     "ts": "now"}],
+                         "cursor": 2}),
+                  (200, {"run_id": "r1", "status": "failed", "active": False,
+                         "events": [], "cursor": 2})))
+    monkeypatch.setattr(dev, "urlopen", server)
+    monkeypatch.setattr(sys, "argv", _argv(graph_file))
+
+    with pytest.raises(SystemExit) as exc:
+        dev.run_graph()
+    assert exc.value.code == 1
+    assert "the real reason" in capsys.readouterr().out
+    # The drain does not long-poll: the log is already final.
+    assert any("wait=0" in r.full_url for r in server.requests)
+
+
+def test_the_drain_is_bounded(monkeypatch, graph_file, capsys):
+    """A server that never stops producing must not park the command."""
+    server = (_FakeServer()
+              .on("=/api/runs", (200, {"run_id": "r1", "status": "running"}))
+              .on("/events", (200, {
+                  "run_id": "r1", "status": "succeeded", "active": False,
+                  "events": [{"cursor": 1, "type": "node_status",
+                              "payload": {"node_id": "n", "status": "completed"},
+                              "ts": "now"}],
+                  "cursor": 1})))
+    monkeypatch.setattr(dev, "urlopen", server)
+    monkeypatch.setattr(sys, "argv", _argv(graph_file))
+
+    dev.run_graph()
+    polls = [r for r in server.requests if "/events" in r.full_url]
+    assert len(polls) <= dev.RUN_DRAIN_MAX_PAGES + 2
 
 
 def test_a_dropped_connection_while_tailing_does_not_crash(monkeypatch,

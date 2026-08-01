@@ -6,7 +6,7 @@ description: Queue graphs per device and walk away — lanes, FIFO order, concur
 
 # Run Queue
 
-A run belongs to the **server**, not to whatever submitted it. Close the tab, close the terminal, log out — the run keeps going, and you can come back to it later from the Runs panel or the CLI.
+A run belongs to the **server**, not to whatever submitted it. Close the tab, close the terminal, log out — the run keeps going, and you can come back to it later over the API or the CLI.
 
 That is what makes queueing useful. Submit five training jobs, shut the laptop lid, and the server works through them one at a time on the GPU instead of starting all five at once and running out of VRAM forty minutes in.
 
@@ -20,6 +20,10 @@ Every run is scheduled against its **resolved device** — `cpu`, `cuda:0`, `mps
 | `cpu` | 2 | Here the failure mode is contention, not death — and a machine with cores to spare should use them. |
 
 A saturated GPU never delays a CPU run, and two different cards never wait on each other. Runs within one queue start in **submit order**, oldest first.
+
+:::note Aliases of one card share one queue
+`cuda` and `cuda:0` are the same physical device, so they are canonicalised onto a single queue key (`cuda:0`) rather than becoming two independent FIFOs over one card. Same for `mps` and `mps:0`. On a multi-GPU box `cuda` follows the process's current device.
+:::
 
 :::note `--device auto` resolves to CPU today
 Device resolution maps an unknown or `auto` request to `cpu`, so `auto` currently queues on the CPU line. Ask for `cuda` (or `cuda:0`) explicitly to use a card.
@@ -49,11 +53,15 @@ Both refusals are immediate and explicit (HTTP 503, or an error on the canvas) r
 
 ## Watching and cancelling
 
-`GET /api/runs` reports `queue_position` for every waiting run — 1-based, **within its own device queue**, so a CPU run behind two other CPU runs is third in line no matter how many CUDA runs were submitted before it. The Runs panel renders it directly.
+`GET /api/runs` reports `queue_position` for every waiting run — 1-based, **within its own device queue**, so a CPU run behind two other CPU runs is third in line no matter how many CUDA runs were submitted before it. `cdui run --wait` prints it while it waits, and a Runs panel will render it once one lands.
 
 Cancelling a run that has not started yet simply removes it from the line. Nothing executed, no device was touched, and the runs behind it move up. The row is recorded as `cancelled` with no start time, and anything following the run receives a normal stop event.
 
 Cancelling a run that is already going is cooperative — see [Running Graphs](./running-graphs#stopping).
+
+:::note Two runs may briefly both read as running on a cap-1 queue
+A run gives its device slot back the moment its graph finishes, before it writes its final status and closing event. The next run therefore starts while the previous one is still filing paperwork, so a poll landing in that window can see two `running` rows on a queue whose limit is 1. Nothing is executing twice — the device really is idle — and it is deliberate: the alternative is holding a GPU idle across a database write, and worse, telling a canvas its run is over while the next click is still refused.
+:::
 
 ## `cdui run`
 
@@ -86,8 +94,8 @@ cdui run infer.json --record-outputs
 
 | Flag | Meaning |
 | --- | --- |
-| `--name <text>` | Label shown in the Runs panel |
-| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` (default `cpu`). The resolved device is the queue it joins. |
+| `--name <text>` | Label stored on the run and shown wherever runs are listed |
+| `--device <dev>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps` (default `auto`, which resolves to `cpu` today). The resolved device is the queue it joins. |
 | `--seed <n>` | Seed for `random`, NumPy and torch |
 | `--record-outputs` | Capture node outputs for later inspection |
 | `--wait` | Stream progress until the run ends (**default**) |
@@ -121,6 +129,7 @@ While a run is waiting, the CLI reports where it is in line rather than sitting 
 | 0 | The run succeeded (or `--detach` submitted it successfully) |
 | 1 | The run failed, was cancelled or interrupted — or the CLI could not submit it (no server, no graph file, rejected envelope) |
 | 2 | Bad command line (argument parsing) |
+| 130 | Ctrl+C. Stops **watching** only — the run keeps going on the server, exactly as `--detach` would have left it. |
 
 `--timeout` expiring also exits 1: the command cannot report success for a run it stopped watching.
 

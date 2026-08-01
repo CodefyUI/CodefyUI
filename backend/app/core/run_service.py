@@ -50,9 +50,11 @@ Scheduling (#123)
 -----------------
 Two admission policies, because the two lanes fail in opposite directions.
 
-``queued`` runs join a **per-device FIFO**. The queue key is the RESOLVED
-device (``resolve_device(options["device"])``: ``cpu``, ``cuda:0``, ``mps``
-…), so a six-hour CUDA job and a CPU preprocessing run never wait on each
+``queued`` runs join a **per-device FIFO**. The queue key is the resolved
+device in canonical form (``canonical_queue_key(resolve_device(...))``:
+``cpu``, ``cuda:0``, ``mps:0`` — the canonicalisation is what stops
+``cuda`` and ``cuda:0`` being two queues over one card), so a six-hour
+CUDA job and a CPU preprocessing run never wait on each
 other, and two CUDA jobs on one card never fight over its VRAM. Each key
 admits :data:`QueueLimits` runs at once — 1 for an accelerator, 2 for
 ``cpu`` — and everything else waits in submit order. Waiting is CHEAP: a
@@ -273,11 +275,56 @@ SHUTDOWN_AFTER_PERSIST = (
 #: Per-subscriber queue depth. Overflow drops (see ``RunSubscription``).
 DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
 
-#: Queue keys that are NOT an accelerator. Everything else — ``cuda``,
-#: ``cuda:1``, ``mps`` — is treated as one, so a backend added to
-#: ``resolve_device`` tomorrow inherits the conservative limit instead of
-#: silently getting the CPU one.
+#: Queue keys that are NOT an accelerator. Everything else — ``cuda:1``,
+#: ``mps:0`` — is treated as one, so a backend added to ``resolve_device``
+#: tomorrow inherits the conservative limit instead of silently getting the
+#: CPU one.
 CPU_QUEUE_KEY = "cpu"
+
+
+def _current_cuda_index() -> int:
+    """Which GPU a bare ``cuda`` means in THIS process.
+
+    ``torch.cuda.current_device()``, because that is the index torch itself
+    will use — hardcoding 0 would be wrong on any process that changed it.
+    Falls back to 0 when torch cannot say; the caller only reaches here for
+    a string ``resolve_device`` already vouched for, so that is a
+    belt-and-braces path rather than the normal one.
+    """
+    try:
+        import torch
+
+        return int(torch.cuda.current_device())
+    except Exception:  # pragma: no cover - torch present and CUDA-checked
+        logger.debug("could not read the current CUDA device", exc_info=True)
+        return 0
+
+
+def canonical_queue_key(device: str) -> str:
+    """Collapse the aliases of one physical device onto ONE queue key.
+
+    ``resolve_device`` hands back what it was asked for: ``cuda`` and
+    ``cuda:0`` both survive verbatim, and on a single-GPU box they are the
+    same card. As QUEUE KEYS that would be two independent FIFOs over one
+    piece of hardware, each admitting its own run — so ``--device cuda`` and
+    ``--device cuda:0`` would execute CONCURRENTLY and fight over the same
+    VRAM, which is the exact failure the per-device cap exists to prevent.
+    Same for ``mps`` versus ``mps:0``.
+
+    Indexing is the canonical form (``cuda`` -> ``cuda:N``, ``mps`` ->
+    ``mps:0``) rather than the other direction, because collapsing
+    ``cuda:0`` -> ``cuda`` would merge two genuinely different cards on a
+    multi-GPU box the moment someone asked for ``cuda:1``.
+
+    Applied once in ``submit`` and used for BOTH the row's ``queue_key`` and
+    the ``ExecutionContext.device``, so the queue a run waits in and the
+    device it runs on are the same string by construction.
+    """
+    if device == "cuda":
+        return f"cuda:{_current_cuda_index()}"
+    if device == "mps":
+        return "mps:0"
+    return device
 
 
 @dataclass(frozen=True)
@@ -1147,7 +1194,8 @@ class RunService:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
                 f"got {lane!r}")
-        queue_key = resolve_device(normalized_options.get("device"))
+        queue_key = canonical_queue_key(
+            resolve_device(normalized_options.get("device")))
 
         if lane == LANE_INTERACTIVE:
             return await self._submit_interactive(
@@ -1325,14 +1373,31 @@ class RunService:
                 queue_key):
             entry = queue.popleft()
             self._pending_by_id.pop(entry.run_id, None)
-            # The graph is NOT passed: ``_drive`` re-reads it from the row.
-            # The signal and the subscriber set ARE — same objects, so a
-            # client that parked on the queued run keeps both its generation
-            # and its live feed across the promotion.
-            self._start(entry.run_id, None, entry.options,
-                        queue_key=queue_key, lane=entry.options.get(
-                            "lane", DEFAULT_LANE),
-                        signal=entry.signal, subscribers=entry.subscribers)
+            try:
+                # The graph is NOT passed: ``_drive`` re-reads it from the
+                # row. The signal and the subscriber set ARE — same objects,
+                # so a client that parked on the queued run keeps both its
+                # generation and its live feed across the promotion.
+                self._start(entry.run_id, None, entry.options,
+                            queue_key=queue_key, lane=entry.options.get(
+                                "lane", DEFAULT_LANE),
+                            signal=entry.signal, subscribers=entry.subscribers)
+            except Exception:
+                # Two things must not happen here, and both did before this
+                # guard. The entry must not be LOST — it has already left
+                # both indexes — so it goes back at the FRONT, keeping its
+                # place in line for the next pump. And the exception must
+                # not escape: this method is called from ``_finalize``,
+                # inside the PREVIOUS run's task and before that run's
+                # terminal event and row write, so letting it through would
+                # make one run's failed promotion silently strand another
+                # run's outcome.
+                logger.exception(
+                    "run %s could not be started off the %s queue; it stays "
+                    "queued", entry.run_id, queue_key)
+                queue.appendleft(entry)
+                self._pending_by_id[entry.run_id] = entry
+                break
         if not queue:
             self._pending.pop(queue_key, None)
 
@@ -1404,6 +1469,15 @@ class RunService:
             record_outputs=bool(options.get("record_outputs")),
             subscribers=set() if subscribers is None else subscribers,
         )
+        # The task is created BEFORE anything is mutated, so this method is
+        # all-or-nothing: if scheduling the task fails (a closed loop during
+        # teardown), no slot has been taken and no half-registered run is
+        # left for ``_pump``'s recovery to reason about. Nothing runs in
+        # between — ``create_task`` only schedules, and this function never
+        # awaits — so ``_drive`` cannot observe the registry before the next
+        # three statements have landed.
+        task = asyncio.create_task(
+            self._drive(active, graph, options, session), name=f"run:{run_id}")
         if lane != LANE_INTERACTIVE:
             # Taken HERE, not in ``_pump``, so the one path that starts a run
             # is the one path that accounts for it. The interactive lane's
@@ -1411,9 +1485,8 @@ class RunService:
             self._slots[queue_key] = self._slots.get(queue_key, 0) + 1
         elif self._session_key(session) is not None:
             self._interactive_sessions[self._session_key(session)] = run_id
+        active.task = task
         self._runs[run_id] = active
-        active.task = asyncio.create_task(
-            self._drive(active, graph, options, session), name=f"run:{run_id}")
         return SubmitResult(run_id=run_id, status=STATUS_RUNNING)
 
     def _release_admission(self, active: _ActiveRun) -> None:
