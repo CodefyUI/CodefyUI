@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { SidebarRail } from './SidebarRail';
 import { useUIStore, SIDEBAR_DEFAULT_WIDTH } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
@@ -31,6 +31,26 @@ describe('SidebarRail', () => {
     const list = screen.getByRole('tablist', { name: 'Sidebar sections' });
     expect(list.getAttribute('aria-orientation')).toBe('vertical');
     for (const label of TAB_LABELS) expect(tab(label)).toBeTruthy();
+  });
+
+  // A tablist may only own `tab` children, and the collapse toggle is not one —
+  // keeping it inside would both break that and add a second Tab stop the
+  // roving tabindex is supposed to prevent.
+  it('keeps the collapse toggle out of the tablist', () => {
+    render(<SidebarRail />);
+    const list = screen.getByRole('tablist', { name: 'Sidebar sections' });
+    const toggle = screen.getByRole('button', { name: 'Collapse sidebar' });
+
+    expect(within(list).getAllByRole('tab')).toHaveLength(TAB_LABELS.length);
+    expect(list.contains(toggle)).toBe(false);
+    // Every element the tablist owns is a tab.
+    expect(
+      Array.from(list.querySelectorAll('button')).every(
+        (b) => b.getAttribute('role') === 'tab',
+      ),
+    ).toBe(true);
+    // ...and the toggle is still in the rail beside it.
+    expect(list.parentElement?.contains(toggle)).toBe(true);
   });
 
   it('marks only the active tab as selected', () => {
@@ -85,12 +105,27 @@ describe('SidebarRail', () => {
     expect(tab('Nodes').getAttribute('aria-selected')).toBe('true');
   });
 
+  // Exactly one panel exists at a time, and only while expanded, so only the
+  // tab that owns it may name it — any other tab would be pointing aria-controls
+  // at an id that is nowhere in the document.
   it('only points aria-controls at a panel that exists', () => {
     const { rerender } = render(<SidebarRail />);
     expect(tab('Nodes').getAttribute('aria-controls')).toBe('sidebar-panel-nodes');
+    for (const label of ['Presets', 'Templates', 'Custom & Plugins']) {
+      expect(tab(label).getAttribute('aria-controls')).toBeNull();
+    }
+
+    // Switching tabs moves the claim along with the panel.
+    fireEvent.click(tab('Presets'));
+    expect(tab('Presets').getAttribute('aria-controls')).toBe('sidebar-panel-presets');
+    expect(tab('Nodes').getAttribute('aria-controls')).toBeNull();
+
+    // Collapsed: no panel at all, so no tab claims one.
     useUIStore.setState({ sidebarCollapsed: true });
     rerender(<SidebarRail />);
-    expect(tab('Nodes').getAttribute('aria-controls')).toBeNull();
+    for (const label of TAB_LABELS) {
+      expect(tab(label).getAttribute('aria-controls')).toBeNull();
+    }
   });
 
   // ── Keyboard navigation ────────────────────────────────────────────────────

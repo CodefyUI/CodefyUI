@@ -72,6 +72,10 @@ beforeEach(() => {
     sidebarCollapsed: false,
     sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   });
+  // Installed through setState rather than vi.spyOn: zustand's set() clones the
+  // state object, so a spy would survive into a NEW object that
+  // restoreAllMocks() never reaches — and the next vi.spyOn would hand back the
+  // same spy with the previous test's call history still on it.
   useNodeDefStore.setState({
     definitions: [def('Conv2d', 'CNN')],
     categorized: { CNN: [def('Conv2d', 'CNN')] },
@@ -79,8 +83,8 @@ beforeEach(() => {
     presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] },
     loading: false,
     error: null,
+    fetchDefinitions: vi.fn().mockResolvedValue(undefined),
   });
-  vi.spyOn(useNodeDefStore.getState(), 'fetchDefinitions').mockResolvedValue(undefined);
   // vi.fn()s from the module factory keep their call history across tests;
   // reset them so "was this tab fetched?" means "in THIS test".
   mockedRest.listExamples.mockReset().mockResolvedValue([]);
@@ -149,6 +153,43 @@ describe('NodePalette (sidebar shell)', () => {
     expect(mockedRest.listExamples).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'Templates' }));
     expect(mockedRest.listExamples).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Catalog bootstrap ──────────────────────────────────────────────────────
+  // The node/preset catalog is the whole app's, not the Nodes tab's: the canvas,
+  // quick search, example loading and the plugin host all read it. The SHELL
+  // must start the load, because the Nodes tab mounts only when it is the open
+  // tab AND the sidebar is expanded — and both of those are persisted, so a
+  // user who quit on another tab (or collapsed) would otherwise come back to an
+  // app with an empty catalog for the whole session.
+
+  it('starts the catalog load even when the sidebar is collapsed', () => {
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
+
+    render(<NodePalette />);
+
+    expect(panel()).toBeNull();
+    expect(fetchDefinitions).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the catalog load when a tab other than Nodes is open', () => {
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    act(() => useUIStore.getState().setSidebarTab('presets'));
+
+    render(<NodePalette />);
+
+    expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+    expect(fetchDefinitions).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-fetch the catalog when it is already loaded', () => {
+    // The beforeEach seeds a non-empty catalog.
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    render(<NodePalette />);
+    expect(fetchDefinitions).not.toHaveBeenCalled();
   });
 
   it('labels the panel with the tab that opened it', () => {
@@ -243,6 +284,102 @@ describe('NodePalette (sidebar shell)', () => {
     act(() => useUIStore.getState().setSidebarCollapsed(true));
     const { container } = render(<NodePalette />);
     expect(container.querySelector('[role="separator"]')).toBeNull();
+  });
+
+  it('tears down a drag left in flight by an unmount', () => {
+    const { container, unmount } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    fireEvent.mouseDown(handle, { clientX: 250 });
+    expect(document.body.style.cursor).toBe('col-resize');
+
+    // Unmounting mid-drag must not leave the page stuck under a col-resize
+    // cursor with listeners still on `document`.
+    unmount();
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+    fireEvent.mouseMove(document, { clientX: 900 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
+  });
+
+  // A focusable role="separator" has to be operable from the keyboard, per the
+  // window-splitter pattern.
+  it('is a keyboard-operable splitter', () => {
+    const { container } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(handle.getAttribute('tabindex')).toBe('0');
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH));
+    expect(handle.getAttribute('aria-valuemin')).toBe(String(SIDEBAR_MIN_WIDTH));
+    expect(handle.getAttribute('aria-valuemax')).toBe(String(SIDEBAR_MAX_WIDTH));
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 16);
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH + 16));
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
+
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MIN_WIDTH);
+
+    fireEvent.keyDown(handle, { key: 'End' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MAX_WIDTH);
+
+    // An unrelated key is left to the browser.
+    const notPrevented = fireEvent.keyDown(handle, { key: 'a' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MAX_WIDTH);
+    expect(notPrevented).toBe(true);
+  });
+
+  // ── Focus handoff on collapse ──────────────────────────────────────────────
+
+  it('moves focus to the rail when collapsing away from a focused panel', () => {
+    render(<NodePalette />);
+    const categoryHeader = screen.getByText('CNN').closest('button')!;
+    act(() => categoryHeader.focus());
+    expect(document.activeElement).toBe(categoryHeader);
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    // The panel that held focus is gone; focus landed on the open tab rather
+    // than falling back to <body>.
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Nodes' }));
+  });
+
+  it('leaves focus alone when collapsing from outside the panel', () => {
+    render(<NodePalette />);
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    // Ctrl+B while working on the canvas must not yank focus into the sidebar.
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it('leaves focus alone when it had moved out of the panel before collapsing', () => {
+    render(<NodePalette />);
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+
+    // Focus goes into the panel and then back out — the handoff must follow
+    // where focus IS, not where it once was, or Ctrl+B from the canvas would
+    // yank focus to the rail and turn arrow keys into tab switches.
+    act(() => screen.getByText('CNN').closest('button')!.focus());
+    act(() => outside.focus());
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it('does not grab focus when it mounts already collapsed', () => {
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
+    render(<NodePalette />);
+    expect(document.activeElement).toBe(document.body);
   });
 
   // ── Keyboard shortcut integration ──────────────────────────────────────────

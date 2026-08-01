@@ -30,10 +30,15 @@ const TAB_META: Record<
  * the tab that is already open collapses the sidebar back to this rail. That
  * makes one icon both "show me this" and "give the canvas its width back".
  *
- * Keyboard: the rail is a vertical tablist with a roving tabindex, so it is a
- * single Tab stop and Up/Down/Home/End move between the icons. Movement
- * activates the tab it lands on (automatic activation) — the panels are cheap
- * and it keeps arrow-key browsing and clicking behaving the same way.
+ * Keyboard: the four tabs form a vertical tablist with a roving tabindex, so
+ * they are a single Tab stop and Up/Down/Home/End move between the icons.
+ * Movement activates the tab it lands on (automatic activation) — the panels
+ * are cheap and it keeps arrow-key browsing and clicking behaving the same way.
+ *
+ * The collapse toggle sits in the rail but OUTSIDE the tablist element: it is
+ * not a tab, and a `tablist` may only own `tab` children. Keeping it out also
+ * stops arrow navigation from landing on a control that would then have no
+ * panel to describe.
  */
 export function SidebarRail() {
   const sidebarTab = useUIStore((s) => s.sidebarTab);
@@ -81,43 +86,48 @@ export function SidebarRail() {
   const toggleLabel = collapsed ? t('sidebar.expand') : t('sidebar.collapse');
 
   return (
-    <div
-      className={styles.rail}
-      role="tablist"
-      aria-orientation="vertical"
-      aria-label={t('sidebar.rail.aria')}
-    >
-      {SIDEBAR_TABS.map((tab, index) => {
-        const { Icon, labelKey } = TAB_META[tab];
-        const label = t(labelKey);
-        const selected = tab === sidebarTab;
-        return (
-          <button
-            key={tab}
-            ref={(el) => {
-              buttonRefs.current[index] = el;
-            }}
-            type="button"
-            role="tab"
-            id={`sidebar-tab-${tab}`}
-            // The panel only exists while expanded; pointing at a missing id
-            // would be worse than omitting the relationship.
-            aria-controls={collapsed ? undefined : `sidebar-panel-${tab}`}
-            aria-selected={selected}
-            aria-label={label}
-            title={label}
-            tabIndex={selected ? 0 : -1}
-            data-tab={tab}
-            className={
-              selected && !collapsed ? `${styles.railButton} ${styles.railButtonActive}` : styles.railButton
-            }
-            onClick={() => handleClick(tab)}
-            onKeyDown={(e) => handleKeyDown(e, index)}
-          >
-            <Icon size={18} />
-          </button>
-        );
-      })}
+    <div className={styles.rail}>
+      <div
+        className={styles.railTabs}
+        role="tablist"
+        aria-orientation="vertical"
+        aria-label={t('sidebar.rail.aria')}
+      >
+        {SIDEBAR_TABS.map((tab, index) => {
+          const { Icon, labelKey } = TAB_META[tab];
+          const label = t(labelKey);
+          const selected = tab === sidebarTab;
+          return (
+            <button
+              key={tab}
+              ref={(el) => {
+                buttonRefs.current[index] = el;
+              }}
+              type="button"
+              role="tab"
+              id={`sidebar-tab-${tab}`}
+              // Exactly one panel exists at a time, and only while expanded —
+              // so only the tab that owns it may claim it. Every other tab
+              // would be pointing at an id that is not in the document.
+              aria-controls={
+                selected && !collapsed ? `sidebar-panel-${tab}` : undefined
+              }
+              aria-selected={selected}
+              aria-label={label}
+              title={label}
+              tabIndex={selected ? 0 : -1}
+              data-tab={tab}
+              className={
+                selected && !collapsed ? `${styles.railButton} ${styles.railButtonActive}` : styles.railButton
+              }
+              onClick={() => handleClick(tab)}
+              onKeyDown={(e) => handleKeyDown(e, index)}
+            >
+              <Icon size={18} />
+            </button>
+          );
+        })}
+      </div>
 
       <div className={styles.railSpacer} />
 

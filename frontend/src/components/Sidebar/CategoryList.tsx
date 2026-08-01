@@ -107,8 +107,14 @@ export function CategoryList<T>({
             return (
               <div
                 key={category}
+                // React 19 ref cleanup: drop the entry when the section goes
+                // away (a search that filters it out, a plugin unload) so the
+                // map cannot accumulate detached nodes for the session.
                 ref={(el) => {
                   sectionRefs.current[category] = el;
+                  return () => {
+                    delete sectionRefs.current[category];
+                  };
                 }}
                 className={styles.categorySection}
               >

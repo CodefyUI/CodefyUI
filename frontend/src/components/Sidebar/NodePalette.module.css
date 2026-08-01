@@ -36,6 +36,13 @@
   background: rgba(6, 182, 212, 0.35);
 }
 
+/* Focusable (it is an operable splitter), so it needs a visible focus state —
+   the 4px strip is too thin for a conventional outline to read. */
+.resizeHandle:focus-visible {
+  background: #06b6d4;
+  outline: none;
+}
+
 /* ── Panel header ── */
 .header {
   padding: 12px 10px 8px;

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { useNodeDefinitions } from '../../hooks/useNodeDefinitions';
+import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import type { NodeDefinition } from '../../types';
@@ -90,9 +90,16 @@ export function NodeItem({ definition }: NodeItemProps) {
  * intact; what changed is that presets moved to their own rail tab, so a
  * category here counts nodes only and the Composite/Basic sub-headers that
  * separated the two kinds are gone.
+ *
+ * A pure consumer of the catalog: this tab mounts only while it is the open
+ * one, so it must not be what STARTS the catalog load — that belongs to the
+ * always-mounted shell (see `useNodeDefinitionsBootstrap`).
  */
 export function NodesTab() {
-  const { categorized, loading, error, refetch } = useNodeDefinitions();
+  const categorized = useNodeDefStore((s) => s.categorized);
+  const loading = useNodeDefStore((s) => s.loading);
+  const error = useNodeDefStore((s) => s.error);
+  const refetch = useNodeDefStore((s) => s.fetchDefinitions);
   const beginnerMode = useUIStore((s) => s.beginnerMode);
   const [searchQuery, setSearchQuery] = useState('');
   const { t } = useI18n();

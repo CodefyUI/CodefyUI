@@ -30,7 +30,7 @@ function def(
   };
 }
 
-/** Seed the node-def store and mark it loaded so the auto-fetch effect is a no-op. */
+/** Seed the node-def store. This tab is a pure consumer — it never fetches. */
 function seedStore(opts: {
   categorized?: Record<string, NodeDefinition[]>;
   loading?: boolean;
@@ -48,10 +48,11 @@ function seedStore(opts: {
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useUIStore.setState({ tooltipsEnabled: true, beginnerMode: false });
-  // Prevent the auto-fetch effect from hitting the network: pretend loaded.
   seedStore({ categorized: {} });
-  // Also stub fetchDefinitions defensively in case any path triggers it.
-  vi.spyOn(useNodeDefStore.getState(), 'fetchDefinitions').mockResolvedValue(undefined);
+  // A fresh mock per test, set through the store rather than vi.spyOn: set()
+  // clones the state object, so a spy would outlive restoreAllMocks() and carry
+  // its call history into the next test.
+  useNodeDefStore.setState({ fetchDefinitions: vi.fn().mockResolvedValue(undefined) });
 });
 
 afterEach(() => {
@@ -80,7 +81,18 @@ describe('NodesTab', () => {
     render(<NodesTab />);
     expect(screen.getByText('Failed to load nodes: network down')).toBeTruthy();
     fireEvent.click(screen.getByText('Retry'));
-    expect(refetch).toHaveBeenCalled();
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  // The catalog belongs to the whole app, and this tab mounts only while it is
+  // the open one — so starting the load is the shell's job, not this tab's.
+  it('never starts a catalog load itself, even with an empty store', () => {
+    seedStore({ categorized: {} });
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<
+      typeof vi.fn
+    >;
+    render(<NodesTab />);
+    expect(fetchDefinitions).not.toHaveBeenCalled();
   });
 
   it('shows the empty state when there are no nodes and no search', () => {

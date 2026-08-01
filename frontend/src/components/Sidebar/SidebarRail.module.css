@@ -16,6 +16,15 @@
   background: #101010;
 }
 
+/* Only the four tab buttons live in the tablist; the collapse toggle is a
+   sibling of this element, not a tab. */
+.railTabs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
 .railButton {
   position: relative;
   display: flex;
