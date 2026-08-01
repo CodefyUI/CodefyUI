@@ -11,6 +11,19 @@ const INITIAL_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+/**
+ * Synthetic event fired when a *previously established* connection comes
+ * back. Not a server frame — the server has no idea a socket is a
+ * replacement for an earlier one.
+ *
+ * Since #121 a run outlives its socket, so a reconnect leaves the browser
+ * connected to a server that is no longer forwarding anything: the old
+ * socket's subscription died with it. Somebody has to send `attach` again,
+ * and only the hook knows which run this tab was watching — hence an event
+ * rather than a re-attach baked in here.
+ */
+export const RECONNECTED_EVENT = 'reconnected';
+
 export class ExecutionWebSocket {
   private ws: WebSocket | null = null;
   private handlers: Map<string, MessageHandler[]> = new Map();
@@ -42,12 +55,7 @@ export class ExecutionWebSocket {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string);
-
-        const typeHandlers = this.handlers.get(data.type) ?? [];
-        typeHandlers.forEach((h) => h(data));
-
-        const wildcardHandlers = this.handlers.get('*') ?? [];
-        wildcardHandlers.forEach((h) => h(data));
+        this.dispatch(data);
       } catch {
         console.error('Failed to parse WebSocket message:', event.data);
       }
@@ -71,12 +79,40 @@ export class ExecutionWebSocket {
           );
           this.notifiedDisconnect = false;
         }
+        // A *replacement* socket, not the first one: whatever this tab was
+        // watching is still running server-side and needs re-attaching.
+        const isReconnect = this.hasBeenConnected;
         this.hasBeenConnected = true;
         this.reconnectAttempt = 0;
         resolve();
+        if (isReconnect) this.dispatch({ type: RECONNECTED_EVENT });
       };
       this.ws!.onerror = () => reject(new Error('WebSocket connection failed'));
     });
+  }
+
+  /**
+   * Route one message (real or synthetic) to its handlers, then to '*'.
+   *
+   * Each handler is isolated: one that throws must not skip the ones after
+   * it. That matters more since #121, because the '*' handler runs last and
+   * is what tracks the run cursor — losing it would make a later reconnect
+   * replay history the panel has already rendered. It also stops a handler
+   * bug from being reported as "Failed to parse WebSocket message" by the
+   * caller's catch, which sent every past reader looking at the wrong layer.
+   */
+  private dispatch(data: any): void {
+    const handlers = [
+      ...(this.handlers.get(data.type) ?? []),
+      ...(this.handlers.get('*') ?? []),
+    ];
+    for (const handler of handlers) {
+      try {
+        handler(data);
+      } catch (err) {
+        console.error('WebSocket handler failed for', data.type, err);
+      }
+    }
   }
 
   private scheduleReconnect(): void {

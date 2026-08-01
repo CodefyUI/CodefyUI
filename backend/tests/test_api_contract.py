@@ -609,13 +609,15 @@ def test_serialize_ndarray_zero_dim_keeps_empty_shape():
     assert tagged["values"] == 7.5
 
 
-# ── WS node_status output contract (#117) ────────────────────────────────
+# ── node_status output contract (#117) ───────────────────────────────────
 # The node_status wire shape is a contract in its own right: nodes DECLARE
-# what a port carries (PortDefinition.media) and the WS layer turns declared
-# outputs into typed `{"output_kind": K, K: payload}` entries. Nothing in
-# this path is allowed to sniff a value's length or character class.
+# what a port carries (PortDefinition.media) and the run's progress bridge
+# turns declared outputs into typed `{"output_kind": K, K: payload}`
+# entries. Nothing in this path is allowed to sniff a value's length or
+# character class. (Lived in api/ws_execution until #121 made the socket a
+# view; the builders belong to the RUN, not to one transport.)
 
-from app.api.ws_execution import (  # noqa: E402
+from app.core.output_entries import (  # noqa: E402
     OUTPUT_KIND_IMAGE,
     OUTPUT_KIND_PROGRESS,
     OUTPUT_KIND_TENSOR_SUMMARY,

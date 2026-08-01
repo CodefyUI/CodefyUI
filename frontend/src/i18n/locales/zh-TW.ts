@@ -223,6 +223,9 @@ const zhTW: Record<TranslationKey, string> = {
   // Execution errors
   'execution.error.noEntryPoints': '尚未定義起始節點。請從節點面板拖曳一個 Start 節點，並連接到要開始執行的節點。',
 
+  // Re-attach (#121): the run kept going while the tab was closed.
+  'execution.reattached': '已重新連上仍在執行中的工作',
+
   // Node palette — control category / start node
   'palette.category.control': '控制',
   'palette.start.description': '標記執行的起點。連接到你想執行的第一個節點。',

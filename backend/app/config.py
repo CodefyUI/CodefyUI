@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     # sit well under 20 KB, so the headroom means elision only ever fires
     # on genuinely unbounded content. <= 0 disables the cap.
     RUN_EVENT_PAYLOAD_CAP_BYTES: int = 128 * 1024
+    # Byte budget for ONE replay page. RUN_EVENT_PAYLOAD_CAP_BYTES bounds a
+    # single payload; this bounds the page, so a `limit` cannot multiply the
+    # two into a response nobody asked for. Read by GET /api/runs/{id}/events
+    # (which stops early and lets the client resume from the returned
+    # cursor) — a short page is already normal, so stopping early costs one
+    # extra round trip and nothing else. Far above any honest page:
+    # ordinary events are a couple of KB.
+    RUN_EVENTS_RESPONSE_CAP_BYTES: int = 4 * 1024 * 1024
     # Comma-separated extra Host-whitelist entries, e.g.
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.

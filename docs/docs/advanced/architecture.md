@@ -19,7 +19,7 @@ A single uvicorn process serves the REST API, the execution WebSocket, and the p
 |-----------|--------|
 | **Backend-authoritative** | `GET /api/nodes` returns every node definition. Adding a backend node makes it appear in the UI automatically — no frontend changes. |
 | **Single BaseNode component** | One React component renders all node types, parameterized by the backend definitions. |
-| **WebSocket execution** | `ws://host/ws/execution` streams per-node status; REST handles graph CRUD and output fetching. |
+| **WebSocket execution** | `ws://host/ws/execution` is a *view* over a server-owned run: it streams per-node status live and can replay a run's stored event log from any cursor, so a reconnecting tab catches up without gaps. Runs themselves are owned by the run service, not the socket. |
 | **Topological execution** | Kahn's algorithm for DAG sort + cycle detection, with parallel execution of independent nodes. |
 
 ## Execution flow

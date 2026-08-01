@@ -5,13 +5,16 @@ import { useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 
-// Mock the REST validation endpoint — the hook calls validateGraph() before
-// sending. Each test drives its resolved/rejected value.
+// Mock the REST layer — the hook calls validateGraph() before sending, and
+// getRun() on mount to decide whether to re-attach (#121). Each test drives
+// their resolved/rejected values.
 vi.mock('../api/rest', () => ({
   validateGraph: vi.fn(),
+  getRun: vi.fn(),
 }));
-import { validateGraph } from '../api/rest';
+import { getRun, validateGraph } from '../api/rest';
 const validateGraphMock = vi.mocked(validateGraph);
+const getRunMock = vi.mocked(getRun);
 
 // ── Fake WebSocket ───────────────────────────────────────────────────────────
 // The real ExecutionWebSocket opens a browser WebSocket. The hook only uses
@@ -42,8 +45,10 @@ function makeFakeWs(connected = true): FakeWs {
     }),
     send: vi.fn(),
     connect: vi.fn(async () => {}),
+    // Mirrors ExecutionWebSocket.dispatch: typed handlers, then '*'.
     emit: (type: string, data: unknown = {}) => {
       for (const h of handlers.get(type) ?? []) h(data);
+      for (const h of handlers.get('*') ?? []) h({ type, ...(data as object) });
     },
   };
   return ws;
@@ -68,6 +73,7 @@ function makeTab(id: string, overrides: Partial<any> = {}): any {
     outputSummaries: {},
     recordOutputs: true,
     lastRunId: null,
+    lastRunCursor: 0,
     activeSegment: null,
     segmentGroups: [],
     verboseMode: false,
@@ -86,6 +92,8 @@ function setTabs(tabs: any[], activeTabId = tabs[0]?.id) {
 beforeEach(() => {
   validateGraphMock.mockReset();
   validateGraphMock.mockResolvedValue({ valid: true, errors: [] });
+  getRunMock.mockReset();
+  getRunMock.mockResolvedValue(null);
   useToastStore.setState({ toasts: [] });
   // Default: one connected tab with a trigger edge so execute() proceeds.
   setTabs([
@@ -108,7 +116,7 @@ function tabById(id: string): any {
 // ── WS listener attachment (the useEffect) ────────────────────────────────────
 
 describe('useGraphExecution - WS listener lifecycle', () => {
-  it('attaches the five event handlers to existing tabs on mount', () => {
+  it('attaches every event handler to existing tabs on mount', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
 
@@ -119,6 +127,13 @@ describe('useGraphExecution - WS listener lifecycle', () => {
       'execution_error',
       'execution_start',
       'execution_stopped',
+      // #121: the attach acknowledgement (which carries the run's real
+      // status), protocol-level refusals, resuming after a dropped socket,
+      // and the run / cursor every frame carries.
+      'attached',
+      'error',
+      'reconnected',
+      '*',
     ]);
   });
 
@@ -128,7 +143,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     unmount();
     const offTypes = ws.off.mock.calls.map((c) => c[0]);
     expect(offTypes).toContain('node_status');
-    expect(ws.off).toHaveBeenCalledTimes(5);
+    expect(ws.off).toHaveBeenCalledTimes(9);
   });
 
   it('does not re-attach to a tab that is already attached', () => {
@@ -151,7 +166,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     act(() => {
       useTabStore.setState((s) => ({ tabs: [...s.tabs, t2] }));
     });
-    expect((t2.ws as FakeWs).on).toHaveBeenCalledTimes(5);
+    expect((t2.ws as FakeWs).on).toHaveBeenCalledTimes(9);
 
     // Remove t1 → its handlers must be released (detachTab path).
     const ws1 = tabById('t1') ? (tabById('t1').ws as FakeWs) : null;
@@ -159,7 +174,7 @@ describe('useGraphExecution - WS listener lifecycle', () => {
     act(() => {
       useTabStore.setState((s) => ({ tabs: s.tabs.filter((t) => t.id !== 't1'), activeTabId: 't2' }));
     });
-    expect(removedWs.off).toHaveBeenCalledTimes(5);
+    expect(removedWs.off).toHaveBeenCalledTimes(9);
   });
 });
 
@@ -589,7 +604,6 @@ describe('useGraphExecution - execute', () => {
     expect(payload.nodes.map((n: any) => n.id)).toEqual(['n1']); // note removed
     expect(payload.changed_nodes).toEqual(['n1']);
     expect(payload.record_outputs).toBe(true);
-    expect(typeof payload.run_id).toBe('string');
 
     useTabStore.setState({ getSerializedGraph: realSerialize } as any);
   });
@@ -649,43 +663,306 @@ describe('useGraphExecution - execute', () => {
     useUIStore.getState().setGlobalDevice('cpu'); // reset for other tests
   });
 
-  it('uses the crypto.randomUUID run id when available', async () => {
+  it('mints no run id of its own — the server owns it (#121)', async () => {
+    // Before #121 the client generated a UUID and the backend echoed it back.
+    // Now RunService creates the row, so its id is THE id: sending a second
+    // one would be a second identity for the same run.
     const ws = tabById('t1').ws as FakeWs;
     const { result } = renderHook(() => useGraphExecution());
 
     await act(async () => {
       await result.current.execute();
     });
-    const runId = ws.send.mock.calls[0][0].run_id;
-    // jsdom's crypto.randomUUID is present → not the fallback format.
-    expect(runId.startsWith('run-')).toBe(false);
-  });
+    expect('run_id' in ws.send.mock.calls[0][0]).toBe(false);
 
-  it('falls back to a timestamp run id when crypto.randomUUID is unavailable', async () => {
-    // Replace crypto with an object lacking randomUUID to hit the fallback.
-    vi.stubGlobal('crypto', {});
-    const ws = tabById('t1').ws as FakeWs;
-    const { result } = renderHook(() => useGraphExecution());
-
-    await act(async () => {
-      await result.current.execute();
-    });
-    expect(ws.send.mock.calls[0][0].run_id).toMatch(/^run-\d+-/);
+    // ...and the server's id is what the tab ends up holding.
+    act(() => ws.emit('execution_start', { run_id: 'server-run-1', cursor: 1 }));
+    expect(tabById('t1').lastRunId).toBe('server-run-1');
   });
 });
 
 // ── stop() ────────────────────────────────────────────────────────────────────
 
 describe('useGraphExecution - stop', () => {
-  it('sends a stop action to the active tab ws', () => {
+  it('sends an explicit cancel naming the run (#121)', () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+        lastRunId: 'run-7',
+      }),
+    ]);
     const ws = tabById('t1').ws as FakeWs;
     const { result } = renderHook(() => useGraphExecution());
     act(() => {
       result.current.stop();
     });
-    expect(ws.send).toHaveBeenCalledWith({ action: 'stop' });
+    // Cancel is the ONLY thing that stops a run now — detaching and closing
+    // the socket deliberately do not — so it has to name the run.
+    expect(ws.send).toHaveBeenCalledWith({ action: 'cancel', run_id: 'run-7' });
+  });
+
+  it('omits run_id when the tab has never seen one', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+    act(() => {
+      result.current.stop();
+    });
+    expect(ws.send).toHaveBeenCalledWith({ action: 'cancel' });
+  });
+
+  it('never names the PREVIOUS run when Stop beats the new run id', async () => {
+    // Stop is enabled the instant execute() sets `running`, but the new
+    // run's id only arrives with `attached`. Naming the old run here would
+    // cancel nothing — or, if retention had already pruned it, get back an
+    // `execution_stopped` that unsticks the UI while the new run trains on.
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+        lastRunId: 'previous-run',
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+    act(() => {
+      result.current.stop(); // before any `attached` frame
+    });
+
+    expect(ws.send).toHaveBeenLastCalledWith({ action: 'cancel' });
   });
 });
 
-// Keep waitFor import used in case of async settle needs.
-void waitFor;
+// ── Re-attach (#121) ──────────────────────────────────────────────────────────
+// The browser half of "close the tab, the run survives". On mount the hook
+// asks the server whether the run this tab was watching is still going and,
+// if so, attaches to replay its history and follow it live.
+//
+// NOTE: the hook remembers which (tab, run) pairs it has already resumed for
+// the lifetime of the page, so every test here uses a DISTINCT run id (the
+// StrictMode test deliberately reuses one).
+
+describe('useGraphExecution - re-attach on mount', () => {
+  function tabWatching(runId: string, overrides: Partial<any> = {}) {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+        lastRunId: runId,
+        ...overrides,
+      }),
+    ]);
+    return tabById('t1').ws as FakeWs;
+  }
+
+  it('attaches from cursor 0 when the run is still running', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-run', status: 'running' } as any);
+    const ws = tabWatching('r-run');
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() =>
+      expect(ws.send).toHaveBeenCalledWith({
+        action: 'attach',
+        run_id: 'r-run',
+        cursor: 0,
+      }),
+    );
+    expect(useToastStore.getState().toasts.length).toBe(1);
+    // The tab is NOT optimistically `running` — an attach the server refuses
+    // must not disable Run forever.
+    expect(tabById('t1').status).toBe('idle');
+
+    // The server's acknowledgement is what restores it, which is also what
+    // re-disables the Run button so a reload mid-training cannot start a
+    // second run against the same persistent weights.
+    act(() => ws.emit('attached', { run_id: 'r-run', cursor: 0, status: 'running' }));
+    expect(tabById('t1').status).toBe('running');
+  });
+
+  it('stays idle when the server refuses the attach', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-refused', status: 'running' } as any);
+    const ws = tabWatching('r-refused');
+
+    renderHook(() => useGraphExecution());
+    await waitFor(() => expect(ws.send).toHaveBeenCalled());
+
+    // The run was pruned between the status check and the attach.
+    act(() => ws.emit('error', { error: "run 'r-refused' not found" }));
+
+    expect(tabById('t1').status).toBe('idle');
+    const log = tabById('t1').logs.find((l: any) => l.type === 'error');
+    expect(log.message).toContain('not found');
+  });
+
+  it('attaches to a queued run too', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-queued', status: 'queued' } as any);
+    const ws = tabWatching('r-queued');
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(ws.send).toHaveBeenCalled());
+    expect(ws.send.mock.calls[0][0].action).toBe('attach');
+  });
+
+  it('does not attach to a run that already finished', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-done', status: 'succeeded' } as any);
+    const ws = tabWatching('r-done');
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-done'));
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(tabById('t1').status).toBe('idle');
+  });
+
+  it('does not attach to a run the server has never heard of', async () => {
+    // Retention pruned it, or it belongs to a previous install.
+    getRunMock.mockResolvedValue(null);
+    const ws = tabWatching('r-gone');
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-gone'));
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when the server is unreachable', async () => {
+    getRunMock.mockRejectedValue(new Error('offline'));
+    const ws = tabWatching('r-offline');
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-offline'));
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(tabById('t1').status).toBe('idle');
+  });
+
+  it('opens the socket first when it is closed', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-closed', status: 'running' } as any);
+    const ws = tabWatching('r-closed', { ws: makeFakeWs(false) });
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(ws.send).toHaveBeenCalled());
+    expect(ws.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up quietly when the socket will not open', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-nows', status: 'running' } as any);
+    const failing = makeFakeWs(false);
+    failing.connect.mockRejectedValueOnce(new Error('no server'));
+    const ws = tabWatching('r-nows', { ws: failing });
+
+    renderHook(() => useGraphExecution());
+
+    await waitFor(() => expect(ws.connect).toHaveBeenCalled());
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('attaches only once when the effect runs twice (StrictMode)', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-strict', status: 'running' } as any);
+    const ws = tabWatching('r-strict');
+
+    // Two mounts against the same tab+run: exactly what StrictMode does in
+    // dev, and a second attach would replay the whole log again.
+    const first = renderHook(() => useGraphExecution());
+    await waitFor(() => expect(ws.send).toHaveBeenCalledTimes(1));
+    first.unmount();
+    renderHook(() => useGraphExecution());
+    await waitFor(() => expect(getRunMock).toHaveBeenCalled());
+
+    expect(ws.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing for a tab that was never watching a run', async () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    await waitFor(() => expect(ws.on).toHaveBeenCalled());
+    expect(getRunMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('useGraphExecution - re-attach after a dropped socket', () => {
+  it('resumes from the last cursor it rendered', () => {
+    setTabs([
+      makeTab('t1', {
+        status: 'running',
+        lastRunId: 'run-live',
+        lastRunCursor: 42,
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('reconnected'));
+
+    // From the cursor, not from 0: the log panel still holds everything up
+    // to 42, and replaying it would double every line.
+    expect(ws.send).toHaveBeenCalledWith({
+      action: 'attach',
+      run_id: 'run-live',
+      cursor: 42,
+    });
+  });
+
+  it('ignores a reconnect when the tab is not running', () => {
+    setTabs([makeTab('t1', { status: 'idle', lastRunId: 'run-old' })]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('reconnected'));
+
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('ignores a reconnect when no run was ever watched', () => {
+    setTabs([makeTab('t1', { status: 'running', lastRunId: null })]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('reconnected'));
+
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('useGraphExecution - frame bookkeeping', () => {
+  it('tracks the run id and cursor carried by every frame', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('node_status', { run_id: 'run-9', cursor: 3, node_id: 'n1', status: 'running' }));
+    expect(tabById('t1').lastRunId).toBe('run-9');
+    expect(tabById('t1').lastRunCursor).toBe(3);
+
+    act(() => ws.emit('node_status', { run_id: 'run-9', cursor: 7, node_id: 'n1', status: 'completed' }));
+    expect(tabById('t1').lastRunCursor).toBe(7);
+  });
+
+  it('never rewinds the cursor on a stale frame', () => {
+    // A frame from a previous attachment can still be in the receive buffer
+    // when a new one starts; it must not move the resume point backwards.
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('node_status', { run_id: 'run-9', cursor: 7, node_id: 'n1', status: 'completed' }));
+    act(() => ws.emit('node_status', { run_id: 'run-9', cursor: 2, node_id: 'n1', status: 'running' }));
+    expect(tabById('t1').lastRunCursor).toBe(7);
+  });
+
+  it('restarts the cursor when a different run takes over the tab', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('node_status', { run_id: 'run-a', cursor: 9, node_id: 'n1', status: 'completed' }));
+    act(() => ws.emit('attached', { run_id: 'run-b', cursor: 0 }));
+    expect(tabById('t1').lastRunId).toBe('run-b');
+    expect(tabById('t1').lastRunCursor).toBe(0);
+  });
+});

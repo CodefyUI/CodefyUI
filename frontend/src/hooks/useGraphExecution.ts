@@ -2,16 +2,43 @@ import { useCallback, useEffect } from 'react';
 import { useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
-import { validateGraph } from '../api/rest';
+import { getRun, validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
 import { useI18n } from '../i18n';
-import type { ExecutionWebSocket } from '../api/ws';
+import { RECONNECTED_EVENT, type ExecutionWebSocket } from '../api/ws';
 
 type WsHandlerEntry = {
   ws: ExecutionWebSocket;
   type: string;
   handler: (data: unknown) => void;
 };
+
+/**
+ * Run statuses that are worth re-attaching to on page load. Everything else
+ * has a terminal row and nothing left to stream.
+ */
+const RESUMABLE = new Set(['running', 'queued']);
+
+/**
+ * (tabId, runId) pairs this page load has already tried to re-attach to.
+ *
+ * React StrictMode mounts every effect twice in development, and a second
+ * `attach` replaces the first subscription on the server — which would
+ * replay the whole log a second time and double every line in the panel.
+ * Module scope, because "once per page load" is exactly its lifetime.
+ */
+const reattached = new Set<string>();
+
+/** Connect if needed; false when the server is unreachable. */
+async function ensureConnected(ws: ExecutionWebSocket): Promise<boolean> {
+  if (ws.connected) return true;
+  try {
+    await ws.connect();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function useGraphExecution() {
   const getActiveTab = useTabStore((s) => s.getActiveTab);
@@ -172,12 +199,67 @@ export function useGraphExecution() {
         store.addTabLog(tabId, { message: 'Execution cancelled', type: 'info' });
       };
 
+      // The server acknowledged an attach. Its `status` is the run row's,
+      // so this — not an optimistic guess at request time — is what puts the
+      // tab into `running`: an attach that fails (the run was pruned between
+      // the status check and the request) simply never gets here, instead of
+      // leaving the tab stuck on "Running" with Run disabled forever.
+      const onAttached = (raw: unknown) => {
+        const data = raw as { status?: string };
+        if (data.status !== 'running' && data.status !== 'queued') return;
+        useTabStore.getState().setTabStatus(tabId, 'running');
+      };
+
+      // Protocol-level refusals (unknown run, bad cursor, no run service).
+      // Surfaced rather than swallowed: silence here is how a Stop that the
+      // server rejected looks exactly like a Stop that worked.
+      const onProtocolError = (raw: unknown) => {
+        const data = raw as { error?: string };
+        useTabStore.getState().addTabLog(tabId, {
+          message: `Execution server: ${data.error ?? 'unknown error'}`,
+          type: 'error',
+        });
+      };
+
+      // #121: every replayed or live frame carries the run it belongs to and
+      // its position in that run's event log. Tracking both here — once, for
+      // all types — is what lets a dropped socket resume mid-run instead of
+      // replaying history that is already on screen.
+      const onAnyFrame = (raw: unknown) => {
+        const data = raw as { run_id?: unknown; cursor?: unknown };
+        const store = useTabStore.getState();
+        if (typeof data.run_id === 'string' && data.run_id) {
+          store.setLastRunId(tabId, data.run_id);
+        }
+        if (typeof data.cursor === 'number') {
+          store.setLastRunCursor(tabId, data.cursor);
+        }
+      };
+
+      // The socket came back after a drop. The run kept going without us
+      // (that is the point of #120/#121), but its subscription died with the
+      // old socket, so nothing is being forwarded until we say so.
+      const onReconnected = () => {
+        const store = useTabStore.getState();
+        const tab = store.tabs.find((t) => t.id === tabId);
+        if (!tab || tab.status !== 'running' || !tab.lastRunId) return;
+        tab.ws.send({
+          action: 'attach',
+          run_id: tab.lastRunId,
+          cursor: tab.lastRunCursor,
+        });
+      };
+
       const entries: WsHandlerEntry[] = [
         { ws, type: 'node_status', handler: onNodeStatus },
         { ws, type: 'execution_complete', handler: onExecutionComplete },
         { ws, type: 'execution_error', handler: onExecutionError },
         { ws, type: 'execution_start', handler: onExecutionStart },
         { ws, type: 'execution_stopped', handler: onExecutionStopped },
+        { ws, type: 'attached', handler: onAttached },
+        { ws, type: 'error', handler: onProtocolError },
+        { ws, type: RECONNECTED_EVENT, handler: onReconnected },
+        { ws, type: '*', handler: onAnyFrame },
       ];
       for (const { type, handler } of entries) ws.on(type, handler);
       attached.set(tabId, entries);
@@ -199,6 +281,54 @@ export function useGraphExecution() {
     };
   }, []);
 
+  // ── Re-attach on load (#121) ────────────────────────────────────────────
+  // The headline behaviour of the run-service wave, from the browser's side:
+  // a run outlives the tab that started it, so on every page load we ask the
+  // server whether the run this tab was watching is still going, and pick it
+  // back up from the beginning of its log (the panel is empty after a
+  // reload, so there is nothing to avoid duplicating).
+  //
+  // Restoring `running` also re-disables the Run button, which matters more
+  // than it looks: without it a user could reload mid-training and start a
+  // SECOND run against the same persistent weights.
+  useEffect(() => {
+    let cancelled = false;
+
+    const resume = async (tab: TabState) => {
+      const runId = tab.lastRunId;
+      if (!runId) return;
+      const key = `${tab.id}:${runId}`;
+      if (reattached.has(key)) return;
+      reattached.add(key);
+
+      let run;
+      try {
+        run = await getRun(runId);
+      } catch {
+        return; // server unreachable — nothing to re-attach to
+      }
+      if (cancelled || !run || !RESUMABLE.has(run.status)) return;
+      if (!(await ensureConnected(tab.ws)) || cancelled) return;
+
+      // The tab goes back to `running` when the server ACKNOWLEDGES the
+      // attach (see onAttached), not here — an attach the server refuses
+      // must not leave the tab permanently disabled, and `lastRunId` is
+      // persisted precisely while the status is `running`, so a wrong guess
+      // would be written back and retried on every future page load.
+      tab.ws.send({ action: 'attach', run_id: runId, cursor: 0 });
+      useToastStore.getState().addToast(
+        useI18n.getState().t('execution.reattached'),
+        'info',
+      );
+    };
+
+    for (const tab of useTabStore.getState().tabs) void resume(tab);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const execute = useCallback(async () => {
     const tab = getActiveTab();
 
@@ -216,13 +346,9 @@ export function useGraphExecution() {
 
     const ws = tab.ws;
 
-    if (!ws.connected) {
-      try {
-        await ws.connect();
-      } catch {
-        addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
-        return;
-      }
+    if (!(await ensureConnected(ws))) {
+      addTabLog(tab.id, { message: 'Failed to connect to execution server', type: 'error' });
+      return;
     }
 
     const graph = getSerializedGraph();
@@ -253,19 +379,27 @@ export function useGraphExecution() {
     const changedNodes = getDirtyWithDownstream();
     clearDirty();
 
-    // Teaching Inspector: generate a run id so the backend can key captured
-    // outputs, and pass the per-tab Record toggle state.
-    const runId =
-      typeof crypto !== 'undefined' && 'randomUUID' in crypto
-        ? crypto.randomUUID()
-        : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // Forget the previous run BEFORE submitting. Stop is enabled the moment
+    // the status flips to `running`, but the new run's id only arrives with
+    // `attached`, so a Stop clicked in that window would otherwise name the
+    // PREVIOUS run — cancelling nothing (or, if retention had pruned it,
+    // getting an `execution_stopped` that unsticks the UI while the new run
+    // keeps training). With no id, `cancel` falls back to the server's own
+    // attachment, which is already correct because the socket handles
+    // messages serially: `execute` finishes attaching before `cancel` is
+    // read.
+    useTabStore.getState().setLastRunId(tab.id, null);
 
+    // No client-minted run id since #121: the RUN is created server-side by
+    // RunService, and its `exec_runs.id` is the one id — the execution id,
+    // the captured-outputs key and the handle `attach` takes. It comes back
+    // on `execution_start` and lands in `lastRunId`, which is what the
+    // Inspector reads and what a re-attach after F5 resumes from.
     ws.send({
       action: 'execute',
       nodes: execNodes,
       edges: graph.edges,
       presets: graph.presets,
-      run_id: runId,
       record_outputs: tab.recordOutputs,
       // A1: verbose step-trace mode
       verbose_mode: tab.verboseMode,
@@ -281,9 +415,16 @@ export function useGraphExecution() {
     });
   }, [getActiveTab, getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);
 
+  // Explicit cancel, naming the run (#121). Closing the tab, navigating away
+  // and losing the connection all leave the run alone now — this is the only
+  // thing that stops it, so it has to say WHICH run rather than "whatever
+  // this socket happens to be doing".
   const stop = useCallback(() => {
     const tab = getActiveTab();
-    tab.ws.send({ action: 'stop' });
+    tab.ws.send({
+      action: 'cancel',
+      ...(tab.lastRunId ? { run_id: tab.lastRunId } : {}),
+    });
   }, [getActiveTab]);
 
   return { execute, stop };

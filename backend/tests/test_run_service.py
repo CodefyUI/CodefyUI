@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from app.core.cache import ExecutionCache
 from app.core.db import Database
 from app.core.node_base import (
     MEDIA_IMAGE,
@@ -39,8 +40,12 @@ from app.core.run_service import (
     EVENT_RUN_FAILED,
     EVENT_RUN_STARTED,
     EVENT_RUN_STOPPED,
+    LANE_INTERACTIVE,
+    OPTION_KEYS,
     STOP_REASON_CANCELLED,
     STOP_REASON_INTERRUPTED,
+    TRUNCATION_MARKER,
+    InteractiveSession,
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
@@ -193,9 +198,17 @@ class _RunBoomNode(BaseNode):
     def define_outputs(cls) -> list[PortDefinition]:
         return [PortDefinition(name="value", data_type=DataType.ANY)]
 
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        # Pads the message, for the "an enormous error is still readable"
+        # path in cap_event_payload.
+        return [ParamDefinition(name="size", param_type=ParamType.INT,
+                                default=0)]
+
     def execute(self, inputs: dict[str, Any],
                 params: dict[str, Any]) -> dict[str, Any]:
-        raise RuntimeError("boom: intentional run-service test failure")
+        raise RuntimeError("boom: intentional run-service test failure"
+                           + "x" * int(params.get("size", 0)))
 
 
 _TEST_NODES = {
@@ -427,18 +440,37 @@ async def test_recovery_runs_before_retention(store, tmp_path):
 # ── options normalization ─────────────────────────────────────────────────
 
 
+#: What ``normalize_options`` fills in when the caller says nothing. Note
+#: ``weights_persistent`` is False here while ``ExecutionContext``'s own
+#: default is True: a server-owned run is isolated unless someone asks.
+_DEFAULT_OPTIONS = {
+    "device": "cpu", "seed": None, "lane": "queued", "graph_id": "",
+    "error_mode": "fail_fast", "max_retries": 0, "record_outputs": False,
+    "verbose": False, "weights_persistent": False, "backward_mode": False,
+    "auto_backward": False,
+}
+
+
 def test_options_defaults():
-    assert normalize_options(None) == {
-        "device": "cpu", "seed": None, "record_outputs": False,
-        "lane": "queued",
-    }
+    assert normalize_options(None) == _DEFAULT_OPTIONS
     assert normalize_options({}) == normalize_options(None)
 
 
 def test_options_accept_every_documented_key():
-    assert normalize_options({
+    """Every key of the vocabulary round-trips; none is silently dropped."""
+    asked = {
         "device": " CUDA ", "seed": 7, "record_outputs": True, "lane": "gpu",
-    }) == {"device": "cuda", "seed": 7, "record_outputs": True, "lane": "gpu"}
+        "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
+        "backward_mode": True, "auto_backward": True,
+        "error_mode": "retry", "max_retries": 3,
+    }
+    assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
+    assert normalize_options(asked) == {**asked, "device": "cuda"}
+
+
+@pytest.mark.parametrize("lane", [LANE_INTERACTIVE, "queued", "gpu"])
+def test_lane_is_carried_through_verbatim(lane):
+    assert normalize_options({"lane": lane})["lane"] == lane
 
 
 @pytest.mark.parametrize("device", ["cpu", "auto", "cuda", "cuda:1", "mps",
@@ -462,6 +494,18 @@ def test_options_accept_the_known_device_vocabulary(device):
     {"lane": ""},
     {"lane": "x" * 65},
     {"record_outputs": "yes"},
+    {"verbose": "yes"},
+    {"weights_persistent": 1},      # an int is not a bool
+    {"backward_mode": None},
+    {"auto_backward": "true"},
+    {"graph_id": 7},
+    {"graph_id": "x" * 129},
+    {"error_mode": "fail-fast"},    # VALUE typo -> loud, not "continue"
+    {"error_mode": None},
+    {"max_retries": -1},
+    {"max_retries": 11},
+    {"max_retries": True},          # a bool is not a count
+    {"max_retries": "3"},
     ["not", "a", "dict"],
 ])
 def test_options_reject_bad_input(bad):
@@ -493,13 +537,97 @@ async def test_submit_persists_normalized_options_and_snapshot(store, service):
 
     record = await store.get_run(submitted.run_id)
     assert record.name == "demo"
-    assert record.options == {"device": "cpu", "seed": 11,
-                              "record_outputs": False, "lane": "queued"}
+    assert record.options == {**_DEFAULT_OPTIONS, "seed": 11}
     # queue_key carries the RESOLVED device (mark_running's contract).
     assert record.queue_key == "cpu"
     snapshot = await store.get_graph_snapshot(submitted.run_id)
     assert [n["id"] for n in snapshot["nodes"]] == [n["id"] for n in graph["nodes"]]
     assert snapshot["presets"] == []
+
+
+# ── the interactive lane (#121) ───────────────────────────────────────────
+
+
+async def test_a_session_is_refused_on_any_other_lane(service):
+    """Statefulness must stay answerable from the stored row.
+
+    A session on a ``queued`` run would mean a row that says "isolated"
+    driving an execution that shares an nn.Module with a browser tab.
+    """
+    with pytest.raises(RunSubmitError) as excinfo:
+        await service.submit(_graph(), options={"lane": "queued"},
+                             session=InteractiveSession())
+    assert LANE_INTERACTIVE in str(excinfo.value)
+
+
+async def test_a_server_owned_run_is_isolated_even_when_it_asks_not_to_be(
+    store, service,
+):
+    """``weights_persistent`` alone cannot make a queued run stateful.
+
+    Isolation is a capability question, not a flag question: without a
+    session there is no module store, so ``StatefulModuleMixin`` rebuilds
+    every module regardless of what the options say.
+    """
+    submitted = await service.submit(
+        _graph(), options={"weights_persistent": True})
+    assert service._runs[submitted.run_id].context.node_state_store is None
+    await _await_terminal(store, submitted.run_id)
+
+
+async def test_the_interactive_lane_lends_its_cache_to_the_run(store, service):
+    """Two submits sharing one cache: the second is served from it.
+
+    This is the canvas's editing loop — hit Run, tweak one node, hit Run
+    again and only the changed subtree re-executes — expressed at the level
+    the service actually implements it.
+    """
+    cache = ExecutionCache()
+    options = {"lane": LANE_INTERACTIVE}
+
+    first = await service.submit(_graph(), options=options,
+                                 session=InteractiveSession(cache=cache))
+    await _await_terminal(store, first.run_id)
+    second = await service.submit(_graph(), options=options,
+                                  session=InteractiveSession(cache=cache))
+    await _await_terminal(store, second.run_id)
+
+    def statuses(run_events):
+        return {(e.payload["node_id"], e.payload["status"])
+                for e in run_events if e.type == EVENT_NODE_STATUS}
+
+    assert ("src", "completed") in statuses(await store.get_events(first.run_id))
+    assert ("src", "cached") in statuses(await store.get_events(second.run_id))
+
+
+async def test_changed_nodes_forces_a_re_run_past_the_cache(store, service):
+    cache = ExecutionCache()
+    options = {"lane": LANE_INTERACTIVE}
+    first = await service.submit(_graph(), options=options,
+                                 session=InteractiveSession(cache=cache))
+    await _await_terminal(store, first.run_id)
+    second = await service.submit(
+        _graph(), options=options,
+        session=InteractiveSession(cache=cache, changed_nodes=("src",)))
+    await _await_terminal(store, second.run_id)
+
+    statuses = {e.payload["status"]
+                for e in await store.get_events(second.run_id)
+                if e.type == EVENT_NODE_STATUS and e.payload["node_id"] == "src"}
+    assert "cached" not in statuses
+    assert "completed" in statuses
+
+
+async def test_error_mode_reaches_the_engine(store, service):
+    """``continue`` finishes the run instead of failing it at the first node."""
+    submitted = await service.submit(_graph("_RunBoom"),
+                                     options={"error_mode": "continue"})
+    record = await _await_terminal(store, submitted.run_id)
+    assert record.status == STATUS_SUCCEEDED
+    statuses = {(e.payload["node_id"], e.payload["status"])
+                for e in await store.get_events(submitted.run_id)
+                if e.type == EVENT_NODE_STATUS}
+    assert ("mid", "error") in statuses     # the node still reported failure
 
 
 async def test_run_id_is_also_the_execution_id(store, service):
@@ -659,6 +787,27 @@ async def test_long_poll_wakes_on_the_next_event(store, service):
 # ── event payload bounds ──────────────────────────────────────────────────
 
 
+def test_the_payload_cap_comes_from_the_setting(store):
+    """ONE source for the ceiling — no module copy to drift out of step.
+
+    #120 shipped an independent ``128 * 1024`` in this module alongside the
+    setting, so raising ``CODEFYUI_RUN_EVENT_PAYLOAD_CAP_BYTES`` moved only
+    the service the lifespan built. A default ARGUMENT would not have fixed
+    it either: it is evaluated at import time.
+    """
+    from app.config import settings
+
+    original = settings.RUN_EVENT_PAYLOAD_CAP_BYTES
+    settings.RUN_EVENT_PAYLOAD_CAP_BYTES = 777
+    try:
+        assert RunService(store)._event_payload_cap_bytes == 777
+        # An explicit argument still wins, for tests that need a tiny cap.
+        assert RunService(store, event_payload_cap_bytes=5) \
+            ._event_payload_cap_bytes == 5
+    finally:
+        settings.RUN_EVENT_PAYLOAD_CAP_BYTES = original
+
+
 def test_cap_leaves_ordinary_payloads_untouched():
     payload = {"node_id": "n", "status": "completed", "outputs": [
         {"output_kind": "text", "text": "hello"},
@@ -687,13 +836,73 @@ def test_cap_elides_an_oversized_entry_but_keeps_its_identity():
     assert capped["node_id"] == "n"              # envelope survives
 
 
+def test_cap_keeps_the_head_of_an_oversized_error_string():
+    """#121: the marker fallback used to swallow the error text entirely.
+
+    An ``execution_error`` carrying a 200 KB traceback has no ``outputs`` to
+    elide, so it collapsed straight to the marker and the user got a red
+    banner with NO message — on the one payload where the text IS the point.
+    """
+    capped = cap_event_payload(
+        {"error": "RuntimeError: boom\n" + "x" * 5000, "run_id": "r"},
+        cap_bytes=500)
+    assert json_size(capped) <= 500
+    assert capped["run_id"] == "r"
+    assert "elided" not in capped, "the marker fallback should not be reached"
+    assert capped["error"].startswith("RuntimeError: boom\n")
+    assert capped["error"].endswith(TRUNCATION_MARKER)
+
+
+def test_cap_spends_its_string_budget_where_it_is_needed():
+    """Short strings survive intact; the giant one pays for the whole cap."""
+    capped = cap_event_payload(
+        {"status": "error", "node_id": "trainer", "error": "E" * 5000},
+        cap_bytes=400)
+    assert json_size(capped) <= 400
+    assert capped["status"] == "error"
+    assert capped["node_id"] == "trainer"
+    assert capped["error"].endswith(TRUNCATION_MARKER)
+    assert len(capped["error"]) > 100          # a useful head, not a stub
+
+
+def test_cap_truncates_non_ascii_strings_by_BYTES_not_characters():
+    """``ensure_ascii`` makes one CJK char cost six bytes on the wire.
+
+    Slicing by character count would leave the payload over cap and drop it
+    into the marker fallback — the exact failure this replaces, just harder
+    to notice because it only fires for non-English error messages.
+    """
+    capped = cap_event_payload({"error": "錯誤" * 2000}, cap_bytes=500)
+    assert json_size(capped) <= 500
+    assert capped["error"].startswith("錯誤")
+    assert capped["error"].endswith(TRUNCATION_MARKER)
+
+
 def test_cap_falls_back_to_a_marker_when_there_is_nothing_to_trim():
-    capped = cap_event_payload({"error": "x" * 5000, "run_id": "r"},
-                               cap_bytes=500)
+    """No entries to elide, no strings to shorten: identity only."""
+    capped = cap_event_payload(
+        {"weights": [1.25] * 5000, "run_id": "r", "status": "completed"},
+        cap_bytes=500)
     assert capped["elided"] is True
     assert capped["run_id"] == "r"               # identity kept
-    assert "error" not in capped
+    assert capped["status"] == "completed"
+    assert "weights" not in capped
     assert json_size(capped) <= 500
+
+
+async def test_an_oversized_failure_keeps_its_message_in_the_log(store):
+    """End to end: a run that fails enormously is still diagnosable."""
+    svc = RunService(store, event_payload_cap_bytes=1000)
+    try:
+        submitted = await svc.submit(_graph("_RunBoom", params={"size": 9000}))
+        await _await_terminal(store, submitted.run_id)
+        events = await store.get_events(submitted.run_id)
+        failure = next(e for e in events if e.type == EVENT_RUN_FAILED)
+        assert failure.payload["error"].startswith("boom: intentional")
+        assert failure.payload["error"].endswith(TRUNCATION_MARKER)
+        assert json_size(failure.payload) <= 1000
+    finally:
+        await svc.shutdown()
 
 
 async def test_an_oversized_image_event_is_stored_elided(store):

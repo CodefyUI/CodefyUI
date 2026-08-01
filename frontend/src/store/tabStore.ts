@@ -95,6 +95,11 @@ export interface TabState {
   // Teaching Inspector state
   recordOutputs: boolean;
   lastRunId: string | null;
+  // #121: highest event cursor this tab has rendered for `lastRunId`. Used
+  // to resume an attach after a dropped socket without replaying history
+  // that is already on screen. In-memory only — a page reload starts with
+  // an empty log panel, so it re-attaches from 0 and replays everything.
+  lastRunCursor: number;
   activeSegment: SegmentGroup | null;
   segmentGroups: SegmentGroup[];
   // A1: verbose / step-trace mode
@@ -131,6 +136,7 @@ function createTabState(id: string, name: string): TabState {
     outputSummaries: {},
     recordOutputs: true,
     lastRunId: null,
+    lastRunCursor: 0,
     activeSegment: null,
     segmentGroups: [],
     verboseMode: false,
@@ -234,7 +240,8 @@ interface TabStoreState {
 
   // Teaching Inspector actions
   toggleRecord: () => void;
-  setLastRunId: (tabId: string, runId: string) => void;
+  setLastRunId: (tabId: string, runId: string | null) => void;
+  setLastRunCursor: (tabId: string, cursor: number) => void;
   setActiveSegment: (segment: SegmentGroup | null) => void;
   addSegmentGroup: (segment: SegmentGroup) => void;
   removeSegmentGroup: (id: string) => void;
@@ -378,6 +385,13 @@ interface PersistedTab {
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
   recordOutputs?: boolean;
+  /**
+   * #121: the run this tab was watching, persisted ONLY while it might
+   * still be alive (see saveTabs). On the next load the hook asks the
+   * server whether it really is, and re-attaches if so — which is how
+   * "close the tab, reopen it, the training is still going" works.
+   */
+  lastRunId?: string;
   verboseMode?: boolean;
   graphId?: string;
   weightsPersistent?: boolean;
@@ -409,6 +423,14 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
         nodes: stripNodeSecretsForPersist(t.nodes),
         edges: t.edges,
         segmentGroups: t.segmentGroups,
+        // Only while the run might still be in flight, so a finished run's
+        // id never survives a reload: the Inspector's captured outputs live
+        // in a process-lifetime store, and pointing it at a run whose
+        // outputs are gone would replace "not run yet" with an empty view.
+        // Keeps localStorage byte-identical for an idle tab, too.
+        ...(t.status === 'running' && t.lastRunId
+          ? { lastRunId: t.lastRunId }
+          : {}),
         recordOutputs: t.recordOutputs,
         verboseMode: t.verboseMode,
         graphId: t.graphId,
@@ -452,6 +474,7 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
             nodes: t.nodes ?? [],
             edges: t.edges ?? [],
             segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
+            lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
             recordOutputs: t.recordOutputs ?? true,
             verboseMode: t.verboseMode ?? false,
             // Preserve persisted graphId — required so backend NodeStateStore
@@ -1333,9 +1356,34 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       })),
     }),
 
+  // Both setters below are called on EVERY WebSocket frame (#121 tracks the
+  // run and cursor each one carries), so both short-circuit to an untouched
+  // `tabs` array when there is nothing to change. `updateTab` maps, and a
+  // map always yields a new array and a new tab object — which every
+  // component selecting on those would see as a change, once per frame, for
+  // no reason.
   setLastRunId: (tabId, runId) =>
-    set({
-      tabs: updateTab(get().tabs, tabId, () => ({ lastRunId: runId })),
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab || tab.lastRunId === runId) return {};
+      // A new run always starts the cursor over: cursors are per run, so
+      // carrying the previous one forward would make a resume skip the
+      // beginning of the new run's log.
+      return {
+        tabs: updateTab(state.tabs, tabId, () => ({
+          lastRunId: runId,
+          lastRunCursor: 0,
+        })),
+      };
+    }),
+
+  setLastRunCursor: (tabId, cursor) =>
+    set((state) => {
+      // Monotonic: frames arrive in cursor order, but a stale frame from a
+      // previous attachment must never rewind the resume point.
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab || cursor <= tab.lastRunCursor) return {};
+      return { tabs: updateTab(state.tabs, tabId, () => ({ lastRunCursor: cursor })) };
     }),
 
   setActiveSegment: (segment) =>

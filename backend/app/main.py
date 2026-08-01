@@ -307,11 +307,14 @@ async def lifespan(app: FastAPI):
     # ── Run Service (#120): server-owned graph runs ────────────────────
     # Owns its own asyncio.Tasks, so it must be created after the DB and
     # drained before it closes (see the shutdown block below).
+    # The per-event payload cap is NOT passed: RunService reads
+    # settings.RUN_EVENT_PAYLOAD_CAP_BYTES itself, so there is one place the
+    # ceiling comes from rather than a lifespan-only override that leaves
+    # every other construction of the service on a different number.
     run_service = RunService(
         RunStore(db),
         output_store=app.state.run_output_store,
         retention_keep_last=settings.RUN_RETENTION_KEEP_LAST,
-        event_payload_cap_bytes=settings.RUN_EVENT_PAYLOAD_CAP_BYTES,
     )
     app.state.run_service = run_service
     # Order matters. Recovery FIRST: nothing resumes a `running` row after a

@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.api.ws_execution import _summarize_single
+from app.core.output_entries import _summarize_single
 
 
 @pytest.fixture
