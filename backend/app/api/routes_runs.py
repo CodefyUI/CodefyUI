@@ -56,8 +56,9 @@ from ..core.run_store import (
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
-#: Upper bound for one queue-position sweep. A queue deeper than this is
-#: #123's problem, not a reason to scan the whole table on every poll.
+#: Upper bound for one queue-position sweep. Deeper than this and a run's
+#: exact rank stops being actionable; scanning the whole table on every poll
+#: of the Runs panel to produce it never was.
 _QUEUE_SCAN_LIMIT = 1000
 
 _CSV_COLUMNS = ("run_id", "node_id", "name", "step", "value", "ts")
@@ -86,20 +87,44 @@ class SubmitRunRequest(BaseModel):
 
 async def _queue_positions(service: RunService,
                            records: list[RunRecord]) -> dict[str, int]:
-    """1-based position of each QUEUED run, oldest first.
+    """1-based position of each QUEUED run WITHIN ITS OWN DEVICE QUEUE.
 
-    Costs one extra query, and only when a queued row is actually present —
-    which today is never (every submit starts immediately). The field exists
-    from day one anyway so #123 can fill the queue without changing the
-    response shape out from under a client.
+    Per ``queue_key``, not global, because that is what the scheduler is
+    (#123): a CPU run behind two other CPU runs is third in line even when
+    six CUDA runs were submitted before it, and a global rank would tell it
+    "position 9" for a queue it is not in.
+
+    Computed from the ROWS rather than asked of the in-memory scheduler, and
+    that is deliberate. The two agree by construction — a run is enqueued in
+    submit order, and ``created_at, rowid`` IS submit order — while the rows
+    also cover what the scheduler cannot see: a ``queued`` orphan left by a
+    process that died before ``recover_interrupted`` ran still gets an
+    honest place in line instead of a null.
+
+    Costs one extra indexed query per request, and only when a queued row is
+    actually present — nothing to pay while the queues are empty, which is
+    the common case, and one bounded scan when the Runs panel is polling a
+    backlog.
+
+    Past ``_QUEUE_SCAN_LIMIT`` the answer is ``None`` for everyone rather
+    than a number. ``list_runs`` is NEWEST-first, so a truncated scan drops
+    the OLDEST rows — the ones actually at the front — and every position
+    computed from what is left would be confidently too small. "We cannot
+    say" is the honest answer; a wrong rank is worse than no rank.
     """
     if not any(record.status == STATUS_QUEUED for record in records):
         return {}
     queued = await service.store.list_runs(status=STATUS_QUEUED,
                                            limit=_QUEUE_SCAN_LIMIT)
+    if len(queued) >= _QUEUE_SCAN_LIMIT:
+        return {}
     # list_runs is newest-first; a queue is served oldest-first.
-    return {record.id: index
-            for index, record in enumerate(reversed(queued), start=1)}
+    depth: dict[str | None, int] = {}
+    positions: dict[str, int] = {}
+    for record in reversed(queued):
+        depth[record.queue_key] = depth.get(record.queue_key, 0) + 1
+        positions[record.id] = depth[record.queue_key]
+    return positions
 
 
 def _run_payload(record: RunRecord, *, queue_position: int | None,
@@ -152,11 +177,17 @@ async def _require_run(service: RunService, run_id: str) -> RunRecord:
 
 @router.post("")
 async def submit_run(body: SubmitRunRequest, request: Request):
-    """Persist and start a run. Returns as soon as it is scheduled.
+    """Persist and schedule a run. Returns as soon as it is scheduled.
 
     Deliberately does NOT wait for the run: that is the entire point of the
     endpoint. Progress is read back through ``/events`` (long-pollable) and
     the row itself.
+
+    ``status`` is ``running`` or ``queued`` — the latter when the run's
+    device is already at its concurrency limit and the run joined that
+    device's FIFO (#123). Poll the row, or long-poll ``/events``, either
+    way; a queued run parks the long poll properly instead of returning
+    empty pages.
     """
     service = _get_service(request)
     try:

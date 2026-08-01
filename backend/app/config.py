@@ -86,6 +86,35 @@ class Settings(BaseSettings):
     # extra round trip and nothing else. Far above any honest page:
     # ordinary events are a couple of KB.
     RUN_EVENTS_RESPONSE_CAP_BYTES: int = 4 * 1024 * 1024
+    # ── Run queue admission (#123) ─────────────────────────────────────
+    # How many QUEUED-lane runs may execute at once on one device. The
+    # queue key is the RESOLVED device string ("cpu", "cuda:0", "mps"), so
+    # every accelerator gets its own FIFO and a six-hour CUDA job never
+    # blocks a CPU run.
+    #
+    # One is the honest GPU default: a second concurrent run on the same
+    # card competes for the same VRAM, and the usual outcome of guessing
+    # otherwise is a CUDA OOM forty minutes in rather than a slower run.
+    # CPU gets two because the failure mode there is contention, not death
+    # — and a machine with cores to spare should use them. Note this is
+    # RUNS per device, orthogonal to MAX_PARALLEL_NODES below (nodes within
+    # one run); the two multiply.
+    RUN_QUEUE_MAX_CONCURRENT_GPU: int = 1
+    RUN_QUEUE_MAX_CONCURRENT_CPU: int = 2
+    # Per-key overrides, e.g. "cuda:0=2,cuda:1=1,cpu=8". A str, not a
+    # dict[str, int]: pydantic mapping env vars demand JSON-in-env quote
+    # hell, the same reason EXTRA_ALLOWED_HOSTS below is a string. Split on
+    # the LAST '=' so a key may contain a colon; malformed entries are
+    # ignored with a warning rather than failing startup.
+    RUN_QUEUE_MAX_CONCURRENT: str = ""
+    # Hard ceiling on concurrent INTERACTIVE-lane runs (the canvas). That
+    # lane bypasses the per-device FIFO on purpose — a classroom demo must
+    # not wait behind a training job — so this is the only thing standing
+    # between "every open tab clicks Run" and a VRAM exhaustion. A submit
+    # over the cap is REFUSED (503), never parked: the canvas has a live
+    # user in front of it who can retry, and a silently queued click looks
+    # exactly like a hang.
+    RUN_INTERACTIVE_MAX_CONCURRENT: int = 2
     # Comma-separated extra Host-whitelist entries, e.g.
     # "192.168.1.20:8000,mybox:8000". A str, not list[str]: pydantic list
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
@@ -119,6 +148,14 @@ class Settings(BaseSettings):
     LOG_DIR: Path | None = None
     LOG_JSON: bool = False
 
+    # Node-level fan-out WITHIN one run: graph_engine builds an
+    # asyncio.Semaphore(context.max_workers) over the ready set, and
+    # RunService fills that field from here. Live, not vestigial — #123
+    # looked at deleting it as dead and found the wiring
+    # (config -> RunService._start -> ExecutionContext.max_workers ->
+    # graph_engine). Deliberately NOT the same knob as
+    # RUN_QUEUE_MAX_CONCURRENT_* above: that one bounds RUNS per device,
+    # this one bounds NODES inside a single run.
     MAX_PARALLEL_NODES: int = 4
 
     @model_validator(mode="after")

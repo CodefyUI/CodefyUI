@@ -50,7 +50,7 @@ Click **Stop** to cancel an in-flight run. **Stop is the only thing that cancels
 
 Closing the browser tab, navigating away, or losing the connection no longer stops anything: the run lives on the server, not in the socket. When you come back, the tab reconnects to the run it was watching, replays everything you missed into the results panel, and carries on following it live — so a long training job survives a reload, a laptop lid, or a flaky Wi-Fi hop.
 
-Cancelling is cooperative rather than immediate: a node already mid-epoch finishes that epoch first, because there is no safe way to interrupt arbitrary node code partway through. The run then stops at the next node boundary and is recorded as `cancelled`.
+Cancelling is cooperative rather than immediate, because there is no safe way to interrupt arbitrary node code partway through. The long-running nodes check for it every batch, step or item — a training loop stops within one batch and writes an interrupt checkpoint on its way out — and every other node runs to the end of its current call, after which the run stops at the next node boundary. Either way it is recorded as `cancelled`.
 
 ## Beyond the browser
 

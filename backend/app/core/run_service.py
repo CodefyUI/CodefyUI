@@ -12,9 +12,9 @@ FastAPI, no HTTP — the ``db.py``/``api_contract.py`` precedent), constructed
 once in the lifespan and reachable at ``app.state.run_service``. Its
 responsibilities, and nothing else:
 
-- **submit** — persist the run (``RunStore``), then start it. Between those
-  two steps is the seam #123's FIFO queue slots into; in THIS issue every
-  submitted run starts immediately.
+- **submit** — persist the run (``RunStore``), then SCHEDULE it. Since #123
+  those are genuinely two steps: a queued-lane run joins the FIFO for its
+  device and starts when that device has a free slot.
 - **observe** — every engine callback is appended to ``exec_run_events`` and
   fanned out to live subscribers; scalar progress values are batched into
   ``exec_run_metrics``. Since #122 the same path also carries what nodes
@@ -36,15 +36,54 @@ function-local import of the #117 output-entry builders out of
 Lanes
 -----
 ``options["lane"]`` labels where a run came from. ``queued`` (the default)
-is a server-owned, fully isolated run — the shape #123's FIFO queue will
-schedule. ``interactive`` is the canvas: a live editor session that expects
-its ``nn.Module`` weights, its execution cache and its captured outputs to
+is a server-owned, fully isolated run — the shape the FIFO queue schedules.
+``interactive`` is the canvas: a live editor session that expects its
+``nn.Module`` weights, its execution cache and its captured outputs to
 carry across Run clicks. Those things are process-local by nature and
 cannot be reconstructed from a stored row, so they do NOT ride in
 ``options``; the submitter hands them over as an :class:`InteractiveSession`
 and the service refuses one on any other lane. Isolation is therefore the
 DEFAULT and statefulness is a capability you must pass in, rather than a
 flag anyone can set.
+
+Scheduling (#123)
+-----------------
+Two admission policies, because the two lanes fail in opposite directions.
+
+``queued`` runs join a **per-device FIFO**. The queue key is the resolved
+device in canonical form (``canonical_queue_key(resolve_device(...))``:
+``cpu``, ``cuda:0``, ``mps:0`` — the canonicalisation is what stops
+``cuda`` and ``cuda:0`` being two queues over one card), so a six-hour
+CUDA job and a CPU preprocessing run never wait on each
+other, and two CUDA jobs on one card never fight over its VRAM. Each key
+admits :data:`QueueLimits` runs at once — 1 for an accelerator, 2 for
+``cpu`` — and everything else waits in submit order. Waiting is CHEAP: a
+pending run holds a run id, its options and a wake-up channel, and nothing
+else; its graph is re-read from ``exec_runs.graph_snapshot`` at promotion,
+so a queue two hundred deep costs no more memory than the rows already do.
+
+``interactive`` runs BYPASS the FIFO entirely — a classroom demo must not
+sit behind a training job — and are bounded two other ways instead:
+
+- a hard cap (``RUN_INTERACTIVE_MAX_CONCURRENT``, default 2) on how many
+  may be in flight at once, and
+- **one run per editor session**, identified by the socket's
+  ``ExecutionCache`` (see ``RunService._session_key`` — the session WRAPPER
+  is rebuilt per message, the cache is not). Two concurrent runs behind one
+  cache would serve each other half-built tensors under a matching key —
+  the hazard #121 disclosed and left to the frontend's disabled Run button.
+  It is refused here, structurally, so no client can provoke it.
+
+Both refusals raise :class:`RunServiceUnavailable` (REST 503, and an
+``execution_error`` frame on the canvas) rather than parking the run: a
+live user can retry, and a click that silently joined an invisible queue
+is indistinguishable from a hang.
+
+Note what interactive bypass does NOT mean: an interactive run still uses
+its device, so it can push a card past that device's queued-lane cap. That
+is the deliberate trade — the FIFO exists so unattended work is orderly,
+not so a device is exclusive.
+
 
 Ids
 ---
@@ -62,6 +101,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, NamedTuple
@@ -160,14 +200,16 @@ OPTION_KEYS = frozenset({
     "error_mode", "max_retries",
 })
 
-#: Default lane. Named for #123's queue; no queue exists yet, so today it is
-#: a label carried through to ``exec_runs.options`` unchanged.
+#: Default lane, and the one the per-device FIFO schedules. Every lane that
+#: is not :data:`LANE_INTERACTIVE` is scheduled this way — an unrecognised
+#: lane label queues rather than bypassing, because bypass is a capability
+#: and a typo must not grant one.
 DEFAULT_LANE = "queued"
 
-#: The canvas lane. Two things follow from it, and nothing else does yet:
-#: it is the only lane that may carry an :class:`InteractiveSession`, and
-#: #123 will let it bypass the FIFO queue so a six-hour training job cannot
-#: block a classroom demo.
+#: The canvas lane. Three things follow from it and nothing else does: it
+#: is the only lane that may carry an :class:`InteractiveSession`, it
+#: bypasses the FIFO (so a six-hour training job cannot block a classroom
+#: demo), and it is capped instead — see the Scheduling section above.
 LANE_INTERACTIVE = "interactive"
 
 MAX_LANE_LENGTH = 64
@@ -222,8 +264,152 @@ METRIC_FLUSH_INTERVAL_S = 0.5
 #: How long ``shutdown`` lets a run stop cooperatively before hard-cancelling.
 DEFAULT_SHUTDOWN_GRACE_S = 5.0
 
+#: Refusal for a run whose row was written while the service was stopping.
+#: One string, two raise sites (``submit`` after ``create_run``, ``_start``
+#: before it registers a task) because it is one situation: the row is
+#: durable, nothing will schedule it, and startup recovery retires it.
+SHUTDOWN_AFTER_PERSIST = (
+    "run service began shutting down while the run was being persisted; "
+    "it stays queued and will be retired at startup")
+
 #: Per-subscriber queue depth. Overflow drops (see ``RunSubscription``).
 DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
+
+#: Queue keys that are NOT an accelerator. Everything else — ``cuda:1``,
+#: ``mps:0`` — is treated as one, so a backend added to ``resolve_device``
+#: tomorrow inherits the conservative limit instead of silently getting the
+#: CPU one.
+CPU_QUEUE_KEY = "cpu"
+
+
+def _current_cuda_index() -> int:
+    """Which GPU a bare ``cuda`` means in THIS process.
+
+    ``torch.cuda.current_device()``, because that is the index torch itself
+    will use — hardcoding 0 would be wrong on any process that changed it.
+    Falls back to 0 when torch cannot say; the caller only reaches here for
+    a string ``resolve_device`` already vouched for, so that is a
+    belt-and-braces path rather than the normal one.
+    """
+    try:
+        import torch
+
+        return int(torch.cuda.current_device())
+    except Exception:  # pragma: no cover - torch present and CUDA-checked
+        logger.debug("could not read the current CUDA device", exc_info=True)
+        return 0
+
+
+def canonical_queue_key(device: str) -> str:
+    """Collapse the aliases of one physical device onto ONE queue key.
+
+    ``resolve_device`` hands back what it was asked for: ``cuda`` and
+    ``cuda:0`` both survive verbatim, and on a single-GPU box they are the
+    same card. As QUEUE KEYS that would be two independent FIFOs over one
+    piece of hardware, each admitting its own run — so ``--device cuda`` and
+    ``--device cuda:0`` would execute CONCURRENTLY and fight over the same
+    VRAM, which is the exact failure the per-device cap exists to prevent.
+    Same for ``mps`` versus ``mps:0``.
+
+    Indexing is the canonical form (``cuda`` -> ``cuda:N``, ``mps`` ->
+    ``mps:0``) rather than the other direction, because collapsing
+    ``cuda:0`` -> ``cuda`` would merge two genuinely different cards on a
+    multi-GPU box the moment someone asked for ``cuda:1``.
+
+    Applied once in ``submit`` and used for BOTH the row's ``queue_key`` and
+    the ``ExecutionContext.device``, so the queue a run waits in and the
+    device it runs on are the same string by construction.
+    """
+    if device == "cuda":
+        return f"cuda:{_current_cuda_index()}"
+    if device == "mps":
+        return "mps:0"
+    return device
+
+
+@dataclass(frozen=True)
+class QueueLimits:
+    """How many runs each queue key admits at once.
+
+    A value object rather than four ``settings`` reads scattered through the
+    scheduler: the limits are consulted on every promotion, tests need to
+    set them without touching global state, and "what is the cap for
+    ``cuda:0``" should have exactly one answer computed in one place.
+
+    ``overrides`` beats the per-class default, which is the point of it:
+    ``cuda:0=2`` on a 48 GB card is a legitimate thing to want without
+    changing what ``cuda:1`` does.
+    """
+
+    cpu: int = 2
+    gpu: int = 1
+    interactive: int = 2
+    overrides: tuple[tuple[str, int], ...] = ()
+
+    def for_key(self, queue_key: str) -> int:
+        """The concurrency cap for one resolved device string. Always >= 1.
+
+        Never zero: a cap of 0 would accept runs into a queue that can never
+        drain, which is a hang dressed up as a configuration. A user who
+        wants that should not submit the run.
+        """
+        for key, value in self.overrides:
+            if key == queue_key:
+                return max(1, value)
+        return max(1, self.cpu if queue_key == CPU_QUEUE_KEY else self.gpu)
+
+    @classmethod
+    def from_settings(cls) -> "QueueLimits":
+        """Read the caps out of ``config.settings``.
+
+        Called per service construction rather than captured in a module
+        constant, for the reason spelled out on
+        ``RunService._event_payload_cap_bytes``: a module constant is bound
+        at import time, before anything can override the setting.
+        """
+        return cls(
+            cpu=int(settings.RUN_QUEUE_MAX_CONCURRENT_CPU),
+            gpu=int(settings.RUN_QUEUE_MAX_CONCURRENT_GPU),
+            interactive=int(settings.RUN_INTERACTIVE_MAX_CONCURRENT),
+            overrides=parse_queue_overrides(settings.RUN_QUEUE_MAX_CONCURRENT),
+        )
+
+
+def parse_queue_overrides(raw: str) -> tuple[tuple[str, int], ...]:
+    """``"cuda:0=2,cpu=8"`` -> ``(("cuda:0", 2), ("cpu", 8))``.
+
+    Split on the LAST ``=`` so a key may contain one; a key legitimately
+    contains a colon (``cuda:0``), which is why this is not a simple
+    ``dict(pair.split("=") for ...)``.
+
+    A malformed entry is skipped with a warning and never raises: this is
+    parsed during startup, and one typo in an env var must not stop the
+    server from booting — it degrades to the default cap for that key,
+    which is the safe direction.
+    """
+    out: list[tuple[str, int]] = []
+    for chunk in (raw or "").split(","):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        key, separator, value = entry.rpartition("=")
+        key = key.strip().lower()
+        if not separator or not key:
+            logger.warning("ignoring run queue override %r: expected key=count",
+                           entry)
+            continue
+        try:
+            count = int(value.strip())
+        except ValueError:
+            logger.warning("ignoring run queue override %r: %r is not a number",
+                           entry, value.strip())
+            continue
+        if count < 1:
+            logger.warning("ignoring run queue override %r: count must be >= 1",
+                           entry)
+            continue
+        out.append((key, count))
+    return tuple(out)
 
 
 class RunSubmitError(ValueError):
@@ -242,9 +428,10 @@ class RunServiceUnavailable(RuntimeError):
 class SubmitResult(NamedTuple):
     """What ``submit`` hands back: the id, and where the run actually is.
 
-    ``status`` is ``running`` today. It is not hardcoded at the call site
-    because #123's queue will legitimately return ``queued`` from the same
-    call, and a client that reads this field keeps working.
+    ``status`` is ``running`` when the run started immediately and ``queued``
+    when it joined a FIFO that was already full (#123). Read it — do not
+    assume: "submitted" and "started" have been different events since the
+    queue landed, and the difference is the whole point of the queue.
     """
 
     run_id: str
@@ -753,13 +940,65 @@ class RunSubscription:
 
 
 @dataclass(eq=False)
+class _QueuedRun:
+    """A submitted run waiting for its device. The FIFO's element (#123).
+
+    Deliberately tiny. It holds what SCHEDULING needs — which queue to join,
+    which options to start with — and not the graph, which is re-read from
+    ``exec_runs.graph_snapshot`` at promotion so a deep queue costs rows and
+    not RAM.
+
+    ``signal`` and ``subscribers`` are the run's two wake-up channels, and
+    both OUTLIVE the wait: the same objects are handed to the ``_ActiveRun``
+    at promotion. That is what lets a client attach to a run that has not
+    started yet — it subscribes here, waits, and the queue it is holding is
+    the same queue the started run pushes into, with no re-subscribe and no
+    window between the two. Without the handover, attaching to a queued run
+    would return an immediately-closed feed and the client would sit on a
+    stream that never delivers anything.
+    """
+
+    run_id: str
+    queue_key: str
+    options: dict[str, Any]
+    signal: _Broadcast
+    subscribers: set[RunSubscription] = field(default_factory=set)
+
+    def close(self) -> None:
+        """End every subscription and wake every poller. Sync — never fails.
+
+        The waiting counterpart of ``_ActiveRun.close``, for a run that is
+        retired before it ever starts. There is no ``finished`` flag to set:
+        a pending entry is only ever closed on its way out of both indexes,
+        so "gone from the queue" is the same fact.
+        """
+        for subscription in list(self.subscribers):
+            subscription.offer(None)
+            subscription.closed = True
+        self.subscribers.clear()
+        self.signal.notify()
+
+
+@dataclass(eq=False)
 class _ActiveRun:
     """Everything the service holds for one in-flight run."""
 
     run_id: str
     context: ExecutionContext
     signal: _Broadcast
+    #: Which FIFO's slot this run occupies (the resolved device), and which
+    #: lane it came in on. Held so the run can RELEASE what it took when it
+    #: ends — the counters cannot be re-derived from a row that is by then
+    #: already terminal.
+    queue_key: str = CPU_QUEUE_KEY
+    lane: str = DEFAULT_LANE
+    session: "InteractiveSession | None" = None
     record_outputs: bool = False
+    #: True once this run's admission — its device slot, or its interactive
+    #: slot and session key — has been given back. Released EARLY (see
+    #: ``_release_admission``), so the flag is what keeps ``_drive``'s
+    #: backstop from releasing a second time.
+    admission_released: bool = False
     task: "asyncio.Task[None] | None" = None
     subscribers: set[RunSubscription] = field(default_factory=set)
     #: "cancelled" (a user asked) or "interrupted" (the server is going
@@ -818,6 +1057,7 @@ class RunService:
         subscriber_queue_size: int = DEFAULT_SUBSCRIBER_QUEUE_SIZE,
         metric_flush_max_points: int = METRIC_FLUSH_MAX_POINTS,
         metric_flush_interval_s: float = METRIC_FLUSH_INTERVAL_S,
+        limits: QueueLimits | None = None,
     ) -> None:
         self.store = store
         self._output_store = output_store
@@ -837,7 +1077,30 @@ class RunService:
         self._subscriber_queue_size = subscriber_queue_size
         self._metric_flush_max_points = metric_flush_max_points
         self._metric_flush_interval_s = metric_flush_interval_s
+        self._limits = QueueLimits.from_settings() if limits is None else limits
         self._runs: dict[str, _ActiveRun] = {}
+        # ── the queue (#123) ─────────────────────────────────────────────
+        # One FIFO per resolved device, plus a by-id index so cancel is O(1)
+        # instead of a scan of every queue. The two are written together and
+        # only ever from the event loop; ``_enqueue``/``_dequeue`` are the
+        # only places that touch both, so they cannot drift.
+        self._pending: dict[str, deque[_QueuedRun]] = {}
+        self._pending_by_id: dict[str, _QueuedRun] = {}
+        # Slots taken per queue key. NOT derived from ``_runs`` on demand:
+        # counting a dict by predicate on every promotion is both slower and
+        # easier to get subtly wrong than incrementing where the slot is
+        # actually taken and released.
+        self._slots: dict[str, int] = {}
+        # The interactive lane's two bounds. ``_interactive_inflight``
+        # includes runs whose row is still being written (submit reserves
+        # BEFORE it awaits ``create_run``), which is what stops two
+        # simultaneous canvas clicks from both passing a cap of one.
+        self._interactive_inflight = 0
+        # ``session_key(session) -> run_id``. Keyed by the CACHE, not by the
+        # session wrapper; ``_admit_interactive`` explains why. The cache
+        # object is the dict key, so holding it here also keeps it alive for
+        # as long as the entry exists.
+        self._interactive_sessions: dict[Any, str] = {}
         self._shutting_down = False
 
     # ── introspection ─────────────────────────────────────────────────────
@@ -854,6 +1117,38 @@ class RunService:
         active = self._runs.get(run_id)
         return None if active is None else active.context.execution_id
 
+    def is_queued(self, run_id: str) -> bool:
+        """True while the run is waiting for a device slot (#123)."""
+        return run_id in self._pending_by_id
+
+    def queue_position(self, run_id: str) -> int | None:
+        """1-based place in this run's device FIFO; ``None`` if not waiting.
+
+        Position 1 is next to start. A run that is running, finished, or
+        unknown to this process has no position — the answer is ``None`` for
+        all three, because "not waiting" is the fact a caller acts on.
+        """
+        entry = self._pending_by_id.get(run_id)
+        if entry is None:
+            return None
+        queue = self._pending.get(entry.queue_key)
+        if queue is None:  # pragma: no cover - the two indexes move together
+            return None
+        for index, waiting in enumerate(queue, start=1):
+            if waiting.run_id == run_id:
+                return index
+        return None  # pragma: no cover - as above
+
+    def queue_snapshot(self) -> dict[str, list[str]]:
+        """``{queue_key: [run_id, ...]}`` in service order. Waiting runs only.
+
+        The scheduler's own view, for tests and diagnostics. Running runs are
+        NOT in it — they no longer occupy a place in line, they occupy a
+        slot.
+        """
+        return {key: [entry.run_id for entry in queue]
+                for key, queue in self._pending.items() if queue}
+
     # ── submit ────────────────────────────────────────────────────────────
 
     async def submit(
@@ -864,21 +1159,25 @@ class RunService:
         name: str | None = None,
         session: InteractiveSession | None = None,
     ) -> SubmitResult:
-        """Persist a run, then start it. Raises ``RunSubmitError`` on input.
+        """Persist a run, then SCHEDULE it. Raises ``RunSubmitError`` on input.
 
         The two halves are separate on purpose. ``create_run`` makes the run
         exist and queryable before anything can execute, so a crash between
         the two leaves a row that startup recovery retires honestly instead
         of losing the submission entirely.
 
-        **The #123 seam is between them.** A queue implementation stops
-        calling ``_start`` here and calls it from its scheduler; the only
-        extra work is re-reading the graph with
-        ``store.get_graph_snapshot(run_id)``, since a deferred start cannot
-        rely on the submitting request still being in memory. Nothing else in
-        this module assumes immediacy. (A queued INTERACTIVE run is the one
-        case that cannot be deferred, because *session* is in memory and
-        nowhere else — which is exactly why that lane bypasses the queue.)
+        Scheduling is what happens between them, and it depends on the lane
+        (see the module's Scheduling section). A ``queued``-lane run joins
+        its device's FIFO and starts when that device has room — so the
+        returned ``status`` is genuinely ``queued`` when it did not, which is
+        why callers were told from #120 to read this field rather than assume
+        ``running``. An ``interactive`` run bypasses the FIFO and is admitted
+        against its own two limits, or refused.
+
+        The device is resolved ONCE here and handed to both the row
+        (``queue_key``) and the run (``ExecutionContext.device``), so the
+        queue a run waits in and the device it eventually uses cannot
+        disagree.
 
         *session* is the canvas's process-local state; see
         :class:`InteractiveSession`. Passing one on any other lane is a
@@ -890,24 +1189,225 @@ class RunService:
         normalized_graph = normalize_graph(graph)
         normalized_options = normalize_options(options)
         normalized_name = normalize_name(name)
-        if session is not None and normalized_options["lane"] != LANE_INTERACTIVE:
+        lane = normalized_options["lane"]
+        if session is not None and lane != LANE_INTERACTIVE:
             raise RunSubmitError(
                 f"an interactive session requires lane={LANE_INTERACTIVE!r}, "
-                f"got {normalized_options['lane']!r}")
+                f"got {lane!r}")
+        queue_key = canonical_queue_key(
+            resolve_device(normalized_options.get("device")))
+
+        if lane == LANE_INTERACTIVE:
+            return await self._submit_interactive(
+                normalized_graph, normalized_options, normalized_name,
+                queue_key, session)
 
         record = await self.store.create_run(
             graph_snapshot=normalized_graph,
             options=normalized_options,
             name=normalized_name,
             status=STATUS_QUEUED,
+            queue_key=queue_key,
         )
-        # ── #123 inserts scheduling HERE (interactive lane skips it) ─────
-        return self._start(record.id, normalized_graph, normalized_options,
-                           session)
+        if self._shutting_down:
+            # The same re-check ``_start`` makes, for the same reason and at
+            # the same seam: ``create_run`` awaits (provenance capture can
+            # shell out to git), and ``shutdown`` retires the queue at any
+            # await. A submit parked in that window would otherwise join a
+            # queue that has already been drained and wait for a pump that
+            # will never run again.
+            raise RunServiceUnavailable(SHUTDOWN_AFTER_PERSIST)
+        # Enqueue THEN pump, always — even when the device is idle and the
+        # run will start on the very next statement. A fast path that started
+        # an empty-queue submit directly would be a second admission rule to
+        # keep in step with this one, and the first bug it produced would be
+        # a run overtaking a queue that filled between the check and the
+        # start.
+        entry = _QueuedRun(run_id=record.id, queue_key=queue_key,
+                           options=normalized_options, signal=_Broadcast())
+        self._enqueue(entry)
+        self._pump(queue_key)
+        return SubmitResult(
+            run_id=record.id,
+            status=(STATUS_RUNNING if record.id in self._runs
+                    else STATUS_QUEUED))
+
+    async def _submit_interactive(
+        self, graph: dict[str, Any], options: dict[str, Any],
+        name: str | None, queue_key: str,
+        session: InteractiveSession | None,
+    ) -> SubmitResult:
+        """Admit a canvas run past the FIFO, or refuse it. Never queues.
+
+        Admission is reserved BEFORE ``create_run`` awaits and released on
+        every failure path after it. Checking after the write would leave the
+        window that makes a cap of one meaningless: two clicks arriving
+        together would both pass the check while neither had a row yet.
+
+        A refusal here must not leave a row behind, which is the other reason
+        the check comes first — a ``queued`` row nothing will ever schedule
+        is exactly the orphan startup recovery exists to clean up, and
+        manufacturing them on a busy canvas is not a good use of it.
+        """
+        self._admit_interactive(session)
+        try:
+            record = await self.store.create_run(
+                graph_snapshot=graph, options=options, name=name,
+                status=STATUS_QUEUED, queue_key=queue_key,
+            )
+            return self._start(record.id, graph, options,
+                               queue_key=queue_key, lane=LANE_INTERACTIVE,
+                               session=session)
+        except BaseException:
+            self._release_interactive(session)
+            raise
+
+    @staticmethod
+    def _session_key(session: InteractiveSession | None) -> Any:
+        """What two concurrent runs must not share: the socket's cache.
+
+        NOT the :class:`InteractiveSession` itself, and that distinction is
+        the whole correctness of the rule. ``ws_execution.handle_execute``
+        builds a FRESH session wrapper on every ``execute`` message (it has
+        to — ``changed_nodes`` differs per click) around the ONE
+        ``ExecutionCache`` it created when the socket opened. Keying on the
+        wrapper would therefore compare two objects that are never the same
+        one, and the rule would silently never fire; keying on the cache
+        keys on the thing that is genuinely per-socket and genuinely shared.
+
+        ``None`` when there is no cache: there is then no cross-run state to
+        corrupt, and only the concurrency cap applies. (The module store is
+        deliberately not part of the key — it is process-global, so it would
+        serialise every canvas in the process against every other.)
+        """
+        return None if session is None else session.cache
+
+    def _admit_interactive(self, session: InteractiveSession | None) -> None:
+        """Reserve one interactive slot, or raise ``RunServiceUnavailable``.
+
+        Two independent bounds, reported separately because the fixes are
+        different: "wait for another tab to finish" versus "this tab already
+        has a run going".
+
+        The per-session rule is the structural close of #121's disclosed
+        gap. Two concurrent runs on one canvas connection share its
+        ``ExecutionCache`` — one would serve the other's half-built tensors
+        under a matching key — and, with ``weights_persistent``, mutate the
+        same ``nn.Module``. The frontend prevents it by disabling Run; that
+        is a convention, and conventions do not hold for a reconnecting tab,
+        a second client speaking the protocol, or a bug.
+        """
+        cap = max(1, self._limits.interactive)
+        if self._interactive_inflight >= cap:
+            raise RunServiceUnavailable(
+                f"{self._interactive_inflight} interactive run(s) already in "
+                f"flight (limit {cap}); wait for one to finish or raise "
+                "CODEFYUI_RUN_INTERACTIVE_MAX_CONCURRENT")
+        key = self._session_key(session)
+        if key is not None and key in self._interactive_sessions:
+            busy = self._interactive_sessions[key]
+            raise RunServiceUnavailable(
+                "this editor session already has a run in flight"
+                + (f" ({busy})" if busy else "")
+                + "; two runs cannot share one session's cache and weights")
+        self._interactive_inflight += 1
+        if key is not None:
+            # Empty string until ``_start`` knows the id: the KEY is what
+            # holds the slot, and it has to be registered before the awaits
+            # in ``create_run``.
+            self._interactive_sessions[key] = ""
+
+    def _release_interactive(self, session: InteractiveSession | None) -> None:
+        """Give back one interactive slot. Idempotent per run, never negative."""
+        self._interactive_inflight = max(0, self._interactive_inflight - 1)
+        key = self._session_key(session)
+        if key is not None:
+            self._interactive_sessions.pop(key, None)
+
+    # ── the queue ─────────────────────────────────────────────────────────
+
+    def _enqueue(self, entry: _QueuedRun) -> None:
+        """Put a run at the back of its device's line. SYNCHRONOUS."""
+        self._pending.setdefault(entry.queue_key, deque()).append(entry)
+        self._pending_by_id[entry.run_id] = entry
+
+    def _dequeue(self, run_id: str) -> _QueuedRun | None:
+        """Take a run out of the line wherever it is. ``None`` if not waiting.
+
+        O(n) in the length of ONE device's queue, and only ever called by
+        cancel and by shutdown. A run that reaches the front is removed by
+        ``_pump``'s ``popleft`` instead, which is the hot path.
+        """
+        entry = self._pending_by_id.pop(run_id, None)
+        if entry is None:
+            return None
+        queue = self._pending.get(entry.queue_key)
+        if queue is not None:
+            try:
+                queue.remove(entry)
+            except ValueError:  # pragma: no cover - indexes move together
+                pass
+            if not queue:
+                self._pending.pop(entry.queue_key, None)
+        return entry
+
+    def _pump(self, queue_key: str) -> None:
+        """Start as many waiting runs as this device has room for. SYNCHRONOUS.
+
+        Called on submit and again whenever a run of this key ends, so there
+        is no scheduler task, no polling interval, and nothing to drain at
+        shutdown. Being synchronous is what makes it safe to call from
+        ``_drive``'s ``finally``: the slot is released and the next run
+        registered without an await in between, so no third party can slip
+        into a slot that has already been promised.
+
+        Refusing to start anything during shutdown is deliberate — the
+        pending runs are being retired by ``shutdown`` at that moment, and
+        promoting one into a task nobody drains is the exact failure
+        ``_start``'s own re-check exists to prevent.
+        """
+        if self._shutting_down:
+            return
+        queue = self._pending.get(queue_key)
+        while queue and self._slots.get(queue_key, 0) < self._limits.for_key(
+                queue_key):
+            entry = queue.popleft()
+            self._pending_by_id.pop(entry.run_id, None)
+            try:
+                # The graph is NOT passed: ``_drive`` re-reads it from the
+                # row. The signal and the subscriber set ARE — same objects,
+                # so a client that parked on the queued run keeps both its
+                # generation and its live feed across the promotion.
+                self._start(entry.run_id, None, entry.options,
+                            queue_key=queue_key, lane=entry.options.get(
+                                "lane", DEFAULT_LANE),
+                            signal=entry.signal, subscribers=entry.subscribers)
+            except Exception:
+                # Two things must not happen here, and both did before this
+                # guard. The entry must not be LOST — it has already left
+                # both indexes — so it goes back at the FRONT, keeping its
+                # place in line for the next pump. And the exception must
+                # not escape: this method is called from ``_finalize``,
+                # inside the PREVIOUS run's task and before that run's
+                # terminal event and row write, so letting it through would
+                # make one run's failed promotion silently strand another
+                # run's outcome.
+                logger.exception(
+                    "run %s could not be started off the %s queue; it stays "
+                    "queued", entry.run_id, queue_key)
+                queue.appendleft(entry)
+                self._pending_by_id[entry.run_id] = entry
+                break
+        if not queue:
+            self._pending.pop(queue_key, None)
 
     def _start(
-        self, run_id: str, graph: dict[str, Any], options: dict[str, Any],
+        self, run_id: str, graph: dict[str, Any] | None,
+        options: dict[str, Any], *, queue_key: str,
+        lane: str = DEFAULT_LANE,
         session: InteractiveSession | None = None,
+        signal: _Broadcast | None = None,
+        subscribers: set[RunSubscription] | None = None,
     ) -> SubmitResult:
         """Register the run and hand it to its own task. SYNCHRONOUS.
 
@@ -916,13 +1416,22 @@ class RunService:
         creating the task that owns it, so no cancellation of the SUBMITTING
         coroutine can land in the middle and strand a registry entry that
         nothing will ever finish. Everything that needs the database
-        (``mark_running``, the start event) happens inside the task, where a
-        cancellation is the RUN's cancellation and unwinds through the normal
-        terminal path.
+        (reading the graph back, ``mark_running``, the start event) happens
+        inside the task, where a cancellation is the RUN's cancellation and
+        unwinds through the normal terminal path.
+
+        It is also what makes promotion out of the FIFO safe: a slot is taken
+        and its run registered in one uninterruptible step, so a cancel can
+        only ever find the run in exactly one of the two places that know how
+        to stop it.
 
         The reported status is therefore a promise the task fulfils on its
         first step; a client that reads the row in that microsecond sees
         ``queued``, which is simply true.
+
+        *graph* may be ``None``, meaning "read it from the row" — the shape
+        every promoted run takes, since a deferred start cannot rely on the
+        submitting request still being in memory.
 
         The shutdown re-check is not redundant with ``submit``'s. That one
         happens before ``create_run`` awaits (provenance capture can shell
@@ -933,12 +1442,10 @@ class RunService:
         recovery, exactly like a cancelled submit.
         """
         if self._shutting_down:
-            raise RunServiceUnavailable(
-                "run service began shutting down while the run was being "
-                "persisted; it stays queued and will be retired at startup")
+            raise RunServiceUnavailable(SHUTDOWN_AFTER_PERSIST)
         context = ExecutionContext(
             execution_id=run_id,
-            device=resolve_device(options.get("device")),
+            device=queue_key,
             max_workers=settings.MAX_PARALLEL_NODES,
             verbose=bool(options.get("verbose")),
             graph_id=str(options.get("graph_id") or ""),
@@ -956,18 +1463,70 @@ class RunService:
                               else session.node_state_store),
         )
         active = _ActiveRun(
-            run_id=run_id, context=context, signal=_Broadcast(),
+            run_id=run_id, context=context,
+            signal=_Broadcast() if signal is None else signal,
+            queue_key=queue_key, lane=lane, session=session,
             record_outputs=bool(options.get("record_outputs")),
+            subscribers=set() if subscribers is None else subscribers,
         )
-        self._runs[run_id] = active
-        active.task = asyncio.create_task(
+        # The task is created BEFORE anything is mutated, so this method is
+        # all-or-nothing: if scheduling the task fails (a closed loop during
+        # teardown), no slot has been taken and no half-registered run is
+        # left for ``_pump``'s recovery to reason about. Nothing runs in
+        # between — ``create_task`` only schedules, and this function never
+        # awaits — so ``_drive`` cannot observe the registry before the next
+        # three statements have landed.
+        task = asyncio.create_task(
             self._drive(active, graph, options, session), name=f"run:{run_id}")
+        if lane != LANE_INTERACTIVE:
+            # Taken HERE, not in ``_pump``, so the one path that starts a run
+            # is the one path that accounts for it. The interactive lane's
+            # slot was taken in ``_admit_interactive`` before its row existed.
+            self._slots[queue_key] = self._slots.get(queue_key, 0) + 1
+        elif self._session_key(session) is not None:
+            self._interactive_sessions[self._session_key(session)] = run_id
+        active.task = task
+        self._runs[run_id] = active
         return SubmitResult(run_id=run_id, status=STATUS_RUNNING)
+
+    def _release_admission(self, active: _ActiveRun) -> None:
+        """Give back what a run held, then serve the next in line. Idempotent.
+
+        Called as soon as the GRAPH is done — the first line of
+        ``_finalize``, before the terminal event — and again from
+        ``_drive``'s ``finally`` as the backstop for the paths that never
+        reach ``_finalize`` (a hard ``Task.cancel``, a vanished row).
+
+        Releasing early is not an optimisation, it is a correctness fix that
+        a live canvas found: a client re-enables its Run button the moment
+        ``execution_complete`` arrives, so releasing after that event left a
+        window in which the user had been told the run was over and the very
+        next click was still refused by the one-run-per-session rule. A fast
+        double-click lands squarely in it. By ``_finalize`` the engine has
+        returned, so the device is idle and nothing will touch the session's
+        cache or weights again — everything left is bookkeeping.
+
+        The pump call lives here rather than at ``_drive``'s cleanup because
+        "a slot freed" and "the queue may move" are the same event, and
+        separating them is how a queue silently stalls.
+        """
+        if active.admission_released:
+            return
+        active.admission_released = True
+        if active.lane == LANE_INTERACTIVE:
+            self._release_interactive(active.session)
+            return
+        remaining = self._slots.get(active.queue_key, 0) - 1
+        if remaining > 0:
+            self._slots[active.queue_key] = remaining
+        else:
+            self._slots.pop(active.queue_key, None)
+        self._pump(active.queue_key)
 
     # ── the run task ──────────────────────────────────────────────────────
 
     async def _drive(
-        self, active: _ActiveRun, graph: dict[str, Any],
+        self, active: _ActiveRun, graph: dict[str, Any] | None,
         options: dict[str, Any], session: InteractiveSession | None = None,
     ) -> None:
         """The server-owned task. Nothing outside this module awaits it.
@@ -977,13 +1536,31 @@ class RunService:
         row stays ``running`` for the next boot's recovery to retire, which
         is deliberate: a forcibly-killed run must not write a tidy terminal
         status it cannot vouch for. The ``finally`` still runs (that is what
-        closes subscriptions and deregisters the run); only the terminal
-        bookkeeping is skipped. Everything else — including a broken
-        database — is caught, because an unretrieved task exception is a
-        silent death nobody would ever see.
+        closes subscriptions, deregisters the run and gives its slot back);
+        only the terminal bookkeeping is skipped. Everything else —
+        including a broken database — is caught, because an unretrieved task
+        exception is a silent death nobody would ever see.
+
+        *graph* is ``None`` for a run promoted out of the queue: the first
+        thing the task does is read the snapshot back off its own row.
+        Reading it HERE rather than in ``_pump`` is what keeps promotion
+        synchronous, and therefore keeps a cancel from finding the run in
+        neither the queue nor the registry.
         """
         run_id = active.run_id
         try:
+            if graph is None:
+                graph = await self._load_graph(active)
+                if graph is None:
+                    return
+            # A cancel that arrived between promotion and here (the queue
+            # front is the likeliest place for a user to catch a run) stops
+            # it before the first node rather than after it: the engine's
+            # earliest checkpoint is inside the level loop, and "cancelled"
+            # should never mean "ran one node first".
+            if active.context.should_stop():
+                await self._finalize(active, self._stopped_status(active), None)
+                return
             if not await self._begin(active):
                 return
             status, error = await self._execute(active, graph, options,
@@ -996,6 +1573,40 @@ class RunService:
         finally:
             active.close()
             self._runs.pop(run_id, None)
+            self._release_admission(active)
+
+    @staticmethod
+    def _stopped_status(active: _ActiveRun) -> str:
+        """``interrupted`` when the server asked, ``cancelled`` when a user did."""
+        return (STATUS_INTERRUPTED
+                if active.stop_reason == STOP_REASON_INTERRUPTED
+                else STATUS_CANCELLED)
+
+    async def _load_graph(self, active: _ActiveRun) -> dict[str, Any] | None:
+        """Read a promoted run's graph back off its row. ``None`` means stop.
+
+        Two ways it can fail, and they deserve different answers:
+
+        - the row is GONE (deleted while the run waited) — there is nothing
+          left to write a status or an event to, so this is the same silent
+          give-up ``_begin`` makes for the same reason.
+        - the snapshot is there but unusable. That is a failed run, not a
+          hung one: filing it as ``failed`` with the reason beats leaving a
+          row claiming to be running until the next restart.
+        """
+        snapshot = await self.store.get_graph_snapshot(active.run_id)
+        if snapshot is None:
+            logger.warning("run %s vanished while it was queued",
+                           active.run_id)
+            return None
+        if not isinstance(snapshot, dict) or not snapshot.get("nodes"):
+            await self._finalize(
+                active, STATUS_FAILED,
+                "the stored graph snapshot is empty or malformed")
+            return None
+        snapshot.setdefault("edges", [])
+        snapshot.setdefault("presets", [])
+        return snapshot
 
     async def _begin(self, active: _ActiveRun) -> bool:
         """Claim the row and announce the run. False means "do not run".
@@ -1048,9 +1659,7 @@ class RunService:
             # Why it stopped is a different fact from that it stopped: a user
             # pressing Stop is `cancelled`, the server going away is
             # `interrupted`. The engine raises the same exception for both.
-            return ((STATUS_INTERRUPTED
-                     if active.stop_reason == STOP_REASON_INTERRUPTED
-                     else STATUS_CANCELLED), None)
+            return self._stopped_status(active), None
         except GraphValidationError as exc:
             return STATUS_FAILED, str(exc)
         except Exception as exc:
@@ -1073,8 +1682,13 @@ class RunService:
         outcome is decided, and a cancel that arrives during the metric
         flush must not report that it cancelled a run about to file
         ``succeeded``.
+
+        The run's ADMISSION goes back in the same breath, and before the
+        terminal event rather than after it — see ``_release_admission`` for
+        the window that closes.
         """
         active.terminating = True
+        self._release_admission(active)
         await self._flush_metrics(active, force=True)
         if status == STATUS_SUCCEEDED:
             await self._emit(active.run_id, EVENT_RUN_COMPLETED, None)
@@ -1287,6 +1901,14 @@ class RunService:
         replay from ``RunStore.get_events``. Always used as a context manager
         so a dropped consumer cannot leak a queue onto a long-lived run.
 
+        A run still WAITING in the queue (#123) yields a live subscription,
+        not a closed one — it has not finished, it has not started, and a
+        client that attached to it is entitled to see it start. The set the
+        subscription joins is handed to the ``_ActiveRun`` at promotion, so
+        no re-subscribe is needed and there is no window between the two in
+        which an event could be missed. Discarding on the way out works
+        either way BECAUSE it is the same set object.
+
         *maxsize* overrides the queue depth; ``0`` means unbounded, as
         ``asyncio.Queue`` defines it. (``maxsize or default`` would have
         quietly turned that request into the bounded default.)
@@ -1295,15 +1917,20 @@ class RunService:
         subscription = RunSubscription(run_id=run_id,
                                        queue=asyncio.Queue(depth))
         active = self._runs.get(run_id)
-        if active is None or active.finished:
+        waiting = self._pending_by_id.get(run_id)
+        if active is not None and not active.finished:
+            subscribers = active.subscribers
+        elif waiting is not None:
+            subscribers = waiting.subscribers
+        else:
             subscription.closed = True
             yield subscription
             return
-        active.subscribers.add(subscription)
+        subscribers.add(subscription)
         try:
             yield subscription
         finally:
-            active.subscribers.discard(subscription)
+            subscribers.discard(subscription)
 
     async def wait_for_events(
         self,
@@ -1324,12 +1951,16 @@ class RunService:
         Returns as soon as anything is available, and immediately (possibly
         empty) once the run is finished or unknown — a long poll on a dead
         run must never hang for its full timeout.
+
+        A run WAITING in the queue parks on its pending entry's channel
+        (#123). Without that it would fall into the "unknown" branch and
+        return instantly every time, turning every follower of a queued run
+        — the Runs panel, ``cdui run --wait`` — into a busy loop against the
+        database for as long as the queue is deep.
         """
         deadline = time.monotonic() + max(wait, 0.0)
         while True:
-            active = self._runs.get(run_id)
-            waiter = None if active is None or active.finished \
-                else active.signal.waiter()
+            waiter = self._waiter_for(run_id)
             events = await self.store.get_events(
                 run_id, after_cursor=after_cursor, limit=limit)
             if events or waiter is None:
@@ -1341,6 +1972,20 @@ class RunService:
                 await asyncio.wait_for(waiter.wait(), remaining)
             except asyncio.TimeoutError:
                 return []
+
+    def _waiter_for(self, run_id: str) -> asyncio.Event | None:
+        """The generation to park on for a run, or ``None`` to not park.
+
+        ``None`` means "there is nothing more coming for this id": the run
+        finished, or this process never had it. Running beats waiting when
+        both somehow answer, because a promoted run's registry entry is the
+        newer fact.
+        """
+        active = self._runs.get(run_id)
+        if active is not None:
+            return None if active.finished else active.signal.waiter()
+        waiting = self._pending_by_id.get(run_id)
+        return None if waiting is None else waiting.signal.waiter()
 
     # ── metrics ───────────────────────────────────────────────────────────
 
@@ -1435,9 +2080,15 @@ class RunService:
         and the outcome is OBSERVED on the row when the run unwinds. What
         #122 changed is how long that takes for the nodes where it mattered.
 
-        A run that never started (a ``queued`` row — #123's lane, or an
-        orphan) is retired directly through the guarded ``mark_finished``, so
-        a cancel racing a start cannot rewrite a run that is already going.
+        A run still WAITING in the queue is dequeued instead, and that is the
+        cheap case by a wide margin: nothing has been started, so there is
+        nothing to unwind, no device to release and no partial output to
+        reconcile. It is retired through the same guarded ``mark_finished``
+        as any other never-started row (an orphan from a previous boot, or a
+        row someone created directly), so a cancel racing a promotion cannot
+        rewrite a run that is already going — the promotion happens in one
+        synchronous step, which is what makes "in the queue" and "in the
+        registry" exhaustive and mutually exclusive.
 
         The ``terminating`` check is what keeps the answer truthful once a
         run's outcome is decided but it is still in the registry — from the
@@ -1446,6 +2097,13 @@ class RunService:
         itself. A registry hit alone would report "cancelled: true" for a
         run that is on its way to filing ``succeeded``.
         """
+        entry = self._dequeue(run_id)
+        if entry is not None:
+            outcome = await self._retire_waiting(entry, STATUS_CANCELLED,
+                                                 STOP_REASON_CANCELLED)
+            if outcome is not None:
+                return outcome
+
         active = self._runs.get(run_id)
         if active is not None and not active.terminating:
             if active.stop_reason is None:
@@ -1467,6 +2125,32 @@ class RunService:
         return CancelOutcome(run_id=run_id, status=record.status,
                              cancelled=False)
 
+    async def _retire_waiting(
+        self, entry: _QueuedRun, status: str, reason: str,
+    ) -> CancelOutcome | None:
+        """File an already-dequeued run as terminal and close its story.
+
+        ``None`` when the guarded write did not land — the row was already
+        terminal (deleted, or retired by another path) — so the caller falls
+        through to reporting whatever the row now says instead of claiming a
+        transition it did not make.
+
+        The ``execution_stopped`` event is written even though there was no
+        ``execution_start`` to balance it. A follower (the WS attach view,
+        ``cdui run --wait``) needs a frame that says the run ENDED; going
+        quiet is indistinguishable from a run that is simply slow.
+        Manufacturing a start event to pair with it would be the actual lie.
+        """
+        landed = await self.store.mark_finished(
+            entry.run_id, status, expected=(STATUS_QUEUED,))
+        if not landed:
+            entry.close()
+            return None
+        await self._emit(entry.run_id, EVENT_RUN_STOPPED, {"reason": reason})
+        entry.close()
+        return CancelOutcome(run_id=entry.run_id, status=status,
+                             cancelled=True)
+
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     async def recover_interrupted(self) -> int:
@@ -1480,12 +2164,16 @@ class RunService:
 
         Guarded rather than merely documented — calling it while this process
         has live runs would mark those very runs interrupted underneath
-        themselves.
+        themselves. Waiting runs count for the same reason: their rows are
+        exactly the ``queued`` ones this sweep retires, and retiring a run
+        the scheduler is still holding would leave the queue pointing at a
+        terminal row.
         """
-        if self._runs:
+        if self._runs or self._pending_by_id:
             raise RuntimeError(
                 "recover_interrupted is a startup call; "
-                f"{len(self._runs)} active run(s) are in flight")
+                f"{len(self._runs)} active run(s) and "
+                f"{len(self._pending_by_id)} queued run(s) are in flight")
         count = await self.store.interrupt_active_runs()
         if count:
             logger.warning(
@@ -1515,8 +2203,25 @@ class RunService:
         time this returns there is no worker thread left holding the
         connection.
 
-        Two phases, in this order:
+        Three phases, in this order:
 
+        0. **Retire the queue.** Every WAITING run is filed ``interrupted``
+           on the spot, with the same ``execution_stopped`` frame a running
+           run gets. Nothing resumes a queue across a restart — the
+           scheduler is in memory and ``recover_interrupted`` retires
+           ``queued`` rows precisely because "a queued row would otherwise
+           wait forever on a scheduler that lost its queue" — so the only
+           question is WHEN the row becomes honest, not what it becomes.
+           Writing it here, while the fact is fresh and the database is
+           still open, converges on exactly the row the next boot's recovery
+           would have written; a hard kill (no graceful shutdown at all)
+           still leaves them ``queued`` and recovery still retires them.
+           Two paths, one outcome, by construction.
+
+           This comes FIRST so a slot freed by a draining run cannot promote
+           a run that is about to be retired. ``_pump`` also refuses to
+           start anything once ``_shutting_down`` is set, which is the same
+           guarantee from the other end.
         1. Cooperative. The stop reason is ``interrupted`` (the server is
            going away, the user did not ask), so the tasks write an honest
            terminal row on their way out.
@@ -1526,6 +2231,7 @@ class RunService:
            tasks are still awaited — cancelling is not draining.
         """
         self._shutting_down = True
+        await self._retire_queue()
         active = list(self._runs.values())
         for entry in active:
             # First reason wins: a run the user already cancelled is filed as
@@ -1548,3 +2254,21 @@ class RunService:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _retire_queue(self) -> int:
+        """File every waiting run ``interrupted``. Returns how many.
+
+        Both indexes are emptied SYNCHRONOUSLY up front, before the first
+        await, so nothing can be promoted, cancelled or double-retired while
+        the rows are being written one at a time.
+        """
+        waiting = list(self._pending_by_id.values())
+        self._pending_by_id.clear()
+        self._pending.clear()
+        if not waiting:
+            return 0
+        logger.info("shutdown: retiring %d queued run(s)", len(waiting))
+        for entry in waiting:
+            await self._retire_waiting(entry, STATUS_INTERRUPTED,
+                                       STOP_REASON_INTERRUPTED)
+        return len(waiting)

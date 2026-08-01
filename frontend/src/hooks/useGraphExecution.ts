@@ -195,8 +195,20 @@ export function useGraphExecution() {
       };
 
       const onExecutionError = (raw: unknown) => {
-        const data = raw as { error: string };
+        const data = raw as { error: string; rejected?: boolean };
         const store = useTabStore.getState();
+        // A REFUSED submit is not a run outcome (#123). The server turned a
+        // click down — the interactive cap, or the one-run-per-session rule
+        // — without starting anything, and the run this tab is already
+        // following is still executing. Falling through to `error` here
+        // would re-enable Run and disable Stop mid-run, taking away the
+        // ability to stop the very run the user is watching.
+        if (data.rejected) {
+          const message = useI18n.getState().t('execution.rejected');
+          useToastStore.getState().addToast(message, 'warning');
+          store.addTabLog(tabId, { message: `${message} (${data.error})`, type: 'info' });
+          return;
+        }
         store.setTabStatus(tabId, 'error');
         store.addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
       };

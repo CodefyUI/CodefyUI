@@ -32,6 +32,13 @@ which is what makes re-attach transparent. Plus three transport frames the
 log has no opinion about: ``attached``, ``detached``, ``cancel_ack``, and
 the pre-existing ``cache_cleared`` / ``error``.
 
+One flag on one frame is not part of the log vocabulary: an
+``execution_error`` carrying ``"rejected": true`` is a submit the service
+REFUSED (#123 — the interactive cap, or one-run-per-session). Nothing
+started and nothing failed, so a client must not treat it as a run
+outcome; the run this socket is already following, if any, is named in
+``run_id`` and is still going.
+
 The replay/live boundary
 ------------------------
 The one genuinely hard part, and the reason ``RunService.subscribe`` and
@@ -302,8 +309,16 @@ class _ExecutionSocket:
 
         A run already attached here is DETACHED, not cancelled: this socket
         stops watching it and starts watching the new one. Cancelling would
-        put back the exact behaviour #120 removed, and the canvas already
-        disables Run while a run is in flight.
+        put back the exact behaviour #120 removed.
+
+        Since #123 that only arises once the previous run has ENDED. While
+        one is still in flight the service refuses the submit outright —
+        two runs behind one socket's ``ExecutionCache`` would serve each
+        other half-built tensors, the hazard #121 disclosed and left to the
+        canvas's disabled Run button. The refusal arrives as an
+        ``execution_error`` flagged ``rejected`` and this socket stays
+        attached to the run that is actually going, which is the more useful
+        of the two.
         """
         service = self._service
         if service is None:
@@ -344,11 +359,29 @@ class _ExecutionSocket:
         try:
             result = await service.submit(graph, options=options,
                                           session=session)
-        except (RunSubmitError, RunServiceUnavailable) as exc:
+        except RunSubmitError as exc:
             # The pre-v2 handler reported a graph the engine refused as
             # ``execution_error``; an envelope it refuses is the same class
             # of thing to a user, so it reads the same on the canvas.
             await self._send({"type": "execution_error", "error": str(exc)})
+            return
+        except RunServiceUnavailable as exc:
+            # A REFUSAL, not a failure — and the difference is load-bearing
+            # on the canvas. Nothing started, nothing failed, and whatever
+            # this socket was already running is still running: the common
+            # case is #123's one-run-per-session rule turning down a second
+            # click. A plain ``execution_error`` puts the tab into `error`,
+            # which re-enables Run and disables Stop while the first run is
+            # mid-epoch — the user loses the ability to stop the very run
+            # they are watching.
+            #
+            # A FLAG rather than a new frame type, so a client that has
+            # never heard of it still shows the message (today's behaviour)
+            # instead of silently doing nothing with an unknown type. The
+            # attached run's id rides along so a client can confirm the
+            # refusal is about the run it is already following.
+            await self._send({"type": "execution_error", "error": str(exc),
+                              "rejected": True, "run_id": self._run_id})
             return
         except asyncio.CancelledError:
             raise
