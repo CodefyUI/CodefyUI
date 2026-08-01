@@ -350,6 +350,16 @@ async def test_ws_long_alphanumeric_text_output_is_not_an_image():
     text_entries = _entries(print_done, "text")
     assert [e["text"] for e in text_entries] == [long_text]
 
+    # The pre-#117 flat fields are deliberately gone from every frame:
+    # `outputs` is the single channel, so nothing is duplicated on the wire.
+    # (The frontend still *reads* them, for the one-release window in which it
+    # may be talking to an older prebuilt backend -- but we never send them.)
+    for msg in messages:
+        if msg["type"] != "node_status":
+            continue
+        for removed in ("log", "image", "progress", "output_summary"):
+            assert removed not in msg, f"{removed!r} still emitted in {msg}"
+
 
 @pytest.mark.asyncio
 async def test_ws_declared_image_port_emits_a_typed_image_output():

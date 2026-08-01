@@ -33,8 +33,14 @@ const LOG_TYPE_BG = {
 // Before #117 progress events and images had no place in the message
 // schema, so they were smuggled through the log stream as prefixed strings
 // and parsed back out here. Log entries now carry `kind` + a typed payload.
-// This parsing stays for one release so a frontend built from source still
-// renders when it is talking to an older prebuilt backend.
+//
+// Note for whoever removes this: the panel branch is NOT the load-bearing
+// compatibility path. useGraphExecution already converts an older backend's
+// flat `log` / `image` / `progress` fields into typed entries before any log
+// reaches this component, so nothing in-tree produces a prefixed message any
+// more. What survives here is only a message some out-of-tree caller of
+// addTabLog might still hand us. Drop it together with the hook's legacy
+// fallback, not before.
 const LEGACY_PROGRESS_PREFIX = '__PROGRESS__:';
 const LEGACY_IMAGE_PREFIX = '__IMAGE__:';
 

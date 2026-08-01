@@ -100,8 +100,13 @@ export function useGraphExecution() {
           });
         }
 
-        const text = firstOf('text')?.text ?? legacy.log;
-        if (text) {
+        // One log line per text output, in the order the backend listed them
+        // — a node may emit several (and #130's chart pack will emit text
+        // alongside other kinds).
+        const texts = ofKind('text').map((o) => o.text);
+        if (legacy.log) texts.push(legacy.log);
+        for (const text of texts) {
+          if (!text) continue;
           store.addTabLog(tabId, {
             nodeId: data.node_id,
             message: String(text),

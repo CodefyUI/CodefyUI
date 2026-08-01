@@ -302,6 +302,23 @@ describe('useGraphExecution - node_status handler', () => {
     expect(tab.outputSummaries.n1).toEqual({ out: { shape: [1] } });
   });
 
+  it('appends one log entry per text output, in backend order', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'completed',
+        outputs: [
+          { output_kind: 'text', text: 'first line' },
+          { output_kind: 'text', text: 'second line' },
+        ],
+      });
+    });
+    const texts = tabById('t1').logs.filter((l: any) => l.kind === 'text');
+    expect(texts.map((l: any) => l.message)).toEqual(['first line', 'second line']);
+  });
+
   it('appends one log entry per image output when a node declares several', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
