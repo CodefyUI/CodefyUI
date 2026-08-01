@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { OutputSummary } from '../../types';
+import { useI18n } from '../../i18n';
 import styles from '../ResultsPanel/ResultsPanel.module.css';
 
 interface EdgeDataTooltipProps {
@@ -10,6 +11,11 @@ interface EdgeDataTooltipProps {
   portName: string;
   summary: OutputSummary;
   onClose: () => void;
+  /**
+   * Open the full statistics for the value on this edge (#129). Omitted when
+   * nothing has run, since there would be no captured value to summarise.
+   */
+  onViewStats?: () => void;
 }
 
 function formatSummary(summary: OutputSummary) {
@@ -50,8 +56,18 @@ function formatSummary(summary: OutputSummary) {
   return rows;
 }
 
-export function EdgeDataTooltip({ x, y, sourceLabel, targetLabel, portName, summary, onClose }: EdgeDataTooltipProps) {
+export function EdgeDataTooltip({
+  x,
+  y,
+  sourceLabel,
+  targetLabel,
+  portName,
+  summary,
+  onClose,
+  onViewStats,
+}: EdgeDataTooltipProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -87,6 +103,15 @@ export function EdgeDataTooltip({ x, y, sourceLabel, targetLabel, portName, summ
           <span className={styles.edgeTooltipValue}>{row.value}</span>
         </div>
       ))}
+      {onViewStats && (
+        // The summary above is whatever the run streamed — a shape, a dtype,
+        // maybe a min/max. This is the way to the real distribution, computed
+        // on the server, so the ANSWER is a kilobyte whatever the tensor
+        // weighs (the computing still costs the server real time).
+        <button type="button" className={styles.edgeTooltipLink} onClick={onViewStats}>
+          {t('edge.viewStats')} &rarr;
+        </button>
+      )}
     </div>
   );
 }

@@ -2,17 +2,34 @@
 
 Complements the WebSocket stream by letting the frontend lazily fetch
 full tensor values (or their slices) for the Teaching Inspector panel.
+
+The ``/stats`` route is the counterpart for data too big to fetch: it
+summarises a value server-side (see ``core.port_stats``) so the answer to
+"what does this data look like" costs a kilobyte instead of two gigabytes.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..config import settings
+from ..core.port_stats import PortStatsCache, compute_port_stats
 from ..core.run_output_store import RunOutputStore
 
 router = APIRouter(prefix="/api/execution/outputs", tags=["execution-outputs"])
+
+#: Ceiling on stat computations running at once. The Stats tab asks for every
+#: port of a node in parallel, and each one is real CPU work over a real
+#: tensor, so the default executor's ~32 threads would let a few clicks
+#: saturate the machine the graph is training on. An executor rather than an
+#: ``asyncio.Semaphore`` because executors are not bound to an event loop —
+#: the test transport runs each test on its own.
+_STATS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="port-stats")
 
 
 def _get_store(request: Request) -> RunOutputStore:
@@ -20,6 +37,29 @@ def _get_store(request: Request) -> RunOutputStore:
     if store is None:
         raise HTTPException(status_code=503, detail="run_output_store not initialised")
     return store
+
+
+def _get_stats_cache(request: Request) -> PortStatsCache:
+    """The app-wide stats LRU, created on first use if the lifespan didn't.
+
+    ``main.lifespan`` installs one for the real server. The fallback is for
+    the test transport, which never runs the lifespan (see
+    ``tests/conftest.py``) — and a cache is an optimisation, so a missing one
+    is worth creating rather than 503-ing over.
+    """
+    cache = getattr(request.app.state, "port_stats_cache", None)
+    if cache is None:
+        cache = PortStatsCache(max_bytes=settings.STATS_CACHE_MAX_BYTES)
+        request.app.state.port_stats_cache = cache
+    return cache
+
+
+def _not_captured(what: str) -> str:
+    """404 detail that names the switch the user probably left off."""
+    return (
+        f"{what}. Turn on Record outputs (the Rec toggle in the toolbar) and "
+        "re-run the graph to capture port data."
+    )
 
 
 def _parse_slice(slice_str: str) -> tuple[Any, ...] | None:
@@ -291,6 +331,58 @@ async def get_grad_index(run_id: str, node_id: str, request: Request):
             })
             seen.add(port)
     return entries
+
+
+@router.get("/{run_id}/{node_id}/{port}/stats")
+async def get_output_stats(run_id: str, node_id: str, port: str, request: Request):
+    """Summary statistics for one captured port, computed server-side.
+
+    Never proportional to the input: a tensor comes back as a fixed set of
+    scalars plus a 64-bin histogram (or, for label tensors, up to 64 value
+    counts), which is a kilobyte or two whatever the tensor weighs.
+
+    The compute runs on a worker thread. A 2 GB tensor takes about a second of
+    real CPU work, and doing that on the event loop would stall every open
+    WebSocket — including the run that produced the tensor.
+    """
+    store = _get_store(request)
+    if not await store.has_run(run_id):
+        raise HTTPException(
+            status_code=404,
+            detail=_not_captured(f"run '{run_id}' has no captured outputs"),
+        )
+    slot = await store.get_with_version(run_id, node_id, port)
+    if slot is None or slot[0] is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_not_captured(
+                f"nothing captured for '{node_id}.{port}' in run '{run_id}'"
+            ),
+        )
+    value, version = slot
+
+    cache = _get_stats_cache(request)
+    # The store's write serial is part of the KEY. A node inside a loop
+    # overwrites one port several times in a run, and the replacement can
+    # land on the freed storage of the value before it — same address, same
+    # shape, same dtype — so anything derived from the object itself would
+    # happily answer for a tensor that no longer exists.
+    key = (run_id, node_id, port, version)
+    payload = cache.get(key)
+    if payload is None:
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(
+            _STATS_EXECUTOR,
+            functools.partial(
+                compute_port_stats,
+                value,
+                sample_threshold=settings.STATS_SAMPLE_THRESHOLD,
+                sample_size=settings.STATS_SAMPLE_SIZE,
+            ),
+        )
+        payload = {"run_id": run_id, "node_id": node_id, "port": port, **stats}
+        cache.put(key, payload)
+    return payload
 
 
 @router.get("/{run_id}/{node_id}/{port}")

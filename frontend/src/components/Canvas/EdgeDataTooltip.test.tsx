@@ -7,7 +7,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderTooltip(summary: OutputSummary, onClose = vi.fn()) {
+function renderTooltip(
+  summary: OutputSummary,
+  onClose = vi.fn(),
+  onViewStats?: () => void,
+) {
   const utils = render(
     <EdgeDataTooltip
       x={100}
@@ -17,6 +21,7 @@ function renderTooltip(summary: OutputSummary, onClose = vi.fn()) {
       portName="out"
       summary={summary}
       onClose={onClose}
+      onViewStats={onViewStats}
     />,
   );
   return { ...utils, onClose };
@@ -120,6 +125,28 @@ describe('EdgeDataTooltip', () => {
     unmount();
     fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.mouseDown(document.body);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // ── "View stats" (#129) ───────────────────────────────────────────────────
+
+  it('offers no stats link when no handler is supplied (nothing has run)', () => {
+    renderTooltip({ type: 'Tensor' });
+    expect(screen.queryByRole('button', { name: /View stats/ })).toBeNull();
+  });
+
+  it('calls onViewStats when the link is clicked', () => {
+    const onViewStats = vi.fn();
+    renderTooltip({ type: 'Tensor' }, vi.fn(), onViewStats);
+    fireEvent.click(screen.getByRole('button', { name: /View stats/ }));
+    expect(onViewStats).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not close the tooltip just because the link was pressed', () => {
+    // mousedown inside must stay inert — the click handler owns what happens
+    // next, and a close racing it would unmount before the click landed.
+    const { onClose } = renderTooltip({ type: 'Tensor' }, vi.fn(), vi.fn());
+    fireEvent.mouseDown(screen.getByRole('button', { name: /View stats/ }));
     expect(onClose).not.toHaveBeenCalled();
   });
 });

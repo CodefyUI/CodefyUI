@@ -251,6 +251,11 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     x: number; y: number;
     sourceLabel: string; targetLabel: string;
     portName: string; summary: OutputSummary;
+    // Where the value on this edge comes from and where it lands. "View
+    // stats" opens the CONSUMER's modal, because the port reads there as the
+    // input it is — and the Stats tab resolves an input back to the producing
+    // node's capture, so it is the same numbers either way (#129).
+    sourceId: string; targetId: string;
   } | null>(null);
 
   const outputSummaries = useTabStore((s) => {
@@ -483,6 +488,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         targetLabel: targetNode?.data.label ?? edge.target.slice(0, 8),
         portName: sourceHandle,
         summary: nodeSummaries[sourceHandle],
+        sourceId,
+        targetId: edge.target,
       });
     },
     [outputSummaries, activeTab.nodes]
@@ -666,6 +673,18 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           portName={edgeTooltip.portName}
           summary={edgeTooltip.summary}
           onClose={() => setEdgeTooltip(null)}
+          onViewStats={
+            // No run, no capture, nothing to summarise — so no link either.
+            activeTab.lastRunId
+              ? () => {
+                  openNodeDetail(edgeTooltip.targetId, {
+                    tab: 'stats',
+                    port: `${edgeTooltip.sourceId}::${edgeTooltip.portName}`,
+                  });
+                  setEdgeTooltip(null);
+                }
+              : undefined
+          }
         />
       )}
 

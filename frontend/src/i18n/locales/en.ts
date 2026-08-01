@@ -615,7 +615,33 @@ const en = {
   'nodeDetail.captures.summaryTitle': 'Shapes from the last run',
   'nodeDetail.captures.noSummary': 'Nothing recorded for this node yet',
   'nodeDetail.stats.title': 'Node statistics',
-  'nodeDetail.stats.placeholder': 'Timing, memory and parameter counts arrive here in a later release.',
+  'nodeDetail.stats.loading': 'Computing…',
+  'nodeDetail.stats.shape': 'Shape',
+  'nodeDetail.stats.dtype': 'Dtype',
+  'nodeDetail.stats.device': 'Device',
+  'nodeDetail.stats.count': 'Count',
+  'nodeDetail.stats.mean': 'Mean',
+  'nodeDetail.stats.std': 'Std',
+  'nodeDetail.stats.min': 'Min',
+  'nodeDetail.stats.max': 'Max',
+  'nodeDetail.stats.nan': 'NaN',
+  'nodeDetail.stats.inf': 'Inf',
+  'nodeDetail.stats.zeros': 'Zeros',
+  'nodeDetail.stats.quantiles': 'Quantiles',
+  'nodeDetail.stats.distribution': 'Distribution',
+  'nodeDetail.stats.classBalance': 'Class balance',
+  'nodeDetail.stats.sampled': 'sampled {size}',
+  'nodeDetail.stats.sampledNote':
+    'Mean, std, quantiles and the histogram come from a sample of this size. Count, min, max, NaN/Inf counts and class balance are exact.',
+  'nodeDetail.stats.rows': 'Rows',
+  'nodeDetail.stats.columns': 'Columns',
+  'nodeDetail.stats.column': 'Column',
+  'nodeDetail.stats.missing': 'Missing',
+  'nodeDetail.stats.unique': 'Unique',
+  'nodeDetail.stats.top': 'Most common',
+  'nodeDetail.stats.columnsTruncated': 'Showing {shown} of {total} columns',
+  'nodeDetail.stats.unsupported': 'No statistics for this value type ({type})',
+  'nodeDetail.stats.notCaptured': 'Nothing captured for this port — re-run with Rec on',
   'nodeDetail.docs.description': 'Description',
   'nodeDetail.docs.noDescription': 'This node ships no description.',
   'nodeDetail.docs.params': 'Parameters',
@@ -626,6 +652,13 @@ const en = {
   'nodeDetail.docs.default': 'default',
   'nodeDetail.docs.options': 'options',
   'nodeDetail.docs.range': 'range',
+
+  // Edge data tooltip
+  'edge.viewStats': 'View stats',
+
+  // Shared plots
+  'plot.noDistribution': 'no distribution',
+  'plot.peak': 'peak {count}',
 } as const;
 
 export type TranslationKey = keyof typeof en;

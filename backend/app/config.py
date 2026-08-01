@@ -120,6 +120,39 @@ class Settings(BaseSettings):
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
     EXTRA_ALLOWED_HOSTS: str = ""
 
+    # ── Port statistics (#129) ─────────────────────────────────────────
+    # GET /api/execution/outputs/{run}/{node}/{port}/stats summarises a
+    # captured value instead of shipping it. Above this element count the
+    # DISTRIBUTION stats (mean/std/quantiles/histogram) are computed from a
+    # deterministic seeded sample and the response is marked
+    # `"sampled": true`. Note what this does NOT cover: count, min, max,
+    # nan_count, inf_count, zero_frac and integer class balance stay exact
+    # at every size, because they are O(n) reductions with no sort — and a
+    # sampled NaN count is not an answer anybody can debug with.
+    #
+    # 4M is a measured number, not a round one: quantiles need a sort, and
+    # torch.sort runs ~0.18us/element (0.7s at 4M, 3s at 16M, 9s at 50M). So
+    # 4M is the largest tensor this can summarise EXACTLY while still feeling
+    # like a click. Raising it buys exactness and pays in seconds, linearly.
+    # (torch.quantile additionally refuses inputs over 16.7M, but that is a
+    # corroborating observation, not the binding constraint — this module
+    # sorts and interpolates itself precisely so it is not bound by it.)
+    STATS_SAMPLE_THRESHOLD: int = 4_000_000
+    # Elements in that sample. 1M sorts in ~0.17s and pins a quantile to
+    # about 0.1% in probability space — far finer than a 64-bar histogram
+    # can draw, so the chart is never the thing the sample limits.
+    STATS_SAMPLE_SIZE: int = 1_000_000
+    # Byte budget for the computed-stats LRU. BYTES, not entries: one payload
+    # ranges from ~2 KB (a 64-bin histogram) to ~50 KB (a wide tabular
+    # summary), so an entry count would be a limit in name only. 8 MB holds
+    # hundreds of ports; a run's worth of inspection never approaches it.
+    #
+    # Measured as SERIALIZED size, which is what the response costs and what
+    # #135 will bound everywhere. Resident size is some multiple of it —
+    # Python dicts, str keys and boxed floats run roughly 5-10x — so read this
+    # as a cap on payload volume, not as an RSS guarantee.
+    STATS_CACHE_MAX_BYTES: int = 8 * 1024 * 1024
+
     NODES_DIR: Path = Path(__file__).parent / "nodes"
     CUSTOM_NODES_DIR: Path = Path(__file__).parent / "custom_nodes"
     GRAPHS_DIR: Path = Path(__file__).parent.parent / "data" / "graphs"

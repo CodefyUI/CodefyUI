@@ -457,6 +457,28 @@
   text-align: right;
 }
 
+/* "View stats →" (#129) — the way from a streamed summary to the real
+   server-computed distribution. */
+.edgeTooltipLink {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 4px 0 0;
+  border: none;
+  border-top: 1px solid #3a3a3a;
+  background: none;
+  color: #67e8f9;
+  font-size: 0.75rem;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.edgeTooltipLink:hover {
+  color: #a5f3fc;
+  text-decoration: underline;
+}
+
 /* Training summary stats */
 .trainingSummary {
   display: flex;
