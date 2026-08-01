@@ -76,6 +76,41 @@ const en = {
   'palette.hint': 'Drag nodes onto the canvas',
   'palette.composite': 'Composite',
   'palette.basic': 'Basic',
+  'palette.searchPresets': 'Search presets...',
+  'palette.presets.empty': 'No presets available',
+  'palette.presets.noMatch': 'No matching presets',
+  'palette.presets.hint': 'Drag presets onto the canvas',
+
+  // Sidebar rail (#126)
+  'sidebar.rail.aria': 'Sidebar sections',
+  'sidebar.tab.nodes': 'Nodes',
+  'sidebar.tab.presets': 'Presets',
+  'sidebar.tab.templates': 'Templates',
+  'sidebar.tab.custom': 'Custom & Plugins',
+  'sidebar.collapse': 'Collapse sidebar',
+  'sidebar.expand': 'Expand sidebar',
+  'sidebar.resize': 'Resize sidebar',
+  'sidebar.jumpTo': 'Jump to category',
+  'sidebar.expandAll': 'Expand all',
+  'sidebar.collapseAll': 'Collapse all',
+  'sidebar.refresh': 'Refresh',
+
+  // Sidebar: Templates tab (#126)
+  'templates.search': 'Search examples...',
+  'templates.loading': 'Loading examples...',
+  'templates.loadFail': 'Failed to load examples: {error}',
+  'templates.empty': 'No examples available',
+  'templates.noMatch': 'No matching examples',
+  'templates.hint': 'Click an example to open it',
+
+  // Sidebar: Custom & Plugins tab (#126)
+  'customTab.section.nodes': 'Custom Nodes',
+  'customTab.section.plugins': 'Plugins',
+  'customTab.manage': 'Manage...',
+  'customTab.nodes.empty': 'No custom nodes yet',
+  'customTab.plugins.empty': 'No plugins installed',
+  'customTab.plugins.hint': 'Install packs with the cdui plugin CLI',
+  'customTab.loadFail': 'Failed to load: {error}',
 
   // Config Panel
   'config.title': 'Node Config',
@@ -241,6 +276,7 @@ const en = {
   'shortcuts.copy': 'Copy selected nodes',
   'shortcuts.paste': 'Paste nodes',
   'shortcuts.delete': 'Delete selected',
+  'shortcuts.toggleSidebar': 'Collapse / expand sidebar',
   'shortcuts.quickSearch': 'Quick node search',
   'shortcuts.help': 'Show this help',
   'shortcuts.doubleClickKey': 'Double-click',

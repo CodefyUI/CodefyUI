@@ -3,6 +3,19 @@ import { create } from 'zustand';
 export type FontSize = 'small' | 'default' | 'large';
 export type EdgeStyle = 'circuit' | 'curve';
 
+/** Which section the left sidebar's icon rail has open (#126). */
+export type SidebarTab = 'nodes' | 'presets' | 'templates' | 'custom';
+
+/** Rail order — also the arrow-key navigation order. */
+export const SIDEBAR_TABS = ['nodes', 'presets', 'templates', 'custom'] as const;
+
+/** Content-panel width bounds. The rail's own ~44px sits outside these. */
+export const SIDEBAR_MIN_WIDTH = 180;
+export const SIDEBAR_MAX_WIDTH = 520;
+/** Matches the pre-#126 fixed palette width, so an existing install's sidebar
+ * is exactly where it was before the rail landed. */
+export const SIDEBAR_DEFAULT_WIDTH = 250;
+
 interface UIState {
   tooltipsEnabled: boolean;
   toggleTooltips: () => void;
@@ -43,6 +56,16 @@ interface UIState {
    * traces ('circuit') or the classic curved beziers ('curve'). */
   edgeStyle: EdgeStyle;
   setEdgeStyle: (style: EdgeStyle) => void;
+  /** Left sidebar (#126). The rail is always visible; `sidebarCollapsed` hides
+   * only the content panel, handing its width back to the canvas. All three
+   * are persisted so a reload restores the exact sidebar the user left. */
+  sidebarTab: SidebarTab;
+  setSidebarTab: (tab: SidebarTab) => void;
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebarCollapsed: () => void;
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
@@ -52,6 +75,9 @@ const LAYOUT_MODE_KEY = 'codefyui-last-layout-mode';
 const FONT_SIZE_KEY = 'codefyui-font-size';
 const GLOBAL_DEVICE_KEY = 'codefyui-global-device';
 const EDGE_STYLE_KEY = 'codefyui-edge-style';
+const SIDEBAR_TAB_KEY = 'codefyui-sidebar-tab';
+const SIDEBAR_COLLAPSED_KEY = 'codefyui-sidebar-collapsed';
+const SIDEBAR_WIDTH_KEY = 'codefyui-sidebar-width';
 
 const loadGlobalDevice = (): string => localStorage.getItem(GLOBAL_DEVICE_KEY) || 'cpu';
 
@@ -65,6 +91,25 @@ const loadLayoutMode = (): 'experiments' | 'all' | 'selected' => {
   const saved = localStorage.getItem(LAYOUT_MODE_KEY);
   if (saved === 'experiments' || saved === 'all' || saved === 'selected') return saved;
   return 'experiments';
+};
+
+/** UI state persisted before #126 has no sidebar-tab entry at all, and a value
+ * written by some other build could be anything. Both cases land on the Nodes
+ * tab rather than leaving the rail with nothing selected. */
+const loadSidebarTab = (): SidebarTab => {
+  const saved = localStorage.getItem(SIDEBAR_TAB_KEY);
+  return SIDEBAR_TABS.includes(saved as SidebarTab) ? (saved as SidebarTab) : 'nodes';
+};
+
+const clampSidebarWidth = (width: number): number =>
+  Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
+
+/** A missing, non-numeric or out-of-range persisted width falls back to (or is
+ * clamped into) the usable range — a 0px or 4000px panel is unrecoverable
+ * without clearing storage. */
+const loadSidebarWidth = (): number => {
+  const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  return Number.isFinite(saved) && saved > 0 ? clampSidebarWidth(saved) : SIDEBAR_DEFAULT_WIDTH;
 };
 
 const loadFontSize = (): FontSize => {
@@ -125,5 +170,27 @@ export const useUIStore = create<UIState>((set) => ({
   setEdgeStyle: (style) => {
     localStorage.setItem(EDGE_STYLE_KEY, style);
     set({ edgeStyle: style });
+  },
+  sidebarTab: loadSidebarTab(),
+  setSidebarTab: (tab) => {
+    localStorage.setItem(SIDEBAR_TAB_KEY, tab);
+    set({ sidebarTab: tab });
+  },
+  sidebarCollapsed: localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+  setSidebarCollapsed: (collapsed) => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+    set({ sidebarCollapsed: collapsed });
+  },
+  toggleSidebarCollapsed: () =>
+    set((state) => {
+      const next = !state.sidebarCollapsed;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return { sidebarCollapsed: next };
+    }),
+  sidebarWidth: loadSidebarWidth(),
+  setSidebarWidth: (width) => {
+    const next = clampSidebarWidth(width);
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+    set({ sidebarWidth: next });
   },
 }));

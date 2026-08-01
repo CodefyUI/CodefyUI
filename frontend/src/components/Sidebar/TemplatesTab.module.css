@@ -1,0 +1,43 @@
+/* ── Templates tab: example rows (#126) ── */
+.exampleItem {
+  display: block;
+  width: calc(100% - 12px);
+  margin: 2px 6px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.exampleItem:hover {
+  background: #232323;
+  border-color: #3a3a3a;
+}
+
+.exampleName {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #ddd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exampleDesc {
+  font-size: 0.6875rem;
+  color: #777;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.exampleMeta {
+  font-size: 0.625rem;
+  color: #555;
+  margin-top: 3px;
+}

@@ -463,6 +463,31 @@ export async function loadExample(path: string) {
   return res.json();
 }
 
+// ── Plugins ──
+
+/** One installed plugin pack, as listed by `GET /api/plugins`.
+ *
+ * The endpoint returns disabled packs too (with `enabled: false` and an empty
+ * `nodes` list, since a disabled pack is not in the registry), so the sidebar
+ * can show them greyed out instead of pretending they are not installed. Only
+ * the fields the UI renders are typed here; the endpoint returns more.
+ */
+export interface PluginSummary {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  nodes: string[];
+  source_kind?: string;
+}
+
+export async function listPlugins(): Promise<PluginSummary[]> {
+  const res = await fetch(`${BASE_URL}/plugins`);
+  if (!res.ok) throw new Error(`Failed to list plugins: ${res.statusText}`);
+  return res.json();
+}
+
 export async function reloadNodes() {
   const res = await apiFetch(`${BASE_URL}/nodes/reload`, { method: 'POST' });
   if (!res.ok) throw new Error(`Reload failed: ${res.statusText}`);

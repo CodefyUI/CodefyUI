@@ -41,6 +41,25 @@ export function getTokenColor(index: number): string {
   return TOKEN_COLORS[index % TOKEN_COLORS.length];
 }
 
+/**
+ * Restrained material-style hue per builtin EXAMPLE category. Unknown
+ * categories (plugin-defined folders) fall back to `EXAMPLE_CATEGORY_FALLBACK`.
+ * Shared by the empty-canvas gallery and the sidebar's Templates tab so the
+ * same example wears the same colour in both.
+ */
+export const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
+  Usage_Example: '#4CAF50',
+  Model_Architecture: '#2196F3',
+  Classical: '#26A69A',
+  LLM: '#AB47BC',
+  Diffusion: '#EC407A',
+  Transformer: '#26C6DA',
+  RNN: '#5C6BC0',
+  RL: '#EF5350',
+};
+
+export const EXAMPLE_CATEGORY_FALLBACK = '#FF9800';
+
 export const DIFFICULTY_COLORS: Record<string, string> = {
   beginner: '#4CAF50',
   intermediate: '#FF9800',

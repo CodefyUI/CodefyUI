@@ -1,0 +1,68 @@
+/* ── Vertical icon rail (#126) ──
+   Always visible, fixed width; the content panel collapses out from beside it.
+   Crafted-dark surface: a touch darker than the panel so the rail reads as
+   chrome rather than content, with the single teal accent marking the open
+   tab. */
+.rail {
+  width: 44px;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  box-sizing: border-box;
+  background: #101010;
+}
+
+.railButton {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #6b6b6b;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.railButton:hover {
+  color: #d8d8d8;
+  background: #1c1c1c;
+}
+
+.railButton:focus-visible {
+  outline: 1px solid #06b6d4;
+  outline-offset: 1px;
+}
+
+/* Open tab: teal glyph plus the flush-left marker VS Code's activity bar uses,
+   so the active section is readable at a glance even peripherally. */
+.railButtonActive {
+  color: #22d3ee;
+  background: #1a1a1a;
+}
+
+.railButtonActive::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: #06b6d4;
+}
+
+/* Pushes the collapse toggle to the bottom of the rail. */
+.railSpacer {
+  flex: 1;
+  min-height: 8px;
+}

@@ -23,12 +23,19 @@ describe('ShortcutsModal', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
     expect(screen.getByText(useI18n.getState().t('shortcuts.title'))).toBeTruthy();
-    // 8 shortcut rows → 8 <kbd> elements.
-    expect(document.querySelectorAll('kbd').length).toBe(8);
+    // 9 shortcut rows → 9 <kbd> elements.
+    expect(document.querySelectorAll('kbd').length).toBe(9);
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();
     expect(screen.getByText('?')).toBeTruthy();
+  });
+
+  it('lists the sidebar toggle (#126) with its platform modifier', () => {
+    useUIStore.setState({ shortcutsModalOpen: true });
+    render(<ShortcutsModal />);
+    expect(screen.getByText(/(Cmd|Ctrl)\+B$/)).toBeTruthy();
+    expect(screen.getByText(useI18n.getState().t('shortcuts.toggleSidebar'))).toBeTruthy();
   });
 
   it('clicking the overlay toggles (closes) the modal', () => {

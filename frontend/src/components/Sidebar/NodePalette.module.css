@@ -1,19 +1,58 @@
-/* ── Sidebar container ── */
+/* ── Sidebar shell: icon rail + content panel (#126) ── */
 .sidebar {
-  width: 250px;
   height: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
   background: #161616;
   border-right: 1px solid #2a2a2a;
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
 }
 
-/* ── Header ── */
+/* Content panel. Width is an inline style driven by the persisted store value,
+   so it neither grows nor shrinks with the surrounding layout. */
+.panel {
+  position: relative;
+  height: 100%;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  border-left: 1px solid #2a2a2a;
+}
+
+/* Drag strip on the sidebar's outer edge — a real layout column, invisible
+   until hovered. */
+.resizeHandle {
+  width: 4px;
+  flex-shrink: 0;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.resizeHandle:hover {
+  background: rgba(6, 182, 212, 0.35);
+}
+
+/* ── Panel header ── */
 .header {
   padding: 12px 10px 8px;
   border-bottom: 1px solid #2a2a2a;
   flex-shrink: 0;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.headerRow .headerTitle {
+  margin-bottom: 0;
+  flex: 1;
 }
 
 .headerTitle {
@@ -23,6 +62,9 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
   margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Search input ── */
@@ -38,39 +80,117 @@
   box-sizing: border-box;
 }
 
-/* ── Sub-header separator (Composite / Basic) ── */
-.subHeader {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px 2px;
+.searchInput:focus {
+  border-color: #0e7490;
 }
 
-.subHeaderLine {
+/* ── Flexible middle region (list / states) ── */
+.panelBody {
   flex: 1;
-  height: 1px;
-  background: #333;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.subHeaderText {
-  font-size: 0.625rem;
-  font-weight: 600;
-  color: #555;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  white-space: nowrap;
+/* ── Category list scaffolding ── */
+.listWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-/* ── Content area ── */
+.listToolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 3px 6px 1px;
+  flex-shrink: 0;
+}
+
+.toolbarButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #777;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.toolbarButton:hover {
+  color: #ddd;
+  background: #232323;
+  border-color: #333;
+}
+
+.listBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+/* ── Scrollable content area ── */
 .content {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding-top: 4px;
+}
+
+/* ── Mini jump index pinned to the panel's inner edge ── */
+.jumpList {
+  flex-shrink: 0;
+  width: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 0;
+  border-left: 1px solid #202020;
+  overflow: hidden;
+}
+
+.jumpDot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 10px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.jumpDotInner {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  opacity: 0.55;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.jumpDot:hover .jumpDotInner,
+.jumpDot:focus-visible .jumpDotInner {
+  opacity: 1;
+  transform: scale(1.35);
 }
 
 /* ── Category section ── */
 .categorySection {
   margin-bottom: 4px;
+  scroll-margin-top: 4px;
 }
 
 .categoryButton {
@@ -99,6 +219,9 @@
   font-weight: 700;
   letter-spacing: 0.05em;
   flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .categoryCount {

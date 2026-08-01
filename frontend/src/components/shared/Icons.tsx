@@ -95,3 +95,102 @@ export function CloseIcon({ size }: { size?: number }) {
     </Icon>
   );
 }
+
+// ── Sidebar rail (#126) ──────────────────────────────────────────────────────
+
+/** Node library (a grid of blocks). */
+export function LibraryIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x={3} y={3} width={7} height={7} rx={1} />
+      <rect x={14} y={3} width={7} height={7} rx={1} />
+      <rect x={3} y={14} width={7} height={7} rx={1} />
+      <rect x={14} y={14} width={7} height={7} rx={1} />
+    </Icon>
+  );
+}
+
+/** Presets — several nodes stacked into one reusable block. */
+export function LayersIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </Icon>
+  );
+}
+
+/** Templates / examples. */
+export function BookIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+    </Icon>
+  );
+}
+
+/** Custom nodes and installed plugin packs. */
+export function PackageIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+      <line x1={12} y1={22.08} x2={12} y2={12} />
+    </Icon>
+  );
+}
+
+/** Collapse the sidebar into its rail. */
+export function PanelLeftCloseIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x={3} y={3} width={18} height={18} rx={2} />
+      <line x1={9} y1={3} x2={9} y2={21} />
+      <polyline points="16 15 13 12 16 9" />
+    </Icon>
+  );
+}
+
+/** Restore the sidebar from its rail. */
+export function PanelLeftOpenIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x={3} y={3} width={18} height={18} rx={2} />
+      <line x1={9} y1={3} x2={9} y2={21} />
+      <polyline points="14 9 17 12 14 15" />
+    </Icon>
+  );
+}
+
+/** Expand every category accordion. */
+export function ExpandAllIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="7 6 12 11 17 6" />
+      <polyline points="7 13 12 18 17 13" />
+    </Icon>
+  );
+}
+
+/** Collapse every category accordion. */
+export function CollapseAllIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="17 11 12 6 7 11" />
+      <polyline points="17 18 12 13 7 18" />
+    </Icon>
+  );
+}
+
+/** Re-fetch a list that came from the backend. */
+export function RefreshIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="23 4 23 10 17 10" />
+      <polyline points="1 20 1 14 7 14" />
+      <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+    </Icon>
+  );
+}

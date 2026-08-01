@@ -1,0 +1,127 @@
+/* ── Custom & Plugins tab (#126) ── */
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 4px;
+  border-bottom: 1px solid #242424;
+  margin-bottom: 2px;
+}
+
+.sectionTitle {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #888;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sectionCount {
+  font-size: 0.625rem;
+  color: #555;
+  flex: 1;
+}
+
+.manageButton {
+  font-size: 0.6875rem;
+  padding: 2px 7px;
+  background: #232323;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #bbb;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.manageButton:hover {
+  color: #22d3ee;
+  border-color: #0e7490;
+}
+
+.sectionEmpty {
+  padding: 10px;
+  font-size: 0.75rem;
+  color: #555;
+  text-align: center;
+}
+
+.sectionHint {
+  font-size: 0.6875rem;
+  color: #444;
+  margin-top: 3px;
+}
+
+.row {
+  padding: 6px 10px;
+  margin: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.row:hover {
+  background: #202020;
+  border-color: #2f2f2f;
+}
+
+.row[data-disabled='true'] {
+  opacity: 0.55;
+}
+
+.rowTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rowName {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #ddd;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.rowVersion {
+  font-size: 0.625rem;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.rowDesc {
+  font-size: 0.6875rem;
+  color: #777;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+.rowMeta {
+  font-size: 0.625rem;
+  color: #555;
+  margin-top: 3px;
+}
+
+.chipOn,
+.chipOff {
+  font-size: 0.5625rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.chipOn {
+  background: rgba(76, 175, 80, 0.13);
+  color: #4CAF50;
+}
+
+.chipOff {
+  background: rgba(158, 158, 158, 0.13);
+  color: #9E9E9E;
+}
