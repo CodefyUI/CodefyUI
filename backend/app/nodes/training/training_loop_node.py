@@ -147,9 +147,9 @@ def _prepare_optimizer(optimizer: Any, model: Any) -> tuple[Any, str]:
     accepted = set(inspect.signature(optimizer_cls.__init__).parameters)
     optimizer_kwargs = {k: v for k, v in optimizer.defaults.items() if k in accepted}
     logger.warning(
-        "Optimizer %s tracks %d parameters but the model has %d; it was built for a "
-        "different model, so a fresh one is being constructed and any optimizer "
-        "state is discarded.",
+        "Optimizer %s tracks %d parameter tensors that do not match the model's %d "
+        "in count or shape, so it was built for a different model: constructing a "
+        "fresh one and discarding any optimizer state.",
         optimizer_cls.__name__, len(tracked), len(model_params),
     )
     return optimizer_cls(model.parameters(), **optimizer_kwargs), "rebuilt"

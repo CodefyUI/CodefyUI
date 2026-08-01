@@ -45,9 +45,14 @@ TOL = dict(rtol=1e-5, atol=1e-7)
 
 @pytest.fixture
 def ckpt_path(request):
-    """A unique checkpoint filename under MODELS_DIR, removed afterwards."""
+    """A per-test checkpoint filename under MODELS_DIR, removed afterwards.
+
+    Derived from the test id rather than a random suffix so parametrized cases
+    never collide and a file left behind by a hard crash is traceable.
+    """
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    name = f"_resume_{abs(hash(request.node.nodeid)) % (10**10)}.pt"
+    stem = "".join(c if c.isalnum() else "_" for c in request.node.name)
+    name = f"_resume_{stem}.pt"
     yield name
     (settings.MODELS_DIR / name).unlink(missing_ok=True)
 
