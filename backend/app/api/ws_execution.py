@@ -241,10 +241,24 @@ class _ExecutionSocket:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # The socket went away mid-send, or the store is unhappy. Either
-            # way the RUN is untouched: this coroutine only ever reads.
-            logger.debug("run %s: event pump stopped early", run_id,
-                         exc_info=True)
+            # Two very different failures land here, and the RUN survives
+            # both — this coroutine only ever reads. Telling them apart by
+            # exception type is guesswork, so we let the SOCKET answer:
+            # trying to report the failure either works (the socket is
+            # alive, the client is now on "Running" with nothing coming, and
+            # needs to hear about it) or fails in turn (the socket is what
+            # went away, which is ordinary and not worth a warning).
+            try:
+                await self._send(_error(
+                    f"lost the event stream for run {run_id}; re-attach to "
+                    "resume"))
+            except Exception:
+                logger.debug("run %s: event pump stopped, the socket went "
+                             "away", run_id, exc_info=True)
+            else:
+                logger.warning(
+                    "run %s: event pump failed; the client is no longer "
+                    "following it", run_id, exc_info=True)
 
     async def attach(self, run_id: str, cursor: int, status: str) -> None:
         """Point this socket at *run_id*, replacing any previous attachment."""
@@ -371,6 +385,17 @@ class _ExecutionSocket:
         record = await service.store.get_run(run_id)
         if record is None:
             await self._send(_error(f"run '{run_id}' not found"))
+            return
+        # A cursor past the end of the log is always a client bug — an
+        # off-by-one, or a cursor kept from a DIFFERENT run. Accepting it
+        # would attach successfully and then deliver nothing, which looks
+        # exactly like a healthy attach to a quiet run: the worst possible
+        # failure mode for a client whose whole job is following along.
+        latest = await service.store.latest_cursor(run_id)
+        if cursor > latest:
+            await self._send(_error(
+                f"attach cursor {cursor} is past the end of run '{run_id}' "
+                f"(latest cursor {latest})"))
             return
         await self.attach(run_id, cursor, record.status)
 

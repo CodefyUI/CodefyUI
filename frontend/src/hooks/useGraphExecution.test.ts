@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useGraphExecution } from './useGraphExecution';
@@ -818,6 +819,9 @@ describe('useGraphExecution - re-attach on mount', () => {
     await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-done'));
     expect(ws.send).not.toHaveBeenCalled();
     expect(tabById('t1').status).toBe('idle');
+    // ...and the stale handle is dropped, so the Inspector shows "not run
+    // yet" rather than an empty view of a run nothing on screen describes.
+    await waitFor(() => expect(tabById('t1').lastRunId).toBeNull());
   });
 
   it('does not attach to a run the server has never heard of', async () => {
@@ -829,6 +833,7 @@ describe('useGraphExecution - re-attach on mount', () => {
 
     await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-gone'));
     expect(ws.send).not.toHaveBeenCalled();
+    await waitFor(() => expect(tabById('t1').lastRunId).toBeNull());
   });
 
   it('stays quiet when the server is unreachable', async () => {
@@ -864,12 +869,31 @@ describe('useGraphExecution - re-attach on mount', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  it('attaches only once when the effect runs twice (StrictMode)', async () => {
+  it('still attaches, exactly once, under StrictMode double-mounting', async () => {
+    // THE regression this guards: StrictMode is the app's dev configuration
+    // (main.tsx wraps <StrictMode>), and it runs the effect, its cleanup,
+    // then the effect again — synchronously, before any await resolves. A
+    // `cancelled` flag set by that cleanup made this fire ZERO times: pass 1
+    // claimed the key, pass 2 saw it claimed and returned, pass 1 then bailed
+    // on the flag. Everyone on `cdui dev` reloaded into an idle-looking tab
+    // with an invisible, unstoppable live run.
     getRunMock.mockResolvedValue({ id: 'r-strict', status: 'running' } as any);
     const ws = tabWatching('r-strict');
 
-    // Two mounts against the same tab+run: exactly what StrictMode does in
-    // dev, and a second attach would replay the whole log again.
+    renderHook(() => useGraphExecution(), { wrapper: StrictMode });
+
+    await waitFor(() => expect(ws.send).toHaveBeenCalledTimes(1));
+    expect(ws.send.mock.calls[0][0]).toEqual({
+      action: 'attach',
+      run_id: 'r-strict',
+      cursor: 0,
+    });
+  });
+
+  it('does not attach again on a genuinely later mount', async () => {
+    getRunMock.mockResolvedValue({ id: 'r-remount', status: 'running' } as any);
+    const ws = tabWatching('r-remount');
+
     const first = renderHook(() => useGraphExecution());
     await waitFor(() => expect(ws.send).toHaveBeenCalledTimes(1));
     first.unmount();
@@ -877,6 +901,37 @@ describe('useGraphExecution - re-attach on mount', () => {
     await waitFor(() => expect(getRunMock).toHaveBeenCalled());
 
     expect(ws.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('abandons the re-attach when the user starts a new run first', async () => {
+    // The race: between the status check and the attach, the user clicks Run.
+    // Their run is already submitted and attached; a late attach to the OLD
+    // run detaches it server-side, so the new one trains invisibly and Stop
+    // cancels the wrong one.
+    let releaseGetRun: (value: any) => void = () => {};
+    getRunMock.mockReturnValue(
+      new Promise((resolve) => {
+        releaseGetRun = resolve;
+      }) as any,
+    );
+    const ws = tabWatching('r-raced');
+
+    const { result } = renderHook(() => useGraphExecution());
+    await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('r-raced'));
+
+    await act(async () => {
+      await result.current.execute();
+    });
+    const sendsAfterRun = ws.send.mock.calls.length;
+    expect(ws.send.mock.calls[sendsAfterRun - 1][0].action).toBe('execute');
+
+    await act(async () => {
+      releaseGetRun({ id: 'r-raced', status: 'running' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(ws.send).toHaveBeenCalledTimes(sendsAfterRun);
+    expect(ws.send.mock.calls.some((c) => c[0].action === 'attach')).toBe(false);
   });
 
   it('does nothing for a tab that was never watching a run', async () => {
@@ -929,6 +984,49 @@ describe('useGraphExecution - re-attach after a dropped socket', () => {
     act(() => ws.emit('reconnected'));
 
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  it('unsticks the tab when the server refuses the re-attach', async () => {
+    // The reconnect path attaches with no preceding status check, so a
+    // refusal (an older backend answering "Unknown action", a store hiccup)
+    // would otherwise leave the tab on Running with nothing forwarding to
+    // it and Run disabled forever.
+    getRunMock.mockResolvedValue({ id: 'run-live', status: 'succeeded' } as any);
+    setTabs([makeTab('t1', { status: 'running', lastRunId: 'run-live', lastRunCursor: 4 })]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('error', { error: 'Unknown action: attach' }));
+
+    // The run's REAL status decides — not the error string, which may not
+    // even be about the attach.
+    await waitFor(() => expect(tabById('t1').status).toBe('completed'));
+    expect(tabById('t1').logs.some((l: any) => l.type === 'error')).toBe(true);
+  });
+
+  it('leaves a healthy run alone when an unrelated error arrives', async () => {
+    getRunMock.mockResolvedValue({ id: 'run-live', status: 'running' } as any);
+    setTabs([makeTab('t1', { status: 'running', lastRunId: 'run-live' })]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('error', { error: 'Unknown action: foobar' }));
+
+    await waitFor(() => expect(getRunMock).toHaveBeenCalledWith('run-live'));
+    expect(tabById('t1').status).toBe('running');
+  });
+
+  it('leaves the tab alone when the server cannot be reached at all', async () => {
+    getRunMock.mockRejectedValue(new Error('offline'));
+    setTabs([makeTab('t1', { status: 'running', lastRunId: 'run-live' })]);
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+
+    act(() => ws.emit('error', { error: 'something went wrong' }));
+
+    await waitFor(() => expect(getRunMock).toHaveBeenCalled());
+    // Not ours to declare over: the run may well still be training.
+    expect(tabById('t1').status).toBe('running');
   });
 });
 

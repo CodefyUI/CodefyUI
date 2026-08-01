@@ -557,6 +557,67 @@ async def test_attach_rejects_a_missing_or_unknown_run(run_env):
             assert "cursor" in (await _recv(ws))["error"]
 
 
+async def test_attach_refuses_a_cursor_past_the_end_of_the_log(run_env):
+    """Accepting one would attach successfully and deliver NOTHING.
+
+    Indistinguishable from a healthy attach to a quiet run — the worst
+    failure mode for a client whose only job is following along. An
+    off-by-one, or a cursor kept from a different run, should be loud.
+    """
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            attached = await _execute(ws, _graph())
+            run_id = attached["run_id"]
+            frames = await _recv_until(ws, "execution_complete")
+    latest = frames[-1]["cursor"]
+
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            # The last cursor is legal: nothing to replay, then live-tail.
+            await ws.send_text(json.dumps({"action": "attach",
+                                           "run_id": run_id,
+                                           "cursor": latest}))
+            assert (await _recv(ws))["type"] == "attached"
+
+            await ws.send_text(json.dumps({"action": "attach",
+                                           "run_id": run_id,
+                                           "cursor": latest + 1}))
+            frame = await _recv(ws)
+            assert frame["type"] == "error"
+            assert f"latest cursor {latest}" in frame["error"]
+
+
+async def test_a_broken_store_tells_the_client_instead_of_stalling(
+    run_env, monkeypatch,
+):
+    """A pump that dies mid-replay must not leave the client on "Running".
+
+    The socket is still open and nothing more is coming; without a frame
+    saying so, the canvas waits forever for a run that is, from its point of
+    view, silently gone.
+    """
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            attached = await _execute(ws, _graph())
+            run_id = attached["run_id"]
+            await _recv_until(ws, "execution_complete")
+    await _await_terminal(run_env.store, run_id)
+
+    async def exploding_get_events(*args, **kwargs):
+        raise RuntimeError("events table is gone")
+
+    monkeypatch.setattr(run_env.store, "get_events", exploding_get_events)
+
+    async with _client() as client:
+        async with aconnect_ws(_WS_PATH, client) as ws:
+            await ws.send_text(json.dumps({"action": "attach",
+                                           "run_id": run_id}))
+            assert (await _recv(ws))["type"] == "attached"
+            frame = await _recv(ws)
+            assert frame["type"] == "error"
+            assert "event stream" in frame["error"]
+
+
 async def test_a_malformed_message_does_not_kill_the_socket(run_env):
     async with _client() as client:
         async with aconnect_ws(_WS_PATH, client) as ws:

@@ -1,4 +1,5 @@
 import { useCallback, useEffect } from 'react';
+import type { ExecutionStatus } from '../types';
 import { useTabStore, type TabState } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
@@ -19,6 +20,14 @@ type WsHandlerEntry = {
  */
 const RESUMABLE = new Set(['running', 'queued']);
 
+/** What a finished run's status means for the tab that was watching it. */
+const TERMINAL_TAB_STATUS: Record<string, ExecutionStatus> = {
+  succeeded: 'completed',
+  failed: 'error',
+  cancelled: 'idle',
+  interrupted: 'idle',
+};
+
 /**
  * (tabId, runId) pairs this page load has already tried to re-attach to.
  *
@@ -26,6 +35,15 @@ const RESUMABLE = new Set(['running', 'queued']);
  * `attach` replaces the first subscription on the server — which would
  * replay the whole log a second time and double every line in the panel.
  * Module scope, because "once per page load" is exactly its lifetime.
+ *
+ * This set is the ONLY idempotency guard on that path, deliberately. The
+ * obvious companion — a `cancelled` flag set by the effect's cleanup —
+ * makes re-attach never fire at all under StrictMode: pass 1 claims the key
+ * before its first `await`, pass 1's cleanup sets the flag, pass 2 sees the
+ * claimed key and returns, and pass 1 then bails on the flag. Nobody
+ * attaches. Nothing here needs the flag anyway: the socket and the tab are
+ * owned by the store and outlive this hook, so a send that lands after
+ * unmount is still a send to a live socket about a live run.
  */
 const reattached = new Set<string>();
 
@@ -210,15 +228,41 @@ export function useGraphExecution() {
         useTabStore.getState().setTabStatus(tabId, 'running');
       };
 
-      // Protocol-level refusals (unknown run, bad cursor, no run service).
-      // Surfaced rather than swallowed: silence here is how a Stop that the
-      // server rejected looks exactly like a Stop that worked.
+      // Protocol-level refusals (unknown run, bad cursor, no run service,
+      // an older backend answering "Unknown action"). Surfaced rather than
+      // swallowed: silence here is how a Stop the server rejected looks
+      // exactly like a Stop that worked.
       const onProtocolError = (raw: unknown) => {
         const data = raw as { error?: string };
-        useTabStore.getState().addTabLog(tabId, {
+        const store = useTabStore.getState();
+        store.addTabLog(tabId, {
           message: `Execution server: ${data.error ?? 'unknown error'}`,
           type: 'error',
         });
+
+        // A refused attach leaves the tab on `running` with nothing
+        // forwarding to it — no frames, no terminal event, Run disabled
+        // forever. The reconnect path is where that bites, because it
+        // attaches without a preceding status check. Ask REST what the run
+        // is really doing rather than guessing from an error string that
+        // may not even be about the attach.
+        const tab = store.tabs.find((t) => t.id === tabId);
+        if (!tab || tab.status !== 'running') return;
+        const runId = tab.lastRunId;
+        void (async () => {
+          let run = null;
+          try {
+            run = runId ? await getRun(runId) : null;
+          } catch {
+            return; // server unreachable: it is not ours to declare over
+          }
+          if (run && RESUMABLE.has(run.status)) return; // still going
+          const current = useTabStore.getState();
+          const now = current.tabs.find((t) => t.id === tabId);
+          if (!now || now.status !== 'running' || now.lastRunId !== runId) return;
+          current.setTabStatus(
+            tabId, run ? TERMINAL_TAB_STATUS[run.status] ?? 'idle' : 'idle');
+        })();
       };
 
       // #121: every replayed or live frame carries the run it belongs to and
@@ -292,8 +336,6 @@ export function useGraphExecution() {
   // than it looks: without it a user could reload mid-training and start a
   // SECOND run against the same persistent weights.
   useEffect(() => {
-    let cancelled = false;
-
     const resume = async (tab: TabState) => {
       const runId = tab.lastRunId;
       if (!runId) return;
@@ -307,8 +349,24 @@ export function useGraphExecution() {
       } catch {
         return; // server unreachable — nothing to re-attach to
       }
-      if (cancelled || !run || !RESUMABLE.has(run.status)) return;
-      if (!(await ensureConnected(tab.ws)) || cancelled) return;
+      if (!run || !RESUMABLE.has(run.status)) {
+        // The run ended (or was pruned) while the tab was closed. Drop the
+        // handle: a restored `lastRunId` only ever means "in flight when we
+        // last saved", so keeping a finished one would point the Inspector
+        // at a run whose execution is nowhere on screen — and, once the
+        // server restarts, whose captured outputs are gone with it.
+        useTabStore.getState().setLastRunId(tab.id, null);
+        return;
+      }
+      if (!(await ensureConnected(tab.ws))) return;
+
+      // Re-read the LIVE tab at the last moment. The user can click Run
+      // while we are awaiting the status check or the socket: their run is
+      // already submitted and attached, and a late attach to the old run
+      // would detach it server-side, leaving the new one training
+      // invisibly — and Stop would then cancel the wrong one.
+      const live = useTabStore.getState().tabs.find((t) => t.id === tab.id);
+      if (!live || live.lastRunId !== runId || live.status === 'running') return;
 
       // The tab goes back to `running` when the server ACKNOWLEDGES the
       // attach (see onAttached), not here — an attach the server refuses
@@ -322,11 +380,8 @@ export function useGraphExecution() {
       );
     };
 
+    // No cleanup, and no `cancelled` flag it could set — see `reattached`.
     for (const tab of useTabStore.getState().tabs) void resume(tab);
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const execute = useCallback(async () => {
