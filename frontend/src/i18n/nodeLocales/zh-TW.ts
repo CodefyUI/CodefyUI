@@ -459,14 +459,14 @@ const zhTW: NodeTranslations = {
     },
   },
   CheckpointSaver: {
-    description: '儲存完整訓練檢查點（模型 + 優化器 + epoch + 損失值），用於稍後恢復訓練',
+    description: '儲存完整訓練檢查點（模型 + 優化器 + 學習率排程 + epoch + 損失值），用於稍後恢復訓練',
     params: {
       path: '輸出檢查點檔案路徑',
       epoch: '要儲存在檢查點中的當前 epoch 數',
     },
   },
   CheckpointLoader: {
-    description: '載入訓練檢查點以恢復訓練（恢復模型 + 優化器 + epoch）',
+    description: '載入訓練檢查點以恢復訓練（恢復模型 + 優化器 + 學習率排程 + epoch）',
     params: {
       path: '檢查點檔案路徑',
       device: '載入的目標裝置',
