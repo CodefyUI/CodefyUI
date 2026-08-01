@@ -257,8 +257,8 @@
   cursor: not-allowed;
 }
 
-/* #EF5350 on the #111 panel is 4.9:1 — the resting colour has to clear
-   4.5:1 too, which the previous muted #C05C58 (3.6:1) did not. */
+/* #EF5350 on the #111 panel is 5.4:1 — the resting colour has to clear
+   4.5:1 too, which the previous muted #C05C58 (4.4:1) narrowly did not. */
 .rowBtnDanger {
   color: #EF5350;
   border-color: rgba(239, 83, 80, 0.3);
@@ -446,8 +446,13 @@
 }
 
 @container (max-width: 560px) {
+  /* Five tracks for the five cells still visible here (name, status,
+     duration, loss, actions) — `started` is gone from the rule above and
+     `device` from this one. Final loss stays because it is the one number
+     that says what the run achieved; a sixth dropped column is cheaper than
+     losing it, and 70+84+68+76+110 plus gaps still fits inside 560px. */
   .row {
-    grid-template-columns: minmax(70px, 1fr) 84px 68px minmax(110px, auto);
+    grid-template-columns: minmax(70px, 1fr) 84px 68px 76px minmax(110px, auto);
   }
 
   .colDevice {
