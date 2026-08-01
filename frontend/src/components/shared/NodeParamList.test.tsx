@@ -1,0 +1,147 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import type { Node } from '@xyflow/react';
+import type { NodeData, NodeDefinition, ParamDefinition } from '../../types';
+import { NodeParamList } from './NodeParamList';
+import { useTabStore } from '../../store/tabStore';
+import { useI18n } from '../../i18n';
+
+// Isolate the list from ParamField's REST/file backends; the mock exposes a
+// button so an edit can be triggered without knowing each field's markup.
+vi.mock('./ParamField', () => ({
+  ParamField: ({ param, value, onChange, siblingParams }: any) => (
+    <button
+      type="button"
+      data-testid={`field-${param.name}`}
+      data-siblings={JSON.stringify(siblingParams)}
+      onClick={() => onChange(param.name, 'EDITED')}
+    >
+      {param.name}={String(value)}
+    </button>
+  ),
+}));
+
+function param(over: Partial<ParamDefinition> = {}): ParamDefinition {
+  return {
+    name: 'p',
+    param_type: 'int',
+    default: 0,
+    description: '',
+    options: [],
+    min_value: null,
+    max_value: null,
+    ...over,
+  };
+}
+
+function def(params: ParamDefinition[]): NodeDefinition {
+  return {
+    node_name: 'Dense',
+    category: 'CNN',
+    description: '',
+    inputs: [],
+    outputs: [],
+    params,
+  };
+}
+
+function seedNode(node: Node<NodeData>) {
+  useTabStore.setState((s) => ({
+    tabs: s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, nodes: [node] } : t)),
+  }));
+}
+
+function nodeWith(params: Record<string, unknown>): Node<NodeData> {
+  return {
+    id: 'n1',
+    type: 'baseNode',
+    position: { x: 0, y: 0 },
+    data: { label: 'N', type: 'Dense', params },
+  };
+}
+
+beforeEach(() => {
+  useI18n.setState({ locale: 'en' });
+  useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
+  useTabStore.getState().addTab('t');
+});
+
+describe('NodeParamList', () => {
+  it('renders a field per visible param with its description and range hints', () => {
+    seedNode(nodeWith({ lr: 0.5, units: 8 }));
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([
+          param({ name: 'lr', description: 'learning rate', min_value: 0, max_value: 1 }),
+          param({ name: 'units', min_value: 1 }),
+        ])}
+        params={{ lr: 0.5, units: 8 }}
+      />,
+    );
+    expect(screen.getByTestId('field-lr')).toHaveTextContent('lr=0.5');
+    expect(screen.getByText('learning rate')).toBeInTheDocument();
+    expect(screen.getByText('Range: 0 — 1')).toBeInTheDocument();
+    expect(screen.getByText('Range: 1 — +∞')).toBeInTheDocument();
+  });
+
+  it('commits an edit through updateNodeParams, marking the node dirty', () => {
+    seedNode(nodeWith({ lr: 0.5 }));
+    render(
+      <NodeParamList nodeId="n1" definition={def([param({ name: 'lr' })])} params={{ lr: 0.5 }} />,
+    );
+    fireEvent.click(screen.getByTestId('field-lr'));
+    const tab = useTabStore.getState().getActiveTab();
+    expect(tab.nodes[0].data.params.lr).toBe('EDITED');
+    expect([...tab.dirtyNodeIds]).toEqual(['n1']);
+    // Typing is continuous; it deliberately does not stack undo snapshots.
+    expect(tab.undoStack).toHaveLength(0);
+  });
+
+  it('commits nothing when there is no node id to write to', () => {
+    seedNode(nodeWith({ lr: 0.5 }));
+    const spy = vi.spyOn(useTabStore.getState(), 'updateNodeParams');
+    render(
+      <NodeParamList nodeId={null} definition={def([param({ name: 'lr' })])} params={{ lr: 0.5 }} />,
+    );
+    fireEvent.click(screen.getByTestId('field-lr'));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('hides params whose visible_when rule does not match', () => {
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([
+          param({ name: 'preset' }),
+          param({ name: 'weights', visible_when: { preset: 'Custom' } }),
+        ])}
+        params={{ preset: 'Sobel' }}
+      />,
+    );
+    expect(screen.getByTestId('field-preset')).toBeInTheDocument();
+    expect(screen.queryByTestId('field-weights')).toBeNull();
+  });
+
+  it('renders nothing for a node with no definition', () => {
+    const { container } = render(
+      <NodeParamList nodeId="n1" definition={undefined} params={{}} />,
+    );
+    expect(container.querySelectorAll('button')).toHaveLength(0);
+  });
+
+  it('passes the sibling params through and applies an extra class', () => {
+    const { container } = render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([param({ name: 'shape' })])}
+        params={{ shape: '2,2', value_mode: 'zeros' }}
+        className="extra-class"
+      />,
+    );
+    expect((container.firstChild as HTMLElement).className).toContain('extra-class');
+    expect(screen.getByTestId('field-shape').dataset.siblings).toBe(
+      JSON.stringify({ shape: '2,2', value_mode: 'zeros' }),
+    );
+  });
+});

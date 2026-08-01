@@ -9,6 +9,22 @@ export async function fetchNodeDefinitions(): Promise<NodeDefinition[]> {
   return res.json();
 }
 
+/**
+ * One node's definition, straight from the registry.
+ *
+ * The palette already holds every definition, but the Node Detail Modal's Docs
+ * tab asks the server again so a node whose plugin was reloaded (or whose
+ * device options changed with the hardware) documents what the backend will
+ * actually run — not what the page happened to load at boot. Callers seed the
+ * view from the local copy first and treat a failure here as "keep the local
+ * one", so the tab still works offline.
+ */
+export async function fetchNodeDefinition(nodeName: string): Promise<NodeDefinition> {
+  const res = await fetch(`${BASE_URL}/nodes/${encodeURIComponent(nodeName)}`);
+  if (!res.ok) throw new Error(`Failed to fetch node definition: ${res.statusText}`);
+  return res.json();
+}
+
 export async function fetchPresetDefinitions(): Promise<PresetDefinition[]> {
   const res = await fetch(`${BASE_URL}/presets`);
   if (!res.ok) throw new Error(`Failed to fetch presets: ${res.statusText}`);

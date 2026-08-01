@@ -1,8 +1,19 @@
 import { useEffect } from 'react';
 import { useTabStore } from '../store/tabStore';
 import { useUIStore } from '../store/uiStore';
+import { useDialogStore } from '../store/dialogStore';
 import { useProjectStore } from '../store/projectStore';
 import { saveActiveGraph } from '../utils/saveActiveGraph';
+
+/** Node kinds with no detail modal to open (mirrors NodeDetailModal). */
+const NO_DETAIL_NODE_TYPES = new Set(['noteNode']);
+
+/**
+ * Elements that answer Enter themselves. Buttons and links must keep firing
+ * their own activation, and a `<select>` uses Enter to commit its choice —
+ * hijacking any of them to open a modal would be a bug, not a shortcut.
+ */
+const ENTER_OWNING_TAGS = new Set(['BUTTON', 'A', 'SELECT', 'SUMMARY']);
 
 export function useKeyboardShortcuts() {
   useEffect(() => {
@@ -79,6 +90,34 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         const mode = useUIStore.getState().lastLayoutMode;
         useTabStore.getState().applyLayout(mode);
+        return;
+      }
+
+      // Enter — open the selected node's detail modal (#127). Every guard
+      // below exists because Enter is the most overloaded key on the page:
+      // it must not steal activation from a focused control, must not fire
+      // behind a confirm dialog whose primary button is focused, and must not
+      // re-open a modal that is already up.
+      if (!mod && !e.shiftKey && !e.altKey && e.key === 'Enter') {
+        if (ENTER_OWNING_TAGS.has(tag)) return;
+        if (useDialogStore.getState().active !== null) return;
+        if (useUIStore.getState().shortcutsModalOpen) return;
+        const { tabs, activeTabId } = useTabStore.getState();
+        const activeTab = tabs.find((t) => t.id === activeTabId);
+        if (!activeTab) return;
+        if (
+          activeTab.nodeDetailNodeId ||
+          activeTab.presetModalNodeId ||
+          activeTab.subgraphModalNodeId
+        ) {
+          return;
+        }
+        const selectedId = activeTab.selectedNodeId;
+        if (!selectedId) return;
+        const node = activeTab.nodes.find((n) => n.id === selectedId);
+        if (!node || NO_DETAIL_NODE_TYPES.has(node.type ?? '')) return;
+        e.preventDefault();
+        useTabStore.getState().openNodeDetail(selectedId);
         return;
       }
     };

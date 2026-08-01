@@ -1,0 +1,15 @@
+/* NodeParamList.module.css — shared by NodeConfigPanel and NodeDetailModal. */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Param description / range hints */
+.paramHint {
+  font-size: 0.6875rem;
+  color: #555;
+  margin-top: 2px;
+  line-height: 1.3;
+}

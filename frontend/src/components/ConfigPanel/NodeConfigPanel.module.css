@@ -162,10 +162,5 @@
   padding-top: 20px;
 }
 
-/* Param description / range hints */
-.paramHint {
-  font-size: 0.6875rem;
-  color: #555;
-  margin-top: 2px;
-  line-height: 1.3;
-}
+/* Param description / range hints now live in shared/NodeParamList.module.css,
+   which owns the param form for both this panel and the Node Detail Modal. */

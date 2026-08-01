@@ -1,38 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
-import {
-  fetchOutput,
-  RunDataExpiredError,
-  PayloadTooLargeError,
-} from '../../api/executionOutputs';
-import type { OutputData } from '../../types';
 import { StepTraceView } from './StepTraceView';
 import { BackwardView } from './BackwardView';
 import { TokenChipsView } from './TokenChipsView';
 import { PortGroup, FlowDivider, keyOf } from './PortGroup';
-import type { PortTarget, FetchMap } from './PortGroup';
+import type { PortTarget } from './PortGroup';
+import { portDataType, resolveInputSources, usePortFetches } from './portCaptures';
 import { isTensor, shapesEqual, makeHighlight } from './diff';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
 
 type InspectorTab = 'forward' | 'steps' | 'backward';
 
-async function fetchPortWithSliceFallback(
-  runId: string,
-  nodeId: string,
-  port: string,
-): Promise<OutputData> {
-  try {
-    return await fetchOutput(runId, nodeId, port);
-  } catch (e) {
-    if (e instanceof PayloadTooLargeError) {
-      // Narrow to the first index along every leading dim
-      return await fetchOutput(runId, nodeId, port, { slice: '0,:,:', maxElements: 65536 });
-    }
-    throw e;
-  }
-}
+const NO_PORTS: PortTarget[] = [];
 
 export function InspectorPanel() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
@@ -43,7 +24,6 @@ export function InspectorPanel() {
   const edges = activeTab.edges;
   const { t } = useI18n();
 
-  const [fetches, setFetches] = useState<FetchMap>({});
   const [collapsed, setCollapsed] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('forward');
 
@@ -135,47 +115,14 @@ export function InspectorPanel() {
     return { mode: 'none' as const };
   }, [selectedNodeId, activeSegment, lastRunId, nodes, edges]);
 
-  // Fetch effect
-  useEffect(() => {
-    if (targets.mode === 'none' || !lastRunId) return;
-    const all = [...targets.inputs, ...targets.outputs];
-    let cancelled = false;
-
-    const run = async () => {
-      const updates: FetchMap = {};
-      for (const t of all) {
-        updates[keyOf(t.nodeId, t.port)] = { loading: true, error: null, data: null };
-      }
-      setFetches((prev) => ({ ...prev, ...updates }));
-
-      await Promise.all(
-        all.map(async (t) => {
-          try {
-            const data = await fetchPortWithSliceFallback(lastRunId, t.nodeId, t.port);
-            if (cancelled) return;
-            setFetches((prev) => ({
-              ...prev,
-              [keyOf(t.nodeId, t.port)]: { loading: false, error: null, data },
-            }));
-          } catch (e) {
-            if (cancelled) return;
-            const msg =
-              e instanceof RunDataExpiredError
-                ? 'run data expired — re-run to capture'
-                : (e as Error).message;
-            setFetches((prev) => ({
-              ...prev,
-              [keyOf(t.nodeId, t.port)]: { loading: false, error: msg, data: null },
-            }));
-          }
-        }),
-      );
-    };
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [targets, lastRunId]);
+  // Every port this view will show, loaded through the shared capture hook —
+  // the same one the Node Detail Modal uses, so the two can never disagree
+  // about what a run recorded.
+  const allPorts = useMemo(
+    () => (targets.mode === 'none' ? NO_PORTS : [...targets.inputs, ...targets.outputs]),
+    [targets],
+  );
+  const fetches = usePortFetches(lastRunId, allPorts);
 
   const collapseButton = (
     <button type="button"
@@ -362,38 +309,4 @@ export function InspectorPanel() {
       </div>
     </div>
   );
-}
-
-/** Look up a source port's declared data type from its node definition. */
-function portDataType(
-  nodes: { id: string; data: { definition?: { outputs?: { name: string; data_type: string }[] } } }[],
-  nodeId: string,
-  port: string,
-): string | undefined {
-  const n = nodes.find((x) => x.id === nodeId);
-  return n?.data.definition?.outputs?.find((o) => o.name === port)?.data_type;
-}
-
-function resolveInputSources(
-  nodeId: string,
-  edges: {
-    source: string;
-    target: string;
-    sourceHandle?: string | null;
-    targetHandle?: string | null;
-    type?: string;
-    data?: unknown;
-  }[],
-): PortTarget[] {
-  const result: PortTarget[] = [];
-  for (const e of edges) {
-    if (e.target !== nodeId) continue;
-    // Skip trigger edges
-    const isTrigger =
-      e.type === 'triggerEdge' || (e.data as { type?: string } | undefined)?.type === 'trigger';
-    if (isTrigger) continue;
-    if (!e.sourceHandle) continue;
-    result.push({ nodeId: e.source, port: e.sourceHandle });
-  }
-  return result;
 }

@@ -158,26 +158,35 @@ describe('NodeContextMenu', () => {
 // ── useNodeContextMenuItems ──────────────────────────────────────────────────
 
 describe('useNodeContextMenuItems', () => {
-  it('returns rename / duplicate / delete with wired callbacks', () => {
+  it('returns open-details / rename / duplicate / delete with wired callbacks', () => {
     const onDelete = vi.fn();
     const onRename = vi.fn();
     const onDuplicate = vi.fn();
+    const onOpenDetails = vi.fn();
     const { result } = renderHook(() =>
-      useNodeContextMenuItems('node-1', { onDelete, onRename, onDuplicate }),
+      useNodeContextMenuItems('node-1', { onDelete, onRename, onDuplicate, onOpenDetails }),
     );
     const items = result.current;
-    expect(items.map((i) => i.label)).toEqual(['Rename', 'Duplicate', 'Delete']);
+    expect(items.map((i) => i.label)).toEqual([
+      'Open details',
+      'Rename',
+      'Duplicate',
+      'Delete',
+    ]);
 
     items[0].action();
-    expect(onRename).toHaveBeenCalledWith('node-1');
+    expect(onOpenDetails).toHaveBeenCalledWith('node-1');
     items[1].action();
-    expect(onDuplicate).toHaveBeenCalledWith('node-1');
+    expect(onRename).toHaveBeenCalledWith('node-1');
     items[2].action();
+    expect(onDuplicate).toHaveBeenCalledWith('node-1');
+    items[3].action();
     expect(onDelete).toHaveBeenCalledWith('node-1');
 
-    // Duplicate has a divider after it; delete is red.
-    expect(items[1].dividerAfter).toBe(true);
-    expect(items[2].color).toBe('#F44336');
+    // Open details and Duplicate each have a divider after them; delete is red.
+    expect(items[0].dividerAfter).toBe(true);
+    expect(items[2].dividerAfter).toBe(true);
+    expect(items[3].color).toBe('#F44336');
   });
 });
 

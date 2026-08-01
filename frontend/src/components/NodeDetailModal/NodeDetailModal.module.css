@@ -1,0 +1,480 @@
+/* NodeDetailModal.module.css — the n8n-style Node Details View (#127).
+   Crafted-dark surface: layered gradient panel, teal accent, monospace meta. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.68);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 2vh 2vw;
+}
+
+.modal {
+  width: 90vw;
+  height: 90vh;
+  min-width: 320px;
+  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  box-shadow:
+    0 30px 70px -20px rgba(0, 0, 0, 0.8),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  flex-shrink: 0;
+  background: rgba(10, 15, 23, 0.72);
+  border-bottom: 2px solid #1f2937; /* color overridden inline with the accent */
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.navBtn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.navBtn:hover:not(:disabled) {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: #06b6d4;
+  color: #22d3ee;
+}
+
+.navBtn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.navCount {
+  color: #64748b;
+  font-size: 0.6875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 48px;
+  text-align: center;
+}
+
+.icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #0a0f17;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  flex-shrink: 0;
+}
+
+.identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nameBtn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #e5e7eb;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  margin-left: -5px;
+  border-radius: 4px;
+  cursor: text;
+  text-align: left;
+  /* Hug the name: the identity column is a stretch flex container, so without
+     this the hover affordance spans the whole header and reads as a text
+     field the user cannot see the end of. */
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nameBtn:hover {
+  border-color: #334155;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nameInput {
+  background: #0a0f17;
+  border: 1px solid #06b6d4;
+  color: #e5e7eb;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  margin-left: -5px;
+  border-radius: 4px;
+  outline: none;
+  width: 100%;
+  max-width: 380px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.metaType {
+  color: #64748b;
+  font-size: 0.6875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.categoryChip,
+.statusChip {
+  font-size: 0.625rem;
+  border: 1px solid;
+  border-radius: 9px;
+  padding: 0 6px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.closeBtn {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.closeBtn:hover {
+  background: rgba(244, 67, 54, 0.14);
+  border-color: #f44336;
+  color: #ff7b72;
+}
+
+/* ── Body: params left, data right ──────────────────────────────────────── */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.paramColumn {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid #1f2937;
+  background: rgba(0, 0, 0, 0.18);
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.columnTitle {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.noParams {
+  color: #475569;
+  font-size: 0.8125rem;
+  padding: 8px 0;
+}
+
+.paramFootnote {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #1f2937;
+  color: #64748b;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.dataColumn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabStrip {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid #1f2937;
+  overflow-x: auto;
+}
+
+.tabBtn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #64748b;
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.tabBtn:hover {
+  color: #cbd5e1;
+}
+
+.tabActive {
+  color: #22d3ee;
+  border-bottom-color: #06b6d4;
+}
+
+.tabPanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.tabBody {
+  padding: 12px 14px;
+}
+
+/* ── Capture-tab extras ─────────────────────────────────────────────────── */
+
+.warnHint {
+  background: rgba(255, 193, 7, 0.09);
+  border: 1px solid rgba(255, 193, 7, 0.35);
+  color: #ffc107;
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 0.75rem;
+  margin-bottom: 10px;
+}
+
+.emptyState {
+  text-align: center;
+  color: #64748b;
+  font-size: 0.8125rem;
+  padding: 28px 12px 20px;
+}
+
+.emptyIcon {
+  font-size: 1.5rem;
+  color: #334155;
+  margin-bottom: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.emptyHint {
+  color: #475569;
+  font-size: 0.6875rem;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.summaryBlock {
+  border-top: 1px solid #1f2937;
+  padding-top: 10px;
+}
+
+.summaryTitle {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.summaryEmpty {
+  color: #475569;
+  font-size: 0.75rem;
+}
+
+.summaryRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  font-size: 0.75rem;
+}
+
+.summaryDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.summaryName {
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.summaryValue {
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6875rem;
+}
+
+/* ── Docs tab ───────────────────────────────────────────────────────────── */
+
+.docsBody {
+  max-width: 820px;
+}
+
+.docsSection {
+  margin-bottom: 20px;
+}
+
+.docsSectionTitle {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.docsDescription {
+  color: #cbd5e1;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.docsEmpty {
+  color: #475569;
+  font-size: 0.75rem;
+}
+
+.docsParamRow {
+  border-left: 2px solid #1f2937;
+  padding: 4px 0 4px 10px;
+  margin-bottom: 10px;
+}
+
+.docsParamHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.docsParamName {
+  color: #e5e7eb;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docsParamType {
+  color: #06b6d4;
+  font-size: 0.625rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docsParamDesc {
+  color: #94a3b8;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
+.docsParamMeta {
+  color: #475569;
+  font-size: 0.6875rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: 3px;
+}
+
+.docsPortRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.docsPortDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.docsPortName {
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docsPortType {
+  color: #64748b;
+  font-size: 0.625rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docsPortOptional {
+  color: #475569;
+  font-size: 0.625rem;
+}
+
+.docsPortDesc {
+  color: #64748b;
+  font-size: 0.6875rem;
+}
+
+/* Narrow viewports: stack the two columns instead of squeezing the form. */
+@media (max-width: 900px) {
+  .body {
+    flex-direction: column;
+  }
+
+  .paramColumn {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid #1f2937;
+    max-height: 40%;
+  }
+}

@@ -31,6 +31,7 @@ type BaseNodeProps = NodeProps<AppNode> & {
  */
 export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const openSubgraphModal = useTabStore((s) => s.openSubgraphModal);
+  const openNodeDetail = useTabStore((s) => s.openNodeDetail);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
   const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
@@ -104,6 +105,23 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
     }
   };
 
+  // Double-click opens the Node Detail Modal (#127) — except on
+  // SequentialModel, whose double-click already belongs to the subgraph
+  // editor (handled above by `handleClick`; opening two modals at once would
+  // be worse than either).
+  //
+  // `stopPropagation` matters regardless of which modal wins: the canvas
+  // listens for `dblclick` on `.react-flow__pane`, which CONTAINS the nodes,
+  // and answers with QuickNodeSearch. FlowCanvas also filters on
+  // `closest('.react-flow__node')`, so this is the second of two independent
+  // guards — deliberately, because either one silently regressing would put
+  // an "add node" palette on top of the modal.
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isSequentialModel) return;
+    openNodeDetail(id);
+  };
+
   // Dynamic border: selected > execution status > default
   const statusBorderColor =
     data.executionStatus === 'running'
@@ -154,6 +172,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   return (
     <div
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={`${styles.node}${isTriggerTarget ? ` ${styles.entryPoint}` : ''}${isDraggingTrigger ? ` ${styles.triggerDropTarget}` : ''}`}
