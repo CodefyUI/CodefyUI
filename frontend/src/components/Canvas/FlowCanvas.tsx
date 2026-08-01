@@ -6,6 +6,7 @@ import {
   Controls,
   BackgroundVariant,
   useReactFlow,
+  type Node,
   type NodeTypes,
   type EdgeTypes,
   type OnConnect,
@@ -50,6 +51,8 @@ import { useUIStore } from '../../store/uiStore';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
 import { isValidConnection, getPortColor, resolveDynamicOutputs } from '../../utils';
 import { computeDetachedEndpoint } from '../../utils/reconnect';
+import { nodesBoundingBox } from '../../utils/autoLayout';
+import { rememberViewport, recallViewport } from '../../utils/viewportMemory';
 import { prompt } from '../../utils/dialog';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useI18n } from '../../i18n';
@@ -89,6 +92,7 @@ const minimapNodeColor = (node: any) => {
 
 export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
+  const activeTabId = useTabStore((s) => s.activeTabId);
   const onNodesChange = useTabStore((s) => s.onNodesChange);
   const onEdgesChange = useTabStore((s) => s.onEdgesChange);
   const storeOnConnect = useTabStore((s) => s.onConnect);
@@ -101,7 +105,82 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const setCanvasPanning = useUIStore((s) => s.setCanvasPanning);
   const setNodes = useTabStore((s) => s.setNodes);
   const layoutFitRequest = useUIStore((s) => s.layoutFitRequest);
-  const { screenToFlowPosition, fitBounds } = useReactFlow();
+  const { screenToFlowPosition, fitBounds, getViewport, setViewport } =
+    useReactFlow();
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const reactFlowId = useId();
+
+  // Fit a flow-space box as an OVERVIEW: small boxes (a single selected node,
+  // a two-node graph) are inflated to most of the viewport first, so the fit
+  // never zooms in aggressively toward maxZoom.
+  //
+  // Instant, never animated: animated viewport transitions run on
+  // requestAnimationFrame, which Chrome throttles to zero in occluded or
+  // background windows — the animation then never applies at all. The
+  // subgraph editor's post-layout fit and the Controls button are instant for
+  // the same reason.
+  const fitToBounds = useCallback(
+    (bounds: { x: number; y: number; width: number; height: number }) => {
+      const el = containerRef.current;
+      if (!el || el.offsetWidth === 0) return;
+      let { x, y, width, height } = bounds;
+      const minW = el.offsetWidth * 0.85;
+      const minH = el.offsetHeight * 0.85;
+      if (width < minW) {
+        x -= (minW - width) / 2;
+        width = minW;
+      }
+      if (height < minH) {
+        y -= (minH - height) / 2;
+        height = minH;
+      }
+      fitBounds({ x, y, width, height }, { padding: 0.2 });
+    },
+    [fitBounds],
+  );
+
+  // ── Per-tab viewport handover (#125) ───────────────────────────────────────
+  // One canvas now serves every tab, so switching tabs has to move the
+  // viewport by hand: stash where the outgoing tab was looking, put the
+  // incoming tab back where IT was. A tab being opened for the first time has
+  // nothing stored, so it gets the same overview fit it used to get from its
+  // own freshly-mounted provider.
+  //
+  // That first-visit fit is computed from the STORE's node positions rather
+  // than asked of React Flow. `fitView()` needs measured nodes, and React Flow
+  // has only just been handed the incoming tab's — so it would either fit
+  // nothing or have to wait for measurement, during which the user stares at
+  // the OUTGOING tab's viewport over the incoming tab's graph. `fitBounds`
+  // over a box we can compute ourselves lands in the same tick, with no
+  // intermediate wrong frame. Sizes fall back to the same defaults the
+  // auto-layout fit uses, so an unmeasured node still contributes a box.
+  //
+  // Keyed on the store's activeTabId rather than the `tabId` prop so this
+  // holds regardless of how the canvas is mounted, and skipped entirely on
+  // first mount — the `fitView` prop on <ReactFlow> owns the initial viewport.
+  // `previousTabRef` also makes the effect idempotent under StrictMode's
+  // double invocation.
+  const previousTabRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const previous = previousTabRef.current;
+    if (previous === activeTabId) return;
+    previousTabRef.current = activeTabId;
+    if (previous === null) return;
+
+    rememberViewport(previous, getViewport());
+    const restored = recallViewport(activeTabId);
+    if (restored) {
+      setViewport(restored);
+      return;
+    }
+    const incoming = useTabStore.getState().tabs.find((t) => t.id === activeTabId);
+    const bounds = nodesBoundingBox((incoming?.nodes ?? []) as Node[]);
+    // An empty tab has nothing to fit; leave the viewport where it is rather
+    // than inventing a position for a blank canvas.
+    if (bounds) fitToBounds(bounds);
+  }, [activeTabId, getViewport, setViewport, fitToBounds]);
 
   // Snap all existing nodes to grid when grid snap is enabled
   useEffect(() => {
@@ -124,44 +203,23 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     }
   }, [gridSnapEnabled]);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const reactFlowId = useId();
-
   // Re-fit the viewport after auto-layout. The request already carries the
   // laid-out bounding box (computed from store data), so this needs nothing
   // from React Flow's internal position sync — fitBounds sets the viewport
   // directly and immediately. (The queued fitView() from useReactFlow only
   // flushes on the next node change, and reading positions back via
-  // getNodesBounds races the sync — both failure modes seen in e2e.) One
-  // FlowCanvas is mounted per tab behind display:none, so only the active,
-  // visible canvas answers, then clears the one-shot request so a canvas
-  // remount can't replay it.
+  // getNodesBounds races the sync — both failure modes seen in e2e.) Since
+  // #125 only the active tab's canvas is mounted, so the `tabId` check below
+  // is belt-and-braces (a harness can still mount several); the one-shot
+  // request is cleared either way so a remount can't replay it.
   useEffect(() => {
     if (!layoutFitRequest) return;
     const el = containerRef.current;
     if (!el || el.offsetWidth === 0) return;
     if (tabId !== undefined && tabId !== useTabStore.getState().activeTabId) return;
-    // Fits are for overview: inflate small bounds (e.g. a single selected
-    // node) so the fit never zooms IN aggressively toward maxZoom.
-    let { x, y, width, height } = layoutFitRequest.bounds;
-    const minW = el.offsetWidth * 0.85;
-    const minH = el.offsetHeight * 0.85;
-    if (width < minW) {
-      x -= (minW - width) / 2;
-      width = minW;
-    }
-    if (height < minH) {
-      y -= (minH - height) / 2;
-      height = minH;
-    }
-    // Instant fit (no duration): animated viewport transitions run on
-    // requestAnimationFrame, which Chrome throttles to zero in occluded or
-    // background windows — the animation then never applies at all. The
-    // subgraph editor's post-layout fit and the Controls button are instant
-    // for the same reason.
-    fitBounds({ x, y, width, height }, { padding: 0.2 });
+    fitToBounds(layoutFitRequest.bounds);
     useUIStore.getState().clearLayoutFit();
-  }, [layoutFitRequest, fitBounds, tabId]);
+  }, [layoutFitRequest, fitToBounds, tabId]);
 
   const [quickSearch, setQuickSearch] = useState<{
     screen: { x: number; y: number };

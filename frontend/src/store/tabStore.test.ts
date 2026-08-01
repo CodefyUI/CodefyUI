@@ -1260,6 +1260,68 @@ describe('undo / redo', () => {
     expect(activeTab().nodes).toHaveLength(2);
     expect(activeTab().undoStack.length).toBeGreaterThanOrEqual(1);
   });
+
+  // ── shallow snapshot semantics (#125) ──────────────────────────────────────
+  // Snapshots stopped being `JSON.parse(JSON.stringify(...))` deep clones.
+  // These pin the two properties that makes safe, and the one it improves.
+
+  it('snapshots the ARRAY, not the live reference, so later writes cannot reach it', () => {
+    const first = { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } };
+    store().setNodes([first] as any);
+    store().pushUndoSnapshot();
+    const snapshot = activeTab().undoStack[0].nodes;
+
+    store().setNodes([]);
+    expect(snapshot).toHaveLength(1);
+    expect(activeTab().nodes).toHaveLength(0);
+    // The snapshot array is its own object, not the one the store now holds.
+    expect(snapshot).not.toBe(activeTab().nodes);
+  });
+
+  it('keeps node object identity through undo (React Flow re-adopts only what changed)', () => {
+    const a = { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } };
+    store().setNodes([a] as any);
+    store().pushUndoSnapshot();
+    const beforeUndo = activeTab().nodes[0];
+
+    store().setNodes([
+      a,
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().undo();
+
+    // A deep clone would have produced a structurally-equal but distinct
+    // object here, forcing React Flow to rebuild every node on every undo.
+    expect(activeTab().nodes[0]).toBe(beforeUndo);
+  });
+
+  it('preserves keys whose value is undefined (JSON round-trips dropped them)', () => {
+    store().setNodes([
+      {
+        id: 'n1',
+        type: 'baseNode',
+        position: { x: 0, y: 0 },
+        data: { label: 'A', type: 'A', params: {}, executionStatus: 'idle', error: undefined },
+      },
+    ] as any);
+    store().pushUndoSnapshot();
+    store().setNodes([]);
+    store().undo();
+    expect('error' in (activeTab().nodes[0].data as object)).toBe(true);
+  });
+
+  it('does not share the node definition object with a JSON copy', () => {
+    // Nodes carry the definition object owned by nodeDefStore. Deep cloning
+    // replaced it with a detached copy on every undo; identity must survive.
+    const definition = { node_name: 'A', category: 'X', description: '', inputs: [], outputs: [], params: [] };
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {}, definition } },
+    ] as any);
+    store().pushUndoSnapshot();
+    store().setNodes([]);
+    store().undo();
+    expect(activeTab().nodes[0].data.definition).toBe(definition);
+  });
 });
 
 // ── clipboard: copy / paste ──────────────────────────────────────────────────

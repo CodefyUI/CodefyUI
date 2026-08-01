@@ -1,6 +1,11 @@
 import { useCallback, useEffect } from 'react';
 import type { ExecutionStatus } from '../types';
 import { useTabStore, type TabState } from '../store/tabStore';
+import {
+  queueTabNodeProgress,
+  queueTabNodeStatus,
+  discardTabNodeUpdates,
+} from '../store/nodeUpdateQueue';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { getRun, validateGraph } from '../api/rest';
@@ -110,7 +115,10 @@ export function useGraphExecution() {
         if (data.status === 'progress') {
           const p = firstOf('progress')?.progress ?? legacy.progress;
           if (p) {
-            store.setTabNodeProgress(tabId, data.node_id, p);
+            // #125: buffered, not written straight through. A training run
+            // streams these faster than the screen repaints, and every
+            // direct write rebuilt the whole nodes array.
+            queueTabNodeProgress(tabId, data.node_id, p);
             if (p.event === 'epoch' || p.event === 'config') {
               store.addTabLog(tabId, {
                 nodeId: data.node_id,
@@ -124,7 +132,7 @@ export function useGraphExecution() {
           }
         }
 
-        store.setTabNodeExecutionStatus(tabId, data.node_id, data.status, data.error);
+        queueTabNodeStatus(tabId, data.node_id, data.status, data.error);
 
         // Suppress running/cached chatter — only surface terminal transitions.
         if (data.status !== 'running' && data.status !== 'cached') {
@@ -437,6 +445,10 @@ export function useGraphExecution() {
     }
 
     clearLogs();
+    // Drop anything the previous run left buffered BEFORE resetting the
+    // nodes to idle (#125): a patch that survived the reset would land one
+    // frame later and paint the old run's status onto the new one.
+    discardTabNodeUpdates(tab.id);
     clearExecutionStatus();
     clearOutputSummaries();
     setTabStatus(tab.id, 'running');

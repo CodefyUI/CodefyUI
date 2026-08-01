@@ -17,12 +17,13 @@
 
 /* ----- Per-tab content wrapper ----- */
 /*
-  "display" is toggled between "flex" and "none" based on whether the
-  tab is active, so it stays as an inline style in the TSX component.
-  All other layout properties here are static.
+  Only the active tab's content is mounted (#125), so "display" is a static
+  flex here. It used to be toggled inline between "flex" and "none" because
+  every tab rendered one of these at once.
 */
 .tabContent {
   flex: 1;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
   min-height: 0;

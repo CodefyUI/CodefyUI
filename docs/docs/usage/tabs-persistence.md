@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: Tabs & Persistence
-description: Multi-tab workspaces, automatic localStorage saving, and importing/exporting graphs as JSON.
+description: Multi-tab workspaces, automatic in-browser saving, and importing/exporting graphs as JSON.
 ---
 
 # Tabs & Persistence
@@ -19,7 +19,13 @@ This lets you keep several experiments side by side — for example a training g
 
 ## Automatic saving
 
-All tabs are auto-saved to your browser's `localStorage`, so your work is restored when you reload the page. This is local to the browser; it is not synced to the server.
+All tabs are auto-saved in your browser, so your work is restored when you reload the page. This is local to the browser; it is not synced to the server.
+
+Saving uses **IndexedDB**, with one record per tab. That matters for large graphs: the older `localStorage` backend capped an origin at roughly 5MB, and a graph past that limit simply stopped being saved. IndexedDB has no comparable practical limit, and only the tab you edited is rewritten.
+
+The first time you open a version with IndexedDB saving, whatever `localStorage` last held is copied across automatically — you do not need to do anything. The old `localStorage` copy is left behind (so downgrading still opens the graph it last saw) but stops being updated from then on.
+
+If your browser has no usable IndexedDB — some private-browsing modes, or a sandboxed frame — saving falls back to `localStorage`, with its old size limit and its "storage is full" warning.
 
 ## Import / export
 
