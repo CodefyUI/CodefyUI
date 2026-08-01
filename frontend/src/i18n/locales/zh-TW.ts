@@ -76,8 +76,41 @@ const zhTW: Record<TranslationKey, string> = {
   'palette.noMatch': '找不到符合的節點',
   'palette.empty': '沒有可用的節點',
   'palette.hint': '拖曳節點到畫布上',
-  'palette.composite': '復合',
-  'palette.basic': '基本',
+  'palette.searchPresets': '搜尋預設組合...',
+  'palette.presets.empty': '沒有可用的預設組合',
+  'palette.presets.noMatch': '找不到符合的預設組合',
+  'palette.presets.hint': '拖曳預設組合到畫布上',
+
+  // Sidebar rail (#126)
+  'sidebar.rail.aria': '側邊欄分頁',
+  'sidebar.tab.nodes': '節點',
+  'sidebar.tab.presets': '預設組合',
+  'sidebar.tab.templates': '範例',
+  'sidebar.tab.custom': '自訂與外掛',
+  'sidebar.collapse': '收合側邊欄',
+  'sidebar.expand': '展開側邊欄',
+  'sidebar.resize': '調整側邊欄寬度',
+  'sidebar.jumpTo': '跳至分類',
+  'sidebar.expandAll': '全部展開',
+  'sidebar.collapseAll': '全部收合',
+  'sidebar.refresh': '重新整理',
+
+  // Sidebar: Templates tab (#126)
+  'templates.search': '搜尋範例...',
+  'templates.loading': '載入範例中...',
+  'templates.loadFail': '載入範例失敗：{error}',
+  'templates.empty': '沒有可用的範例',
+  'templates.noMatch': '找不到符合的範例',
+  'templates.hint': '點選範例即可開啟',
+
+  // Sidebar: Custom & Plugins tab (#126)
+  'customTab.section.nodes': '自訂節點',
+  'customTab.section.plugins': '外掛',
+  'customTab.manage': '管理...',
+  'customTab.nodes.empty': '尚未有自訂節點',
+  'customTab.plugins.empty': '尚未安裝外掛',
+  'customTab.plugins.hint': '使用 cdui plugin 指令安裝外掛套件',
+  'customTab.loadFail': '載入失敗：{error}',
 
   // Config Panel
   'config.title': '節點設定',
@@ -243,6 +276,7 @@ const zhTW: Record<TranslationKey, string> = {
   'shortcuts.copy': '複製選取的節點',
   'shortcuts.paste': '貼上節點',
   'shortcuts.delete': '刪除選取項目',
+  'shortcuts.toggleSidebar': '收合／展開側邊欄',
   'shortcuts.quickSearch': '快速搜尋節點',
   'shortcuts.help': '顯示此說明',
   'shortcuts.doubleClickKey': '雙擊',

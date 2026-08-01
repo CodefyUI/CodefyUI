@@ -1,9 +1,7 @@
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { MOD_LABEL as mod } from '../../utils/platform';
 import styles from './ShortcutsModal.module.css';
-
-const isMac = navigator.platform.toUpperCase().includes('MAC');
-const mod = isMac ? 'Cmd' : 'Ctrl';
 
 export function ShortcutsModal() {
   const open = useUIStore((s) => s.shortcutsModalOpen);
@@ -19,6 +17,7 @@ export function ShortcutsModal() {
     { keys: `${mod}+C`, action: t('shortcuts.copy') },
     { keys: `${mod}+V`, action: t('shortcuts.paste') },
     { keys: 'Delete', action: t('shortcuts.delete') },
+    { keys: `${mod}+B`, action: t('shortcuts.toggleSidebar') },
     { keys: t('shortcuts.doubleClickKey'), action: t('shortcuts.quickSearch') },
     { keys: '?', action: t('shortcuts.help') },
   ];

@@ -1,11 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import {
+  BookIcon,
   CloseIcon,
+  CollapseAllIcon,
+  ExpandAllIcon,
   ExpandIcon,
   EyeIcon,
   EyeOffIcon,
   FitIcon,
+  LayersIcon,
+  LibraryIcon,
+  PackageIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  RefreshIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from './Icons';
@@ -18,6 +27,15 @@ const icons = [
   ['FitIcon', FitIcon],
   ['ExpandIcon', ExpandIcon],
   ['CloseIcon', CloseIcon],
+  ['LibraryIcon', LibraryIcon],
+  ['LayersIcon', LayersIcon],
+  ['BookIcon', BookIcon],
+  ['PackageIcon', PackageIcon],
+  ['PanelLeftCloseIcon', PanelLeftCloseIcon],
+  ['PanelLeftOpenIcon', PanelLeftOpenIcon],
+  ['ExpandAllIcon', ExpandAllIcon],
+  ['CollapseAllIcon', CollapseAllIcon],
+  ['RefreshIcon', RefreshIcon],
 ] as const;
 
 describe('Icons', () => {

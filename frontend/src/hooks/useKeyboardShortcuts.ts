@@ -59,6 +59,14 @@ export function useKeyboardShortcuts() {
         return;
       }
 
+      // Ctrl+B / Cmd+B — Collapse/expand the left sidebar to its icon rail
+      // (#126). Shift excluded so future Ctrl+Shift+B combinations stay free.
+      if (mod && !e.shiftKey && e.key === 'b') {
+        e.preventDefault();
+        useUIStore.getState().toggleSidebarCollapsed();
+        return;
+      }
+
       // ? — Toggle shortcuts help
       if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();

@@ -13,6 +13,7 @@ import {
   createPreset,
   listExamples,
   loadExample,
+  listPlugins,
   reloadNodes,
   listCustomNodes,
   toggleCustomNode,
@@ -179,6 +180,12 @@ describe('GET endpoints', () => {
       fn: () => listCustomNodes(),
       url: '/api/custom-nodes',
       errorRe: /Failed to list custom nodes/,
+    },
+    {
+      name: 'listPlugins',
+      fn: () => listPlugins(),
+      url: '/api/plugins',
+      errorRe: /Failed to list plugins/,
     },
     {
       name: 'listModelFiles',

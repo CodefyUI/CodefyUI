@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
-import { useNodeDefinitions } from './useNodeDefinitions';
+import { useNodeDefinitionsBootstrap } from './useNodeDefinitionsBootstrap';
 import { useNodeDefStore } from '../store/nodeDefStore';
 
 // Mock the REST layer the store calls so the effect never hits the network.
@@ -47,26 +47,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('useNodeDefinitions', () => {
-  it('fetches definitions on mount when store is empty and not loading', async () => {
-    const { result } = renderHook(() => useNodeDefinitions());
+describe('useNodeDefinitionsBootstrap', () => {
+  it('fetches nodes AND presets on mount when the store is empty and idle', async () => {
+    renderHook(() => useNodeDefinitionsBootstrap());
 
-    // Triggers fetchDefinitions which resolves with our mocked data.
     await waitFor(() => {
       expect(useNodeDefStore.getState().definitions.length).toBe(1);
     });
 
     expect(fetchDefsMock).toHaveBeenCalledTimes(1);
     expect(fetchPresetsMock).toHaveBeenCalledTimes(1);
-    expect(result.current.definitions).toEqual([sampleDef]);
-    expect(result.current.categorized).toEqual({ Data: [sampleDef] });
-    expect(typeof result.current.refetch).toBe('function');
+    expect(useNodeDefStore.getState().categorized).toEqual({ Data: [sampleDef] });
   });
 
   it('does NOT fetch when definitions are already loaded', () => {
     useNodeDefStore.setState({ definitions: [sampleDef] });
 
-    renderHook(() => useNodeDefinitions());
+    renderHook(() => useNodeDefinitionsBootstrap());
 
     expect(fetchDefsMock).not.toHaveBeenCalled();
   });
@@ -74,29 +71,29 @@ describe('useNodeDefinitions', () => {
   it('does NOT fetch when a load is already in progress', () => {
     useNodeDefStore.setState({ loading: true });
 
-    const { result } = renderHook(() => useNodeDefinitions());
+    renderHook(() => useNodeDefinitionsBootstrap());
 
     expect(fetchDefsMock).not.toHaveBeenCalled();
-    expect(result.current.loading).toBe(true);
   });
 
-  it('exposes refetch bound to the store fetchDefinitions action', async () => {
-    const { result } = renderHook(() => useNodeDefinitions());
-    await waitFor(() => expect(fetchDefsMock).toHaveBeenCalledTimes(1));
+  // The guard reads getState() rather than closure-captured flags, so a second
+  // caller overlapping the first in-flight load does not fire a second one.
+  it('is idempotent across two overlapping callers', async () => {
+    renderHook(() => useNodeDefinitionsBootstrap());
+    renderHook(() => useNodeDefinitionsBootstrap());
 
-    // Calling refetch invokes the store action again.
-    await result.current.refetch();
-    expect(fetchDefsMock).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(useNodeDefStore.getState().definitions.length).toBe(1));
+    expect(fetchDefsMock).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces error state from the store', async () => {
+  it('leaves the store error set when the load fails', async () => {
     fetchDefsMock.mockRejectedValueOnce(new Error('boom'));
 
-    const { result } = renderHook(() => useNodeDefinitions());
+    renderHook(() => useNodeDefinitionsBootstrap());
 
     await waitFor(() => {
-      expect(result.current.error).toBe('boom');
+      expect(useNodeDefStore.getState().error).toBe('boom');
     });
-    expect(result.current.loading).toBe(false);
+    expect(useNodeDefStore.getState().loading).toBe(false);
   });
 });

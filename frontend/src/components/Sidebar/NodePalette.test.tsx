@@ -1,43 +1,56 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { NodePalette } from './NodePalette';
 import { useNodeDefStore } from '../../store/nodeDefStore';
-import { useUIStore } from '../../store/uiStore';
+import {
+  useUIStore,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+} from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import * as rest from '../../api/rest';
 import type { NodeDefinition, PresetDefinition } from '../../types';
 
-// ── Builders ─────────────────────────────────────────────────────────────────
+/*
+ * The sidebar SHELL (#126): icon rail plus the panel for the open tab. The
+ * per-tab behaviours live in NodesTab/PresetsTab/TemplatesTab/CustomTab tests;
+ * what is asserted here is the composition — which panel is mounted, that
+ * collapsing removes it, that width survives a drag, and that the node
+ * library still behaves exactly as it did before the split when it is the
+ * open tab.
+ */
 
-function def(
-  node_name: string,
-  category: string,
-  description = `${node_name} desc`,
-): NodeDefinition {
+vi.mock('../../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/rest')>();
+  return {
+    ...actual,
+    listExamples: vi.fn(),
+    listCustomNodes: vi.fn(),
+    listPlugins: vi.fn(),
+  };
+});
+
+const mockedRest = vi.mocked(rest);
+
+function def(node_name: string, category: string): NodeDefinition {
   return {
     node_name,
     category,
-    description,
+    description: `${node_name} desc`,
     inputs: [],
     outputs: [],
     params: [],
   };
 }
 
-function preset(
-  preset_name: string,
-  category: string,
-  tags: string[] = ['beginner'],
-  description = `${preset_name} desc`,
-): PresetDefinition {
+function preset(preset_name: string, category: string): PresetDefinition {
   return {
     preset_name,
     category,
-    description,
-    tags,
-    nodes: [
-      { id: 'a', type: 'Linear', params: {} },
-      { id: 'b', type: 'ReLU', params: {} },
-    ],
+    description: `${preset_name} desc`,
+    tags: ['beginner'],
+    nodes: [{ id: 'a', type: 'Linear', params: {} }],
     edges: [],
     exposed_inputs: [],
     exposed_outputs: [],
@@ -45,314 +58,338 @@ function preset(
   };
 }
 
-/** Seed the node-def store and mark it loaded so the auto-fetch effect is a no-op. */
-function seedStore(opts: {
-  categorized?: Record<string, NodeDefinition[]>;
-  presetCategorized?: Record<string, PresetDefinition[]>;
-  loading?: boolean;
-  error?: string | null;
-}) {
-  const definitions = Object.values(opts.categorized ?? {}).flat();
-  useNodeDefStore.setState({
-    definitions,
-    categorized: opts.categorized ?? {},
-    presets: Object.values(opts.presetCategorized ?? {}).flat(),
-    presetCategorized: opts.presetCategorized ?? {},
-    loading: opts.loading ?? false,
-    error: opts.error ?? null,
-  });
+function panel() {
+  return document.querySelector('[role="tabpanel"]') as HTMLElement | null;
 }
 
 beforeEach(() => {
+  localStorage.clear();
   useI18n.setState({ locale: 'en' });
-  useUIStore.setState({ tooltipsEnabled: true, beginnerMode: false });
-  // Prevent the auto-fetch effect from hitting the network: pretend loaded.
-  seedStore({ categorized: {}, presetCategorized: {} });
-  // Also stub fetchDefinitions defensively in case any path triggers it.
-  vi.spyOn(useNodeDefStore.getState(), 'fetchDefinitions').mockResolvedValue(undefined);
+  useUIStore.setState({
+    tooltipsEnabled: true,
+    beginnerMode: false,
+    sidebarTab: 'nodes',
+    sidebarCollapsed: false,
+    sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+  });
+  // Installed through setState rather than vi.spyOn: zustand's set() clones the
+  // state object, so a spy would survive into a NEW object that
+  // restoreAllMocks() never reaches — and the next vi.spyOn would hand back the
+  // same spy with the previous test's call history still on it.
+  useNodeDefStore.setState({
+    definitions: [def('Conv2d', 'CNN')],
+    categorized: { CNN: [def('Conv2d', 'CNN')] },
+    presets: [preset('CNNBlock', 'CNN')],
+    presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] },
+    loading: false,
+    error: null,
+    fetchDefinitions: vi.fn().mockResolvedValue(undefined),
+  });
+  // vi.fn()s from the module factory keep their call history across tests;
+  // reset them so "was this tab fetched?" means "in THIS test".
+  mockedRest.listExamples.mockReset().mockResolvedValue([]);
+  mockedRest.listCustomNodes.mockReset().mockResolvedValue([]);
+  mockedRest.listPlugins.mockReset().mockResolvedValue([]);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
 });
 
-describe('NodePalette', () => {
-  it('renders the title, search box, and footer hint', () => {
+describe('NodePalette (sidebar shell)', () => {
+  it('opens on the Nodes tab, with the node library behaving as before', () => {
     render(<NodePalette />);
     expect(screen.getByText('Nodes')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search nodes...')).toBeTruthy();
+    expect(screen.getByText('Conv2d')).toBeTruthy();
     expect(screen.getByText('Drag nodes onto the canvas')).toBeTruthy();
-  });
 
-  it('shows the loading state', () => {
-    seedStore({ loading: true });
-    render(<NodePalette />);
-    expect(screen.getByText('Loading nodes...')).toBeTruthy();
-  });
+    // Drag-to-canvas payload is unchanged.
+    const item = screen.getByText('Conv2d').closest('div')!.parentElement!;
+    const setData = vi.fn();
+    fireEvent.dragStart(item, { dataTransfer: { setData, effectAllowed: '' } });
+    expect(setData).toHaveBeenCalledWith('application/codefyui-node', 'Conv2d');
 
-  it('shows the error state and retries on click', () => {
-    seedStore({ error: 'network down' });
-    const refetch = useNodeDefStore.getState().fetchDefinitions as ReturnType<
-      typeof vi.fn
-    >;
-    render(<NodePalette />);
-    expect(screen.getByText('Failed to load nodes: network down')).toBeTruthy();
-    fireEvent.click(screen.getByText('Retry'));
-    expect(refetch).toHaveBeenCalled();
-  });
-
-  it('shows the empty state when there are no nodes and no search', () => {
-    seedStore({ categorized: {}, presetCategorized: {} });
-    render(<NodePalette />);
-    expect(screen.getByText('No nodes available')).toBeTruthy();
-  });
-
-  it('renders categories in CATEGORY_ORDER, then unknown categories sorted', () => {
-    seedStore({
-      categorized: {
-        Zebra: [def('ZNode', 'Zebra')], // unknown → sorted after ordered ones
-        CNN: [def('Conv2d', 'CNN')], // ordered
-        Data: [def('Dataset', 'Data')], // ordered (earlier)
-        Apple: [def('ANode', 'Apple')], // unknown → sorted
-      },
-    });
-    const { container } = render(<NodePalette />);
-    const categoryNames = Array.from(
-      container.querySelectorAll('button span'),
-    )
-      .map((s) => s.textContent)
-      .filter((t) => ['Data', 'CNN', 'Apple', 'Zebra'].includes(t ?? ''));
-    // Data and CNN (ordered) come before the alphabetical unknowns Apple, Zebra.
-    expect(categoryNames).toEqual(['Data', 'CNN', 'Apple', 'Zebra']);
-  });
-
-  it('expands and collapses a category section', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
-    render(<NodePalette />);
-    // Expanded by default → node visible.
-    expect(screen.getByText('Conv2d')).toBeTruthy();
-    const header = screen.getByText('CNN').closest('button')!;
-    // Collapse.
-    fireEvent.click(header);
-    expect(screen.queryByText('Conv2d')).toBeNull();
-    // Chevron flips to collapsed glyph.
-    expect(within(header).getByText('▸')).toBeTruthy();
-    // Re-expand.
-    fireEvent.click(header);
-    expect(screen.getByText('Conv2d')).toBeTruthy();
-    expect(within(header).getByText('▾')).toBeTruthy();
-  });
-
-  it('shows the category count = presets + nodes', () => {
-    seedStore({
-      categorized: { CNN: [def('Conv2d', 'CNN'), def('MaxPool', 'CNN')] },
-      presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] },
-    });
-    render(<NodePalette />);
-    const header = screen.getByText('CNN').closest('button')!;
-    expect(within(header).getByText('3')).toBeTruthy();
-  });
-
-  it('renders preset and node sub-headers only when a category has both', () => {
-    seedStore({
-      categorized: { CNN: [def('Conv2d', 'CNN')] },
-      presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] },
-    });
-    render(<NodePalette />);
-    expect(screen.getByText('Composite')).toBeTruthy();
-    expect(screen.getByText('Basic')).toBeTruthy();
-    expect(screen.getByText('CNNBlock')).toBeTruthy();
-    expect(screen.getByText('Conv2d')).toBeTruthy();
-  });
-
-  it('does not render sub-headers when a category has only nodes', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
-    render(<NodePalette />);
-    expect(screen.queryByText('Composite')).toBeNull();
-    expect(screen.queryByText('Basic')).toBeNull();
-  });
-
-  // ── Search ───────────────────────────────────────────────────────────────
-
-  it('filters nodes by name', () => {
-    seedStore({
-      categorized: { CNN: [def('Conv2d', 'CNN'), def('MaxPool', 'CNN')] },
-    });
-    render(<NodePalette />);
+    // Search still filters.
     fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
-      target: { value: 'conv' },
-    });
-    expect(screen.getByText('Conv2d')).toBeTruthy();
-    expect(screen.queryByText('MaxPool')).toBeNull();
-  });
-
-  it('filters nodes by description', () => {
-    seedStore({
-      categorized: { CNN: [def('Conv2d', 'CNN', 'a convolution layer')] },
-    });
-    render(<NodePalette />);
-    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
-      target: { value: 'convolution' },
-    });
-    expect(screen.getByText('Conv2d')).toBeTruthy();
-  });
-
-  it('filters presets by name, description, and tags', () => {
-    seedStore({
-      presetCategorized: {
-        CNN: [
-          preset('AlphaNet', 'CNN', ['advanced'], 'a deep net'),
-          preset('BetaNet', 'CNN', ['beginner'], 'shallow'),
-        ],
-      },
-    });
-    render(<NodePalette />);
-    const input = screen.getByPlaceholderText('Search nodes...');
-
-    // By name.
-    fireEvent.change(input, { target: { value: 'alpha' } });
-    expect(screen.getByText('AlphaNet')).toBeTruthy();
-    expect(screen.queryByText('BetaNet')).toBeNull();
-
-    // By description.
-    fireEvent.change(input, { target: { value: 'shallow' } });
-    expect(screen.getByText('BetaNet')).toBeTruthy();
-    expect(screen.queryByText('AlphaNet')).toBeNull();
-
-    // By tag.
-    fireEvent.change(input, { target: { value: 'advanced' } });
-    expect(screen.getByText('AlphaNet')).toBeTruthy();
-    expect(screen.queryByText('BetaNet')).toBeNull();
-  });
-
-  it('shows the no-match message when a search matches nothing', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
-    render(<NodePalette />);
-    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), {
-      target: { value: 'zzzzz' },
+      target: { value: 'zzz' },
     });
     expect(screen.getByText('No matching nodes')).toBeTruthy();
   });
 
-  // ── Beginner mode ──────────────────────────────────────────────────────────
-
-  it('beginner mode hides non-beginner categories', () => {
-    useUIStore.setState({ beginnerMode: true });
-    seedStore({
-      categorized: {
-        CNN: [def('Conv2d', 'CNN')], // beginner
-        Transformer: [def('Attention', 'Transformer')], // not beginner
-      },
-    });
-    render(<NodePalette />);
-    expect(screen.getByText('CNN')).toBeTruthy();
-    expect(screen.queryByText('Transformer')).toBeNull();
+  it('the rail always renders, collapsed or not', () => {
+    const { rerender } = render(<NodePalette />);
+    expect(screen.getByRole('tablist', { name: 'Sidebar sections' })).toBeTruthy();
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
+    rerender(<NodePalette />);
+    expect(screen.getByRole('tablist', { name: 'Sidebar sections' })).toBeTruthy();
   });
 
-  // ── NodeItem drag + tooltip + hover ──────────────────────────────────────────
-
-  it('node drag start sets the codefyui-node dataTransfer payload', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
+  it('mounts only the open tab, and swaps panels from the rail', async () => {
     render(<NodePalette />);
-    const item = screen.getByText('Conv2d').closest('div')!.parentElement!;
-    const setData = vi.fn();
-    fireEvent.dragStart(item, {
-      dataTransfer: { setData, effectAllowed: '' },
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+    expect(screen.queryByText('CNNBlock')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
+    expect(screen.getByText('CNNBlock')).toBeTruthy();
+    expect(screen.queryByText('Conv2d')).toBeNull();
+    expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Templates' }));
+    expect(await screen.findByText('No examples available')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Custom & Plugins' }));
+    expect(await screen.findByText('No custom nodes yet')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Nodes' }));
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
+  it('a tab is only fetched when it is opened', () => {
+    render(<NodePalette />);
+    expect(mockedRest.listExamples).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'Templates' }));
+    expect(mockedRest.listExamples).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Catalog bootstrap ──────────────────────────────────────────────────────
+  // The node/preset catalog is the whole app's, not the Nodes tab's: the canvas,
+  // quick search, example loading and the plugin host all read it. The SHELL
+  // must start the load, because the Nodes tab mounts only when it is the open
+  // tab AND the sidebar is expanded — and both of those are persisted, so a
+  // user who quit on another tab (or collapsed) would otherwise come back to an
+  // app with an empty catalog for the whole session.
+
+  it('starts the catalog load even when the sidebar is collapsed', () => {
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
+
+    render(<NodePalette />);
+
+    expect(panel()).toBeNull();
+    expect(fetchDefinitions).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the catalog load when a tab other than Nodes is open', () => {
+    useNodeDefStore.setState({ definitions: [], categorized: {}, presets: [], presetCategorized: {} });
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    act(() => useUIStore.getState().setSidebarTab('presets'));
+
+    render(<NodePalette />);
+
+    expect(screen.getByPlaceholderText('Search presets...')).toBeTruthy();
+    expect(fetchDefinitions).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-fetch the catalog when it is already loaded', () => {
+    // The beforeEach seeds a non-empty catalog.
+    const fetchDefinitions = useNodeDefStore.getState().fetchDefinitions as ReturnType<typeof vi.fn>;
+    render(<NodePalette />);
+    expect(fetchDefinitions).not.toHaveBeenCalled();
+  });
+
+  it('labels the panel with the tab that opened it', () => {
+    render(<NodePalette />);
+    expect(panel()?.id).toBe('sidebar-panel-nodes');
+    expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-nodes');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Presets' }));
+    expect(panel()?.id).toBe('sidebar-panel-presets');
+    expect(panel()?.getAttribute('aria-labelledby')).toBe('sidebar-tab-presets');
+  });
+
+  // ── Collapse ───────────────────────────────────────────────────────────────
+
+  it('collapsing removes the panel from the DOM so the canvas gets the width', () => {
+    render(<NodePalette />);
+    expect(panel()).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+    expect(panel()).toBeNull();
+    expect(screen.queryByText('Conv2d')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+    expect(panel()).toBeTruthy();
+    expect(screen.getByText('Conv2d')).toBeTruthy();
+  });
+
+  it('exposes the collapsed state on the shell for styling and e2e', () => {
+    const { container } = render(<NodePalette />);
+    const shell = container.firstElementChild as HTMLElement;
+    expect(shell.dataset.collapsed).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+    expect(shell.dataset.collapsed).toBe('true');
+  });
+
+  it('restores the persisted tab, width and collapsed state', () => {
+    // What a reload looks like: the store is rebuilt from localStorage before
+    // the component mounts.
+    act(() => {
+      useUIStore.getState().setSidebarTab('presets');
+      useUIStore.getState().setSidebarWidth(310);
+      useUIStore.getState().setSidebarCollapsed(false);
     });
-    expect(setData).toHaveBeenCalledWith(
-      'application/codefyui-node',
-      'Conv2d',
+    expect(localStorage.getItem('codefyui-sidebar-tab')).toBe('presets');
+    expect(localStorage.getItem('codefyui-sidebar-width')).toBe('310');
+    expect(localStorage.getItem('codefyui-sidebar-collapsed')).toBe('false');
+
+    render(<NodePalette />);
+    expect(screen.getByText('CNNBlock')).toBeTruthy();
+    expect(panel()?.style.width).toBe('310px');
+  });
+
+  // ── Resize ────────────────────────────────────────────────────────────────
+
+  it('drags the resize handle to a new width and persists it', () => {
+    const { container } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(handle.getAttribute('aria-label')).toBe('Resize sidebar');
+
+    fireEvent.mouseDown(handle, { clientX: 250 });
+    expect(document.body.style.cursor).toBe('col-resize');
+
+    fireEvent.mouseMove(document, { clientX: 310 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 60);
+    expect(panel()?.style.width).toBe(`${SIDEBAR_DEFAULT_WIDTH + 60}px`);
+
+    fireEvent.mouseUp(document);
+    expect(document.body.style.cursor).toBe('');
+    expect(localStorage.getItem('codefyui-sidebar-width')).toBe(
+      String(SIDEBAR_DEFAULT_WIDTH + 60),
     );
+
+    // The listeners are gone: a stray move after the drag changes nothing.
+    fireEvent.mouseMove(document, { clientX: 900 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 60);
   });
 
-  it('hovering a node sets a hover background and shows a tooltip portal', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN', 'tip text')] } });
-    render(<NodePalette />);
-    const nameEl = screen.getByText('Conv2d');
-    const item = nameEl.parentElement as HTMLElement;
+  it('clamps a drag that would push the panel out of its usable range', () => {
+    const { container } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
 
-    fireEvent.mouseEnter(item);
-    // Hover background applied (jsdom normalizes to rgb).
-    expect(item.style.background).toBe('rgb(42, 42, 42)');
-    // Tooltip portal renders the description (appears twice: inline + tooltip).
-    const tips = screen.getAllByText('tip text');
-    expect(tips.length).toBeGreaterThanOrEqual(2);
+    fireEvent.mouseDown(handle, { clientX: 250 });
+    fireEvent.mouseMove(document, { clientX: -900 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MIN_WIDTH);
 
-    fireEvent.mouseLeave(item);
-    expect(item.style.background).toBe('transparent');
+    fireEvent.mouseMove(document, { clientX: 4000 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MAX_WIDTH);
+    fireEvent.mouseUp(document);
   });
 
-  it('does not show a tooltip when tooltips are disabled', () => {
-    useUIStore.setState({ tooltipsEnabled: false });
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN', 'tip text')] } });
-    render(<NodePalette />);
-    const item = screen.getByText('Conv2d').parentElement as HTMLElement;
-    fireEvent.mouseEnter(item);
-    // Only the inline description remains (no portal duplicate).
-    expect(screen.getAllByText('tip text')).toHaveLength(1);
+  it('has no resize handle while collapsed', () => {
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
+    const { container } = render(<NodePalette />);
+    expect(container.querySelector('[role="separator"]')).toBeNull();
   });
 
-  it('does not render a description block when a node has no description', () => {
-    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN', '')] } });
-    render(<NodePalette />);
-    const item = screen.getByText('Conv2d').parentElement as HTMLElement;
-    fireEvent.mouseEnter(item);
-    // No tooltip because desc is empty.
-    expect(item.style.background).toBe('rgb(42, 42, 42)');
-    expect(screen.queryByText('Conv2d desc')).toBeNull();
+  it('tears down a drag left in flight by an unmount', () => {
+    const { container, unmount } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    fireEvent.mouseDown(handle, { clientX: 250 });
+    expect(document.body.style.cursor).toBe('col-resize');
+
+    // Unmounting mid-drag must not leave the page stuck under a col-resize
+    // cursor with listeners still on `document`.
+    unmount();
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+    fireEvent.mouseMove(document, { clientX: 900 });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
   });
 
-  // ── PresetItem drag + difficulty + hover ──────────────────────────────────────
+  // A focusable role="separator" has to be operable from the keyboard, per the
+  // window-splitter pattern.
+  it('is a keyboard-operable splitter', () => {
+    const { container } = render(<NodePalette />);
+    const handle = container.querySelector('[role="separator"]') as HTMLElement;
+    expect(handle.getAttribute('tabindex')).toBe('0');
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH));
+    expect(handle.getAttribute('aria-valuemin')).toBe(String(SIDEBAR_MIN_WIDTH));
+    expect(handle.getAttribute('aria-valuemax')).toBe(String(SIDEBAR_MAX_WIDTH));
 
-  it('preset drag start sets the codefyui-preset dataTransfer payload', () => {
-    seedStore({ presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] } });
-    render(<NodePalette />);
-    const item = screen.getByText('CNNBlock').closest('div')!.parentElement!
-      .parentElement!;
-    const setData = vi.fn();
-    fireEvent.dragStart(item, { dataTransfer: { setData, effectAllowed: '' } });
-    expect(setData).toHaveBeenCalledWith(
-      'application/codefyui-preset',
-      'CNNBlock',
-    );
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH + 16);
+    expect(handle.getAttribute('aria-valuenow')).toBe(String(SIDEBAR_DEFAULT_WIDTH + 16));
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_DEFAULT_WIDTH);
+
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MIN_WIDTH);
+
+    fireEvent.keyDown(handle, { key: 'End' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MAX_WIDTH);
+
+    // An unrelated key is left to the browser.
+    const notPrevented = fireEvent.keyDown(handle, { key: 'a' });
+    expect(useUIStore.getState().sidebarWidth).toBe(SIDEBAR_MAX_WIDTH);
+    expect(notPrevented).toBe(true);
   });
 
-  it('shows the preset difficulty badge and node count', () => {
-    seedStore({
-      presetCategorized: { CNN: [preset('CNNBlock', 'CNN', ['intermediate'])] },
-    });
+  // ── Focus handoff on collapse ──────────────────────────────────────────────
+
+  it('moves focus to the rail when collapsing away from a focused panel', () => {
     render(<NodePalette />);
-    expect(screen.getByText('intermediate')).toBeTruthy();
-    expect(screen.getByText('2 nodes')).toBeTruthy();
+    const categoryHeader = screen.getByText('CNN').closest('button')!;
+    act(() => categoryHeader.focus());
+    expect(document.activeElement).toBe(categoryHeader);
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    // The panel that held focus is gone; focus landed on the open tab rather
+    // than falling back to <body>.
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Nodes' }));
   });
 
-  it('defaults preset difficulty to beginner when no difficulty tag present', () => {
-    seedStore({
-      presetCategorized: { CNN: [preset('CNNBlock', 'CNN', ['vision'])] },
-    });
+  it('leaves focus alone when collapsing from outside the panel', () => {
     render(<NodePalette />);
-    expect(screen.getByText('beginner')).toBeTruthy();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    // Ctrl+B while working on the canvas must not yank focus into the sidebar.
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
   });
 
-  it('hovering a preset toggles its hover background', () => {
-    seedStore({ presetCategorized: { CNN: [preset('CNNBlock', 'CNN')] } });
+  it('leaves focus alone when it had moved out of the panel before collapsing', () => {
     render(<NodePalette />);
-    const item = screen.getByText('CNNBlock').closest('div')!.parentElement!
-      .parentElement!;
-    fireEvent.mouseEnter(item);
-    expect(item.style.background).toContain('rgba(212, 160, 23');
-    fireEvent.mouseLeave(item);
-    expect(item.style.background).toBe('transparent');
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+
+    // Focus goes into the panel and then back out — the handoff must follow
+    // where focus IS, not where it once was, or Ctrl+B from the canvas would
+    // yank focus to the rail and turn arrow keys into tab switches.
+    act(() => screen.getByText('CNN').closest('button')!.focus());
+    act(() => outside.focus());
+
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
   });
 
-  it('translates node descriptions via i18n when locale is non-English', () => {
-    // zh-TW with no node translation falls back to the English description.
-    // Use a node name that has no zh-TW entry so `tn` returns the fallback.
-    act(() => useI18n.setState({ locale: 'zh-TW' }));
-    seedStore({
-      categorized: { CNN: [def('TotallyMadeUpNodeXYZ', 'CNN', 'english fallback')] },
-    });
+  it('does not grab focus when it mounts already collapsed', () => {
+    act(() => useUIStore.getState().setSidebarCollapsed(true));
     render(<NodePalette />);
-    expect(screen.getByText('english fallback')).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  // ── Keyboard shortcut integration ──────────────────────────────────────────
+
+  it('reflects a Ctrl+B store toggle without a rail click', () => {
+    render(<NodePalette />);
+    expect(panel()).toBeTruthy();
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+    expect(panel()).toBeNull();
+    act(() => useUIStore.getState().toggleSidebarCollapsed());
+    expect(panel()).toBeTruthy();
   });
 });

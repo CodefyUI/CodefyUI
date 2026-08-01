@@ -1,25 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNodeDefStore } from '../../store/nodeDefStore';
-import { useTabStore } from '../../store/tabStore';
 import { useI18n, type TranslationKey } from '../../i18n';
-import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
-import { listExamples, loadExample } from '../../api/rest';
+import { openExample } from '../../utils/openExample';
+import { listExamples } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
-import { useToastStore } from '../../store/toastStore';
+import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
 import styles from './EmptyCanvasOverlay.module.css';
-
-// Restrained material-style hue per builtin category; unknown categories
-// (e.g. plugin-defined folders) fall back to orange.
-const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
-  Usage_Example: '#4CAF50',
-  Model_Architecture: '#2196F3',
-  Classical: '#26A69A',
-  LLM: '#AB47BC',
-  Diffusion: '#EC407A',
-  Transformer: '#26C6DA',
-  RNN: '#5C6BC0',
-  RL: '#EF5350',
-};
 
 // Quick Start: pinned by path (paths are stable identifiers, robust to
 // backend ordering), rendered in exactly this order.
@@ -107,7 +92,7 @@ function renderCard(
   onClick: (e: ExampleSummary) => void,
   t: (k: TranslationKey, vars?: Record<string, string | number>) => string,
 ) {
-  const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? '#FF9800';
+  const catColor = EXAMPLE_CATEGORY_COLORS[example.category] ?? EXAMPLE_CATEGORY_FALLBACK;
   const catLabel = example.category.replace(/_/g, ' ');
   return (
     <button type="button"
@@ -145,11 +130,7 @@ function renderCard(
 }
 
 export function EmptyCanvasOverlay() {
-  const setNodes = useTabStore((s) => s.setNodes);
-  const setEdges = useTabStore((s) => s.setEdges);
-  const renameTab = useTabStore((s) => s.renameTab);
   const { t } = useI18n();
-  const addToast = useToastStore((s) => s.addToast);
 
   const [examples, setExamples] = useState<ExampleSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -163,43 +144,11 @@ export function EmptyCanvasOverlay() {
 
   const sections = groupExamples(examples);
 
+  // Loading an example lives in `utils/openExample` so the sidebar's
+  // Templates tab (#126) opens one identically.
   const handleClick = useCallback(
-    async (example: ExampleSummary) => {
-      try {
-        const data = await loadExample(example.path);
-        const rawNodes = data.nodes ?? [];
-        const edges = data.edges ?? [];
-
-        const store = useNodeDefStore.getState();
-        const importedPresets = Array.isArray(data.presets) ? data.presets : [];
-        const mergedPresets = [...store.presets];
-        for (const p of importedPresets) {
-          if (!mergedPresets.some((ep) => ep.preset_name === p.preset_name)) {
-            mergedPresets.push(p);
-          }
-        }
-
-        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
-        const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
-        setNodes(resolvedNodes);
-        setEdges(resolvedEdges);
-
-        // Mirror the example name onto the active tab so saves, exports,
-        // and the script header all use a meaningful name out of the box.
-        const exampleName = typeof data.name === 'string' && data.name.trim() ? data.name.trim() : null;
-        if (exampleName) {
-          const { activeTabId } = useTabStore.getState();
-          renameTab(activeTabId, exampleName);
-        }
-
-        if (importedPresets.length > 0) {
-          useNodeDefStore.setState({ presets: mergedPresets });
-        }
-      } catch {
-        addToast(t('empty.loadError'), 'error');
-      }
-    },
-    [setNodes, setEdges, renameTab, t, addToast],
+    (example: ExampleSummary) => void openExample(example.path),
+    [],
   );
 
   return (
