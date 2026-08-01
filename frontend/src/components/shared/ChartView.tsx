@@ -59,8 +59,26 @@ export function ChartView({ chart, width = 420, height = 180, className }: Chart
     [chart.points],
   );
 
+  // A kind this build knows, whose spec is missing the payload that kind needs
+  // (a heatmap with no `matrix`), is a different failure from a kind that
+  // postdates the editor — and saying "needs a newer editor" about it sends
+  // the reader to upgrade instead of to the node that produced it.
+  const KNOWN: string[] = ['bar', 'line', 'scatter', 'heatmap'];
+  const malformed =
+    KNOWN.includes(chart.kind) &&
+    ((chart.kind === 'bar' && !chart.bars) ||
+      (chart.kind === 'line' && !chart.series) ||
+      (chart.kind === 'scatter' && !chart.points) ||
+      (chart.kind === 'heatmap' && !chart.matrix?.length));
+
   let body: React.ReactNode;
-  if (chart.kind === 'bar') {
+  if (malformed) {
+    body = (
+      <div className={styles.unknown}>
+        {t('chart.malformed', { kind: chart.kind })}
+      </div>
+    );
+  } else if (chart.kind === 'bar') {
     body = (
       <HistogramPlot
         bars={bars}
@@ -71,7 +89,12 @@ export function ChartView({ chart, width = 420, height = 180, className }: Chart
       />
     );
   } else if (chart.kind === 'line') {
-    body = <LossChart series={series} height={height} xLabel={chart.x_label ?? 'x'} />;
+    // LossChart draws the x caption itself but has no y caption, so the
+    // footer below carries y_label for this kind too — dropping it silently
+    // lost the unit on every line chart.
+    body = (
+      <LossChart series={series} height={height} xLabel={chart.x_label ?? 'x'} />
+    );
   } else if (chart.kind === 'scatter') {
     body = (
       <ScatterPlot
@@ -83,11 +106,11 @@ export function ChartView({ chart, width = 420, height = 180, className }: Chart
         showLabels={points.length <= 12}
       />
     );
-  } else if (chart.kind === 'heatmap' && chart.matrix?.length) {
+  } else if (chart.kind === 'heatmap') {
     const side = Math.min(width, height + 80);
     body = (
       <HeatmapPlot
-        data={chart.matrix}
+        data={chart.matrix as number[][]}
         rowLabels={chart.row_labels}
         colLabels={chart.col_labels}
         panelWidth={side}
@@ -110,10 +133,14 @@ export function ChartView({ chart, width = 420, height = 180, className }: Chart
       {chart.title && <div className={styles.title}>{chart.title}</div>}
       {chart.note && <div className={styles.note}>{chart.note}</div>}
       <div className={styles.body}>{body}</div>
-      {(chart.x_label || chart.y_label) && chart.kind !== 'line' && (
+      {(chart.x_label || chart.y_label) && (
         <div className={styles.axes}>
           {chart.y_label && <span className={styles.axisY}>{chart.y_label}</span>}
-          {chart.x_label && <span className={styles.axisX}>{chart.x_label}</span>}
+          {/* LossChart already prints x under its own axis, so showing it
+              again here would caption the same axis twice. */}
+          {chart.x_label && chart.kind !== 'line' && (
+            <span className={styles.axisX}>{chart.x_label}</span>
+          )}
         </div>
       )}
     </div>

@@ -770,6 +770,33 @@ def test_build_output_entries_chart_port_without_a_spec_is_skipped(value):
     assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
 
 
+@pytest.mark.parametrize("reserved", ["output_kind", "port", "elided", "bytes", "cap_bytes"])
+def test_build_output_entries_refuses_a_kind_that_collides_with_a_reserved_key(reserved):
+    """A payload is stored under a key NAMED BY THE KIND.
+
+    So ``media="port"`` would overwrite the port name and ``media="elided"``
+    would forge the marker run_service writes when a payload exceeds the size
+    cap — making an intact entry read as truncated. Refused, not renamed: a
+    collision is a bug in the declaring pack and must surface to its author.
+    """
+    entries = build_node_output_entries(
+        "completed", {"p": {"a": 1}}, {reserved: ["p"]},
+    )
+    assert _kinds(entries) == [OUTPUT_KIND_TENSOR_SUMMARY]
+
+
+def test_build_output_entries_rejects_the_pre_130_sequence_signature():
+    """A bare list was the old third argument.
+
+    Left unguarded it iterates as media kinds (and a string iterates as
+    characters), so an out-of-repo caller would get plausible nonsense rather
+    than an error.
+    """
+    for legacy in (["image"], "image", ("image",)):
+        with pytest.raises(TypeError, match="mapping of media kind"):
+            build_node_output_entries("completed", {"image": "x"}, legacy)
+
+
 def test_build_output_entries_emits_one_entry_per_declared_kind():
     entries = build_node_output_entries(
         "completed",

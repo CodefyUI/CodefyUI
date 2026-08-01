@@ -664,6 +664,7 @@ const en = {
   'chart.bar': 'Bar chart',
   'chart.series': 'series',
   'chart.unknownKind': 'This chart kind ({kind}) needs a newer editor',
+  'chart.malformed': 'This {kind} chart arrived without its data',
   'nodeDetail.captures.charts': 'Charts ({count})',
 } as const;
 

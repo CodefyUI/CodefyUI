@@ -99,6 +99,41 @@ def test_drop_nan_off_lets_nan_propagate_like_numpy():
     assert math.isnan(matrix[1, 1])
 
 
+def test_spearman_with_pairwise_nan_drop_matches_pandas():
+    """The intersection of the two subtlest semantics.
+
+    Ranking happens AFTER the pairwise mask, so each pair is ranked within its
+    own surviving rows — rank the full column first and a hole in one column
+    shifts every rank in the other. pandas does the former; the columns below
+    carry non-overlapping holes and ties, so the two orders disagree.
+    """
+    frame = pd.DataFrame({
+        "a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "b": [7.0, float("nan"), 5.0, 5.0, 3.0, 2.0, 1.0],
+        "c": [2.0, 2.0, float("nan"), 4.0, float("nan"), 9.0, 3.0],
+    })
+    result = _run(torch.tensor(frame.to_numpy()), {"method": "spearman"},
+                  columns=list(frame.columns))
+    expected = frame.corr(method="spearman").to_numpy()
+
+    assert result["matrix"].numpy() == pytest.approx(expected, rel=1e-5, abs=1e-6)
+    # Guard the guard: a wrong implementation would have to miss by more than
+    # the tolerance, so check the reference itself is not degenerate.
+    assert abs(expected[0, 2]) < 0.999
+
+
+def test_pearson_with_pairwise_nan_drop_matches_pandas_on_the_same_frame():
+    frame = pd.DataFrame({
+        "a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "b": [7.0, float("nan"), 5.0, 5.0, 3.0, 2.0, 1.0],
+        "c": [2.0, 2.0, float("nan"), 4.0, float("nan"), 9.0, 3.0],
+    })
+    result = _run(torch.tensor(frame.to_numpy()), columns=list(frame.columns))
+    assert result["matrix"].numpy() == pytest.approx(
+        frame.corr().to_numpy(), rel=1e-5, abs=1e-6
+    )
+
+
 def test_drop_nan_off_also_propagates_through_spearman():
     """Ranking a NaN would give it a finite rank and invent a correlation."""
     table = torch.tensor([[1.0, 1.0], [2.0, float("nan")], [3.0, 5.0]])

@@ -4,13 +4,15 @@ Two contracts live here, and both are normative for the pack — see
 ``plugins/stats/README.md`` for the third-party-facing version.
 
 **The table contract.** CodefyUI has no ``TABLE`` port type (``DataType`` is a
-closed Enum in core). What ``CSVReader`` and ``SyntheticDataset`` actually
-emit, and what ``ColumnSelector`` / ``RowSelector`` / ``Edu-ColumnStats``
-actually accept, is a *split table*: a 2D numeric ``TENSOR`` carrying the
-values plus a parallel ``LIST`` of column names. This pack produces and
-consumes exactly that, and additionally carries a ``row_labels`` LIST — the
-one thing no core node round-trips, and the reason a ``describe()`` table is
-readable at all.
+closed Enum in core). What ``CSVReader`` and ``SyntheticDataset`` emit is a
+*split table*: a 2D numeric ``TENSOR`` plus a parallel ``LIST`` of column
+names (plus a per-row ``labels`` LIST for the categorical column).
+``ColumnSelector`` is the only core node that reads the column-name list back.
+This pack produces and consumes that shape, and additionally carries a
+``row_labels`` LIST — no core node round-trips row names, which is why a
+``describe()`` table would otherwise print without saying which row is the
+median. ``RowSelector.labels`` is the nearest core precedent: a row-axis
+label list, not column names.
 
 **Missing values.** NaN means missing; ±Inf is a value. That is pandas' rule
 (``count()`` ignores NaN but counts Inf, so a column holding an Inf has an Inf
@@ -300,8 +302,16 @@ def _base(kind: str, title: str, x_label: str, y_label: str) -> dict[str, Any]:
     return spec
 
 
-def _note(spec: dict[str, Any], text: str) -> None:
-    """Record a downsampling / substitution notice on the spec."""
+def add_note(spec: dict[str, Any], text: str) -> None:
+    """Append a downsampling / substitution notice to *spec*, keeping any earlier one.
+
+    Public because producers add notices of their own AFTER a builder has
+    returned, and assigning ``spec["note"]`` there silently deletes the
+    builder's. That is the exact truncation lie the caps above exist to
+    prevent: a 500-bin histogram of data containing NaN would report the
+    excluded values and quietly drop "showing the first 200 of 500 bars".
+    Never assign ``note`` directly; always come through here.
+    """
     existing = spec.get("note")
     spec["note"] = f"{existing} {text}".strip() if existing else text
 
@@ -318,7 +328,7 @@ def bar_chart(
     spec = _base("bar", title, x_label, y_label)
     pairs = list(zip([str(label) for label in labels], [_num(v) for v in values]))
     if len(pairs) > MAX_BARS:
-        _note(spec, f"showing the first {MAX_BARS} of {len(pairs)} bars")
+        add_note(spec, f"showing the first {MAX_BARS} of {len(pairs)} bars")
         pairs = pairs[:MAX_BARS]
     spec["bars"] = [{"label": label, "value": value} for label, value in pairs]
     return spec
@@ -339,7 +349,7 @@ def line_chart(
     spec = _base("line", title, x_label, y_label)
     kept = list(series)
     if len(kept) > MAX_SERIES:
-        _note(spec, f"showing {MAX_SERIES} of {len(kept)} series")
+        add_note(spec, f"showing {MAX_SERIES} of {len(kept)} series")
         kept = kept[:MAX_SERIES]
     out: list[dict[str, Any]] = []
     for name, xs, ys in kept:
@@ -350,7 +360,7 @@ def line_chart(
         ]
         if len(points) > MAX_POINTS_PER_SERIES:
             step = (len(points) + MAX_POINTS_PER_SERIES - 1) // MAX_POINTS_PER_SERIES
-            _note(spec, f"series sampled every {step} points")
+            add_note(spec, f"series sampled every {step} points")
             points = points[::step]
         out.append({"name": str(name), "points": points})
     spec["series"] = out
@@ -382,7 +392,7 @@ def scatter_chart(
         points.append(point)
     if len(points) > MAX_SCATTER_POINTS:
         step = (len(points) + MAX_SCATTER_POINTS - 1) // MAX_SCATTER_POINTS
-        _note(spec, f"sampled every {step} of {len(points)} points")
+        add_note(spec, f"sampled every {step} of {len(points)} points")
         points = points[::step]
     spec["points"] = points
     return spec
@@ -397,7 +407,6 @@ def heatmap_chart(
     title: str = "",
     x_label: str = "",
     y_label: str = "",
-    value_format: str = "",
     vmin: float | None = None,
     vmax: float | None = None,
 ) -> dict[str, Any]:
@@ -419,7 +428,7 @@ def heatmap_chart(
     rows = list(row_labels or [])
     cols = list(col_labels or [])
     if work.shape[0] > MAX_HEATMAP_SIDE or work.shape[1] > MAX_HEATMAP_SIDE:
-        _note(
+        add_note(
             spec,
             f"showing the first {MAX_HEATMAP_SIDE}x{MAX_HEATMAP_SIDE} of "
             f"{work.shape[0]}x{work.shape[1]} cells",
@@ -429,19 +438,20 @@ def heatmap_chart(
         cols = cols[:MAX_HEATMAP_SIDE]
     finite = work[np.isfinite(work)]
     if finite.size < work.size:
-        _note(spec, "non-finite cells drawn as 0")
+        add_note(spec, "non-finite cells drawn as 0")
     spec["matrix"] = [[_num(v) for v in row] for row in work.tolist()]
     spec["row_labels"] = [str(r) for r in rows]
     spec["col_labels"] = [str(c) for c in cols]
-    spec["vmin"] = vmin if vmin is not None else (
-        float(finite.min()) if finite.size else 0.0
+    # Through _num like every other number in a spec: this is the function a
+    # third party copies, so it has to obey Rule 1 of the chart contract even
+    # when the caller hands it an inf bound.
+    spec["vmin"] = _num(vmin) if vmin is not None else (
+        _num(finite.min()) if finite.size else 0.0
     )
-    spec["vmax"] = vmax if vmax is not None else (
-        float(finite.max()) if finite.size else 1.0
+    spec["vmax"] = _num(vmax) if vmax is not None else (
+        _num(finite.max()) if finite.size else 1.0
     )
     spec["colormap"] = colormap
-    if value_format:
-        spec["value_format"] = value_format
     return spec
 
 

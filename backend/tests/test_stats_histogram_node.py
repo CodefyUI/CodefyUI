@@ -65,6 +65,23 @@ def test_non_finite_values_are_dropped_and_counted():
     assert "non-finite" in result["chart"]["note"]
 
 
+def test_a_dropped_value_notice_does_not_erase_the_downsampling_notice():
+    """Both notices must survive together.
+
+    Assigning `chart["note"] = ...` after bar_chart has already recorded its
+    cap notice deletes it, so a 500-bin histogram would disclose the excluded
+    NaNs and silently hide that only 200 of its 500 bars are drawn — exactly
+    the truncation lie the caps exist to prevent.
+    """
+    values = list(range(500)) + [float("nan")] * 7
+    result = _run(torch.tensor(values, dtype=torch.float64), {"bins": 500})
+
+    note = result["chart"]["note"]
+    assert "showing the first 200 of 500 bars" in note
+    assert "7 non-finite value(s) excluded" in note
+    assert len(result["chart"]["bars"]) == 200
+
+
 def test_chart_payload_is_a_bar_chart_with_one_bar_per_bin():
     result = _run(torch.tensor([1.0, 2.0, 3.0, 4.0]), {"bins": 4, "title": "Widths"})
     chart = result["chart"]

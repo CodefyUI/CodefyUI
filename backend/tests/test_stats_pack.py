@@ -12,12 +12,14 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 from pathlib import Path
 from textwrap import dedent
 
 import pandas as pd
 import plugins as plugin_cli
 import pytest
+import torch
 
 from app.core import plugin_loader
 from app.core.graph_engine import execute_graph
@@ -42,9 +44,12 @@ NODE_NAMES = [
 
 
 def _pack_sources() -> list[Path]:
-    return sorted(
-        p for p in _PACK_DIR.rglob("*.py") if "__pycache__" not in p.parts
-    )
+    found = sorted(p for p in _PACK_DIR.rglob("*.py") if "__pycache__" not in p.parts)
+    # A parametrize over an empty list collects zero tests and reports success,
+    # so a moved or renamed pack directory would turn the security gate into a
+    # no-op that still shows green. Fail at import instead.
+    assert found, f"no Python sources found under {_PACK_DIR} — the AST gate would be a no-op"
+    return found
 
 
 @pytest.fixture
@@ -126,8 +131,8 @@ def test_an_installed_pack_exposes_all_eight_nodes(isolated_lockfile):
     assert sorted(registry.nodes) == [f"stats:{name}" for name in NODE_NAMES]
 
 
-def test_hot_reload_re_registers_every_node(isolated_lockfile):
-    """`cdui plugin reload` rediscovers with force_reload — twice must be stable."""
+def test_rediscovery_does_not_duplicate_or_drop_nodes(isolated_lockfile):
+    """Discovering twice is stable — no duplicate keys, no losses."""
     assert _install() == 0
     nodes_dir = _PACK_DIR / "nodes"
     package = "cdui_plugins.stats.nodes"
@@ -137,6 +142,58 @@ def test_hot_reload_re_registers_every_node(isolated_lockfile):
     registry.clear()
     assert registry.discover(nodes_dir, package, force_reload=True) == 8
     assert sorted(registry.nodes) == [f"stats:{name}" for name in NODE_NAMES]
+
+
+def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path, monkeypatch):
+    """The acceptance criterion, exercised the way a plugin author lives it.
+
+    Copies the pack to a temp dir, runs a node, EDITS the source, reloads
+    through ``rediscover_all`` — the same call ``POST /api/plugins/reload``
+    makes — and re-runs. Discovering a pristine pack twice would pass even if
+    reload could not pick up a change, which is the only thing anyone actually
+    wants from it.
+    """
+    user_root = tmp_path / "userdata" / "plugins"
+    pack = user_root / "stats"
+    shutil.copytree(_PACK_DIR, pack)
+    monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: user_root)
+
+    lockfile = {
+        "schema": 1,
+        "plugins": {"stats": {"source_kind": "user", "source": "stats", "enabled": True}},
+    }
+    monkeypatch.setattr(plugin_loader, "load_lockfile", lambda: lockfile)
+
+    registry = NodeRegistry()
+
+    def reload_pack() -> None:
+        plugin_loader.purge_plugin_modules("stats")
+        plugin_loader.install_plugin_finder(
+            plugin_loader.plugins_builtin_root(), user_root, lockfile
+        )
+        registry.clear()
+        registry.discover(pack / "nodes", "cdui_plugins.stats.nodes", force_reload=True)
+
+    reload_pack()
+    describe = registry.get("stats:Stats-Describe")
+    before = describe().execute({"table": torch.zeros((3, 1))}, {})
+    assert before["row_labels"][0] == "count"
+
+    # The edit: rename the first statistic. Small, but only a genuine re-import
+    # of the changed file can make it visible.
+    source = pack / "nodes" / "stats_describe_node.py"
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            '["count", "mean", "std", "min"]', '["N_ROWS", "mean", "std", "min"]'
+        ),
+        encoding="utf-8",
+    )
+
+    reload_pack()
+    after = registry.get("stats:Stats-Describe")
+    assert after is not describe, "reload must hand back a freshly imported class"
+    assert after().execute({"table": torch.zeros((3, 1))}, {})["row_labels"][0] == "N_ROWS"
+    assert len(registry.nodes) == 8, "an edit must not duplicate or drop nodes"
 
 
 def test_node_types_are_namespaced_so_saved_graphs_are_unambiguous(

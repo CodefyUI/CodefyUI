@@ -661,6 +661,7 @@ const zhTW: Record<TranslationKey, string> = {
   'chart.bar': '長條圖',
   'chart.series': '數列',
   'chart.unknownKind': '這種圖表類型（{kind}）需要更新版的編輯器',
+  'chart.malformed': '這張 {kind} 圖表沒有帶資料',
   'nodeDetail.captures.charts': '圖表（{count}）',
 };
 

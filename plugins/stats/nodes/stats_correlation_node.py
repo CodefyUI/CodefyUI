@@ -207,7 +207,6 @@ class StatsCorrelationNode(BaseNode):
             col_labels=names,
             colormap="RdBu",
             title=str(params.get("title", "Correlation") or "Correlation"),
-            value_format="0.00",
             # Read against a fixed diverging scale, never the data's own extent.
             vmin=-1.0,
             vmax=1.0,

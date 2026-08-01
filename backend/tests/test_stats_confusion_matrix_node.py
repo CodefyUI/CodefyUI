@@ -98,6 +98,17 @@ def test_a_class_missing_from_class_names_is_ignored_and_reported():
     assert "1 sample(s) ignored" in result["chart"]["note"]
 
 
+def test_an_ignored_sample_notice_does_not_erase_the_downsampling_notice():
+    """Both notices must survive together — see the histogram twin of this test."""
+    classes = [str(i) for i in range(80)]          # over MAX_HEATMAP_SIDE (64)
+    labels = classes + ["off-the-list"]
+    result = _run(labels, labels, {"class_names": ",".join(classes)})
+
+    note = result["chart"]["note"]
+    assert "showing the first 64x64 of 80x80 cells" in note
+    assert "1 sample(s) ignored" in note
+
+
 def test_integer_class_indices_sort_numerically_not_lexicographically():
     """Sorted as strings, class 10 would land before class 2."""
     labels = [str(v) for v in (2, 10, 2, 10)]

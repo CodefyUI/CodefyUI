@@ -19,7 +19,7 @@ cdui plugin uninstall deep
 
 ## What's available
 
-| Pack | Hands-on modules | Edu nodes |
+| Pack | Hands-on modules | Nodes |
 |------|------------------|-----------|
 | `foundations` | I1 Data Representation · I2 Classical ML | Edu-ColumnStats, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-TokenEmbedding, Edu-FFN |
 | `deep` | I3 Vision · I4 Sequences | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |

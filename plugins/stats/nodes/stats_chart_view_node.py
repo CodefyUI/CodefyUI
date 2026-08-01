@@ -34,6 +34,7 @@ from app.core.node_base import (
 
 from ._stats_core import (
     CHART_KINDS,
+    add_note,
     as_matrix,
     bar_chart,
     heatmap_chart,
@@ -82,8 +83,9 @@ def convert_chart(spec: dict[str, Any], kind: str) -> dict[str, Any]:
     # matrix, so those two directions are the ones that refuse.
     if current == "heatmap" or kind == "heatmap":
         out = dict(spec)
-        note = f"cannot redraw a {current} chart as {kind}; showing it as {current}"
-        out["note"] = f"{spec['note']} {note}".strip() if spec.get("note") else note
+        add_note(
+            out, f"cannot redraw a {current} chart as {kind}; showing it as {current}"
+        )
         return out
 
     triples = _points_of(spec)
@@ -106,9 +108,11 @@ def convert_chart(spec: dict[str, Any], kind: str) -> dict[str, Any]:
             title=title, x_label=x_label, y_label=y_label,
         )
     if spec.get("note"):
-        converted["note"] = (
-            f"{spec['note']} {converted.get('note', '')}".strip()
-        )
+        # The source's notice comes FIRST, then whatever the rebuild added.
+        carried = converted.pop("note", "")
+        add_note(converted, str(spec["note"]))
+        if carried:
+            add_note(converted, carried)
     return converted
 
 
@@ -279,9 +283,10 @@ class StatsChartViewNode(BaseNode):
             title=title, x_label="group", y_label=names[column],
         )
         if len(selection) > 1:
-            spec["note"] = (
+            add_note(
+                spec,
                 f"charting {names[column]!r}; a bar chart shows one column — set "
-                "columns_filter to pick another"
+                "columns_filter to pick another",
             )
         return spec
 

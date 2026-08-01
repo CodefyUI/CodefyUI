@@ -26,7 +26,14 @@ from app.core.node_base import (
     PortDefinition,
 )
 
-from ._stats_core import as_vector, bar_chart, float_param, int_param, to_tensor
+from ._stats_core import (
+    add_note,
+    as_vector,
+    bar_chart,
+    float_param,
+    int_param,
+    to_tensor,
+)
 
 _RANGE_MODES = ("auto", "manual")
 
@@ -195,7 +202,10 @@ class StatsHistogramNode(BaseNode):
             y_label=value_name,
         )
         if dropped:
-            chart["note"] = f"{dropped} non-finite value(s) excluded"
+            # add_note, never `chart["note"] = ...`: bar_chart may already have
+            # recorded a downsampling notice, and overwriting it would hide the
+            # truncation the cap exists to disclose.
+            add_note(chart, f"{dropped} non-finite value(s) excluded")
 
         return {
             "table": to_tensor(table),

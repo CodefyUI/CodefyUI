@@ -133,9 +133,43 @@ describe('ChartView', () => {
     ).toBeInTheDocument();
   });
 
-  it('treats a heatmap with no matrix as an unknown kind rather than an empty box', () => {
-    render(<ChartView chart={{ kind: 'heatmap' }} />);
-    expect(screen.getByText(/needs a newer editor/)).toBeInTheDocument();
+  // A known kind with a missing payload is a producer bug, not an old editor.
+  // Telling the reader to upgrade would send them to the wrong place.
+  it.each([
+    ['heatmap', { kind: 'heatmap' }],
+    ['bar', { kind: 'bar' }],
+    ['line', { kind: 'line' }],
+    ['scatter', { kind: 'scatter' }],
+  ])('reports a %s missing its payload as malformed, not as too new', (kind, chart) => {
+    render(<ChartView chart={chart as LogChartPayload} />);
+    expect(
+      screen.getByText(`This ${kind} chart arrived without its data`),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/needs a newer editor/)).toBeNull();
+  });
+
+  it('draws an empty-but-present payload rather than calling it malformed', () => {
+    // `bars: []` is a real answer ("nothing in range"), unlike a missing key.
+    render(<ChartView chart={{ kind: 'bar', bars: [] }} />);
+    expect(screen.queryByText(/arrived without its data/)).toBeNull();
+  });
+
+  it('captions the y axis of a line chart', () => {
+    // LossChart draws x itself but has no y caption, so the footer must carry
+    // it — otherwise every line chart silently loses its unit.
+    render(
+      <ChartView
+        chart={{
+          kind: 'line',
+          series: [{ name: 's', points: [[0, 1]] }],
+          x_label: 'step',
+          y_label: 'loss',
+        }}
+      />,
+    );
+    expect(screen.getByText('loss')).toBeInTheDocument();
+    // x is not repeated: LossChart already prints it under its own axis.
+    expect(screen.getAllByText('step')).toHaveLength(1);
   });
 
   it('renders an empty bar chart without crashing', () => {

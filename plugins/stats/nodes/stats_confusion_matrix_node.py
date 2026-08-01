@@ -38,7 +38,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 
-from ._stats_core import as_labels, heatmap_chart, parse_names, to_tensor
+from ._stats_core import add_note, as_labels, heatmap_chart, parse_names, to_tensor
 
 _NORMALIZE = ("none", "true", "pred", "all")
 
@@ -213,13 +213,16 @@ class StatsConfusionMatrixNode(BaseNode):
             title=str(params.get("title", "Confusion matrix") or "Confusion matrix"),
             x_label="predicted",
             y_label="true",
-            value_format="0" if normalize == "none" else "0.00",
             vmin=0.0,
             vmax=None if normalize == "none" else 1.0,
         )
         if ignored:
-            chart["note"] = (
-                f"{ignored} sample(s) ignored — their class is not in class_names"
+            # add_note, never `chart["note"] = ...`: heatmap_chart may already
+            # have recorded a downsampling notice, and overwriting it would
+            # hide the truncation the cap exists to disclose.
+            add_note(
+                chart,
+                f"{ignored} sample(s) ignored — their class is not in class_names",
             )
 
         return {

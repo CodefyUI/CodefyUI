@@ -56,6 +56,7 @@ export const EXAMPLE_CATEGORY_COLORS: Record<string, string> = {
   Transformer: '#26C6DA',
   RNN: '#5C6BC0',
   RL: '#EF5350',
+  Stats: '#7E57C2',
 };
 
 export const EXAMPLE_CATEGORY_FALLBACK = '#FF9800';

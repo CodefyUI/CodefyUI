@@ -218,6 +218,18 @@ _MEDIA_PAYLOADS: dict[str, Callable[[Any], dict[str, Any] | None]] = {
     MEDIA_CHART: _object_payload,
 }
 
+#: Keys an entry dict already uses for its own bookkeeping. Since an entry
+#: stores its payload under a key NAMED BY THE KIND, a third-party pack
+#: declaring ``media="port"`` would overwrite the port name, and one declaring
+#: ``media="elided"`` would forge the marker ``run_store`` writes when a
+#: payload exceeds the size cap — making an intact entry read as truncated, or
+#: vice versa. Refused rather than silently renamed: a kind that collides is a
+#: bug in the declaring pack, and quietly serving it under another name would
+#: hide that from its author.
+_RESERVED_ENTRY_KEYS = frozenset(
+    {"output_kind", "port", "elided", "bytes", "cap_bytes"}
+)
+
 
 def build_node_output_entries(
     status: str,
@@ -234,6 +246,16 @@ def build_node_output_entries(
     """
     if not result:
         return []
+
+    # A Sequence here is the pre-#130 signature (a bare list of image ports).
+    # Left unguarded, iterating a string yields its characters and a list
+    # yields port names used as media kinds -- either way the caller gets
+    # plausible-looking nonsense instead of an error.
+    if media_ports is not None and not isinstance(media_ports, Mapping):
+        raise TypeError(
+            "media_ports must be a mapping of media kind -> port names, e.g. "
+            f"{{'image': ['plot']}}; got {type(media_ports).__name__}"
+        )
 
     # A "progress" status carries a live training event, nothing else.
     if status == "progress":
@@ -253,6 +275,13 @@ def build_node_output_entries(
     # Declared media ports, kind by kind. A declared port that produced
     # nothing this run is skipped rather than announced as an empty payload.
     for kind, port_names in (media_ports or {}).items():
+        if kind in _RESERVED_ENTRY_KEYS:
+            logger.warning(
+                "skipping media kind %r: it collides with a reserved entry key "
+                "(%s). Rename the kind in the declaring node pack.",
+                kind, ", ".join(sorted(_RESERVED_ENTRY_KEYS)),
+            )
+            continue
         envelope = _MEDIA_PAYLOADS.get(kind, _object_payload)
         for port in port_names:
             payload = envelope(result.get(port))
