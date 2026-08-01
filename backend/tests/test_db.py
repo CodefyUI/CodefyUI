@@ -14,7 +14,7 @@ import sqlite3
 
 import pytest
 
-from app.core.db import Database, utc_now_iso
+from app.core.db import Database, transaction, utc_now_iso
 from app.core.migrations import MIGRATIONS, iter_statements
 
 
@@ -23,13 +23,19 @@ def test_connect_migrates_empty_file(tmp_path):
     db.connect()
     try:
         assert db._conn.execute("PRAGMA user_version").fetchone()[0] \
-            == len(MIGRATIONS) == 2
+            == len(MIGRATIONS) == 3
         names = {
             r[0] for r in db._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        # Publish (001/002) plus the Run Service store (003). The literal
+        # count above is a deliberate tripwire: adding a migration should
+        # make someone extend this set too. Per-table schema assertions
+        # live with each subsystem (test_provenance / test_run_store).
         assert {"apps", "app_versions", "api_keys", "runs"} <= names
+        assert {"exec_runs", "exec_run_metrics", "exec_run_events",
+                "exec_run_artifacts"} <= names
     finally:
         db.close()
 
@@ -85,6 +91,67 @@ def test_failed_migration_rolls_back_atomically(tmp_path, monkeypatch):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+# ── transaction() ────────────────────────────────────────────────────────
+
+
+def test_transaction_commits_on_success(tmp_path):
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    try:
+        with transaction(db._conn) as conn:
+            conn.execute(
+                "INSERT INTO api_keys (name, prefix, token_hash, created_at) "
+                "VALUES ('t', 'cdui_a', ?, ?)", ("h" * 64, utc_now_iso()))
+        assert db._conn.in_transaction is False   # no dangling transaction
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM api_keys").fetchone()[0] == 1
+    finally:
+        db.close()
+
+
+def test_transaction_rolls_back_every_statement_on_failure(tmp_path):
+    # The multi-statement guarantee: the first INSERT must not survive a
+    # failure in the second (this is exactly what RunStore's batched metric
+    # flush and cursor allocation rely on).
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            with transaction(db._conn) as conn:
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('a', 'p', ?, ?)",
+                    ("h" * 64, utc_now_iso()))
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('b', 'p', ?, ?)",   # duplicate hash
+                    ("h" * 64, utc_now_iso()))
+        assert db._conn.in_transaction is False   # no dangling transaction
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM api_keys").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_transaction_takes_the_write_lock_up_front(tmp_path):
+    # IMMEDIATE, not DEFERRED: the lock must be held before the block's
+    # first read, which is what makes a read-then-write cursor allocation
+    # safe against a second connection.
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    other = sqlite3.connect(str(tmp_path / "codefyui.db"),
+                            isolation_level=None)
+    other.execute("PRAGMA busy_timeout=0")
+    try:
+        with transaction(db._conn) as conn:
+            conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()
+            with pytest.raises(sqlite3.OperationalError, match="locked|busy"):
+                other.execute("BEGIN IMMEDIATE")
+    finally:
+        other.close()
+        db.close()
 
 
 def test_iter_statements_handles_comments_and_multistatement():

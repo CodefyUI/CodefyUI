@@ -20,9 +20,10 @@ import asyncio
 import logging
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 from .migrations import MIGRATIONS, iter_statements
 
@@ -40,6 +41,38 @@ def utc_now_iso() -> str:
     the runs ``before=`` cursor) is lexicographically correct.
     """
     return datetime.now(timezone.utc).strftime(_TIMESTAMP_FORMAT)
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """``BEGIN IMMEDIATE`` … ``COMMIT``, rolling back on any exception.
+
+    The inline form of this (``BEGIN IMMEDIATE`` / try / ``COMMIT`` /
+    except ``BaseException`` / ``ROLLBACK`` / re-raise) is already the house
+    idiom in ``routes_apps.py`` and ``_apply_migrations``; this is the same
+    thing factored out for the modules that need it in several places.
+
+    IMMEDIATE, not the default DEFERRED: the write lock is taken up front,
+    so a read-then-write inside the block (``SELECT MAX(...) + 1`` then
+    ``INSERT``) cannot interleave with another writer. DEFERRED would
+    upgrade the lock only at the INSERT, leaving the read stale.
+
+    Only usable because ``Database.connect`` passes ``isolation_level=None``
+    — sqlite3's default would emit its own implicit BEGIN and de-atomize
+    this.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            # A failed COMMIT can already have rolled the transaction back;
+            # never let that mask the original error on its way out.
+            pass
+        raise
 
 
 class Database:
