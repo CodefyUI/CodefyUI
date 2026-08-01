@@ -76,6 +76,14 @@ class EvaluateModelNode(BaseNode):
         import torch
         from torch.utils.data import DataLoader
 
+        from ...core.loop_control import (
+            EVENT_BATCH,
+            ProgressThrottle,
+            interrupted_result,
+            loader_length,
+            stop_checker,
+        )
+
         model = inputs.get("model")
         dataset = inputs.get("dataset")
         if model is None:
@@ -92,10 +100,21 @@ class EvaluateModelNode(BaseNode):
         model = model.to(device)
         model.eval()
 
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        total_batches = loader_length(loader)
+        stopped_at_batch: int | None = None
+
         correct = 0
         total = 0
         with torch.no_grad():
-            for batch in loader:
+            for batch_index, batch in enumerate(loader):
+                # #122: a full test set is a long loop too, and an
+                # uninterruptible evaluation is what makes Stop feel broken
+                # right after the training it follows finally stopped.
+                if should_stop():
+                    stopped_at_batch = batch_index
+                    break
                 x, y = batch[0], batch[1]
                 x = x.to(device)
                 y = torch.as_tensor(y).to(device)
@@ -103,6 +122,22 @@ class EvaluateModelNode(BaseNode):
                 pred = logits.argmax(dim=1)
                 correct += int((pred == y).sum().item())
                 total += int(y.numel())
+                throttle.emit({
+                    "event": EVENT_BATCH,
+                    "batch": batch_index + 1,
+                    "total_batches": total_batches,
+                    "accuracy": round(float(correct) / float(total), 6) if total else 0.0,
+                })
 
         accuracy = float(correct) / float(total) if total else 0.0
-        return {"accuracy": accuracy, "correct": int(correct), "total": int(total)}
+        result: dict[str, Any] = {"accuracy": accuracy, "correct": int(correct),
+                                  "total": int(total)}
+        if stopped_at_batch is not None:
+            # The partial counts are still returned -- "0.97 over the first
+            # 40% of the set" beats nothing -- but the result says so, and
+            # an incomplete pass is deliberately NOT filed as a measured
+            # accuracy.
+            result.update(interrupted_result(batch=stopped_at_batch))
+        elif context is not None:
+            context.log_metric("eval_accuracy", accuracy, 1)
+        return result

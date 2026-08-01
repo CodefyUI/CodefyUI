@@ -67,10 +67,25 @@ class DiffusionTrainingLoopNode(BaseNode):
             ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="亂數種子（決定每步挑的時間步與加的雜訊）。"),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any], progress_callback: Any | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        progress_callback: Any | None = None,
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
         import torch
         from torch.utils.data import DataLoader
 
+        from ...core.loop_control import (
+            EVENT_BATCH,
+            ProgressThrottle,
+            interrupted_result,
+            loader_length,
+            save_interrupt_checkpoint,
+            stop_checker,
+        )
         from ..diffusion.ddpm_sampler_node import _cosine_betas, _linear_betas
 
         model = inputs.get("model")
@@ -104,10 +119,24 @@ class DiffusionTrainingLoopNode(BaseNode):
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        total_batches = loader_length(loader)
+        # Mirrors TrainingLoop's marker, phase included: without it a stop
+        # BETWEEN epochs and a stop on the FIRST batch of one both report
+        # batch=0 and cannot be told apart.
+        stopped_at: dict[str, Any] | None = None
+
         epoch_losses: list[float] = []
         for epoch in range(epochs):
             running, batches = 0.0, 0
-            for batch in loader:
+            for batch_index, batch in enumerate(loader):
+                # #122: one threading.Event read per batch. The default here
+                # is 200 epochs of a CPU U-Net, so "Stop works" is not a
+                # nicety on this node.
+                if should_stop():
+                    stopped_at = {"phase": "train", "batch": batch_index}
+                    break
                 x0 = batch[0] if isinstance(batch, (list, tuple)) else batch
                 x0 = x0.to(device).float()
                 b = x0.shape[0]
@@ -120,15 +149,44 @@ class DiffusionTrainingLoopNode(BaseNode):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                running += loss.item()
+                batch_loss = loss.item()
+                running += batch_loss
                 batches += 1
+                throttle.emit({"event": EVENT_BATCH, "epoch": epoch + 1,
+                               "batch": batch_index + 1,
+                               "total_batches": total_batches,
+                               "loss": round(batch_loss, 6)})
+            if stopped_at is not None:
+                break
             avg = running / max(batches, 1)
             epoch_losses.append(avg)
             if epoch % max(1, epochs // 10) == 0 or epoch == epochs - 1:
                 logger.info("Diffusion epoch %d/%d - Loss: %.4f", epoch + 1, epochs, avg)
+            if context is not None:
+                context.log_metric("train_loss", avg, epoch + 1)
             if progress_callback:
                 progress_callback({"event": "epoch", "epoch": epoch + 1, "total_epochs": epochs,
                                    "loss": round(avg, 6), "losses": [round(l, 6) for l in epoch_losses]})
+            if should_stop():
+                stopped_at = {"phase": "epoch", "batch": 0}
+                break
 
         losses_tensor = torch.tensor(epoch_losses, dtype=torch.float32)
-        return {"model": model, "losses": losses_tensor}
+        result: dict[str, Any] = {"model": model, "losses": losses_tensor}
+        if stopped_at is not None:
+            # The optimizer is built inside this node, so the checkpoint is
+            # not resumable through the CheckpointLoader -> start_epoch
+            # wiring the generic TrainingLoop offers (there is no start_epoch
+            # port to wire it to). It is still worth writing: the weights of
+            # a half-trained diffusion model are the expensive part, and
+            # ModelLoader can put them back into a fresh run.
+            checkpoint_path = save_interrupt_checkpoint(
+                context, model, optimizer,
+                epoch=len(epoch_losses), batch=stopped_at["batch"],
+                losses=losses_tensor,
+            )
+            result.update(interrupted_result(
+                epoch=len(epoch_losses), batch=stopped_at["batch"],
+                checkpoint_path=checkpoint_path, phase=stopped_at["phase"],
+            ))
+        return result

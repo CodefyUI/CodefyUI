@@ -60,6 +60,7 @@ const zhTW: Record<TranslationKey, string> = {
   'status.error': '錯誤',
   'status.skipped': '已跳過',
   'status.cached': '已快取',
+  'status.interrupted': '已中斷',
 
   // Connection (WebSocket reconnect surface)
   'connection.lost': '連線中斷 — 嘗試重新連線中…',

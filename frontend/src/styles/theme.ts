@@ -54,6 +54,10 @@ export const STATUS_COLORS: Record<string, string> = {
   cached: '#2196F3',
   skipped: '#9E9E9E',
   idle: '#444',
+  // core#122: stopped part-way with partial results. Deeper amber than
+  // `running` so the two are not confused at a glance, and deliberately not
+  // red — an interruption is what the user asked for, not a failure.
+  interrupted: '#FF8F00',
 };
 
 /** Shared zoom-out floor for both React Flow canvases. Wide skip-aware valley

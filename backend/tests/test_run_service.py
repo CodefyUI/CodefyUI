@@ -35,11 +35,14 @@ from app.core.node_base import (
 )
 from app.core.node_registry import registry
 from app.core.run_service import (
+    EVENT_ARTIFACT,
+    EVENT_METRIC,
     EVENT_NODE_STATUS,
     EVENT_RUN_COMPLETED,
     EVENT_RUN_FAILED,
     EVENT_RUN_STARTED,
     EVENT_RUN_STOPPED,
+    EVENT_WARNING,
     LANE_INTERACTIVE,
     OPTION_KEYS,
     STOP_REASON_CANCELLED,
@@ -130,6 +133,90 @@ class _RunMetricsNode(BaseNode):
         return {"value": inputs.get("value")}
 
 
+class _RunLogMetricsNode(BaseNode):
+    """Uses the #122 node-facing API: log_metric, log_artifact, batch frames.
+
+    Shaped exactly like ``TrainingLoopNode``: a config frame first, then per
+    epoch an explicit ``train_loss``/``val_loss`` followed by an epoch
+    progress payload that ALSO carries ``loss``/``val_loss`` for the live
+    chart. Whether those two paths double-file the same point is the thing
+    the tests below exist to pin.
+    """
+
+    NODE_NAME = "_RunLogMetrics"
+    CATEGORY = "Test"
+    DESCRIPTION = "Logs explicit metrics and an artifact"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [
+            ParamDefinition(name="epochs", param_type=ParamType.INT, default=3),
+            ParamDefinition(name="artifact", param_type=ParamType.BOOL,
+                            default=False),
+            ParamDefinition(name="batches", param_type=ParamType.INT, default=0),
+        ]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any],
+                progress_callback=None, *, context=None) -> dict[str, Any]:
+        epochs = int(params.get("epochs", 3))
+        if progress_callback:
+            progress_callback({"event": "config", "config": {"epochs": epochs}})
+        for epoch in range(1, epochs + 1):
+            for batch in range(1, int(params.get("batches", 0)) + 1):
+                if progress_callback:
+                    progress_callback({
+                        "event": "batch", "epoch": epoch, "batch": batch,
+                        "total_batches": int(params.get("batches", 0)),
+                        "loss": 1.0 / (epoch * batch),
+                    })
+            if context is not None:
+                context.log_metric("train_loss", 1.0 / epoch, epoch)
+                context.log_metric("val_loss", 2.0 / epoch, epoch)
+            if progress_callback:
+                progress_callback({"event": "epoch", "epoch": epoch,
+                                   "total_epochs": epochs,
+                                   "loss": 1.0 / epoch, "val_loss": 2.0 / epoch})
+        if params.get("artifact") and context is not None:
+            context.log_artifact("checkpoint", "interrupted/fake.pt",
+                                 {"reason": "interrupted", "epoch": epochs})
+        return {"value": inputs.get("value")}
+
+
+class _RunFloodNode(BaseNode):
+    """Logs far more points than a tiny outbox can hold — the overflow probe."""
+
+    NODE_NAME = "_RunFlood"
+    CATEGORY = "Test"
+    DESCRIPTION = "Overruns the outbox"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [ParamDefinition(name="points", param_type=ParamType.INT,
+                                default=64)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any],
+                *, context=None) -> dict[str, Any]:
+        for step in range(1, int(params.get("points", 64)) + 1):
+            context.log_metric("loss", 1.0 / step, step)
+        return {"value": inputs.get("value")}
+
+
 class _RunNanNode(BaseNode):
     """Emits a diverged (NaN) scalar — the JSON-token hazard."""
 
@@ -214,6 +301,8 @@ class _RunBoomNode(BaseNode):
 _TEST_NODES = {
     "_RunSlow": _RunSlowNode,
     "_RunMetrics": _RunMetricsNode,
+    "_RunLogMetrics": _RunLogMetricsNode,
+    "_RunFlood": _RunFloodNode,
     "_RunNan": _RunNanNode,
     "_RunImage": _RunImageNode,
     "_RunBoom": _RunBoomNode,
@@ -1005,6 +1094,158 @@ async def test_metrics_are_written_in_batches(store, service, monkeypatch):
     assert calls, "no metric flush happened at all"
     assert sum(calls) == 12          # 6 epochs x {loss, accuracy}
     assert max(calls) > 1, "points were flushed one at a time"
+
+
+# ── #122: what a node logs for itself ─────────────────────────────────────
+
+
+async def test_explicit_metrics_land_and_are_not_double_filed(store, service):
+    """``context.log_metric`` writes the series; inference stands down.
+
+    The node reports ``val_loss`` twice over — once explicitly, once inside
+    its epoch progress payload. Only the explicit one may become rows, or
+    every validation loss in the product is stored twice.
+    """
+    submitted = await service.submit(_graph("_RunLogMetrics",
+                                            params={"epochs": 3}))
+    await _await_terminal(store, submitted.run_id)
+
+    assert await store.list_metric_names(submitted.run_id) == [
+        "train_loss", "val_loss"]
+    val = await store.get_metrics(submitted.run_id, name="val_loss")
+    assert [(p.step, round(p.value, 6)) for p in val] == [
+        (1, 2.0), (2, 1.0), (3, round(2 / 3, 6))]
+    assert {p.node_id for p in val} == {"mid"}
+
+
+async def test_batch_progress_frames_are_not_mined_for_metrics(store, service):
+    """A wall-clock-throttled frame is liveness, not a measurement."""
+    submitted = await service.submit(
+        _graph("_RunLogMetrics", params={"epochs": 2, "batches": 5}))
+    await _await_terminal(store, submitted.run_id)
+
+    names = await store.list_metric_names(submitted.run_id)
+    assert names == ["train_loss", "val_loss"]
+    # ...but the frames themselves are still in the durable event log, which
+    # is what a live chart and a re-attaching client read.
+    events = await store.get_events(submitted.run_id)
+    frames = [p for e in events
+              for entry in ((e.payload or {}).get("outputs") or [])
+              if (p := entry.get("progress"))
+              and p.get("event") == "batch"]
+    assert [f["batch"] for f in frames] == [1, 2, 3, 4, 5] * 2
+
+
+async def test_a_metric_event_is_emitted_per_flush(store, service):
+    """One ``metric`` event per FLUSH, carrying the points that landed."""
+    submitted = await service.submit(_graph("_RunLogMetrics",
+                                            params={"epochs": 3}))
+    await _await_terminal(store, submitted.run_id)
+
+    events = [e for e in await store.get_events(submitted.run_id)
+              if e.type == EVENT_METRIC]
+    assert events, "no metric event was emitted"
+    points = [p for e in events for p in e.payload["points"]]
+    assert len(points) == 6                       # 3 epochs x 2 series
+    assert {p["name"] for p in points} == {"train_loss", "val_loss"}
+    assert all(p["node_id"] == "mid" for p in points)
+    # Never one event per point on a batched path.
+    assert len(events) < len(points)
+    # And the terminal frame is still last.
+    assert (await store.get_events(submitted.run_id))[-1].type == \
+        EVENT_RUN_COMPLETED
+
+
+async def test_log_artifact_registers_a_row_and_announces_it(store, service):
+    submitted = await service.submit(
+        _graph("_RunLogMetrics", params={"epochs": 1, "artifact": True}))
+    await _await_terminal(store, submitted.run_id)
+
+    artifacts = await store.list_artifacts(submitted.run_id, kind="checkpoint")
+    assert len(artifacts) == 1
+    assert artifacts[0].path == "interrupted/fake.pt"
+    assert artifacts[0].meta == {"reason": "interrupted", "epoch": 1,
+                                 "node_id": "mid"}
+
+    announced = [e for e in await store.get_events(submitted.run_id)
+                 if e.type == EVENT_ARTIFACT]
+    assert len(announced) == 1
+    assert announced[0].payload["artifact_id"] == artifacts[0].id
+    assert announced[0].payload["path"] == "interrupted/fake.pt"
+
+
+async def test_dropped_signals_are_reported_as_a_warning(store, monkeypatch):
+    """Overflow sheds load and SAYS so; the run still succeeds.
+
+    The outbox is shrunk by patching the context the service builds, rather
+    than by adding a knob nobody would ever turn in production — capacity is
+    a property of the queue, not a run option.
+    """
+    import app.core.run_service as run_service_module
+    from app.core.execution_context import EventOutbox, ExecutionContext
+
+    monkeypatch.setattr(
+        run_service_module, "ExecutionContext",
+        lambda **kwargs: ExecutionContext(outbox=EventOutbox(capacity=4),
+                                          **kwargs),
+    )
+    svc = RunService(store, shutdown_grace_s=2.0)
+    try:
+        submitted = await svc.submit(_graph("_RunFlood",
+                                            params={"points": 200}))
+        await _await_terminal(store, submitted.run_id)
+    finally:
+        await svc.shutdown()
+
+    record = await store.get_run(submitted.run_id)
+    assert record is not None and record.status == STATUS_SUCCEEDED
+
+    warnings = [e for e in await store.get_events(submitted.run_id)
+                if e.type == EVENT_WARNING]
+    assert warnings, "load was shed without telling anyone"
+    dropped = sum(w.payload["count"] for w in warnings)
+    kept = len(await store.get_metrics(submitted.run_id, name="loss"))
+    assert dropped > 0
+    assert dropped + kept == 200, "every point is delivered or accounted for"
+    assert all(w.payload["kind"] == "dropped_signals" for w in warnings)
+
+
+async def test_metrics_are_queryable_after_a_simulated_restart(
+    store, service, tmp_path,
+):
+    """Persistence proof: a new process reads a finished run's series.
+
+    The restart is real as far as this layer can make it — a second
+    ``Database`` over the same file, a fresh ``RunStore`` and a fresh
+    ``RunService`` whose startup recovery runs first, exactly as
+    ``main.py``'s lifespan does.
+    """
+    submitted = await service.submit(
+        _graph("_RunLogMetrics", params={"epochs": 4, "artifact": True}))
+    await _await_terminal(store, submitted.run_id)
+
+    reopened = Database(tmp_path / "codefyui.db")
+    reopened.connect()
+    try:
+        restarted_store = RunStore(reopened)
+        restarted = RunService(restarted_store)
+        assert await restarted.recover_interrupted() == 0, (
+            "a finished run must not be retired by startup recovery"
+        )
+
+        record = await restarted_store.get_run(submitted.run_id)
+        assert record is not None and record.status == STATUS_SUCCEEDED
+        assert await restarted_store.list_metric_names(submitted.run_id) == [
+            "train_loss", "val_loss"]
+        train = await restarted_store.get_metrics(submitted.run_id,
+                                                  name="train_loss")
+        assert [p.step for p in train] == [1, 2, 3, 4]
+        assert train[0].value == pytest.approx(1.0)
+        assert train[-1].value == pytest.approx(0.25)
+        assert len(await restarted_store.list_artifacts(
+            submitted.run_id, kind="checkpoint")) == 1
+    finally:
+        reopened.close()
 
 
 # ── retention + shutdown ──────────────────────────────────────────────────

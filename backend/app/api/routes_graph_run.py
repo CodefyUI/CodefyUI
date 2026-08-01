@@ -460,7 +460,7 @@ async def execute_contract_run(
         if status == "running":
             node_started[node_id] = time.monotonic()
             return
-        if status in ("completed", "cached", "skipped", "error"):
+        if status in ("completed", "cached", "skipped", "error", "interrupted"):
             # cached/skipped arrive WITHOUT a prior "running" (the engine
             # emits them directly): the dict.get guard records 0.0.
             started = node_started.get(node_id)
@@ -506,9 +506,11 @@ async def execute_contract_run(
                     timing={"total_s": round(time.monotonic() - t0, 3)},
                     node_timings=node_timings,
                 )
-        # 10. Cooperative cancellation: observed at node boundaries only —
-        # the node currently inside run_in_executor finishes in its thread
-        # after this 500 is sent (documented limitation).
+        # 10. Cooperative cancellation. Since #122 the long-loop nodes
+        # (TrainingLoop, DiffusionTrainingLoop, EvaluateModel, DDPMSampler,
+        # Map) poll `context.should_stop()` every batch and unwind within
+        # one iteration; anything else still runs to the end of its
+        # `run_in_executor` call, after this 500 has been sent.
         ctx.cancel()
         return _error(500, code="timeout",
                       message=f"run exceeded timeout_s={run_req.timeout_s}",

@@ -273,6 +273,10 @@ describe('BaseNode', () => {
     ['completed', '#4CAF50'],
     ['error', '#F44336'],
     ['cached', '#2196F3'],
+    // core#122: a node that stopped part-way with partial results. Without
+    // its own branch it falls through to 'transparent' and looks exactly
+    // like a node that never ran.
+    ['interrupted', '#FF8F00'],
   ] as const)('uses the %s status border when unselected', (status, hex) => {
     const data = baseData({
       executionStatus: status,

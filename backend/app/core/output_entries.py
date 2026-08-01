@@ -44,8 +44,11 @@ OUTPUT_KIND_IMAGE = "image"
 OUTPUT_KIND_PROGRESS = "progress"
 OUTPUT_KIND_TENSOR_SUMMARY = "tensor_summary"
 
-# Statuses whose payload is a finished node result worth summarizing.
-_STATUSES_WITH_RESULT = ("completed", "cached")
+# Statuses whose payload is a node result worth summarizing. "interrupted"
+# (#122) carries PARTIAL outputs — the epochs a stopped training run did
+# manage — and those are exactly what the user wants to look at afterwards,
+# so it summarizes like a completed one.
+_STATUSES_WITH_RESULT = ("completed", "cached", "interrupted")
 
 
 def _summarize_single(value: Any) -> dict[str, Any]:

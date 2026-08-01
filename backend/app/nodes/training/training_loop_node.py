@@ -98,10 +98,14 @@ def _prepare_optimizer(optimizer: Any, model: Any) -> tuple[Any, str]:
         including per-group overrides, are preserved.
 
     ``rebuilt``
-        The optimizer belongs to a *different* model (different parameter
-        count or shapes), so its state is meaningless here. A fresh optimizer
-        of the same class is constructed over ``model.parameters()`` and a
-        warning is logged.
+        The optimizer's parameters do not line up with the model's at all
+        (different count, or different shapes), so its state cannot be
+        re-keyed onto this model. Usually that means an optimizer built for
+        a *different* model -- but it is also exactly what a deliberately
+        PARTIAL optimizer looks like (one built over an unfrozen head only),
+        and the rebuild widens it to every parameter. A fresh optimizer of
+        the same class is constructed over ``model.parameters()``, its state
+        is discarded, and a warning spelling both cases out is logged.
 
     Note that the check is on the *parameters*, not on the module object:
     ``nn.Module.to()`` mutates in place and returns ``self``, so the module is
@@ -313,6 +317,31 @@ class TrainingLoopNode(BaseNode):
       epochs live in the checkpoint's ``losses``. Map array index to absolute
       epoch with ``metrics["start_epoch"]``, which progress events also carry
       as ``start_epoch`` whenever it is non-zero.
+
+    **Stopping (#122).** ``context.should_stop()`` is polled once per batch,
+    training and validation alike, so Stop lands within one batch instead of
+    at the end of the run. On a stop the node does NOT raise: it writes an
+    interrupt checkpoint (``MODELS_DIR/interrupted/``, registered as an
+    ``exec_run_artifacts`` row of kind ``checkpoint``), returns the partial
+    ``losses``/``val_losses``/``metrics`` it has, and marks the result
+    interrupted so the engine reports an ``interrupted`` node status.
+    Resuming is the ordinary #118 path -- ``CheckpointLoader.epoch`` into
+    ``start_epoch`` -- and the checkpoint stores the number of COMPLETE
+    epochs, so a run stopped part-way through epoch 3 resumes by re-running
+    epoch 3 over the weights that partial epoch already produced.
+
+    One consequence worth knowing: an interruption during VALIDATION leaves
+    ``val_losses`` one entry shorter than ``losses``, because that epoch's
+    training finished and its validation did not.
+
+    **Metrics (#122).** Per epoch, stepped by the ABSOLUTE epoch number:
+    ``train_loss``, ``lr``, ``val_loss`` when a validation loader is wired,
+    and ``patience_counter``/``best_epoch`` when early stopping is on. Under
+    the ``batch_metrics`` option, ``train_loss_batch`` per batch, stepped by
+    the global batch index. Note the rename: the series the run service used
+    to INFER from the epoch progress payload was called ``loss``; it is
+    ``train_loss`` now, which is the same number under a name that lines up
+    with ``val_loss``.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -376,6 +405,16 @@ class TrainingLoopNode(BaseNode):
                 description="Max gradient norm for clipping (0 = disabled)",
                 min_value=0.0,
             ),
+            ParamDefinition(
+                name="batch_metrics",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Also record the loss of every batch as the "
+                    "'train_loss_batch' series (off by default: one row per "
+                    "batch is a lot of rows)"
+                ),
+            ),
         ]
 
     def execute(
@@ -389,6 +428,14 @@ class TrainingLoopNode(BaseNode):
         import torch
 
         from ...core.device_utils import resolve_node_device, to_device
+        from ...core.loop_control import (
+            EVENT_BATCH,
+            ProgressThrottle,
+            interrupted_result,
+            loader_length,
+            save_interrupt_checkpoint,
+            stop_checker,
+        )
 
         model = inputs["model"]
         dataloader = inputs["dataloader"]
@@ -402,6 +449,12 @@ class TrainingLoopNode(BaseNode):
         device = resolve_node_device(params.get("device"), context)
         patience = params.get("early_stopping_patience", 0)
         grad_clip = params.get("grad_clip_norm", 0.0)
+        batch_metrics = bool(params.get("batch_metrics", False))
+
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        total_batches = loader_length(dataloader)
+        total_val_batches = loader_length(val_dataloader)
 
         model = to_device(model, device)
         loss_fn = to_device(loss_fn, device)
@@ -451,6 +504,11 @@ class TrainingLoopNode(BaseNode):
         best_state_dict = None
         patience_counter = 0
 
+        # Where a stop landed: the 0-based index of the batch that never ran,
+        # and which loop it was in. None until someone presses Stop.
+        stopped_at: dict[str, Any] | None = None
+        global_batch = 0
+
         # ``epoch`` is the ABSOLUTE epoch index for the whole training run, not
         # an offset into this call: a resume at start_epoch=2 with epochs=4 runs
         # epochs 2 and 3, and every epoch number it reports (logs, progress
@@ -461,7 +519,15 @@ class TrainingLoopNode(BaseNode):
             running_loss = 0.0
             batch_count = 0
 
-            for batch_data in dataloader:
+            for batch_index, batch_data in enumerate(dataloader):
+                # #122: once per batch, before any work. A plain
+                # threading.Event read -- cheap enough to sit in the hot loop,
+                # which is the whole point of doing it here rather than at the
+                # node boundary the engine already checks.
+                if should_stop():
+                    stopped_at = {"phase": "train", "batch": batch_index}
+                    break
+
                 if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
                     data, targets = batch_data
                     data = to_device(data, device)
@@ -484,8 +550,27 @@ class TrainingLoopNode(BaseNode):
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
                 optimizer.step()
-                running_loss += loss.item()
+                batch_loss = loss.item()
+                running_loss += batch_loss
                 batch_count += 1
+                global_batch += 1
+
+                if batch_metrics and context is not None:
+                    # A series of its own, stepped by GLOBAL batch index --
+                    # not "train_loss at a finer resolution", which would put
+                    # two different x-axes in one series.
+                    context.log_metric("train_loss_batch", batch_loss,
+                                       global_batch)
+                throttle.emit({
+                    "event": EVENT_BATCH,
+                    "epoch": epoch + 1,
+                    "batch": batch_index + 1,
+                    "total_batches": total_batches,
+                    "loss": round(batch_loss, 6),
+                })
+
+            if stopped_at is not None:
+                break
 
             avg_train_loss = running_loss / max(batch_count, 1)
             epoch_losses.append(avg_train_loss)
@@ -501,7 +586,11 @@ class TrainingLoopNode(BaseNode):
                 val_batch_count = 0
 
                 with torch.no_grad():
-                    for batch_data in val_dataloader:
+                    for batch_index, batch_data in enumerate(val_dataloader):
+                        if should_stop():
+                            stopped_at = {"phase": "val", "batch": batch_index}
+                            break
+
                         if isinstance(batch_data, (list, tuple)) and len(batch_data) == 2:
                             data, targets = batch_data
                             data = to_device(data, device)
@@ -517,6 +606,21 @@ class TrainingLoopNode(BaseNode):
                             loss = loss_fn(outputs)
                         val_running_loss += loss.item()
                         val_batch_count += 1
+                        throttle.emit({
+                            "event": EVENT_BATCH,
+                            "epoch": epoch + 1,
+                            "batch": batch_index + 1,
+                            "total_batches": total_val_batches,
+                            "loss": round(val_running_loss
+                                          / max(val_batch_count, 1), 6),
+                            "phase": "val",
+                        })
+
+                if stopped_at is not None:
+                    # This epoch's TRAINING is already banked in
+                    # ``epoch_losses``; only its validation is missing. The
+                    # resume point is therefore the next epoch.
+                    break
 
                 avg_val_loss = val_running_loss / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
@@ -554,6 +658,27 @@ class TrainingLoopNode(BaseNode):
                 f" - LR: {current_lr:.6f}" if lr_scheduler else "",
             )
 
+            # #122: the durable series, logged BEFORE the progress frame so
+            # the run service knows this node reports its own metrics and
+            # stops inferring duplicates from the payload below.
+            #
+            # Because inference stands down per NODE, this list has to cover
+            # everything ``scalar_metrics`` used to mine out of the epoch
+            # payload, or a series would silently disappear. That payload
+            # yields lr, loss, val_loss and -- when early stopping is on --
+            # patience_counter and best_epoch. All of them are here; the one
+            # deliberate change is that ``loss`` is now ``train_loss``, which
+            # names the same number and lines up with ``val_loss``.
+            if context is not None:
+                context.log_metric("train_loss", avg_train_loss, epoch + 1)
+                if avg_val_loss is not None:
+                    context.log_metric("val_loss", avg_val_loss, epoch + 1)
+                context.log_metric("lr", current_lr, epoch + 1)
+                if patience > 0:
+                    context.log_metric("patience_counter", patience_counter,
+                                       epoch + 1)
+                    context.log_metric("best_epoch", best_epoch, epoch + 1)
+
             if progress_callback:
                 progress_data = {
                     "event": "epoch",
@@ -581,30 +706,72 @@ class TrainingLoopNode(BaseNode):
                 logger.info("Early stopping triggered at epoch %d (best epoch: %d)", epoch + 1, best_epoch)
                 break
 
-        # Restore best model if early stopping was used and found a best
-        if best_state_dict is not None:
+            # #122: a stop that arrives between epochs. Checked AFTER early
+            # stopping so a run that finished on its own terms is reported as
+            # finished, not interrupted.
+            if should_stop():
+                stopped_at = {"phase": "epoch", "batch": 0}
+                break
+
+        # Restore best model if early stopping was used and found a best.
+        # NOT on an interruption: the point of stopping is to resume, and
+        # resuming means continuing from where training actually is, not
+        # rewinding the weights to an earlier epoch behind the user's back.
+        if best_state_dict is not None and stopped_at is None:
             model.load_state_dict(best_state_dict)
             logger.info("Restored best model from epoch %d", best_epoch)
 
         losses_tensor = torch.tensor(epoch_losses, dtype=torch.float32)
         val_losses_tensor = torch.tensor(val_epoch_losses, dtype=torch.float32) if val_epoch_losses else torch.tensor([], dtype=torch.float32)
 
+        # Complete epochs, which is exactly what CheckpointLoader.epoch has
+        # to hand back to start_epoch. A mid-epoch stop does not count the
+        # partial epoch (its weight updates are in the model, its loss
+        # average is not), so the resumed run re-runs it from batch 0.
+        completed_epochs = start_epoch + len(epoch_losses)
+        checkpoint_path: str | None = None
+        if stopped_at is not None:
+            # The epoch the stop landed IN, 1-based. Only the ``train`` phase
+            # stops inside an epoch that has not been counted yet; ``val`` and
+            # ``epoch`` both stop after one was banked.
+            stopped_in_epoch = completed_epochs + (
+                1 if stopped_at["phase"] == "train" else 0)
+            logger.info(
+                "Training interrupted during %s of epoch %d/%d at batch %d",
+                stopped_at["phase"], stopped_in_epoch, epochs,
+                stopped_at["batch"],
+            )
+            checkpoint_path = save_interrupt_checkpoint(
+                context, model, optimizer,
+                epoch=completed_epochs, batch=stopped_at["batch"],
+                losses=losses_tensor, lr_scheduler=lr_scheduler,
+            )
+
         # Epoch numbers are absolute; counts are for this call only.
         # ``best_epoch`` keeps its pre-#118 value when start_epoch is 0.
         metrics = {
             "final_train_loss": epoch_losses[-1] if epoch_losses else 0.0,
             "final_val_loss": val_epoch_losses[-1] if val_epoch_losses else None,
-            "best_epoch": best_epoch if patience > 0 else start_epoch + len(epoch_losses),
+            "best_epoch": best_epoch if patience > 0 else completed_epochs,
             "total_epochs_run": len(epoch_losses),
             "start_epoch": start_epoch,
-            "last_epoch": start_epoch + len(epoch_losses),
+            "last_epoch": completed_epochs,
             "stopped_early": best_state_dict is not None and patience_counter >= patience,
             "lr_history": lr_history,
+            "interrupted": stopped_at is not None,
         }
+        if stopped_at is not None:
+            metrics["interrupt_checkpoint"] = checkpoint_path
 
-        return {
+        result: dict[str, Any] = {
             "model": model,
             "losses": losses_tensor,
             "val_losses": val_losses_tensor,
             "metrics": metrics,
         }
+        if stopped_at is not None:
+            result.update(interrupted_result(
+                epoch=completed_epochs, batch=stopped_at["batch"],
+                checkpoint_path=checkpoint_path, phase=stopped_at["phase"],
+            ))
+        return result

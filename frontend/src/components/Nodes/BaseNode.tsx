@@ -114,7 +114,12 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           ? STATUS_COLORS.error
           : data.executionStatus === 'cached'
             ? STATUS_COLORS.cached
-            : 'transparent';
+            : // core#122: stopped with partial results. Without this branch an
+              // interrupted node falls through to 'transparent' and renders
+              // exactly like one that never ran.
+              data.executionStatus === 'interrupted'
+              ? STATUS_COLORS.interrupted
+              : 'transparent';
 
   const borderColor = selected
     ? '#ffffff'

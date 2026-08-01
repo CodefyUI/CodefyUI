@@ -140,6 +140,13 @@ class DDPMSamplerNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        from ...core.loop_control import (
+            EVENT_BATCH,
+            ProgressThrottle,
+            interrupted_result,
+            stop_checker,
+        )
+
         model = inputs.get("model")
         noise = inputs.get("noise")
         if model is None:
@@ -184,8 +191,18 @@ class DDPMSamplerNode(BaseNode):
         if hasattr(model, "eval"):
             model.eval()
 
+        # #122: one U-Net forward per step and ``num_steps`` has no upper
+        # bound, so this is a long loop like any other -- and until now it
+        # reported nothing at all despite accepting a progress_callback.
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        stopped_at_step: int | None = None
+
         with torch.no_grad():
-            for t in reversed(range(num_steps)):
+            for done, t in enumerate(reversed(range(num_steps))):
+                if should_stop():
+                    stopped_at_step = done
+                    break
                 t_tensor = torch.full(
                     (x.shape[0],), t, dtype=torch.long, device=x.device
                 )
@@ -207,4 +224,14 @@ class DDPMSamplerNode(BaseNode):
                 else:
                     x = mean
 
-        return {"image": x}
+                throttle.emit({"event": EVENT_BATCH, "batch": done + 1,
+                               "total_batches": num_steps, "timestep": t})
+
+        result: dict[str, Any] = {"image": x}
+        if stopped_at_step is not None:
+            # A partially denoised x is still an image, and returning it
+            # beats returning nothing -- but it is not the sample that was
+            # asked for, so the run is not allowed to call this a success.
+            result.update(interrupted_result(batch=stopped_at_step,
+                                             total_steps=num_steps))
+        return result
