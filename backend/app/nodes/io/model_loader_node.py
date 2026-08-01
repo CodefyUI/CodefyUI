@@ -11,6 +11,11 @@ class ModelLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load model weights from a .pt/.pth file into a model, or load a full saved model"
 
+    # The cache key hashes `path`, never the weights behind it. Re-training
+    # and re-saving to the same path between runs is the normal workflow, so
+    # a cache hit here would silently load the previous epoch's weights.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

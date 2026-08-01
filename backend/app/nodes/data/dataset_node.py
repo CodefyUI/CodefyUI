@@ -8,6 +8,11 @@ class DatasetNode(BaseNode):
     CATEGORY = "Data"
     DESCRIPTION = "Load a standard dataset (MNIST, CIFAR10, or FashionMNIST)"
 
+    # Reads (and on first use downloads) the dataset under `data_dir`. The
+    # cache key hashes the directory name, not its contents, so a cached
+    # dataset would survive the files there changing.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []

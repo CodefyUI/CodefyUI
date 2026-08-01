@@ -29,6 +29,11 @@ class KaggleDatasetNode(BaseNode):
     CATEGORY = "Data"
     DESCRIPTION = "Download a Kaggle dataset and load it as an ImageFolder"
 
+    # Hits the network, the kagglehub cache on disk, and KAGGLE_* credentials
+    # in the environment. None of that is visible to the cache key, so a hit
+    # would pin the graph to whatever the first run happened to download.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return []
