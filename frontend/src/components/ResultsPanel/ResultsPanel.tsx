@@ -70,6 +70,15 @@ export function ResultsPanel() {
   // before the first visit and decays after leaving.
   const activeRuns = useRunStore((s) => s.activeCount);
 
+  // Since #125 only the ACTIVE tab's editor surface is mounted, and it is not
+  // torn down and rebuilt on a tab switch — so one instance of this component
+  // now serves every canvas tab. Everything below therefore became
+  // workspace-global, which is deliberate for the geometry and the selected
+  // dock tab (they are preferences, not graph state) but WRONG for anything
+  // that points INTO the active tab's data. `expandedIdx` is the latter: it
+  // is a positional index into `filteredLogs`, so carrying it across a switch
+  // would expand whatever row happens to sit at that index in the new tab's
+  // log. It is reset below.
   const [collapsed, setCollapsed] = useState(false);
   const [panelHeight, setPanelHeight] = useState(DEFAULT_HEIGHT);
   const [panelTab, setPanelTab] = useState<PanelTab>('log');
@@ -129,6 +138,12 @@ export function ResultsPanel() {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [filteredLogs, panelTab]);
+
+  // Drop the expanded row when the canvas tab changes: the index means
+  // nothing in the incoming tab's log (see the state block above).
+  useEffect(() => {
+    setExpandedIdx(null);
+  }, [activeTab.id]);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

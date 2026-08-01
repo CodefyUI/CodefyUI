@@ -264,6 +264,11 @@ afterAll(() => {
       `frame budget ${FRAME_BUDGET_MS}ms (p95), hard assert: ${HARD_ASSERT ? 'on' : 'off'}`,
       report(),
       '',
+      'note: the (IndexedDB) autosave row names the ENVIRONMENT, not the',
+      'backend. It measures whichever tier this build reaches for when',
+      'IndexedDB is available -- one record per tab since #125, and the same',
+      'whole-tree localStorage blob as the row above it on any earlier build.',
+      '',
     ].join('\n'),
   );
 });

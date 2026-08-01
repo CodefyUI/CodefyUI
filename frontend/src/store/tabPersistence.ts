@@ -130,6 +130,20 @@ export async function writeSnapshot(
  * Rejects only when IndexedDB itself is unreachable. Damaged or partial data
  * resolves `null` (or the readable subset) rather than throwing, because
  * refusing to open the app is a worse answer than starting fresh.
+ *
+ * Two things worth knowing about how it does that:
+ *
+ * - **Damaged meta leaks records.** If `|meta` is missing, malformed or names
+ *   no tabs, this returns `null` without looking at the `|tab|` records, so the
+ *   caller migrates over the top and any records meta failed to name are never
+ *   reclaimed. Deliberate: the alternative is deleting a user's graphs on the
+ *   strength of one damaged index record. The next clean save DOES sweep them,
+ *   because the durability baseline adopted below is keyed by what was on disk.
+ * - **Read and write are separate transactions.** Meta and the records are read
+ *   in two, and a save writes in a third, so nothing here is atomic against a
+ *   concurrent writer. In practice the only writer is this page's own debounced
+ *   save, and `tabStore`'s hydration guard holds that off until the read has
+ *   settled — that guard, not IndexedDB, is what serialises the two.
  */
 export async function readSnapshot(scope: string): Promise<PersistedSnapshot | null> {
   const meta = await idbGet<PersistedTabsMeta>(tabMetaKey(scope));
@@ -168,10 +182,14 @@ export async function readSnapshot(scope: string): Promise<PersistedSnapshot | n
 }
 
 /**
- * Forget what is durable. Tests share module state and swap the IndexedDB
- * factory between cases; production calls it when the storage scope changes
- * under it (opening a project), where the previous scope's bookkeeping says
- * nothing about the new one.
+ * Forget what is durable. Test-only, as the name says: cases in one file share
+ * this module's state and swap the IndexedDB factory between them, and
+ * bookkeeping held against the previous factory would make the next case's
+ * first write look like a no-op.
+ *
+ * Production never needs it. The bookkeeping is keyed BY scope, so opening a
+ * project does not invalidate anything — the new scope simply has no entry
+ * yet, and the old scope's stays correct for it.
  */
 export function _resetTabPersistenceForTests(): void {
   _written.clear();

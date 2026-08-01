@@ -289,6 +289,65 @@ describe('tab autosave - IndexedDB is the write target', () => {
   });
 });
 
+describe('tab autosave - hydration failure is surfaced', () => {
+  /** An IndexedDB that exists (so `idbAvailable()` is true) but never opens. */
+  function installBrokenIndexedDb() {
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        const request: Record<string, unknown> = { error: new Error('broken') };
+        queueMicrotask(() => (request.onerror as (() => void) | undefined)?.());
+        return request;
+      },
+    });
+  }
+
+  it('toasts when the hydrate read fails, so the user knows to export', async () => {
+    // The dangerous case: a migrated workspace whose IndexedDB has since gone
+    // bad. localStorage is frozen at migration-day content, so failing quietly
+    // shows stale tabs, accepts edits against them, and loses them at the next
+    // healthy load.
+    localStorage.setItem(
+      LEGACY_KEY,
+      legacyBlob([{ id: 'a', name: 'MigrationDay', nodes: [], edges: [] }], 'a'),
+    );
+    vi.resetModules();
+    installBrokenIndexedDb();
+    const toastMod = await import('./toastStore');
+    const store = (await import('./tabStore')) as TabStoreModule;
+
+    expect(await store.whenTabsHydrated()).toBe('failed');
+    const toasts = toastMod.useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+    expect(toasts[0].message.length).toBeGreaterThan(0);
+  });
+
+  it('warns once, not once per retry, while storage stays broken', async () => {
+    vi.resetModules();
+    installBrokenIndexedDb();
+    const toastMod = await import('./toastStore');
+    const store = (await import('./tabStore')) as TabStoreModule;
+    await store.whenTabsHydrated();
+    expect(toastMod.useToastStore.getState().toasts).toHaveLength(1);
+
+    // A resolved project retries the hydrate against the same broken store.
+    await store.hydrateTabsFromPersistence();
+    await store.hydrateTabsFromPersistence();
+    expect(toastMod.useToastStore.getState().toasts).toHaveLength(1);
+  });
+
+  it('says nothing when there is simply no IndexedDB to use', async () => {
+    // A browser without IndexedDB at all is not degraded — localStorage stays
+    // authoritative and autosave keeps working, exactly as before #125.
+    vi.resetModules();
+    vi.stubGlobal('indexedDB', undefined);
+    const toastMod = await import('./toastStore');
+    const store = (await import('./tabStore')) as TabStoreModule;
+    expect(await store.whenTabsHydrated()).toBe('unavailable');
+    expect(toastMod.useToastStore.getState().toasts).toHaveLength(0);
+  });
+});
+
 describe('tab autosave - hydration race', () => {
   it('discards a base-scope read that a resolved project has superseded', async () => {
     // The base scope's hydration starts at import; opening a project switches

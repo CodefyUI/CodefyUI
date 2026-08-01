@@ -69,9 +69,19 @@ function _schedule(): void {
       flushTabNodeUpdates();
     });
   } else {
-    // Non-visual environments (a background document, or jsdom without
-    // `pretendToBeVisual`) have no rAF. A macrotask still coalesces a burst
-    // arriving in the same tick, which is the point.
+    // Environments with no rAF AT ALL: jsdom without `pretendToBeVisual`, a
+    // worker. A macrotask still coalesces a burst arriving in the same tick,
+    // which is the point.
+    //
+    // Note what this branch is NOT for. A hidden, backgrounded or occluded
+    // document still HAS `requestAnimationFrame` — it simply never calls it
+    // back — so the branch above is taken and the flush waits, indefinitely,
+    // until the document is painted again. That is deliberate: there is no
+    // reason to rebuild a nodes array for pixels nobody is looking at, and
+    // the buffer is bounded (one patch per node) however long the wait runs.
+    // The consequence to know about is that node badges and progress values
+    // FREEZE in a background tab while logs, which are written synchronously,
+    // keep arriving; everything catches up in one commit on the next frame.
     _handleIsRaf = false;
     _handle = setTimeout(() => {
       _handle = null;

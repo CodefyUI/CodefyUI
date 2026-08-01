@@ -147,12 +147,14 @@ export function redirectMouseDownToReconnectAnchor(
     (typeof document === 'undefined' ? null : document);
   if (!doc) return false;
 
-  // Scope the lookup to the handle's own canvas. The app mounts one
-  // (hidden) <FlowCanvas> per open tab and edge ids are only unique PER
-  // TAB (graphs loaded from example files carry fixed ids), so a
-  // document-wide query could match an identically-named edge in another
-  // tab's hidden ReactFlow instance — querySelector returns the FIRST
-  // match in DOM order, i.e. the OLDER tab's canvas. The ReactFlow root
+  // Scope the lookup to the handle's own canvas. Since #125 only the active
+  // tab's canvas is mounted, so the several-hidden-canvases case this was
+  // originally written for no longer arises. More than one ReactFlow instance
+  // can still be in the document at once (the SubgraphEditorModal mounts its own
+  // provider over the main canvas), and edge ids are only unique PER GRAPH
+  // (graphs loaded from example files carry fixed ids). A document-wide query
+  // could therefore match an identically-named edge in the other instance:
+  // querySelector returns the FIRST match in DOM order. The ReactFlow root
   // container carries the class "react-flow" (verified in @xyflow/react
   // 12.10.1 dist/esm/index.js: the ReactFlow component renders
   // `<div data-testid="rf__wrapper" ... className={cc(['react-flow',

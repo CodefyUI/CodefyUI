@@ -10,7 +10,7 @@ import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, Outpu
 import { ExecutionWebSocket } from '../api/ws';
 import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
-import { useI18n } from '../i18n';
+import { useI18n, type TranslationKey } from '../i18n';
 import { useProjectStore } from './projectStore';
 
 // ── Per-tab state ──
@@ -430,10 +430,25 @@ export interface PersistedTab {
   autoBackward?: boolean;
 }
 
-// Throttle the user-facing quota toast so a big graph editing session
-// doesn't burst N toasts when localStorage fills up. One per minute is
-// plenty to surface "your work isn't being saved".
-let _lastQuotaWarn = 0;
+// Throttle the user-facing persistence warnings so a long editing session
+// doesn't burst N toasts while storage stays broken. One per minute is plenty
+// to surface "your work isn't being saved". Keyed by message, so a failing
+// READ and a failing WRITE cannot silence each other — they are different
+// problems with different advice.
+const _lastPersistenceWarn = new Map<string, number>();
+
+function warnPersistence(messageKey: TranslationKey): void {
+  const now = Date.now();
+  if (now - (_lastPersistenceWarn.get(messageKey) ?? 0) <= 60_000) return;
+  // Opened before the toast is attempted, so a throwing i18n/toast layer
+  // cannot turn this into a per-save retry loop.
+  _lastPersistenceWarn.set(messageKey, now);
+  try {
+    useToastStore.getState().addToast(useI18n.getState().t(messageKey), 'error');
+  } catch {
+    /* toast/i18n not initialised yet — nothing useful to do here */
+  }
+}
 
 /** Build the storage record for one tab. */
 function buildPersistedTab(t: TabState): PersistedTab {
@@ -543,17 +558,8 @@ function saveTabsToLocalStorage(records: PersistedTab[], activeTabId: string) {
   } catch {
     // QuotaExceededError / SecurityError / private mode etc. The README
     // promises auto-save; failing silently lets the user lose work without
-    // realising. Surface once per minute at most.
-    const now = Date.now();
-    if (now - _lastQuotaWarn > 60_000) {
-      _lastQuotaWarn = now;
-      try {
-        const message = useI18n.getState().t('persistence.quotaError');
-        useToastStore.getState().addToast(message, 'error');
-      } catch {
-        /* toast/i18n not initialised yet — nothing useful to do here */
-      }
-    }
+    // realising.
+    warnPersistence('persistence.quotaError');
   }
 }
 
@@ -1511,14 +1517,21 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         return { ...tab, nodes };
       });
       // A batch naming only stale tabs/nodes (a run whose graph was edited
-      // mid-flight) must not notify subscribers about nothing.
+      // mid-flight) leaves `tabs` out of the patch entirely, so the array
+      // reference every selector reads is preserved. Zustand still runs its
+      // listeners — an empty patch is not a no-op at that level — but no
+      // selector sees a change, so nothing re-renders and React Flow is not
+      // handed a new nodes array to diff.
       return anyTabChanged ? { tabs } : {};
     }),
 
-  // Immediate single-node forms, kept as the direct/synchronous API over the
-  // same applier. Live execution does NOT use these — it batches through
-  // `nodeUpdateQueue` — but a caller holding one node's outcome should not
-  // have to build a nested Map to write it.
+  // Immediate single-node forms over the same applier. Nothing in the live
+  // app calls them any more — the WS handler batches through
+  // `nodeUpdateQueue` — and they are kept deliberately, for two callers that
+  // are not the live path: the perf harness drives them as its pre-#125
+  // comparison (writing straight through, once per event, which is what these
+  // measure), and tests that assert on one node's outcome should not have to
+  // build a nested Map to set it up. Retire them only if both go away.
   setTabNodeExecutionStatus: (tabId, nodeId, status, error) =>
     get().applyTabNodeUpdates(
       new Map([[tabId, new Map([[nodeId, { status: { executionStatus: status, error } }]])]]),
@@ -1681,9 +1694,16 @@ let _hydrationsInFlight = 0;
  * migrating localStorage's contents on the first run that finds it empty.
  *
  * Called at import for the base scope and again once a project resolves, and
- * exported so tests can await it. Never rejects: a broken IndexedDB leaves
- * the localStorage-derived tabs in place, which is exactly the pre-#125
- * behaviour.
+ * exported so tests can await it.
+ *
+ * Never rejects — but a failure here is NOT benign, and the toast it raises
+ * is the only thing that says so. Once a workspace has migrated, localStorage
+ * is frozen at migration-day content: it is still read, never written. So a
+ * failed READ (Firefox private mode, a corrupted database, storage evicted
+ * under pressure — `idbAvailable()` is true in all three) puts those old tabs
+ * on screen, accepts edits against them, routes the saves to the localStorage
+ * fallback, and lets the next healthy session load IndexedDB and discard the
+ * lot. The user has to know to export before that happens.
  */
 export async function hydrateTabsFromPersistence(): Promise<HydrationOutcome> {
   if (!idbAvailable()) return 'unavailable';
@@ -1728,6 +1748,9 @@ export async function hydrateTabsFromPersistence(): Promise<HydrationOutcome> {
     // from here on, so IndexedDB is the only tier that stays current.
     return hadLegacy ? 'migrated' : 'seeded';
   } catch {
+    // See the note above: silence here reads to the user as "nothing to
+    // restore" and costs them the session's work at the next healthy load.
+    warnPersistence('persistence.storageUnavailable');
     return 'failed';
   } finally {
     _hydrationsInFlight -= 1;
@@ -1742,7 +1765,17 @@ function _startHydration(): void {
   _lastHydration = hydrateTabsFromPersistence();
 }
 
-/** Resolves once the newest hydration attempt has settled. */
+/**
+ * Resolves once the newest hydration attempt has settled.
+ *
+ * No production caller, deliberately: acting on a bad outcome is
+ * `hydrateTabsFromPersistence`'s own job (it raises the toast at the point of
+ * failure, where the reason is still in scope), so nothing has to remember to
+ * await this and check. It exists so tests can be deterministic about a step
+ * that is otherwise only observable as "the tabs changed a bit later", and so
+ * a future caller that genuinely needs to sequence against hydration has a
+ * handle rather than a timeout.
+ */
 export function whenTabsHydrated(): Promise<HydrationOutcome> {
   return _lastHydration;
 }

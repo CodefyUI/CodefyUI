@@ -26,7 +26,15 @@ export interface GraphSpec {
     type: string;
     params?: Record<string, any>;
     ports?: PortDef[];
-    position?: { x: number; y: number };
+    /**
+     * `Readonly` on purpose. `workflowToGraphSpec` aliases the React Flow
+     * node's own position object in here rather than copying it, so mutating
+     * `position.x` through a spec node would move the node on the live canvas
+     * — action at a distance, from a function whose job is serialization.
+     * Replacing the whole object (`n.position = { x, y }`, as `layoutSpec`
+     * does) is the safe pattern and the only one the type permits.
+     */
+    position?: Readonly<{ x: number; y: number }>;
   }>;
   edges: Array<{
     id: string;

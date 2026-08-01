@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -156,6 +164,13 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // intermediate wrong frame. Sizes fall back to the same defaults the
   // auto-layout fit uses, so an unmeasured node still contributes a box.
   //
+  // A LAYOUT effect, not a passive one: the render that changes activeTabId
+  // has already handed <ReactFlow> the incoming tab's nodes, so a passive
+  // effect would let the browser paint one frame of the new graph under the
+  // OUTGOING tab's pan/zoom before correcting it. useLayoutEffect runs before
+  // that paint, and everything it needs is available there — `offsetWidth` is
+  // read after the DOM is committed, and `getViewport` reads store state.
+  //
   // Keyed on the store's activeTabId rather than the `tabId` prop so this
   // holds regardless of how the canvas is mounted, and skipped entirely on
   // first mount — the `fitView` prop on <ReactFlow> owns the initial viewport.
@@ -163,7 +178,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // double invocation.
   const previousTabRef = useRef<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = previousTabRef.current;
     if (previous === activeTabId) return;
     previousTabRef.current = activeTabId;
@@ -256,8 +271,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         const tab = useTabStore.getState().tabs.find(
           (t) => t.id === useTabStore.getState().activeTabId,
         );
-        // FlowCanvas only renders with an active tab (line 88 asserts it), so this
-        // lookup always finds it; the else branch is never taken
+        // FlowCanvas only renders with an active tab (the `activeTab` selector
+        // at the top asserts it), so this lookup always finds it; the else
+        // branch is never taken
         /* v8 ignore next -- @preserve */
         if (tab) {
           setEdges(
@@ -304,8 +320,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
             const tab = useTabStore.getState().tabs.find(
               (t) => t.id === useTabStore.getState().activeTabId,
             );
-            // FlowCanvas only renders with an active tab (line 88 asserts it), so
-            // reaching here means the lookup above already succeeded; else never taken
+            // FlowCanvas only renders with an active tab (the `activeTab`
+            // selector at the top asserts it), so reaching here means the
+            // lookup above already succeeded; else never taken
             /* v8 ignore next -- @preserve */
             if (tab) {
               setEdges(

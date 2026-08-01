@@ -114,6 +114,31 @@ describe('ResultsPanel — log tab basics', () => {
     expect(screen.queryByText('bad shape')).not.toBeInTheDocument();
   });
 
+  // #125: one ResultsPanel now serves every canvas tab (only the active tab's
+  // surface is mounted, and it is not remounted on a switch), so local state
+  // that indexes INTO the active tab's data has to be reset by hand.
+  it('drops the expanded error row when the canvas tab changes', () => {
+    seedLogs([makeLog({ message: 'ValueError: bad shape', type: 'error' })]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText('ValueError: bad shape'));
+    expect(screen.getByText('bad shape')).toBeInTheDocument();
+
+    // A second tab whose log has a DIFFERENT error at the same index. Without
+    // the reset, index 0 stays expanded and this row renders open.
+    act(() => {
+      useTabStore.getState().addTab('other');
+      useTabStore.setState((state) => ({
+        tabs: state.tabs.map((tb) =>
+          tb.id === state.activeTabId
+            ? { ...tb, logs: [makeLog({ message: 'RuntimeError: other tab', type: 'error' })] }
+            : tb,
+        ),
+      }));
+    });
+    expect(screen.getByText('RuntimeError: other tab')).toBeInTheDocument();
+    expect(screen.queryByText('other tab')).not.toBeInTheDocument();
+  });
+
   it('clicking a node-id badge highlights that node and stops propagation', () => {
     seedLogs([makeLog({ message: 'ValueError: oops', type: 'error', nodeId: 'node-xyz-1' })]);
     render(<ResultsPanel />);
