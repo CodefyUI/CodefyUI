@@ -331,25 +331,74 @@ async def test_logging_never_blocks_the_worker_thread():
 
 @pytest.mark.asyncio
 async def test_overflow_reports_a_dropped_count_and_keeps_the_run_healthy():
-    """Drop-oldest under a tiny queue, surfaced as a DroppedSignal."""
+    """Drop-oldest under a tiny queue, surfaced as a DroppedSignal.
+
+    The overflow is FORCED, not raced for (#171). Every drain in the engine
+    goes through one delivery lock, so a consumer that parks inside its first
+    dispatch holds that lock and nothing can empty the queue while the node
+    floods it. The previous version logged 40 points and trusted the pump to
+    fall behind; on an idle CI runner it kept up and dropped nothing, which
+    is a flaky test rather than a passing contract.
+    """
     from app.core.execution_context import DroppedSignal
 
+    capacity, total = 4, 40
+    loop = asyncio.get_running_loop()
+    consumer_parked = threading.Event()   # loop → node: no drain can happen
+    burst_queued = asyncio.Event()        # node → loop: the flood is queued
+    observed: dict[str, bool] = {}
+
+    class _FloodingLogger(_MetricLoggerNode):
+        """Waits until the consumer is provably stuck, THEN overruns it."""
+
+        NODE_NAME = "_FloodingLogger"
+
+        def execute(self, inputs, params, progress_callback=None, *, context=None):
+            # One point to wake the pump, which parks in the consumer below.
+            context.log_metric("train_loss", 1.0, 1)
+            observed["parked"] = consumer_parked.wait(timeout=5.0)
+            for step in range(2, int(params.get("count", 5)) + 1):
+                context.log_metric("train_loss", 1.0 / step, step)
+            loop.call_soon_threadsafe(burst_queued.set)
+            return {"value": "flooded"}
+
     signals: list[object] = []
-    context = ExecutionContext(outbox=EventOutbox(capacity=4))
-    nodes, edges = _graph(count=40)
 
-    outputs = await execute_graph(nodes, edges, context=context,
-                                  on_signal=signals.append)
+    async def gated_consumer(signal):
+        signals.append(signal)
+        if consumer_parked.is_set():
+            return
+        consumer_parked.set()
+        # Still inside the engine's delivery lock, so every later drain waits
+        # here — the node's remaining points have nowhere to go but out.
+        await asyncio.wait_for(burst_queued.wait(), timeout=5.0)
 
+    context = ExecutionContext(outbox=EventOutbox(capacity=capacity))
+    nodes, edges = _graph(count=total)
+    nodes[1]["type"] = "_FloodingLogger"
+    registry._nodes["_FloodingLogger"] = _FloodingLogger
+    try:
+        outputs = await execute_graph(nodes, edges, context=context,
+                                      on_signal=gated_consumer)
+    finally:
+        registry._nodes.pop("_FloodingLogger", None)
+
+    assert observed.get("parked"), "the consumer never parked; nothing was held"
     assert outputs["logger"]["value"], "the run completed regardless"
+
     metrics = [s for s in signals if isinstance(s, MetricSignal)]
-    dropped = sum(s.count for s in signals if isinstance(s, DroppedSignal))
-    assert dropped > 0, "a capacity-4 queue must have shed 40 points"
-    assert len(metrics) + dropped == 40, (
+    # Point 1 was delivered on its own; of the other 39 only the last
+    # `capacity` can survive, so the shed count is exact rather than "> 0".
+    expected_dropped = total - 1 - capacity
+    assert [s.count for s in signals if isinstance(s, DroppedSignal)] == [
+        expected_dropped
+    ], "one stalled drain, one drop-count covering everything it missed"
+    assert len(metrics) + expected_dropped == total, (
         "every point is either delivered or accounted for as dropped"
     )
     # The tail survives: what a chart needs most is where the run got to.
-    assert metrics[-1].step == 40
+    assert [s.step for s in metrics] == [
+        1, *range(total - capacity + 1, total + 1)]
 
 
 @pytest.mark.asyncio
