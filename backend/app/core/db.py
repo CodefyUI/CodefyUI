@@ -51,6 +51,9 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     except ``BaseException`` / ``ROLLBACK`` / re-raise) is already the house
     idiom in ``routes_apps.py`` and ``_apply_migrations``; this is the same
     thing factored out for the modules that need it in several places.
+    Those two existing call sites are deliberately left inline — rewriting
+    shipped transaction code is not worth the risk in an unrelated change,
+    so the two forms coexist until something else has to touch them.
 
     IMMEDIATE, not the default DEFERRED: the write lock is taken up front,
     so a read-then-write inside the block (``SELECT MAX(...) + 1`` then
@@ -138,12 +141,45 @@ class Database:
         THE seam: every route-level DB operation goes through here (one
         sync fn, one ``to_thread``, one lock — Decision A2). Multi-statement
         transactions live INSIDE ``fn`` with explicit BEGIN/COMMIT/ROLLBACK.
+
+        Cancelling the caller does NOT abandon the worker
+        --------------------------------------------------
+        ``asyncio.to_thread`` cancellation cancels the *awaiter*, never the
+        thread — a running sqlite3 statement cannot be interrupted. A bare
+        ``await asyncio.to_thread(...)`` would therefore unwind the
+        ``async with`` and RELEASE THE LOCK while ``fn`` was still executing
+        on the shared connection, so the next caller would land in the
+        middle of someone else's transaction: its writes silently swallowed
+        by that transaction's ROLLBACK, swept into its COMMIT, or refused
+        with "cannot start a transaction within a transaction".
+
+        So the cancellation is absorbed (``shield``) and re-raised only once
+        the thread has finished and the transaction is settled. The loop
+        handles repeated cancellation — during shutdown a task can be
+        cancelled more than once, and every one of those must be held until
+        the connection is quiet. ``shield`` ALONE is not enough: the outer
+        await still raises immediately and the lock still goes early.
+
+        The cost is bounded: cancelling a DB call now takes as long as the
+        statement in flight, which ``PRAGMA busy_timeout=5000`` caps.
         """
         async with self._lock:
             conn = self._conn
             if conn is None:
                 raise RuntimeError("Database is not connected")
-            return await asyncio.to_thread(fn, conn)
+            worker = asyncio.ensure_future(asyncio.to_thread(fn, conn))
+            cancellation: BaseException | None = None
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError as exc:
+                    if not worker.done():
+                        cancellation = exc   # ours, not the worker's
+                except BaseException:
+                    pass                     # worker.result() re-raises below
+            if cancellation is not None:
+                raise cancellation
+            return worker.result()
 
     async def prune_runs(self, retention_days: int, *, force: bool = False) -> int:
         """Delete runs older than ``retention_days`` days; 0 disables.

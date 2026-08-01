@@ -149,7 +149,14 @@ CREATE TABLE exec_run_metrics (
   node_id TEXT,                          -- emitting node. NULL for run-level scalars
   name    TEXT NOT NULL,                 -- series name, e.g. train_loss
   step    INTEGER NOT NULL,              -- epoch or batch index, series-defined
-  value   REAL NOT NULL,
+  -- Nullable on purpose. sqlite has no NaN: the driver binds one as NULL,
+  -- so NOT NULL here would reject a diverged loss with a constraint error
+  -- naming a column the caller never set -- and, because the metric flush
+  -- is one all-or-nothing transaction, would discard the whole batch of
+  -- good points around it. run_store normalises every non-finite value
+  -- (NaN, +/-inf) to NULL and reads it back as None, which is also the
+  -- only JSON-representable answer for the chart consumers.
+  value   REAL,
   ts      TEXT NOT NULL
 );
 -- Serves both chart reads: one series (run_id, name -> ordered steps) and

@@ -21,6 +21,12 @@ Every method goes through ``Database.run`` — one sync function, one worker
 thread, one shared ``asyncio.Lock``, one connection. See ``append_event``
 for why that plus ``BEGIN IMMEDIATE`` is what makes the event cursor safe.
 
+Each method is individually atomic; they do NOT compose. Two calls are two
+transactions, and calling one from inside another's ``fn(conn)`` closure
+deadlocks on the non-reentrant lock. When a caller needs several writes to
+land together, that belongs in a new method with one ``Database.run`` —
+``log_metrics`` is the existing example (a whole flush, one transaction).
+
 Rows in, rows out
 -----------------
 Reads return frozen dataclasses, not ``sqlite3.Row``: the row objects are
@@ -35,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,16 +93,40 @@ _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
 _ARTIFACT_COLUMNS = "id, run_id, kind, path, meta, created_at"
 
 
+def _json_safe(value: Any) -> Any:
+    """Replace every non-finite float with None, recursively."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def _dumps(value: Any) -> str:
-    """Compact JSON for a storage column.
+    """Compact JSON for a storage column. Always valid JSON.
 
     ``separators`` trims the whitespace sqlite would otherwise store for
     every graph snapshot and event payload. ``ensure_ascii`` stays at its
     default: escaping keeps a lone surrogate (legal in a JSON string that
     arrived over the wire) from raising ``UnicodeEncodeError`` on insert,
     and the round-trip is byte-identical either way.
+
+    ``allow_nan=False`` is the load-bearing one. Python's default emits the
+    bare tokens ``NaN`` / ``Infinity``, which are a CPython extension and
+    NOT JSON — ``JSON.parse`` throws on them. A stored event payload is
+    replayed verbatim to a browser on attach, so a diverged ``loss`` in a
+    progress payload would otherwise poison the whole replay, remotely and
+    long after the fact. The strict attempt runs first (no cost when the
+    data is clean); only when it trips do we walk the structure and replace
+    the offenders with null. Dropping the value beats dropping the event.
     """
-    return json.dumps(value, separators=(",", ":"))
+    try:
+        return json.dumps(value, separators=(",", ":"), allow_nan=False)
+    except ValueError:
+        return json.dumps(_json_safe(value), separators=(",", ":"),
+                          allow_nan=False)
 
 
 def _loads(raw: str | None) -> Any:
@@ -129,10 +160,17 @@ class RunRecord:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
+        # `or {}` would quietly turn a corrupt 0 / "" / [] into a plausible
+        # empty options dict; an explicit type check keeps damage loud.
+        options = _loads(row["options"])
+        if not isinstance(options, dict):
+            raise ValueError(
+                f"exec_runs.options for run {row['id']!r} is "
+                f"{type(options).__name__}, expected a JSON object")
         return cls(
             id=row["id"],
             name=row["name"],
-            options=_loads(row["options"]) or {},
+            options=options,
             status=row["status"],
             error=row["error"],
             queue_key=row["queue_key"],
@@ -147,13 +185,20 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class MetricRecord:
-    """One stored point of a named series. The read side of ``MetricPoint``."""
+    """One stored point of a named series. The read side of ``MetricPoint``.
+
+    ``value`` is None when the producer logged a non-finite number — a
+    diverged ``train_loss`` is NaN, and neither sqlite nor JSON can carry
+    NaN or +/-inf. The point is still recorded at its step so a chart shows
+    a break exactly where the training went bad, instead of the series
+    silently ending there.
+    """
 
     run_id: str
     node_id: str | None
     name: str
     step: int
-    value: float
+    value: float | None
     ts: str
 
     @classmethod
@@ -392,19 +437,14 @@ class RunStore:
         ``queued|running`` on mount). An unknown status raises rather than
         quietly returning nothing; an EMPTY sequence is the honest empty
         filter and returns nothing (``IN ()`` is not valid SQL).
+
+        A single-status filter is fully index-ordered; a multi-status one
+        merges two index ranges and pays a sort. That is accepted — the
+        query exists to find the handful of runs still in flight.
         """
-        where, params = "", []
-        if status is not None:
-            wanted = (status,) if isinstance(status, str) else tuple(status)
-            if not wanted:
-                return []
-            unknown = sorted(set(wanted) - RUN_STATUSES)
-            if unknown:
-                raise ValueError(
-                    f"unknown run status {unknown}; expected one of "
-                    f"{sorted(RUN_STATUSES)}")
-            where = f" WHERE status IN ({','.join('?' * len(wanted))})"
-            params = list(wanted)
+        where, params = self._status_filter(status)
+        if where is None:
+            return []
         params += [limit, offset]
 
         def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -415,6 +455,45 @@ class RunStore:
             ).fetchall()
 
         return [RunRecord.from_row(r) for r in await self.db.run(_select)]
+
+    async def count_runs(
+        self, *, status: str | Sequence[str] | None = None,
+    ) -> int:
+        """Total matching runs, ignoring limit/offset.
+
+        The paging companion to ``list_runs``: a table cannot render
+        "1-50 of 213" or size a scrollbar from a page alone.
+        """
+        where, params = self._status_filter(status)
+        if where is None:
+            return 0
+
+        def _count(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                f"SELECT COUNT(*) FROM exec_runs{where}", params).fetchone()[0]
+
+        return await self.db.run(_count)
+
+    @staticmethod
+    def _status_filter(
+        status: str | Sequence[str] | None,
+    ) -> tuple[str | None, list[Any]]:
+        """(WHERE fragment, params) for a status filter.
+
+        Returns ``(None, [])`` for an explicitly EMPTY filter — ``IN ()`` is
+        not valid SQL, so callers short-circuit to an empty result instead.
+        """
+        if status is None:
+            return "", []
+        wanted = (status,) if isinstance(status, str) else tuple(status)
+        if not wanted:
+            return None, []
+        unknown = sorted(set(wanted) - RUN_STATUSES)
+        if unknown:
+            raise ValueError(
+                f"unknown run status {unknown}; expected one of "
+                f"{sorted(RUN_STATUSES)}")
+        return f" WHERE status IN ({','.join('?' * len(wanted))})", list(wanted)
 
     async def mark_running(
         self, run_id: str, *, queue_key: str | None = None,
@@ -472,13 +551,20 @@ class RunStore:
         row would otherwise wait forever on a scheduler that lost its queue.
         Narrow it with *statuses* if a caller can genuinely re-adopt one.
         Idempotent: a second call finds nothing.
+
+        *statuses* is validated against ACTIVE_STATUSES, not the full
+        vocabulary: this rewrites ``status`` AND ``finished_at``, so letting
+        a terminal state through would let a startup call silently falsify
+        completed history.
         """
         wanted = tuple(statuses)
         if not wanted:
             return 0
-        unknown = sorted(set(wanted) - RUN_STATUSES)
+        unknown = sorted(set(wanted) - ACTIVE_STATUSES)
         if unknown:
-            raise ValueError(f"unknown run status {unknown}")
+            raise ValueError(
+                f"{unknown} is not an active status; expected a subset of "
+                f"{sorted(ACTIVE_STATUSES)}")
         stamp = utc_now_iso()
 
         def _update(conn: sqlite3.Connection) -> int:
@@ -513,18 +599,31 @@ class RunStore:
 
         1. In-process serialisation. Every call funnels through
            ``Database.run``, which holds ONE ``asyncio.Lock`` for the whole
-           ``asyncio.to_thread`` hop onto ONE connection. Two coroutines
-           physically cannot interleave their statements, no matter how many
-           are gathered — this is the property the concurrency test pins.
+           ``asyncio.to_thread`` hop onto ONE connection — including when
+           the caller is CANCELLED mid-call, which is the case that used to
+           hand the connection over with a transaction still open (see
+           ``Database.run``). Gathered coroutines cannot interleave their
+           statements. ``test_cursors_are_gapless_and_monotonic_under_
+           concurrent_writers`` pins this layer, plus the cursor-to-caller
+           mapping; note it CANNOT detect a missing transaction, because
+           the lock alone already serialises the 100 writers.
         2. Cross-connection serialisation. ``BEGIN IMMEDIATE`` takes the
            write lock BEFORE the SELECT, so even a second connection on the
            same file (another process, a future pool) cannot commit between
            this read and this write. DEFERRED would not: it would upgrade
            the lock only at the INSERT, having already read a stale MAX.
+           Pinned by ``test_append_event_reads_and_writes_in_one_immediate_
+           transaction`` here and by
+           ``test_transaction_takes_the_write_lock_up_front`` in test_db.
         3. A constraint backstop. ``UNIQUE (run_id, cursor)`` means that if
            1 and 2 were ever both defeated, the loser raises
            ``IntegrityError`` — a failed append, never two events silently
            sharing a cursor and a replay that skips one of them.
+
+        Not covered: an append whose caller is cancelled after the COMMIT
+        still leaves a durable event, and the cursor is lost with the
+        raise. A producer that retries must expect that its previous
+        attempt may already be in the log.
 
         *payload* is any JSON-serialisable value; None stores SQL NULL.
         Pass *ts* when the caller needs the exact stamp it will fan out to
@@ -606,9 +705,17 @@ class RunStore:
         transactions would mean one fsync each. All-or-nothing on purpose: a
         bad point rolls the whole flush back rather than leaving a partial
         one behind for a chart to interpolate through.
+
+        A non-finite value (NaN from a diverged loss, +/-inf) is stored as
+        NULL and reads back as ``MetricRecord.value is None``. It must not
+        be an error: all-or-nothing means one NaN would otherwise discard
+        every good point flushed alongside it, at exactly the moment the
+        user most needs to see the chart.
         """
         rows = [
-            (run_id, p.node_id, p.name, p.step, p.value, p.ts or utc_now_iso())
+            (run_id, p.node_id, p.name, p.step,
+             p.value if math.isfinite(p.value) else None,
+             p.ts or utc_now_iso())
             for p in points
         ]
         if not rows:
@@ -616,12 +723,11 @@ class RunStore:
 
         def _insert(conn: sqlite3.Connection) -> int:
             with transaction(conn):
-                conn.executemany(
+                return conn.executemany(
                     "INSERT INTO exec_run_metrics (run_id, node_id, name, "
                     "step, value, ts) VALUES (?, ?, ?, ?, ?, ?)",
                     rows,
-                )
-                return len(rows)
+                ).rowcount
 
         return await self.db.run(_insert)
 
@@ -633,7 +739,17 @@ class RunStore:
         after_step: int | None = None,
         limit: int | None = None,
     ) -> list[MetricRecord]:
-        """Points ordered ``(name, step)`` — chart order, and index order."""
+        """Points ordered ``(name, step)`` — chart order, and index order.
+
+        *limit* requires *name*. The ordering groups by series, so a raw row
+        cap over several interleaved series would return the whole
+        alphabetically-first one and NOTHING of the rest, with no signal
+        that anything was dropped. Cap a series, not a run.
+        """
+        if limit is not None and name is None:
+            raise ValueError(
+                "limit requires name: capping across series would silently "
+                "drop whole series (order is name, step)")
         sql = (f"SELECT {_METRIC_COLUMNS} FROM exec_run_metrics "
                "WHERE run_id = ?")
         params: list[Any] = [run_id]
@@ -673,11 +789,14 @@ class RunStore:
         encoded = None if meta is None else _dumps(meta)
 
         def _insert(conn: sqlite3.Connection) -> int:
-            return conn.execute(
+            cur = conn.execute(
                 "INSERT INTO exec_run_artifacts (run_id, kind, path, meta, "
                 "created_at) VALUES (?, ?, ?, ?, ?)",
                 (run_id, kind, path, encoded, created_at),
-            ).lastrowid
+            )
+            # lastrowid is Optional in the driver's typing; after a
+            # successful single-row INSERT it is always the new rowid.
+            return int(cur.lastrowid or 0)
 
         artifact_id = await self.db.run(_insert)
         return ArtifactRecord(id=artifact_id, run_id=run_id, kind=kind,

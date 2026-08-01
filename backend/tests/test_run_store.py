@@ -15,6 +15,7 @@ Four concerns, in order:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 
 import pytest
@@ -217,6 +218,29 @@ def test_the_run_list_order_is_served_by_an_index(db):
     ).fetchall())
     assert "idx_exec_runs_created" in plan
     assert "TEMP B-TREE" not in plan
+
+
+def test_status_filtered_list_order_is_index_served_for_one_status(db):
+    """...and honestly is NOT for several.
+
+    A multi-value IN merges two index ranges, which cannot preserve a
+    global created_at order, so sqlite sorts. Accepted: that query exists
+    to find the handful of runs still in flight. Asserted rather than left
+    implicit so the ASC-index rationale does not overclaim.
+    """
+    def _plan(marks: str, params: tuple) -> str:
+        return " ".join(r["detail"] for r in db._conn.execute(
+            f"EXPLAIN QUERY PLAN SELECT id FROM exec_runs WHERE status IN "
+            f"({marks}) ORDER BY created_at DESC, rowid DESC LIMIT ?", params,
+        ).fetchall())
+
+    one = _plan("?", ("queued", 1))
+    assert "idx_exec_runs_status_created" in one
+    assert "TEMP B-TREE" not in one
+
+    two = _plan("?,?", ("queued", "running", 1))
+    assert "idx_exec_runs_status_created" in two
+    assert "TEMP B-TREE" in two          # documented, accepted trade-off
 
 
 def test_event_replay_and_cursor_allocation_are_index_served(db):
@@ -430,6 +454,31 @@ async def test_interrupt_active_runs_can_be_narrowed_to_running(store):
         await store.interrupt_active_runs(statuses=["nope"])
 
 
+async def test_interrupt_active_runs_refuses_to_rewrite_finished_history(store):
+    # It rewrites status AND finished_at, so a terminal status must not be
+    # reachable through the statuses= escape hatch.
+    done = await _make_run(store)
+    await store.mark_finished(done.id, "succeeded")
+    with pytest.raises(ValueError, match="not an active status"):
+        await store.interrupt_active_runs(statuses=["succeeded"])
+    assert (await store.get_run(done.id)).status == "succeeded"
+
+
+async def test_count_runs_ignores_paging(store):
+    for _ in range(3):
+        await _make_run(store)
+    running = await _make_run(store)
+    await store.mark_running(running.id)
+
+    assert await store.count_runs() == 4
+    assert await store.count_runs(status="queued") == 3
+    assert await store.count_runs(status=["queued", "running"]) == 4
+    assert await store.count_runs(status=[]) == 0
+    assert len(await store.list_runs(limit=2)) == 2      # paging unaffected
+    with pytest.raises(ValueError, match="status"):
+        await store.count_runs(status="bogus")
+
+
 def test_status_constants_partition_the_vocabulary():
     assert ACTIVE_STATUSES | TERMINAL_STATUSES == RUN_STATUSES
     assert not (ACTIVE_STATUSES & TERMINAL_STATUSES)
@@ -462,6 +511,31 @@ async def test_cursors_are_gapless_and_monotonic_under_concurrent_writers(store)
     by_cursor = {e.cursor: e.payload["i"] for e in events}
     for i, cursor in enumerate(cursors):
         assert by_cursor[cursor] == i
+
+
+async def test_append_event_reads_and_writes_in_one_immediate_transaction(
+        store, db):
+    """Layer 2 of the cursor argument, which the gather test cannot see.
+
+    The gather test is serialised by Database.run's lock before any SQL
+    runs, so it passes even with no transaction at all. What actually
+    protects the read-modify-write from a SECOND connection is that the
+    SELECT and the INSERT sit inside one BEGIN IMMEDIATE -- assert exactly
+    that statement order.
+    """
+    run = await _make_run(store)
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    try:
+        await store.append_event(run.id, "log", {"i": 1})
+    finally:
+        db._conn.set_trace_callback(None)
+
+    trimmed = [" ".join(s.split()).upper() for s in statements]
+    assert trimmed[0].startswith("BEGIN IMMEDIATE")   # not DEFERRED, not absent
+    assert trimmed[-1].startswith("COMMIT")
+    body = " ".join(trimmed)
+    assert body.index("MAX(CURSOR)") < body.index("INSERT INTO")
 
 
 async def test_cursors_are_independent_per_run(store):
@@ -596,6 +670,60 @@ async def test_list_metric_names_is_sorted_and_deduped(store):
 async def test_metric_for_an_unknown_run_is_rejected(store):
     with pytest.raises(sqlite3.IntegrityError):
         await store.log_metric("ghost", "train_loss", 1.0, 0)
+
+
+async def test_a_diverged_loss_is_stored_as_none_not_an_error(store):
+    # sqlite binds NaN as NULL, so a NOT NULL column would reject it with a
+    # constraint error -- and because the flush is all-or-nothing, would
+    # discard every good point around it. A diverged loss is the single
+    # thing a user most wants to SEE on the chart.
+    run = await _make_run(store)
+    points = [MetricPoint("train_loss", 0.5, 0),
+              MetricPoint("train_loss", float("nan"), 1),
+              MetricPoint("train_loss", float("inf"), 2),
+              MetricPoint("train_loss", float("-inf"), 3),
+              MetricPoint("train_loss", 0.25, 4)]
+    assert await store.log_metrics(run.id, points) == 5
+    series = await store.get_metrics(run.id, name="train_loss")
+    assert [m.step for m in series] == [0, 1, 2, 3, 4]
+    assert [m.value for m in series] == [0.5, None, None, None, 0.25]
+
+
+async def test_get_metrics_limit_requires_a_name(store):
+    run = await _make_run(store)
+    await store.log_metrics(run.id, [MetricPoint("a", 1.0, 0),
+                                     MetricPoint("b", 1.0, 0)])
+    with pytest.raises(ValueError, match="limit requires name"):
+        await store.get_metrics(run.id, limit=1)
+
+
+async def test_event_payloads_never_store_non_json_tokens(store):
+    # json.dumps defaults to allow_nan=True and emits the bare tokens NaN /
+    # Infinity, which JSON.parse throws on -- and the WS attach path replays
+    # stored payloads verbatim to a browser.
+    run = await _make_run(store)
+    await store.append_event(run.id, "progress", {
+        "loss": float("nan"), "lr": float("inf"),
+        "losses": [1.0, float("-inf")], "epoch": 3})
+    raw = await store.db.run(lambda conn: conn.execute(
+        "SELECT payload FROM exec_run_events WHERE run_id = ?",
+        (run.id,)).fetchone()[0])
+    assert "NaN" not in raw and "Infinity" not in raw
+    assert json.loads(raw) == {"loss": None, "lr": None,
+                               "losses": [1.0, None], "epoch": 3}
+    assert (await store.get_events(run.id))[0].payload["epoch"] == 3
+
+
+async def test_artifact_meta_and_options_are_also_json_safe(store):
+    run = await store.create_run(graph_snapshot={"t": [float("nan")]},
+                                 options={"lr": float("inf")},
+                                 provenance=RunProvenance())
+    assert (await store.get_run(run.id)).options == {"lr": None}
+    assert await store.get_graph_snapshot(run.id) == {"t": [None]}
+    art = await store.add_artifact(run.id, "checkpoint", "c.pt",
+                                   meta={"loss": float("nan")})
+    assert (await store.list_artifacts(run.id))[0].meta == {"loss": None}
+    assert art.id > 0
 
 
 # ── 5. artifacts ──────────────────────────────────────────────────────────
@@ -762,26 +890,56 @@ async def test_provenance_skips_git_outside_project_mode(store, monkeypatch):
     assert run.plugin_pins == {}
 
 
-def test_provenance_capture_delegates_to_the_real_git_helper(tmp_path):
-    """Wiring check against the unpatched project.git_provenance, asserted
-    as equality so it holds in a git checkout AND in a source tarball."""
+def test_capture_uses_the_real_git_helper_and_the_project_dir():
+    """Wiring check without spawning git.
+
+    Asserting `capture(x) == git_provenance(x)` against the live checkout
+    would be both tautological and flaky: `dirty` is whatever the working
+    tree looks like at that instant, so anything writing into the repo
+    between the two calls reddens the test. Prove the binding by identity,
+    and prove the argument with a spy.
+    """
     from pathlib import Path
 
-    from app.core.project import git_provenance
+    from app.core import project, run_store
 
-    for directory in (Path(__file__).resolve().parents[2], tmp_path):
-        captured = RunProvenance.capture(directory)
-        assert (captured.git_commit, captured.git_dirty) == \
-            git_provenance(directory)
+    assert run_store.git_provenance is project.git_provenance
 
 
-def test_provenance_capture_tolerates_a_corrupt_lockfile(monkeypatch, tmp_path):
+def test_capture_passes_the_project_dir_as_a_path(monkeypatch):
+    seen: list[object] = []
+    monkeypatch.setattr("app.core.run_store.git_provenance",
+                        lambda d: (seen.append(d) or ("a" * 40, False)))
+    monkeypatch.setattr("app.core.run_store.load_lockfile",
+                        lambda: {"schema": 1, "plugins": {}})
+    monkeypatch.setattr("app.core.run_store.settings.PROJECT_DIR",
+                        r"C:\projects\demo")
+
+    from pathlib import Path
+    assert RunProvenance.capture().git_commit == "a" * 40
+    assert seen == [Path(r"C:\projects\demo")]     # str coerced to Path
+
+    seen.clear()
+    RunProvenance.capture(Path("/explicit"))       # explicit beats settings
+    assert seen == [Path("/explicit")]
+
+
+@pytest.fixture
+def no_git(monkeypatch):
+    """Keep the plugin-pin tests off real `git` subprocesses."""
+    monkeypatch.setattr("app.core.run_store.git_provenance",
+                        lambda d: (None, None))
+
+
+def test_provenance_capture_tolerates_a_corrupt_lockfile(
+        monkeypatch, tmp_path, no_git):
     monkeypatch.setattr("app.core.run_store.load_lockfile",
                         lambda: {"schema": 1, "plugins": "not-a-dict"})
     assert RunProvenance.capture(tmp_path).plugin_pins == {}
 
 
-def test_provenance_capture_skips_disabled_plugins(monkeypatch, tmp_path):
+def test_provenance_capture_skips_disabled_plugins(
+        monkeypatch, tmp_path, no_git):
     monkeypatch.setattr("app.core.run_store.load_lockfile", lambda: {
         "schema": 1,
         "plugins": {

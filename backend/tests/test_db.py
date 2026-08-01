@@ -9,8 +9,10 @@ WAL / busy_timeout / foreign_keys pragmas.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
+import threading
 
 import pytest
 
@@ -248,6 +250,55 @@ async def test_run_seam_executes_and_returns(tmp_path):
 
         assert await db.run(_count) == 1
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_run_waits_for_the_worker_thread(tmp_path):
+    # A cancelled db.run must NOT release the lock while its fn is still
+    # executing: the abandoned thread would keep driving BEGIN/COMMIT on the
+    # SHARED connection, and the next caller's write would be swallowed by
+    # someone else's ROLLBACK, swept into their COMMIT, or refused with
+    # "cannot start a transaction within a transaction".
+    db = Database(tmp_path / "codefyui.db")
+    db.connect()
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _slow(conn: sqlite3.Connection) -> None:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO api_keys (name, prefix, token_hash, created_at) "
+                "VALUES ('slow', 'p', ?, ?)", ("a" * 64, utc_now_iso()))
+            inside.set()
+            release.wait(10)
+
+    try:
+        task = asyncio.create_task(db.run(_slow))
+        await asyncio.to_thread(inside.wait, 10)   # thread is mid-transaction
+        task.cancel()
+        await asyncio.sleep(0.05)                  # let cancellation settle
+        assert db._lock.locked()                   # lock NOT handed over yet
+        assert not task.done()
+
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert db._conn.in_transaction is False
+
+        # The next caller gets a quiet connection and its write survives.
+        def _next(conn: sqlite3.Connection) -> int:
+            with transaction(conn):
+                conn.execute(
+                    "INSERT INTO api_keys (name, prefix, token_hash, "
+                    "created_at) VALUES ('next', 'p', ?, ?)",
+                    ("b" * 64, utc_now_iso()))
+            return conn.execute(
+                "SELECT COUNT(*) FROM api_keys").fetchone()[0]
+
+        assert await db.run(_next) == 2
+    finally:
+        release.set()
         db.close()
 
 
