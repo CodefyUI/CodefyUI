@@ -394,3 +394,43 @@ async def test_save_and_load_roundtrips_segment_groups(
         {"id": "g1", "headNodeId": "a", "tailNodeId": "b"},
         {"id": "g2", "headNodeId": "c", "tailNodeId": "d"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_save_and_load_roundtrips_the_bypass_flag(
+    test_client, tmp_path, monkeypatch,
+):
+    """core#128: a muted node stays muted across save/load.
+
+    `NodeData.data` is a free-form dict, so this is really a guard against a
+    future schema tightening quietly dropping the flag.
+    """
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "bypass-graph",
+        "nodes": [
+            {
+                "id": "drop",
+                "type": "Dropout",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {"p": 0.25}, "bypassed": True},
+            },
+            {
+                "id": "flat",
+                "type": "Flatten",
+                "position": {"x": 0, "y": 0},
+                "data": {"params": {}},
+            },
+        ],
+        "edges": [],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200
+
+    resp = await test_client.get("/api/graph/load/bypass-graph")
+    assert resp.status_code == 200
+    loaded = {n["id"]: n for n in resp.json()["nodes"]}
+    assert loaded["drop"]["data"]["bypassed"] is True
+    assert loaded["drop"]["data"]["params"]["p"] == 0.25
+    # An untouched node gains no flag.
+    assert "bypassed" not in loaded["flat"]["data"]

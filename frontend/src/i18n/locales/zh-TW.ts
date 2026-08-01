@@ -103,6 +103,25 @@ const zhTW: Record<TranslationKey, string> = {
   'templates.noMatch': '找不到符合的範例',
   'templates.hint': '點選範例即可開啟',
 
+  // 範例圖庫彈窗 (core#128)
+  'gallery.open': '範例圖庫',
+  'gallery.browse': '瀏覽全部範例',
+  'gallery.open.title': '瀏覽所有內建與外掛提供的範例',
+  'gallery.title': '範例圖庫',
+  'gallery.subtitle': '可以開在新分頁，或直接插入目前的畫布',
+  'gallery.search': '搜尋範例...',
+  'gallery.close': '關閉範例圖庫',
+  'gallery.list': '範例清單',
+  'gallery.detail': '範例詳情',
+  'gallery.detailEmpty': '選一個範例來看它的內容',
+  'gallery.noDescription': '這個範例沒有附說明文字。',
+  'gallery.edgeCount': '{count} 條連線',
+  'gallery.sourceBuiltin': '內建範例',
+  'gallery.sourcePlugin': '來自外掛套件「{plugin}」',
+  'gallery.openNewTab': '在新分頁開啟',
+  'gallery.insert': '插入目前畫布',
+  'gallery.insertHint': '插入的節點會拿到全新的 id，並放在目前圖表的下方，不會覆蓋既有內容。按一次復原就能整批移除。',
+
   // Sidebar: Custom & Plugins tab (#126)
   'customTab.section.nodes': '自訂節點',
   'customTab.section.plugins': '外掛',
@@ -130,6 +149,8 @@ const zhTW: Record<TranslationKey, string> = {
   'node.completed': '已完成',
   'node.cached': '已快取',
   'node.error': '錯誤：{error}',
+  'node.bypassed': '略過',
+  'node.bypassed.title': '已略過：這個節點不會執行，輸入會直接傳給下游',
 
   // Results Panel
   'results.title': '執行紀錄',
@@ -166,6 +187,8 @@ const zhTW: Record<TranslationKey, string> = {
   'contextMenu.rename.prompt': '請輸入節點的新名稱：',
   'contextMenu.addTextNote': '新增文字註記',
   'contextMenu.addImageNote': '新增圖片註記',
+  'contextMenu.bypass': '略過這個節點',
+  'contextMenu.unbypass': '取消略過',
 
   // Notes
   'note.placeholder': '點擊以編輯...',
@@ -276,7 +299,9 @@ const zhTW: Record<TranslationKey, string> = {
   'shortcuts.copy': '複製選取的節點',
   'shortcuts.paste': '貼上節點',
   'shortcuts.delete': '刪除選取項目',
-  'shortcuts.toggleSidebar': '收合／展開側邊欄',
+  'shortcuts.bypass': '略過／取消略過選取的節點',
+  'shortcuts.toggleSidebar': '收合／展開側邊欄（沒有選取節點時）',
+  'shortcuts.toggleSidebarAlways': '收合／展開側邊欄（永遠有效）',
   'shortcuts.quickSearch': '快速搜尋節點',
   'shortcuts.help': '顯示此說明',
   'shortcuts.doubleClickKey': '雙擊',

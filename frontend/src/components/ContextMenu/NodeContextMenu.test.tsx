@@ -318,3 +318,96 @@ describe('useNoteContextMenuItems', () => {
     expect(colorItems.every((i) => i.color === '#999')).toBe(true);
   });
 });
+
+
+// ── Bypass entry (core#128) ──────────────────────────────────────────────
+
+/** Put a single node on the active tab and return its id. */
+function seedNode(id: string, over: Partial<Node<NodeData>> = {}) {
+  const tabId = useTabStore.getState().activeTabId;
+  useTabStore.setState({
+    tabs: useTabStore.getState().tabs.map((t) =>
+      t.id === tabId
+        ? {
+            ...t,
+            nodes: [
+              {
+                id,
+                type: 'baseNode',
+                position: { x: 0, y: 0 },
+                data: { label: id, type: 'Dropout', params: {} },
+                ...over,
+              } as Node<NodeData>,
+            ],
+          }
+        : t,
+    ),
+  });
+  return id;
+}
+
+describe('useNodeContextMenuItems — bypass', () => {
+  const callbacks = {
+    onDelete: vi.fn(),
+    onRename: vi.fn(),
+    onDuplicate: vi.fn(),
+    onOpenDetails: vi.fn(),
+  };
+
+  it('offers Bypass on an ordinary node and forwards to the store', () => {
+    seedNode('n1');
+    const spy = vi.spyOn(useTabStore.getState(), 'toggleNodeBypass');
+    const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+
+    expect(result.current.map((i) => i.label)).toEqual([
+      'Open details',
+      'Rename',
+      'Duplicate',
+      'Bypass',
+      'Delete',
+    ]);
+    result.current[3].action();
+    expect(spy).toHaveBeenCalledWith('n1');
+  });
+
+  it('offers the inverse label once the node is muted', () => {
+    seedNode('n1', { data: { label: 'n1', type: 'Dropout', params: {}, bypassed: true } });
+    const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+    const item = result.current.find((i) => i.label === 'Remove Bypass');
+    expect(item).toBeTruthy();
+    expect(item!.color).toBe('#22d3ee');
+  });
+
+  it('omits the entry for node kinds bypass does not apply to', () => {
+    for (const type of ['noteNode', 'start', 'presetNode']) {
+      seedNode('n1', { type });
+      const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+      expect(result.current.map((i) => i.label)).toEqual([
+        'Open details',
+        'Rename',
+        'Duplicate',
+        'Delete',
+      ]);
+      // Duplicate keeps the divider that would otherwise sit under Bypass, so
+      // Delete stays visually separated either way.
+      expect(result.current[2].dividerAfter).toBe(true);
+    }
+  });
+
+  it('omits the entry for the graph I/O contract nodes (core#128 review)', () => {
+    // GraphInput/GraphOutput render as ordinary baseNode cards, so the
+    // component-type check cannot see them — the real node type can. Muting
+    // one would leave a published contract advertising an input or output
+    // the run cannot honour, which the backend refuses outright.
+    for (const graphType of ['GraphInput', 'GraphOutput']) {
+      seedNode('n1', { data: { label: 'n1', type: graphType, params: {} } });
+      const { result } = renderHook(() => useNodeContextMenuItems('n1', callbacks));
+      expect(result.current.map((i) => i.label)).toEqual([
+        'Open details',
+        'Rename',
+        'Duplicate',
+        'Delete',
+      ]);
+    }
+  });
+});

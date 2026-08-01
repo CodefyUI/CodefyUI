@@ -465,6 +465,16 @@ export interface ExampleSummary {
   path: string;
   node_count: number;
   edge_count: number;
+  /**
+   * Where the example ships from: `builtin`, or `plugin:<id>` for one a
+   * plugin pack contributed. The gallery (core#128) shows it so an example
+   * can be traced back to the pack that has to stay installed for it to work.
+   *
+   * Optional because this type describes what arrives over the wire, not a
+   * guarantee: a frontend built from source can meet an older prebuilt
+   * backend. Every consumer already treats a missing value as "built-in".
+   */
+  source?: string;
 }
 
 export async function listExamples(): Promise<ExampleSummary[]> {

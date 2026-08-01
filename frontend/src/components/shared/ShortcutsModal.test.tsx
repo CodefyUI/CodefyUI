@@ -23,19 +23,27 @@ describe('ShortcutsModal', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
     expect(screen.getByText(useI18n.getState().t('shortcuts.title'))).toBeTruthy();
-    // 9 shortcut rows → 9 <kbd> elements.
-    expect(document.querySelectorAll('kbd').length).toBe(9);
+    // 11 shortcut rows → 11 <kbd> elements. (core#128 added the bypass row
+    // and the unconditional sidebar chord alongside the context-sensitive one.)
+    expect(document.querySelectorAll('kbd').length).toBe(11);
     // A platform-prefixed combo is present (Cmd+Z or Ctrl+Z).
     expect(screen.getByText(/(Cmd|Ctrl)\+Z$/)).toBeTruthy();
     expect(screen.getByText('Delete')).toBeTruthy();
     expect(screen.getByText('?')).toBeTruthy();
   });
 
-  it('lists the sidebar toggle (#126) with its platform modifier', () => {
+  it('spells out both halves of the context-sensitive mod+B (core#128)', () => {
     useUIStore.setState({ shortcutsModalOpen: true });
     render(<ShortcutsModal />);
-    expect(screen.getByText(/(Cmd|Ctrl)\+B$/)).toBeTruthy();
-    expect(screen.getByText(useI18n.getState().t('shortcuts.toggleSidebar'))).toBeTruthy();
+    const { t } = useI18n.getState();
+    // Two rows share the chord — bypass when a node is selected, sidebar
+    // otherwise — so the modal has to name both rather than pick one.
+    expect(screen.getAllByText(/(Cmd|Ctrl)\+B$/)).toHaveLength(2);
+    expect(screen.getByText(t('shortcuts.bypass'))).toBeTruthy();
+    expect(screen.getByText(t('shortcuts.toggleSidebar'))).toBeTruthy();
+    // ...plus the unconditional sidebar chord.
+    expect(screen.getByText(/(Cmd|Ctrl)\+Shift\+B$/)).toBeTruthy();
+    expect(screen.getByText(t('shortcuts.toggleSidebarAlways'))).toBeTruthy();
   });
 
   it('clicking the overlay toggles (closes) the modal', () => {

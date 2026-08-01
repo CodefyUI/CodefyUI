@@ -25,6 +25,7 @@ import copy
 import keyword
 import math
 import re
+from collections import deque
 from typing import Any
 
 from .api_contract import (
@@ -34,8 +35,10 @@ from .api_contract import (
     derive_contract,
 )
 from .graph_engine import (
+    BypassLink,
     build_preset_fallback,
     prepare_executable_graph,
+    resolve_bypass,
     topological_sort,
 )
 from .secret_params import scrub_graph_secrets
@@ -616,6 +619,95 @@ def generate_python(
 
     raw_by_id = {node.get("id"): node for node in nodes}
 
+    # ── Bypassed nodes (core#128) ────────────────────────────────────────
+    #
+    # `prepare_executable_graph` already removed them, so the script would
+    # simply never mention them.  Resolving the RAW graph a second time here
+    # is purely so the export SHOWS what was muted and what each of its
+    # outputs stood in for -- a commented-out assignment, sitting immediately
+    # above the first node that consumes the pass-through.
+    #
+    # It re-resolves rather than reusing the executable pass because the
+    # resolution is internal to that call; the only cost is a second port
+    # lookup per bypassed node, and the only divergence is a bypassed node fed
+    # by a PRESET (whose expanded internals the raw graph does not have), which
+    # simply has no local variable to name -- handled below.
+    bypass = resolve_bypass(nodes, edges)
+    kept_ids = {kept.get("id") for kept in bypass.nodes}
+    # Graph order, so the emitted comments are deterministic.
+    bypassed_ids = [
+        node.get("id")
+        for node in nodes
+        if node.get("id") is not None and node.get("id") not in kept_ids
+    ]
+    bypassed_id_set = set(bypassed_ids)
+    links_by_node: dict[str, list[BypassLink]] = {}
+    for link in bypass.links:
+        links_by_node.setdefault(link.node_id, []).append(link)
+
+    raw_downstream: dict[str, list[str]] = {}
+    for edge in edges:
+        if edge.get("type", "data") == "data":
+            raw_downstream.setdefault(edge["source"], []).append(edge["target"])
+
+    def _bypass_anchor(node_id: str) -> str | None:
+        """Earliest emitted node that consumes this bypass, through chains."""
+        best: str | None = None
+        seen = {node_id}
+        queue = deque([node_id])
+        while queue:
+            for target in raw_downstream.get(queue.popleft(), []):
+                if target in seen:
+                    continue
+                seen.add(target)
+                if target in bypassed_id_set:
+                    queue.append(target)
+                elif target in seq_by_id and (
+                    best is None or seq_by_id[target] < seq_by_id[best]
+                ):
+                    best = target
+        return best
+
+    def _bypass_lines(node_id: str) -> list[str]:
+        node_type = str((raw_by_id.get(node_id) or {}).get("type", ""))
+        lines = [
+            f"# BYPASSED node {_literal(node_id)} ({_literal(node_type)}) -- "
+            "not executed; its inputs pass straight through:"
+        ]
+        node_links = links_by_node.get(node_id, [])
+        if not node_links:
+            # A pass-through is only ever resolved for an output something
+            # downstream reads, so an empty link list means nothing consumed
+            # this node -- it says nothing about what was wired INTO it.
+            lines.append("#     (nothing downstream consumed it)")
+            return lines
+        stand_in = _slug(node_id, "node")
+        for link in node_links:
+            source_local = local_names.get(link.source)
+            rhs = (
+                f"_port({source_local}, {_literal(link.source_handle)})"
+                if source_local is not None
+                else (
+                    f"output {_literal(link.source_handle)} of node "
+                    f"{_literal(link.source)}"
+                )
+            )
+            lines.append(
+                f"#     {stand_in}[{_literal(link.output)}] = {rhs}"
+                f"  # via input {_literal(link.input)}"
+            )
+        return lines
+
+    # node_id -> comment block emitted just before it inside its flow body.
+    bypass_comments: dict[str, list[str]] = {}
+    orphan_bypass_lines: list[str] = []
+    for node_id in bypassed_ids:
+        anchor = _bypass_anchor(node_id)
+        if anchor is None:
+            orphan_bypass_lines.extend(_bypass_lines(node_id))
+        else:
+            bypass_comments.setdefault(anchor, []).extend(_bypass_lines(node_id))
+
     def _preset_origin(node_id: str) -> str | None:
         preset_id = internal_to_preset.get(node_id)
         if preset_id is None:
@@ -684,6 +776,8 @@ def generate_python(
         lines = [f"def flow_{index}(ctx, results, provided):"]
         lines.append(f"    {ascii(_flow_summary(member_ids))}")
         for member in member_ids:
+            for comment in bypass_comments.get(member, ()):
+                lines.append(f"    {comment}")
             node = node_by_id[member]
             kwargs: list[str] = []
             if node.get("type") == GRAPH_INPUT_TYPE:
@@ -750,6 +844,10 @@ def generate_python(
 
     banner = "# " + "=" * 28 + " Node functions " + "=" * 28
     node_sections: list[str] = [banner + "\n"]
+    # Bypassed nodes nothing downstream consumes have no flow member to sit
+    # above, so they are recorded here rather than dropped without trace.
+    if orphan_bypass_lines:
+        node_sections.append("\n".join(orphan_bypass_lines) + "\n")
     for index, member_ids in enumerate(flows, start=1):
         header = _comment_text(_flow_summary(member_ids))
         node_sections.append(f"# ---- Flow {index}: {header} ----\n")

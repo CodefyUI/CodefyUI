@@ -1993,3 +1993,299 @@ describe('persistence (module reload)', () => {
     }
   });
 });
+
+
+// ── Bypass (core#128) ────────────────────────────────────────────────────────
+
+/** A canvas node, defaulting to the plain (bypassable) card type. */
+function bnode(id: string, over: Record<string, any> = {}) {
+  const { data, ...rest } = over;
+  return {
+    id,
+    type: 'baseNode',
+    position: { x: 0, y: 0 },
+    selected: false,
+    data: { label: id, type: 'Dropout', params: {}, ...data },
+    ...rest,
+  } as any;
+}
+
+describe('bypass', () => {
+  beforeEach(resetToSingleTab);
+
+  it('toggleNodeBypass flips the flag and back again', () => {
+    store().setNodes([bnode('n1')]);
+    store().toggleNodeBypass('n1');
+    expect(activeTab().nodes[0].data.bypassed).toBe(true);
+    store().toggleNodeBypass('n1');
+    expect(activeTab().nodes[0].data.bypassed).toBe(false);
+  });
+
+  it('toggleNodeBypass is one undo step', () => {
+    store().setNodes([bnode('n1')]);
+    store().toggleNodeBypass('n1');
+    store().undo();
+    expect(activeTab().nodes[0].data.bypassed).toBeUndefined();
+  });
+
+  it('toggleNodeBypass marks the node dirty so the next run redoes downstream', () => {
+    store().setNodes([bnode('n1')]);
+    store().setEdges([{ id: 'e1', source: 'n1', target: 'n2' }] as any);
+    store().toggleNodeBypass('n1');
+    // n1 itself is filtered out of the hint once muted; its consumer is not.
+    expect(store().getDirtyWithDownstream()).toEqual(['n2']);
+  });
+
+  it('toggleNodeBypass refuses notes, Start nodes and presets', () => {
+    store().setNodes([
+      bnode('note', { type: 'noteNode' }),
+      bnode('start', { type: 'start' }),
+      bnode('preset', { type: 'presetNode' }),
+    ]);
+    for (const id of ['note', 'start', 'preset']) store().toggleNodeBypass(id);
+    expect(activeTab().nodes.every((n) => n.data.bypassed === undefined)).toBe(true);
+  });
+
+  it('toggleNodeBypass ignores an id that is not on the canvas', () => {
+    store().setNodes([bnode('n1')]);
+    store().toggleNodeBypass('ghost');
+    expect(activeTab().nodes[0].data.bypassed).toBeUndefined();
+  });
+
+  it('toggleBypassForSelection mutes every selected node and reports true', () => {
+    store().setNodes([
+      bnode('n1', { selected: true }),
+      bnode('n2', { selected: true }),
+      bnode('n3'),
+    ]);
+    expect(store().toggleBypassForSelection()).toBe(true);
+    const byId = Object.fromEntries(activeTab().nodes.map((n) => [n.id, n.data.bypassed]));
+    expect(byId).toEqual({ n1: true, n2: true, n3: undefined });
+  });
+
+  it('toggleBypassForSelection makes a mixed selection uniformly bypassed', () => {
+    store().setNodes([
+      bnode('n1', { selected: true, data: { bypassed: true } }),
+      bnode('n2', { selected: true }),
+    ]);
+    store().toggleBypassForSelection();
+    expect(activeTab().nodes.map((n) => n.data.bypassed)).toEqual([true, true]);
+    // A second press now un-mutes the whole (uniform) selection.
+    store().toggleBypassForSelection();
+    expect(activeTab().nodes.map((n) => n.data.bypassed)).toEqual([false, false]);
+  });
+
+  it('toggleBypassForSelection falls back to selectedNodeId when nothing is flagged', () => {
+    store().setNodes([bnode('n1'), bnode('n2')]);
+    store().setSelectedNodeId('n2');
+    expect(store().toggleBypassForSelection()).toBe(true);
+    expect(activeTab().nodes.map((n) => n.data.bypassed)).toEqual([undefined, true]);
+  });
+
+  it('toggleBypassForSelection reports false with nothing selected', () => {
+    store().setNodes([bnode('n1')]);
+    expect(store().toggleBypassForSelection()).toBe(false);
+    expect(activeTab().nodes[0].data.bypassed).toBeUndefined();
+  });
+
+  it('toggleBypassForSelection reports false when only un-bypassable nodes are selected', () => {
+    store().setNodes([bnode('note', { type: 'noteNode', selected: true })]);
+    expect(store().toggleBypassForSelection()).toBe(false);
+  });
+
+  it('getSerializedGraph writes the flag only for muted nodes', () => {
+    store().setNodes([
+      bnode('n1', { data: { bypassed: true } }),
+      bnode('n2'),
+    ]);
+    const [muted, plain] = store().getSerializedGraph().nodes;
+    expect(muted.data.bypassed).toBe(true);
+    expect('bypassed' in plain.data).toBe(false);
+  });
+
+  it('getSerializedGraph drops the flag again once the node is un-muted', () => {
+    store().setNodes([bnode('n1', { data: { bypassed: true } })]);
+    store().toggleNodeBypass('n1');
+    expect('bypassed' in store().getSerializedGraph().nodes[0].data).toBe(false);
+  });
+
+  it('getDirtyWithDownstream propagates through a muted node but never names it', () => {
+    store().setNodes([
+      bnode('a'),
+      bnode('b', { data: { bypassed: true } }),
+      bnode('c'),
+    ]);
+    store().setEdges([
+      { id: 'e1', source: 'a', target: 'b' },
+      { id: 'e2', source: 'b', target: 'c' },
+    ] as any);
+    store().markDirty('a');
+    expect(store().getDirtyWithDownstream().sort()).toEqual(['a', 'c']);
+  });
+});
+
+// ── insertGraph (core#128 template insertion) ────────────────────────────────
+
+describe('insertGraph', () => {
+  beforeEach(resetToSingleTab);
+
+  it('is a no-op for an empty template', () => {
+    store().setNodes([bnode('n1')]);
+    store().insertGraph([], []);
+    expect(activeTab().nodes).toHaveLength(1);
+    expect(activeTab().undoStack).toHaveLength(0);
+  });
+
+  it('remaps ids so a template can never clobber an existing node', () => {
+    // Both graphs use the id "n1" — the exact collision a template saved by
+    // someone else routinely causes.
+    store().setNodes([bnode('n1', { data: { label: 'MINE' } })]);
+    store().insertGraph(
+      [bnode('n1', { data: { label: 'TEMPLATE' } }), bnode('n2')],
+      [{ id: 'e1', source: 'n1', target: 'n2' }] as any,
+    );
+
+    const tab = activeTab();
+    expect(tab.nodes).toHaveLength(3);
+    // The original survives untouched, under its own id.
+    expect(tab.nodes.find((n) => n.id === 'n1')!.data.label).toBe('MINE');
+    // Neither inserted node kept a template id.
+    const inserted = tab.nodes.filter((n) => n.selected);
+    expect(inserted).toHaveLength(2);
+    expect(inserted.map((n) => n.id)).not.toContain('n1');
+    expect(inserted.map((n) => n.id)).not.toContain('n2');
+    expect(new Set(tab.nodes.map((n) => n.id)).size).toBe(3);
+    // ...and the inserted edge follows the remap rather than pointing at the
+    // user's own "n1".
+    expect(tab.edges).toHaveLength(1);
+    const insertedIds = new Set(inserted.map((n) => n.id));
+    expect(insertedIds.has(tab.edges[0].source)).toBe(true);
+    expect(insertedIds.has(tab.edges[0].target)).toBe(true);
+    expect(tab.edges[0].id).not.toBe('e1');
+  });
+
+  it('places the template clear of the existing graph and selects only it', () => {
+    store().setNodes([bnode('n1', { position: { x: 10, y: 0 } })]);
+    store().insertGraph([bnode('t1', { position: { x: 500, y: 500 } })], []);
+
+    const tab = activeTab();
+    const [original, insertedNode] = tab.nodes;
+    expect(original.selected).toBe(false);
+    expect(insertedNode.selected).toBe(true);
+    // Left-aligned with the existing graph, below its lowest point.
+    expect(insertedNode.position.x).toBe(10);
+    expect(insertedNode.position.y).toBeGreaterThan(0);
+  });
+
+  it('drops a template into an empty canvas at its own coordinates', () => {
+    store().insertGraph([bnode('t1', { position: { x: 40, y: 60 } })], []);
+    expect(activeTab().nodes[0].position).toEqual({ x: 40, y: 60 });
+  });
+
+  it('undoes the whole insertion in one step', () => {
+    store().setNodes([bnode('n1')]);
+    store().insertGraph([bnode('t1'), bnode('t2')], [{ id: 'e1', source: 't1', target: 't2' }] as any);
+    expect(activeTab().nodes).toHaveLength(3);
+    store().undo();
+    expect(activeTab().nodes).toHaveLength(1);
+    expect(activeTab().edges).toHaveLength(0);
+  });
+
+  it('drops an edge whose endpoint the template did not ship', () => {
+    store().setNodes([bnode('n1')]);
+    store().insertGraph(
+      [bnode('t1')],
+      [{ id: 'e1', source: 't1', target: 'nowhere' }] as any,
+    );
+    expect(activeTab().edges).toHaveLength(0);
+  });
+
+  it('remaps a note binding inside the template and clears a dangling one', () => {
+    store().insertGraph(
+      [
+        bnode('t1'),
+        bnode('bound', { type: 'noteNode', data: { boundToNodeId: 't1', boundOffset: { x: 1, y: 2 } } }),
+        bnode('orphan', { type: 'noteNode', data: { boundToNodeId: 'gone', boundOffset: { x: 3, y: 4 } } }),
+      ],
+      [],
+    );
+    const tab = activeTab();
+    const t1 = tab.nodes[0];
+    const bound = tab.nodes[1];
+    const orphan = tab.nodes[2];
+    expect(bound.data.boundToNodeId).toBe(t1.id);
+    expect(bound.data.boundOffset).toEqual({ x: 1, y: 2 });
+    expect(orphan.data.boundToNodeId).toBeNull();
+    expect(orphan.data.boundOffset).toBeNull();
+  });
+
+  it('resets execution state on inserted nodes', () => {
+    store().insertGraph(
+      [bnode('t1', { data: { executionStatus: 'error', error: 'stale' } })],
+      [],
+    );
+    const inserted = activeTab().nodes[0];
+    expect(inserted.data.executionStatus).toBe('idle');
+    expect(inserted.data.error).toBeUndefined();
+  });
+});
+
+
+describe('bypass — graph I/O contract nodes (core#128 review)', () => {
+  beforeEach(resetToSingleTab);
+
+  it('toggleNodeBypass refuses GraphInput and GraphOutput', () => {
+    store().setNodes([
+      bnode('gi', { data: { label: 'gi', type: 'GraphInput', params: {} } }),
+      bnode('go', { data: { label: 'go', type: 'GraphOutput', params: {} } }),
+    ]);
+    store().toggleNodeBypass('gi');
+    store().toggleNodeBypass('go');
+    expect(activeTab().nodes.every((n) => n.data.bypassed === undefined)).toBe(true);
+  });
+
+  it('toggleBypassForSelection skips them and falls through', () => {
+    store().setNodes([
+      bnode('go', { selected: true, data: { label: 'go', type: 'GraphOutput', params: {} } }),
+    ]);
+    // false is what lets Ctrl+B reach the sidebar instead of doing nothing.
+    expect(store().toggleBypassForSelection()).toBe(false);
+    expect(activeTab().nodes[0].data.bypassed).toBeUndefined();
+  });
+
+  it('still bypasses an ordinary node sharing the selection with a contract node', () => {
+    store().setNodes([
+      bnode('go', { selected: true, data: { label: 'go', type: 'GraphOutput', params: {} } }),
+      bnode('drop', { selected: true }),
+    ]);
+    expect(store().toggleBypassForSelection()).toBe(true);
+    const byId = Object.fromEntries(activeTab().nodes.map((n) => [n.id, n.data.bypassed]));
+    expect(byId).toEqual({ go: undefined, drop: true });
+  });
+});
+
+
+describe('insertGraph — viewport fit (core#128 review)', () => {
+  beforeEach(() => {
+    resetToSingleTab();
+    useUIStore.setState({ layoutFitRequest: null });
+  });
+
+  it('asks the canvas to fit the inserted block, not the whole graph', () => {
+    // Without this, a template dropped below a graph the user has panned
+    // away from lands entirely off-screen and the insert looks like a no-op.
+    store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
+    store().insertGraph([bnode('t1', { position: { x: 900, y: 900 } })], []);
+
+    const request = useUIStore.getState().layoutFitRequest;
+    expect(request).not.toBeNull();
+    const inserted = activeTab().nodes.find((n) => n.selected)!;
+    expect(request!.bounds.x).toBe(inserted.position.x);
+    expect(request!.bounds.y).toBe(inserted.position.y);
+  });
+
+  it('does not request a fit for an empty template', () => {
+    store().insertGraph([], []);
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+  });
+});

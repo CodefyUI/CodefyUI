@@ -11,6 +11,42 @@
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+/* ── Bypassed / muted (core#128) ──
+   Faded and struck through so a muted node reads as "still here, not running"
+   at a glance, without being mistaken for a disabled control: the card stays
+   fully clickable, because selecting it is how you un-mute it. The opacity
+   sits on the card only — handles keep their own so edges into and out of a
+   bypassed node stay grabbable. */
+.bypassed {
+  opacity: 0.45;
+  filter: grayscale(0.7);
+}
+
+.bypassed .headerLabel {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+
+.bypassed .portLabel {
+  text-decoration: line-through;
+}
+
+.bypassed .portHandle {
+  opacity: 1 !important;
+}
+
+.bypassBadge {
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #ffffff;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* ── Hover tooltip ── */
 .tooltip {
   position: absolute;

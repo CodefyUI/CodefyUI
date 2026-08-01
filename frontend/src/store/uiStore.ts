@@ -25,6 +25,14 @@ interface UIState {
   setCanvasPanning: (panning: boolean) => void;
   shortcutsModalOpen: boolean;
   toggleShortcutsModal: () => void;
+  /**
+   * Template gallery modal (core#128). Workspace-global like the rest of the
+   * panel state (#125) and deliberately NOT persisted — reopening the app on
+   * top of a modal nobody remembers opening is never what you want.
+   */
+  templateGalleryOpen: boolean;
+  openTemplateGallery: () => void;
+  closeTemplateGallery: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
   /** Endpoint of the edge currently being detached during an edge-reconnect
@@ -137,6 +145,9 @@ export const useUIStore = create<UIState>((set) => ({
   setCanvasPanning: (panning) => set({ isCanvasPanning: panning }),
   shortcutsModalOpen: false,
   toggleShortcutsModal: () => set((state) => ({ shortcutsModalOpen: !state.shortcutsModalOpen })),
+  templateGalleryOpen: false,
+  openTemplateGallery: () => set({ templateGalleryOpen: true }),
+  closeTemplateGallery: () => set({ templateGalleryOpen: false }),
   draggingSourceType: null,
   setDraggingSourceType: (type) => set({ draggingSourceType: type }),
   reconnectingHandle: null,

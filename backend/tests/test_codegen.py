@@ -1357,3 +1357,111 @@ async def test_export_endpoint_validates_graph(test_client):
     }
     response = await test_client.post("/api/graph/export", json=bad)
     assert response.status_code == 400
+
+
+# ── Bypass in the exported script (core#128) ─────────────────────────────
+
+
+def _bypass_export_graph(bypass: bool = True) -> tuple[list[dict], list[dict]]:
+    """Start -> TensorCreate -> Dropout(bypassed?) -> Print."""
+    dropout: dict = {
+        "id": "drop",
+        "type": "Dropout",
+        "position": {"x": 0, "y": 0},
+        "data": {"params": {"p": 0.5}},
+    }
+    if bypass:
+        dropout["data"]["bypassed"] = True
+    nodes = [
+        {"id": "s1", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "make",
+            "type": "TensorCreate",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"shape": "2,2", "fill": "ones"}},
+        },
+        dropout,
+        {
+            "id": "out",
+            "type": "Print",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {"label": "tail"}},
+        },
+    ]
+    edges = [
+        {"id": "t1", "source": "s1", "target": "make", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "d1", "source": "make", "target": "drop", "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data"},
+        {"id": "d2", "source": "drop", "target": "out", "sourceHandle": "tensor", "targetHandle": "value", "type": "data"},
+    ]
+    return nodes, edges
+
+
+def test_export_omits_a_bypassed_node_and_wires_the_pass_through():
+    from app.core.codegen import generate_python
+
+    script = generate_python(*_bypass_export_graph(), name="bypassed")
+    _compile_check(script)
+
+    emitted = _node_functions(script)
+    assert "drop" not in {node_id for _, node_id, _ in emitted}
+    assert {node_id for _, node_id, _ in emitted} == {"s1", "make", "out"}
+
+    # Print is called with the tensor TensorCreate produced, not via Dropout.
+    make_local = next(name for name, nid, _ in emitted if nid == "make")
+    assert make_local  # sanity: the source node did get a function
+    assert "_port(make, 'tensor')" in script
+
+    # ...and the export says so, in a commented-out pass-through assignment.
+    assert "# BYPASSED node 'drop' ('Dropout')" in script
+    assert "#     drop['tensor'] = _port(make, 'tensor')" in script
+
+
+def test_export_keeps_a_bypassed_node_when_the_flag_is_off():
+    from app.core.codegen import generate_python
+
+    script = generate_python(*_bypass_export_graph(bypass=False), name="plain")
+    _compile_check(script)
+
+    assert "drop" in {node_id for _, node_id, _ in _node_functions(script)}
+    assert "BYPASSED" not in script
+
+
+def test_export_refuses_a_bypass_with_no_compatible_input():
+    from app.core.codegen import generate_python
+    from app.core.graph_engine import GraphValidationError
+
+    nodes = [
+        {"id": "s1", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {"id": "ds", "type": "Dataset", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        {
+            "id": "dl",
+            "type": "DataLoader",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {}, "bypassed": True},
+        },
+        {"id": "loop", "type": "TrainingLoop", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+    ]
+    edges = [
+        {"id": "t1", "source": "s1", "target": "ds", "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "d1", "source": "ds", "target": "dl", "sourceHandle": "dataset", "targetHandle": "dataset", "type": "data"},
+        {"id": "d2", "source": "dl", "target": "loop", "sourceHandle": "dataloader", "targetHandle": "dataloader", "type": "data"},
+    ]
+    with pytest.raises(GraphValidationError, match="no type-compatible input"):
+        generate_python(nodes, edges, name="broken")
+
+
+def test_export_notes_a_bypassed_node_that_leads_nowhere():
+    """A muted leaf has no consumer to sit above, so it gets its own note."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _bypass_export_graph()
+    # Drop the Dropout -> Print edge: nothing consumes the bypass any more.
+    edges = [e for e in edges if e["id"] != "d2"]
+    nodes = [n for n in nodes if n["id"] != "out"]
+
+    script = generate_python(nodes, edges, name="leaf")
+    _compile_check(script)
+    assert "# BYPASSED node 'drop' ('Dropout')" in script
+    # Its input IS still wired (TensorCreate -> drop); what is missing is a
+    # consumer, and the note has to say that and not the opposite.
+    assert "#     (nothing downstream consumed it)" in script

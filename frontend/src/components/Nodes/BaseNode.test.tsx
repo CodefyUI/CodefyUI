@@ -824,3 +824,42 @@ describe('BaseNode detach drag redirect', () => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+
+// ── Bypass visuals (core#128) ────────────────────────────────────────────
+
+describe('BaseNode bypass', () => {
+  beforeEach(resetStores);
+
+  it('renders no bypass marker on an ordinary node', () => {
+    const { container } = renderBody(baseData());
+    expect(screen.queryByText('BYPASS')).toBeNull();
+    expect(container.querySelector('[data-bypassed]')).toBeNull();
+  });
+
+  it('dims, strikes through and badges a bypassed node', () => {
+    const { container } = renderBody(baseData({ bypassed: true }));
+
+    const badge = screen.getByText('BYPASS');
+    expect(badge).toBeInTheDocument();
+    expect(badge.getAttribute('title')).toBe(
+      'Bypassed: this node is skipped and passes its input straight through',
+    );
+
+    // The card carries the dim/strike-through class, and says so in the DOM
+    // so a test (or a screenshot diff) does not have to match on a hashed
+    // CSS-module name.
+    const card = container.querySelector('[data-bypassed="true"]');
+    expect(card).not.toBeNull();
+    expect(card!.className).toMatch(/bypassed/);
+  });
+
+  it('keeps the label and ports of a bypassed node on screen', () => {
+    renderBody(baseData({ bypassed: true }));
+    // Muting hides nothing: the node is still readable and still selectable,
+    // which is how it gets un-muted.
+    expect(screen.getByText('My Linear')).toBeInTheDocument();
+    expect(screen.getByText('in')).toBeInTheDocument();
+    expect(screen.getByText('out')).toBeInTheDocument();
+  });
+});

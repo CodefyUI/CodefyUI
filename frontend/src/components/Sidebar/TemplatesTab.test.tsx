@@ -26,6 +26,7 @@ function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
     path: 'Usage_Example/Foo',
     node_count: 3,
     edge_count: 2,
+    source: 'builtin',
     ...overrides,
   };
 }

@@ -38,8 +38,21 @@ function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
     path: '/examples/foo.json',
     node_count: 3,
     edge_count: 2,
+    source: 'builtin',
     ...overrides,
   };
+}
+
+/**
+ * Names of the example cards in DOM order. Filtered by class rather than
+ * taken from every button, because the overlay also carries the
+ * browse-the-gallery button (core#128), which is not a card.
+ */
+function cardNames(): (string | null | undefined)[] {
+  return screen
+    .getAllByRole('button')
+    .filter((b) => b.className.includes('presetCard'))
+    .map((b) => b.querySelector('span')?.textContent);
 }
 
 describe('EmptyCanvasOverlay', () => {
@@ -137,10 +150,7 @@ describe('EmptyCanvasOverlay', () => {
     // Global card order: pinned trio first (in pinned order, not list order),
     // then Advanced (LLM before leftover Usage_Example), then plugin, then
     // architectures last.
-    const names = screen
-      .getAllByRole('button')
-      .map((b) => b.querySelector('span')?.textContent);
-    expect(names).toEqual([
+    expect(cardNames()).toEqual([
       'Train CNN',
       'Inference CNN',
       'Api Fn',
@@ -163,10 +173,7 @@ describe('EmptyCanvasOverlay', () => {
     ]);
     render(<EmptyCanvasOverlay />);
     await waitFor(() => expect(screen.getByText('Analogy')).toBeInTheDocument());
-    const names = screen
-      .getAllByRole('button')
-      .map((b) => b.querySelector('span')?.textContent);
-    expect(names).toEqual(['Analogy', 'Forward', 'ToySampling', 'MiniUNet', 'Iris']);
+    expect(cardNames()).toEqual(['Analogy', 'Forward', 'ToySampling', 'MiniUNet', 'Iris']);
   });
 
   it('renders unknown categories in the plugin section with the fallback badge colour', async () => {

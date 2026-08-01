@@ -579,6 +579,13 @@ export function Toolbar() {
       {/* Node management */}
       <div className={styles.cluster}>
         <button type="button"
+          onClick={() => useUIStore.getState().openTemplateGallery()}
+          title={t('gallery.open.title')}
+          className={`${styles.ghost} ${styles.ghostMuted}`}
+        >
+          {t('gallery.open')}
+        </button>
+        <button type="button"
           onClick={handleReloadNodes}
           title={t('toolbar.reloadNodes.title')}
           className={`${styles.ghost} ${styles.ghostMuted}`}

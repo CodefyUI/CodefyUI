@@ -487,6 +487,21 @@ describe('NodeDetailModal — header', () => {
     expect(screen.getByText('PRESET')).toBeInTheDocument();
   });
 
+  it('flags a bypassed node, which the canvas card underneath cannot (core#128)', () => {
+    seedTab({
+      nodes: [node('n1', { data: { bypassed: true } })],
+      nodeDetailNodeId: 'n1',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByText('BYPASS')).toBeInTheDocument();
+  });
+
+  it('carries no bypass chip for an ordinary node', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    expect(screen.queryByText('BYPASS')).toBeNull();
+  });
+
   it('surfaces the commit/cancel keys only while the name editor is open', () => {
     seedTab({ nodes: [node('n1', { label: 'Old' })], nodeDetailNodeId: 'n1' });
     render(<NodeDetailModal />);
