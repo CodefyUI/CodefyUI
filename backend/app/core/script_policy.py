@@ -187,6 +187,11 @@ TIER0_DENIED_ATTRS: tuple[str, ...] = (
     "loadtxt",
     "genfromtxt",
     "fromfile",
+    # ``numpy.fromregex(path, pattern, dtype)`` opens and reads the path. It
+    # was simply missing from this list of numpy's file-IO leaves, and a
+    # signature sweep of the allowed surface (every callable whose parameters
+    # look like a file) found it -- the one real hit among 1,085 callables.
+    "fromregex",
     "tofile",
     "memmap",
     "ctypeslib",

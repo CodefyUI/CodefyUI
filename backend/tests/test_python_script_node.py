@@ -1335,6 +1335,15 @@ ROUND_THREE_PROBES = [
         "import torch.utils\n\ndef run(inputs, params):\n"
         "    return str(torch.utils.collect_env)\n",
     ),
+    (
+        # Found by sweeping every callable in the allowed surface for a
+        # parameter that looks like a file: one real hit in 1,085. It reads
+        # the path it is given and was simply missing from the list of
+        # numpy's file-IO leaves.
+        "numpy.fromregex, which opens the path it is given",
+        "import numpy as np\n\ndef run(inputs, params):\n"
+        "    return str(np.fromregex('x.txt', r'(\\\\d+)', [('n', np.int64)]))\n",
+    ),
 ]
 
 
@@ -1572,6 +1581,68 @@ def test_only_allowlisted_module_paths_are_reachable():
         f"reachable outside the path allowlist: "
         f"{sorted(reached - set(TIER0_MODULE_PATHS))}"
     )
+
+
+def test_no_reachable_callable_takes_a_file_path():
+    """The sweep that found ``numpy.fromregex``, kept as a standing check.
+
+    Every callable the policy allows, inspected for a parameter named like a
+    file. numpy's ``out=`` convention is excluded (it is an output *array*),
+    as are ``json.load``/``dump``, which take a file OBJECT a script cannot
+    obtain. Anything else with a path parameter is a file primitive and needs
+    a decision, not a shrug.
+    """
+    import inspect
+    import re as regex
+
+    from app.core.script_proxy import (
+        RestrictedModule,
+        tier0_module_namespace,
+        unwrap,
+    )
+
+    fileish = regex.compile(
+        r"^(file|fname|filename|filepath|path|fid|dst|src|folder|directory"
+        r"|outfile|infile|archive)$",
+        regex.IGNORECASE,
+    )
+    known = {
+        "json.dump", "json.load",       # take a file object, not a path
+        "numpy.copyto",                 # dst/src are arrays
+        "numpy.interp",                 # fp is the y-coordinate array
+        "torch.prepare_multiprocessing_environment",  # body is `pass`
+    }
+    seen: set[int] = set()
+    hits: list[str] = []
+
+    def walk(proxy, path: str, depth: int) -> None:
+        target = unwrap(proxy)
+        if id(target) in seen or depth > 4:
+            return
+        seen.add(id(target))
+        for name in dir(target):
+            try:
+                value = getattr(proxy, name)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(value, RestrictedModule):
+                walk(value, f"{path}.{name}", depth + 1)
+                continue
+            if not callable(value):
+                continue
+            try:
+                signature = inspect.signature(value)
+            except Exception:  # noqa: BLE001
+                continue
+            if any(fileish.match(p) for p in signature.parameters):
+                full = f"{path}.{name}"
+                if full not in known:
+                    hits.append(full)
+
+    for root, proxy in tier0_module_namespace().items():
+        walk(proxy, root, 1)
+
+    assert hits == [], f"reachable callable takes a file path: {hits}"
 
 
 def test_the_capability_rule_is_keyed_on_the_type_not_the_name():
