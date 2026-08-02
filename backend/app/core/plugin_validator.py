@@ -45,13 +45,15 @@ import ast
 from typing import Iterable
 
 from .security_tiers import (
-    TIER0_PATH_LEAF,
+    TIER0_PATH_HELPERS,
     TIER0_PATH_MODULE,
     TIER0_PATH_ROOT,
     capability_for_module,
     describe_capability,
     granted_modules,
 )
+
+_TIER0_PATH_HELPERS: frozenset[str] = frozenset(TIER0_PATH_HELPERS)
 
 
 class PluginValidationError(ValueError):
@@ -486,30 +488,35 @@ def _is_tier0_path_import(
 ) -> bool:
     """Whether this import is the ``os.path`` slice Tier 0 keeps.
 
-    **One** form, and every leaf it binds has to be a plain path helper::
+    **One** form, and every leaf it binds must be on an explicit allowlist of
+    pure string helpers::
 
         from os.path import join, basename, splitext    # the exception
-        from os import path                             # NOT -- see below
+        from os.path import expandvars                  # NOT -- reads os.environ
+        from os.path import exists, getsize             # NOT -- real stat()
+        from os.path import genericpath                 # NOT -- a module
+        from os import path                             # NOT -- binds ntpath
         import os / import os.path                      # NOT -- both bind ``os``
 
-    The first cut of this rule also allowed ``from os import path`` and
-    screened leaves by NAME against the blocklist. Review found that handed a
-    ZERO-DECLARATION plugin the real ``os`` and ``sys``, and it was verified
-    end to end: ``os.path`` *is* ``ntpath`` / ``posixpath``, which re-export
-    ``os``, ``sys``, ``stat`` and ``genericpath`` as ordinary attributes, so
-    ``path.os.remove(p)`` deleted a real file and
-    ``path.sys.modules['subprocess'].run([...])`` ran a real command --
-    through a form the gate refused at the merge base. The name screen missed
-    it twice over: ``genericpath`` is not a blocklisted name, and neither is
-    ``path``.
+    Two review rounds landed on this shape, and the way they landed is the
+    point. The first cut allowed ``from os import path`` and screened leaves
+    against the blocklist by NAME; that handed a zero-declaration plugin the
+    real ``os`` and ``sys``, verified end to end. The second screened leaves
+    by whether they ARE modules, which closed that -- and was still scoped to
+    the escape that had been *demonstrated* rather than to the property that
+    made it possible: **``os.path`` is a real module and its surface is not
+    string manipulation.** ``expandvars`` reads ``os.environ`` (it returned a
+    real API key), ``expanduser`` returns the home directory, and
+    ``exists`` / ``isfile`` / ``getsize`` call ``stat()`` on any path given.
+    None is a module, so no module screen could ever have seen them.
 
-    So the leaf test asks what a leaf IS, not what it is called: the module
-    attributes of the real ``os.path`` are computed at import
-    (:data:`_OS_PATH_MODULE_LEAVES`), so a future Python that re-exports one
-    more module is covered without anybody noticing. ``*`` is refused with
-    them -- ``ntpath.__all__`` happens to contain no modules today, and
-    "happens to, today" is not a thing this file should rely on when naming
-    the helpers costs one line.
+    Hence an allowlist -- :data:`app.core.security_tiers.TIER0_PATH_HELPERS`,
+    every entry verified by CALLING it against the live ``os.path``. The
+    module screen stays as a second lock (a name added to the allowlist that
+    later becomes a module still fails) and because it is free.
+
+    ``*`` is refused: ``ntpath.__all__`` includes ``exists``, ``expanduser``
+    and ``getsize``, so a star import is exactly the leak this closes.
 
     ``ntpath``, ``posixpath`` and ``genericpath`` are on the blocklist now
     too, so the route that never needed this exception at all
@@ -519,8 +526,11 @@ def _is_tier0_path_import(
     if not from_import or module != TIER0_PATH_MODULE:
         return False
     leaves = set(names)
-    if not leaves or "*" in leaves:
+    if not leaves or not leaves <= _TIER0_PATH_HELPERS:
         return False
+    # Belt and braces: the allowlist is a list of names, and a name is not a
+    # boundary. If a future CPython turns one of them into a module, the
+    # structural screen still refuses it.
     return not (leaves & _OS_PATH_MODULE_LEAVES) and not (leaves & _DANGEROUS_MODULES)
 
 

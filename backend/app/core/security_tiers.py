@@ -223,7 +223,69 @@ CAPABILITY_SUMMARY: dict[str, str] = {
 #: refusal for ``import os.path`` names the working form.
 TIER0_PATH_MODULE: str = "os.path"
 TIER0_PATH_ROOT: str = "os"
-TIER0_PATH_LEAF: str = "path"
+
+#: The ONLY names ``from os.path import ...`` may bind at Tier 0.
+#:
+#: An ALLOWLIST, after two rounds of getting this wrong in the same way. The
+#: first cut allowed ``from os import path`` and screened leaves against the
+#: blocklist by NAME; review showed that handed over the real ``os`` and
+#: ``sys``. The second screened leaves by whether they ARE modules, which
+#: closed that -- and review then pointed out the screen was still scoped to
+#: the escape that had been demonstrated rather than to the property behind
+#: it. ``os.path`` is a real module, and its surface is emphatically not
+#: string manipulation::
+#:
+#:     expandvars("%WANDB_API_KEY%")   # returned a real secret, capabilities=[]
+#:     expanduser("~")                 # the user's home directory
+#:     getsize(p) / exists(p) / isfile(p)   # a real stat() on any path
+#:
+#: All of those are functions, not modules, so a module screen could never
+#: see them -- and ``expandvars`` reads the very thing ``process-env``'s
+#: consent line promises to gate.
+#:
+#: So the rule is inverted: these names, and nothing else. Every entry was
+#: verified against the LIVE ``os.path`` rather than assumed -- called with a
+#: path that does not exist, containing an unexpanded ``%VAR%``, ``$VAR`` and
+#: ``~``, and checked to return neither the variable's value nor the working
+#: directory.
+#:
+#: Deliberately absent, and each for a checked reason:
+#:
+#: * ``expandvars`` / ``expanduser`` -- read ``os.environ``;
+#: * ``exists`` / ``lexists`` / ``isfile`` / ``isdir`` / ``islink`` /
+#:   ``ismount`` / ``getsize`` / ``getmtime`` / ``getatime`` / ``getctime`` /
+#:   ``samefile`` -- call ``stat()`` on a real path;
+#: * ``abspath`` / ``realpath`` / ``relpath`` -- resolve against the working
+#:   directory, so they disclose where CodefyUI is installed. ``abspath`` is
+#:   worth naming twice: a source audit for ``os.`` usage said it was pure,
+#:   because on Windows it reaches ``nt._getfullpathname`` through a name the
+#:   audit was not looking for. That is why these were verified by CALLING
+#:   them, not by reading them.
+#:
+#: A plugin that needs any of those is asking for the filesystem or the
+#: environment, which is what the capabilities are for.
+TIER0_PATH_HELPERS: tuple[str, ...] = (
+    # pure string transforms
+    "basename",
+    "commonpath",
+    "commonprefix",
+    "dirname",
+    "isabs",
+    "join",
+    "normcase",
+    "normpath",
+    "split",
+    "splitdrive",
+    "splitext",
+    # module-level string constants
+    "altsep",
+    "curdir",
+    "defpath",
+    "extsep",
+    "pardir",
+    "pathsep",
+    "sep",
+)
 
 
 def capability_for_module(root: str) -> str | None:

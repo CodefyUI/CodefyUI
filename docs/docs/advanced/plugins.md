@@ -60,18 +60,27 @@ Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickl
 
 ### Path helpers are Tier 0
 
-`os.path.join` is string manipulation, so it needs no capability — but only in the **one** form that binds the helpers themselves, and only when every name it binds is a plain function:
+`os.path.join` is string manipulation, so it needs no capability — but only in the **one** form that binds the helpers themselves, and only for the names that really are pure string functions:
 
 ```python
 from os.path import join, basename   # fine, Tier 0
-from os import path                  # needs "process-env"
-from os.path import genericpath      # needs "process-env"
-import os                            # needs "process-env"
-import os.path                       # also binds `os` — needs "process-env"
+from os.path import expandvars       # needs "process-env" — reads os.environ
+from os.path import exists, getsize  # needs "process-env" — real stat()
+from os.path import genericpath      # needs "process-env" — a module
+from os import path                  # needs "process-env" — binds ntpath
+import os / import os.path           # needs "process-env"
 import ntpath / posixpath            # needs "process-env"
 ```
 
-The refused lines are not pedantry. `os.path` **is** `ntpath` / `posixpath`, and those modules `import os` and `import sys` at module level and leave both bound as ordinary attributes — so `path.os.remove(p)` deletes a file and `path.sys.modules['subprocess'].run([...])` runs a command. `from os.path import <name>` is allowed only for names that are not modules, and that list is read off the live `os.path` rather than hard-coded.
+The Tier-0 list is exactly: `join`, `basename`, `dirname`, `split`, `splitext`, `splitdrive`, `normpath`, `normcase`, `isabs`, `commonpath`, `commonprefix`, and the `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` constants.
+
+The refused lines are not pedantry — `os.path` is a real module and most of its surface is not string manipulation:
+
+- `os.path` **is** `ntpath` / `posixpath`, and those modules `import os` and `import sys` at module level, leaving both bound as ordinary attributes — so `path.os.remove(p)` deletes a file and `path.sys.modules['subprocess'].run([...])` runs a command.
+- `expandvars("%WANDB_API_KEY%")` returns the value of the environment variable — the exact thing `process-env` exists to gate — and `expanduser("~")` returns your home directory.
+- `exists`, `isfile`, `isdir`, `getsize`, `getmtime` and friends call `stat()` on any path you name; `abspath`, `realpath` and `relpath` resolve against the working directory and so disclose where CodefyUI is installed.
+
+Each name on the Tier-0 list was checked by *calling* it, not by reading its source — on Windows `abspath` reaches `nt._getfullpathname`, which a source audit for `os.` usage does not see.
 
 ### Declaring, and being asked
 
@@ -98,7 +107,9 @@ $ cdui plugin install alice/metric-logger
 
 ### What holds in every tier
 
-`torch.load(...)` still requires an explicit `weights_only=True`; dunder access (`__class__`, `__globals__`, `__subclasses__`, …), frame walking (`f_globals`, `gi_frame`, …), `eval` / `exec` / `compile` / `__import__`, and `os.system` / `os.popen` / `os.spawn*` are refused whatever was declared. A capability never buys reflection.
+`torch.load(...)` still requires an explicit `weights_only=True`; dunder access (`__class__`, `__globals__`, `__subclasses__`, …), frame walking (`f_globals`, `gi_frame`, …), and `eval` / `exec` / `compile` / `__import__` are refused whatever was declared. **A capability never buys reflection.**
+
+It does not follow that a capability never buys process execution. `os.system(...)` and `os.popen(...)` are refused *as calls* — but only as calls, so `f = os.system` then `f(cmd)` is one assignment past the rule — and `os.spawnve` / `os.execv` / `os.startfile` are not refused at all once `process-env` is granted. That is the same fact the `process-env` row states; it is repeated here because an earlier version of this paragraph claimed the opposite.
 
 ### What this is not
 

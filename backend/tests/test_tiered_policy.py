@@ -304,7 +304,12 @@ def test_the_refusal_carries_a_line_number_for_the_editor():
 def test_tier0_allows_the_path_helpers_by_their_binding_form():
     _tier0("from os.path import join, basename, splitext\n")
     _tier0("from os.path import join as j\n")
-    _tier0("from os.path import dirname, exists, isfile, sep, abspath\n")
+    _tier0("from os.path import dirname, sep, normpath\n")
+    # NOTE: this test used to list ``exists``, ``isfile`` and ``abspath`` too.
+    # They are refused now -- they stat() the disk or resolve against the
+    # working directory -- and the failure of this assertion is what the round-2
+    # fix looks like from the outside. See
+    # ``test_the_path_exception_binds_only_pure_string_helpers``.
 
 
 def test_tier0_still_refuses_the_forms_that_bind_the_whole_os_module():
@@ -339,7 +344,7 @@ def test_tier0_refuses_pulling_anything_but_path_out_of_os():
         "from os.path import genericpath",        # .os is the real os too
         "from os.path import stat",
         "from os.path import join, genericpath",  # one bad leaf poisons it
-        "from os.path import *",                  # what __all__ holds today
+        "from os.path import *",                  # __all__ holds expanduser
         "from os.path.genericpath import os",
         "import ntpath",                          # the pre-existing route
         "import posixpath",
@@ -351,6 +356,104 @@ def test_tier0_refuses_pulling_anything_but_path_out_of_os():
 def test_no_spelling_of_os_path_hands_over_a_module(line):
     with pytest.raises(PluginValidationError):
         _tier0(f"{line}\n")
+
+
+# ── round 2: os.path's surface is not string manipulation ─────────────────
+#
+# The module screen above closed the escape that had been DEMONSTRATED. It
+# could not see the property behind it: ``os.path`` is a real module and most
+# of what it exports touches the environment or the disk. None of these is a
+# module, so no module screen would ever have caught them -- and
+# ``expandvars`` reads the exact thing ``process-env``'s consent line promises
+# to gate.
+
+@pytest.mark.parametrize(
+    ("leaf", "why"),
+    [
+        ("expandvars", "reads os.environ -- returned a real API key"),
+        ("expanduser", "returns the user's home directory"),
+        ("exists", "stat() on any path"),
+        ("lexists", "lstat() on any path"),
+        ("isfile", "stat() on any path"),
+        ("isdir", "stat() on any path"),
+        ("islink", "lstat() on any path"),
+        ("ismount", "stat() on any path"),
+        ("getsize", "stat() -- a true byte size for any file"),
+        ("getmtime", "stat()"),
+        ("getatime", "stat()"),
+        ("getctime", "stat()"),
+        ("samefile", "stat() on two paths"),
+        ("realpath", "resolves against the working directory"),
+        ("abspath", "resolves against the working directory"),
+        ("relpath", "resolves against the working directory"),
+    ],
+)
+def test_the_path_exception_binds_only_pure_string_helpers(leaf, why):
+    message = _refusal(f"from os.path import {leaf}\n")
+    assert "process-env" in message, why
+    # ... and it stays refused when smuggled in beside a legitimate one.
+    with pytest.raises(PluginValidationError):
+        _tier0(f"from os.path import join, {leaf}\n")
+
+
+def test_every_allowlisted_path_helper_is_real_and_is_not_a_module():
+    """The allowlist is a list of NAMES, so it gets a structural guard.
+
+    Checks the two things a name cannot tell you: that it exists on this
+    platform's ``os.path`` at all (the tuple is shared by Windows and POSIX
+    CI), and that it is not a module.
+    """
+    import os.path
+    import types
+
+    for name in tiers.TIER0_PATH_HELPERS:
+        assert hasattr(os.path, name), f"{name!r} is not on this platform's os.path"
+        assert not isinstance(getattr(os.path, name), types.ModuleType)
+
+
+def test_no_allowlisted_path_helper_reads_the_environment_or_the_cwd():
+    """Verified by CALLING them, not by reading them.
+
+    A source audit for ``os.`` usage passed ``abspath`` as pure, because on
+    Windows it reaches ``nt._getfullpathname`` under a name the audit was not
+    looking for. So each helper is invoked on a path that does not exist and
+    that contains an unexpanded ``%VAR%``, ``$VAR`` and ``~``, and the result
+    must contain neither the variable's value nor the working directory.
+    """
+    import os
+    import os.path
+
+    os.environ["CDUI_PATH_PURITY_PROBE"] = "SHOULD-NEVER-APPEAR"
+    try:
+        probe = "%CDUI_PATH_PURITY_PROBE%/$CDUI_PATH_PURITY_PROBE/~"
+        cwd = os.getcwd()
+        for name in tiers.TIER0_PATH_HELPERS:
+            value = getattr(os.path, name)
+            if not callable(value):
+                assert isinstance(value, (str, type(None))), name
+                continue
+            if name in ("commonpath", "commonprefix"):
+                result = value([probe, probe])
+            elif name == "join":
+                result = value(probe, probe)
+            else:
+                result = value(probe)
+            rendered = str(result)
+            assert "SHOULD-NEVER-APPEAR" not in rendered, f"{name} read os.environ"
+            assert cwd not in rendered, f"{name} resolved against the cwd"
+    finally:
+        os.environ.pop("CDUI_PATH_PURITY_PROBE", None)
+
+
+def test_the_helpers_a_plugin_actually_wants_still_work():
+    _tier0(
+        "from os.path import join, basename, dirname, splitext, sep\n\n"
+        "def under(root, name):\n"
+        "    stem, _ext = splitext(basename(name))\n"
+        "    return join(root, dirname(name), stem) + sep\n"
+    )
+    _tier0("from os.path import normpath, normcase, isabs, splitdrive, split\n")
+    _tier0("from os.path import commonpath, commonprefix, curdir, pardir\n")
 
 
 def test_the_module_leaf_screen_asks_what_a_leaf_IS_not_what_it_is_called():

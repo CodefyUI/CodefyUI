@@ -44,10 +44,15 @@ assets_dir      = "assets"
 #   Tier 0 — nothing to declare. Pure computation: math, statistics,
 #     collections, itertools, functools, json, re, dataclasses, typing, enum,
 #     decimal, random, numpy, torch, pandas — plus the path helpers, via
-#     `from os.path import join, basename`. That exact form only: `import os`,
-#     `import os.path` and `from os import path` all hand over the whole os
-#     module (os.path IS ntpath/posixpath, which re-export os and sys), so
-#     they need "process-env". Plain open() is a builtin and needs nothing.
+#     `from os.path import join, basename`. That exact form, and only for the
+#     pure string helpers: join, basename, dirname, split, splitext,
+#     splitdrive, normpath, normcase, isabs, commonpath, commonprefix, and the
+#     sep/curdir/pardir/extsep/pathsep/altsep/defpath constants. Everything
+#     else on os.path reads the environment (expandvars, expanduser) or hits
+#     the disk (exists, isfile, getsize, abspath), so it needs "process-env" —
+#     as do `import os`, `import os.path`, `from os import path` and
+#     `import ntpath`, all of which hand over the whole os module.
+#     Plain open() is a builtin and needs nothing.
 #
 #   Tier 1 — capabilities. Ask for a group of modules by name. `cdui plugin
 #     install` prints the request, the user confirms, and the grant is
@@ -63,8 +68,10 @@ assets_dir      = "assets"
 #     and importlib. Nobody can install your plugin without passing
 #     --trust-author, so reach for a capability first.
 #
-# torch.load(..., weights_only=True), the dunder bans and os.system/os.popen
-# apply in every tier. This is a guardrail, not a sandbox — declare honestly.
+# torch.load(..., weights_only=True) and the dunder/reflection bans apply in
+# every tier. os.system(...) / os.popen(...) are refused only as CALLS, and
+# os.execv / os.spawnve are not refused at all once "process-env" is granted.
+# This is a guardrail, not a sandbox — declare honestly.
 [security]
 capabilities    = []
 allowed_modules = []

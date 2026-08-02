@@ -60,18 +60,27 @@ cdui plugin uninstall deep
 
 ### 路徑輔助函式屬於第 0 級
 
-`os.path.join` 是字串處理，因此不需要任何能力——但僅限於**唯一一種**綁定輔助函式本身的寫法，而且它綁定的每一個名稱都必須是純函式：
+`os.path.join` 是字串處理，因此不需要任何能力——但僅限於**唯一一種**綁定輔助函式本身的寫法，而且只限於那些真的是純字串函式的名稱：
 
 ```python
 from os.path import join, basename   # 可以，第 0 級
-from os import path                  # 需要 "process-env"
-from os.path import genericpath      # 需要 "process-env"
-import os                            # 需要 "process-env"
-import os.path                       # 一樣綁定 `os`——需要 "process-env"
+from os.path import expandvars       # 需要 "process-env"——會讀 os.environ
+from os.path import exists, getsize  # 需要 "process-env"——真的會 stat()
+from os.path import genericpath      # 需要 "process-env"——那是模組
+from os import path                  # 需要 "process-env"——綁定的是 ntpath
+import os / import os.path           # 需要 "process-env"
 import ntpath / posixpath            # 需要 "process-env"
 ```
 
-被拒絕的那幾行不是吹毛求疵。`os.path` **就是** `ntpath` / `posixpath`，而這兩個模組在模組層級執行 `import os` 與 `import sys`，並把兩者都留成一般屬性——所以 `path.os.remove(p)` 會刪掉檔案，`path.sys.modules['subprocess'].run([...])` 會執行指令。`from os.path import <名稱>` 只在該名稱不是模組時才被允許，而這份「哪些名稱是模組」的清單是從執行中的 `os.path` 讀出來的，不是寫死的。
+第 0 級的清單就是：`join`、`basename`、`dirname`、`split`、`splitext`、`splitdrive`、`normpath`、`normcase`、`isabs`、`commonpath`、`commonprefix`，以及 `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` 這些常數。
+
+被拒絕的那幾行不是吹毛求疵——`os.path` 是一個真正的模組，而它的表面大部分都不是字串處理：
+
+- `os.path` **就是** `ntpath` / `posixpath`，這兩個模組在模組層級執行 `import os` 與 `import sys`，並把兩者都留成一般屬性——所以 `path.os.remove(p)` 會刪掉檔案，`path.sys.modules['subprocess'].run([...])` 會執行指令。
+- `expandvars("%WANDB_API_KEY%")` 會回傳該環境變數的值——正是 `process-env` 存在要攔的東西——而 `expanduser("~")` 會回傳你的家目錄。
+- `exists`、`isfile`、`isdir`、`getsize`、`getmtime` 這一類會對你指定的任何路徑呼叫 `stat()`；`abspath`、`realpath`、`relpath` 則會依工作目錄解析，因而洩漏 CodefyUI 安裝在哪裡。
+
+第 0 級清單上的每一個名稱都是靠**實際呼叫**驗證的，不是靠讀原始碼——在 Windows 上 `abspath` 會走到 `nt._getfullpathname`，而一份只找 `os.` 用法的原始碼稽核看不到它。
 
 ### 宣告，以及被詢問
 
@@ -97,7 +106,9 @@ $ cdui plugin install alice/metric-logger
 
 ### 每一級都成立的規則
 
-`torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……）、`eval` / `exec` / `compile` / `__import__`，以及 `os.system` / `os.popen` / `os.spawn*`，不論宣告了什麼都一律拒絕。能力永遠買不到反射能力。
+`torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及 `eval` / `exec` / `compile` / `__import__`，不論宣告了什麼都一律拒絕。**能力永遠買不到反射能力。**
+
+但這不代表能力永遠買不到執行程式的權力。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就繞過了這條規則——而一旦授予 `process-env`，`os.spawnve` / `os.execv` / `os.startfile` 根本不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；之所以在這裡重講一次，是因為這一段先前的版本宣稱了相反的事。
 
 ### 這不是什麼
 
