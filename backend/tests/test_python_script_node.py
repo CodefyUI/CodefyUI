@@ -1274,11 +1274,14 @@ ROUND_THREE_PROBES = [
         "    f = torch.cuda.amp.common.find_spec\n"
         "    return str(f('os'))\n",
     ),
-    (
-        "threading.RLock re-exported by numpy.random",
-        "def run(inputs, params):\n"
-        "    return str(numpy.random.bit_generator.RLock)\n",
-    ),
+    # NOTE: ``numpy.random.bit_generator.RLock`` is deliberately NOT a probe
+    # here. It surfaced in the sweep, and closing it is the reason the C
+    # implementations of blocked modules count as their wrapper -- but which
+    # object numpy re-exports varies by version (``threading.RLock`` here,
+    # ``_thread.RLock`` with ``__module__`` unset on CI's numpy), and a lock
+    # is not a capability. Asserting it would be asserting something the rule
+    # does not guarantee. The rule itself is tested against stable stdlib
+    # objects in ``test_the_c_implementation_of_a_blocked_module...``.
     (
         "numpy's own temp-directory helper",
         "def run(inputs, params):\n"
@@ -1623,10 +1626,17 @@ def test_no_file_capability_is_reachable_through_the_proxies():
     def defining_root(value):
         owner = (
             value
-            if isinstance(value, (type, types.FunctionType))
+            if isinstance(
+                value,
+                (type, types.FunctionType, types.BuiltinFunctionType,
+                 types.MethodType),
+            )
             else type(value)
         )
-        return (getattr(owner, "__module__", "") or "").split(".")[0]
+        module = getattr(owner, "__module__", "")
+        # Not always a str: some C-defined classes expose a slot descriptor
+        # here, which is what broke this sweep on CI's numpy.
+        return module.split(".")[0] if isinstance(module, str) else ""
 
     def walk(proxy, path: str, depth: int) -> None:
         nonlocal inspected
