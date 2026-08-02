@@ -542,6 +542,51 @@ describe('param updates', () => {
     expect(activeTab().edges.map((e) => e.id)).toEqual(['t']);
   });
 
+  it('makes edge deletion undoable, and only then pushes a snapshot', () => {
+    // Dropping a script from 8 ports to 1 destroys up to 7 edges. Without a
+    // snapshot Ctrl+Z would skip past their deletion entirely; with one on
+    // every keystroke the undo stack would be useless.
+    const scriptDef = makeDef({
+      node_name: 'PythonScript',
+      inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
+      outputs: [{ name: 'out1', data_type: 'ANY', description: '', optional: false }],
+      params: [
+        { name: 'input_ports', param_type: 'int', default: 1, description: '', options: [], min_value: 1, max_value: 8 },
+        { name: 'code', param_type: 'code', default: '', description: '', options: [], min_value: null, max_value: null },
+      ],
+    });
+    store().addNode(makeDef({ node_name: 'Source' }), { x: 0, y: 0 });
+    store().addNode(scriptDef, { x: 200, y: 0 });
+    const [source, script] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              undoStack: [],
+              edges: [
+                { id: 'in1', source: source.id, target: script.id, sourceHandle: 'value', targetHandle: 'in1' },
+                { id: 'in2', source: source.id, target: script.id, sourceHandle: 'value', targetHandle: 'in2' },
+              ],
+            }
+          : tab,
+      ),
+    });
+
+    // An ordinary param edit that changes no ports must NOT push a snapshot.
+    store().updateNodeParams(script.id, { input_ports: 2 });
+    store().updateNodeParams(script.id, { code: 'x' });
+    expect(activeTab().undoStack.length).toBe(0);
+    expect(activeTab().edges).toHaveLength(2);
+
+    store().updateNodeParams(script.id, { input_ports: 1 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['in1']);
+    expect(activeTab().undoStack.length).toBe(1);
+
+    store().undo();
+    expect(activeTab().edges.map((e) => e.id).sort()).toEqual(['in1', 'in2']);
+  });
+
   it('leaves edges alone for a node whose ports do not depend on params', () => {
     store().addNode(makeDef({ node_name: 'Add' }), { x: 0, y: 0 });
     store().addNode(makeDef({ node_name: 'Print' }), { x: 200, y: 0 });

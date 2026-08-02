@@ -11,6 +11,7 @@
  * panel, no autocompletion, no linting, no folding.
  */
 import {
+  Annotation,
   EditorState,
   StateEffect,
   StateField,
@@ -84,6 +85,39 @@ const theme = EditorView.theme(
 const setErrorLine = StateEffect.define<number | null>();
 
 /**
+ * Marks a change this module made itself, rather than one the user typed.
+ *
+ * Two editors are mounted at once (the param column and the Code tab) and
+ * both are controlled by the same store value, so every keystroke in one is
+ * echoed into the other through `setValue`. Without this annotation the echo
+ * looks exactly like typing: the update listener fires, calls `onChange`,
+ * and writes the same text back to the store a second time — doubling the
+ * store writes, the undo entries and the validation round-trips for every
+ * character.
+ */
+const programmatic = Annotation.define<boolean>();
+
+/**
+ * Escape moves focus OUT of the editor (WCAG 2.1.2, No Keyboard Trap).
+ *
+ * `indentWithTab` deliberately takes Tab away from the browser's focus
+ * order — correct for a code editor, and a trap without a documented way
+ * out. In the Node Detail Modal a second Escape then closes the modal; in
+ * the side config panel, where nothing else listens for Escape, this is the
+ * only way out for a keyboard user.
+ */
+const escapeBlur = {
+  key: 'Escape',
+  run: (view: EditorView) => {
+    view.contentDOM.blur();
+    // Hand focus to the nearest container that can hold it, so the next
+    // Escape reaches the modal instead of the document body.
+    view.dom.closest<HTMLElement>('[tabindex]')?.focus();
+    return true;
+  },
+};
+
+/**
  * Highlight one line, by 1-based number.
  *
  * Held in a StateField rather than re-created per render so that ordinary
@@ -133,9 +167,10 @@ export function createPythonEditor(options: PythonEditorOptions): PythonEditorHa
     highlightActiveLine(),
     highlightActiveLineGutter(),
     history(),
-    // `indentWithTab` last so Tab indents inside the editor; it is bound
-    // AFTER the default keymap, which has no Tab binding of its own.
-    keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+    // `escapeBlur` first so it wins over the default Escape binding
+    // (simplifySelection); `indentWithTab` last, after the default keymap,
+    // which has no Tab binding of its own.
+    keymap.of([escapeBlur, ...defaultKeymap, ...historyKeymap, indentWithTab]),
     python(),
     indentUnit.of('    '),
     syntaxHighlighting(highlightStyle),
@@ -152,7 +187,11 @@ export function createPythonEditor(options: PythonEditorOptions): PythonEditorHa
       spellcheck: 'false',
     }),
     EditorView.updateListener.of((update) => {
-      if (update.docChanged) options.onChange(update.state.doc.toString());
+      if (!update.docChanged) return;
+      // An echo of the store's own value is not an edit; reporting it would
+      // write the same text back and re-run validation for nothing.
+      if (update.transactions.some((tr) => tr.annotation(programmatic))) return;
+      options.onChange(update.state.doc.toString());
     }),
   ];
 
@@ -169,6 +208,7 @@ export function createPythonEditor(options: PythonEditorOptions): PythonEditorHa
       if (next === view.state.doc.toString()) return;
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: next },
+        annotations: programmatic.of(true),
       });
     },
     setErrorLine(line: number | null) {

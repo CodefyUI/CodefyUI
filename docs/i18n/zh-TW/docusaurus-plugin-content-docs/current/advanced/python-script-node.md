@@ -31,6 +31,23 @@ def run(inputs: dict, params: dict) -> dict
 
 `run` 必須定義在模組層級、名稱完全一致。少了它時編輯器會立刻提醒，不會等到執行失敗才說。
 
+`async def run` 會**在檢查階段就被拒絕**：節點是在沒有事件迴圈的工作執行緒上呼叫 `run`，不會有人 await 它，輸出連接埠只會拿到一個 coroutine 物件。
+
+除了允許的函式庫之外，命名空間裡還有兩個名稱：
+
+* `device`——本次執行解析出來的運算裝置，讓 `torch.zeros(3, device=device)` 落在流程其他部分所在的裝置上。
+* `should_stop()`——本次執行的協作式停止旗標。腳本無法從外部被中斷（見下方的安全模型），所以想要能被停止的長迴圈必須自己詢問：
+
+  ```python
+  def run(inputs, params):
+      total = 0.0
+      for row in inputs["in1"]:
+          if should_stop():
+              break
+          total += float(row.sum())
+      return total
+  ```
+
 ## 連接埠
 
 `input_ports` 與 `output_ports`（各 1–8）決定節點有幾個連接點。**程式碼** 分頁的連接埠區塊可以同時設定數量與每個連接埠的 `DataType`；同樣的值以逗號分隔字串存在 `input_types` / `output_types` 參數裡，所以流程 JSON 仍然易讀。
@@ -71,10 +88,13 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 * 其他任何匯入——`os`、`sys`、`pathlib`、`subprocess`、`socket`、`urllib`、`requests`，以及 `pandas`、`sklearn` 這類並不危險、只是不在清單上的模組。相對匯入同樣被拒絕。
 * `exec`、`eval`、`compile`、`__import__`、`open`、`input`、`globals`、`locals`、`vars`、`dir`、`breakpoint`、`exit`。
-* 雙底線屬性存取——`__class__`、`__globals__`、`__subclasses__`、`__code__`……——這些是通用的逃逸手法。
-* 沒有明確寫 `weights_only=True` 的 `torch.load(...)` / `numpy.load(...)`，以及任何 `load(allow_pickle=True)`：它們會執行來源檔案裡的程式碼。
+* 直接使用模組機制的名稱——`__loader__`、`__spec__`、`__builtins__`、`__package__`——以及雙底線屬性存取（`__class__`、`__globals__`、`__subclasses__`、`__code__`……）。這些是通用的逃逸手法：`__loader__.load_module('nt')` 不用任何 import 就能拿到真正的 `os` 模組。
+* 允許的函式庫**內部**通往檔案系統、網路、編譯器或其他行程的那些門：`torch.hub`（會下載並執行遠端的 `hubconf.py`）、`torch.utils.cpp_extension`（編譯並執行 C++）、`torch.distributed`、`torch.multiprocessing`、`numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`、`numpy.ctypeslib`，以及 `script_policy.py` 裡 `TIER0_DENIED_ATTRS` 的其餘項目。用 import 把它們的名稱帶進來、或用字面值 `getattr` 取得，同樣會被拒絕。
+* 沒有明確寫 `weights_only=True` 的 `torch.load(...)` / `numpy.load(...)`，以及任何 `load(allow_pickle=True)`：它們會執行來源檔案裡的程式碼。接收端會透過你的 import 別名解析，所以 `import torch as t; t.load(...)` 一樣會被擋下。
 
-這些名稱同時也從腳本執行時的命名空間中移除，等於同一道門上了第二道鎖。
+`json.load` 與 `json.loads` **不**受最後這條規則影響——`json` 本來就是 Tier-0 模組，解析 JSON 正是它的用途。
+
+上述規則中有兩條在執行期還有第二道鎖：命名空間的 builtins 以明確的允許清單建立（所以 `open`、`eval` 這些不只是不能改，而是根本不存在），而 `__import__` 被換成會重新檢查模組清單的版本。雙底線與函式庫門戶這兩條規則**只在 AST 階段**檢查——程式碼開始執行後就沒有人再檢查一次，這正是這道關卡必須在編譯之前跑的原因。
 
 ### 需要清單以外的東西？
 
@@ -89,9 +109,11 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 這道關卡擋的是**容易的**逃逸手法。它**不是**沙箱，也沒有打算變成沙箱：
 
+* **它限制的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼。** numpy 與 torch 本身就大到內建了檔案 IO、下載功能與一個 C++ 編譯器。上面那份拒絕清單關掉的是我們知道的門；它是架在兩套龐大 API 之上的黑名單，只能視為提高逃逸的成本，絕不是「檔案與網路碰不到」的保證。
 * 腳本在 **CodefyUI 伺服器行程內**執行，使用你的使用者權限。沒有任何容器隔離。
 * 已經能在你畫布上打字的攻擊者，只要夠有決心，多半仍找得到出口。這道關卡提高的是隨手執行程式碼的成本，並不能讓這個面向對有備而來的對手變得安全。
-* 沒有任何 CPU 或記憶體限制。腳本裡的 `while True:` 會佔住一條工作執行緒直到伺服器重啟——「停止」是協作式的、只在節點**之間**檢查，無法中斷節點內部的迴圈。
+* 沒有任何 CPU 或記憶體限制，而且失控的腳本不只影響自己的節點。節點是在直譯器的**預設執行緒池**上執行，所以某個腳本裡的 `while True:` 會餓死這個行程裡**所有**節點的執行，直到伺服器重啟。「停止」是協作式的、只在節點**之間**檢查，無法中斷節點內部的迴圈——長迴圈必須自己呼叫 `should_stop()`。
+* **模組物件是與主行程共用的。** 允許清單裡的模組就是本尊，不是複本，所以腳本裡的 `torch.zeros = 別的東西` 會影響其他所有節點、所有流程，直到伺服器重啟為止。run 與 run 之間不會還原任何東西。
 * `code` 參數跟其他參數一樣會存進流程 JSON。**打開來路不明的流程並按下執行，等於執行對方的 Python。** 政策檢查是這中間唯一的一道防線，這正是它在編譯之前就跑、而不是等到匯入時才跑的原因。
 
 真正的界線是**誰能碰到這個編輯器**。CodefyUI 預設只綁定本機；除非你信任該網路上的所有人，否則請維持原狀。
@@ -186,7 +208,7 @@ def run(inputs, params):
 
 ### 在本次執行的裝置上建立張量
 
-命名空間裡還有 `device`，也就是本次執行解析出來的運算裝置，讓建立張量的腳本跟流程其他部分待在同一個裝置上：
+`device` 是本次執行解析出來的運算裝置，讓建立張量的腳本跟流程其他部分待在同一個裝置上：
 
 ```python
 def run(inputs, params):
@@ -200,5 +222,5 @@ def run(inputs, params):
 | 腳本長度 | 100,000 個字元。超過這個長度請改寫成自訂節點。 |
 | 連接埠 | 每邊 1–8 個。 |
 | 擷取的輸出 | 每次執行 64,000 個字元，超過後截斷並附註。 |
-| 非同步 | `run` 是一般函式，在引擎的工作執行緒上呼叫。`asyncio` 無法匯入。 |
-| 狀態 | 每次執行都是全新的命名空間，run 與 run 之間不保留任何東西。需要狀態請交給流程本身。 |
+| 非同步 | `run` 必須是一般的 `def`；`async def run` 會在檢查階段被拒絕，`asyncio` 也無法匯入。 |
+| 狀態 | 每次執行都會拿到全新的命名空間，所以你自己的模組層級變數不會延續。但匯入進來的**模組**是主行程的那一份——見安全模型一節。真正需要保留的狀態請交給流程本身。 |

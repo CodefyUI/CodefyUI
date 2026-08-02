@@ -573,7 +573,7 @@ const zhTW: NodeTranslations = {
   },
   PythonScript: {
     description:
-      '直接在畫布上寫 Python。定義 run(inputs, params)，回傳以輸出連接埠為鍵的字典（直接回傳單一值時視為 out1）。可匯入的模組限於 collections、itertools、json、math、numpy、re、statistics、torch；需要檔案、網路或行程操作請改寫自訂節點或外掛套件。這是防護欄，不是沙箱：程式碼以你的權限在伺服器行程內執行。',
+      '直接在畫布上寫 Python。定義 run(inputs, params)，回傳以輸出連接埠為鍵的字典（直接回傳單一值時視為 out1）。腳本只能使用 collections、itertools、json、math、numpy、re、statistics、torch 這幾個函式庫。這限制的是它能碰到哪些函式庫，而不是那些函式庫能做什麼：這是防護欄，不是沙箱，程式碼以你的權限在 CodefyUI 行程內執行。只執行你信任的程式碼。',
     params: {
       code: '定義 run(inputs, params) 的 Python 原始碼。每次編輯都會依 Tier-0 政策檢查。',
       input_ports: '輸入連接埠 in1..inN 的數量（1..8）',

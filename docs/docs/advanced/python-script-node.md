@@ -31,6 +31,23 @@ def run(inputs: dict, params: dict) -> dict
 
 The function must be defined at module level and be called exactly `run`. The editor warns as soon as it is missing, rather than waiting for the run to fail.
 
+`async def run` is **rejected at the gate**: the node calls `run` on a worker thread with no event loop, so nothing would await it and the output port would carry a coroutine object.
+
+Two more names are in scope besides the allowlisted libraries:
+
+* `device` — the compute device this run resolved to, so `torch.zeros(3, device=device)` lands where the rest of the graph is.
+* `should_stop()` — the run's cooperative stop flag. Nothing can interrupt a script from outside (see the security model below), so a long loop that wants to be stoppable has to ask:
+
+  ```python
+  def run(inputs, params):
+      total = 0.0
+      for row in inputs["in1"]:
+          if should_stop():
+              break
+          total += float(row.sum())
+      return total
+  ```
+
 ## Ports
 
 `input_ports` and `output_ports` (1–8 each) decide how many handles the node has. The **Code** tab's Ports section sets both the count and the `DataType` of each port; the same values live in the `input_types` / `output_types` params as a comma-separated list, so a graph JSON stays readable.
@@ -71,10 +88,13 @@ They are also **pre-bound** in the namespace under those exact names, so `math.f
 
 * Any other import — `os`, `sys`, `pathlib`, `subprocess`, `socket`, `urllib`, `requests`, and equally `pandas` or `sklearn`, which are not dangerous, just not on the list. Relative imports are refused with them.
 * `exec`, `eval`, `compile`, `__import__`, `open`, `input`, `globals`, `locals`, `vars`, `dir`, `breakpoint`, `exit`.
-* Dunder attribute access — `__class__`, `__globals__`, `__subclasses__`, `__code__`, ... — the universal escape primitives.
-* `torch.load(...)` / `numpy.load(...)` without an explicit `weights_only=True`, and any `load(allow_pickle=True)`: those execute code from the file they read.
+* Bare uses of the module machinery — `__loader__`, `__spec__`, `__builtins__`, `__package__` — and dunder attribute access (`__class__`, `__globals__`, `__subclasses__`, `__code__`, ...). These are the universal escape primitives: `__loader__.load_module('nt')` hands back the real `os` module without an import statement.
+* Doors *inside* the allowed libraries that lead back out to the filesystem, the network, a compiler or another process: `torch.hub` (downloads and executes a remote `hubconf.py`), `torch.utils.cpp_extension` (compiles and runs C++), `torch.distributed`, `torch.multiprocessing`, `numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`, `numpy.ctypeslib`, and the rest of `TIER0_DENIED_ATTRS` in `script_policy.py`. Importing one of those by name, or reaching it with a literal `getattr`, is refused the same way.
+* `torch.load(...)` / `numpy.load(...)` without an explicit `weights_only=True`, and any `load(allow_pickle=True)`: those execute code from the file they read. The receiver is resolved through your import aliases, so `import torch as t; t.load(...)` is caught too.
 
-Those names are also removed from the namespace the script runs in, so the runtime is a second lock on the same door.
+`json.load` and `json.loads` are **not** caught by that last rule — `json` is a Tier-0 module and parsing JSON is exactly what it is there for.
+
+Two of those rules have a second lock at run time: the namespace is built from an explicit allowlist of builtins (so `open`, `eval` and friends are not merely un-writable, they are absent), and `__import__` is replaced with one that re-checks the module list. The dunder and library-door rules are **AST-only** — nothing re-checks them once the code is running, which is precisely why the gate runs before the code is compiled.
 
 ### Need something off the list?
 
@@ -89,9 +109,11 @@ Read this before you enable CodefyUI on a network interface.
 
 The gate blocks the *easy* escapes. It is **not** a sandbox, and it is not trying to be one:
 
+* **It limits which libraries a script can reach, not what those libraries can do.** numpy and torch are big enough to contain file IO, downloads and a C++ compiler on their own. The denied-attribute list above closes the doors we know about; it is a blocklist over two enormous APIs, and it should be read as raising the cost of an escape, never as a guarantee that files and the network are out of reach.
 * The script runs **in the CodefyUI server process**, with your user's permissions. Nothing containerises it.
 * A determined attacker who can already type into your canvas can probably still find a way out. The gate raises the cost of drive-by code execution; it does not make the surface safe against a motivated adversary.
-* Nothing limits CPU or memory. A `while True:` in a script occupies a worker thread until the server restarts — the Stop button is cooperative and checked *between* nodes, so it cannot interrupt a loop inside one.
+* Nothing limits CPU or memory, and a runaway is not contained to its own node. Nodes execute on the interpreter's **default thread pool**, so a `while True:` in one script starves *every* node execution in the process until the server is restarted. Stop is cooperative and checked *between* nodes, so it cannot interrupt a loop inside one — a long loop has to call `should_stop()` itself.
+* **Module objects are shared with the host process.** The allowlisted modules are the real ones, not copies, so a script that assigns `torch.zeros = something_else` changes it for every other node, in every graph, until the server restarts. Nothing is rolled back between runs.
 * The `code` param is saved in the graph JSON like any other parameter. **Opening a graph from an untrusted source and pressing Run executes that person's Python.** The policy check is the only thing between the two, which is exactly why it runs before the code is compiled rather than at import time.
 
 The real boundary is *who can reach the editor*. CodefyUI binds to localhost by default; keep it that way unless you trust everyone on the network.
@@ -186,7 +208,7 @@ def run(inputs, params):
 
 ### Creating a tensor on the run's device
 
-The namespace also holds `device`, the compute device the run resolved to, so a script that creates tensors puts them where the rest of the graph is:
+`device` holds the compute device the run resolved to, so a script that creates tensors puts them where the rest of the graph is:
 
 ```python
 def run(inputs, params):
@@ -200,5 +222,5 @@ def run(inputs, params):
 | Script length | 100,000 characters. Past that, write a custom node. |
 | Ports | 1–8 per side. |
 | Captured output | 64,000 characters per execution, then truncated with a notice. |
-| Async | `run` is a plain function, called on the engine's worker thread. `asyncio` is not importable. |
-| State | A fresh namespace per execution; nothing persists between runs. Use the graph for that. |
+| Async | `run` must be a plain `def`; `async def run` is rejected at the gate, and `asyncio` is not importable. |
+| State | Each execution gets a fresh namespace, so your own module-level variables do not carry over. The imported **modules** are the host's, though — see the security model. Use the graph for state you mean to keep. |

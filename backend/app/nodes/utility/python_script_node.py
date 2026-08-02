@@ -25,13 +25,14 @@ The policy
 ----------
 Code is checked by :func:`app.core.script_policy.validate_script_source`
 BEFORE it is compiled -- the same AST walker that gates plugin packs, run in
-allowlist mode -- and then executed with a namespace whose builtins are
-pruned and whose ``__import__`` refuses anything off the Tier-0 list. The
+allowlist mode -- and then executed with an explicitly allowlisted set of
+builtins and an ``__import__`` that refuses anything off the Tier-0 list. The
 editor runs the same check on every keystroke, so a rejection is a red
 banner while typing rather than a failed run ten minutes later.
 
 Read :mod:`app.core.script_policy` for the honest framing: this is a
-guardrail, not a sandbox, and it contains neither CPU nor memory.
+guardrail, not a sandbox; it limits which libraries a script can reach, not
+what those libraries can do; and it contains neither CPU nor memory.
 
 Output capture
 --------------
@@ -48,6 +49,7 @@ from __future__ import annotations
 
 import builtins
 import importlib
+import inspect
 from typing import Any
 
 from ...core.execution_context import ExecutionContext
@@ -88,18 +90,61 @@ DEFAULT_CODE = '''def run(inputs, params):
     return {"out1": x}
 '''
 
-#: Builtins removed from the script namespace. Defense in depth: the AST gate
-#: already refuses to compile code that names them, so this only matters for
-#: a graph that reached the engine without passing through the editor.
+#: Builtins the script namespace exposes. An explicit ALLOWLIST, and it has
+#: to be: the first cut of this node built ``vars(builtins)`` minus a
+#: blocklist, which left ``__loader__`` -- CPython's BuiltinImporter -- bound
+#: in the namespace, and::
 #:
-#: ``getattr``/``setattr``/``delattr`` are deliberately NOT here -- the gate
+#:     m = __loader__.load_module('nt')   # the real os module
+#:     getattr(m, 'getcwd')()             # a literal getattr is permitted
+#:
+#: was a complete escape from a node whose whole job is to not be one. A
+#: blocklist over a namespace someone else owns is only ever correct until
+#: that namespace grows, so this lists what goes IN.
+#:
+#: ``getattr``/``setattr``/``delattr`` are here deliberately -- the AST gate
 #: permits them with a literal attribute name, and removing them would make
 #: code the editor accepted fail at run time.
-_DENIED_BUILTINS = frozenset({
-    "exec", "eval", "compile", "breakpoint",
-    "globals", "locals", "vars", "dir",
-    "open", "input", "exit", "quit", "help", "license", "credits",
-})
+_ALLOWED_BUILTINS: tuple[str, ...] = (
+    # Types and constructors
+    "bool", "bytearray", "bytes", "complex", "dict", "float", "frozenset",
+    "int", "list", "object", "set", "slice", "str", "tuple", "type",
+    "memoryview", "range", "super", "property", "classmethod", "staticmethod",
+    # Functions
+    "abs", "all", "any", "ascii", "bin", "callable", "chr", "delattr",
+    "divmod", "enumerate", "filter", "format", "getattr", "hasattr", "hash",
+    "hex", "id", "isinstance", "issubclass", "iter", "len", "map", "max",
+    "min", "next", "oct", "ord", "pow", "repr", "reversed", "round",
+    "setattr", "sorted", "sum", "zip",
+    # Constants
+    "Ellipsis", "NotImplemented", "__debug__",
+    # ``class X:`` compiles to a call to this; a script defining a small
+    # helper class is ordinary Python, and ``type`` is already exposed.
+    "__build_class__",
+)
+
+
+def _script_builtins_base() -> dict[str, Any]:
+    """The allowlisted builtins plus the ``Exception`` hierarchy.
+
+    Exceptions come from a live scan rather than a hard-coded list so a new
+    CPython exception type does not silently become unavailable. Only
+    ``Exception`` subclasses: ``SystemExit``, ``KeyboardInterrupt`` and
+    ``GeneratorExit`` are BaseException-only for a reason, and a script has
+    no business raising something the engine's ``except Exception`` cannot
+    catch.
+    """
+    namespace: dict[str, Any] = {
+        name: getattr(builtins, name)
+        for name in _ALLOWED_BUILTINS
+        if hasattr(builtins, name)
+    }
+    namespace.update({
+        name: value
+        for name, value in vars(builtins).items()
+        if isinstance(value, type) and issubclass(value, Exception)
+    })
+    return namespace
 
 
 def resolve_port_count(params: dict[str, Any] | None, name: str) -> int:
@@ -231,9 +276,12 @@ class PythonScriptNode(BaseNode):
     CATEGORY = "Utility"
     DESCRIPTION = (
         "Run Python you write on the canvas. Define run(inputs, params) and "
-        "return a dict keyed by output port. Imports are limited to "
+        "return a dict keyed by output port. The script may use "
         + ", ".join(TIER0_MODULES)
-        + "; for files, network or processes write a custom node or a plugin."
+        + " and nothing else. That limits which LIBRARIES it can reach, not "
+        "what they can do: this is a guardrail, not a sandbox, and the code "
+        "runs in the CodefyUI process with your permissions. Only run "
+        "scripts you trust."
     )
 
     # The code is an ordinary param, so ExecutionCache already keys on it:
@@ -381,6 +429,13 @@ class PythonScriptNode(BaseNode):
             # The run's compute device, so `torch.zeros(3, device=device)`
             # lands where the rest of the graph is.
             "device": context.device if context is not None else "cpu",
+            # The engine's cooperative stop flag. Nothing can interrupt a
+            # script from outside -- it runs on the interpreter's default
+            # thread pool, so a runaway loop starves every node execution in
+            # the process -- but a loop that asks can bail out on Stop.
+            "should_stop": (
+                context.should_stop if context is not None else (lambda: False)
+            ),
         })
 
         try:
@@ -401,6 +456,16 @@ class PythonScriptNode(BaseNode):
                 "PythonScript needs a 'def run(inputs, params):' function; "
                 "the script defines none."
             )
+        # The gate refuses `async def run` while it is typed; this catches the
+        # shapes an AST cannot see (a run() rebound to a coroutine function,
+        # a graph that never passed through the editor). Without it the port
+        # carries an un-awaited coroutine object downstream.
+        if inspect.iscoroutinefunction(entry):
+            raise RuntimeError(
+                "PythonScript's run() is a coroutine function; the node calls "
+                "it on a worker thread with no event loop, so nothing would "
+                "await it. Define a plain 'def run(inputs, params)'."
+            )
 
         try:
             return entry(dict(inputs), dict(params)), capture
@@ -409,11 +474,7 @@ class PythonScriptNode(BaseNode):
 
     @staticmethod
     def _script_builtins(capture: _OutputCapture) -> dict[str, Any]:
-        namespace = {
-            name: value
-            for name, value in vars(builtins).items()
-            if name not in _DENIED_BUILTINS
-        }
+        namespace = _script_builtins_base()
         namespace["print"] = capture.print
         namespace["__import__"] = _guarded_import
         return namespace

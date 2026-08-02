@@ -1106,6 +1106,22 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   updateNodeParams: (nodeId, params) => {
     get().markDirty(nodeId);
+
+    // Deleting edges is not something a param edit is expected to do, so it
+    // gets its own undo entry BEFORE the write: dropping a script from 8
+    // ports to 1 destroys up to 7 edges, and without this Ctrl+Z would skip
+    // straight past their deletion to whatever was undoable before it.
+    // Computed here, ahead of the write, because `pushUndoSnapshot` captures
+    // the CURRENT tab and must see the edges intact.
+    {
+      const tab = get().getActiveTab();
+      const node = tab.nodes.find((n) => n.id === nodeId);
+      const merged = { ...(node?.data.params ?? {}), ...params };
+      if (staleEdges(node, merged, tab.edges).size > 0) {
+        get().pushUndoSnapshot();
+      }
+    }
+
     const orphaned = new Set<string>();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => {

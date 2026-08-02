@@ -23,6 +23,7 @@ from app.core.script_policy import (
 from app.nodes.utility.python_script_node import (
     MAX_PORTS,
     PythonScriptNode,
+    _OutputCapture,
     resolve_port_count,
     resolve_port_types,
 )
@@ -509,3 +510,203 @@ def test_a_typed_tensor_output_feeds_a_tensor_consumer():
         {"id": "e3", "source": "py", "target": "f", "sourceHandle": "out1", "targetHandle": "tensor"},
     ]
     assert validate_graph(nodes, edges) == []
+
+
+# ── Escape-matrix regressions (review round 1) ───────────────────────────
+#
+# Every probe below was a WORKING escape (or a false rejection) against the
+# first cut of this node, verified end-to-end through ``execute``. They are
+# kept as executable probes rather than validator unit tests so a future
+# refactor cannot pass by loosening only the layer they happen to hit.
+
+
+def _escapes(code: str) -> bool:
+    """True when *code* runs to completion -- i.e. the gate let it through."""
+    try:
+        PythonScriptNode().execute({}, {"code": code})
+        return True
+    except (PluginValidationError, RuntimeError):
+        return False
+
+
+@pytest.mark.parametrize(
+    ("label", "code"),
+    [
+        (
+            "module machinery by bare name",
+            "def run(inputs, params):\n"
+            "    m = __loader__.load_module('nt')\n"
+            "    return getattr(m, 'getcwd')()\n",
+        ),
+        (
+            "builtins aliased then subscripted",
+            "def run(inputs, params):\n"
+            "    b = __builtins__\n"
+            "    return b['__loader__'].load_module('nt').getcwd()\n",
+        ),
+        (
+            "__spec__ by bare name",
+            "def run(inputs, params):\n    return __spec__.loader\n",
+        ),
+        (
+            "site builtin left in the namespace",
+            "def run(inputs, params):\n    return copyright._Printer__filenames\n",
+        ),
+        (
+            "numpy writes a file",
+            "import numpy\n\ndef run(inputs, params):\n"
+            "    numpy.savetxt('probe.txt', numpy.zeros(3))\n    return 1\n",
+        ),
+        (
+            "numpy reads a file",
+            "import numpy\n\ndef run(inputs, params):\n"
+            "    return numpy.fromfile('probe.txt')\n",
+        ),
+        (
+            "torch.hub downloads and executes",
+            "import torch\n\ndef run(inputs, params):\n    return torch.hub.load\n",
+        ),
+        (
+            "cpp_extension compiles and executes",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return torch.utils.cpp_extension.load_inline\n",
+        ),
+        (
+            "denied door imported as a bare name",
+            "from torch.utils.cpp_extension import load_inline\n\n"
+            "def run(inputs, params):\n    return load_inline\n",
+        ),
+        (
+            "denied numpy leaf imported by name",
+            "from numpy import savetxt\n\ndef run(inputs, params):\n    return savetxt\n",
+        ),
+        (
+            "denied submodule imported directly",
+            "import torch.hub\n\ndef run(inputs, params):\n    return 1\n",
+        ),
+        (
+            "literal getattr around the attribute rule",
+            "import numpy\n\ndef run(inputs, params):\n"
+            "    return getattr(numpy, 'savetxt')\n",
+        ),
+        (
+            "aliased torch.load",
+            "import torch as t\n\ndef run(inputs, params):\n    return t.load('x.pt')\n",
+        ),
+        (
+            "torch.load down an attribute chain",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return torch.serialization.load('x.pt')\n",
+        ),
+        (
+            "class walk",
+            "def run(inputs, params):\n"
+            "    return ().__class__.__bases__[0].__subclasses__()\n",
+        ),
+        (
+            "open at module level",
+            "fh = open('x')\n\ndef run(inputs, params):\n    return 1\n",
+        ),
+    ],
+)
+def test_escape_probe_fails_closed(label, code):
+    assert not _escapes(code), f"escape still open: {label}"
+
+
+def test_the_namespace_is_an_allowlist_not_a_blocklist():
+    """The ``__loader__`` escape existed because the namespace was built by
+    subtraction from ``vars(builtins)``. Assert the shape, not just the
+    symptom: a future CPython builtin must not appear here by default."""
+    exposed = PythonScriptNode._script_builtins(_OutputCapture())  # noqa: SLF001
+    for leaked in ("__loader__", "__spec__", "__package__", "copyright", "open", "eval"):
+        assert leaked not in exposed
+    for needed in ("len", "range", "sorted", "isinstance", "getattr", "ValueError"):
+        assert needed in exposed
+    # BaseException-only types stay out: a script must not raise something
+    # the engine's ``except Exception`` cannot catch.
+    assert "SystemExit" not in exposed
+    assert "KeyboardInterrupt" not in exposed
+
+
+def test_ordinary_python_still_works_inside_the_allowlisted_namespace():
+    result = _run(
+        "import numpy as np\n"
+        "\n"
+        "\n"
+        "class Summary:\n"
+        "    def __init__(self, values):\n"
+        "        self.values = values\n"
+        "\n"
+        "    def mean(self):\n"
+        "        try:\n"
+        "            return float(np.mean(self.values))\n"
+        "        except ValueError:\n"
+        "            return 0.0\n"
+        "\n"
+        "\n"
+        "def run(inputs, params):\n"
+        "    return Summary([1.0, 2.0, 3.0]).mean()\n"
+    )
+    assert result["out1"] == 2.0
+
+
+def test_json_parsing_is_allowed_because_json_is_tier_zero():
+    """The pickle heuristic used to condemn ``.loads`` on ANY receiver, so
+    the node told users to write a custom node to parse JSON."""
+    result = _run(
+        'import json\n\ndef run(inputs, params):\n'
+        '    return json.dumps(json.loads(\'{"a": 1}\'))\n'
+    )
+    assert result["out1"] == '{"a": 1}'
+
+
+def test_async_run_is_rejected_at_the_gate():
+    with pytest.raises(PluginValidationError, match="async def run"):
+        _run("async def run(inputs, params):\n    return 1\n")
+
+
+def test_a_coroutine_run_is_refused_at_runtime_too():
+    """The gate cannot see a ``run`` rebound after definition; the port must
+    still never carry an un-awaited coroutine."""
+    code = (
+        "async def _work(inputs, params):\n"
+        "    return 1\n"
+        "\n"
+        "run = _work\n"
+    )
+    with pytest.raises(RuntimeError, match="coroutine"):
+        PythonScriptNode()._invoke(code, {}, {})  # noqa: SLF001
+
+
+def test_should_stop_is_exposed_so_a_long_loop_can_bail_out():
+    from app.core.execution_context import ExecutionContext
+
+    context = ExecutionContext()
+    context.cancel()
+    result = PythonScriptNode().execute(
+        {},
+        {
+            "code": "def run(inputs, params):\n"
+            "    for i in range(1000):\n"
+            "        if should_stop():\n"
+            "            return i\n"
+            "    return -1\n"
+        },
+        context=context,
+    )
+    assert result["out1"] == 0
+
+
+def test_should_stop_answers_false_without_a_context():
+    result = _run("def run(inputs, params):\n    return should_stop()\n")
+    assert result["out1"] is False
+
+
+def test_the_policy_message_does_not_promise_files_are_unreachable():
+    """numpy can write files; a hint that says otherwise is a promise the
+    gate cannot keep, printed exactly when trust is being decided."""
+    lowered = ESCAPE_HATCH_HINT.lower()
+    assert "libraries" in lowered
+    assert "for file, network or process access" not in lowered
+    assert "libraries" in PythonScriptNode.DESCRIPTION.lower()
+    assert "guardrail, not a sandbox" in PythonScriptNode.DESCRIPTION.lower()

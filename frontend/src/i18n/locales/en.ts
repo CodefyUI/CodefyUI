@@ -618,7 +618,7 @@ const en = {
   'nodeDetail.tabs.docs': 'Docs',
   'nodeDetail.code.title': 'Script',
   'nodeDetail.code.contract': 'def run(inputs, params) -> dict — inputs holds one key per connected port (in1, in2, ...); return {"out1": value}. A bare value becomes out1.',
-  'nodeDetail.code.security': 'A guardrail, not a sandbox: imports are limited and the obvious escapes are blocked, but this code runs in the CodefyUI process with your permissions. Only run scripts you trust.',
+  'nodeDetail.code.security': 'A guardrail, not a sandbox. The policy limits which libraries a script can reach, not what those libraries can do, and the code runs in the CodefyUI process with your permissions. Only run scripts you trust.',
   'nodeDetail.code.inputs': 'Input ports',
   'nodeDetail.code.outputs': 'Output ports',
   'nodeDetail.code.inputCount': 'Number of input ports',
