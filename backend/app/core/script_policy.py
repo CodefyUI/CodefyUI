@@ -193,6 +193,20 @@ TIER0_DENIED_ATTRS: tuple[str, ...] = (
     # look like a file) found it -- the one real hit among 1,085 callables.
     "fromregex",
     "tofile",
+    # ``numpy.zeros(3).dump(path)`` pickles the array straight to any path the
+    # script names -- arbitrary file WRITE, and the content is substantially
+    # attacker-chosen: ``numpy.frombuffer(payload, dtype=numpy.uint8).dump(p)``
+    # embeds the payload verbatim after a fixed pickle prefix, which is enough
+    # to append to a shell rc file or drop a ``site-packages/*.pth``. It sits
+    # on the ARRAY, not on a module, so neither the module-path allowlist nor
+    # the proxy's resolved-object rule ever sees it: ``ndarray``, ``matrix``,
+    # ``recarray``, ``generic`` and every scalar type carry it, reachable as
+    # ~50 spellings plus the unbound ``numpy.ndarray.dump(a, p)``, a bound
+    # local and a literal ``getattr``. This entry is receiver-independent, so
+    # it closes all of them at once. Collateral, accepted: ``json.dump`` goes
+    # with it -- it needs a file object a tier-0 script cannot obtain, and
+    # ``json.dumps`` is untouched.
+    "dump",
     "memmap",
     "ctypeslib",
     "DataSource",

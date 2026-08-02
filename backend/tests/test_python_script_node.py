@@ -1584,17 +1584,28 @@ def test_only_allowlisted_module_paths_are_reachable():
 
 
 def test_no_reachable_callable_takes_a_file_path():
-    """The sweep that found ``numpy.fromregex``, kept as a standing check.
+    """The sweep that found ``numpy.fromregex``, kept as a standing check --
+    and extended one level into CLASSES, which is where it was blind.
 
-    Every callable the policy allows, inspected for a parameter named like a
-    file. numpy's ``out=`` convention is excluded (it is an output *array*),
-    as are ``json.load``/``dump``, which take a file OBJECT a script cannot
-    obtain. Anything else with a path parameter is a file primitive and needs
-    a decision, not a shrug.
+    The original walked module attributes and inspected the *module-level*
+    callables it met. It never descended into the classes those modules hand
+    over, so it could not see ``numpy.ndarray.dump(path)`` -- pickle an array
+    straight to any path, an arbitrary file write that ran green through the
+    endpoint and every one of ~50 spellings (``ndarray``, ``matrix``,
+    ``recarray``, ``generic`` and every scalar type all carry it). A sweep
+    that stops at module level is a sweep that cannot see a method, and a
+    method on a value the policy hands over is reachable code.
+
+    Class members are read off the class but skipped when the name is in
+    :data:`SCRIPT_PROXY_DENIED_ATTRS`, because that set is enforced
+    receiver-INDEPENDENTLY at the gate: a script cannot write ``.dump`` or
+    ``.tofile`` on any receiver at all, so those are closed, not reachable.
+    Remove ``dump`` from that set and this test fails with 56 hits.
     """
     import inspect
     import re as regex
 
+    from app.core.script_policy import SCRIPT_PROXY_DENIED_ATTRS
     from app.core.script_proxy import (
         RestrictedModule,
         tier0_module_namespace,
@@ -1606,16 +1617,36 @@ def test_no_reachable_callable_takes_a_file_path():
         r"|outfile|infile|archive)$",
         regex.IGNORECASE,
     )
+    denied = frozenset(SCRIPT_PROXY_DENIED_ATTRS)
     known = {
-        "json.dump", "json.load",       # take a file object, not a path
+        "json.load",                    # takes a file object, not a path
         "numpy.copyto",                 # dst/src are arrays
         "numpy.interp",                 # fp is the y-coordinate array
         "torch.prepare_multiprocessing_environment",  # body is `pass`
+        # The class descent's only false positives, named rather than
+        # pattern-excluded so the assertion stays sharp: ``src`` here is the
+        # source SEQUENCE tensor of a transformer, not a source path.
+        "torch.nn.Transformer.forward",
+        "torch.nn.TransformerEncoder.forward",
+        "torch.nn.TransformerEncoderLayer.forward",
     }
     seen: set[int] = set()
     hits: list[str] = []
+    module_callables = 0
+    class_methods = 0
+
+    def inspect_callable(value, full: str) -> bool:
+        """True when *value* has a signature we could read."""
+        try:
+            signature = inspect.signature(value)
+        except Exception:  # noqa: BLE001
+            return False
+        if any(fileish.match(p) for p in signature.parameters) and full not in known:
+            hits.append(full)
+        return True
 
     def walk(proxy, path: str, depth: int) -> None:
+        nonlocal module_callables, class_methods
         target = unwrap(proxy)
         if id(target) in seen or depth > 4:
             return
@@ -1628,21 +1659,102 @@ def test_no_reachable_callable_takes_a_file_path():
             if isinstance(value, RestrictedModule):
                 walk(value, f"{path}.{name}", depth + 1)
                 continue
-            if not callable(value):
+            if isinstance(value, type):
+                # One level into the class: its methods are as reachable as
+                # the class is, and ``numpy.zeros(3).dump`` lives here.
+                for attr in dir(value):
+                    if attr.startswith("__") or attr in denied:
+                        continue
+                    try:
+                        member = getattr(value, attr)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if callable(member) and inspect_callable(
+                        member, f"{path}.{name}.{attr}"
+                    ):
+                        class_methods += 1
                 continue
-            try:
-                signature = inspect.signature(value)
-            except Exception:  # noqa: BLE001
-                continue
-            if any(fileish.match(p) for p in signature.parameters):
-                full = f"{path}.{name}"
-                if full not in known:
-                    hits.append(full)
+            if callable(value) and inspect_callable(value, f"{path}.{name}"):
+                module_callables += 1
 
     for root, proxy in tier0_module_namespace().items():
         walk(proxy, root, 1)
 
+    # Non-vacuity: a sweep that inspects nothing passes trivially, which is
+    # exactly how the class surface went unswept for five rounds.
+    assert module_callables > 300, f"module-level sweep too thin: {module_callables}"
+    assert class_methods > 3_000, f"class sweep too thin: {class_methods}"
     assert hits == [], f"reachable callable takes a file path: {hits}"
+
+
+@pytest.mark.parametrize(
+    ("label", "body"),
+    [
+        ("array literal", "    numpy.zeros(3).dump({P})"),
+        ("matrix", "    numpy.matrix([[1, 2]]).dump({P})"),
+        ("recarray", "    numpy.recarray((2,), dtype=[('a', 'i4')]).dump({P})"),
+        ("a scalar type", "    numpy.float64(1.0).dump({P})"),
+        ("another scalar type", "    numpy.uint8(1).dump({P})"),
+        ("the abstract base", "    numpy.generic.dump(numpy.float64(1.0), {P})"),
+        ("unbound off the class", "    numpy.ndarray.dump(numpy.zeros(3), {P})"),
+        ("bound to a local", "    a = numpy.zeros(3)\n    m = a.dump\n    m({P})"),
+        ("a literal getattr", "    a = numpy.zeros(3)\n    getattr(a, 'dump')({P})"),
+        (
+            "an attacker-chosen payload",
+            "    numpy.frombuffer(b'PAYLOAD', dtype=numpy.uint8).dump({P})",
+        ),
+    ],
+)
+def test_dumping_an_array_to_a_path_is_refused(label, body, tmp_path):
+    """``numpy.zeros(3).dump(path)`` was an arbitrary file WRITE.
+
+    It survived five rounds because it is a method on the ARRAY, not on a
+    module: the module-path allowlist and the proxy's resolved-object rule
+    never see it, and the AST gate had no entry for the name. The endpoint
+    answered ``ok: true`` for every spelling. ``dump`` is receiver-independent
+    in :data:`TIER0_DENIED_ATTRS`, so one entry closes ``ndarray``, ``matrix``,
+    ``recarray``, ``generic``, every scalar type, the unbound form, a bound
+    local and a literal ``getattr`` together.
+
+    The content was substantially the attacker's: ``frombuffer(payload).dump``
+    embeds the payload verbatim after a fixed pickle prefix, which is enough
+    to append to a shell rc file or drop a ``site-packages/*.pth``.
+    """
+    target = tmp_path / f"{label.replace(' ', '_')}.bin"
+    code = (
+        "import numpy\n\n\ndef run(inputs, params):\n"
+        + body.replace("{P}", repr(str(target)))
+        + "\n    return 1\n"
+    )
+    # Refused by the gate, so the editor marks it while you type...
+    assert _gate_rejects(code), f"gate still lets this through: {label}"
+    # ...and by the endpoint the editor actually calls.
+    with pytest.raises(PluginValidationError, match="dump"):
+        validate_script_source(code)
+    # The point of the rule: no file appears.
+    assert not target.exists(), f"a file was written: {label}"
+
+
+def test_json_dumps_survives_the_dump_rule():
+    """The accepted collateral, pinned so nobody 'fixes' it back open.
+
+    Denying ``dump`` receiver-independently also closes ``json.dump``. That is
+    the right trade -- it needs a file object a tier-0 script cannot obtain --
+    but ``json.dumps``, which is what a script actually uses, must not go with
+    it.
+    """
+    result = PythonScriptNode().execute(
+        {},
+        {"code": "import json\n\ndef run(inputs, params):\n"
+                 "    return json.dumps({'a': [1, 2]})\n"},
+    )
+    assert result["out1"] == '{"a": [1, 2]}'
+
+    with pytest.raises(PluginValidationError, match="dump"):
+        validate_script_source(
+            "import json\n\ndef run(inputs, params):\n"
+            "    return json.dump({}, inputs['in1'])\n"
+        )
 
 
 def test_the_capability_rule_is_keyed_on_the_type_not_the_name():
