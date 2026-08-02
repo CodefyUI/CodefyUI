@@ -113,10 +113,10 @@ torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
 **會被關卡拒絕，並附上替代路徑說明：**
 
 * 其他任何匯入——`os`、`sys`、`pathlib`、`subprocess`、`socket`、`urllib`、`requests`，以及 `pandas`、`sklearn` 這類並不危險、只是不在清單上的模組。相對匯入同樣被拒絕。
-* `exec`、`eval`、`compile`、`__import__`、`open`、`input`、`globals`、`locals`、`vars`、`dir`、`breakpoint`、`exit`。
+* `exec`、`eval`、`compile`、`__import__`、`open`、`input`、`globals`、`locals`、`vars`、`dir`、`breakpoint`、`exit`——以**裸呼叫**形式，以及透過定義它們的模組（`builtins.eval`）。只是剛好同名的方法並不是那個內建函式，因此是允許的：`re.compile(r'\d+')` 與 `model.eval()` 在規則學會問「這個 `compile` 是誰的」之前一律被拒絕。它們也永遠不可能是內建函式——代理會以物件識別（identity）拒絕真正的 `compile` / `eval` / `open`，不論它被叫成什麼名字，而 `builtins` 也在下方的拒絕屬性清單上，所以第 0 級腳本根本沒有路徑碰到它。
 * 直接使用模組機制的名稱——`__loader__`、`__spec__`、`__builtins__`、`__package__`——以及雙底線屬性存取（`__class__`、`__globals__`、`__subclasses__`、`__code__`、`__traceback__`……）。這份清單請讀成**我們已知的逃逸手法，一項一項列出來**，而不是「反射這一整類都處理好了」的保證。清單上的每一項都曾是真的能逃出去的路：`__loader__.load_module('nt')` 不用任何 import 就能拿到真正的 `os` 模組。
 * **走訪執行框架（frame）**，不論接收端是誰：`tb_frame`、`tb_next`、`f_back`、`f_globals`、`f_locals`、`f_builtins`、`f_code`、`gi_frame`、`gi_code`、`cr_frame`，以及這一族的其餘成員。被接住的例外身上帶著 traceback，traceback 身上帶著它被丟出時的那個 frame，而**呼叫**你的那個 frame 屬於 CodefyUI 自己：`e.__traceback__.tb_frame.f_back.f_globals` 會交出這個節點自己的模組全域變數，裡面就有 `importlib` 與 `builtins`。到了那一步，腳本原本拿到的是哪一套 builtins 已經不重要了——所以這些名稱是直接拒絕，而不是設法清理。
-* **你不能 import 的模組名稱，被當成屬性來取用**：`torch.os`、`torch.sys`、`torch.serialization.pickle`、`json.codecs.sys`、`numpy.f2py.subprocess`。函式庫自己也會 import 東西，所以一份只看 `import` 陳述句的允許清單，只要你向某個被允許的模組指名要，它就會把被封鎖的模組直接遞出來。這些名稱取自 import 規則用的同一份封鎖清單，只排除 `torch.signal`（那是 torch 自己的訊號處理命名空間，不是標準函式庫的同名模組）。這一類現在由代理從結構上擋住；名稱規則留下來，是因為它是編輯器在你打字時就能顯示的版本。
+* **你不能 import 的模組名稱，被當成屬性來取用**：`torch.os`、`torch.sys`、`torch.serialization.pickle`、`json.codecs.sys`、`numpy.f2py.subprocess`。函式庫自己也會 import 東西，所以一份只看 `import` 陳述句的允許清單，只要你向某個被允許的模組指名要，它就會把被封鎖的模組直接遞出來。這些名稱取自 import 規則用的同一份封鎖清單，只排除 `torch.signal`（那是 torch 自己的訊號處理命名空間，不是標準函式庫的同名模組），並額外加上 `builtins`——它不能放進那份共用封鎖清單，因為那份清單同時也是代理的「這個值是哪個模組**定義**的」規則，而 `builtins` 定義了函式庫遞回來的每一個 `int`、`str` 與 `float`，`math.pi` 也包含在內。這一類現在由代理從結構上擋住；名稱規則留下來，是因為它是編輯器在你打字時就能顯示的版本。
 * **函式庫的私有屬性**——`collections._sys`、`statistics.random._os`、`re._parser`——只要接收端是那八個被允許的模組之一就會被拒絕。你自己類別裡的 `self._cache` 是普通的 Python，仍然合法。
 * **對函式庫指派**：`torch.zeros = 我的函式`、`del numpy.mean`。
 * 允許的函式庫**內部**通往檔案系統、網路、編譯器或其他行程的那些門：`torch.hub`（會下載並執行遠端的 `hubconf.py`）、`torch.utils.cpp_extension`（編譯並執行 C++）、`torch.distributed`、`torch.multiprocessing`、`numpy.savetxt` / `loadtxt` / `fromfile` / `fromregex` / `tofile` / `save` / `dump` / `memmap`、`numpy.ctypeslib`，以及 `script_policy.py` 裡 `TIER0_DENIED_ATTRS` 的其餘項目。這份清單裡的 `dump` 是唯一長在**陣列**上、而不是長在模組上的：`numpy.zeros(3).dump(path)` 會把陣列直接 pickle 寫進你指定的任何路徑，每一種 numpy 陣列與純量型別都帶著它，而且寫進去的內容大致由你決定。因為這些規則是**不管接收端是誰**、只認屬性名稱，所以單一條目就一次擋掉它所有的寫法——代價是 `json.dump` 也一起被擋（`json.dumps` 不受影響，而 `json.dump` 本來就需要一個腳本拿不到的檔案物件）。用 import 把它們的名稱帶進來、或用字面值 `getattr` 取得，同樣會被拒絕；`os.system` / `.popen` / `.spawnv` 現在也**當成屬性**擋掉，而不只是擋呼叫——因為 `f = obj.system` 之後再 `f(cmd)`，只差一行指派就繞過了任何「認呼叫」的規則。
@@ -137,7 +137,7 @@ torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
 那正是另外兩條路存在的理由，而且它們更適合：
 
 * [自訂節點](./custom-nodes.md)——放在你自己專案裡的檔案，你寫的、你能檢查。
-* [外掛套件](./plugins.md)——可安裝、有版本，還能在 manifest 裡宣告額外模組，由使用者以 `--trust-author` 接受。
+* [外掛套件](./plugins.md)——可安裝、有版本，並依它自己的[三級政策](./plugins.md#安全性三個層級)執行：純運算不需要任何宣告，`network` / `filesystem` / `process-env` 在 manifest 宣告並於安裝時由使用者確認，超出這三者的則需要 `--trust-author`。
 
 ## 安全模型——這是防護欄，不是沙箱
 

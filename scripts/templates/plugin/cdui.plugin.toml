@@ -37,8 +37,28 @@ assets_dir      = "assets"
 #   [python_deps]
 #   numpy = ">=1.24"
 
-# OPTIONAL. The AST validator blocks dangerous imports (os, subprocess, …) on
-# install. If your nodes legitimately need one, list it here; users then have to
-# install with --trust-author.
+# OPTIONAL. Most plugins delete this whole section.
+#
+# An AST gate checks every .py file at install time. Three tiers:
+#
+#   Tier 0 — nothing to declare. Pure computation: math, statistics,
+#     collections, itertools, functools, json, re, dataclasses, typing, enum,
+#     decimal, random, numpy, torch, pandas — plus the path helpers, via
+#     `from os.path import join, basename` (NOT `import os`).
+#
+#   Tier 1 — capabilities. Ask for a group of modules by name. `cdui plugin
+#     install` prints the request, the user confirms, and the grant is
+#     recorded in the lockfile. Known capabilities:
+#       "network"      requests, urllib, http, socket
+#       "filesystem"   pathlib, tempfile, shutil, zip/tar/gzip, sqlite3, glob
+#       "process-env"  the os module, for reading os.environ
+#
+#   Tier 2 — allowed_modules. Anything at all, including subprocess, ctypes
+#     and importlib. Nobody can install your plugin without passing
+#     --trust-author, so reach for a capability first.
+#
+# torch.load(..., weights_only=True), the dunder bans and os.system/os.popen
+# apply in every tier. This is a guardrail, not a sandbox — declare honestly.
 [security]
+capabilities    = []
 allowed_modules = []

@@ -71,6 +71,7 @@ from .script_policy import (
     SCRIPT_PROXY_DENIED_ATTRS,
     TIER0_MODULE_PATHS,
     TIER0_MODULES,
+    TIER0_RECEIVER_SCOPED_ATTRS,
     TIER0_SAFE_LOAD_RECEIVERS,
     ScriptPolicyError,
 )
@@ -95,6 +96,14 @@ _FRAME_ATTRS: frozenset[str] = frame_introspection_attrs()
 _SAFE_LOAD_ROOTS: frozenset[str] = frozenset(TIER0_SAFE_LOAD_RECEIVERS)
 
 _LOAD_NAMES = frozenset({"load", "loads"})
+
+#: ``{attribute name: the roots it may be reached on}`` -- the runtime half of
+#: :data:`app.core.script_policy.TIER0_RECEIVER_SCOPED_ATTRS`, so ``re.compile``
+#: works and ``torch.compile`` (TorchInductor: generates C++/Triton and invokes
+#: a compiler) is refused at both layers rather than only at the gate.
+_SCOPED_ATTRS: dict[str, frozenset[str]] = {
+    attr: frozenset(roots) for attr, roots in TIER0_RECEIVER_SCOPED_ATTRS.items()
+}
 
 #: Capability-bearing TYPES a proxy will not hand over, as the class itself or
 #: as an instance of it. Checked with ``issubclass`` / ``isinstance``, so a
@@ -251,6 +260,12 @@ def _resolve(target: types.ModuleType, label: str, name: str) -> Any:
             f"{', '.join(sorted(_SAFE_LOAD_ROOTS))} may be loaded from, "
             f"because every other '.{name}' within reach executes code from "
             "the file it reads"
+        )
+    scope = _SCOPED_ATTRS.get(name)
+    if scope is not None and label.split(".")[0] not in scope:
+        raise _refuse(
+            f"'{label}.{name}' is not available: under this policy "
+            f"'.{name}' is available only on {', '.join(sorted(scope))}"
         )
     value = getattr(target, name)  # AttributeError propagates unchanged
     if isinstance(value, types.ModuleType):

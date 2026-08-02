@@ -26,17 +26,88 @@ cdui plugin uninstall deep
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
 | `stats` | — (any dataset) | Stats-Describe, Stats-GroupByAggregate, Stats-Histogram, Stats-Percentile, Stats-Correlation, Stats-ConfusionMatrix, Stats-TableView, Stats-ChartView |
 
-`stats` is the odd one out: not a textbook companion but a working reference for third-party pack authors. It is pure numpy + torch, passes the AST security gate with **no `[security]` overrides**, and its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) is the normative write-up of the two contracts a data pack needs — how a table travels between ports, and how a `chart` output is declared and drawn.
+`stats` is the odd one out: not a textbook companion but a working reference for third-party pack authors. It is pure numpy + torch, installs at [Tier 0](#security--three-tiers) with **no `[security]` section at all**, and its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) is the normative write-up of the two contracts a data pack needs — how a table travels between ports, and how a `chart` output is declared and drawn.
 
 Each Edu node decomposes a single lesson concept into a chain of named steps that the [Teaching Inspector](/usage/teaching-inspector) renders one row at a time — `Edu-ColumnStats` shows the population-std formula as `sum → divide → deviations² → variance → sqrt`; `Edu-PolicyGradient` exposes `softmax → gather → log → baseline → loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch on **Verbose mode** in the Settings popover to capture them.
 
 ## How packs are stored
 
 - **Built-in direction packs** live in `plugins/<id>/` inside the repo and are activated in place (no copies).
-- **Third-party packs** are downloaded as a pinned-SHA tarball into `<USER_DATA>/plugins/<id>/` and **AST-validated** before install.
-- A lockfile at `<USER_DATA>/plugins/installed.json` records every install, so `cdui start` rediscovers them on the next launch.
+- **Third-party packs** are downloaded as a pinned-SHA tarball into `<USER_DATA>/plugins/<id>/` and **AST-validated** before install (see [Security](#security--three-tiers)).
+- A lockfile at `<USER_DATA>/plugins/installed.json` records every install — including which capabilities you granted — so `cdui start` rediscovers them on the next launch.
 
 Plugin nodes are namespaced to avoid collisions and to self-document graphs — built-in nodes use a bare name like `Conv2d`, while plugin nodes are qualified like `foundations:Edu-KNN`.
+
+## Security — three tiers
+
+A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file in it is walked by an AST gate that decides what it may import. The gate has three answers, and the middle one is the interesting one.
+
+| Tier | How a plugin gets it | What it covers |
+|------|----------------------|----------------|
+| **0 — default** | nothing to declare | Pure computation: `math`, `statistics`, `collections`, `itertools`, `functools`, `json`, `re`, `dataclasses`, `typing`, `enum`, `decimal`, `random`, `numpy`, `torch`, `pandas` — plus the path helpers (below). Every first-party pack lives here. |
+| **1 — declared capabilities** | `[security] capabilities = [...]` in the manifest, confirmed by the user at install | One named group of modules per capability. |
+| **2 — trusted** | `[security] allowed_modules = [...]` **and** `cdui plugin install --trust-author` | Anything, including `subprocess`, `ctypes` and `importlib`. |
+
+### The capabilities
+
+| Capability | Unlocks | What you are agreeing to |
+|------------|---------|--------------------------|
+| `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host. |
+| `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can read and write files anywhere your account can. |
+| `process-env` | `os` | The plugin can read this process's environment, **including any API keys in it**. |
+
+Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only, however sympathetic the use case: a capability may grant a *resource*, never the ability to run other code or to reach into the interpreter that is hosting it. "I need to POST a metric" and "I need to spawn a shell" should not share a word.
+
+### Path helpers are Tier 0
+
+`os.path.join` is string manipulation, so it needs no capability — but only in the forms that bind the path helpers rather than `os` itself:
+
+```python
+from os.path import join, basename   # fine, Tier 0
+from os import path                  # fine, Tier 0
+import os                            # needs "process-env"
+import os.path                       # also binds `os` — needs "process-env"
+```
+
+### Declaring, and being asked
+
+```toml
+[security]
+capabilities = ["network"]
+```
+
+```console
+$ cdui plugin install alice/metric-logger
+  Source: https://github.com/alice/metric-logger
+  Ref: default branch (a1b2c3d)
+
+> This plugin requests the following capabilities
+    network -> reach the network -- send and receive data from any host (requests, urllib, http, socket)
+  A capability is a declaration, not a sandbox: once granted, the plugin may
+  use that group of modules and CodefyUI stops asking.
+  Grant these? [y/N]:
+```
+
+- **Without a terminal** (a script, CI, a piped install) the answer is **no**, and the message names `--accept-capabilities`, which grants the declared set without the prompt. `-y` / `--no-confirm` does *not* imply it: that flag skips the "install from this URL?" question, and consenting to code that reaches the network is a different question.
+- **What was granted is recorded** in `<USER_DATA>/plugins/installed.json` and shown by `cdui plugin list` and `cdui plugin info`.
+- **`cdui plugin update` does not re-ask** when the new version's request is a subset of what you already granted — and **stops** when it grew a capability, which is the supply-chain shape an update can actually catch.
+
+### What holds in every tier
+
+`torch.load(...)` still requires an explicit `weights_only=True`; dunder access (`__class__`, `__globals__`, `__subclasses__`, …), frame walking (`f_globals`, `gi_frame`, …), `eval` / `exec` / `compile` / `__import__`, and `os.system` / `os.popen` / `os.spawn*` are refused whatever was declared. A capability never buys reflection.
+
+### What this is not
+
+**This is a guardrail, not a sandbox** — the same framing the [in-canvas script policy](/advanced/python-script-node) carries, and worth repeating here because this is where a *stranger's* code runs.
+
+- **The gate reads your plugin's own `import` statements.** It does not read the libraries you import, and it cannot tell what a permitted function does.
+- **A capability covers the blocklisted roots, not the category.** `requests` is gated; `httpx` was never on the blocklist, so a plugin that imports it reaches the network with nothing declared. Enumerating every HTTP client on PyPI is not a thing a list can do.
+- **Two paths skip the gate entirely, on purpose.** Built-in packs ship inside this repo and are reviewed by PR; `cdui plugin link` loads *your own* working tree and says so with a warning.
+- **A declaration is a statement of intent by the author.** It raises the cost of a drive-by and gives you something to read before you consent. Treat "do I trust whoever wrote this?" as the real question.
+
+### Upgrading from an older install
+
+Nothing to do. A lockfile entry written before capabilities existed has no `capabilities` key, which reads as "none granted" — exactly the behaviour it had. Existing packs revalidate unchanged.
 
 ## Writing your own plugin
 
@@ -59,7 +130,7 @@ cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
 cdui plugin install your-username/your-fork
 ```
 
-A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (mounted at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, and lesson metadata.
+A pack ships any of: a `nodes/` directory (auto-discovered), a `presets/` directory, an `examples/` directory, and an `assets/` directory (mounted at `/plugins/<id>/assets/<file>`). A `cdui.plugin.toml` manifest declares the id, version, `requires_codefyui`, content directories, lesson metadata, and — only if you need them — the `[security]` declarations described under [Security](#security--three-tiers). Delete that section if your nodes are pure computation; most are.
 
 :::warning Breaking change (v0.3)
 The chapter packs `c1`–`c6` were repackaged into three direction packs `foundations` / `deep` / `rl`, and every Edu node's type id gained a dash (`EduKNN` → `Edu-KNN`). Saved graphs referencing the old `cN:EduFoo` types must be updated to `<pack>:Edu-Foo` and the packs reinstalled with `cdui plugin install foundations deep rl`.

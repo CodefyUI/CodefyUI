@@ -32,7 +32,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 
 if sys.version_info >= (3, 11):
@@ -49,6 +49,12 @@ from app.core.plugin_loader import (
     save_lockfile,
 )
 from app.core.plugin_validator import PluginValidationError, validate_python_source
+from app.core.security_tiers import (
+    CAPABILITIES,
+    CAPABILITY_SUMMARY,
+    normalize_capabilities,
+    unknown_capabilities,
+)
 
 # ── colour + i18n (kept self-contained so scripts/dev.py owns no deps here) ──
 
@@ -133,6 +139,45 @@ def err(zh: str, en: str) -> None:
 
 def ok(zh: str, en: str) -> None:
     print(f"  {GREEN}{MARK_OK} {t(zh, en)}{RESET}")
+
+
+# ── declared capabilities (core#133) ───────────────────────────────────────
+#
+# ``app.core.security_tiers`` owns the English one-liners because the AST
+# validator quotes them in its refusals; the zh-TW halves live here with every
+# other CLI string, so the two i18n systems stay where they already are.
+
+_CAPABILITY_ZH: dict[str, str] = {
+    "network": "連線網路——可與任何主機收發資料（requests、urllib、http、socket）",
+    "filesystem": (
+        "讀寫你帳號權限所及的任何檔案（pathlib、tempfile、shutil、"
+        "zip/tar/gzip、sqlite3、glob）"
+    ),
+    "process-env": (
+        "讀取此行程的環境變數，包含其中的 API 金鑰"
+        "（os 模組；os.system、os.popen 仍然禁止）"
+    ),
+}
+
+
+def _capability_line(capability: str) -> str:
+    """``network -> reach the network ...`` in the caller's language.
+
+    The arrow is the module's shared ``ARROW`` glyph, so a legacy Windows
+    console that cannot encode it gets ``->`` instead of a crash.
+    """
+    return f"{capability} {ARROW} " + t(
+        _CAPABILITY_ZH.get(capability, capability),
+        CAPABILITY_SUMMARY.get(capability, capability),
+    )
+
+
+def manifest_capabilities(manifest: dict[str, Any]) -> tuple[str, ...]:
+    """The normalised ``[security].capabilities`` a manifest declares."""
+    security = manifest.get("security")
+    if not isinstance(security, dict):
+        return ()
+    return normalize_capabilities(security.get("capabilities"))
 
 
 # ── catalog ────────────────────────────────────────────────────────────────
@@ -262,16 +307,59 @@ def validate_manifest(m: dict[str, Any]) -> None:
             f"Invalid plugin id: {plugin_id!r}. "
             "Must match ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
         )
+    _validate_security_table(m.get("security"))
 
 
-def validate_nodes_dir(nodes_dir: Path, allowed_modules: list[str]) -> None:
+def _validate_security_table(security: Any) -> None:
+    """Check ``[security]`` before anything acts on it.
+
+    Both keys are lists of strings, and a wrong shape used to fail silently in
+    the worst possible direction: ``allowed_modules = "os"`` reaches
+    ``frozenset("os")``, which is ``{"o", "s"}``, which grants nothing and
+    unlocks nothing while printing "Plugin requests non-default modules: o, s".
+    A manifest is hand-written; say what is wrong with it.
+
+    An unknown capability is an error rather than a no-op. It is either a typo
+    or a manifest written against a newer CodefyUI, and granting nothing then
+    failing at the import would blame the wrong line.
+    """
+    if security is None:
+        return
+    if not isinstance(security, dict):
+        raise ValueError("[security] must be a table.")
+    for key in ("allowed_modules", "capabilities"):
+        value = security.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(
+                f"[security].{key} must be a list of strings, got {value!r}."
+            )
+    unknown = unknown_capabilities(security.get("capabilities"))
+    if unknown:
+        raise ValueError(
+            f"Unknown capability in [security].capabilities: "
+            f"{', '.join(unknown)}. This build knows: {', '.join(CAPABILITIES)}."
+        )
+
+
+def validate_nodes_dir(
+    nodes_dir: Path,
+    allowed_modules: list[str],
+    capabilities: Iterable[str] = (),
+) -> None:
     if not nodes_dir.exists():
         return
     for py in sorted(nodes_dir.rglob("*.py")):
         content = py.read_bytes()
         if not content.strip():
             continue
-        validate_python_source(content, py.name, allowed_modules=allowed_modules)
+        validate_python_source(
+            content,
+            py.name,
+            allowed_modules=allowed_modules,
+            capabilities=list(capabilities),
+        )
 
 
 # Directories within an extracted plugin tarball that are *not* imported as
@@ -285,12 +373,21 @@ _VALIDATION_SKIP_DIRS = frozenset({
 })
 
 
-def validate_plugin_dir(plugin_root: Path, allowed_modules: list[str]) -> None:
+def validate_plugin_dir(
+    plugin_root: Path,
+    allowed_modules: list[str],
+    capabilities: Iterable[str] = (),
+) -> None:
     """Walk the entire plugin directory and validate every Python source file.
 
     The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
     bypass via top-level helpers. This visits all ``.py`` files except those
     in test / docs / asset directories that aren't part of the import graph.
+
+    *capabilities* are the ones the user confirmed at install time. They are
+    passed to every file rather than per-file, because a capability is a
+    property of the INSTALL, not of a source file: a plugin granted
+    ``network`` may reach it from wherever it likes inside its own tree.
     """
     if not plugin_root.exists():
         return
@@ -302,7 +399,12 @@ def validate_plugin_dir(plugin_root: Path, allowed_modules: list[str]) -> None:
         content = py.read_bytes()
         if not content.strip():
             continue
-        validate_python_source(content, py.name, allowed_modules=allowed_modules)
+        validate_python_source(
+            content,
+            py.name,
+            allowed_modules=allowed_modules,
+            capabilities=list(capabilities),
+        )
 
 
 # ── runtime helpers ────────────────────────────────────────────────────────
@@ -465,6 +567,123 @@ def _install_deps(deps: dict[str, str]) -> int:
     return r.returncode
 
 
+# ── the capability prompt (core#133, tier 1) ───────────────────────────────
+
+#: Sentinel for "the user said no". Distinct from the empty tuple, which is
+#: the ordinary "this plugin asked for nothing" answer.
+CAPABILITIES_REFUSED = None
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether there is a human on the other end of ``input()``.
+
+    A pytest run, a CI job and ``| tee`` all answer False, and all of them
+    must take the non-interactive branch rather than blocking forever on a
+    prompt nobody will ever see. On Windows this is only reachable at all
+    because ``dev.py`` re-executes the venv interpreter with
+    :func:`_reexec` -- ``subprocess.run`` keeps the console attached, where
+    ``os.execv`` would have orphaned it and made every prompt read EOF.
+    """
+    try:
+        return bool(sys.stdin) and sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def capability_gate(
+    manifest: dict[str, Any],
+    args: argparse.Namespace,
+) -> tuple[str, ...] | None:
+    """Decide which capabilities this install may grant, asking if it must.
+
+    Returns the granted tuple, or ``CAPABILITIES_REFUSED`` (``None``) when the
+    install must stop. Four outcomes, in the order they are tried:
+
+    1. the manifest declares nothing -> ``()``, silently;
+    2. everything it asks for was already granted (the ``update`` path, where
+       *prior_capabilities* carries the lockfile's record) -> granted, with a
+       note, and no second prompt for a decision the user already made;
+    3. ``--accept-capabilities`` -> granted, after printing what was accepted,
+       because a flag that grants something silently is a flag people
+       copy-paste;
+    4. otherwise print the request and ask. With no human attached the answer
+       is no, and the message names the flag -- refusing beats defaulting to
+       yes, and beats hanging on an ``input()`` in a CI job.
+
+    The declared set is checked against this build's vocabulary first;
+    ``validate_manifest`` already refuses an unknown name, so reaching one
+    here means a caller skipped it, and refusing is the safe reading.
+    """
+    requested = manifest_capabilities(manifest)
+    if not requested:
+        return ()
+
+    unknown = unknown_capabilities(requested)
+    if unknown:
+        err(
+            f"manifest 要求未知的能力：{', '.join(unknown)}。"
+            f"此版本支援：{', '.join(CAPABILITIES)}。",
+            f"Manifest requests unknown capabilities: {', '.join(unknown)}. "
+            f"This build knows: {', '.join(CAPABILITIES)}.",
+        )
+        return CAPABILITIES_REFUSED
+
+    prior = set(normalize_capabilities(getattr(args, "prior_capabilities", None)))
+    if set(requested) <= prior:
+        info(
+            f"沿用先前授權的能力：{', '.join(requested)}",
+            f"Re-using previously granted capabilities: {', '.join(requested)}",
+        )
+        return requested
+
+    section("此外掛要求下列能力", "This plugin requests the following capabilities")
+    for capability in requested:
+        print(f"    {BOLD}{_capability_line(capability)}{RESET}")
+    info(
+        "能力是宣告，不是沙箱：授權後外掛就能使用該類模組，CodefyUI 不會再逐一攔截。",
+        "A capability is a declaration, not a sandbox: once granted, the "
+        "plugin may use that group of modules and CodefyUI stops asking.",
+    )
+    if prior:
+        warn(
+            f"這次比上次多要了：{', '.join(sorted(set(requested) - prior))}",
+            f"This is more than last time: {', '.join(sorted(set(requested) - prior))}",
+        )
+
+    if getattr(args, "accept_capabilities", False):
+        ok(
+            f"已由 --accept-capabilities 接受：{', '.join(requested)}",
+            f"Accepted via --accept-capabilities: {', '.join(requested)}",
+        )
+        return requested
+
+    def _no_terminal() -> None:
+        err(
+            "非互動模式無法確認能力要求。確定要授權請加 --accept-capabilities。",
+            "Cannot confirm a capability request without a terminal. "
+            "Pass --accept-capabilities if you mean to grant these.",
+        )
+
+    if not _stdin_is_interactive():
+        _no_terminal()
+        return CAPABILITIES_REFUSED
+
+    try:
+        answer = input(f"  {t('要授權嗎？', 'Grant these?')} [y/N]: ").strip().lower()
+    except EOFError:
+        # ``isatty()`` said yes and stdin was closed anyway -- an install
+        # driven from a here-doc or a pipe on a terminal. Fail closed like the
+        # branch above, and print the same way out, because "Cancelled" on its
+        # own leaves the user with no idea what to do differently.
+        print()
+        _no_terminal()
+        return CAPABILITIES_REFUSED
+    if answer not in ("y", "yes"):
+        warn("已取消（未授權任何能力）", "Cancelled (nothing was granted)")
+        return CAPABILITIES_REFUSED
+    return requested
+
+
 # ── commands ───────────────────────────────────────────────────────────────
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -530,6 +749,17 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
     # patterns like `getattr(context, "verbose", False)`.
     allowed = manifest.get("security", {}).get("allowed_modules") or []
 
+    # Same reasoning for the capability prompt: a pack that ships inside this
+    # repo is not a third party asking for permission, and prompting while
+    # skipping the gate entirely would be theatre. What it does get is a
+    # RECORD -- printed here, written to the lockfile below -- so that
+    # `cdui plugin list` answers "which of my plugins reaches the network"
+    # for every pack, wherever it came from.
+    capabilities = manifest_capabilities(manifest)
+    for capability in capabilities:
+        line = _capability_line(capability)
+        info(f"能力：{line}", f"Capability: {line}")
+
     deps = manifest.get("python_deps", {})
     if deps:
         info(
@@ -546,6 +776,7 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
         "installed_at": now_iso(),
         "manifest": manifest.get("plugin", {}),
         "trusted_modules": list(allowed),
+        "capabilities": list(capabilities),
         "enabled": True,
     }
     save_lockfile(lockfile)
@@ -644,12 +875,19 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             )
             return 1
 
+        # Tier 1. Asked BEFORE anything is copied out of the temp directory,
+        # so a "no" leaves nothing behind but the tarball the context manager
+        # is about to delete.
+        capabilities = capability_gate(manifest, args)
+        if capabilities is CAPABILITIES_REFUSED:
+            return 1
+
         try:
             # Validate the *entire* extracted tarball, not just nodes/. The
             # plugin loader exposes the plugin root as a namespace package so
             # ``from .. import helper`` from a node would otherwise import
             # unscanned helpers.
-            validate_plugin_dir(root, allowed)
+            validate_plugin_dir(root, allowed, capabilities)
         except PluginValidationError as e:
             err(str(e), str(e))
             return 1
@@ -710,6 +948,7 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
             "installed_at": now_iso(),
             "manifest": manifest.get("plugin", {}),
             "trusted_modules": list(allowed),
+            "capabilities": list(capabilities),
             "enabled": True,
         }
         save_lockfile(lockfile)
@@ -754,6 +993,11 @@ def cmd_list(args: argparse.Namespace) -> int:
         bits.append(f"{kind}:{src}")
         if entry.get("sha"):
             bits.append(entry["sha"][:7])
+        # "Which of my plugins can reach the network" should be answerable
+        # without opening a lockfile in a text editor.
+        granted = normalize_capabilities(entry.get("capabilities"))
+        if granted:
+            bits.append(f"[{', '.join(granted)}]")
         if enabled:
             # Normal layout — bold id, plain name, dim metadata.
             print(
@@ -910,6 +1154,12 @@ def _link_local(root: Path, *, force: bool) -> int:
             return rc
 
     allowed = manifest.get("security", {}).get("allowed_modules") or []
+    # Recorded, not prompted: a linked plugin is the author's own working
+    # tree and the AST gate is skipped for it entirely (see the warning
+    # above), so asking for consent to a subset of what is already unchecked
+    # would be misleading. Recording it still means `cdui plugin list` and
+    # `info` tell the truth about what this plugin declares.
+    capabilities = manifest_capabilities(manifest)
     lockfile.setdefault("plugins", {})[plugin_id] = {
         "source_kind": "local",
         "source": str(root),
@@ -917,6 +1167,7 @@ def _link_local(root: Path, *, force: bool) -> int:
         "installed_at": now_iso(),
         "manifest": manifest.get("plugin", {}),
         "trusted_modules": list(allowed),
+        "capabilities": list(capabilities),
         "enabled": True,
     }
     save_lockfile(lockfile)
@@ -1172,6 +1423,16 @@ def _print_info(
         fields.append(("lessons", ", ".join(lessons_meta["lessons"])))
     if deps:
         fields.append(("deps", ", ".join(f"{k}{v}" for k, v in deps.items())))
+    # Granted first (what this install actually holds), falling back to what
+    # the manifest asks for when the plugin is not installed yet — `info` on a
+    # remote source is exactly where you want to see the ask before you agree.
+    granted = normalize_capabilities(
+        entry.get("capabilities")
+    ) or manifest_capabilities(manifest)
+    if granted:
+        fields.append(("capabilities", ", ".join(granted)))
+    if entry.get("trusted_modules"):
+        fields.append(("trusted modules", ", ".join(entry["trusted_modules"])))
 
     width = max(len(k) for k, _ in fields) + 2 if fields else 0
     for k, v in fields:
@@ -1257,10 +1518,18 @@ def cmd_update(args: argparse.Namespace) -> int:
             f"更新 {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
             f"Updating {plugin_id}: {entry.get('sha', '')[:7]} {ARROW} {new_sha[:7]}",
         )
+        # ``prior_capabilities`` is what makes an update non-interactive
+        # WITHOUT being a silent re-grant: the gate waves through a manifest
+        # asking for no more than the lockfile already records, and stops on
+        # one that grew a capability since the version the user consented to.
+        # Capability creep across an update is the supply-chain shape worth
+        # catching, and it is the only one an update can catch.
         synthetic_args = argparse.Namespace(
             force=True,
             no_confirm=True,
             trust_author=bool(entry.get("trusted_modules")),
+            accept_capabilities=False,
+            prior_capabilities=list(entry.get("capabilities") or []),
         )
         rc = _install_github(owner, repo, ref, synthetic_args, lockfile)
         if rc != 0:
@@ -1454,6 +1723,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--trust-author",
         action="store_true",
         help="accept a third-party plugin's declared [security].allowed_modules",
+    )
+    p_inst.add_argument(
+        "--accept-capabilities",
+        action="store_true",
+        help=(
+            "grant the [security].capabilities the manifest declares without "
+            "the interactive prompt (required in scripts and CI)"
+        ),
     )
     p_inst.set_defaults(_func=cmd_install)
 
