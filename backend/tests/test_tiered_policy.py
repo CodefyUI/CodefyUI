@@ -420,13 +420,15 @@ def test_every_allowlisted_path_helper_is_real_and_is_not_a_module():
 # ``lexists``) sails past it by returning a bool while still calling
 # ``stat()`` on any path you name.
 #
-# Screen 2 was specified as an audit hook. Measured on this interpreter it
-# catches ZERO of them, because **``os.stat`` raises no audit event** -- the
-# CPython audit table covers ``open``, ``os.listdir``, ``os.scandir``,
-# ``os.chdir`` and friends, but not ``stat`` or ``getcwd``. It is kept
-# anyway: it costs four lines and it is the only screen that sees a helper
-# reaching the disk through something other than the ``os`` names screen 3
-# replaces.
+# Screen 2 is an audit hook. It catches ZERO of today's impure ``os.path``
+# names, because **``os.stat`` raises no audit event** -- the CPython audit
+# table covers ``open``, ``os.listdir``, ``os.scandir``, ``os.chdir`` and
+# friends, but not ``stat``, ``lstat`` or ``getcwd``. It is not decoration
+# though, and this was measured rather than assumed: it is the ONLY screen
+# that sees a helper reaching the disk without going through the ``os`` names
+# screen 3 replaces. A hypothetical ``os.path`` helper built on ``io.open``
+# or on ``pathlib.Path.read_text`` is invisible to screen 3 and shows up here
+# as an ``open`` event.
 #
 # Screen 3 is the one that does the work: replace the ``os`` functions the
 # path modules actually call -- plus ``os.environ`` and, on Windows, the
@@ -613,10 +615,28 @@ def test_the_purity_guard_catches_every_impure_name_on_os_path():
 
     #: Genuinely inert: not callable, so there is nothing to call.
     inert = {"devnull", "supports_unicode_filenames", "ALLOW_MISSING"}
-    #: Pure: compares two ``stat_result`` objects and calls nothing. A plugin
-    #: cannot obtain one at Tier 0 anyway -- the same shape as ``json.dump``
-    #: needing a file object it cannot get.
-    pure_but_unusable = {"samestat"}
+    #: Names the probe finds pure, which are nonetheless NOT on the allowlist,
+    #: each with the reason. This bucket is what keeps the test honest about
+    #: the difference between "the guard cannot see it" (a hole) and "we
+    #: looked and chose not to allow it" (a decision). A genuinely dangerous
+    #: new name cannot join it silently -- it has to be added here by hand,
+    #: next to a justification.
+    pure_not_allowlisted = {
+        # Compares two ``stat_result`` objects and calls nothing. A Tier-0
+        # plugin cannot obtain one anyway -- the same shape as ``json.dump``
+        # needing a file object it cannot get.
+        "samestat": "pure, and needs a stat_result a Tier-0 plugin cannot get",
+        # Python 3.12+. Genuinely a pure string split, but allowlisting it
+        # would make TIER0_PATH_HELPERS version-dependent, and a manifest
+        # using it would break on 3.10/3.11 regardless. ``splitdrive`` is
+        # allowlisted and covers the same ground.
+        "splitroot": "pure, but 3.12+ only; TIER0_PATH_HELPERS stays static",
+        # Python 3.12+. Pure on posixpath (it returns False unconditionally --
+        # junctions are a Windows concept) and IMPURE on ntpath, where it
+        # calls lstat and is caught by the interception screen. The allowlist
+        # is shared across platforms, so the stricter platform decides.
+        "isjunction": "pure on posixpath, lstat() on ntpath -- the stricter wins",
+    }
 
     import ntpath
     import posixpath
@@ -641,7 +661,7 @@ def test_the_purity_guard_catches_every_impure_name_on_os_path():
             value = getattr(module, name)
             if isinstance(value, types.ModuleType):
                 by_module_screen.append(name)      # the module screen catches these
-            elif name in inert or name in pure_but_unusable:
+            elif name in inert or name in pure_not_allowlisted:
                 accounted_inert.append(name)
             elif _probe_path_helper(name, module):
                 by_interception.append(name)
@@ -651,8 +671,11 @@ def test_the_purity_guard_catches_every_impure_name_on_os_path():
         where = module.__name__
         assert unaccounted == [], (
             f"[{where}] these names are neither allowlisted nor caught by any "
-            f"screen: {unaccounted} -- either they are pure and belong on "
-            f"TIER0_PATH_HELPERS, or the guard has a hole"
+            f"screen: {unaccounted}. Three possibilities, and somebody has to "
+            f"pick one: they are pure and belong on TIER0_PATH_HELPERS; they "
+            f"are pure but deliberately excluded, and belong in "
+            f"pure_not_allowlisted with the reason written down; or the guard "
+            f"has a hole and they reach the disk by a route it cannot see."
         )
         # Non-vacuity: the buckets must actually contain the names we know about.
         assert {"os", "sys", "genericpath"} <= set(by_module_screen), where
