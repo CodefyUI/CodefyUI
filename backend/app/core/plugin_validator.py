@@ -90,6 +90,15 @@ _DANGEROUS_MODULES = frozenset({
     # library re-exporting one was a handover the value rules could not see.
     "zipfile", "gzip", "tarfile", "bz2", "lzma", "codecs",
     "sqlite3", "glob", "fileinput", "webbrowser",
+    # ``os.path`` under its real names. These look like pure string helpers
+    # and are not: each one does ``import os`` and ``import sys`` at module
+    # level and leaves both bound as ordinary attributes, so
+    # ``import ntpath; ntpath.sys.modules['subprocess'].run([...])`` is
+    # arbitrary command execution through a module nobody thinks of as a
+    # capability. That route predates core#133 -- these three were simply
+    # never on the list -- and it is the same door the ``os.path`` import
+    # exception has to keep shut.
+    "ntpath", "posixpath", "genericpath",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver
@@ -169,6 +178,31 @@ _FRAME_INTROSPECTION_ATTRS = frozenset({
 # ``_import_roots`` means ``import builtins as b; b.eval(s)`` resolves back to
 # the same verdict.
 _BUILTINS_RECEIVERS = frozenset({"builtins", "__builtins__"})
+
+# Names on the real ``os.path`` that ARE modules -- ``os``, ``sys``, ``stat``,
+# ``genericpath`` on both platforms today.
+#
+# Computed rather than listed, because the whole failure this closes was a
+# name screen: ``from os.path import genericpath`` cleared a blocklist-name
+# check and handed back a module whose ``.os`` is the real thing. Asking the
+# interpreter what is actually a module there is the same "what is it, not
+# what is it called" move the runtime proxy makes, and it covers whatever a
+# future CPython re-exports without an edit here.
+_OS_PATH_MODULE_LEAVES: frozenset[str] = frozenset()
+
+
+def _compute_os_path_module_leaves() -> frozenset[str]:
+    import os.path
+    import types as _types
+
+    return frozenset(
+        name
+        for name in dir(os.path)
+        if isinstance(getattr(os.path, name, None), _types.ModuleType)
+    )
+
+
+_OS_PATH_MODULE_LEAVES = _compute_os_path_module_leaves()
 
 
 def dangerous_modules() -> frozenset[str]:
@@ -452,30 +486,42 @@ def _is_tier0_path_import(
 ) -> bool:
     """Whether this import is the ``os.path`` slice Tier 0 keeps.
 
-    Only the two forms that bind the path helpers rather than ``os`` itself::
+    **One** form, and every leaf it binds has to be a plain path helper::
 
-        from os.path import join, basename     # binds functions
-        from os import path                    # binds ntpath / posixpath
+        from os.path import join, basename, splitext    # the exception
+        from os import path                             # NOT -- see below
+        import os / import os.path                      # NOT -- both bind ``os``
 
-    ``import os`` and ``import os.path`` both bind the ``os`` module, so both
-    stay behind ``process-env``. Nothing is widened by this: ``posixpath`` and
-    ``ntpath`` were never on the blocklist and are the same module, so an
-    author who wanted it could always spell it that way -- the exception is
-    here so they do not have to write platform-specific code to join two path
-    components.
+    The first cut of this rule also allowed ``from os import path`` and
+    screened leaves by NAME against the blocklist. Review found that handed a
+    ZERO-DECLARATION plugin the real ``os`` and ``sys``, and it was verified
+    end to end: ``os.path`` *is* ``ntpath`` / ``posixpath``, which re-export
+    ``os``, ``sys``, ``stat`` and ``genericpath`` as ordinary attributes, so
+    ``path.os.remove(p)`` deleted a real file and
+    ``path.sys.modules['subprocess'].run([...])`` ran a real command --
+    through a form the gate refused at the merge base. The name screen missed
+    it twice over: ``genericpath`` is not a blocklisted name, and neither is
+    ``path``.
+
+    So the leaf test asks what a leaf IS, not what it is called: the module
+    attributes of the real ``os.path`` are computed at import
+    (:data:`_OS_PATH_MODULE_LEAVES`), so a future Python that re-exports one
+    more module is covered without anybody noticing. ``*`` is refused with
+    them -- ``ntpath.__all__`` happens to contain no modules today, and
+    "happens to, today" is not a thing this file should rely on when naming
+    the helpers costs one line.
+
+    ``ntpath``, ``posixpath`` and ``genericpath`` are on the blocklist now
+    too, so the route that never needed this exception at all
+    (``import ntpath; ntpath.os...``, live since long before core#133) is
+    closed with it.
     """
-    if not from_import or not module:
+    if not from_import or module != TIER0_PATH_MODULE:
         return False
     leaves = set(names)
-    if module == TIER0_PATH_MODULE or module.startswith(TIER0_PATH_MODULE + "."):
-        # ``ntpath`` / ``posixpath`` import ``os``, ``sys`` and ``stat``, so
-        # ``from os.path import os`` binds the real ``os`` module through a
-        # module this rule was about to wave through. Every leaf has to be a
-        # path helper, not a re-export of something blocked.
-        return not (leaves & _DANGEROUS_MODULES)
-    if module == TIER0_PATH_ROOT:
-        return bool(leaves) and leaves <= {TIER0_PATH_LEAF}
-    return False
+    if not leaves or "*" in leaves:
+        return False
+    return not (leaves & _OS_PATH_MODULE_LEAVES) and not (leaves & _DANGEROUS_MODULES)
 
 
 def _capability_denial(module: str, root: str, filename: str) -> str:
@@ -632,6 +678,23 @@ def validate_python_source(
         -- because the two forms bind different objects.
         """
         names = list(names)
+        # ``from json import __builtins__ as b`` then ``b['eval']``. Every
+        # OTHER spelling of a forbidden dunder is refused -- as a bare name, as
+        # an attribute, as a subscript target, through a literal getattr -- but
+        # an import BINDS it without writing any of those node types, so
+        # nothing looked at it. Every module has a ``__builtins__``, so the
+        # receiver did not even have to be interesting. Pre-existing, and it
+        # applies to BOTH gate shapes (a script's ``json`` is on its allowlist),
+        # which is why it runs before either verdict.
+        for leaf in names:
+            if leaf in _FORBIDDEN_DUNDERS:
+                raise fail(
+                    f"Importing the name {leaf!r} is not allowed in {filename}: "
+                    f"importing a dunder binds it without writing an attribute "
+                    f"access, which is the one spelling the other rules cannot "
+                    f"see",
+                    node,
+                )
         # Allowlist verdict first, so a module that is simply off the list
         # reads as "not allowed" rather than as whatever the denied-attribute
         # rule happens to say about one component of its name. The root check

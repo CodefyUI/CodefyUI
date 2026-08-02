@@ -52,22 +52,26 @@ cdui plugin uninstall deep
 
 | 能力 | 解鎖 | 你正在同意的事 |
 |------------|---------|--------------------------|
-| `network` | `requests`、`urllib`、`http`、`socket` | 這個外掛可以與任何主機收發資料。 |
-| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`、`glob`、`fileinput` | 這個外掛可以讀寫你帳號權限所及的任何檔案。 |
-| `process-env` | `os` | 這個外掛可以讀取此行程的環境變數，**包含其中的 API 金鑰**。 |
+| `network` | `requests`、`urllib`、`http`、`socket` | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
+| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`、`glob`、`fileinput` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
+| `process-env` | `os`、`ntpath`、`posixpath`、`genericpath` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
 
-除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能走第 2 級，不論理由多正當：能力可以授予**資源**，但絕不授予執行其他程式碼、或伸手進入宿主直譯器的權力。「我需要 POST 一個指標」跟「我需要開一個 shell」不該共用同一個詞。
+除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能走第 2 級：**沒有任何能力會交出一個「本身就是用來執行程式碼、或伸手進入直譯器」的模組。** 請注意這句話的精確之處——`process-env` 授予 `os`，而 `os` 會啟動行程。任何能力都不會給你的，是一個為執行程式碼而生的模組。
 
 ### 路徑輔助函式屬於第 0 級
 
-`os.path.join` 是字串處理，因此不需要任何能力——但僅限於那些綁定路徑輔助函式、而非綁定 `os` 本身的寫法：
+`os.path.join` 是字串處理，因此不需要任何能力——但僅限於**唯一一種**綁定輔助函式本身的寫法，而且它綁定的每一個名稱都必須是純函式：
 
 ```python
 from os.path import join, basename   # 可以，第 0 級
-from os import path                  # 可以，第 0 級
+from os import path                  # 需要 "process-env"
+from os.path import genericpath      # 需要 "process-env"
 import os                            # 需要 "process-env"
 import os.path                       # 一樣綁定 `os`——需要 "process-env"
+import ntpath / posixpath            # 需要 "process-env"
 ```
+
+被拒絕的那幾行不是吹毛求疵。`os.path` **就是** `ntpath` / `posixpath`，而這兩個模組在模組層級執行 `import os` 與 `import sys`，並把兩者都留成一般屬性——所以 `path.os.remove(p)` 會刪掉檔案，`path.sys.modules['subprocess'].run([...])` 會執行指令。`from os.path import <名稱>` 只在該名稱不是模組時才被允許，而這份「哪些名稱是模組」的清單是從執行中的 `os.path` 讀出來的，不是寫死的。
 
 ### 宣告，以及被詢問
 
@@ -82,7 +86,7 @@ $ cdui plugin install alice/metric-logger
   Ref: default branch (a1b2c3d)
 
 > 此外掛要求下列能力
-    network → 連線網路——可與任何主機收發資料（requests、urllib、http、socket）
+    network → 連線網路——可與任何主機收發資料，並把下載到的內容寫入磁碟（requests、urllib、http、socket）
   能力是宣告，不是沙箱：授權後外掛就能使用該類模組，CodefyUI 不會再逐一攔截。
   要授權嗎？ [y/N]:
 ```
@@ -100,8 +104,12 @@ $ cdui plugin install alice/metric-logger
 **這是防護欄，不是沙箱**——與[畫布內腳本政策](/advanced/python-script-node)同一套說法，而且在這裡更值得重講一次，因為這是**別人的**程式碼真正執行的地方。
 
 - **閘門讀的是你外掛自己的 `import` 敘述。** 它不會去讀你 import 的函式庫，也無法判斷一個被允許的函式實際上做了什麼。
+- **能力攔的是 *import*，不是 *行為*。** 有兩個後果值得直接講明，而不是留給你自己踩到：
+  - **`filesystem` 並不會攔截寫檔。** `open(p, "w")` 是內建函式、不需要 import，在第 0 級什麼都不宣告就能過。我們考慮過攔它然後放棄了：模式字串經常是算出來的（`open(p, "w" if overwrite else "r")`），所以這個檢查只要一個變數就能繞過，卻會誤傷誠實的外掛——是一個沒有相應安全價值的誤判。
+  - **`network` 隱含了寫檔能力**，透過 `urllib.request.urlretrieve(url, dest)`。
 - **能力涵蓋的是黑名單上的模組根名稱，不是整個類別。** `requests` 有被攔；`httpx` 從來就不在黑名單上，所以一個 import 它的外掛什麼都不用宣告就能連網。把 PyPI 上每一個 HTTP 用戶端都列進清單，不是清單做得到的事。
-- **有兩條路徑刻意完全跳過閘門。** 內建外掛包隨這個 repo 一起發行、由 PR 審查；`cdui plugin link` 載入的是**你自己的**工作目錄，並且會印出警告說明。
+- **有兩條路徑刻意完全跳過閘門。** 內建外掛包隨這個 repo 一起發行、由 PR 審查；`cdui plugin link` 載入的是**你自己的**工作目錄，並且會印出警告說明。`cdui project restore` 也會以非互動方式授予專案 manifest 宣告的能力——它本來就帶著 `--trust-author`，所以不會增加額外曝險，但這代表一份專案檔本身也是一個信任決定。
+- **任何能寫入 `installed.json` 的東西，都能預先批准下一次更新。** lockfile 正是 `cdui plugin update` 用來「這個能力已授權過、不必再問」的依據，所以能編輯它的程式碼（包含已取得 `filesystem` 的外掛，或任何用 `open` 的外掛）都可以在自己的條目裡加上一項能力，讓下一次更新靜默接受。這屬於入侵後的持久化，而非第一步的提權——但 lockfile 是一份信任存放區，它的保護程度就等於你帳號的保護程度。
 - **宣告是作者的意圖聲明。** 它提高了順手攻擊的成本，也讓你在同意前有東西可讀。真正該問的問題仍然是：「我信任寫這個東西的人嗎？」
 
 ### 從舊版升級

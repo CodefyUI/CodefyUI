@@ -59,10 +59,18 @@ def isolated_lockfile(tmp_path, monkeypatch):
 
     Same shape as the fixture in ``test_plugin_cli.py``: CLI tests must never
     touch real user data or expect a running server.
+
+    ``plugins_user_root`` is patched in BOTH modules. ``scripts/plugins.py``
+    imported the name, so it holds its own reference; patching only
+    ``plugin_loader``'s moves the lockfile while leaving any install path
+    copying real files into the real ``<USER_DATA>/plugins/``. That is not
+    hypothetical -- it happened during core#133 and three directories had to
+    be swept out of a developer's actual user data.
     """
     target = tmp_path / "plugins"
     target.mkdir()
     monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: target)
+    monkeypatch.setattr(plugin_cli, "plugins_user_root", lambda: target)
     monkeypatch.setattr(plugin_cli, "_backend_reload", lambda: False)
     return target
 

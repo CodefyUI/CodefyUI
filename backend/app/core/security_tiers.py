@@ -51,7 +51,21 @@ rather than left to be discovered:
    stdlib roots plus ``requests``. A plugin that imports ``httpx`` reaches the
    network with no declaration at all, because ``httpx`` was never on the
    blocklist. Adding every HTTP client on PyPI is not a thing a list can do.
-3. **Nothing here loosens Tier 0 for in-canvas scripts.** The script node's
+3. **A capability is not a permission boundary around an ACTION, only around
+   an IMPORT.** Two consequences that surprise people, so they are written
+   here and in the docs rather than left to be found:
+
+   * ``filesystem`` does not gate writing files. Plain ``open(p, "w")`` is a
+     builtin, needs no import, and passes at Tier 0 with nothing declared.
+     What the capability gates is the file LIBRARIES. Gating ``open`` was
+     considered and rejected: the mode is often computed
+     (``open(p, "w" if x else "r")``), so the check would be evaded by one
+     variable while breaking honest plugins -- a false positive with no
+     matching security value.
+   * ``network`` implies a file write, because
+     ``urllib.request.urlretrieve(url, dest)`` is one call.
+
+4. **Nothing here loosens Tier 0 for in-canvas scripts.** The script node's
    surface is an ALLOWLIST of dotted module paths
    (``script_policy.TIER0_MODULE_PATHS``), audited path by path across six
    adversarial rounds in core#131. This module's Tier-0 list is the policy
@@ -125,11 +139,14 @@ CAPABILITIES: tuple[str, ...] = ("network", "filesystem", "process-env")
 #: ``subprocess``, ``sys``, ``importlib``, ``ctypes``, ``pickle``, ``marshal``,
 #: ``dill``, ``shelve``, ``runpy``, ``code``, ``codeop``, ``compileall``,
 #: ``signal``, ``atexit``, ``webbrowser``, ``threading``, ``asyncio`` and
-#: ``multiprocessing`` map to NO capability and stay Tier 2. The line is: a
-#: capability may grant a resource, never the ability to run other code or to
-#: reach into the interpreter that is hosting you. "I need to POST a metric"
-#: and "I need to spawn a shell" are different asks and should not share a
-#: word.
+#: ``multiprocessing`` map to NO capability and stay Tier 2: no capability
+#: unlocks a module whose PURPOSE is running code or reaching the interpreter.
+#:
+#: That is the real invariant, and it is narrower than "capabilities cannot
+#: spawn a process", which is what this comment used to imply. ``process-env``
+#: grants ``os``, and ``os`` spawns processes. The distinction worth keeping is
+#: that no capability hands over a module built for executing code; the one
+#: that hands over a general-purpose module says so in its summary.
 CAPABILITY_MODULES: dict[str, tuple[str, ...]] = {
     "network": ("http", "requests", "socket", "urllib"),
     "filesystem": (
@@ -146,7 +163,19 @@ CAPABILITY_MODULES: dict[str, tuple[str, ...]] = {
         "tempfile",
         "zipfile",
     ),
-    "process-env": ("os",),
+    # Named for the reason people ask for it -- reading ``os.environ`` -- but
+    # what it GRANTS is the ``os`` module, and this comment exists because the
+    # first version of it claimed otherwise. Under this capability alone,
+    # ``os.execv``, ``os.startfile``, ``os.spawnve``, ``os.fork``,
+    # ``os.remove``, ``os.open`` + ``os.write`` and ``os.environ[k] = v`` are
+    # all reachable, and ``os.system`` / ``os.popen`` are refused only as
+    # CALLS (``f = os.system; f(cmd)`` is one assignment away). The honest
+    # framing is the one the summary and the docs now use: this is the os
+    # module, process spawning included. Narrowing it to a genuine read-only
+    # slice would mean a blocklist over ~300 functions, and a promise resting
+    # on an incomplete blocklist is the failure mode core#131 spent six rounds
+    # unlearning.
+    "process-env": ("os", "ntpath", "posixpath", "genericpath"),
 }
 
 #: One line per capability, shown in the install prompt and quoted verbatim in
@@ -157,16 +186,17 @@ CAPABILITY_MODULES: dict[str, tuple[str, ...]] = {
 #: somebody is about to answer y/N on the strength of this sentence.
 CAPABILITY_SUMMARY: dict[str, str] = {
     "network": (
-        "reach the network -- send and receive data from any host "
-        "(requests, urllib, http, socket)"
+        "reach the network -- send and receive data from any host, and write "
+        "what it downloads to disk (requests, urllib, http, socket)"
     ),
     "filesystem": (
-        "read and write files anywhere your account can "
-        "(pathlib, tempfile, shutil, zip/tar/gzip, sqlite3, glob)"
+        "use the file libraries -- pathlib, tempfile, shutil, zip/tar/gzip, "
+        "sqlite3, glob. Note that plain open() needs no declaration at all"
     ),
     "process-env": (
-        "read this process's environment, including any API keys in it "
-        "(the os module; os.system and os.popen stay refused)"
+        "use the whole os module -- read AND change this process's "
+        "environment (any API keys in it included), start other programs, "
+        "and delete or rename files"
     ),
 }
 
@@ -261,9 +291,15 @@ def unknown_capabilities(raw: Any) -> tuple[str, ...]:
 
 
 def granted_modules(capabilities: Iterable[str] | None) -> frozenset[str]:
-    """Every module root the given capabilities unlock, as one set."""
+    """Every module root the given capabilities unlock, as one set.
+
+    *capabilities* goes to :func:`normalize_capabilities` untouched. Wrapping
+    it in ``list()`` first would have re-created the exact bug that function
+    exists to prevent: ``list("network")`` is ``['n','e','t',...]``, which is
+    ``frozenset("os")`` wearing a different hat.
+    """
     roots: set[str] = set()
-    for capability in normalize_capabilities(list(capabilities or ())):
+    for capability in normalize_capabilities(capabilities):
         roots.update(modules_for_capability(capability))
     return frozenset(roots)
 

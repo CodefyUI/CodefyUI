@@ -44,14 +44,20 @@ assets_dir      = "assets"
 #   Tier 0 — nothing to declare. Pure computation: math, statistics,
 #     collections, itertools, functools, json, re, dataclasses, typing, enum,
 #     decimal, random, numpy, torch, pandas — plus the path helpers, via
-#     `from os.path import join, basename` (NOT `import os`).
+#     `from os.path import join, basename`. That exact form only: `import os`,
+#     `import os.path` and `from os import path` all hand over the whole os
+#     module (os.path IS ntpath/posixpath, which re-export os and sys), so
+#     they need "process-env". Plain open() is a builtin and needs nothing.
 #
 #   Tier 1 — capabilities. Ask for a group of modules by name. `cdui plugin
 #     install` prints the request, the user confirms, and the grant is
 #     recorded in the lockfile. Known capabilities:
-#       "network"      requests, urllib, http, socket
+#       "network"      requests, urllib, http, socket — and note that
+#                      urlretrieve() writes files, so this implies a write
 #       "filesystem"   pathlib, tempfile, shutil, zip/tar/gzip, sqlite3, glob
-#       "process-env"  the os module, for reading os.environ
+#                      — the file LIBRARIES; it does not gate open()
+#       "process-env"  the whole os module: read AND change the environment,
+#                      start other programs, delete or rename files
 #
 #   Tier 2 — allowed_modules. Anything at all, including subprocess, ctypes
 #     and importlib. Nobody can install your plugin without passing

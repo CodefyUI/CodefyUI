@@ -86,12 +86,17 @@ def test_the_pure_compute_tier_is_never_on_the_blocklist():
     assert overlap == set(), f"Tier-0 roots quietly became blocked: {sorted(overlap)}"
 
 
-def test_capabilities_never_grant_the_ability_to_run_code():
+def test_no_capability_unlocks_a_dedicated_code_execution_module():
     """The line the three capability names are drawn on.
 
-    A capability grants a RESOURCE. Executing other code, reaching into the
-    interpreter, or starting a process is not a resource, and is Tier 2 only
-    however sympathetic the use case.
+    Deliberately narrower than "capabilities cannot spawn a process", which is
+    what this test used to be called and did not check: it compared module
+    NAMES, so it certified an invariant it never tested. ``process-env`` grants
+    ``os``, and ``os`` spawns processes -- see the test below, which pins that
+    rather than wishing it away.
+
+    What does hold: no capability hands over a module whose PURPOSE is running
+    code or reaching the interpreter hosting the plugin.
     """
     never_granted = {
         "subprocess", "sys", "importlib", "ctypes", "pickle", "marshal",
@@ -103,6 +108,54 @@ def test_capabilities_never_grant_the_ability_to_run_code():
             f"{root!r} was mapped to a capability; it runs code or reaches "
             "the interpreter, so it belongs to --trust-author"
         )
+
+
+def test_process_env_really_does_grant_process_spawning():
+    """Assert what is TRUE, not what the capability's name suggests.
+
+    Every one of these passes the gate under ``process-env`` alone. They are
+    pinned here so that nobody -- reader, reviewer, or a future edit to the
+    summary string -- can come away believing this capability is read-only.
+    The summary and both doc locales say so in words; this says so in code.
+    """
+    for line in (
+        "os.execv('/bin/sh', ['sh'])",
+        "os.startfile('x.exe')",
+        "os.spawnve(os.P_NOWAIT, 'x', ['x'], {})",
+        "os.remove('/some/file')",
+        "os.rmdir('/some/dir')",
+        "os.write(os.open('/f', os.O_WRONLY), b'x')",
+        "os.environ['API_KEY'] = 'stolen'",
+    ):
+        _tier1(f"import os\n\ndef go():\n    {line}\n", "process-env")
+
+
+def test_the_process_env_summary_admits_what_the_os_module_is():
+    """The prompt is the consent. If it undersells the grant, the consent is
+    not informed -- so the wording is a test, not a docstring."""
+    summary = tiers.CAPABILITY_SUMMARY["process-env"]
+    assert "os module" in summary
+    assert "start" in summary          # ... other programs
+    assert "delete" in summary or "rename" in summary
+    assert "change" in summary         # environment writes, not just reads
+
+
+def test_the_filesystem_summary_does_not_claim_to_gate_writes():
+    """``open(p, 'w')`` is a builtin and passes at Tier 0 with nothing
+    declared, so a summary promising "the plugin can write files only with
+    this" would be false the moment it was read."""
+    assert "open()" in tiers.CAPABILITY_SUMMARY["filesystem"]
+    _tier0("def go(p):\n    with open(p, 'w') as fh:\n        fh.write('x')\n")
+
+
+def test_the_network_summary_admits_it_implies_a_file_write():
+    """``urllib.request.urlretrieve(url, dest)`` is one call."""
+    assert "disk" in tiers.CAPABILITY_SUMMARY["network"]
+    _tier1(
+        "import urllib.request\n\ndef go(u, d):\n"
+        "    return urllib.request.urlretrieve(u, d)\n",
+        "network",
+    )
 
 
 def test_every_capability_has_a_summary_a_human_can_answer_yes_to():
@@ -250,8 +303,8 @@ def test_the_refusal_carries_a_line_number_for_the_editor():
 
 def test_tier0_allows_the_path_helpers_by_their_binding_form():
     _tier0("from os.path import join, basename, splitext\n")
-    _tier0("from os import path\n")
     _tier0("from os.path import join as j\n")
+    _tier0("from os.path import dirname, exists, isfile, sep, abspath\n")
 
 
 def test_tier0_still_refuses_the_forms_that_bind_the_whole_os_module():
@@ -263,6 +316,87 @@ def test_tier0_still_refuses_the_forms_that_bind_the_whole_os_module():
 def test_tier0_refuses_pulling_anything_but_path_out_of_os():
     message = _refusal("from os import path, environ\n")
     assert "process-env" in message
+
+
+# ── the escape that review found in the first cut of the exception ─────────
+#
+# ``from os import path`` was in the exception, and leaves were screened by
+# NAME against the blocklist. Both were wrong, and it was verified end to end
+# with capabilities=[]: ``os.path`` IS ``ntpath`` / ``posixpath``, which
+# re-export ``os``, ``sys``, ``stat`` and ``genericpath`` as ordinary
+# attributes, so ``path.os.remove(p)`` deleted a real file and
+# ``path.sys.modules['subprocess'].run([...])`` ran a real command. The merge
+# base refused both forms, so it was a regression of the gate's verdict, in
+# the exact commit that attaches a consent prompt and a docs promise to it.
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from os import path",                    # binds ntpath/posixpath
+        "from os import path as p",
+        "from os.path import os",                 # the real os, re-exported
+        "from os.path import sys",                # the real sys
+        "from os.path import genericpath",        # .os is the real os too
+        "from os.path import stat",
+        "from os.path import join, genericpath",  # one bad leaf poisons it
+        "from os.path import *",                  # what __all__ holds today
+        "from os.path.genericpath import os",
+        "import ntpath",                          # the pre-existing route
+        "import posixpath",
+        "import genericpath",
+        "from ntpath import os",
+        "import ntpath as p",
+    ],
+)
+def test_no_spelling_of_os_path_hands_over_a_module(line):
+    with pytest.raises(PluginValidationError):
+        _tier0(f"{line}\n")
+
+
+def test_the_module_leaf_screen_asks_what_a_leaf_IS_not_what_it_is_called():
+    """``genericpath`` cleared a blocklist-NAME screen and handed back a module
+    whose ``.os`` is the real thing. The screen is computed from the live
+    ``os.path`` instead, so a future CPython re-export is covered with no edit.
+    """
+    import os.path
+    import types
+
+    from app.core.plugin_validator import _OS_PATH_MODULE_LEAVES  # noqa: SLF001
+
+    actual = {
+        name
+        for name in dir(os.path)
+        if isinstance(getattr(os.path, name, None), types.ModuleType)
+    }
+    assert _OS_PATH_MODULE_LEAVES == actual
+    assert {"os", "sys", "genericpath"} <= actual
+
+
+def test_the_os_path_aliases_are_reachable_only_with_process_env():
+    """They ARE ``os.path``, and granting ``os`` already gives you them."""
+    for root in ("ntpath", "posixpath", "genericpath"):
+        assert root in dangerous_modules()
+        assert tiers.capability_for_module(root) == "process-env"
+        _tier1(f"import {root}\n", "process-env")
+
+
+def test_a_dunder_cannot_be_imported_under_a_name():
+    """``from json import __builtins__ as b`` then ``b['eval']``: every other
+    spelling of a forbidden dunder is refused, but an import BINDS it without
+    writing a Name, Attribute, Subscript or getattr node, so nothing looked at
+    it -- and every module has a ``__builtins__``. Pre-existing on both gate
+    shapes."""
+    from app.core.script_policy import validate_script_source
+
+    for code in (
+        "from json import __builtins__ as b\n",
+        "from json import __builtins__\n",
+        "import json\nfrom json import __loader__\n",
+    ):
+        with pytest.raises(PluginValidationError):
+            _tier0(code)
+    with pytest.raises(PluginValidationError):
+        validate_script_source("from json import __builtins__ as b\n")
 
 
 def test_process_env_still_unlocks_the_whole_os_module():
@@ -482,6 +616,25 @@ def test_the_scoped_rule_has_a_runtime_lock_too():
     proxy = module_proxy(torch)
     with pytest.raises(ScriptPolicyError, match="compile"):
         proxy.compile
+
+
+def test_the_module_compile_method_is_a_documented_tier0_false_positive():
+    """PyTorch >= 2.2 put ``compile`` on ``nn.Module`` itself, so ``m.compile()``
+    is refused for in-canvas scripts along with ``torch.compile(m)`` -- it is
+    the same TorchInductor path by another spelling. A real false positive for
+    anyone who wanted only the speed-up, so it is stated in both doc locales
+    rather than left to be discovered, and pinned here so the docs stay true.
+    """
+    import torch
+
+    from app.core.script_policy import validate_script_source
+
+    assert hasattr(torch.nn.Module, "compile"), "the premise of this test moved"
+    with pytest.raises(PluginValidationError, match=r"\.compile"):
+        validate_script_source(
+            "import torch\n\n\ndef run(inputs, params):\n"
+            "    m = torch.nn.Linear(2, 2)\n    m.compile()\n    return 1\n"
+        )
 
 
 def test_an_installed_plugin_may_still_call_torch_compile():

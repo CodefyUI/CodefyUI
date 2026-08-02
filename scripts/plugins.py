@@ -148,14 +148,17 @@ def ok(zh: str, en: str) -> None:
 # other CLI string, so the two i18n systems stay where they already are.
 
 _CAPABILITY_ZH: dict[str, str] = {
-    "network": "連線網路——可與任何主機收發資料（requests、urllib、http、socket）",
+    "network": (
+        "連線網路——可與任何主機收發資料，並把下載到的內容寫入磁碟"
+        "（requests、urllib、http、socket）"
+    ),
     "filesystem": (
-        "讀寫你帳號權限所及的任何檔案（pathlib、tempfile、shutil、"
-        "zip/tar/gzip、sqlite3、glob）"
+        "使用檔案函式庫——pathlib、tempfile、shutil、zip/tar/gzip、sqlite3、glob。"
+        "請注意：單純的 open() 本來就不需要任何宣告"
     ),
     "process-env": (
-        "讀取此行程的環境變數，包含其中的 API 金鑰"
-        "（os 模組；os.system、os.popen 仍然禁止）"
+        "使用整個 os 模組——讀取**並修改**此行程的環境變數（包含其中的 API 金鑰）、"
+        "啟動其他程式，以及刪除或重新命名檔案"
     ),
 }
 
@@ -1423,12 +1426,16 @@ def _print_info(
         fields.append(("lessons", ", ".join(lessons_meta["lessons"])))
     if deps:
         fields.append(("deps", ", ".join(f"{k}{v}" for k, v in deps.items())))
-    # Granted first (what this install actually holds), falling back to what
-    # the manifest asks for when the plugin is not installed yet — `info` on a
-    # remote source is exactly where you want to see the ask before you agree.
-    granted = normalize_capabilities(
-        entry.get("capabilities")
-    ) or manifest_capabilities(manifest)
+    # For an INSTALLED plugin the lockfile is the only truthful source, even
+    # when it says "none": falling back to the manifest on a falsy value meant
+    # a plugin that shipped `capabilities = ["network"]` in a manifest it
+    # rewrote after install was displayed as if that had been granted. For a
+    # plugin that is not installed there is no grant yet, and the manifest's
+    # ask is exactly what you want to read before agreeing to it.
+    if installed:
+        granted = normalize_capabilities(entry.get("capabilities"))
+    else:
+        granted = manifest_capabilities(manifest)
     if granted:
         fields.append(("capabilities", ", ".join(granted)))
     if entry.get("trusted_modules"):

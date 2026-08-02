@@ -52,22 +52,26 @@ A plugin pack is Python that runs in the CodefyUI process. Before a third-party 
 
 | Capability | Unlocks | What you are agreeing to |
 |------------|---------|--------------------------|
-| `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host. |
-| `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can read and write files anywhere your account can. |
-| `process-env` | `os` | The plugin can read this process's environment, **including any API keys in it**. |
+| `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host — **and write what it downloads to disk**, because `urllib.request.urlretrieve(url, dest)` is one call. |
+| `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can use the file **libraries**. This is not a write boundary: plain `open(p, "w")` is a builtin and needs no declaration at all (see [What this is not](#what-this-is-not)). |
+| `process-env` | `os`, `ntpath`, `posixpath`, `genericpath` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
 
-Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only, however sympathetic the use case: a capability may grant a *resource*, never the ability to run other code or to reach into the interpreter that is hosting it. "I need to POST a metric" and "I need to spawn a shell" should not share a word.
+Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only: **no capability hands over a module whose purpose is running code or reaching the interpreter.** Note the precise claim — `process-env` grants `os`, and `os` starts processes. What you do not get from any capability is a module built for executing code.
 
 ### Path helpers are Tier 0
 
-`os.path.join` is string manipulation, so it needs no capability — but only in the forms that bind the path helpers rather than `os` itself:
+`os.path.join` is string manipulation, so it needs no capability — but only in the **one** form that binds the helpers themselves, and only when every name it binds is a plain function:
 
 ```python
 from os.path import join, basename   # fine, Tier 0
-from os import path                  # fine, Tier 0
+from os import path                  # needs "process-env"
+from os.path import genericpath      # needs "process-env"
 import os                            # needs "process-env"
 import os.path                       # also binds `os` — needs "process-env"
+import ntpath / posixpath            # needs "process-env"
 ```
+
+The refused lines are not pedantry. `os.path` **is** `ntpath` / `posixpath`, and those modules `import os` and `import sys` at module level and leave both bound as ordinary attributes — so `path.os.remove(p)` deletes a file and `path.sys.modules['subprocess'].run([...])` runs a command. `from os.path import <name>` is allowed only for names that are not modules, and that list is read off the live `os.path` rather than hard-coded.
 
 ### Declaring, and being asked
 
@@ -82,7 +86,7 @@ $ cdui plugin install alice/metric-logger
   Ref: default branch (a1b2c3d)
 
 > This plugin requests the following capabilities
-    network -> reach the network -- send and receive data from any host (requests, urllib, http, socket)
+    network -> reach the network -- send and receive data from any host, and write what it downloads to disk (requests, urllib, http, socket)
   A capability is a declaration, not a sandbox: once granted, the plugin may
   use that group of modules and CodefyUI stops asking.
   Grant these? [y/N]:
@@ -101,8 +105,12 @@ $ cdui plugin install alice/metric-logger
 **This is a guardrail, not a sandbox** — the same framing the [in-canvas script policy](/advanced/python-script-node) carries, and worth repeating here because this is where a *stranger's* code runs.
 
 - **The gate reads your plugin's own `import` statements.** It does not read the libraries you import, and it cannot tell what a permitted function does.
+- **A capability gates an *import*, not an *action*.** Two consequences worth stating outright rather than leaving to be discovered:
+  - **`filesystem` does not gate writing files.** `open(p, "w")` is a builtin, needs no import, and passes at Tier 0 with nothing declared. Gating it was considered and rejected: the mode is often computed (`open(p, "w" if overwrite else "r")`), so the check would be evaded by one variable while breaking honest plugins — a false positive with no matching security value.
+  - **`network` implies a file write**, via `urllib.request.urlretrieve(url, dest)`.
 - **A capability covers the blocklisted roots, not the category.** `requests` is gated; `httpx` was never on the blocklist, so a plugin that imports it reaches the network with nothing declared. Enumerating every HTTP client on PyPI is not a thing a list can do.
-- **Two paths skip the gate entirely, on purpose.** Built-in packs ship inside this repo and are reviewed by PR; `cdui plugin link` loads *your own* working tree and says so with a warning.
+- **Two paths skip the gate entirely, on purpose.** Built-in packs ship inside this repo and are reviewed by PR; `cdui plugin link` loads *your own* working tree and says so with a warning. `cdui project restore` also grants a project manifest's declared capabilities non-interactively — it already passes `--trust-author`, so this adds no exposure, but it means a project file is a consent decision too.
+- **Anything that can write `installed.json` can pre-authorize the next update.** The lockfile is what makes `cdui plugin update` skip the prompt for an already-granted capability, so code that can edit it (including a plugin that already has `filesystem`, or any plugin at all via `open`) can add a capability to its own entry and have the next update accept it silently. This is post-compromise persistence, not a first-step escalation — but the lockfile is a trust store, and it is only as protected as your user account.
 - **A declaration is a statement of intent by the author.** It raises the cost of a drive-by and gives you something to read before you consent. Treat "do I trust whoever wrote this?" as the real question.
 
 ### Upgrading from an older install
