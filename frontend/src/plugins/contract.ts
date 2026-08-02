@@ -157,6 +157,21 @@ export interface PluginToolbarButtonOptions {
 
 /* ── execution events — requires apiVersion >= 3 ────────────────────────── */
 
+/**
+ * One recorded scalar point.
+ *
+ * Declared here because BOTH halves of the run surface use it: the live
+ * `metric` event below, and `runs.metrics()` further down. One type for one
+ * concept is the whole reason a dashboard can share a fold between them.
+ */
+export interface RunMetricPoint {
+  node_id: string | null;
+  name: string;
+  step: number;
+  /** `null` for a non-finite value (a diverged loss) — a gap, not a zero. */
+  value: number | null;
+}
+
 /** Terminal state of a run. */
 export type ExecutionFinishStatus =
   | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
@@ -164,9 +179,18 @@ export type ExecutionFinishStatus =
 /**
  * One run event, as `api.events.onExecution` delivers it.
  *
- * `cursor` is the source frame's position in the run's durable event log —
- * the same cursor `GET /api/runs/{id}/events` pages by. A batched metric
- * frame expands to one event per point, so events can share a cursor.
+ * Every event maps 1:1 onto one entry of the run's durable event log, and
+ * `cursor` is that entry's position — the same cursor
+ * `GET /api/runs/{id}/events` pages by. Within a run, cursors you receive are
+ * strictly increasing and never repeat, so a jump means the host dropped
+ * events under load and `runs.metrics()` is the way to recover them.
+ *
+ * A `metric` entry carries the whole batch it was recorded as, rather than
+ * being split into one event per point. That keeps the log entry atomic —
+ * `cursor` would otherwise say "you have this entry" when only part of it had
+ * been delivered — and makes `points` the SAME type `runs.metrics()` returns,
+ * so a dashboard can fold the live tail and the REST back-fill with one
+ * function. `value` is `null` for a non-finite number exactly as it is there.
  */
 export type ExecutionEvent =
   | { type: 'run_started'; run_id: string; cursor: number }
@@ -176,7 +200,7 @@ export type ExecutionEvent =
     }
   | {
       type: 'metric'; run_id: string; cursor: number;
-      name: string; value: number; step: number; node_id: string | null;
+      points: readonly RunMetricPoint[];
     }
   | {
       type: 'run_finished'; run_id: string; cursor: number;
@@ -229,14 +253,6 @@ export interface RunListOptions {
   status?: readonly RunStatus[];
   limit?: number;
   offset?: number;
-}
-
-export interface RunMetricPoint {
-  node_id: string | null;
-  name: string;
-  step: number;
-  /** `null` for a non-finite value (a diverged loss) — a gap, not a zero. */
-  value: number | null;
 }
 
 export interface RunMetrics {

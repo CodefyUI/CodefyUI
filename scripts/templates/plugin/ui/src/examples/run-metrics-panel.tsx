@@ -18,40 +18,58 @@
  *   - `api.events.onExecution` is the LIVE half. It streams what is happening
  *     right now — batched onto animation frames, so a training run pushing
  *     hundreds of metrics a second costs you one render per frame, not one
- *     per point. It starts wherever you happened to subscribe: it is a tail,
- *     not a history.
+ *     per point. Within a run its cursors strictly increase and never repeat,
+ *     so the editor re-attaching to a run cannot hand you the same entry
+ *     twice; a cursor that JUMPS is the signal that events were dropped.
  *   - `api.runs` is the HISTORY half. Read-only: `list()`, `get(id)`,
  *     `metrics(id)`. Use it to fill in everything that happened before you
- *     were listening, and to back-fill anything the live stream dropped.
+ *     were listening, and to recover anything a jumped cursor tells you the
+ *     live stream dropped.
  *
  * The pattern below is the one most dashboards want: subscribe first, then
  * back-fill, so no event can slip through the gap between the two.
  */
 import React from 'react';
 import { mountPanel, useExecutionEvents, useRuns } from '../sdk';
-import type { CodefyUIPluginAPI, ExecutionEvent } from '../sdk';
+import type { CodefyUIPluginAPI, RunMetricPoint } from '../sdk';
 
 interface Series {
   name: string;
-  last: number;
+  /** Last finite value seen; null until one arrives. */
+  last: number | null;
+  /** How many points were recorded, gaps included. */
   points: number;
+  /** How many of them were non-finite. */
+  gaps: number;
 }
 
-/** Fold one event into the series table. Pure, so it is easy to test. */
-function reduceEvent(
+/**
+ * Fold recorded points into the series table.
+ *
+ * It takes `RunMetricPoint[]`, which is what BOTH halves of the run surface
+ * hand you: `event.points` from the live tail, and `runs.metrics().metrics`
+ * from the REST back-fill. One function serves both — that is the reason the
+ * live `metric` event carries its batch instead of one event per point.
+ *
+ * `value: null` is a diverged (non-finite) number: a gap in the curve, not a
+ * zero. Draw a break, do not fold it into an average.
+ */
+function foldPoints(
   series: Record<string, Series>,
-  event: ExecutionEvent,
+  points: readonly RunMetricPoint[],
 ): Record<string, Series> {
-  if (event.type !== 'metric') return series;
-  const previous = series[event.name];
-  return {
-    ...series,
-    [event.name]: {
-      name: event.name,
-      last: event.value,
+  // One pass, one new object — not one spread per point.
+  const next = { ...series };
+  for (const point of points) {
+    const previous = next[point.name];
+    next[point.name] = {
+      name: point.name,
+      last: point.value ?? previous?.last ?? null,
+      gaps: (previous?.gaps ?? 0) + (point.value === null ? 1 : 0),
       points: (previous?.points ?? 0) + 1,
-    },
-  };
+    };
+  }
+  return next;
 }
 
 function RunMetricsPanel() {
@@ -73,7 +91,9 @@ function RunMetricsPanel() {
       setStatus(event.status);
       return;
     }
-    setSeries((current) => reduceEvent(current, event));
+    if (event.type === 'metric') {
+      setSeries((current) => foldPoints(current, event.points));
+    }
   });
 
   // 2. The back-fill. On mount there may already be a run in flight that
@@ -89,17 +109,12 @@ function RunMetricsPanel() {
       setStatus(active.status);
       const recorded = await runs.metrics(active.id);
       if (cancelled) return;
-      setSeries((current) => {
-        const merged = { ...current };
-        for (const point of recorded.metrics) {
-          if (point.value === null) continue;      // a diverged loss: a gap
-          if (merged[point.name]) continue;        // the live tail wins
-          merged[point.name] = {
-            name: point.name, last: point.value, points: 1,
-          };
-        }
-        return merged;
-      });
+      // The same fold as the live tail, because it is the same type. Only
+      // series the tail has not already covered are back-filled.
+      setSeries((current) => foldPoints(
+        current,
+        recorded.metrics.filter((point) => !current[point.name]),
+      ));
     })();
     return () => { cancelled = true; };
   }, [runs]);
@@ -119,14 +134,15 @@ function RunMetricsPanel() {
       ) : (
         <table className="cdui-metrics__table">
           <thead>
-            <tr><th>Series</th><th>Last</th><th>Points</th></tr>
+            <tr><th>Series</th><th>Last</th><th>Points</th><th>Gaps</th></tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.name}>
                 <td>{row.name}</td>
-                <td>{row.last.toFixed(4)}</td>
+                <td>{row.last === null ? '--' : row.last.toFixed(4)}</td>
                 <td>{row.points}</td>
+                <td>{row.gaps}</td>
               </tr>
             ))}
           </tbody>

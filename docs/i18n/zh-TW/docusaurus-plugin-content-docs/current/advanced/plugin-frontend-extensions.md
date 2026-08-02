@@ -263,7 +263,7 @@ type ExecutionEvent =
   | { type: "node_status";  run_id: string; cursor: number;
       node_id: string; status: string; error?: string }
   | { type: "metric";       run_id: string; cursor: number;
-      name: string; value: number; step: number; node_id: string | null }
+      points: readonly RunMetricPoint[] }
   | { type: "run_finished"; run_id: string; cursor: number;
       status: "succeeded" | "failed" | "cancelled" | "interrupted";
       error?: string };
@@ -271,20 +271,30 @@ type ExecutionEvent =
 
 ```js
 const off = api.events.onExecution((event) => {
-  if (event.type === "metric") record(event.name, event.step, event.value);
+  if (event.type === "metric") {
+    for (const p of event.points) record(p.name, p.step, p.value);
+  }
   if (event.type === "run_finished") summarise(event.run_id, event.status);
 });
 ```
 
 在你拿它蓋東西之前，值得先知道的幾件事：
 
-- **它是尾巴，不是歷史。** 你收到的是從訂閱那一刻起發生的事。在那之前的部分請用 [`api.runs`](#apiruns--執行歷史唯讀) 補齊。
+- **一則 `metric` 事件會帶著它被記錄下來時的整批點**，放在 `points` 裡。那些是 [`RunMetricPoint`](#apiruns--執行歷史唯讀)——和 `api.runs.metrics()` 回傳的*同一個*型別——所以同一個 fold 函式可以同時服務即時尾巴與 REST 回填。特別是兩邊的 `value` 對非有限數字都是 `null`：發散的 loss 是**曲線上的缺口，不是零**，而且會被送出，不會被跳過。
 - **事件會批次對齊到動畫影格。** 一次每秒推送數百筆指標的執行，到你手上是每影格一叢呼叫，而不是每則訊息一次呼叫——和編輯器自己更新節點徽章用的是同一套批次機制。被切到背景或被遮住的編輯器視窗不會重繪，所以在它回來之前不會派送任何東西；若期間累積超過兩千多筆事件，最舊的指標與節點狀態會被丟棄（`run_started` 與 `run_finished` 永遠不會）。若你需要每一個點，請改用 `api.runs.metrics()` 重新讀取。
-- **一則批次指標訊息會展開成每個點一個事件**，所以多個事件可能共用同一個 `cursor`。
-- **`cursor`** 是來源訊息在該次執行持久事件記錄中的位置——和 `GET /api/runs/{id}/events` 分頁用的是同一個 cursor，所以你可以用它偵測缺口，或用它接續 REST 的讀取。
+- **它是尾巴，不是逐字稿。** 編輯器每次附掛到一次執行時，都會重播該次執行完整的記錄——重新整理頁面時仍在跑的執行，或使用者在「執行任務」面板挑一次執行來看的時候。那些重播的項目會經過同一條串流，而主程式會濾掉每一筆你已經拿過的，所以重新附掛不可能塞給你重複的資料讓你重複計算。
+- **記得取消訂閱**；它會立即生效，包含在一批事件派送到一半的時候。外掛卸載或熱重載時，編輯器也會替你取消。
 - **串流涵蓋的是編輯器已附掛的執行**——從畫布分頁啟動的那些，加上使用者在「執行任務」面板選擇觀看的執行。由 `cdui run` 送出、沒人在看的執行，要從 `api.runs` 看，不在這裡。
 - **若你的 callback 拋出錯誤**，編輯器會記錄下來並繼續。其他訂閱者不受影響，但你會漏掉那一則事件。
-- **記得取消訂閱。** 外掛卸載或熱重載時，編輯器也會替你取消。
+
+#### `cursor` 是什麼
+
+`cursor` 是這則事件在該次執行持久事件記錄中的位置——和 `GET /api/runs/{id}/events` 分頁用的是同一個 cursor，而那份記錄的一個項目，在這裡就正好是一個事件。在同一次執行內，你收到的 cursor **嚴格遞增且永不重複**。這給你一個保證和一個訊號：
+
+- **已經看過的 cursor 不會再出現**，所以你可以邊收邊 fold，不需要自己去重。
+- **cursor 跳號**——你收到 41，該次執行的下一個事件卻是 43——代表主程式丟了事件，而那只會發生在上面說的溢位情況。沒有別的原因會造成缺口：記錄本身是連續無洞的。把跳號當成「這次執行要重讀」，呼叫 `api.runs.metrics(run_id)` 把漏掉的補回來。
+
+有一種情況串流藏不住：當編輯器附掛到一次你完全沒看過的執行時——使用者在「執行任務」面板點了某次執行——那次執行的記錄會從頭依 cursor 順序重播給你，然後才接上即時尾巴。每個項目仍然只到達一次，但你為那次執行看到的最初幾個事件描述的是過去。若這個差別對你有影響，可以對照 `api.runs.get(run_id)`，它的 `last_cursor` 會告訴你記錄的歷史在哪裡結束。
 
 ### `api.runs` — 執行歷史（唯讀）
 
@@ -316,6 +326,8 @@ interface RunMetricPoint {
   value: number | null;   // null 代表發散（非有限）的值——是缺口，不是零
 }
 ```
+
+`RunMetricPoint` 和即時 `metric` 事件放在 `points` 裡的是同一個型別，所以儀表板可以用同一個函式 fold 兩邊。
 
 `RunSummary` 對應執行歷史的一列：`id`、`name`、`status`、`error`、`options`、`queue_key`、`created_at`、`started_at`、`finished_at`、`git_commit`、`git_dirty`、`plugin_pins`、`queue_position`、`final_metrics` 與 `active`。完整型別在隨附的 SDK types 中，背後的端點則記載於 [API 參考](/advanced/api-reference)。
 
@@ -391,10 +403,24 @@ export default function activate(api) {
 
   const series = new Map();   // name -> { last, points }
 
+  // 兩半共用同一個 fold：`event.points` 與 `runs.metrics().metrics`
+  // 是同一種 RunMetricPoint[]。
+  const fold = (points) => {
+    for (const p of points) {
+      const previous = series.get(p.name);
+      series.set(p.name, {
+        // null 是發散的值——是缺口，所以保留上一個有限值。
+        last: p.value ?? previous?.last ?? null,
+        points: (previous?.points ?? 0) + 1,
+      });
+    }
+  };
+
   const render = () => {
     if (!el.isConnected) return;   // 分頁沒開，不必畫
     el.textContent = [...series.entries()]
-      .map(([name, s]) => `${name}  last=${s.last.toFixed(4)}  n=${s.points}`)
+      .map(([name, s]) =>
+        `${name}  last=${s.last === null ? "--" : s.last.toFixed(4)}  n=${s.points}`)
       .join("\n");
   };
 
@@ -406,12 +432,7 @@ export default function activate(api) {
   // 1. 即時尾巴
   api.events.onExecution((event) => {
     if (event.type === "run_started") series.clear();
-    if (event.type === "metric") {
-      const previous = series.get(event.name);
-      series.set(event.name, {
-        last: event.value, points: (previous?.points ?? 0) + 1,
-      });
-    }
+    if (event.type === "metric") fold(event.points);
     render();
   });
 
@@ -420,11 +441,8 @@ export default function activate(api) {
     const active = page.runs[0];
     if (!active) return;
     const recorded = await api.runs.metrics(active.id);
-    for (const point of recorded.metrics) {
-      if (point.value === null) continue;          // 發散的值：是缺口
-      if (series.has(point.name)) continue;        // 即時尾巴優先
-      series.set(point.name, { last: point.value, points: 1 });
-    }
+    // 同一個 fold，只挑即時尾巴還沒涵蓋到的序列。
+    fold(recorded.metrics.filter((p) => !series.has(p.name)));
     render();
   });
 }

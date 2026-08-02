@@ -263,7 +263,7 @@ type ExecutionEvent =
   | { type: "node_status";  run_id: string; cursor: number;
       node_id: string; status: string; error?: string }
   | { type: "metric";       run_id: string; cursor: number;
-      name: string; value: number; step: number; node_id: string | null }
+      points: readonly RunMetricPoint[] }
   | { type: "run_finished"; run_id: string; cursor: number;
       status: "succeeded" | "failed" | "cancelled" | "interrupted";
       error?: string };
@@ -271,20 +271,30 @@ type ExecutionEvent =
 
 ```js
 const off = api.events.onExecution((event) => {
-  if (event.type === "metric") record(event.name, event.step, event.value);
+  if (event.type === "metric") {
+    for (const p of event.points) record(p.name, p.step, p.value);
+  }
   if (event.type === "run_finished") summarise(event.run_id, event.status);
 });
 ```
 
 Things worth knowing before you build on it:
 
-- **It is a tail, not a history.** You receive what happens from the moment you subscribe. Use [`api.runs`](#apiruns--run-history-read-only) to fill in what came before.
+- **A `metric` event carries the whole batch it was recorded as,** in `points`. Those are [`RunMetricPoint`](#apiruns--run-history-read-only)s — the *same* type `api.runs.metrics()` returns — so one fold function can serve the live tail and the REST back-fill. In particular `value` is `null` for a non-finite number on both sides: a diverged loss is a **gap in the curve, not a zero**, and it is delivered rather than skipped.
 - **Events are batched onto animation frames.** A run pushing hundreds of metrics a second reaches you as one burst of calls per frame, not one call per message — the same batching the editor uses for its own node badges. A backgrounded or occluded editor window is never painted, so nothing is delivered until it comes back; if more than a couple of thousand events pile up in the meantime, the oldest metrics and node statuses are dropped (`run_started` and `run_finished` never are). Re-read metrics from `api.runs.metrics()` if you need every point.
-- **A batched metric frame becomes one event per point,** so several events can share a `cursor`.
-- **`cursor`** is the source frame's position in the run's durable event log — the same cursor `GET /api/runs/{id}/events` pages by, so you can use it to spot a gap or to resume a REST read where the stream started.
+- **It is a tail, not a transcript.** The editor replays a run's whole recorded log whenever it attaches to one — on a page reload with a run in flight, or when the user picks a run to watch in the Runs panel. Those replayed entries pass through the same stream, and the host filters out every one you have already been given, so a re-attach can never hand you a duplicate to double-count.
+- **Unsubscribe** when you are done; it takes effect immediately, including part-way through a batch. The editor also unsubscribes you automatically on unload or hot-reload.
 - **The stream covers the runs the editor is attached to** — the ones started from a canvas tab, plus any run the user chose to watch from the Runs panel. A run submitted by `cdui run` that nobody is watching is visible through `api.runs`, not here.
 - **If your callback throws,** the editor logs it and moves on. No other subscriber is affected, but you lose that event.
-- **Unsubscribe** when you are done. The editor also unsubscribes you automatically on unload or hot-reload.
+
+#### What `cursor` means
+
+`cursor` is the event's position in the run's durable event log — the same cursor `GET /api/runs/{id}/events` pages by, and one entry of that log is exactly one event here. Within a single run, the cursors you receive are **strictly increasing and never repeat**. That gives you one guarantee and one signal:
+
+- **A cursor you have already seen will never arrive again**, so you can fold events in as they come without de-duplicating.
+- **A cursor that jumps** — you had 41 and the next event for that run is 43 — means the host dropped events, which happens only under the overflow described above. Nothing else causes a gap: the log itself is gapless. Treat a jump as "re-read this run", and call `api.runs.metrics(run_id)` to recover what you missed.
+
+One case the stream cannot hide from you: when the editor attaches to a run you have not seen at all — the user clicking a run in the Runs panel — that run's recorded log is replayed to you from the start, in cursor order, before its live tail begins. Every entry still arrives exactly once, but the first events you see for that run describe the past. If the difference matters, compare against `api.runs.get(run_id)`, whose `last_cursor` tells you where the recorded history ends.
 
 ### `api.runs` — run history (read-only)
 
@@ -316,6 +326,8 @@ interface RunMetricPoint {
   value: number | null;   // null is a diverged (non-finite) value — a gap, not a zero
 }
 ```
+
+`RunMetricPoint` is the same type the live `metric` event carries in `points`, so a dashboard can fold both with one function.
 
 `RunSummary` mirrors a row of the run history: `id`, `name`, `status`, `error`, `options`, `queue_key`, `created_at`, `started_at`, `finished_at`, `git_commit`, `git_dirty`, `plugin_pins`, `queue_position`, `final_metrics` and `active`. The full shapes are in the vendored SDK types, and the endpoints behind them are documented in the [API Reference](/advanced/api-reference).
 
@@ -391,10 +403,24 @@ export default function activate(api) {
 
   const series = new Map();   // name -> { last, points }
 
+  // One fold for both halves: `event.points` and `runs.metrics().metrics`
+  // are the same RunMetricPoint[].
+  const fold = (points) => {
+    for (const p of points) {
+      const previous = series.get(p.name);
+      series.set(p.name, {
+        // null is a diverged value — a gap, so keep the last finite one.
+        last: p.value ?? previous?.last ?? null,
+        points: (previous?.points ?? 0) + 1,
+      });
+    }
+  };
+
   const render = () => {
     if (!el.isConnected) return;   // the tab is not open; nothing to paint
     el.textContent = [...series.entries()]
-      .map(([name, s]) => `${name}  last=${s.last.toFixed(4)}  n=${s.points}`)
+      .map(([name, s]) =>
+        `${name}  last=${s.last === null ? "--" : s.last.toFixed(4)}  n=${s.points}`)
       .join("\n");
   };
 
@@ -406,12 +432,7 @@ export default function activate(api) {
   // 1. the live tail
   api.events.onExecution((event) => {
     if (event.type === "run_started") series.clear();
-    if (event.type === "metric") {
-      const previous = series.get(event.name);
-      series.set(event.name, {
-        last: event.value, points: (previous?.points ?? 0) + 1,
-      });
-    }
+    if (event.type === "metric") fold(event.points);
     render();
   });
 
@@ -420,11 +441,8 @@ export default function activate(api) {
     const active = page.runs[0];
     if (!active) return;
     const recorded = await api.runs.metrics(active.id);
-    for (const point of recorded.metrics) {
-      if (point.value === null) continue;          // a diverged value: a gap
-      if (series.has(point.name)) continue;        // the live tail wins
-      series.set(point.name, { last: point.value, points: 1 });
-    }
+    // Same fold, filtered to the series the live tail has not covered.
+    fold(recorded.metrics.filter((p) => !series.has(p.name)));
     render();
   });
 }

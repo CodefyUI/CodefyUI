@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useTabStore } from '../store/tabStore';
 import type { ExecutionWebSocket } from '../api/ws';
 import {
-  EXECUTION_EVENT_DEDUPE_WINDOW,
+  EXECUTION_EVENT_WATERMARK_RUNS,
   MAX_BUFFERED_EXECUTION_EVENTS,
   _resetExecutionEvents,
   executionEventSubscriberCount,
@@ -12,6 +12,7 @@ import {
   subscribeExecutionEvents,
   type ExecutionEvent,
 } from './executionEvents';
+import type { RunMetricPoint } from '../api/rest';
 
 /**
  * A stand-in for `ExecutionWebSocket` that records its handler table, so a
@@ -107,35 +108,84 @@ describe('normalizeExecutionFrame', () => {
     }]);
   });
 
-  it('expands a batched metric frame into one event per point', () => {
+  it('keeps a batched metric frame whole, as one event carrying its points', () => {
     expect(normalizeExecutionFrame({
       type: 'metric', run_id: 'r1', cursor: 4,
       points: [
         { name: 'loss', value: 0.5, step: 1, node_id: 'n1' },
         { name: 'acc', value: 0.9, step: 1, node_id: null },
       ],
-    })).toEqual([
-      { type: 'metric', run_id: 'r1', cursor: 4, name: 'loss', value: 0.5, step: 1, node_id: 'n1' },
-      { type: 'metric', run_id: 'r1', cursor: 4, name: 'acc', value: 0.9, step: 1, node_id: null },
-    ]);
+    })).toEqual([{
+      type: 'metric', run_id: 'r1', cursor: 4,
+      points: [
+        { node_id: 'n1', name: 'loss', step: 1, value: 0.5 },
+        { node_id: null, name: 'acc', step: 1, value: 0.9 },
+      ],
+    }]);
   });
 
-  it('skips malformed metric points without losing the good ones', () => {
+  // The server runs json_safe() over every payload, so a diverged loss
+  // reaches the socket as `value: null`. That is a first-class value with a
+  // documented meaning on the REST half of this same contract ("a gap, not a
+  // zero"), and the moment a dashboard most needs to draw something. Dropping
+  // it here would make the two halves of v3 disagree.
+  it('DELIVERS a non-finite value as an explicit null gap', () => {
+    expect(normalizeExecutionFrame({
+      type: 'metric', run_id: 'r1', cursor: 4,
+      points: [
+        { name: 'loss', value: 0.5, step: 1, node_id: null },
+        { name: 'loss', value: null, step: 2, node_id: null },
+        { name: 'loss', value: 0.3, step: 3, node_id: null },
+      ],
+    })).toEqual([{
+      type: 'metric', run_id: 'r1', cursor: 4,
+      points: [
+        { node_id: null, name: 'loss', step: 1, value: 0.5 },
+        { node_id: null, name: 'loss', step: 2, value: null },
+        { node_id: null, name: 'loss', step: 3, value: 0.3 },
+      ],
+    }]);
+  });
+
+  it('matches what runs.metrics() publishes for the same diverged point', () => {
+    // Not a shape assertion for its own sake: a dashboard folds the live tail
+    // and the REST back-fill with one function, which only works if a point
+    // from each side is the same thing.
+    const restPoint: RunMetricPoint = {
+      node_id: null, name: 'loss', step: 2, value: null,
+    };
+    const [live] = normalizeExecutionFrame({
+      type: 'metric', run_id: 'r1', cursor: 4,
+      points: [{ name: 'loss', value: null, step: 2 }],
+    });
+    expect(live.type).toBe('metric');
+    expect((live as Extract<ExecutionEvent, { type: 'metric' }>).points[0])
+      .toEqual(restPoint);
+  });
+
+  it('skips genuinely malformed points without losing the good ones', () => {
     const events = normalizeExecutionFrame({
       type: 'metric', run_id: 'r1', cursor: 5,
       points: [
         null,
         'garbage',
         { name: '', value: 1, step: 1 },
-        { name: 'loss', value: null, step: 1 },
         { name: 'loss', value: 1, step: 'one' },
+        { name: 'loss', value: 'NaN', step: 4 },
+        { name: 'loss', value: undefined, step: 5 },
         { name: 'loss', value: 0.25, step: 7 },
       ],
     });
     expect(events).toEqual([{
       type: 'metric', run_id: 'r1', cursor: 5,
-      name: 'loss', value: 0.25, step: 7, node_id: null,
+      points: [{ node_id: null, name: 'loss', step: 7, value: 0.25 }],
     }]);
+  });
+
+  it('drops a frame whose every point was malformed', () => {
+    expect(normalizeExecutionFrame({
+      type: 'metric', run_id: 'r1', cursor: 5, points: ['garbage', null],
+    })).toEqual([]);
   });
 
   it('maps the three terminal frames onto one run_finished with a status', () => {
@@ -291,25 +341,23 @@ describe('subscribeExecutionEvents', () => {
     expect(hostHandler).toHaveBeenCalledTimes(1);
   });
 
-  it('unsubscribing mid-batch stops delivery to that subscriber only', () => {
+  it('subscribing from inside a callback does not disturb the running batch', () => {
     const [ws] = seedTabs(1);
-    const other = vi.fn();
-    let off = () => {};
-    const first = vi.fn(() => off());
-    off = subscribeExecutionEvents(first);
-    subscribeExecutionEvents(other);
+    const late = vi.fn();
+    subscribeExecutionEvents((e) => {
+      if (e.type === 'run_started') subscribeExecutionEvents(late);
+    });
 
     ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
     ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 2 });
     runFrame();
-    // The batch is delivered against a snapshot, so the mid-batch removal
-    // takes effect from the next frame rather than corrupting this one.
-    expect(other).toHaveBeenCalledTimes(2);
+    // The batch runs against a snapshot, so a subscriber added mid-batch
+    // starts at the NEXT frame rather than seeing half of this one.
+    expect(late).not.toHaveBeenCalled();
 
     ws.emit({ type: 'execution_start', run_id: 'r2', cursor: 1 });
     runFrame();
-    expect(first).toHaveBeenCalledTimes(2);
-    expect(other).toHaveBeenCalledTimes(3);
+    expect(late).toHaveBeenCalledTimes(1);
   });
 
   it('collapses the same frame arriving on two tabs attached to one run', () => {
@@ -379,19 +427,111 @@ describe('subscribeExecutionEvents', () => {
     expect(second).toHaveLength(1);
   });
 
-  it('de-duplicates only within a bounded window', () => {
+  it('swallows a full cursor-0 re-attach replay, however long the run', () => {
+    // Both of the editor's attach paths send `cursor: 0` on purpose, so the
+    // server replays the entire durable log through the same '*' slot this
+    // module taps. A 512-key window could not cover a real training run; a
+    // per-run watermark covers any length.
     const [ws] = seedTabs(1);
     const seen: ExecutionEvent[] = [];
     subscribeExecutionEvents((e) => seen.push(e));
-    for (let cursor = 1; cursor <= EXECUTION_EVENT_DEDUPE_WINDOW + 1; cursor += 1) {
-      ws.emit({ type: 'execution_start', run_id: 'r1', cursor });
-      runFrame();
+
+    const RUN_LENGTH = 1000;
+    for (let cursor = 1; cursor <= RUN_LENGTH; cursor += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor,
+        points: [{ name: 'loss', value: 1 / cursor, step: cursor, node_id: null }],
+      });
     }
+    flushExecutionEvents();
+    expect(seen).toHaveLength(RUN_LENGTH);
+
+    // The user reloads or clicks re-attach: the whole log arrives again.
+    for (let cursor = 1; cursor <= RUN_LENGTH; cursor += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor,
+        points: [{ name: 'loss', value: 1 / cursor, step: cursor, node_id: null }],
+      });
+    }
+    flushExecutionEvents();
+    expect(seen).toHaveLength(RUN_LENGTH);
+
+    // ...and the live tail that follows the replay still gets through.
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: RUN_LENGTH + 1 });
+    flushExecutionEvents();
+    expect(seen).toHaveLength(RUN_LENGTH + 1);
+    expect(seen[seen.length - 1].type).toBe('run_finished');
+  });
+
+  it('delivers cursors strictly increasing per run, so a jump means real loss', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    for (const cursor of [1, 2, 3, 2, 1, 3, 4, 4, 5]) {
+      ws.emit({ type: 'execution_start', run_id: 'r1', cursor });
+    }
+    flushExecutionEvents();
+    expect(seen.map((e) => e.cursor)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('keeps a watermark per run, not one for the workspace', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 900 });
+    // A different run starting at cursor 1 is not "behind" r1.
+    ws.emit({ type: 'execution_start', run_id: 'r2', cursor: 1 });
+    flushExecutionEvents();
+    expect(seen.map((e) => [e.run_id, e.cursor])).toEqual([['r1', 900], ['r2', 1]]);
+  });
+
+  it('bounds the watermark table, forgetting the least recently advanced run', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({ type: 'execution_start', run_id: 'old', cursor: 5 });
+    for (let i = 0; i < EXECUTION_EVENT_WATERMARK_RUNS; i += 1) {
+      ws.emit({ type: 'execution_start', run_id: `r${i}`, cursor: 1 });
+    }
+    flushExecutionEvents();
     const before = seen.length;
-    // The oldest key has been evicted, so replaying it is no longer detected.
-    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
-    runFrame();
+    // 'old' has been evicted, so its watermark no longer suppresses.
+    ws.emit({ type: 'execution_start', run_id: 'old', cursor: 5 });
+    flushExecutionEvents();
     expect(seen.length).toBe(before + 1);
+  });
+});
+
+describe('unsubscribe takes effect immediately', () => {
+  it('stops delivery mid-batch for the handler that unsubscribed', () => {
+    // The obvious plugin idiom is "unsubscribe on run_finished, then tear my
+    // state down". Delivering the rest of the batch afterwards would call
+    // into code that has already gone.
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    let off = () => {};
+    off = subscribeExecutionEvents((e) => {
+      seen.push(e);
+      if (e.type === 'run_started') off();
+    });
+
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 2 });
+    flushExecutionEvents();
+    expect(seen.map((e) => e.type)).toEqual(['run_started']);
+  });
+
+  it('does not disturb the other subscribers in the same batch', () => {
+    const [ws] = seedTabs(1);
+    const other: ExecutionEvent[] = [];
+    let off = () => {};
+    off = subscribeExecutionEvents(() => off());
+    subscribeExecutionEvents((e) => other.push(e));
+
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 2 });
+    flushExecutionEvents();
+    expect(other).toHaveLength(2);
   });
 });
 
@@ -423,7 +563,38 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     });
     // The newest metrics are the ones kept.
     const metrics = seen.filter((e) => e.type === 'metric');
-    expect(metrics[metrics.length - 1]).toMatchObject({ step: overflow - 1 });
+    expect(metrics[metrics.length - 1]).toMatchObject({
+      points: [{ name: 'loss', step: overflow - 1, value: overflow - 1 }],
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped'));
+  });
+
+  it('evicts whole entries, so a delivered cursor is always a complete one', () => {
+    // The reason `metric` carries its batch instead of being expanded: with
+    // one event per point, eviction removed points from the MIDDLE of an
+    // entry while delivering the rest, and `cursor` then lied about what the
+    // plugin held.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    const POINTS_PER_FRAME = 200;
+    for (let i = 0; i < MAX_BUFFERED_EXECUTION_EVENTS + 100; i += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor: i + 1,
+        points: Array.from({ length: POINTS_PER_FRAME }, (_, k) => ({
+          name: `series${k}`, value: k, step: i, node_id: null,
+        })),
+      });
+    }
+    flushExecutionEvents();
+
+    expect(seen.length).toBeGreaterThan(0);
+    for (const event of seen) {
+      expect(event.type).toBe('metric');
+      expect((event as Extract<ExecutionEvent, { type: 'metric' }>).points)
+        .toHaveLength(POINTS_PER_FRAME);
+    }
   });
 });

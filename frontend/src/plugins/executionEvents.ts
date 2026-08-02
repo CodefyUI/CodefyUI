@@ -40,9 +40,14 @@
  * deliberately not a second timing mechanism. Each subscriber callback is
  * invoked inside its own try/catch, so one plugin throwing cannot stop
  * another plugin, or the host's own consumers, from seeing the batch.
+ *
+ * Before any of that, every frame passes the per-run watermark in
+ * `alreadyDelivered` — the thing that keeps the stream a tail while the
+ * host's own re-attach paths replay whole logs through the same socket.
  */
 import { useTabStore } from '../store/tabStore';
 import type { ExecutionWebSocket } from '../api/ws';
+import type { RunMetricPoint } from '../api/rest';
 import { createFrameFlusher } from '../utils/frameScheduler';
 
 /** Terminal state of a run, mirroring the backend's run statuses. */
@@ -50,12 +55,24 @@ export type ExecutionFinishStatus =
   | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 
 /**
- * One normalised run event.
+ * One normalised run event — exactly one entry of the run's durable log.
  *
- * `cursor` is the position of the SOURCE frame in the run's durable event log
- * — the same cursor `GET /api/runs/{id}/events` pages by, so a plugin can use
- * it to resume or to detect a gap. A batched `metric` frame expands to one
- * event per point, so several events can share a cursor.
+ * `cursor` is that entry's position, the same cursor
+ * `GET /api/runs/{id}/events` pages by.
+ *
+ * A `metric` entry keeps the batch it was recorded as rather than being split
+ * into one event per point, for two reasons that only became visible once the
+ * per-point version existed:
+ *
+ *  - **`cursor` stays honest.** Under overflow the buffer evicts whole
+ *    events. With per-point expansion that meant dropping some points of an
+ *    entry while delivering others, so a plugin holding cursor N could not
+ *    conclude it had entry N — which is precisely what this module tells it
+ *    to conclude. One entry, one event, one cursor.
+ *  - **`points` is the same type `runs.metrics()` returns.** A dashboard
+ *    spans the live tail and the REST back-fill; making them one type means
+ *    one fold, and means a diverged loss is `value: null` on both sides
+ *    rather than a dropped point on one and an explicit gap on the other.
  */
 export type ExecutionEvent =
   | { type: 'run_started'; run_id: string; cursor: number }
@@ -65,7 +82,7 @@ export type ExecutionEvent =
     }
   | {
       type: 'metric'; run_id: string; cursor: number;
-      name: string; value: number; step: number; node_id: string | null;
+      points: readonly RunMetricPoint[];
     }
   | {
       type: 'run_finished'; run_id: string; cursor: number;
@@ -87,13 +104,13 @@ export type ExecutionEventHandler = (event: ExecutionEvent) => void;
 export const MAX_BUFFERED_EXECUTION_EVENTS = 2000;
 
 /**
- * How many recent frames are remembered for de-duplication.
+ * How many runs keep a delivery watermark.
  *
- * Two canvas tabs can be attached to the same run, which delivers every frame
- * twice. `(run_id, cursor)` identifies a frame uniquely, so a bounded FIFO of
- * seen keys collapses the duplicates without holding a run's whole history.
+ * One number per run, not one key per frame: see `alreadyDelivered`. A
+ * workspace watches single digits of runs at once, so this only bounds a
+ * pathological session; the least-recently-advanced run is dropped first.
  */
-export const EXECUTION_EVENT_DEDUPE_WINDOW = 512;
+export const EXECUTION_EVENT_WATERMARK_RUNS = 64;
 
 type Frame = Record<string, unknown>;
 
@@ -132,22 +149,30 @@ export function normalizeExecutionFrame(raw: unknown): ExecutionEvent[] {
     }
 
     case 'metric': {
-      const points = frame.points;
-      if (!Array.isArray(points)) return [];
-      const events: ExecutionEvent[] = [];
-      for (const raw_point of points) {
+      const raw_points = frame.points;
+      if (!Array.isArray(raw_points)) return [];
+      const points: RunMetricPoint[] = [];
+      for (const raw_point of raw_points) {
         if (!raw_point || typeof raw_point !== 'object') continue;
         const point = raw_point as Frame;
         const name = str(point.name);
-        if (!name) continue;
-        if (typeof point.value !== 'number' || typeof point.step !== 'number') continue;
-        events.push({
-          type: 'metric', run_id, cursor, name,
-          value: point.value, step: point.step,
+        if (!name || typeof point.step !== 'number') continue;
+        // `null` is NOT malformed. The server runs `json_safe()` over every
+        // payload, which turns a non-finite float into null — so a diverged
+        // loss reaches us as `value: null`, and that is exactly the moment a
+        // dashboard needs to draw a break rather than see nothing at all.
+        // Anything that is neither a number nor null really is malformed.
+        const value = point.value;
+        if (typeof value !== 'number' && value !== null) continue;
+        points.push({
           node_id: str(point.node_id) ?? null,
+          name, step: point.step, value,
         });
       }
-      return events;
+      // A frame whose every point was malformed carries nothing; delivering an
+      // empty batch would just be noise.
+      if (points.length === 0) return [];
+      return [{ type: 'metric', run_id, cursor, points }];
     }
 
     case 'execution_complete':
@@ -195,20 +220,41 @@ let buffer: ExecutionEvent[] = [];
  * millions of times.
  */
 let evictFrom = 0;
-const seen = new Set<string>();
-const seenOrder: string[] = [];
+/** run_id -> the highest cursor accepted for it. Insertion order = LRU. */
+const watermarks = new Map<string, number>();
 let droppedSinceWarning = 0;
 
 const flusher = createFrameFlusher(flushExecutionEvents);
 
-function alreadySeen(run_id: string, cursor: number): boolean {
-  const key = `${run_id}:${cursor}`;
-  if (seen.has(key)) return true;
-  seen.add(key);
-  seenOrder.push(key);
-  if (seenOrder.length > EXECUTION_EVENT_DEDUPE_WINDOW) {
-    const evicted = seenOrder.shift();
-    if (evicted !== undefined) seen.delete(evicted);
+/**
+ * The gate that makes this a tail rather than a transcript.
+ *
+ * Two things push the same frame at us more than once:
+ *
+ *  - Two canvas tabs attached to the same run — every frame arrives twice.
+ *  - **Re-attach.** Both of the editor's attach paths deliberately ask for
+ *    `cursor: 0` (`useGraphExecution` on page load, `RunsPanel` when the user
+ *    picks a run to watch) because the host's own console is empty and wants
+ *    the run's whole story. The server replays the entire durable log, and
+ *    every replayed frame comes through the same `'*'` slot this module taps.
+ *    A 1000-event run therefore used to be delivered twice.
+ *
+ * Cursors are gapless and monotonic per run, so one number per run answers
+ * both: accept a frame only if its cursor is strictly above everything
+ * already accepted for that run. A replay of ground already covered is
+ * silently swallowed, and the guarantee the contract sells — cursors that
+ * strictly increase and never repeat, so a jump means real loss — becomes
+ * true by construction rather than by luck.
+ */
+function alreadyDelivered(run_id: string, cursor: number): boolean {
+  const watermark = watermarks.get(run_id);
+  if (watermark !== undefined && cursor <= watermark) return true;
+  // Re-insert so iteration order stays least-recently-advanced first.
+  watermarks.delete(run_id);
+  watermarks.set(run_id, cursor);
+  if (watermarks.size > EXECUTION_EVENT_WATERMARK_RUNS) {
+    const oldest = watermarks.keys().next();
+    if (!oldest.done) watermarks.delete(oldest.value);
   }
   return false;
 }
@@ -233,7 +279,7 @@ function onFrame(raw: unknown): void {
   const events = normalizeExecutionFrame(raw);
   if (events.length === 0) return;
   const [first] = events;
-  if (alreadySeen(first.run_id, first.cursor)) return;
+  if (alreadyDelivered(first.run_id, first.cursor)) return;
   for (const event of events) {
     if (buffer.length >= MAX_BUFFERED_EXECUTION_EVENTS) evictOne();
     buffer.push(event);
@@ -262,9 +308,17 @@ export function flushExecutionEvents(): void {
   }
   // Snapshot the subscribers: a callback may unsubscribe (or subscribe)
   // mid-batch, and iterating the live Set would then skip or double-deliver.
+  //
+  // The snapshot alone is not enough, though. "Unsubscribe on run_finished,
+  // then tear my state down" is the obvious plugin idiom, and without the
+  // membership re-check below the rest of the batch — up to the whole 2000
+  // under overflow — would still be delivered into code that has already
+  // torn itself down. The host would contain the resulting throws, but the
+  // plugin author would be reading warnings for an unsubscribe that did not.
   const handlers = Array.from(subscribers);
   for (const event of batch) {
     for (const handler of handlers) {
+      if (!subscribers.has(handler)) continue;
       try {
         handler(event);
       } catch (err) {
@@ -310,8 +364,7 @@ function stopListening(): void {
   flusher.cancel();
   buffer = [];
   evictFrom = 0;
-  seen.clear();
-  seenOrder.length = 0;
+  watermarks.clear();
   droppedSinceWarning = 0;
 }
 
