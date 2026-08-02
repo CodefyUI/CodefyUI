@@ -476,16 +476,26 @@ def _install_audit_hook() -> None:
     _AUDIT_STATE["installed"] = True
 
 
-def _probe_path_helper(name: str) -> set[str]:
-    """Call ``os.path.<name>`` under all three screens; return what it touched.
+def _probe_path_helper(name: str, module=None) -> set[str]:
+    """Call ``<module>.<name>`` under all three screens; return what it touched.
 
     An empty set means: touched no intercepted ``os`` function, raised no
     audited event, and returned neither the probe environment variable's value
     nor the working directory.
+
+    *module* defaults to the live ``os.path`` -- the one the gate's verdict
+    actually has to be right about -- but the caller may pass ``ntpath`` or
+    ``posixpath`` explicitly. Both are importable on both platforms, and
+    checking both is what turns "correct on the machine that ran it" into
+    "correct on either CI runner". That is not theoretical: the first version
+    of this probe passed on Windows and failed on Linux, because
+    ``posixpath.expandvars`` returns early when the path holds no ``$``.
     """
     import os
     import os.path
 
+    if module is None:
+        module = os.path
     _install_audit_hook()
     touched: list[str] = []
 
@@ -508,28 +518,34 @@ def _probe_path_helper(name: str) -> set[str]:
             touched.append("os.environ")
             return default
 
-    value = getattr(os.path, name)
+    value = getattr(module, name, None)
     if not callable(value):
         return set()
 
     saved_os = {k: getattr(os, k) for k in _OS_INTERCEPTS if hasattr(os, k)}
     saved_path = {
-        k: getattr(os.path, k) for k in _OS_PATH_INTERCEPTS if hasattr(os.path, k)
+        k: getattr(module, k) for k in _OS_PATH_INTERCEPTS if hasattr(module, k)
     }
     real_environ = os.environ
     marker = "SHOULD-NEVER-APPEAR"
     os.environ["CDUI_PATH_PURITY_PROBE"] = marker
     cwd = os.getcwd()
-    # The ``~`` has to LEAD: ``expanduser`` expands only that position, and a
-    # probe path with ``~`` in the middle let it slip the guard entirely.
-    args = _PATH_HELPER_ARGS.get(name, ("~/%CDUI_PATH_PURITY_PROBE%/x",))
+    # Every shape has to be present at once, and each one was learned by the
+    # guard missing something: the ``~`` must LEAD (``expanduser`` expands only
+    # that position), ``%VAR%`` is what ``ntpath.expandvars`` reads, and
+    # ``$VAR`` is what ``posixpath.expandvars`` reads -- the latter returns
+    # early when the path holds no ``$``, which is how a probe that passed on
+    # Windows let ``expandvars`` slip on Linux.
+    args = _PATH_HELPER_ARGS.get(
+        name, ("~/%CDUI_PATH_PURITY_PROBE%/$CDUI_PATH_PURITY_PROBE/x",)
+    )
 
     _AUDIT_STATE["events"] = []
     try:
         for key in saved_os:
             setattr(os, key, _tracker(f"os.{key}"))
         for key in saved_path:
-            setattr(os.path, key, _tracker(f"os.path.{key}"))
+            setattr(module, key, _tracker(f"{module.__name__}.{key}"))
         os.environ = _EnvProxy()  # type: ignore[assignment]
         _AUDIT_STATE["armed"] = True
         try:
@@ -542,7 +558,7 @@ def _probe_path_helper(name: str) -> set[str]:
         for key, original in saved_os.items():
             setattr(os, key, original)
         for key, original in saved_path.items():
-            setattr(os.path, key, original)
+            setattr(module, key, original)
         real_environ.pop("CDUI_PATH_PURITY_PROBE", None)
 
     touched.extend(_AUDIT_STATE["events"])  # type: ignore[arg-type]
@@ -555,19 +571,31 @@ def _probe_path_helper(name: str) -> set[str]:
 
 def test_no_allowlisted_path_helper_touches_the_environment_the_disk_or_the_cwd():
     """Every entry on the allowlist, verified by CALLING it under all three
-    screens -- on whichever platform is running the suite, so ``ntpath`` here
-    and ``posixpath`` on CI."""
-    import os.path
+    screens, in BOTH path implementations.
 
-    for name in tiers.TIER0_PATH_HELPERS:
-        value = getattr(os.path, name)
-        if not callable(value):
-            assert isinstance(value, (str, bool, type(None))), (
-                f"{name} is a {type(value).__name__}, which is not an inert constant"
-            )
-            continue
-        touched = _probe_path_helper(name)
-        assert touched == set(), f"{name} touched {sorted(touched)}"
+    The live ``os.path`` is the one the gate's verdict has to be right about
+    today, but ``ntpath`` and ``posixpath`` are both importable everywhere and
+    a plugin manifest is portable: a helper that is a pure string transform on
+    one platform and reads the environment on the other would be a hole for
+    every user on the other platform. Both are checked here so that is a test
+    failure rather than a support ticket.
+    """
+    import ntpath
+    import os.path
+    import posixpath
+
+    for module in (os.path, ntpath, posixpath):
+        for name in tiers.TIER0_PATH_HELPERS:
+            where = f"{module.__name__}.{name}"
+            assert hasattr(module, name), f"{where} does not exist"
+            value = getattr(module, name)
+            if not callable(value):
+                assert isinstance(value, (str, bool, type(None))), (
+                    f"{where} is a {type(value).__name__}, not an inert constant"
+                )
+                continue
+            touched = _probe_path_helper(name, module)
+            assert touched == set(), f"{where} touched {sorted(touched)}"
 
 
 def test_the_purity_guard_catches_every_impure_name_on_os_path():
@@ -590,35 +618,48 @@ def test_the_purity_guard_catches_every_impure_name_on_os_path():
     #: needing a file object it cannot get.
     pure_but_unusable = {"samestat"}
 
-    by_module_screen: list[str] = []
-    by_interception: list[str] = []
-    accounted_inert: list[str] = []
-    unaccounted: list[str] = []
+    import ntpath
+    import posixpath
 
-    for name in sorted(dir(os.path)):
-        if name.startswith("_") or name in set(tiers.TIER0_PATH_HELPERS):
-            continue
-        value = getattr(os.path, name)
-        if isinstance(value, types.ModuleType):
-            by_module_screen.append(name)          # the module screen catches these
-        elif name in inert or name in pure_but_unusable:
-            accounted_inert.append(name)
-        elif _probe_path_helper(name):
-            by_interception.append(name)
-        else:
-            unaccounted.append(name)
+    # BOTH implementations, not just the live one. ``ntpath`` and ``posixpath``
+    # are pure Python and importable on either platform, and they differ in
+    # ways that matter here -- ``posixpath.expandvars`` reads ``$VAR`` and
+    # returns early without one, ``ntpath.expandvars`` reads ``%VAR%``. The
+    # first version of this test probed only ``os.path`` and therefore passed
+    # on Windows while ``expandvars`` slipped the guard on Linux. Checking both
+    # turns "correct on the machine that ran it" into "correct on either CI
+    # runner".
+    for module in (os.path, ntpath, posixpath):
+        by_module_screen: list[str] = []
+        by_interception: list[str] = []
+        accounted_inert: list[str] = []
+        unaccounted: list[str] = []
 
-    assert unaccounted == [], (
-        f"these os.path names are neither allowlisted nor caught by any screen: "
-        f"{unaccounted} -- either they are pure and belong on TIER0_PATH_HELPERS, "
-        f"or the guard has a hole"
-    )
-    # Non-vacuity: the buckets must actually contain the names we know about.
-    assert {"os", "sys", "genericpath"} <= set(by_module_screen)
-    assert {
-        "expandvars", "expanduser", "exists", "isfile", "isdir", "islink",
-        "lexists", "getsize", "getmtime", "abspath", "realpath", "relpath",
-    } <= set(by_interception), f"interception only caught {by_interception}"
+        for name in sorted(dir(module)):
+            if name.startswith("_") or name in set(tiers.TIER0_PATH_HELPERS):
+                continue
+            value = getattr(module, name)
+            if isinstance(value, types.ModuleType):
+                by_module_screen.append(name)      # the module screen catches these
+            elif name in inert or name in pure_but_unusable:
+                accounted_inert.append(name)
+            elif _probe_path_helper(name, module):
+                by_interception.append(name)
+            else:
+                unaccounted.append(name)
+
+        where = module.__name__
+        assert unaccounted == [], (
+            f"[{where}] these names are neither allowlisted nor caught by any "
+            f"screen: {unaccounted} -- either they are pure and belong on "
+            f"TIER0_PATH_HELPERS, or the guard has a hole"
+        )
+        # Non-vacuity: the buckets must actually contain the names we know about.
+        assert {"os", "sys", "genericpath"} <= set(by_module_screen), where
+        assert {
+            "expandvars", "expanduser", "exists", "isfile", "isdir", "islink",
+            "lexists", "getsize", "getmtime", "abspath", "realpath", "relpath",
+        } <= set(by_interception), f"[{where}] interception only caught {by_interception}"
 
 
 def test_the_helpers_a_plugin_actually_wants_still_work():
