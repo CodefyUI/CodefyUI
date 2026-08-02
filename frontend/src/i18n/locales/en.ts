@@ -527,6 +527,11 @@ const en = {
   'project.readOnly.loadNotice': 'Opened read-only: this graph uses a newer format (v{version}) than this CodefyUI build.',
   'project.readOnly.saveBlocked': 'Save is disabled: this graph was written by a newer CodefyUI. Update CodefyUI to edit it.',
 
+  // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
+  // their own titles, so the host only labels the containers around them.
+  'plugins.panels': 'Plugin panels',
+  'plugins.moreActions': 'More plugin actions',
+
   // Runs panel (#124) — the Run Service made visible: every run the server
   // owns, its queue position, its live curves and its artifacts.
   'runs.tab': 'Runs',

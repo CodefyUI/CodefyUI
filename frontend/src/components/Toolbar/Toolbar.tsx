@@ -21,6 +21,7 @@ import { autoLayout, stackUnboundNotes, type LayoutMode } from '../../utils/auto
 import type { Node as FlowNode } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { SettingsPopover } from './SettingsPopover';
+import { PluginToolbarButtons } from './PluginToolbarButtons';
 import { FontSizeMenu } from './FontSizeMenu';
 import { ProjectBadge } from './ProjectBadge';
 import styles from './Toolbar.module.css';
@@ -657,8 +658,13 @@ export function Toolbar() {
         </div>
       </div>
 
-      {/* RIGHT cluster: Settings, Help, FontSize, Language */}
+      {/* RIGHT cluster: plugin buttons, Settings, Help, FontSize, Language */}
       <div className={`${styles.cluster} ${styles.right}`}>
+        {/* Plugin buttons (#132) lead the right-hand group so an installed
+            plugin never pushes Settings or Help off the row. Renders nothing
+            at all — no element, no gap — when no plugin registered one. */}
+        <PluginToolbarButtons />
+
         {/* Settings ⚙ */}
         <div className={styles.menuWrapper}>
           <button type="button"

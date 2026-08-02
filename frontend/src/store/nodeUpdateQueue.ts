@@ -1,4 +1,5 @@
 import { useTabStore, type PendingNodeUpdates } from './tabStore';
+import { createFrameFlusher } from '../utils/frameScheduler';
 import type { NodeData, NodeProgress } from '../types';
 
 /**
@@ -38,57 +39,15 @@ export interface PendingNodePatch {
 // "flush with nothing to do" path allocates nothing.
 let _pending: PendingNodeUpdates | null = null;
 
-// Handle of the scheduled flush, plus which scheduler produced it — rAF and
-// setTimeout hand back ids from different spaces and must be cancelled with
-// their own canceller.
-let _handle: number | null = null;
-let _handleIsRaf = false;
-
-function _hasRaf(): boolean {
-  return typeof requestAnimationFrame === 'function';
-}
-
-function _cancelScheduled(): void {
-  if (_handle === null) return;
-  if (_handleIsRaf) {
-    // A test can strip rAF between scheduling and cancelling; dropping the
-    // handle is still correct because the flush re-checks `_pending`.
-    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(_handle);
-  } else {
-    clearTimeout(_handle);
-  }
-  _handle = null;
-}
-
-function _schedule(): void {
-  if (_handle !== null) return;
-  if (_hasRaf()) {
-    _handleIsRaf = true;
-    _handle = requestAnimationFrame(() => {
-      _handle = null;
-      flushTabNodeUpdates();
-    });
-  } else {
-    // Environments with no rAF AT ALL: jsdom without `pretendToBeVisual`, a
-    // worker. A macrotask still coalesces a burst arriving in the same tick,
-    // which is the point.
-    //
-    // Note what this branch is NOT for. A hidden, backgrounded or occluded
-    // document still HAS `requestAnimationFrame` — it simply never calls it
-    // back — so the branch above is taken and the flush waits, indefinitely,
-    // until the document is painted again. That is deliberate: there is no
-    // reason to rebuild a nodes array for pixels nobody is looking at, and
-    // the buffer is bounded (one patch per node) however long the wait runs.
-    // The consequence to know about is that node badges and progress values
-    // FREEZE in a background tab while logs, which are written synchronously,
-    // keep arriving; everything catches up in one commit on the next frame.
-    _handleIsRaf = false;
-    _handle = setTimeout(() => {
-      _handle = null;
-      flushTabNodeUpdates();
-    }, 0) as unknown as number;
-  }
-}
+// The frame slot itself lives in `utils/frameScheduler` — one rAF
+// implementation shared with the plugin execution-event stream (#132), with
+// the same setTimeout fallback and the same "an occluded document never
+// paints, so the flush waits" behaviour documented there. The consequence to
+// know about here: node badges and progress values FREEZE in a background tab
+// while logs, which are written synchronously, keep arriving; everything
+// catches up in one commit on the next frame. The buffer stays bounded
+// through that wait because it holds one patch per node, not one per event.
+const _flusher = createFrameFlusher(() => flushTabNodeUpdates());
 
 function _patchFor(tabId: string, nodeId: string): PendingNodePatch {
   if (_pending === null) _pending = new Map();
@@ -102,7 +61,7 @@ function _patchFor(tabId: string, nodeId: string): PendingNodePatch {
     patch = {};
     forTab.set(nodeId, patch);
   }
-  _schedule();
+  _flusher.schedule();
   return patch;
 }
 
@@ -132,7 +91,7 @@ export function queueTabNodeProgress(
  * store to be current before reading it.
  */
 export function flushTabNodeUpdates(): void {
-  _cancelScheduled();
+  _flusher.cancel();
   const updates = _pending;
   _pending = null;
   if (updates === null || updates.size === 0) return;
@@ -150,13 +109,13 @@ export function flushTabNodeUpdates(): void {
 export function discardTabNodeUpdates(tabId?: string): void {
   if (tabId === undefined) {
     _pending = null;
-    _cancelScheduled();
+    _flusher.cancel();
     return;
   }
   _pending?.delete(tabId);
   if (_pending && _pending.size === 0) {
     _pending = null;
-    _cancelScheduled();
+    _flusher.cancel();
   }
 }
 

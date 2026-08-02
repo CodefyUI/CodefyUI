@@ -163,9 +163,17 @@ export interface RunListPage {
  * page-load re-attach check (#121) asking "is the run this tab was watching
  * still going?", and a run pruned by retention, or one from a previous
  * install, is simply a "no".
+ *
+ * This and the other two run readers go through `apiFetch` rather than bare
+ * `fetch`. It is a pass-through for GET today (reads are gated by the
+ * Host-header middleware, not the token), but `api.runs` — the plugin facade
+ * (#132) — is built on them, and its contract is that the HOST attaches
+ * whatever authentication a request needs. Routing through the one auth-aware
+ * client is what keeps that true if reads ever become token-gated, without a
+ * plugin ever seeing the token.
  */
 export async function getRun(runId: string): Promise<RunInfo | null> {
-  const res = await fetch(`${BASE_URL}/runs/${encodeURIComponent(runId)}`);
+  const res = await apiFetch(`${BASE_URL}/runs/${encodeURIComponent(runId)}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to fetch run: ${res.statusText}`);
   return res.json();
@@ -182,7 +190,7 @@ export async function listRuns(
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   if (opts.offset !== undefined) params.set('offset', String(opts.offset));
   const query = params.toString();
-  const res = await fetch(`${BASE_URL}/runs${query ? `?${query}` : ''}`);
+  const res = await apiFetch(`${BASE_URL}/runs${query ? `?${query}` : ''}`);
   if (!res.ok) throw new Error(`Failed to list runs: ${res.statusText}`);
   return res.json();
 }
@@ -287,7 +295,7 @@ export async function getRunMetrics(
   name?: string,
 ): Promise<RunMetrics> {
   const query = name ? `?name=${encodeURIComponent(name)}` : '';
-  const res = await fetch(
+  const res = await apiFetch(
     `${BASE_URL}/runs/${encodeURIComponent(runId)}/metrics${query}`,
   );
   if (!res.ok) throw new Error(`Failed to fetch run metrics: ${res.statusText}`);

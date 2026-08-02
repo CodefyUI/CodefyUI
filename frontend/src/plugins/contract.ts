@@ -122,6 +122,130 @@ export interface PluginNodeRenderer {
   unmount?(container: HTMLElement): void;
 }
 
+/* ── panels, toolbar buttons — requires apiVersion >= 3 ─────────────────── */
+
+/** Where a panel lives: a tab in the bottom dock, or a right-hand section. */
+export type PluginPanelDock = 'bottom' | 'right';
+
+export interface PluginPanelOptions {
+  /** Unique within your plugin. The host namespaces it with your plugin id. */
+  id: string;
+  /** Tab label (bottom dock) or section heading (right dock). */
+  title: string;
+  /** Optional short glyph shown before the title. */
+  icon?: string;
+  /** Defaults to `'bottom'`. */
+  dock?: PluginPanelDock;
+  /**
+   * Called after the panel's element is attached to the document, and after
+   * it is detached. The element itself survives either way — these exist so
+   * you can stop doing work while nobody can see it.
+   */
+  onShow?: () => void;
+  onHide?: () => void;
+}
+
+export interface PluginToolbarButtonOptions {
+  /** Unique within your plugin. */
+  id: string;
+  /** Short glyph — the toolbar has room for a glyph, not a sentence. */
+  icon: string;
+  /** Hover and accessible text. An icon on its own is not a label. */
+  tooltip: string;
+  onClick: () => void;
+}
+
+/* ── execution events — requires apiVersion >= 3 ────────────────────────── */
+
+/** Terminal state of a run. */
+export type ExecutionFinishStatus =
+  | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
+
+/**
+ * One run event, as `api.events.onExecution` delivers it.
+ *
+ * `cursor` is the source frame's position in the run's durable event log —
+ * the same cursor `GET /api/runs/{id}/events` pages by. A batched metric
+ * frame expands to one event per point, so events can share a cursor.
+ */
+export type ExecutionEvent =
+  | { type: 'run_started'; run_id: string; cursor: number }
+  | {
+      type: 'node_status'; run_id: string; cursor: number;
+      node_id: string; status: string; error?: string;
+    }
+  | {
+      type: 'metric'; run_id: string; cursor: number;
+      name: string; value: number; step: number; node_id: string | null;
+    }
+  | {
+      type: 'run_finished'; run_id: string; cursor: number;
+      status: ExecutionFinishStatus; error?: string;
+    };
+
+/* ── runs (read-only) — requires apiVersion >= 3 ────────────────────────── */
+
+export type RunStatus =
+  | 'queued' | 'running' | 'succeeded'
+  | 'failed' | 'cancelled' | 'interrupted';
+
+/** One row of the run history. Timestamps are ISO-8601 UTC with a `Z`. */
+export interface RunSummary {
+  id: string;
+  name: string | null;
+  status: RunStatus;
+  error: string | null;
+  /** Submit options verbatim — `device`, `seed`, `record_outputs`, ... */
+  options: Record<string, unknown>;
+  queue_key: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  git_commit: string | null;
+  git_dirty: boolean | null;
+  plugin_pins: Record<string, unknown> | null;
+  /** 1-based place in this run's own device queue; `null` is a real answer. */
+  queue_position: number | null;
+  /** Last recorded value of every series, e.g. `{ train_loss: 0.31 }`. */
+  final_metrics: Record<string, number>;
+  /** Whether the server is currently driving this run. */
+  active: boolean;
+}
+
+export interface RunInfo extends RunSummary {
+  /** Highest event cursor issued so far — where a follower should resume. */
+  last_cursor: number;
+}
+
+export interface RunListPage {
+  runs: RunSummary[];
+  /** Unpaged count for the active filter, so a table can size itself. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RunListOptions {
+  status?: readonly RunStatus[];
+  limit?: number;
+  offset?: number;
+}
+
+export interface RunMetricPoint {
+  node_id: string | null;
+  name: string;
+  step: number;
+  /** `null` for a non-finite value (a diverged loss) — a gap, not a zero. */
+  value: number | null;
+}
+
+export interface RunMetrics {
+  run_id: string;
+  /** Every series name in the run, so a legend needs no scan of the points. */
+  names: string[];
+  metrics: RunMetricPoint[];
+}
+
 /** The object the editor hands every plugin frontend at activation. */
 export interface CodefyUIPluginAPI {
   apiVersion: number;
@@ -130,6 +254,27 @@ export interface CodefyUIPluginAPI {
     /** Create (or reuse) a container `<div>` in the editor's widget stack. */
     addFloatingWidget(opts: { id: string }): HTMLElement;
     toast(message: string, type?: ToastType): void;
+    /**
+     * Register a dock panel and get its container element — requires
+     * apiVersion >= 3.
+     *
+     * The host owns the tab chrome and the placement; you own what goes
+     * inside the element. The element's identity is stable for the life of
+     * the panel, so mount into it once: the host attaches and detaches it as
+     * its tab becomes active, and never empties or replaces it. Calling
+     * `addPanel` again with the same id returns the same element and updates
+     * the title/icon/dock.
+     */
+    addPanel(opts: PluginPanelOptions): HTMLElement;
+    /** Remove a panel. Its element is detached from the editor. */
+    removePanel(id: string): void;
+    /**
+     * Add a toolbar button — requires apiVersion >= 3. Returns a remove
+     * function. Placement and overflow are the host's: buttons share one
+     * group and collapse into a menu when the window is too narrow.
+     */
+    addToolbarButton(opts: PluginToolbarButtonOptions): () => void;
+    removeToolbarButton(id: string): void;
   };
   graph: {
     getGraph(): SerializedGraph;
@@ -141,6 +286,33 @@ export interface CodefyUIPluginAPI {
   /** Custom node renderers — requires apiVersion >= 2. */
   nodes: {
     registerRenderer(nodeType: string, renderer: PluginNodeRenderer): () => void;
+  };
+  /** Live run events — requires apiVersion >= 3. */
+  events: {
+    /**
+     * Subscribe to the run event stream. Returns an unsubscribe function.
+     *
+     * Events are batched onto animation frames, so a burst arrives as a burst
+     * of calls in one frame rather than one call per socket message, and a
+     * backgrounded editor delivers nothing until it is painted again. If your
+     * callback throws, the host contains it — no other subscriber is
+     * affected, but you will lose that event.
+     */
+    onExecution(cb: (event: ExecutionEvent) => void): () => void;
+  };
+  /**
+   * Read-only view of run history — requires apiVersion >= 3.
+   *
+   * The host performs the requests, with editor authentication attached; the
+   * session token is never handed to plugin code. Submitting and cancelling
+   * runs are deliberately absent: a plugin should not be able to start work
+   * on the user's machine behind a UI the user did not open.
+   */
+  runs: {
+    list(opts?: RunListOptions): Promise<RunListPage>;
+    /** `null` when the server has never heard of the run. */
+    get(id: string): Promise<RunInfo | null>;
+    metrics(id: string, name?: string): Promise<RunMetrics>;
   };
   http: {
     /** Browser `fetch`, with the CodefyUI session token attached. */

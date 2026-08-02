@@ -524,6 +524,11 @@ const zhTW: Record<TranslationKey, string> = {
   'project.readOnly.loadNotice': '以唯讀開啟：此圖使用比目前版本更新的格式（v{version}）。',
   'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
 
+  // 外掛 API v3 的外框（#132）。外掛面板與工具列按鈕自帶標題，主程式只負責
+  // 標示包在外面的容器。
+  'plugins.panels': '外掛面板',
+  'plugins.moreActions': '更多外掛動作',
+
   // 執行面板（#124）：把 Run Service 攤開給使用者看 —— 所有由伺服器持有的
   // 執行、佇列位置、即時曲線與產出檔案。
   'runs.tab': '執行任務',

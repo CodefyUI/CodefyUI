@@ -15,6 +15,7 @@ import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
 import { PluginHost } from './plugins/PluginHost';
+import { PluginRightPanels, usePluginPanels } from './components/PluginPanels/PluginPanels';
 import { useTabStore } from './store/tabStore';
 import { useUIStore } from './store/uiStore';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -42,13 +43,19 @@ function RightColumn() {
   );
   const hasSelection = selectedNodeId !== null;
   const hasSegment = activeSegment !== null;
+  // A right-docked plugin panel (#132) is a standing section, not a reaction
+  // to a selection, so it keeps the column alive on its own. Without this the
+  // column would vanish the moment the user clicked empty canvas, taking a
+  // plugin's panel with it.
+  const hasPluginPanels = usePluginPanels('right').length > 0;
 
-  if (!hasSelection && !hasSegment) return null;
+  if (!hasSelection && !hasSegment && !hasPluginPanels) return null;
 
   return (
     <div className={styles.rightColumn}>
       {hasSelection && <NodeConfigPanel />}
-      <InspectorPanel />
+      {(hasSelection || hasSegment) && <InspectorPanel />}
+      <PluginRightPanels />
     </div>
   );
 }

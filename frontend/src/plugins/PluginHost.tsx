@@ -17,6 +17,8 @@ import { useEffect, useRef } from 'react';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import { buildPluginAPI } from './api';
+import { removePluginPanelsFor } from './panels';
+import { removePluginToolbarButtonsFor } from './toolbarButtons';
 import styles from './PluginHost.module.css';
 
 interface PluginListItem {
@@ -42,6 +44,8 @@ let hostStarted = false;
 let stackEl: HTMLElement | null = null;
 let cleanups: Array<() => void> = [];
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+/** Ids activated by the last load — what a teardown has to unregister. */
+let activatedIds: string[] = [];
 
 function widgetContainer(pluginId: string, widgetId: string): HTMLElement {
   const host = stackEl ?? document.body;
@@ -58,8 +62,16 @@ function widgetContainer(pluginId: string, widgetId: string): HTMLElement {
  * Run tracked cleanups and remove plugin-created widget DOM. Called before a
  * dev re-activation so subscriptions don't accumulate and a plugin's
  * createRoot() isn't invoked twice on the same (already-rooted) node.
+ *
+ * Everything `buildPluginAPI` hands out that outlives the call — graph
+ * subscriptions, node renderers, and since #132 dock panels, toolbar buttons
+ * and execution-event subscriptions — registers its own undo here, so a
+ * re-activation starts from an empty registry rather than a second copy of
+ * every tab and button. The sweep below is the belt to that braces: it drops
+ * anything left registered for a plugin whose cleanup threw or was never
+ * tracked, so one misbehaving plugin cannot strand a tab in the dock.
  */
-function teardownPlugins(): void {
+function teardownPlugins(pluginIds: string[] = []): void {
   for (const fn of cleanups) {
     try {
       fn();
@@ -68,6 +80,10 @@ function teardownPlugins(): void {
     }
   }
   cleanups = [];
+  for (const id of pluginIds) {
+    removePluginPanelsFor(id);
+    removePluginToolbarButtonsFor(id);
+  }
   if (stackEl) {
     while (stackEl.firstChild) stackEl.removeChild(stackEl.firstChild);
   }
@@ -137,7 +153,18 @@ export async function loadPluginFrontends(
       );
     }
   }
+  activatedIds = activated;
   return activated;
+}
+
+/**
+ * Tear every activated plugin frontend down. Exported for the host's own
+ * tests and for a future explicit unload path; the dev hot-reload below is
+ * the only production caller today.
+ */
+export function unloadPluginFrontends(): void {
+  teardownPlugins(activatedIds);
+  activatedIds = [];
 }
 
 async function fetchGeneration(): Promise<number | null> {
@@ -185,7 +212,7 @@ async function maybeStartDevHotReload(): Promise<void> {
       const gen = await fetchGeneration();
       if (gen === null || gen === lastGen) return;
       lastGen = gen;
-      teardownPlugins();
+      unloadPluginFrontends();
       await loadPluginFrontends(
         widgetContainer,
         (url) => import(/* @vite-ignore */ `${url}?v=${gen}`),

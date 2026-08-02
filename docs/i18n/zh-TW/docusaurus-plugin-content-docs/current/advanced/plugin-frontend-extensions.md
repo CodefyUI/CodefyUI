@@ -10,7 +10,33 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
+
+停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 1.5.0 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
 :::
+
+## API 版本
+
+`api.apiVersion` 是一個只增不減的數字，而目前每一次改版都是**純粹新增**：舊版能用的東西，沒有被移除過，也沒有被改過形狀。為 apiVersion 2 撰寫的外掛，在 apiVersion 3 的編輯器上不必改任何一行就能繼續運作。
+
+| `apiVersion` | CodefyUI | 新增內容 |
+|--------------|----------|----------|
+| 1 | 1.3.0 | `ui.addFloatingWidget`、`ui.toast`、`graph.*`、`http.fetch`、`storage.*` |
+| 2 | 1.3.0 | `nodes.registerRenderer` |
+| 3 | 1.5.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
+
+在使用比你所要求的版本更新的功能之前先檢查它，而且是降級處理，不是直接拋錯：
+
+```js
+export default function activate(api) {
+  if (api.apiVersion >= 3) {
+    mountDashboard(api.ui.addPanel({ id: "dash", title: "Dashboard" }));
+  } else {
+    mountDashboard(api.ui.addFloatingWidget({ id: "dash" }));
+  }
+}
+```
+
+因為改版都是純新增，破壞性變更一定會伴隨 `apiVersion` 提升與遷移說明——不會靜悄悄發生。
 
 ## 宣告前端進入點
 
@@ -71,7 +97,7 @@ export default function activate(api) {
 
 編輯器每次頁面載入時呼叫 `activate` 一次，且**不會** await 它的回傳值——請以同步方式完成設定（你仍可啟動非同步工作，編輯器只是不會等待）。在 `activate` 內同步拋出的錯誤會被逐一外掛捕獲、記錄至瀏覽器主控台並以 toast 呈現；它們無法使編輯器或其他外掛崩潰。匯入另有 10 秒逾時限制。（只要求*預設匯出是一個函式*；名稱 `activate` 只是慣例。）
 
-## CodefyUIPluginAPI v1 參考
+## CodefyUIPluginAPI 參考
 
 ### `api.ui` — 編輯器 UI
 
@@ -79,6 +105,74 @@ export default function activate(api) {
 |------|------|------|
 | `addFloatingWidget` | `({ id }) => HTMLElement` | 在編輯器的浮動元件堆疊中建立（或重用）一個容器 `<div>` 並回傳。`id` 在同一外掛內必須唯一。回傳的元素歸你所有——填入你自己的 DOM，或在其上掛載一個 React root。 |
 | `toast` | `(message, level?) => void` | 顯示一個暫時性通知。`level` 為 `"info"`（預設）、`"warning"` 或 `"error"`。 |
+| `addPanel` | `(opts) => HTMLElement` | **apiVersion 3。** 註冊一個停靠面板，回傳它的容器元素。 |
+| `removePanel` | `(id: string) => void` | **apiVersion 3。** 移除你自己的某個面板。 |
+| `addToolbarButton` | `(opts) => () => void` | **apiVersion 3。** 新增一個工具列按鈕；回傳移除函式。 |
+| `removeToolbarButton` | `(id: string) => void` | **apiVersion 3。** 依 id 移除你自己的某個按鈕。 |
+
+#### 停靠面板
+
+需要 `api.apiVersion >= 3`。
+
+```ts
+interface PluginPanelOptions {
+  id: string;                 // 同一外掛內唯一
+  title: string;              // 分頁標籤，或右側區塊標題
+  icon?: string;              // 顯示在標題前的短符號
+  dock?: "bottom" | "right";  // 預設為 "bottom"
+  onShow?: () => void;        // 元素已掛入文件
+  onHide?: () => void;        // ……又被卸下
+}
+```
+
+`"bottom"` 面板會成為編輯器底部面板的一個分頁，排在「執行記錄」、「訓練」與「執行任務」之後。`"right"` 面板則成為右側欄的一個區塊，與節點設定和檢視器面板並列。分頁外框、排序與位置由主程式決定；元素裡面的一切則歸你。
+
+**在面板存在的期間，那個元素都是你的。** 它的身分永遠不變，所以只需掛載一次：
+
+```js
+const el = api.ui.addPanel({ id: "runs", title: "My Runs", icon: "~" });
+createRoot(el).render(<MyPanel />);   // 只做一次，不是每次切分頁
+```
+
+編輯器只會掛載*當前*的底部分頁，所以裝著你面板的那個容器會隨著使用者切換分頁而被拆掉重建。你的元素不會：編輯器只是把它卸下再掛回去，子節點與其狀態都完整保留。用同一個 `id` 再呼叫一次 `addPanel`，回傳的是同一個元素，只是更新標題、圖示與停靠位置。
+
+代價只有一件事要留意：面板不在畫面上時，你的程式仍在*執行*，而且畫的是一個不在文件中的元素。如果面板做的事情不便宜——圖表、輪詢、動畫——請把它關掉：
+
+```js
+api.ui.addPanel({
+  id: "runs", title: "My Runs",
+  onShow: () => chart.start(),
+  onHide: () => chart.stop(),
+});
+```
+
+請把這兩個 callback 寫成連續呼叫兩次也無害：React 的開發模式會重播掛載 effect，所以單次切換分頁有可能多產生一組 `onHide`/`onShow`。
+
+外掛被卸載或熱重載時，面板會自動移除；`removePanel` 是給你想更早移除的面板用的。
+
+#### 工具列按鈕
+
+需要 `api.apiVersion >= 3`。
+
+```ts
+interface PluginToolbarButtonOptions {
+  id: string;        // 同一外掛內唯一
+  icon: string;      // 短符號——工具列的空間只容得下一個符號
+  tooltip: string;   // 滑鼠提示與無障礙文字；圖示本身不算標籤
+  onClick: () => void;
+}
+```
+
+```js
+const remove = api.ui.addToolbarButton({
+  id: "sweep", icon: "~", tooltip: "Start a sweep",
+  onClick: () => startSweep(),
+});
+```
+
+按鈕會依註冊順序，集中在工具列右側的同一組裡。你無法指定位置，顯示幾個也由編輯器決定：視窗夠寬時最多三個直接排在列上，視窗窄時全部收進一個溢位選單。正是這條規則讓五個已安裝外掛不會把「執行」擠出工具列，所以請把 `tooltip` 當成標籤來寫——在選單裡，它就是標籤。
+
+若 `onClick` 拋出錯誤，編輯器會記錄下來並繼續運作；工具列不受影響。
 
 ### `api.graph` — 圖表讀寫
 
@@ -155,6 +249,80 @@ api.nodes.registerRenderer('my_plugin:MyNode', {
 
 [外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝它，讓你能以 React 元件撰寫內容區。
 
+### `api.events` — 即時執行事件
+
+需要 `api.apiVersion >= 3`。
+
+| 方法 | 簽名 | 說明 |
+|------|------|------|
+| `onExecution` | `(cb: (event: ExecutionEvent) => void) => () => void` | 訂閱執行事件串流。回傳一個取消訂閱函式。 |
+
+```ts
+type ExecutionEvent =
+  | { type: "run_started";  run_id: string; cursor: number }
+  | { type: "node_status";  run_id: string; cursor: number;
+      node_id: string; status: string; error?: string }
+  | { type: "metric";       run_id: string; cursor: number;
+      name: string; value: number; step: number; node_id: string | null }
+  | { type: "run_finished"; run_id: string; cursor: number;
+      status: "succeeded" | "failed" | "cancelled" | "interrupted";
+      error?: string };
+```
+
+```js
+const off = api.events.onExecution((event) => {
+  if (event.type === "metric") record(event.name, event.step, event.value);
+  if (event.type === "run_finished") summarise(event.run_id, event.status);
+});
+```
+
+在你拿它蓋東西之前，值得先知道的幾件事：
+
+- **它是尾巴，不是歷史。** 你收到的是從訂閱那一刻起發生的事。在那之前的部分請用 [`api.runs`](#apiruns--執行歷史唯讀) 補齊。
+- **事件會批次對齊到動畫影格。** 一次每秒推送數百筆指標的執行，到你手上是每影格一叢呼叫，而不是每則訊息一次呼叫——和編輯器自己更新節點徽章用的是同一套批次機制。被切到背景或被遮住的編輯器視窗不會重繪，所以在它回來之前不會派送任何東西；若期間累積超過兩千多筆事件，最舊的指標與節點狀態會被丟棄（`run_started` 與 `run_finished` 永遠不會）。若你需要每一個點，請改用 `api.runs.metrics()` 重新讀取。
+- **一則批次指標訊息會展開成每個點一個事件**，所以多個事件可能共用同一個 `cursor`。
+- **`cursor`** 是來源訊息在該次執行持久事件記錄中的位置——和 `GET /api/runs/{id}/events` 分頁用的是同一個 cursor，所以你可以用它偵測缺口，或用它接續 REST 的讀取。
+- **串流涵蓋的是編輯器已附掛的執行**——從畫布分頁啟動的那些，加上使用者在「執行任務」面板選擇觀看的執行。由 `cdui run` 送出、沒人在看的執行，要從 `api.runs` 看，不在這裡。
+- **若你的 callback 拋出錯誤**，編輯器會記錄下來並繼續。其他訂閱者不受影響，但你會漏掉那一則事件。
+- **記得取消訂閱。** 外掛卸載或熱重載時，編輯器也會替你取消。
+
+### `api.runs` — 執行歷史（唯讀）
+
+需要 `api.apiVersion >= 3`。
+
+| 方法 | 簽名 | 說明 |
+|------|------|------|
+| `list` | `(opts?) => Promise<RunListPage>` | 由新到舊的一頁執行紀錄。`opts` 為 `{ status?, limit?, offset? }`。 |
+| `get` | `(id: string) => Promise<RunInfo \| null>` | 單筆執行；伺服器沒聽過這個 id 時回傳 `null`。 |
+| `metrics` | `(id: string, name?: string) => Promise<RunMetrics>` | 已記錄的純量序列，依 `(name, step)` 排序。 |
+
+```js
+const page = await api.runs.list({ status: ["running"], limit: 1 });
+const active = page.runs[0];
+if (active) {
+  const recorded = await api.runs.metrics(active.id);
+  for (const point of recorded.metrics) {
+    if (point.value !== null) record(point.name, point.step, point.value);
+  }
+}
+```
+
+```ts
+interface RunListPage { runs: RunSummary[]; total: number; limit: number; offset: number }
+interface RunInfo extends RunSummary { last_cursor: number }
+interface RunMetrics { run_id: string; names: string[]; metrics: RunMetricPoint[] }
+interface RunMetricPoint {
+  node_id: string | null; name: string; step: number;
+  value: number | null;   // null 代表發散（非有限）的值——是缺口，不是零
+}
+```
+
+`RunSummary` 對應執行歷史的一列：`id`、`name`、`status`、`error`、`options`、`queue_key`、`created_at`、`started_at`、`finished_at`、`git_commit`、`git_dirty`、`plugin_pins`、`queue_position`、`final_metrics` 與 `active`。完整型別在隨附的 SDK types 中，背後的端點則記載於 [API 參考](/advanced/api-reference)。
+
+這個門面的存在，是為了讓常見情境不必自己拼 fetch：請求由編輯器透過它自己的 API 客戶端送出，需要的驗證資訊都已附上。你不必自己組 URL，token 也不會傳進你的程式碼、不會出現在 `api.runs` 的任何回傳值裡——但這是便利，不是沙箱（參見[信任模型](#信任模型)）。
+
+它在這一版是刻意**唯讀**的。沒有 `submit`，也沒有 `cancel`：在別人的機器上啟動或停止工作，應該發生在使用者自己打開的介面背後，而不是一次外掛呼叫背後。若你確實需要，請由使用者按下的按鈕出發，透過 `api.http.fetch` 進行。
+
 ### `api.http` — 具 session 意識的 fetch
 
 | 方法 | 簽名 | 說明 |
@@ -211,6 +379,58 @@ export default function activate(api) {
   panel.appendChild(btn);
 }
 ```
+
+## 即時執行指標面板
+
+下面這個範例，就是 apiVersion 3 這組介面被加進來的目的：一個底部分頁，把一次執行的指標邊跑邊列出來。它把兩半湊在一起——`events.onExecution` 負責即時尾巴，`runs` 負責面板打開之前已經發生的事——而且*先*訂閱再回填，這樣兩者之間就不會有東西漏掉。
+
+```js
+// frontend/index.js
+export default function activate(api) {
+  if (api.apiVersion < 3) return;
+
+  const series = new Map();   // name -> { last, points }
+
+  const render = () => {
+    if (!el.isConnected) return;   // 分頁沒開，不必畫
+    el.textContent = [...series.entries()]
+      .map(([name, s]) => `${name}  last=${s.last.toFixed(4)}  n=${s.points}`)
+      .join("\n");
+  };
+
+  const el = api.ui.addPanel({
+    id: "run-metrics", title: "Run Metrics", icon: "~",
+    onShow: render,   // 進來時先畫一次，分頁才不會是空白
+  });
+
+  // 1. 即時尾巴
+  api.events.onExecution((event) => {
+    if (event.type === "run_started") series.clear();
+    if (event.type === "metric") {
+      const previous = series.get(event.name);
+      series.set(event.name, {
+        last: event.value, points: (previous?.points ?? 0) + 1,
+      });
+    }
+    render();
+  });
+
+  // 2. 回填：面板出現之前就已經在跑的執行
+  api.runs.list({ status: ["running"], limit: 1 }).then(async (page) => {
+    const active = page.runs[0];
+    if (!active) return;
+    const recorded = await api.runs.metrics(active.id);
+    for (const point of recorded.metrics) {
+      if (point.value === null) continue;          // 發散的值：是缺口
+      if (series.has(point.name)) continue;        // 即時尾巴優先
+      series.set(point.name, { last: point.value, points: 1 });
+    }
+    render();
+  });
+}
+```
+
+[外掛骨架](/advanced/plugins)在 `ui/src/examples/run-metrics-panel.tsx` 附了同一個範例的 React 版本，使用 SDK 的 `mountPanel`、`useExecutionEvents` 與 `useRuns`。
 
 ## 另請參閱
 
