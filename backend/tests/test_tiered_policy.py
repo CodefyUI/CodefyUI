@@ -600,89 +600,69 @@ def test_no_allowlisted_path_helper_touches_the_environment_the_disk_or_the_cwd(
             assert touched == set(), f"{where} touched {sorted(touched)}"
 
 
-def test_the_purity_guard_catches_every_impure_name_on_os_path():
+def test_the_purity_guard_can_see_impurity_in_both_path_implementations():
     """The guard's own sensitivity, measured rather than asserted.
 
-    A guard that inspects nothing passes trivially -- which is exactly how the
+    A guard that inspects nothing passes trivially -- which is how the
     value-only version shipped while catching 3 of the 25 names it would have
-    to catch. So: take every public name on ``os.path`` that is NOT on the
-    allowlist, and require that adding it would be caught by SOME screen in
-    this file. Each name lands in exactly one bucket, and a name that lands in
-    none fails the test.
+    had to catch. So this drives the probe over every public name in BOTH
+    ``ntpath`` and ``posixpath`` and requires that the ones known to touch the
+    environment or the disk come back caught.
+
+    **What this deliberately does NOT assert** is that every name falls into a
+    pre-approved bucket. An earlier version did, and it was wrong twice over.
+    It cost a CI round per CPython release -- 3.12 alone added ``splitroot``,
+    ``isjunction`` and ``isdevdrive`` -- and it was enforcing something that is
+    not a security property: ``TIER0_PATH_HELPERS`` is an ALLOWLIST, so a name
+    nobody has heard of is refused by the gate whether it is pure or not. A new
+    *impure* name is a non-event for the same reason, and the day somebody
+    tries to allowlist one,
+    ``test_no_allowlisted_path_helper_touches_the_environment_the_disk_or_the_cwd``
+    is what refuses it.
+
+    So the load-bearing claim is the floor below: these names, which really do
+    read the environment or hit the disk, are visible to the guard on both
+    implementations. If a future edit blunts a screen -- drops ``os.stat`` from
+    the interception list, say -- this is the test that notices.
     """
+    import ntpath
     import os.path
+    import posixpath
     import types
 
-    #: Genuinely inert: not callable, so there is nothing to call.
-    inert = {"devnull", "supports_unicode_filenames", "ALLOW_MISSING"}
-    #: Names the probe finds pure, which are nonetheless NOT on the allowlist,
-    #: each with the reason. This bucket is what keeps the test honest about
-    #: the difference between "the guard cannot see it" (a hole) and "we
-    #: looked and chose not to allow it" (a decision). A genuinely dangerous
-    #: new name cannot join it silently -- it has to be added here by hand,
-    #: next to a justification.
-    pure_not_allowlisted = {
-        # Compares two ``stat_result`` objects and calls nothing. A Tier-0
-        # plugin cannot obtain one anyway -- the same shape as ``json.dump``
-        # needing a file object it cannot get.
-        "samestat": "pure, and needs a stat_result a Tier-0 plugin cannot get",
-        # Python 3.12+. Genuinely a pure string split, but allowlisting it
-        # would make TIER0_PATH_HELPERS version-dependent, and a manifest
-        # using it would break on 3.10/3.11 regardless. ``splitdrive`` is
-        # allowlisted and covers the same ground.
-        "splitroot": "pure, but 3.12+ only; TIER0_PATH_HELPERS stays static",
-        # Python 3.12+. Pure on posixpath (it returns False unconditionally --
-        # junctions are a Windows concept) and IMPURE on ntpath, where it
-        # calls lstat and is caught by the interception screen. The allowlist
-        # is shared across platforms, so the stricter platform decides.
-        "isjunction": "pure on posixpath, lstat() on ntpath -- the stricter wins",
+    #: Names whose impurity the guard MUST be able to see, per implementation.
+    #: ``ntpath`` and ``posixpath`` reach the disk by different routes --
+    #: ``_getfullpathname`` versus ``os.getcwd`` -- which is the whole reason
+    #: both are driven here.
+    must_be_caught = {
+        "expandvars", "expanduser", "exists", "lexists", "isfile", "isdir",
+        "islink", "ismount", "getsize", "getmtime", "getatime", "getctime",
+        "samefile", "realpath", "abspath", "relpath",
     }
 
-    import ntpath
-    import posixpath
-
-    # BOTH implementations, not just the live one. ``ntpath`` and ``posixpath``
-    # are pure Python and importable on either platform, and they differ in
-    # ways that matter here -- ``posixpath.expandvars`` reads ``$VAR`` and
-    # returns early without one, ``ntpath.expandvars`` reads ``%VAR%``. The
-    # first version of this test probed only ``os.path`` and therefore passed
-    # on Windows while ``expandvars`` slipped the guard on Linux. Checking both
-    # turns "correct on the machine that ran it" into "correct on either CI
-    # runner".
+    allowlisted = set(tiers.TIER0_PATH_HELPERS)
     for module in (os.path, ntpath, posixpath):
-        by_module_screen: list[str] = []
-        by_interception: list[str] = []
-        accounted_inert: list[str] = []
-        unaccounted: list[str] = []
-
+        where = module.__name__
+        caught: set[str] = set()
+        modules_seen: set[str] = set()
         for name in sorted(dir(module)):
-            if name.startswith("_") or name in set(tiers.TIER0_PATH_HELPERS):
+            if name.startswith("_") or name in allowlisted:
                 continue
             value = getattr(module, name)
             if isinstance(value, types.ModuleType):
-                by_module_screen.append(name)      # the module screen catches these
-            elif name in inert or name in pure_not_allowlisted:
-                accounted_inert.append(name)
+                modules_seen.add(name)      # the module screen owns these
             elif _probe_path_helper(name, module):
-                by_interception.append(name)
-            else:
-                unaccounted.append(name)
+                caught.add(name)
 
-        where = module.__name__
-        assert unaccounted == [], (
-            f"[{where}] these names are neither allowlisted nor caught by any "
-            f"screen: {unaccounted}. Three possibilities, and somebody has to "
-            f"pick one: they are pure and belong on TIER0_PATH_HELPERS; they "
-            f"are pure but deliberately excluded, and belong in "
-            f"pure_not_allowlisted with the reason written down; or the guard "
-            f"has a hole and they reach the disk by a route it cannot see."
+        missed = {n for n in must_be_caught if hasattr(module, n)} - caught
+        assert missed == set(), (
+            f"[{where}] the guard cannot see that these touch the environment "
+            f"or the disk: {sorted(missed)}. Either a screen was blunted, or "
+            f"the probe no longer reaches them."
         )
-        # Non-vacuity: the buckets must actually contain the names we know about.
-        assert {"os", "sys", "genericpath"} <= set(by_module_screen), where
-        assert {
-            "expandvars", "expanduser", "exists", "isfile", "isdir", "islink",
-            "lexists", "getsize", "getmtime", "abspath", "realpath", "relpath",
-        } <= set(by_interception), f"[{where}] interception only caught {by_interception}"
+        # Non-vacuity: a probe that inspects nothing would report nothing.
+        assert len(caught) >= 12, f"[{where}] only caught {sorted(caught)}"
+        assert {"os", "sys", "genericpath"} <= modules_seen, where
 
 
 def test_the_helpers_a_plugin_actually_wants_still_work():
