@@ -259,12 +259,12 @@ api.nodes.registerRenderer('my_plugin:MyNode', {
 
 ```ts
 type ExecutionEvent =
-  | { type: "run_started";  run_id: string; cursor: number }
-  | { type: "node_status";  run_id: string; cursor: number;
+  | { type: "run_started";  run_id: string; cursor: number; seq: number }
+  | { type: "node_status";  run_id: string; cursor: number; seq: number;
       node_id: string; status: string; error?: string }
-  | { type: "metric";       run_id: string; cursor: number;
+  | { type: "metric";       run_id: string; cursor: number; seq: number;
       points: readonly RunMetricPoint[] }
-  | { type: "run_finished"; run_id: string; cursor: number;
+  | { type: "run_finished"; run_id: string; cursor: number; seq: number;
       status: "succeeded" | "failed" | "cancelled" | "interrupted";
       error?: string };
 ```
@@ -280,21 +280,57 @@ const off = api.events.onExecution((event) => {
 
 在你拿它蓋東西之前，值得先知道的幾件事：
 
-- **一則 `metric` 事件會帶著它被記錄下來時的整批點**，放在 `points` 裡。那些是 [`RunMetricPoint`](#apiruns--執行歷史唯讀)——和 `api.runs.metrics()` 回傳的*同一個*型別——所以同一個 fold 函式可以同時服務即時尾巴與 REST 回填。特別是兩邊的 `value` 對非有限數字都是 `null`：發散的 loss 是**曲線上的缺口，不是零**，而且會被送出，不會被跳過。
+- **一則 `metric` 事件會帶著它被記錄下來時的整批點**，放在 `points` 裡。那些是 [`RunMetricPoint`](#apiruns--執行歷史唯讀)——和 `api.runs.metrics()` 回傳的*同一個*型別——所以同一個 fold 函式可以同時服務即時尾巴與 REST 回填。特別是兩邊的 `value` 對非有限數字都是 `null`：發散的 loss 是**曲線上的缺口，不是零**，而且會被送出，不會被跳過。（唯一的差別：`ts` 只有 `api.runs.metrics()` 回來的點才有，即時事件上沒有。）
+- **事件是凍結的。** 同一個事件物件會交給每一個訂閱者，所以它和它的 `points` 都經過 `Object.freeze`——你改不到別的外掛收到的內容，要轉換請先複製。
 - **事件會批次對齊到動畫影格。** 一次每秒推送數百筆指標的執行，到你手上是每影格一叢呼叫，而不是每則訊息一次呼叫——和編輯器自己更新節點徽章用的是同一套批次機制。被切到背景或被遮住的編輯器視窗不會重繪，所以在它回來之前不會派送任何東西；若期間累積超過兩千多筆事件，最舊的指標與節點狀態會被丟棄（`run_started` 與 `run_finished` 永遠不會）。若你需要每一個點，請改用 `api.runs.metrics()` 重新讀取。
-- **它是尾巴，不是逐字稿。** 編輯器每次附掛到一次執行時，都會重播該次執行完整的記錄——重新整理頁面時仍在跑的執行，或使用者在「執行任務」面板挑一次執行來看的時候。那些重播的項目會經過同一條串流，而主程式會濾掉每一筆你已經拿過的，所以重新附掛不可能塞給你重複的資料讓你重複計算。
+- **它是尾巴，不是逐字稿。** 編輯器每次附掛到一次執行時，都會重播該次執行完整的記錄——重新整理頁面時仍在跑的執行，或使用者在「執行任務」面板挑一次執行來看的時候。那些重播的項目會經過同一條串流，而主程式會濾掉每一筆已經派送過的，所以重新附掛不可能塞給你重複的資料讓你重複計算。例外情形寫在[當編輯器附掛到一次你沒看過的執行](#當編輯器附掛到一次你沒看過的執行)。
 - **記得取消訂閱**；它會立即生效，包含在一批事件派送到一半的時候。外掛卸載或熱重載時，編輯器也會替你取消。
 - **串流涵蓋的是編輯器已附掛的執行**——從畫布分頁啟動的那些，加上使用者在「執行任務」面板選擇觀看的執行。由 `cdui run` 送出、沒人在看的執行，要從 `api.runs` 看，不在這裡。
 - **若你的 callback 拋出錯誤**，編輯器會記錄下來並繼續。其他訂閱者不受影響，但你會漏掉那一則事件。
 
-#### `cursor` 是什麼
+#### `cursor` 與 `seq`
 
-`cursor` 是這則事件在該次執行持久事件記錄中的位置——和 `GET /api/runs/{id}/events` 分頁用的是同一個 cursor，而那份記錄的一個項目，在這裡就正好是一個事件。在同一次執行內，你收到的 cursor **嚴格遞增且永不重複**。這給你一個保證和一個訊號：
+每則事件都帶兩個數字，把它們搞混，是做出一個會騙使用者的儀表板最快的方法。
 
-- **已經看過的 cursor 不會再出現**，所以你可以邊收邊 fold，不需要自己去重。
-- **cursor 跳號**——你收到 41，該次執行的下一個事件卻是 43——代表主程式丟了事件，而那只會發生在上面說的溢位情況。沒有別的原因會造成缺口：記錄本身是連續無洞的。把跳號當成「這次執行要重讀」，呼叫 `api.runs.metrics(run_id)` 把漏掉的補回來。
+**`cursor` 是這則事件在該次執行持久記錄中的位置**——和 `GET /api/runs/{id}/events` 分頁、`api.runs.get(id).last_cursor` 講的是同一個 cursor。用它把事件對回 REST 那一側。
 
-有一種情況串流藏不住：當編輯器附掛到一次你完全沒看過的執行時——使用者在「執行任務」面板點了某次執行——那次執行的記錄會從頭依 cursor 順序重播給你，然後才接上即時尾巴。每個項目仍然只到達一次，但你為那次執行看到的最初幾個事件描述的是過去。若這個差別對你有影響，可以對照 `api.runs.get(run_id)`，它的 `last_cursor` 會告訴你記錄的歷史在哪裡結束。
+它在同一次執行內嚴格遞增，但**不連續，而且跳號本身沒有任何意義**。那份記錄裡還有一些項目不會經由這條串流發布，而每一個都佔掉一個 cursor：
+
+- `artifact`——執行每存一次檢查點就寫一筆；
+- `run_warning`；
+- 被拒絕的送出，以及沒有東西可取消的取消；
+- 因為 payload 過大而被伺服器摺疊掉的指標項目。
+
+也就是說，一次每個 epoch 存檢查點、健康得不得了的訓練，每個 epoch 都會產生一次 cursor 缺口。不要把那當成資料遺失。
+
+**`seq` 是串流自己的計數器，它才是遺失的訊號。** 它逐一計算某次執行實際派送出去的事件，而且是連續的：你為某次執行收到的下一個事件，`seq` 一定剛好比上一個大 1——除非主程式在上面說的緩衝上限下丟了事件，而那是唯一能在它上面打洞的東西。
+
+```js
+// 每次執行各記一份：記住上一個 seq，看到洞就反應。
+const lastSeq = new Map();
+api.events.onExecution((event) => {
+  const previous = lastSeq.get(event.run_id);
+  lastSeq.set(event.run_id, event.seq);
+  if (previous !== undefined && event.seq > previous + 1) {
+    // 唯一的成因是緩衝溢位。從 REST 把它補回來。
+    void api.runs.metrics(event.run_id).then(backfill);
+  }
+  apply(event);
+});
+```
+
+你為某次執行看到的第一個 `seq` 是你的基準，不一定是 `1`：它從*編輯器*開始串流那次執行時算起，而那可能早於你的外掛訂閱的時間。
+
+#### 當編輯器附掛到一次你沒看過的執行
+
+上面說的去重，是編輯器**以執行為單位、整個頁面共用一份**的帳，不是每個外掛各記一份。這有兩個後果：
+
+- 當編輯器附掛到一次**還沒有任何東西串流過**的執行時——使用者在「執行任務」面板點了某次執行——伺服器會從頭重播那次執行的記錄，而你會收到它，依 cursor 順序，然後才接上即時尾巴。每個項目仍然只到達一次，但你為那次執行看到的最初幾個事件描述的是過去。
+- 當編輯器附掛到一次**已經串流過東西**的執行時，重播會對所有人一起被濾掉。如果你的外掛比另一個晚訂閱，你會繼承那份濾除，所以對於一次你個人從沒看過的執行，你可能從重播裡**什麼都收不到**。不要靠重播來填滿自己；那是 `api.runs` 的工作。
+
+若你需要知道一則事件描述的是不是過去，`api.runs.get(run_id)` 會回報 `last_cursor`。但要注意，對還在跑的執行來說它不是一行就解決的事：你讀到的是一個會動的目標，而且是在重播已經開始*之後*才讀到，所以誠實的作法是先把事件緩衝起來，等 promise 回來之後再分類。
+
+還有一個上限，與其讓你自己撞到，不如先講：編輯器會記住最近 **1024** 次它串流過的執行。在同一次頁面工作階段中附掛超過 1024 次不同的執行，然後再回頭去看那個工作階段最早的那一次，它會被重播給你第二次。一般使用根本碰不到，寫在這裡是為了讓這個限制是一條寫明的條件，而不是一個意外。
 
 ### `api.runs` — 執行歷史（唯讀）
 
@@ -324,10 +360,11 @@ interface RunMetrics { run_id: string; names: string[]; metrics: RunMetricPoint[
 interface RunMetricPoint {
   node_id: string | null; name: string; step: number;
   value: number | null;   // null 代表發散（非有限）的值——是缺口，不是零
+  ts?: string;            // ISO-8601 UTC；這裡有，即時 metric 事件上沒有
 }
 ```
 
-`RunMetricPoint` 和即時 `metric` 事件放在 `points` 裡的是同一個型別，所以儀表板可以用同一個函式 fold 兩邊。
+`RunMetricPoint` 和即時 `metric` 事件放在 `points` 裡的是同一個型別，所以儀表板可以用同一個函式 fold 兩邊。`ts` 是兩個來源之間唯一有差的欄位：`api.runs.metrics()` 會記錄每個點寫入的時間，即時串流則只帶圖表拿來對 `step` 畫的東西。忽略 `ts` 的 fold 在兩邊都能原封不動地用。
 
 `RunSummary` 對應執行歷史的一列：`id`、`name`、`status`、`error`、`options`、`queue_key`、`created_at`、`started_at`、`finished_at`、`git_commit`、`git_dirty`、`plugin_pins`、`queue_position`、`final_metrics` 與 `active`。完整型別在隨附的 SDK types 中，背後的端點則記載於 [API 參考](/advanced/api-reference)。
 

@@ -280,6 +280,16 @@ export interface RunMetricPoint {
   step: number;
   /** null for a non-finite value (a diverged loss) — a gap, not a zero. */
   value: number | null;
+  /**
+   * When the point was recorded, ISO-8601 UTC.
+   *
+   * `/metrics` has always returned it; it was simply undeclared until the
+   * plugin contract started publishing this type (#132), and an undeclared
+   * field reaching plugin authors through a typed facade is how it becomes
+   * load-bearing by accident. Optional because the live `metric` event shares
+   * this type and carries only what a chart plots against `step`.
+   */
+  ts?: string;
 }
 
 export interface RunMetrics {

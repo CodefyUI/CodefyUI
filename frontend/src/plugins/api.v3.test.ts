@@ -207,9 +207,21 @@ describe('runs facade', () => {
   });
 
   it('metrics() proxies the metrics endpoint, optionally for one series', async () => {
-    const body = { run_id: 'r1', names: ['loss'], metrics: [] };
+    // The point shape is the server's real one: `getRunMetrics` returns
+    // `res.json()` unmapped, so `ts` reaches plugin code and the contract has
+    // to declare it (it does, optionally — the live half has no `ts`).
+    const body = {
+      run_id: 'r1',
+      names: ['loss'],
+      metrics: [{
+        node_id: null, name: 'loss', step: 1, value: 0.5,
+        ts: '2026-08-02T09:15:00.000Z',
+      }],
+    };
     const fetchMock = mockFetch(body);
-    expect(await freshApi().runs.metrics('r1')).toEqual(body);
+    const got = await freshApi().runs.metrics('r1');
+    expect(got).toEqual(body);
+    expect(got.metrics[0].ts).toBe('2026-08-02T09:15:00.000Z');
     expect(fetchMock.mock.calls[0][0]).toBe('/api/runs/r1/metrics');
 
     const withName = mockFetch(body);

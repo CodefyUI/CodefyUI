@@ -33,6 +33,9 @@
  *   - Transport frames (`attached`, `detached`, `cache_cleared`,
  *     `reconnected`, protocol `error`) carry no cursor and are not run events.
  *
+ * Everything dropped here still occupies a cursor in the durable log, which is
+ * why a delivered event carries `seq` as well — see `ExecutionEvent`.
+ *
  * ── Delivery ─────────────────────────────────────────────────────────────
  *
  * Events buffer and flush on the host's shared frame slot
@@ -42,8 +45,17 @@
  * another plugin, or the host's own consumers, from seeing the batch.
  *
  * Before any of that, every frame passes the per-run watermark in
- * `alreadyDelivered` — the thing that keeps the stream a tail while the
- * host's own re-attach paths replay whole logs through the same socket.
+ * `acceptFrame` — the thing that keeps the stream a tail while the host's own
+ * re-attach paths replay whole logs through the same socket, and the place
+ * `seq` is handed out.
+ *
+ * One consequence worth knowing, because it is visible to plugin authors: the
+ * watermark table belongs to this MODULE, not to a subscription. A plugin
+ * that subscribes after another has already been streaming a run inherits
+ * that run's watermark, so a replay it has personally never seen is swallowed
+ * for it too. Documented rather than fixed: per-subscriber tables would
+ * multiply the memory by the plugin count to un-swallow history the plugin
+ * can fetch from `api.runs` anyway.
  */
 import { useTabStore } from '../store/tabStore';
 import type { ExecutionWebSocket } from '../api/ws';
@@ -55,26 +67,22 @@ export type ExecutionFinishStatus =
   | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 
 /**
- * One normalised run event — exactly one entry of the run's durable log.
- *
- * `cursor` is that entry's position, the same cursor
- * `GET /api/runs/{id}/events` pages by.
+ * A run event as normalised from the wire, before the stream stamps its `seq`.
  *
  * A `metric` entry keeps the batch it was recorded as rather than being split
  * into one event per point, for two reasons that only became visible once the
  * per-point version existed:
  *
- *  - **`cursor` stays honest.** Under overflow the buffer evicts whole
+ *  - **The log entry stays atomic.** Under overflow the buffer evicts whole
  *    events. With per-point expansion that meant dropping some points of an
  *    entry while delivering others, so a plugin holding cursor N could not
- *    conclude it had entry N — which is precisely what this module tells it
- *    to conclude. One entry, one event, one cursor.
+ *    conclude it had entry N. One entry, one event.
  *  - **`points` is the same type `runs.metrics()` returns.** A dashboard
  *    spans the live tail and the REST back-fill; making them one type means
  *    one fold, and means a diverged loss is `value: null` on both sides
  *    rather than a dropped point on one and an explicit gap on the other.
  */
-export type ExecutionEvent =
+export type ExecutionEventDraft =
   | { type: 'run_started'; run_id: string; cursor: number }
   | {
       type: 'node_status'; run_id: string; cursor: number;
@@ -89,28 +97,77 @@ export type ExecutionEvent =
       status: ExecutionFinishStatus; error?: string;
     };
 
+/**
+ * One delivered run event: a draft plus the stream's own sequence number.
+ *
+ * ── Why there are two numbers ────────────────────────────────────────────
+ *
+ * `cursor` is the entry's position in the run's DURABLE log, which is what
+ * `runs.get(id).last_cursor` and `GET /api/runs/{id}/events` speak, so it is
+ * the number that correlates an event with the REST side. What it is not is
+ * dense. Plenty of durable entries never become plugin events:
+ *
+ *   - `artifact` and `run_warning` — outside the published union.
+ *   - `execution_error` with `rejected: true`, and `execution_stopped` with
+ *     `reason: "not_running"` — deliberately dropped as misleading.
+ *   - a `metric` entry whose every point was malformed, or which the server
+ *     collapsed because the payload was too large.
+ *
+ * Each of those still consumes a cursor. A run that saves a checkpoint emits
+ * an `artifact` every time, so cursor jumps are not an edge case — they are
+ * what an ordinary training run looks like. Telling plugins to read a jump as
+ * data loss (which an earlier draft of this contract did) would have made a
+ * dashboard cry wolf on every checkpoint.
+ *
+ * `seq` is this module's own counter, incremented once per event actually
+ * handed to subscribers, per run. It is dense by construction: the only thing
+ * that can put a hole in it is the buffer dropping events under
+ * `MAX_BUFFERED_EXECUTION_EVENTS`. So `seq` answers "did I miss anything?"
+ * and `cursor` answers "where is this in the log?", and neither has to lie to
+ * do the other's job.
+ */
+export type ExecutionEvent = ExecutionEventDraft & { readonly seq: number };
+
 export type ExecutionEventHandler = (event: ExecutionEvent) => void;
 
 /**
- * How many events may wait for a frame that is not coming.
+ * How many EVENTS may wait for a frame that is not coming.
  *
  * An occluded or backgrounded document keeps `requestAnimationFrame` but
  * never calls it back, so a long training run in a hidden window would
  * otherwise grow this buffer without bound. At the cap the oldest
  * non-lifecycle events are dropped first: a plugin that misses a metric can
  * re-read it from `api.runs.metrics()`, but one that misses `run_finished`
- * waits forever.
+ * waits forever. Every drop punches a hole in `seq`, which is how a
+ * subscriber finds out.
+ *
+ * Read the unit carefully: this counts events, and one `metric` event holds a
+ * whole recorded batch. The backend flushes metrics on a 0.5s floor, so a run
+ * writing several series at a high step rate can put hundreds or low
+ * thousands of points in a single event — meaning the retained-object
+ * worst case is this number MULTIPLIED by the batch size, not equal to it.
+ * A cost-aware bound (weighting an event by its point count) would express
+ * the memory intent directly; see the #132 report for the measurement and the
+ * recommendation.
  */
 export const MAX_BUFFERED_EXECUTION_EVENTS = 2000;
 
 /**
  * How many runs keep a delivery watermark.
  *
- * One number per run, not one key per frame: see `alreadyDelivered`. A
- * workspace watches single digits of runs at once, so this only bounds a
- * pathological session; the least-recently-advanced run is dropped first.
+ * Two small numbers per run, not one key per frame: see `acceptFrame`. The
+ * bound exists so a session cannot grow the table without limit, and the
+ * least-recently-advanced run is evicted first.
+ *
+ * It is set far above what a session reaches because exceeding it is not a
+ * degraded mode, it is a broken promise: an evicted run has no watermark, so
+ * re-attaching to it replays its log a second time and the published "a
+ * cursor you have already seen will never arrive again" stops holding. 64 was
+ * reachable by a user clicking through the Runs panel; a thousand distinct
+ * runs attached in one page session is not. The exact condition is documented
+ * for plugin authors rather than left implicit.
  */
-export const EXECUTION_EVENT_WATERMARK_RUNS = 64;
+export const EXECUTION_EVENT_WATERMARK_RUNS = 1024;
 
 type Frame = Record<string, unknown>;
 
@@ -124,7 +181,7 @@ function str(value: unknown): string | undefined {
  * Pure and exported so the mapping — including everything it deliberately
  * drops — is testable without a socket.
  */
-export function normalizeExecutionFrame(raw: unknown): ExecutionEvent[] {
+export function normalizeExecutionFrame(raw: unknown): ExecutionEventDraft[] {
   if (!raw || typeof raw !== 'object') return [];
   const frame = raw as Frame;
   const type = str(frame.type);
@@ -220,14 +277,24 @@ let buffer: ExecutionEvent[] = [];
  * millions of times.
  */
 let evictFrom = 0;
-/** run_id -> the highest cursor accepted for it. Insertion order = LRU. */
-const watermarks = new Map<string, number>();
+
+/** What the stream remembers about one run. */
+interface RunWatermark {
+  /** Highest durable cursor accepted for this run. */
+  cursor: number;
+  /** How many events have been handed to subscribers for this run. */
+  seq: number;
+}
+
+/** run_id -> watermark. Insertion order is least-recently-advanced first. */
+const watermarks = new Map<string, RunWatermark>();
 let droppedSinceWarning = 0;
 
 const flusher = createFrameFlusher(flushExecutionEvents);
 
 /**
- * The gate that makes this a tail rather than a transcript.
+ * The gate that makes this a tail rather than a transcript, and the source of
+ * the dense `seq`.
  *
  * Two things push the same frame at us more than once:
  *
@@ -239,24 +306,35 @@ const flusher = createFrameFlusher(flushExecutionEvents);
  *    every replayed frame comes through the same `'*'` slot this module taps.
  *    A 1000-event run therefore used to be delivered twice.
  *
- * Cursors are gapless and monotonic per run, so one number per run answers
- * both: accept a frame only if its cursor is strictly above everything
- * already accepted for that run. A replay of ground already covered is
- * silently swallowed, and the guarantee the contract sells — cursors that
- * strictly increase and never repeat, so a jump means real loss — becomes
- * true by construction rather than by luck.
+ * Durable cursors are monotonic per run, so one number per run answers both:
+ * accept a frame only if its cursor is strictly above everything already
+ * accepted for that run. A replay of ground already covered is swallowed.
+ *
+ * `seq` is then handed out here rather than at delivery, and only to frames
+ * that actually became an event — which is what makes it dense across the
+ * entry types the stream drops. Assigning it here rather than at flush time
+ * is also deliberate: an event evicted under buffer pressure has already
+ * taken its number, so the hole it leaves is visible to subscribers.
+ *
+ * Returns the sequence number, or null when the frame is a replay.
  */
-function alreadyDelivered(run_id: string, cursor: number): boolean {
-  const watermark = watermarks.get(run_id);
-  if (watermark !== undefined && cursor <= watermark) return true;
-  // Re-insert so iteration order stays least-recently-advanced first.
-  watermarks.delete(run_id);
-  watermarks.set(run_id, cursor);
+function acceptFrame(run_id: string, cursor: number): number | null {
+  const existing = watermarks.get(run_id);
+  if (existing !== undefined) {
+    if (cursor <= existing.cursor) return null;
+    existing.cursor = cursor;
+    existing.seq += 1;
+    // Re-insert so iteration order stays least-recently-advanced first.
+    watermarks.delete(run_id);
+    watermarks.set(run_id, existing);
+    return existing.seq;
+  }
+  watermarks.set(run_id, { cursor, seq: 1 });
   if (watermarks.size > EXECUTION_EVENT_WATERMARK_RUNS) {
     const oldest = watermarks.keys().next();
     if (!oldest.done) watermarks.delete(oldest.value);
   }
-  return false;
+  return 1;
 }
 
 /** Make room at the cap, sacrificing metrics and statuses before lifecycle. */
@@ -274,15 +352,33 @@ function evictOne(): void {
   droppedSinceWarning += 1;
 }
 
+/**
+ * Freeze what every subscriber shares.
+ *
+ * One event object goes to all of them, so without this the first subscriber
+ * could empty `points` — `readonly` is a compile-time claim a plugin bundle
+ * never sees — and the second would receive an event the host never sent.
+ */
+function sealed(draft: ExecutionEventDraft, seq: number): ExecutionEvent {
+  if (draft.type === 'metric') {
+    for (const point of draft.points) Object.freeze(point);
+    Object.freeze(draft.points);
+  }
+  return Object.freeze({ ...draft, seq }) as ExecutionEvent;
+}
+
 function onFrame(raw: unknown): void {
   if (subscribers.size === 0) return;
-  const events = normalizeExecutionFrame(raw);
-  if (events.length === 0) return;
-  const [first] = events;
-  if (alreadyDelivered(first.run_id, first.cursor)) return;
-  for (const event of events) {
+  const drafts = normalizeExecutionFrame(raw);
+  // A frame that produced nothing takes no sequence number and does not move
+  // the watermark: it never happened as far as this stream is concerned.
+  if (drafts.length === 0) return;
+  const [first] = drafts;
+  const seq = acceptFrame(first.run_id, first.cursor);
+  if (seq === null) return;
+  for (const draft of drafts) {
     if (buffer.length >= MAX_BUFFERED_EXECUTION_EVENTS) evictOne();
-    buffer.push(event);
+    buffer.push(sealed(draft, seq));
   }
   flusher.schedule();
 }

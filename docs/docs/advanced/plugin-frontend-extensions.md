@@ -259,12 +259,12 @@ Requires `api.apiVersion >= 3`.
 
 ```ts
 type ExecutionEvent =
-  | { type: "run_started";  run_id: string; cursor: number }
-  | { type: "node_status";  run_id: string; cursor: number;
+  | { type: "run_started";  run_id: string; cursor: number; seq: number }
+  | { type: "node_status";  run_id: string; cursor: number; seq: number;
       node_id: string; status: string; error?: string }
-  | { type: "metric";       run_id: string; cursor: number;
+  | { type: "metric";       run_id: string; cursor: number; seq: number;
       points: readonly RunMetricPoint[] }
-  | { type: "run_finished"; run_id: string; cursor: number;
+  | { type: "run_finished"; run_id: string; cursor: number; seq: number;
       status: "succeeded" | "failed" | "cancelled" | "interrupted";
       error?: string };
 ```
@@ -280,21 +280,57 @@ const off = api.events.onExecution((event) => {
 
 Things worth knowing before you build on it:
 
-- **A `metric` event carries the whole batch it was recorded as,** in `points`. Those are [`RunMetricPoint`](#apiruns--run-history-read-only)s — the *same* type `api.runs.metrics()` returns — so one fold function can serve the live tail and the REST back-fill. In particular `value` is `null` for a non-finite number on both sides: a diverged loss is a **gap in the curve, not a zero**, and it is delivered rather than skipped.
+- **A `metric` event carries the whole batch it was recorded as,** in `points`. Those are [`RunMetricPoint`](#apiruns--run-history-read-only)s — the *same* type `api.runs.metrics()` returns — so one fold function can serve the live tail and the REST back-fill. In particular `value` is `null` for a non-finite number on both sides: a diverged loss is a **gap in the curve, not a zero**, and it is delivered rather than skipped. (The one difference: `ts` is populated on points from `api.runs.metrics()` and absent on live ones.)
+- **Events are frozen.** One event object is shared by every subscriber, so it and its `points` are `Object.freeze`d — you cannot mutate what another plugin receives, and you should copy before transforming.
 - **Events are batched onto animation frames.** A run pushing hundreds of metrics a second reaches you as one burst of calls per frame, not one call per message — the same batching the editor uses for its own node badges. A backgrounded or occluded editor window is never painted, so nothing is delivered until it comes back; if more than a couple of thousand events pile up in the meantime, the oldest metrics and node statuses are dropped (`run_started` and `run_finished` never are). Re-read metrics from `api.runs.metrics()` if you need every point.
-- **It is a tail, not a transcript.** The editor replays a run's whole recorded log whenever it attaches to one — on a page reload with a run in flight, or when the user picks a run to watch in the Runs panel. Those replayed entries pass through the same stream, and the host filters out every one you have already been given, so a re-attach can never hand you a duplicate to double-count.
+- **It is a tail, not a transcript.** The editor replays a run's whole recorded log whenever it attaches to one — on a page reload with a run in flight, or when the user picks a run to watch in the Runs panel. Those replayed entries pass through the same stream, and the host filters out every one already delivered, so a re-attach can never hand you a duplicate to double-count. The exceptions are spelled out under [when the editor attaches to a run you have not seen](#when-the-editor-attaches-to-a-run-you-have-not-seen).
 - **Unsubscribe** when you are done; it takes effect immediately, including part-way through a batch. The editor also unsubscribes you automatically on unload or hot-reload.
 - **The stream covers the runs the editor is attached to** — the ones started from a canvas tab, plus any run the user chose to watch from the Runs panel. A run submitted by `cdui run` that nobody is watching is visible through `api.runs`, not here.
 - **If your callback throws,** the editor logs it and moves on. No other subscriber is affected, but you lose that event.
 
-#### What `cursor` means
+#### `cursor` and `seq`
 
-`cursor` is the event's position in the run's durable event log — the same cursor `GET /api/runs/{id}/events` pages by, and one entry of that log is exactly one event here. Within a single run, the cursors you receive are **strictly increasing and never repeat**. That gives you one guarantee and one signal:
+Every event carries two numbers, and mixing them up is the easiest way to build a dashboard that lies to its user.
 
-- **A cursor you have already seen will never arrive again**, so you can fold events in as they come without de-duplicating.
-- **A cursor that jumps** — you had 41 and the next event for that run is 43 — means the host dropped events, which happens only under the overflow described above. Nothing else causes a gap: the log itself is gapless. Treat a jump as "re-read this run", and call `api.runs.metrics(run_id)` to recover what you missed.
+**`cursor` is where the event sits in the run's durable log** — the same cursor `GET /api/runs/{id}/events` pages by and `api.runs.get(id).last_cursor` reports. Use it to line an event up against the REST side.
 
-One case the stream cannot hide from you: when the editor attaches to a run you have not seen at all — the user clicking a run in the Runs panel — that run's recorded log is replayed to you from the start, in cursor order, before its live tail begins. Every entry still arrives exactly once, but the first events you see for that run describe the past. If the difference matters, compare against `api.runs.get(run_id)`, whose `last_cursor` tells you where the recorded history ends.
+It is strictly increasing within a run, but it is **not dense, and a jump in it means nothing**. The log also holds entries this stream does not publish, and each one consumes a cursor:
+
+- `artifact` — every checkpoint a run saves writes one;
+- `run_warning`;
+- a refused submit, and a cancel that had nothing to cancel;
+- a metric entry the server collapsed because its payload was too large.
+
+A perfectly healthy training run that checkpoints every epoch therefore produces a cursor gap every epoch. Do not treat that as data loss.
+
+**`seq` is the stream's own counter, and it is the one that signals loss.** It counts the events delivered for a run, densely: the next event you receive for a run has `seq` exactly one higher than the last one you received — unless the host dropped events under the buffering limit described above, which is the only thing that can put a hole in it.
+
+```js
+// Per run: remember the last seq you saw, and react to a hole.
+const lastSeq = new Map();
+api.events.onExecution((event) => {
+  const previous = lastSeq.get(event.run_id);
+  lastSeq.set(event.run_id, event.seq);
+  if (previous !== undefined && event.seq > previous + 1) {
+    // The only cause is buffer overflow. Recover from REST.
+    void api.runs.metrics(event.run_id).then(backfill);
+  }
+  apply(event);
+});
+```
+
+The first `seq` you see for a run is your baseline, not necessarily `1`: it counts from when the *editor* started streaming that run, which may be before your plugin subscribed.
+
+#### When the editor attaches to a run you have not seen
+
+The de-duplication above is bookkeeping the editor keeps **per run, once, for the whole page** — not per plugin. Two consequences:
+
+- When the editor attaches to a run **nothing has streamed yet** — the user clicking a run in the Runs panel — the server replays that run's recorded log from the start, and you receive it, in cursor order, before the live tail begins. Every entry still arrives exactly once, but the first events you see for that run describe the past.
+- When the editor attaches to a run **something has already streamed**, the replay is filtered out for everyone. If your plugin subscribed later than another one, you inherit that filtering, so you may see *nothing at all* from the replay of a run you personally never saw. Do not rely on a replay to populate yourself; use `api.runs` for that, which is what it is for.
+
+If you need to know whether an event describes the past, `api.runs.get(run_id)` reports `last_cursor`. Note it is not a one-liner for a run that is still going: you are reading a moving target *after* the replay has already started, so the honest pattern is to buffer events until the promise resolves and only then classify them.
+
+One bound worth knowing rather than discovering: the editor remembers the last **1024** runs it has streamed. Attaching to more than 1024 distinct runs in a single page session and then returning to one from the beginning of that session will replay it to you a second time. No ordinary session comes close, and the number is here so the limit is a documented condition rather than a surprise.
 
 ### `api.runs` — run history (read-only)
 
@@ -324,10 +360,11 @@ interface RunMetrics { run_id: string; names: string[]; metrics: RunMetricPoint[
 interface RunMetricPoint {
   node_id: string | null; name: string; step: number;
   value: number | null;   // null is a diverged (non-finite) value — a gap, not a zero
+  ts?: string;            // ISO-8601 UTC; set here, absent on live metric events
 }
 ```
 
-`RunMetricPoint` is the same type the live `metric` event carries in `points`, so a dashboard can fold both with one function.
+`RunMetricPoint` is the same type the live `metric` event carries in `points`, so a dashboard can fold both with one function. `ts` is the only field that differs between the two sources: `api.runs.metrics()` records when each point was written, the live stream carries only what a chart plots against `step`. A fold that ignores `ts` works on both unchanged.
 
 `RunSummary` mirrors a row of the run history: `id`, `name`, `status`, `error`, `options`, `queue_key`, `created_at`, `started_at`, `finished_at`, `git_commit`, `git_dirty`, `plugin_pins`, `queue_position`, `final_metrics` and `active`. The full shapes are in the vendored SDK types, and the endpoints behind them are documented in the [API Reference](/advanced/api-reference).
 

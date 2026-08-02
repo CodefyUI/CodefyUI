@@ -18,13 +18,15 @@
  *   - `api.events.onExecution` is the LIVE half. It streams what is happening
  *     right now — batched onto animation frames, so a training run pushing
  *     hundreds of metrics a second costs you one render per frame, not one
- *     per point. Within a run its cursors strictly increase and never repeat,
- *     so the editor re-attaching to a run cannot hand you the same entry
- *     twice; a cursor that JUMPS is the signal that events were dropped.
+ *     per point. The editor re-attaching to a run cannot hand you the same
+ *     entry twice, and a hole in `event.seq` — NOT in `event.cursor` — is the
+ *     signal that events were dropped. (`cursor` skips durable entries this
+ *     stream does not publish, an artifact for every saved checkpoint among
+ *     them, so cursor gaps are ordinary and mean nothing.)
  *   - `api.runs` is the HISTORY half. Read-only: `list()`, `get(id)`,
  *     `metrics(id)`. Use it to fill in everything that happened before you
- *     were listening, and to recover anything a jumped cursor tells you the
- *     live stream dropped.
+ *     were listening, and to recover anything a `seq` hole says the live
+ *     stream dropped.
  *
  * The pattern below is the one most dashboards want: subscribe first, then
  * back-fill, so no event can slip through the gap between the two.

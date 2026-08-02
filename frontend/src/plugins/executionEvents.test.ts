@@ -11,6 +11,7 @@ import {
   normalizeExecutionFrame,
   subscribeExecutionEvents,
   type ExecutionEvent,
+  type ExecutionEventDraft,
 } from './executionEvents';
 import type { RunMetricPoint } from '../api/rest';
 
@@ -147,20 +148,39 @@ describe('normalizeExecutionFrame', () => {
     }]);
   });
 
-  it('matches what runs.metrics() publishes for the same diverged point', () => {
+  it('agrees with what runs.metrics() really returns for the same point', () => {
     // Not a shape assertion for its own sake: a dashboard folds the live tail
     // and the REST back-fill with one function, which only works if a point
-    // from each side is the same thing.
+    // from each side is the same thing to that function.
+    //
+    // The REST side here is what the SERVER actually sends
+    // (`routes_runs.py` -> node_id/name/step/value/ts), not a hand-built
+    // literal — `getRunMetrics` returns `res.json()` unmapped, so the extra
+    // `ts` key reaches plugin code verbatim and the contract declares it.
     const restPoint: RunMetricPoint = {
       node_id: null, name: 'loss', step: 2, value: null,
+      ts: '2026-08-02T09:15:00.000Z',
     };
     const [live] = normalizeExecutionFrame({
       type: 'metric', run_id: 'r1', cursor: 4,
       points: [{ name: 'loss', value: null, step: 2 }],
     });
     expect(live.type).toBe('metric');
-    expect((live as Extract<ExecutionEvent, { type: 'metric' }>).points[0])
-      .toEqual(restPoint);
+    const livePoint = (live as Extract<ExecutionEventDraft, { type: 'metric' }>)
+      .points[0];
+
+    // Every field a fold reads is identical...
+    const foldFields = (p: RunMetricPoint) =>
+      ({ node_id: p.node_id, name: p.name, step: p.step, value: p.value });
+    expect(foldFields(livePoint)).toEqual(foldFields(restPoint));
+
+    // ...and `ts` is the one documented difference: the REST half records it,
+    // the live half never carries it, and it is optional for exactly that
+    // reason. Asserted rather than assumed, because an undeclared field
+    // leaking through a typed facade is how it becomes load-bearing.
+    expect(restPoint.ts).toBeDefined();
+    expect(livePoint.ts).toBeUndefined();
+    expect('ts' in livePoint).toBe(false);
   });
 
   it('skips genuinely malformed points without losing the good ones', () => {
@@ -486,6 +506,10 @@ describe('subscribeExecutionEvents', () => {
   });
 
   it('bounds the watermark table, forgetting the least recently advanced run', () => {
+    // The documented failure mode: past the bound, an evicted run's replay is
+    // delivered again. The bound is set high enough that reaching it is not a
+    // session a user has, but the condition is exact and published rather
+    // than left implicit.
     const [ws] = seedTabs(1);
     const seen: ExecutionEvent[] = [];
     subscribeExecutionEvents((e) => seen.push(e));
@@ -495,10 +519,180 @@ describe('subscribeExecutionEvents', () => {
     }
     flushExecutionEvents();
     const before = seen.length;
-    // 'old' has been evicted, so its watermark no longer suppresses.
     ws.emit({ type: 'execution_start', run_id: 'old', cursor: 5 });
     flushExecutionEvents();
     expect(seen.length).toBe(before + 1);
+  });
+
+  it('evicts by least-recently-ADVANCED, not least-recently-first-seen', () => {
+    // Without the re-insert in acceptFrame the run that must survive here is
+    // the one evicted, because it was inserted first.
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    ws.emit({ type: 'execution_start', run_id: 'veteran', cursor: 1 });
+    for (let i = 0; i < EXECUTION_EVENT_WATERMARK_RUNS - 1; i += 1) {
+      ws.emit({ type: 'execution_start', run_id: `r${i}`, cursor: 1 });
+    }
+    // Touch the veteran again: it is now the most recently advanced run, so
+    // the next insertion must evict r0, not it.
+    ws.emit({
+      type: 'node_status', run_id: 'veteran', cursor: 2,
+      node_id: 'n', status: 'running',
+    });
+    ws.emit({ type: 'execution_start', run_id: 'newcomer', cursor: 1 });
+    flushExecutionEvents();
+    seen.length = 0;
+
+    // The veteran kept its watermark: a replay of cursors 1-2 is swallowed.
+    ws.emit({ type: 'execution_start', run_id: 'veteran', cursor: 1 });
+    ws.emit({
+      type: 'node_status', run_id: 'veteran', cursor: 2,
+      node_id: 'n', status: 'running',
+    });
+    // r0 lost its watermark: its replay comes through.
+    ws.emit({ type: 'execution_start', run_id: 'r0', cursor: 1 });
+    flushExecutionEvents();
+    expect(seen.map((e) => e.run_id)).toEqual(['r0']);
+  });
+});
+
+describe('seq -- the dense counter that actually signals loss', () => {
+  it('stays dense across durable entries the stream does not publish', () => {
+    // The log entries here are cursors 1-5, but artifact and run_warning are
+    // outside the published union. A run that saves a checkpoint emits an
+    // artifact every time, so a dashboard told to read a cursor jump as data
+    // loss would cry wolf on every checkpoint.
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({
+      type: 'artifact', run_id: 'r1', cursor: 2,
+      artifact_id: 7, kind: 'checkpoint',
+    });
+    ws.emit({ type: 'run_warning', run_id: 'r1', cursor: 3, kind: 'dropped_signals' });
+    ws.emit({
+      type: 'metric', run_id: 'r1', cursor: 4,
+      points: [{ name: 'loss', value: 0.5, step: 1, node_id: null }],
+    });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 5 });
+    flushExecutionEvents();
+
+    expect(seen.map((e) => e.cursor)).toEqual([1, 4, 5]);
+    expect(seen.map((e) => e.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('stays dense across an all-malformed metric entry', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'metric', run_id: 'r1', cursor: 2, points: ['garbage'] });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 3 });
+    flushExecutionEvents();
+    expect(seen.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it('counts per run, not per workspace', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({ type: 'execution_start', run_id: 'a', cursor: 1 });
+    ws.emit({ type: 'execution_start', run_id: 'b', cursor: 1 });
+    ws.emit({ type: 'execution_complete', run_id: 'a', cursor: 2 });
+    ws.emit({ type: 'execution_complete', run_id: 'b', cursor: 2 });
+    flushExecutionEvents();
+    expect(seen.map((e) => [e.run_id, e.seq]))
+      .toEqual([['a', 1], ['b', 1], ['a', 2], ['b', 2]]);
+  });
+
+  it('does not advance for a swallowed replay', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 2 });
+    flushExecutionEvents();
+    expect(seen.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it('JUMPS when the buffer drops events -- the one thing that makes a hole', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    // A first frame gets through normally.
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    flushExecutionEvents();
+    expect(seen.map((e) => e.seq)).toEqual([1]);
+
+    // Then the window goes dark and more arrives than the buffer holds.
+    const dropped = 200;
+    const total = MAX_BUFFERED_EXECUTION_EVENTS + dropped;
+    for (let i = 0; i < total; i += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor: i + 2,
+        points: [{ name: 'loss', value: i, step: i, node_id: null }],
+      });
+    }
+    flushExecutionEvents();
+
+    const seqs = seen.map((e) => e.seq);
+    expect(seqs).toHaveLength(MAX_BUFFERED_EXECUTION_EVENTS + 1);
+    // Numbers were handed out to all of them, so the survivors run to the end
+    // and the ones the buffer sacrificed are simply absent.
+    expect(seqs[seqs.length - 1]).toBe(total + 1);
+    // The subscriber had seq 1; the next thing it sees is far past 2. That
+    // jump is the signal, and it is the ONLY way to get one.
+    expect(seqs[1]).toBe(dropped + 2);
+    expect(seqs[1] - seqs[0]).toBeGreaterThan(1);
+  });
+});
+
+describe('delivered events are shared, so they are frozen', () => {
+  it('one subscriber cannot empty points for another', () => {
+    const [ws] = seedTabs(1);
+    subscribeExecutionEvents((e) => {
+      if (e.type !== 'metric') return;
+      // `readonly` is compile-time only; a plugin bundle never sees it.
+      try {
+        (e.points as RunMetricPoint[]).length = 0;
+      } catch {
+        /* frozen, so strict mode throws -- which is the point */
+      }
+    });
+    const second: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => second.push(e));
+
+    ws.emit({
+      type: 'metric', run_id: 'r1', cursor: 1,
+      points: [{ name: 'loss', value: 0.5, step: 1, node_id: null }],
+    });
+    flushExecutionEvents();
+
+    const event = second[0] as Extract<ExecutionEvent, { type: 'metric' }>;
+    expect(event.points).toHaveLength(1);
+    expect(event.points[0].value).toBe(0.5);
+  });
+
+  it('freezes the event, its points array and each point', () => {
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    ws.emit({
+      type: 'metric', run_id: 'r1', cursor: 1,
+      points: [{ name: 'loss', value: 0.5, step: 1, node_id: null }],
+    });
+    flushExecutionEvents();
+    const event = seen[0] as Extract<ExecutionEvent, { type: 'metric' }>;
+    expect(Object.isFrozen(event)).toBe(true);
+    expect(Object.isFrozen(event.points)).toBe(true);
+    expect(Object.isFrozen(event.points[0])).toBe(true);
   });
 });
 

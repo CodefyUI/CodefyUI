@@ -154,6 +154,15 @@ export interface RunMetricPoint {
   step: number;
   /** `null` for a non-finite value (a diverged loss) — a gap, not a zero. */
   value: number | null;
+  /**
+   * When the point was recorded, ISO-8601 UTC.
+   *
+   * Present on points from `runs.metrics()`, absent on points from a live
+   * `metric` event — the live path carries only what a chart needs to plot
+   * against `step`. Optional for exactly that reason; a fold that ignores it
+   * works on both halves unchanged.
+   */
+  ts?: string;
 }
 
 /** Terminal state of a run. */
@@ -163,11 +172,27 @@ export type ExecutionFinishStatus =
 /**
  * One run event, as `api.events.onExecution` delivers it.
  *
- * Every event maps 1:1 onto one entry of the run's durable event log, and
- * `cursor` is that entry's position — the same cursor
- * `GET /api/runs/{id}/events` pages by. Within a run, cursors you receive are
- * strictly increasing and never repeat, so a jump means the host dropped
- * events under load and `runs.metrics()` is the way to recover them.
+ * Every event carries TWO numbers, and they answer different questions.
+ *
+ * `cursor` is the event's position in the run's durable log — the same cursor
+ * `GET /api/runs/{id}/events` pages by and `runs.get(id).last_cursor` reports.
+ * Use it to line an event up against the REST side. It is strictly increasing
+ * within a run but **not dense**: the log also holds entries this stream does
+ * not publish (artifacts, run warnings, refused submits, entries the server
+ * collapsed because they were too large), and each of those consumes a cursor.
+ * A cursor jump is therefore ordinary — a run that saves a checkpoint produces
+ * one every time — and says nothing about whether you missed anything.
+ *
+ * `seq` is this stream's own counter, and it is the one to check for loss. It
+ * counts the events delivered to plugin subscribers for a run, densely: the
+ * next event you receive for a run always has `seq` exactly one higher than
+ * the last, unless the host dropped events under the buffering limit. So
+ * `seq` gapless means you have everything; `seq` jumping by N means N events
+ * were dropped and `runs.metrics()` is how to recover them.
+ *
+ * (The first `seq` you see for a run is your baseline, not necessarily 1: it
+ * counts from when the editor started streaming that run, which may predate
+ * your subscription.)
  *
  * A `metric` entry carries the whole batch it was recorded as, rather than
  * being split into one event per point. That keeps the log entry atomic —
@@ -175,19 +200,22 @@ export type ExecutionFinishStatus =
  * been delivered — and makes `points` the SAME type `runs.metrics()` returns,
  * so a dashboard can fold the live tail and the REST back-fill with one
  * function. `value` is `null` for a non-finite number exactly as it is there.
+ *
+ * Events and their `points` are frozen: they are shared between every
+ * subscriber, so one plugin cannot mutate what another receives.
  */
 export type ExecutionEvent =
-  | { type: 'run_started'; run_id: string; cursor: number }
+  | { type: 'run_started'; run_id: string; cursor: number; seq: number }
   | {
-      type: 'node_status'; run_id: string; cursor: number;
+      type: 'node_status'; run_id: string; cursor: number; seq: number;
       node_id: string; status: string; error?: string;
     }
   | {
-      type: 'metric'; run_id: string; cursor: number;
+      type: 'metric'; run_id: string; cursor: number; seq: number;
       points: readonly RunMetricPoint[];
     }
   | {
-      type: 'run_finished'; run_id: string; cursor: number;
+      type: 'run_finished'; run_id: string; cursor: number; seq: number;
       status: ExecutionFinishStatus; error?: string;
     };
 
