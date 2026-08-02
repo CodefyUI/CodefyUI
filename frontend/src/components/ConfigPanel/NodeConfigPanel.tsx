@@ -1,4 +1,5 @@
 import { useTabStore } from '../../store/tabStore';
+import { resolveDynamicInputs, resolveDynamicOutputs } from '../../utils';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { NodeParamList } from '../shared/NodeParamList';
@@ -17,6 +18,8 @@ export function NodeConfigPanel() {
   const selectedNode = nodes.find((n) => n.id === selectedNodeId);
   const def = selectedNode?.data.definition;
   const nodeName = def?.node_name ?? '';
+  const liveInputs = resolveDynamicInputs(def, selectedNode?.data.params);
+  const liveOutputs = resolveDynamicOutputs(def, selectedNode?.data.params);
 
   if (!selectedNode) return null;
 
@@ -87,15 +90,16 @@ export function NodeConfigPanel() {
           <div className={styles.noParams}>{t('config.noParams')}</div>
         ) : null}
 
-        {/* I/O info section */}
-        {def && (def.inputs.length > 0 || def.outputs.length > 0) && (
+        {/* I/O info section — live ports, so a param-driven node (Split,
+            PythonScript) lists what it actually has right now. */}
+        {def && (liveInputs.length > 0 || liveOutputs.length > 0) && (
           <div style={{ marginTop: 20 }}>
             <div className={styles.sectionHeaderPorts}>{t('config.ports')}</div>
 
-            {def.inputs.length > 0 && (
+            {liveInputs.length > 0 && (
               <div style={{ marginBottom: 8 }}>
                 <div className={styles.portSubLabel}>{t('config.inputs')}</div>
-                {def.inputs.map((inp) => (
+                {liveInputs.map((inp) => (
                   <div key={inp.name} className={styles.portRow}>
                     <span className={styles.portDot} />
                     <span className={styles.portName}>{inp.name}</span>
@@ -108,10 +112,10 @@ export function NodeConfigPanel() {
               </div>
             )}
 
-            {def.outputs.length > 0 && (
+            {liveOutputs.length > 0 && (
               <div>
                 <div className={styles.portSubLabel}>{t('config.outputs')}</div>
-                {def.outputs.map((out) => (
+                {liveOutputs.map((out) => (
                   <div key={out.name} className={styles.portRow}>
                     <span className={styles.portDot} />
                     <span className={styles.portName}>{out.name}</span>

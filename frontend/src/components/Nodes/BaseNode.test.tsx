@@ -863,3 +863,86 @@ describe('BaseNode bypass', () => {
     expect(screen.getByText('out')).toBeInTheDocument();
   });
 });
+
+// ── PythonScript: dynamic ports + code preview (core#131) ────────────────
+
+describe('BaseNodeBody — script nodes', () => {
+  const scriptDef = () =>
+    makeDef({
+      node_name: 'PythonScript',
+      category: 'Utility',
+      inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
+      outputs: [{ name: 'out1', data_type: 'ANY', description: '', optional: false }],
+      params: [
+        {
+          name: 'code',
+          param_type: 'code',
+          default: '',
+          description: '',
+          options: [],
+          min_value: null,
+          max_value: null,
+        },
+        {
+          name: 'input_ports',
+          param_type: 'int',
+          default: 1,
+          description: '',
+          options: [],
+          min_value: 1,
+          max_value: 8,
+        },
+        {
+          name: 'output_ports',
+          param_type: 'int',
+          default: 1,
+          description: '',
+          options: [],
+          min_value: 1,
+          max_value: 8,
+        },
+      ],
+    });
+
+  const scriptData = (params: Record<string, unknown>) =>
+    baseData({ type: 'PythonScript', definition: scriptDef(), params });
+
+  it('renders one handle per configured port, both sides', () => {
+    renderBody(scriptData({ code: '', input_ports: 3, output_ports: 2 }));
+    for (const name of ['in1', 'in2', 'in3', 'out1', 'out2']) {
+      expect(screen.getByText(name)).toBeInTheDocument();
+    }
+    expect(screen.queryByText('in4')).toBeNull();
+    expect(screen.queryByText('out3')).toBeNull();
+  });
+
+  it('shows the opening lines of the script instead of an escaped one-liner', () => {
+    renderBody(
+      scriptData({
+        code: '\n\ndef run(inputs, params):\n    x = inputs["in1"]\n    return {"out1": x}\n',
+        input_ports: 1,
+        output_ports: 1,
+      }),
+    );
+    // Leading blank lines are skipped so the preview starts at real code.
+    expect(screen.getByText('def run(inputs, params):')).toBeInTheDocument();
+    // Exact text, indentation included: getByText normalizes whitespace by
+    // default, which would hide a preview that had lost its indentation.
+    expect(
+      screen.getByText('    x = inputs["in1"]', { normalizer: (text) => text }),
+    ).toBeInTheDocument();
+    // The raw value is never rendered as one long line.
+    expect(screen.queryByText(/\n/)).toBeNull();
+  });
+
+  it('counts the lines it did not show', () => {
+    const code = Array.from({ length: 9 }, (_, i) => `line${i}`).join('\n');
+    renderBody(scriptData({ code, input_ports: 1, output_ports: 1 }));
+    expect(screen.getByText('+5 more lines')).toBeInTheDocument();
+  });
+
+  it('says the script is empty rather than showing a blank block', () => {
+    renderBody(scriptData({ code: '   \n\n', input_ports: 1, output_ports: 1 }));
+    expect(screen.getByText('(no code yet)')).toBeInTheDocument();
+  });
+});

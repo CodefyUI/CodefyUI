@@ -202,6 +202,40 @@
   text-align: right;
 }
 
+/* ── CODE param preview (core#131) ── */
+.codePreview {
+  margin: 3px 0 1px;
+  padding: 5px 6px;
+  border: 1px solid #2a2a2a;
+  border-left: 2px solid #06b6d4;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.codePreviewLine {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.625rem;
+  line-height: 1.45;
+  color: #c8c8c8;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.codePreviewMore {
+  font-size: 0.5938rem;
+  color: #6b7280;
+  padding-top: 2px;
+}
+
+.codePreviewEmpty {
+  font-size: 0.6875rem;
+  color: #6b7280;
+  font-style: italic;
+  padding: 3px 0;
+}
+
 /* ── Sequential subgraph section ── */
 .subgraphSection {
   border-top: 1px solid #333;

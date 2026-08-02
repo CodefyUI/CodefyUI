@@ -571,6 +571,17 @@ const zhTW: NodeTranslations = {
       label: '標籤前綴',
     },
   },
+  PythonScript: {
+    description:
+      '直接在畫布上寫 Python。定義 run(inputs, params)，回傳以輸出連接埠為鍵的字典（直接回傳單一值時視為 out1）。腳本只能使用 collections、itertools、json、math、numpy、re、statistics、torch 這幾個函式庫。這限制的是它能碰到哪些函式庫，而不是那些函式庫能做什麼：這是防護欄，不是沙箱，程式碼以你的權限在 CodefyUI 行程內執行。只執行你信任的程式碼。',
+    params: {
+      code: '定義 run(inputs, params) 的 Python 原始碼。每次編輯都會依 Tier-0 政策檢查。',
+      input_ports: '輸入連接埠 in1..inN 的數量（1..8）',
+      output_ports: '輸出連接埠 out1..outN 的數量（1..8）',
+      input_types: '每個輸入連接埠的資料型別，以逗號分隔。列得比連接埠少時，最後一項會沿用到其餘連接埠。',
+      output_types: '每個輸出連接埠的資料型別，以逗號分隔。ANY 可接到任何地方；填入實際型別則可讓流程驗證器替你檢查接線。',
+    },
+  },
   Reshape: {
     description: '將張量重塑為指定形狀',
     params: {

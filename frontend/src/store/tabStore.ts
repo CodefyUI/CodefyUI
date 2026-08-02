@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
-import { generateId, buildFlowNode, isBypassable } from '../utils';
+import {
+  generateId,
+  buildFlowNode,
+  isBypassable,
+  resolveDynamicInputs,
+  resolveDynamicOutputs,
+} from '../utils';
 import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
@@ -357,6 +363,54 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+const NO_STALE_EDGES: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Ids of edges a param edit would leave hanging off a handle that no longer
+ * exists (core#131).
+ *
+ * Only ports the resolver itself produced are candidates, so trigger handles
+ * and preset ports — which this knows nothing about — are never touched. For
+ * every node whose ports do NOT depend on params the two resolvers hand back
+ * the definition's own arrays, so the identity check below settles it in two
+ * comparisons; the set work only ever runs for Split and PythonScript.
+ */
+function staleEdges(
+  node: Node<NodeData> | undefined,
+  nextParams: Record<string, unknown>,
+  edges: Edge[],
+): ReadonlySet<string> {
+  const def = node?.data.definition;
+  if (!node || !def) return NO_STALE_EDGES;
+
+  const inputsBefore = resolveDynamicInputs(def, node.data.params);
+  const inputsAfter = resolveDynamicInputs(def, nextParams);
+  const outputsBefore = resolveDynamicOutputs(def, node.data.params);
+  const outputsAfter = resolveDynamicOutputs(def, nextParams);
+  if (inputsBefore === inputsAfter && outputsBefore === outputsAfter) {
+    return NO_STALE_EDGES;
+  }
+
+  const names = (ports: { name: string }[]) => new Set(ports.map((p) => p.name));
+  const hadInput = names(inputsBefore);
+  const hasInput = names(inputsAfter);
+  const hadOutput = names(outputsBefore);
+  const hasOutput = names(outputsAfter);
+
+  const stale = new Set<string>();
+  for (const edge of edges) {
+    const from = edge.sourceHandle;
+    const to = edge.targetHandle;
+    if (edge.source === node.id && from && hadOutput.has(from) && !hasOutput.has(from)) {
+      stale.add(edge.id);
+    }
+    if (edge.target === node.id && to && hadInput.has(to) && !hasInput.has(to)) {
+      stale.add(edge.id);
+    }
+  }
+  return stale;
 }
 
 // ── Serialization helpers ──
@@ -1052,15 +1106,49 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   updateNodeParams: (nodeId, params) => {
     get().markDirty(nodeId);
+
+    // Deleting edges is not something a param edit is expected to do, so it
+    // gets its own undo entry BEFORE the write: dropping a script from 8
+    // ports to 1 destroys up to 7 edges, and without this Ctrl+Z would skip
+    // straight past their deletion to whatever was undoable before it.
+    // Computed here, ahead of the write, because `pushUndoSnapshot` captures
+    // the CURRENT tab and must see the edges intact.
+    {
+      const tab = get().getActiveTab();
+      const node = tab.nodes.find((n) => n.id === nodeId);
+      const merged = { ...(node?.data.params ?? {}), ...params };
+      if (staleEdges(node, merged, tab.edges).size > 0) {
+        get().pushUndoSnapshot();
+      }
+    }
+
+    const orphaned = new Set<string>();
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
-        nodes: tab.nodes.map((n) =>
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
+        const node = tab.nodes.find((n) => n.id === nodeId);
+        const nextParams = { ...(node?.data.params ?? {}), ...params };
+        const nodes = tab.nodes.map((n) =>
           n.id === nodeId
-            ? { ...n, data: { ...n.data, params: { ...n.data.params, ...params } } }
+            ? { ...n, data: { ...n.data, params: nextParams } }
             : n
-        ),
-      })),
+        );
+        // A param can change the node's own PORT SET (Split's `chunks`,
+        // PythonScript's `input_ports`/`output_ports`). An edge left hanging
+        // off a handle that no longer renders is invisible on the canvas but
+        // very much alive in the graph JSON, and the backend validator
+        // rejects the whole run for it. Drop those edges here — the one
+        // choke point every param edit from every surface goes through.
+        const stale = staleEdges(node, nextParams, tab.edges);
+        if (stale.size === 0) return { nodes };
+        for (const edge of tab.edges) {
+          // A consumer that just lost its input is dirty in its own right:
+          // once the edge is gone the dirty walk cannot reach it from here.
+          if (stale.has(edge.id) && edge.target !== nodeId) orphaned.add(edge.target);
+        }
+        return { nodes, edges: tab.edges.filter((e) => !stale.has(e.id)) };
+      }),
     });
+    for (const target of orphaned) get().markDirty(target);
   },
 
   updatePresetInternalParam: (nodeId, internalNodeId, paramName, value) =>

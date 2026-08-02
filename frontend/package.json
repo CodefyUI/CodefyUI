@@ -13,7 +13,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@codemirror/commands": "^6",
+    "@codemirror/lang-python": "^6",
+    "@codemirror/language": "^6",
+    "@codemirror/state": "^6",
+    "@codemirror/view": "^6",
     "@dagrejs/dagre": "^3.0.0",
+    "@lezer/highlight": "^1",
     "@xyflow/react": "^12.6.0",
     "katex": "^0.16.45",
     "react": "^19.1.0",

@@ -9,7 +9,11 @@ export interface PortDefinition {
 
 export interface ParamDefinition {
   name: string;
-  param_type: 'int' | 'float' | 'string' | 'bool' | 'select' | 'model_file' | 'image_file' | 'tensor_grid' | 'secret';
+  param_type:
+    | 'int' | 'float' | 'string' | 'bool' | 'select'
+    | 'model_file' | 'image_file' | 'tensor_grid' | 'secret'
+    /** Multi-line Python source; rendered with a code editor (core#131). */
+    | 'code';
   default: any;
   description: string;
   options: string[];

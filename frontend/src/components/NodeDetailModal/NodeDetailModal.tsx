@@ -9,6 +9,7 @@ import { topologicalOrder } from '../../utils/topoOrder';
 import { MathText } from '../shared/MathText';
 import { NodeParamList } from '../shared/NodeParamList';
 import {
+  defaultTabFor,
   getNodeDetailTabs,
   type NodeDetailTabContext,
   type NodeDetailTabSpec,
@@ -85,7 +86,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   // the effect below: a deep-linked Stats tab that mounts one commit late
   // mounts the Inputs tab first, and the Inputs tab fetches.
   const [activeTabId, setActiveTabId] = useState(
-    () => activeTab.nodeDetailTab ?? 'inputs',
+    () => activeTab.nodeDetailTab ?? defaultTabFor(node),
   );
   const [draftName, setDraftName] = useState<string | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
@@ -125,7 +126,7 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const requestNonce = activeTab.nodeDetailRequest;
   useEffect(() => {
     setDraftName(null);
-    setActiveTabId(requestedTab ?? 'inputs');
+    setActiveTabId(requestedTab ?? defaultTabFor(node));
     // `requestedTab` is read, not watched — the nonce already changes on every
     // open, and listing both would re-run twice for one request.
     // eslint-disable-next-line react-hooks/exhaustive-deps

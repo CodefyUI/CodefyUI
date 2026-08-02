@@ -1,0 +1,80 @@
+/* CODE param: editor + live policy verdict (core#131). */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.labelRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.label {
+  font-size: 0.6875rem;
+  color: #9ca3af;
+}
+
+.badge {
+  font-size: 0.625rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.badgeIdle {
+  color: #4b5563;
+}
+
+.badgeChecking {
+  color: #6b7280;
+}
+
+.badgeOk {
+  color: #34d399;
+}
+
+.badgeError {
+  color: #f87171;
+}
+
+.error {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.09);
+  border-left: 2px solid #ef4444;
+  border-radius: 2px;
+  padding: 5px 7px;
+  max-height: 140px;
+  overflow-y: auto;
+  word-break: break-word;
+}
+
+.errorLine {
+  display: inline-block;
+  margin-right: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #ef4444;
+}
+
+.warning {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 2px solid #f59e0b;
+  border-radius: 2px;
+  padding: 5px 7px;
+}
+
+.allowed {
+  font-size: 0.625rem;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -57,7 +57,12 @@ import { SegmentBubble } from './SegmentBubble';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useDragAndDrop } from '../../hooks/useDragAndDrop';
-import { isValidConnection, getPortColor, resolveDynamicOutputs } from '../../utils';
+import {
+  isValidConnection,
+  getPortColor,
+  resolveDynamicInputs,
+  resolveDynamicOutputs,
+} from '../../utils';
 import { computeDetachedEndpoint } from '../../utils/reconnect';
 import { nodesBoundingBox } from '../../utils/autoLayout';
 import { rememberViewport, recallViewport } from '../../utils/viewportMemory';
@@ -376,8 +381,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
         const targetDef = targetNode.data.definition;
         if (!sourceDef || !targetDef) return true;
 
-        const sourceOutput = sourceDef.outputs.find((o) => o.name === sourceHandle);
-        const targetInput = targetDef.inputs.find((i) => i.name === targetHandle);
+        // Live port sets, not the palette template: a script node's ports
+        // and their types follow its params (core#131).
+        const sourceOutput = resolveDynamicOutputs(sourceDef, sourceNode.data.params)
+          .find((o) => o.name === sourceHandle);
+        const targetInput = resolveDynamicInputs(targetDef, targetNode.data.params)
+          .find((i) => i.name === targetHandle);
         if (!sourceOutput || !targetInput) return true;
 
         return isValidConnection(sourceOutput.data_type, targetInput.data_type);

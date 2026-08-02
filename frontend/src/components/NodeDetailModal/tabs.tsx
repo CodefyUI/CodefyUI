@@ -7,6 +7,7 @@ import { BackwardView } from '../InspectorPanel/BackwardView';
 import { CapturesTab } from './CapturesTab';
 import { StatsTab } from './StatsTab';
 import { DocsTab } from './DocsTab';
+import { CodeTab, hasCodeParam } from './CodeTab';
 
 /**
  * Everything a Node Detail Modal tab is handed. Treat it as an additive
@@ -62,6 +63,16 @@ export interface NodeDetailTabSpec {
  */
 export const BUILTIN_NODE_DETAIL_TABS: readonly NodeDetailTabSpec[] = [
   {
+    // First in the strip, and the tab the modal opens on for a node that has
+    // one (see `defaultTabFor`): for a PythonScript the script IS the node,
+    // so landing on its captured inputs would bury it.
+    id: 'code',
+    labelKey: 'nodeDetail.tabs.code',
+    order: 5,
+    isEnabled: (ctx) => hasCodeParam(ctx.node),
+    render: (ctx) => <CodeTab key={ctx.nodeId} ctx={ctx} />,
+  },
+  {
     id: 'inputs',
     labelKey: 'nodeDetail.tabs.inputs',
     order: 10,
@@ -112,6 +123,16 @@ export const BUILTIN_NODE_DETAIL_TABS: readonly NodeDetailTabSpec[] = [
     render: (ctx) => <DocsTab node={ctx.node} />,
   },
 ];
+
+/**
+ * The tab the modal opens on when nothing was deep-linked.
+ *
+ * `inputs` for everything except a node whose body is a script, where the
+ * code is the reason the modal was opened.
+ */
+export function defaultTabFor(node: Node<NodeData> | undefined): string {
+  return hasCodeParam(node) ? 'code' : 'inputs';
+}
 
 /** Tabs contributed after module load, keyed by id. */
 const extraTabs = new Map<string, NodeDetailTabSpec>();

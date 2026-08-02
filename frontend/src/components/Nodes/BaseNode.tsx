@@ -2,7 +2,13 @@ import { memo, useState, type ReactNode } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
-import { getPortColor, isParamVisible, isValidConnection, resolveDynamicOutputs } from '../../utils';
+import {
+  getPortColor,
+  isParamVisible,
+  isValidConnection,
+  resolveDynamicInputs,
+  resolveDynamicOutputs,
+} from '../../utils';
 import { findDetachableEdge, redirectMouseDownToReconnectAnchor } from '../../utils/reconnect';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
@@ -22,6 +28,43 @@ type BaseNodeProps = NodeProps<AppNode> & {
    */
   bodyExtra?: ReactNode;
 };
+
+/** Lines of a CODE param shown on the card before the "+N more" line. */
+const CODE_PREVIEW_LINES = 4;
+
+/**
+ * The opening lines of a CODE param, on the node card (core#131).
+ *
+ * Blank and comment-only leading lines are skipped so the preview starts at
+ * something that says what the script does, which for the shipped template
+ * is the `def run(...)` line.
+ */
+function CodePreview({ source }: { source: string }) {
+  const { t } = useI18n();
+  const lines = source.replace(/\t/g, '    ').split('\n');
+  const start = lines.findIndex((line) => line.trim() !== '');
+  const body = start < 0 ? [] : lines.slice(start);
+  const shown = body.slice(0, CODE_PREVIEW_LINES);
+  const hidden = Math.max(0, body.length - shown.length);
+
+  if (shown.length === 0) {
+    return <div className={styles.codePreviewEmpty}>{t('node.code.empty')}</div>;
+  }
+  return (
+    <div className={styles.codePreview} title={source}>
+      {shown.map((line, i) => (
+        <div key={i} className={styles.codePreviewLine}>
+          {line === '' ? ' ' : line}
+        </div>
+      ))}
+      {hidden > 0 && (
+        <div className={styles.codePreviewMore}>
+          {t('node.code.moreLines', { count: hidden })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Named export — the full node card with an injectable body slot. Use this
@@ -43,6 +86,10 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const [downloading, setDownloading] = useState(false);
   const { getEdges } = useReactFlow();
   const def = data.definition;
+  // Live port sets: a param-driven node (Split's `chunks`, PythonScript's
+  // `input_ports`) has a different shape than its palette template.
+  const liveInputs = resolveDynamicInputs(def, data.params);
+  const liveOutputs = resolveDynamicOutputs(def, data.params);
   const category = def?.category ?? 'Utility';
   const headerColor = CATEGORY_COLORS[category] ?? '#607D8B';
   const { t, tn } = useI18n();
@@ -226,8 +273,8 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
       {/* Ports area */}
       <div className={styles.portsArea}>
-        {/* Input handles */}
-        {def?.inputs.map((input) => (
+        {/* Input handles — param-driven nodes (PythonScript) expand here */}
+        {liveInputs.map((input) => (
           <div
             key={`in-${input.name}`}
             className={styles.portRowInput}
@@ -264,39 +311,32 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
         ))}
 
         {/* Output handles — param-driven nodes (e.g. Split) expand here */}
-        {(() => {
-          const liveOutputs = resolveDynamicOutputs(def, data.params);
-          return (
-            <>
-              {def && def.inputs.length > 0 && liveOutputs.length > 0 && (
-                <div className={styles.divider} />
-              )}
-              {liveOutputs.map((output) => (
-                <div
-                  key={`out-${output.name}`}
-                  className={styles.portRowOutput}
-                  title={output.description}
-                >
-                  <span
-                    className={styles.portLabel}
-                    style={{ color: getPortColor(output.data_type) }}
-                  >
-                    {output.name}
-                  </span>
-                  <Handle
-                    type="source"
-                    position={Position.Right}
-                    id={output.name}
-                    className={`${styles.portHandle} ${styles.portHandleOutput}${
-                      isDetaching(output.name, 'source') ? ` ${styles.portDetaching}` : ''
-                    }`}
-                    style={{ background: getPortColor(output.data_type) }}
-                  />
-                </div>
-              ))}
-            </>
-          );
-        })()}
+        {def && liveInputs.length > 0 && liveOutputs.length > 0 && (
+          <div className={styles.divider} />
+        )}
+        {liveOutputs.map((output) => (
+          <div
+            key={`out-${output.name}`}
+            className={styles.portRowOutput}
+            title={output.description}
+          >
+            <span
+              className={styles.portLabel}
+              style={{ color: getPortColor(output.data_type) }}
+            >
+              {output.name}
+            </span>
+            <Handle
+              type="source"
+              position={Position.Right}
+              id={output.name}
+              className={`${styles.portHandle} ${styles.portHandleOutput}${
+                isDetaching(output.name, 'source') ? ` ${styles.portDetaching}` : ''
+              }`}
+              style={{ background: getPortColor(output.data_type) }}
+            />
+          </div>
+        ))}
       </div>
 
       {/* Custom body slot — viz nodes inject animated chips, scatter plots, etc. */}
@@ -330,6 +370,15 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             .filter((p) => isParamVisible(p, data.params))
             .map((p) => {
               const val = data.params[p.name] ?? p.default;
+              // CODE params are the node's whole point, not a value beside a
+              // name: show the opening lines as code (core#131). One line of
+              // `def run(inputs, params):` squeezed into the 120px value
+              // column would say nothing about what the script does.
+              if (p.param_type === 'code') {
+                return (
+                  <CodePreview key={p.name} source={String(val ?? '')} />
+                );
+              }
               // SECRET params never render their value on the node card —
               // the canvas is visible during screen shares; only the
               // masked ParamField may hold the session value.

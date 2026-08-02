@@ -7,6 +7,7 @@ import { useI18n } from '../../i18n';
 // Mock the REST file backends used by the model_file / image_file variants so
 // we can drive list/upload/download success + failure paths deterministically.
 vi.mock('../../api/rest', () => ({
+  validateScript: vi.fn(),
   listModelFiles: vi.fn(),
   uploadModelFile: vi.fn(),
   downloadModelFile: vi.fn(),
@@ -23,6 +24,14 @@ import {
   uploadImageFile,
   downloadImageFile,
 } from '../../api/rest';
+vi.mock('./ScriptCodeField', () => ({
+  ScriptCodeField: ({ param, displayLabel }: any) => (
+    <div data-testid="script-code-field" data-param={param.name}>
+      {displayLabel}
+    </div>
+  ),
+}));
+
 import { ParamField } from './ParamField';
 
 const mkParam = (over: Partial<ParamDefinition>): ParamDefinition => ({
@@ -478,5 +487,24 @@ describe('ParamField — image_file FileField backend', () => {
     fireEvent.change(fileInput, { target: { files: [new File(['x'], 'n.png')] } });
     await waitFor(() => expect(uploadImageFile).toHaveBeenCalled());
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('img', 'up.png'));
+  });
+});
+
+describe('ParamField — code params (core#131)', () => {
+  const SCRIPT = ['def run(inputs, params):', '    return 1', ''].join('\n');
+
+  it('renders the script editor rather than a one-line text input', () => {
+    render(
+      <ParamField
+        param={mkParam({ name: 'code', param_type: 'code', default: SCRIPT })}
+        value={SCRIPT}
+        onChange={() => {}}
+      />,
+    );
+    const field = screen.getByTestId('script-code-field');
+    expect(field.getAttribute('data-param')).toBe('code');
+    // The string default arm would have produced an <input type="text">,
+    // which turns a multi-line script into an unreadable single line.
+    expect(screen.queryByRole('textbox')).toBeNull();
   });
 });

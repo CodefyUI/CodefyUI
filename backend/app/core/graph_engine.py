@@ -310,7 +310,7 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
             node_cls = registry.get(node["type"])
             params = node.get("data", {}).get("params", {})
             ports[node_id] = (
-                node_cls.define_inputs(),
+                node_cls.define_inputs_dynamic(params),
                 node_cls.define_outputs_dynamic(params),
             )
         return ports[node_id]
@@ -490,7 +490,8 @@ def validate_graph(
         if node["id"] not in valid_node_ids or node["id"] in preset_node_ids:
             continue
         node_cls = registry.get(node["type"])
-        for inp in node_cls.define_inputs():
+        node_params = node.get("data", {}).get("params", {}) if isinstance(node.get("data"), dict) else {}
+        for inp in node_cls.define_inputs_dynamic(node_params):
             if not inp.optional and (node["id"], inp.name) not in connected_inputs:
                 # A port left unconnected BY A BYPASS reads as the user's own
                 # wiring mistake unless the message says otherwise (core#128).
@@ -550,13 +551,14 @@ def validate_graph(
 
         src_port = edge.get("sourceHandle", "")
         tgt_port = edge.get("targetHandle", "")
-        # define_outputs_dynamic lets param-driven nodes (e.g. SplitNode whose
-        # `chunks` param decides how many chunk_i ports exist) expose their
-        # live port set. Nodes that don't override fall back to the static
-        # define_outputs() via BaseNode's default.
+        # define_{outputs,inputs}_dynamic let param-driven nodes (SplitNode's
+        # `chunks`, PythonScriptNode's `input_ports`/`output_ports`) expose
+        # their live port set. Nodes that don't override fall back to the
+        # static definitions via BaseNode's defaults.
         src_params = src.get("data", {}).get("params", {}) if isinstance(src.get("data"), dict) else {}
+        tgt_params = tgt.get("data", {}).get("params", {}) if isinstance(tgt.get("data"), dict) else {}
         src_outputs = {p.name: p for p in src_cls.define_outputs_dynamic(src_params)}
-        tgt_inputs = {p.name: p for p in tgt_cls.define_inputs()}
+        tgt_inputs = {p.name: p for p in tgt_cls.define_inputs_dynamic(tgt_params)}
 
         if src_port not in src_outputs:
             errors.append(f"Invalid output port '{src_port}' on {src['type']}")

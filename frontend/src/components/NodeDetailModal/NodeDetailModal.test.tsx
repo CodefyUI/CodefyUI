@@ -25,6 +25,16 @@ vi.mock('../../api/rest', async (importOriginal) => {
   return { ...actual, fetchNodeDefinition: vi.fn() };
 });
 
+// The script editor has its own test file, and mounting the real one here
+// would pull in the lazily-loaded editor chunk and hit the validation
+// endpoint on a timer. Stubbed for BOTH surfaces at once (the param column
+// reaches it through ParamField, the Code tab directly).
+vi.mock('../shared/ScriptCodeField', () => ({
+  ScriptCodeField: ({ displayLabel }: { displayLabel: string }) => (
+    <div data-testid="script-field">{displayLabel}</div>
+  ),
+}));
+
 // EmptyCanvasOverlay fires a REST call on mount and is irrelevant here.
 vi.mock('../Canvas/EmptyCanvasOverlay', () => ({
   EmptyCanvasOverlay: () => <div data-testid="empty-overlay" />,
@@ -1587,5 +1597,70 @@ describe('NodeDetailModal — tab registry', () => {
       'aria-labelledby',
       'node-detail-tab-docs',
     );
+  });
+});
+
+// ── Code tab (core#131) ──────────────────────────────────────────────────────
+
+describe('NodeDetailModal - script nodes', () => {
+  const codeParam = {
+    name: 'code',
+    param_type: 'code' as const,
+    default: ['def run(inputs, params):', '    return 1', ''].join('\n'),
+    description: '',
+    options: [],
+    min_value: null,
+    max_value: null,
+  };
+
+  const scriptDef = () =>
+    def({ node_name: 'PythonScript', category: 'Utility', params: [codeParam] });
+
+  function scriptNode() {
+    return node('py1', { type: 'PythonScript', definition: scriptDef() });
+  }
+
+  it('hides the Code tab for a node with no code param', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+    expect(screen.queryByRole('tab', { name: 'Code' })).toBeNull();
+  });
+
+  it('shows the Code tab first for a node that has one', () => {
+    seedTab({ nodes: [scriptNode()], nodeDetailNodeId: 'py1' });
+    render(<NodeDetailModal />);
+    const tabs = screen.getAllByRole('tab').map((el) => el.textContent);
+    expect(tabs[0]).toBe('Code');
+  });
+
+  it('opens on the Code tab, because the script is the node', () => {
+    seedTab({ nodes: [scriptNode()], nodeDetailNodeId: 'py1' });
+    render(<NodeDetailModal />);
+    expect(screen.getByRole('tab', { name: 'Code' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByText('Input ports')).toBeInTheDocument();
+  });
+
+  it('still honours an explicit deep link to another tab', () => {
+    seedTab({
+      nodes: [scriptNode()],
+      nodeDetailNodeId: 'py1',
+      nodeDetailTab: 'docs',
+    });
+    render(<NodeDetailModal />);
+    expect(screen.getByRole('tab', { name: 'Docs' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('keeps the editor in the param column as well as the tab', () => {
+    seedTab({ nodes: [scriptNode()], nodeDetailNodeId: 'py1' });
+    render(<NodeDetailModal />);
+    // One in the param column, one in the Code tab body — both bound to the
+    // same store param.
+    expect(screen.getAllByTestId('script-field').length).toBe(2);
   });
 });

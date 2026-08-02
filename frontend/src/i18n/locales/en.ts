@@ -152,6 +152,8 @@ const en = {
   'node.error': 'Error: {error}',
   'node.bypassed': 'BYPASS',
   'node.bypassed.title': 'Bypassed: this node is skipped and passes its input straight through',
+  'node.code.empty': '(no code yet)',
+  'node.code.moreLines': '+{count} more lines',
 
   // Results Panel
   'results.title': 'Execution Log',
@@ -266,6 +268,15 @@ const en = {
   'paramField.uploadFailed': 'Upload failed',
   'paramField.downloadFailed': 'Download failed',
   'paramField.secretHint': 'Session only - cleared on save. Prefer the environment variable.',
+
+  // ParamField (in-canvas Python, core#131)
+  'paramField.code.checking': 'checking...',
+  'paramField.code.ok': 'policy OK',
+  'paramField.code.rejected': 'rejected',
+  'paramField.code.unavailable': 'check unavailable',
+  'paramField.code.atLine': 'Line {line}:',
+  'paramField.code.noRun': 'No run(inputs, params) defined yet - this node will fail when the graph runs.',
+  'paramField.code.allowed': 'Imports allowed: {modules}',
 
   // Grid Snap
   'toolbar.gridSnap.on': 'Snap ON',
@@ -598,12 +609,21 @@ const en = {
   'nodeDetail.renameHint': 'Enter to apply, Esc to cancel',
   'nodeDetail.parameters': 'Parameters',
   'nodeDetail.noParams': 'This node has no configurable parameters',
+  'nodeDetail.tabs.code': 'Code',
   'nodeDetail.tabs.inputs': 'Inputs',
   'nodeDetail.tabs.outputs': 'Outputs',
   'nodeDetail.tabs.steps': 'Steps',
   'nodeDetail.tabs.backward': 'Backward',
   'nodeDetail.tabs.stats': 'Stats',
   'nodeDetail.tabs.docs': 'Docs',
+  'nodeDetail.code.title': 'Script',
+  'nodeDetail.code.contract': 'def run(inputs, params) -> dict — inputs holds one key per connected port (in1, in2, ...); return {"out1": value}. A bare value becomes out1.',
+  'nodeDetail.code.security': 'A guardrail, not a sandbox. The policy bounds which libraries a script can reach, not what those libraries can do, and the code runs in the CodefyUI process with your permissions. This check is the fast first pass: a script it accepts can still be refused while it runs. Only run scripts you trust.',
+  'nodeDetail.code.inputs': 'Input ports',
+  'nodeDetail.code.outputs': 'Output ports',
+  'nodeDetail.code.inputCount': 'Number of input ports',
+  'nodeDetail.code.outputCount': 'Number of output ports',
+  'nodeDetail.code.unavailable': 'This node has no code parameter',
   'nodeDetail.tabError': 'This tab failed to render',
   'nodeDetail.inputs.title': 'Inputs ({count})',
   'nodeDetail.outputs.title': 'Outputs ({count})',

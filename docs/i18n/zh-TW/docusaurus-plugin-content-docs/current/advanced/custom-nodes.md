@@ -8,6 +8,10 @@ description: 把一個 Python 檔案放進 custom_nodes/ 即可新增節點行�
 
 CodefyUI 是**後端權威**的：一個節點的連接埠、參數與類別全部來自其 Python 定義，UI 會自動渲染它。若要新增行為，把一個 `.py` 檔案放進 `backend/app/custom_nodes/`，並繼承 `BaseNode`。
 
+:::tip 只有幾行程式碼？先試試畫布
+如果你需要的只是一段短短的轉換，或是對流程已經算出來的東西做統計，[PythonScript 節點](./python-script-node.md) 能直接執行你在畫布上輸入的 Python——不用建檔、不用重啟。等程式碼大到裝不下，或是需要檔案、網路、或允許清單以外的套件時，再回來這裡。
+:::
+
 ## 最小範例
 
 ```python

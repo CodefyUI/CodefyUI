@@ -8,6 +8,7 @@ import {
   VIZ_NODE_TYPES,
   resolveSerializedNodes,
   resolveSerializedEdges,
+  resolveDynamicInputs,
   resolveDynamicOutputs,
   buildFlowNode,
   sanitizeGraphName,
@@ -502,6 +503,89 @@ describe('resolveDynamicOutputs', () => {
   it('strips a plugin prefix before matching the Split node name', () => {
     const ports = resolveDynamicOutputs(buildDef({ node_name: 'foundations:Split' }), { chunks: 2 });
     expect(ports.map((p) => p.name)).toEqual(['chunk_0', 'chunk_1']);
+  });
+});
+
+describe('resolveDynamicOutputs / resolveDynamicInputs for PythonScript', () => {
+  function scriptDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
+    return {
+      node_name: 'PythonScript',
+      category: 'Utility',
+      description: '',
+      inputs: [{ name: 'in1', data_type: 'TENSOR', description: '', optional: true }],
+      outputs: [{ name: 'out1', data_type: 'ANY', description: '', optional: false }],
+      params: [],
+      ...overrides,
+    };
+  }
+
+  it('expands input ports to match input_ports', () => {
+    const ports = resolveDynamicInputs(scriptDef(), { input_ports: 3 });
+    expect(ports.map((p) => p.name)).toEqual(['in1', 'in2', 'in3']);
+  });
+
+  it('expands output ports to match output_ports', () => {
+    const ports = resolveDynamicOutputs(scriptDef(), { output_ports: 2 });
+    expect(ports.map((p) => p.name)).toEqual(['out1', 'out2']);
+  });
+
+  it('leaves every input optional so a partly wired script still validates', () => {
+    const ports = resolveDynamicInputs(scriptDef(), { input_ports: 4 });
+    expect(ports.every((p) => p.optional)).toBe(true);
+  });
+
+  it('clamps the port count to 1..8 and tolerates junk', () => {
+    expect(resolveDynamicInputs(scriptDef(), { input_ports: 0 })).toHaveLength(1);
+    expect(resolveDynamicInputs(scriptDef(), { input_ports: 99 })).toHaveLength(8);
+    expect(resolveDynamicInputs(scriptDef(), { input_ports: 'many' })).toHaveLength(1);
+    expect(resolveDynamicOutputs(scriptDef(), undefined)).toHaveLength(1);
+  });
+
+  it('reads a string port count, as the store holds it after a select edit', () => {
+    expect(resolveDynamicOutputs(scriptDef(), { output_ports: '3' })).toHaveLength(3);
+  });
+
+  it('types each port from the comma-separated types param', () => {
+    const ports = resolveDynamicInputs(scriptDef(), {
+      input_ports: 3,
+      input_types: 'TENSOR,STRING,SCALAR',
+    });
+    expect(ports.map((p) => p.data_type)).toEqual(['TENSOR', 'STRING', 'SCALAR']);
+  });
+
+  it('repeats the last declared type over ports added later', () => {
+    const ports = resolveDynamicOutputs(scriptDef(), {
+      output_ports: 4,
+      output_types: 'TENSOR,STRING',
+    });
+    expect(ports.map((p) => p.data_type)).toEqual(['TENSOR', 'STRING', 'STRING', 'STRING']);
+  });
+
+  it('defaults inputs to TENSOR and outputs to ANY', () => {
+    expect(resolveDynamicInputs(scriptDef(), {})[0].data_type).toBe('TENSOR');
+    expect(resolveDynamicOutputs(scriptDef(), {})[0].data_type).toBe('ANY');
+  });
+
+  it('falls back to the default for an unknown type name or TRIGGER', () => {
+    expect(resolveDynamicOutputs(scriptDef(), { output_types: 'NOPE' })[0].data_type).toBe('ANY');
+    expect(resolveDynamicInputs(scriptDef(), { input_types: 'TRIGGER' })[0].data_type).toBe('TENSOR');
+  });
+
+  it('strips a plugin prefix before matching the node name', () => {
+    const def = scriptDef({ node_name: 'somepack:PythonScript' });
+    expect(resolveDynamicInputs(def, { input_ports: 2 })).toHaveLength(2);
+  });
+
+  it('returns the definition arrays verbatim for every other node', () => {
+    const def = scriptDef({ node_name: 'Add' });
+    // Identity, not equality: tabStore uses it as a "ports cannot have
+    // changed" short-circuit on every keystroke.
+    expect(resolveDynamicInputs(def, { input_ports: 5 })).toBe(def.inputs);
+    expect(resolveDynamicOutputs(def, { output_ports: 5 })).toBe(def.outputs);
+  });
+
+  it('returns [] when the definition is undefined', () => {
+    expect(resolveDynamicInputs(undefined, {})).toEqual([]);
   });
 });
 
