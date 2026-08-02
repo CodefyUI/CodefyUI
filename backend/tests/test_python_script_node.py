@@ -1224,6 +1224,61 @@ ROUND_THREE_PROBES = [
         "import torch\n\ndef run(inputs, params):\n"
         "    return torch.load('x.pt', weights_only=True)\n",
     ),
+    # ── review round 4: a capability that is not a module ────────────
+    #
+    # The proxy's module rule asks "may I hand over this MODULE". A class is
+    # not a module, so pathlib.Path -- arbitrary file read AND write -- came
+    # through four different spellings, and an INSTANCE of it through a
+    # fifth. Proven live by writing a file, including into the backend's own
+    # source tree, where a later import would execute it.
+    (
+        "pathlib.Path re-exported by numpy.f2py",
+        "def run(inputs, params):\n"
+        "    P = numpy.f2py.crackfortran.Path\n"
+        "    return P('.').resolve().name\n",
+    ),
+    (
+        "pathlib.Path re-exported by numpy.f2py.f2py2e.rules",
+        "def run(inputs, params):\n"
+        "    P = numpy.f2py.f2py2e.rules.Path\n"
+        "    return P('.').resolve().name\n",
+    ),
+    (
+        "pathlib.Path re-exported by torch.fx",
+        "def run(inputs, params):\n"
+        "    P = torch.fx.graph_module.Path\n"
+        "    return P('.').resolve().name\n",
+    ),
+    (
+        "pathlib.Path re-exported by torch.package",
+        "def run(inputs, params):\n"
+        "    P = torch.package.package_exporter.Path\n"
+        "    return P('.').resolve().name\n",
+    ),
+    (
+        "a Path INSTANCE, not the class",
+        "def run(inputs, params):\n"
+        "    root = numpy.testing.NUMPY_ROOT\n"
+        "    return str(root.parent)\n",
+    ),
+    (
+        "writing a file through a re-exported Path",
+        "def run(inputs, params):\n"
+        "    P = torch.fx.graph_module.Path\n"
+        "    P('round4_probe.txt').write_text('pwned')\n"
+        "    return 1\n",
+    ),
+    (
+        "importlib's find_spec re-exported by torch.cuda.amp",
+        "def run(inputs, params):\n"
+        "    f = torch.cuda.amp.common.find_spec\n"
+        "    return str(f('os'))\n",
+    ),
+    (
+        "threading.RLock re-exported by numpy.random",
+        "def run(inputs, params):\n"
+        "    return str(numpy.random.bit_generator.RLock)\n",
+    ),
 ]
 
 
@@ -1406,6 +1461,127 @@ def test_no_module_outside_the_allowlist_is_reachable_through_the_proxies():
 
     assert visited > 50, "the walk should reach a real slice of the surface"
     assert leaked == [], f"reachable outside the allowlist: {leaked[:10]}"
+
+
+def test_the_capability_rule_is_keyed_on_the_type_not_the_name():
+    """The round-4 fix, asserted without naming a real re-export.
+
+    ``pathlib.Path`` reached the script under four different attribute names
+    and once as an instance. A name rule would have needed all five; asking
+    what the VALUE IS needs one, and covers subclasses and aliases nobody has
+    written yet.
+    """
+    import math
+    import pathlib
+
+    from app.core.script_proxy import module_proxy
+
+    class MyPath(pathlib.PurePosixPath):
+        """A subclass, defined in a module that IS allowlisted."""
+
+    proxy = module_proxy(math)
+    try:
+        math.harmless_looking_name = pathlib.Path
+        with pytest.raises(ScriptPolicyError, match="reads and writes files"):
+            proxy.harmless_looking_name
+
+        math.another_name = pathlib.Path(".")  # an instance, not the class
+        with pytest.raises(ScriptPolicyError, match="reads and writes files"):
+            proxy.another_name
+
+        math.subclassed = MyPath  # __module__ is this test file, not pathlib
+        with pytest.raises(ScriptPolicyError, match="reads and writes files"):
+            proxy.subclassed
+    finally:
+        for attr in ("harmless_looking_name", "another_name", "subclassed"):
+            delattr(math, attr)
+
+
+def test_a_value_defined_by_a_blocked_module_is_refused_however_it_is_named():
+    """The companion rule: ``torch.cuda.amp.common.find_spec`` is
+    ``importlib``'s, and ``numpy.random.bit_generator.RLock`` is
+    ``threading``'s. Being re-exported by an allowlisted library does not
+    change what a function does."""
+    import math
+    import shutil
+    import subprocess
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    try:
+        math.zz_one = shutil.rmtree
+        with pytest.raises(ScriptPolicyError, match="'shutil' module"):
+            proxy.zz_one
+        math.zz_two = subprocess.Popen
+        with pytest.raises(ScriptPolicyError, match="'subprocess' module"):
+            proxy.zz_two
+    finally:
+        del math.zz_one
+        del math.zz_two
+
+
+def test_no_file_capability_is_reachable_through_the_proxies():
+    """Walk the proxy surface and assert no value that reads or writes files
+    comes back. The sweep is not vacuous: with the capability check disabled
+    it finds seven, four of which a review proved by writing a file."""
+    import io as io_module
+    import mmap
+    import pathlib
+    import types
+
+    from app.core.plugin_validator import dangerous_modules
+    from app.core.script_proxy import (
+        RestrictedModule,
+        tier0_module_namespace,
+        unwrap,
+    )
+
+    caps = (pathlib.PurePath, io_module.IOBase, mmap.mmap)
+    blocked = dangerous_modules()
+    seen: set[int] = set()
+    leaks: list[str] = []
+    inspected = 0
+
+    def defining_root(value):
+        owner = (
+            value
+            if isinstance(value, (type, types.FunctionType))
+            else type(value)
+        )
+        return (getattr(owner, "__module__", "") or "").split(".")[0]
+
+    def walk(proxy, path: str, depth: int) -> None:
+        nonlocal inspected
+        if depth > 3:
+            return
+        target = unwrap(proxy)
+        if id(target) in seen:
+            return
+        seen.add(id(target))
+        for name in dir(target):
+            try:
+                value = getattr(proxy, name)
+            except Exception:  # noqa: BLE001 - refused or simply absent
+                continue
+            if isinstance(value, RestrictedModule):
+                walk(value, f"{path}.{name}", depth + 1)
+                continue
+            inspected += 1
+            try:
+                is_cap = (
+                    isinstance(value, type) and issubclass(value, caps)
+                ) or isinstance(value, caps)
+            except TypeError:  # pragma: no cover - exotic metaclass
+                is_cap = False
+            if is_cap or defining_root(value) in blocked:
+                leaks.append(f"{path}.{name} -> {value!r}"[:120])
+
+    for root, proxy in tier0_module_namespace().items():
+        walk(proxy, root, 1)
+
+    assert inspected > 500, "the sweep should reach a real slice of the surface"
+    assert leaks == [], f"file capability reachable: {leaks[:10]}"
 
 
 def test_the_gate_and_the_proxy_agree_on_which_attributes_are_closed():

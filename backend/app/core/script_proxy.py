@@ -57,10 +57,14 @@ can see.
 
 from __future__ import annotations
 
+import io
+import mmap
+import os
+import pathlib
 import types
 from typing import Any
 
-from .plugin_validator import frame_introspection_attrs
+from .plugin_validator import dangerous_modules, frame_introspection_attrs
 from .script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_PROXY_DENIED_ATTRS,
@@ -84,6 +88,35 @@ _FRAME_ATTRS: frozenset[str] = frame_introspection_attrs()
 _SAFE_LOAD_ROOTS: frozenset[str] = frozenset(TIER0_SAFE_LOAD_RECEIVERS)
 
 _LOAD_NAMES = frozenset({"load", "loads"})
+
+#: Capability-bearing TYPES a proxy will not hand over, as the class itself or
+#: as an instance of it. Checked with ``issubclass`` / ``isinstance``, so a
+#: subclass or an alias under any name is covered -- which is the point:
+#: ``pathlib.Path`` was reachable as ``numpy.f2py.crackfortran.Path``,
+#: ``torch.fx.graph_module.Path`` and ``torch.package.package_exporter.Path``,
+#: and an *instance* of it as ``numpy.testing.NUMPY_ROOT``. A ``Path`` is
+#: arbitrary file read AND write (``read_text``, ``write_text``, ``unlink``,
+#: ``mkdir``) -- the escape a review proved by writing into the backend's own
+#: source tree, which a later import would then execute.
+#:
+#: The proxy's module rule could not see any of it: a class is not a module.
+#: This is the same question asked of values -- *what is this thing* -- rather
+#: than of names.
+#:
+#: Only types whose DEFINING module is not already blocked need listing here;
+#: everything defined by :func:`dangerous_modules` (``subprocess.Popen``,
+#: ``socket.socket``, ``threading.Thread``, ``tempfile.TemporaryDirectory``,
+#: ``ctypes.CDLL``, ...) is caught by the rule below without being named.
+_CAPABILITY_TYPES: tuple[type, ...] = (
+    pathlib.PurePath,   # __module__ is 'pathlib', but subclasses need not be
+    io.IOBase,          # __module__ is '_io' for the concrete file types
+    mmap.mmap,          # a file mapped into memory
+) + ((os.DirEntry,) if isinstance(getattr(os, "DirEntry", None), type) else ())
+
+#: Top-level modules whose classes and functions a script may not hold, even
+#: when an allowlisted library hands one over under a harmless name. Derived
+#: from the shared blocklist rather than re-listed.
+_BLOCKED_DEFINING_ROOTS: frozenset[str] = dangerous_modules()
 
 _MISS = object()
 
@@ -162,7 +195,66 @@ def _resolve(target: types.ModuleType, label: str, name: str) -> Any:
     value = getattr(target, name)  # AttributeError propagates unchanged
     if isinstance(value, types.ModuleType):
         return module_proxy(value)
+    _check_capability(value, label, name)
     return value
+
+
+def _defining_root(value: Any) -> str:
+    """Top-level module that DEFINES *value*, as it declares itself.
+
+    A class or a function answers for itself; anything else answers through
+    its type. ``pathlib.Path`` and an instance of it both come back as
+    ``pathlib`` whatever attribute they were reached through, which is what
+    makes the rule survive aliasing.
+    """
+    owner = value if isinstance(value, (type, types.FunctionType)) else type(value)
+    module = getattr(owner, "__module__", "") or ""
+    return module.split(".")[0]
+
+
+def _check_capability(value: Any, label: str, name: str) -> None:
+    """Refuse a value that IS a capability, however it was named.
+
+    The module rule asks "is this a module I may hand over"; a class is not a
+    module, so ``numpy.f2py.crackfortran.Path`` sailed past it and gave a
+    script arbitrary file read and write. This asks the same question of the
+    value: is it one of the known capability types, or is it defined by a
+    module this policy already refuses?
+
+    Type-based on purpose. A name-based version would have had to know about
+    ``crackfortran.Path``, ``graph_module.Path``, ``package_exporter.Path``
+    AND ``testing.NUMPY_ROOT`` -- four spellings of one class, which is
+    exactly the failure mode the proxy replaced for modules.
+
+    The type list is finite and this is a guardrail, not a sandbox: a
+    capability whose type is defined by an allowlisted library, or a bare C
+    function like ``os.getcwd`` bound under some harmless name, is not covered
+    here. The docs say so.
+    """
+    if isinstance(value, type):
+        try:
+            if issubclass(value, _CAPABILITY_TYPES):
+                raise _refuse(
+                    f"'{label}.{name}' is not available: it is a "
+                    f"{value.__name__!r} class, which reads and writes files. "
+                    "A script reaches the filesystem through a custom node, "
+                    "not through a library that happens to re-export the class"
+                )
+        except TypeError:  # pragma: no cover - exotic metaclass
+            pass
+    elif isinstance(value, _CAPABILITY_TYPES):
+        raise _refuse(
+            f"'{label}.{name}' is not available: it is a "
+            f"{type(value).__name__} object, which reads and writes files"
+        )
+
+    root = _defining_root(value)
+    if root in _BLOCKED_DEFINING_ROOTS:
+        raise _refuse(
+            f"'{label}.{name}' is not available: it is defined by the "
+            f"'{root}' module, which is not on the Tier-0 list, and being "
+            "re-exported by a library that is does not change what it does"
+        )
 
 
 #: Proxy state, held OFF the proxy object: ``id(proxy) -> (proxy, module,

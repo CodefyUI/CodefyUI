@@ -215,21 +215,33 @@ async def test_the_endpoint_can_approve_what_the_runtime_then_refuses(test_clien
     to. That split is the architecture, not an oversight -- but a user who
     reads the green badge as a guarantee would be wrong, and the docs say so.
     """
-    code = (
-        "def run(inputs, params):\n"
-        "    b = json.codecs.builtins\n"
-        "    f = b.eval\n"
-        "    return f('6*7')\n"
-    )
-    body = (
-        await test_client.post("/api/nodes/script/validate", json={"code": code})
-    ).json()
-    assert body["ok"] is True
-
     from app.nodes.utility.python_script_node import PythonScriptNode
 
-    with pytest.raises(RuntimeError, match="not on the Tier-0 list"):
-        PythonScriptNode().execute({}, {"code": code})
+    cases = [
+        (
+            "def run(inputs, params):\n"
+            "    b = json.codecs.builtins\n"
+            "    f = b.eval\n"
+            "    return f('6*7')\n",
+            "not on the Tier-0 list",
+        ),
+        # The consequential one: pathlib.Path re-exported by numpy, which is
+        # arbitrary file read and write. Nothing in it is spelled like a rule.
+        (
+            "def run(inputs, params):\n"
+            "    P = numpy.f2py.crackfortran.Path\n"
+            "    P('round4.txt').write_text('pwned')\n"
+            "    return 1\n",
+            "reads and writes files",
+        ),
+    ]
+    for code, refusal in cases:
+        body = (
+            await test_client.post("/api/nodes/script/validate", json={"code": code})
+        ).json()
+        assert body["ok"] is True
+        with pytest.raises(RuntimeError, match=refusal):
+            PythonScriptNode().execute({}, {"code": code})
 
 
 @pytest.mark.asyncio
