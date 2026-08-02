@@ -870,6 +870,15 @@ def test_the_gateway_rule_leaves_torch_signal_alone():
     """``torch.signal`` is torch's own DSP namespace, not the stdlib module
     of that name -- a name-keyed rule has to say so explicitly."""
     assert "signal" not in TIER0_GATEWAY_MODULE_ATTRS
+    # The gate claim holds whatever torch is installed; ``torch.signal``
+    # itself only exists from 2.1, and pyproject's floor is 2.0.
+    validate_script_source(
+        "import torch\n\ndef run(inputs, params):\n    return torch.signal.windows\n"
+    )
+    import torch
+
+    if not hasattr(torch, "signal"):  # pragma: no cover - torch < 2.1
+        pytest.skip("torch.signal arrived in 2.1")
     result = _run(
         "import torch\n\ndef run(inputs, params):\n"
         "    return float(torch.signal.windows.hann(8).sum())\n"
