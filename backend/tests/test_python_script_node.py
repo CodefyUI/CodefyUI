@@ -1279,6 +1279,12 @@ ROUND_THREE_PROBES = [
         "def run(inputs, params):\n"
         "    return str(numpy.random.bit_generator.RLock)\n",
     ),
+    (
+        "numpy's own temp-directory helper",
+        "def run(inputs, params):\n"
+        "    with numpy.testing.tempdir() as d:\n"
+        "        return str(d)\n",
+    ),
 ]
 
 
@@ -1519,6 +1525,77 @@ def test_a_value_defined_by_a_blocked_module_is_refused_however_it_is_named():
     finally:
         del math.zz_one
         del math.zz_two
+
+
+def test_the_c_implementation_of_a_blocked_module_counts_as_that_module():
+    """A blocked module is usually a thin wrapper, and what it re-exports
+    declares the implementation: ``os.getcwd.__module__`` is ``nt``, and CI
+    found ``numpy.random.bit_generator.RLock`` resolving to ``threading`` on
+    one numpy and ``_thread`` on another. Blocking only the wrapper would make
+    the verdict depend on which one a library imported from."""
+    import _thread
+    import io as io_module
+    import math
+    import os
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    for name, value in (
+        ("zz_getcwd", os.getcwd),
+        ("zz_system", os.system),
+        ("zz_fileio", io_module.FileIO),
+        ("zz_rlock", _thread.RLock),
+    ):
+        setattr(math, name, value)
+        try:
+            with pytest.raises(ScriptPolicyError):
+                getattr(proxy, name)
+        finally:
+            delattr(math, name)
+
+
+def test_a_removed_builtin_is_refused_by_identity_not_by_name():
+    """The namespace allowlist stops a script *writing* ``open``. It says
+    nothing about a library handing the same object over under another name,
+    and identity is the only check that does not care what that name is."""
+    import builtins
+    import math
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    for banned in (builtins.open, builtins.eval, builtins.exec, builtins.compile):
+        math.zz_banned = banned
+        try:
+            with pytest.raises(ScriptPolicyError, match="builtin"):
+                proxy.zz_banned
+        finally:
+            del math.zz_banned
+    # ...and an ordinary builtin-implemented library function is untouched.
+    assert proxy.floor(1.7) == 1
+
+
+def test_a_policy_check_never_crashes_on_an_odd_module_attribute():
+    """``__module__`` is not always a string -- on some C-defined classes it
+    is a slot descriptor, which CI hit on a numpy this machine did not have
+    (``'member_descriptor' object has no attribute 'split'``). A guardrail
+    that raises AttributeError from inside itself is worse than the hole."""
+    import math
+
+    from app.core.script_proxy import module_proxy
+
+    class Weird:
+        pass
+
+    Weird.__module__ = object()  # not a str, as a C slot descriptor is not
+
+    proxy = module_proxy(math)
+    math.zz_weird = Weird
+    try:
+        assert proxy.zz_weird is Weird
+    finally:
+        del math.zz_weird
 
 
 def test_no_file_capability_is_reachable_through_the_proxies():

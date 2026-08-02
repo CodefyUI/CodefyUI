@@ -148,6 +148,15 @@ TIER0_DENIED_ATTRS: tuple[str, ...] = (
     "memmap",
     "ctypeslib",
     "DataSource",
+    # numpy.testing's temp-file helpers: they create real directories and
+    # files on disk and hand back a plain ``str``, so neither the capability
+    # type rule nor the blocked-defining-module rule in
+    # :mod:`app.core.script_proxy` can see them -- they are numpy's own
+    # functions returning numpy's own strings. Listed here openly as what
+    # they are: a NAME-based patch on the residual those rules leave, closing
+    # the one instance found in the tier-0 surface rather than the class.
+    "tempdir",
+    "temppath",
 )
 
 #: Attribute names that survive the gateway rule below despite naming a

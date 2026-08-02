@@ -57,6 +57,7 @@ can see.
 
 from __future__ import annotations
 
+import builtins
 import io
 import mmap
 import os
@@ -113,10 +114,59 @@ _CAPABILITY_TYPES: tuple[type, ...] = (
     mmap.mmap,          # a file mapped into memory
 ) + ((os.DirEntry,) if isinstance(getattr(os, "DirEntry", None), type) else ())
 
+#: The C-extension modules that IMPLEMENT the blocked ones. A blocked module
+#: is usually a thin Python wrapper, and the thing it re-exports declares the
+#: implementation as its ``__module__``: ``os.getcwd.__module__`` is ``nt``
+#: (``posix`` on Linux), ``io.FileIO``'s is ``_io``, and CI found
+#: ``numpy.random.bit_generator.RLock`` resolving to ``_thread`` on one numpy
+#: version and ``threading`` on another. Blocking only the wrapper would make
+#: the rule depend on which of the two a library happened to import from.
+_BLOCKED_IMPLEMENTATION_ROOTS: frozenset[str] = frozenset({
+    "nt", "posix", "_io", "_thread", "_socket", "_ssl", "_ctypes",
+    "_pickle", "_winapi", "msvcrt", "_posixsubprocess", "_multiprocessing",
+    "_imp", "_frozen_importlib", "_frozen_importlib_external",
+})
+
 #: Top-level modules whose classes and functions a script may not hold, even
 #: when an allowlisted library hands one over under a harmless name. Derived
 #: from the shared blocklist rather than re-listed.
-_BLOCKED_DEFINING_ROOTS: frozenset[str] = dangerous_modules()
+_BLOCKED_DEFINING_ROOTS: frozenset[str] = (
+    dangerous_modules() | _BLOCKED_IMPLEMENTATION_ROOTS
+)
+
+#: Values that answer for their OWN defining module rather than through their
+#: type. Builtin functions are in here because ``os.getcwd`` and ``os.system``
+#: are ``builtin_function_or_method`` instances -- asking their type gives
+#: ``builtins`` and lets the real thing through, while asking them gives
+#: ``nt`` / ``posix``.
+_SELF_DESCRIBING: tuple[type, ...] = (
+    type,
+    types.FunctionType,
+    types.BuiltinFunctionType,
+    types.MethodType,
+    types.ModuleType,
+)
+
+#: The builtins Tier 0 removed from the namespace, held as OBJECTS.
+#:
+#: The namespace allowlist means a script cannot *name* ``open`` or ``eval``.
+#: It says nothing about a library handing one over under some other name,
+#: and identity is the only check that does not care what that name is:
+#: ``numpy.anything is builtins.open`` is the same function whatever it is
+#: called. Built from the policy's own denied-call list so the two cannot
+#: drift.
+_BANNED_BUILTINS: frozenset[Any] = frozenset(
+    obj
+    for obj in (
+        getattr(builtins, name, None)
+        for name in (
+            "open", "eval", "exec", "compile", "__import__", "input",
+            "breakpoint", "globals", "locals", "vars", "dir", "exit", "quit",
+            "help", "memoryview",
+        )
+    )
+    if callable(obj)
+)
 
 _MISS = object()
 
@@ -206,9 +256,21 @@ def _defining_root(value: Any) -> str:
     its type. ``pathlib.Path`` and an instance of it both come back as
     ``pathlib`` whatever attribute they were reached through, which is what
     makes the rule survive aliasing.
+
+    ``__module__`` is not always a string: on some C-defined classes it is a
+    slot descriptor, and CI found one (``'member_descriptor' object has no
+    attribute 'split'``) on a numpy version this machine did not have. A
+    policy check must never be the thing that crashes a legitimate script, so
+    anything that is not a ``str`` answers "unknown" and the value is allowed
+    through to the rules that do not depend on it.
     """
-    owner = value if isinstance(value, (type, types.FunctionType)) else type(value)
-    module = getattr(owner, "__module__", "") or ""
+    if isinstance(value, _SELF_DESCRIBING):
+        owner: Any = value
+    else:
+        owner = type(value)
+    module = getattr(owner, "__module__", "")
+    if not isinstance(module, str):
+        return ""
     return module.split(".")[0]
 
 
@@ -247,6 +309,18 @@ def _check_capability(value: Any, label: str, name: str) -> None:
             f"'{label}.{name}' is not available: it is a "
             f"{type(value).__name__} object, which reads and writes files"
         )
+
+    if isinstance(value, _SELF_DESCRIBING) and not isinstance(value, type):
+        # Identity, not name: the namespace allowlist stops a script writing
+        # ``open``, and this stops a library handing the same object over as
+        # ``numpy.something``.
+        if value in _BANNED_BUILTINS:
+            raise _refuse(
+                f"'{label}.{name}' is not available: it is the builtin "
+                f"{getattr(value, '__name__', '?')!r}, which this policy "
+                "removes from the namespace; reaching it through a library "
+                "does not make it a different function"
+            )
 
     root = _defining_root(value)
     if root in _BLOCKED_DEFINING_ROOTS:
