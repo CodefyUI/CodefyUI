@@ -563,8 +563,13 @@ def cmd_restore(args: argparse.Namespace) -> int:
             ok(f"{pid} 已是 {sha[:7]}", f"{pid} already at {sha[:7]}")
             continue
         _kind, owner, repo, _ref = parse_source(url)
+        # ``accept_capabilities`` matches this path's existing stance on
+        # ``trust_author``: a restore reinstalls what the project manifest
+        # already pinned, non-interactively, so it cannot stop at a prompt.
+        # The grant is still printed and still recorded in the lockfile.
         inst_args = argparse.Namespace(
-            force=True, no_confirm=True, trust_author=True, pinned_sha=sha)
+            force=True, no_confirm=True, trust_author=True,
+            accept_capabilities=True, pinned_sha=sha)
         # Trust _install_github's return code (spec ID11: install BY the pinned
         # sha). It never re-resolves the ref when pinned_sha is set, so success
         # (rc == 0) already means the installed plugin is at this exact sha.

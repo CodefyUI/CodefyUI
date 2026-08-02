@@ -202,10 +202,17 @@ def test_manifest_has_frontend_detection():
 @pytest.fixture
 def isolated_lockfile(tmp_path, monkeypatch):
     """Redirect the lockfile to a temp dir and stub the server hot-reload so
-    CLI tests never touch real user data or a running server."""
+    CLI tests never touch real user data or a running server.
+
+    ``plugins_user_root`` is patched in BOTH modules on purpose:
+    ``scripts/plugins.py`` imported the name, so it holds its own reference,
+    and patching only ``plugin_loader``'s would move the lockfile while
+    leaving any install path writing files into the real user data dir.
+    """
     target = tmp_path / "plugins"
     target.mkdir()
     monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: target)
+    monkeypatch.setattr(plugin_cli, "plugins_user_root", lambda: target)
     monkeypatch.setattr(plugin_cli, "_backend_reload", lambda: False)
     return target
 

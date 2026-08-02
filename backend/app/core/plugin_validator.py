@@ -19,12 +19,41 @@ the canvas is checked against an **allowlist** (``import_allowlist``):
 nothing but the named modules gets in, because nobody reviewed it. Both
 shapes share this walker so a bypass found in one is fixed for both; only
 the import rule differs.
+
+Three tiers on the blocklist side (core#133)
+--------------------------------------------
+Within the blocklist shape, a refused module now belongs to one of three
+answers rather than one:
+
+* **Tier 0** -- not on the blocklist at all. Nothing to declare.
+* **Tier 1** -- on the blocklist, and unlocked by a capability the manifest
+  declared and the user confirmed at install time (*capabilities*).
+* **Tier 2** -- on the blocklist, unlocked only by ``--trust-author`` plus
+  ``[security].allowed_modules`` (*allowed_modules*).
+
+The tier vocabulary lives in :mod:`app.core.security_tiers`, which imports
+nothing from here so the CLI can print a capability request without dragging
+in the walker. The blocklist itself is untouched by the tiering: a capability
+is an OVERLAY that says which refusals a declaration can lift, so the module
+sets the in-canvas policy derives from :func:`dangerous_modules` are exactly
+what they were.
 """
 
 from __future__ import annotations
 
 import ast
 from typing import Iterable
+
+from .security_tiers import (
+    TIER0_PATH_HELPERS,
+    TIER0_PATH_MODULE,
+    TIER0_PATH_ROOT,
+    capability_for_module,
+    describe_capability,
+    granted_modules,
+)
+
+_TIER0_PATH_HELPERS: frozenset[str] = frozenset(TIER0_PATH_HELPERS)
 
 
 class PluginValidationError(ValueError):
@@ -63,6 +92,15 @@ _DANGEROUS_MODULES = frozenset({
     # library re-exporting one was a handover the value rules could not see.
     "zipfile", "gzip", "tarfile", "bz2", "lzma", "codecs",
     "sqlite3", "glob", "fileinput", "webbrowser",
+    # ``os.path`` under its real names. These look like pure string helpers
+    # and are not: each one does ``import os`` and ``import sys`` at module
+    # level and leaves both bound as ordinary attributes, so
+    # ``import ntpath; ntpath.sys.modules['subprocess'].run([...])`` is
+    # arbitrary command execution through a module nobody thinks of as a
+    # capability. That route predates core#133 -- these three were simply
+    # never on the list -- and it is the same door the ``os.path`` import
+    # exception has to keep shut.
+    "ntpath", "posixpath", "genericpath",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver
@@ -126,6 +164,47 @@ _FRAME_INTROSPECTION_ATTRS = frozenset({
     "cr_frame", "cr_code",                            # coroutines
     "ag_frame", "ag_code",                            # async generators
 })
+
+# The module that DEFINES the names in ``_DANGEROUS_NAMES``.
+#
+# Those names are refused as CALLS, and until core#133 the rule matched a
+# call's leaf whatever the receiver was -- so ``re.compile(r'\d+')``,
+# ``torch.compile(model)`` and ``model.eval()`` were all refused as if they
+# were the builtin. That is a false positive with no security value: an
+# attribute-leaf ``compile`` is whatever the receiver defines, and the receiver
+# that defines the real one is ``builtins``.
+#
+# So the call rule now asks WHOSE ``eval`` this is, and only this module's
+# answer is refused. ``__builtins__`` is here for symmetry; the bare name is
+# already refused as a forbidden dunder, and the assignment-following in
+# ``_import_roots`` means ``import builtins as b; b.eval(s)`` resolves back to
+# the same verdict.
+_BUILTINS_RECEIVERS = frozenset({"builtins", "__builtins__"})
+
+# Names on the real ``os.path`` that ARE modules -- ``os``, ``sys``, ``stat``,
+# ``genericpath`` on both platforms today.
+#
+# Computed rather than listed, because the whole failure this closes was a
+# name screen: ``from os.path import genericpath`` cleared a blocklist-name
+# check and handed back a module whose ``.os`` is the real thing. Asking the
+# interpreter what is actually a module there is the same "what is it, not
+# what is it called" move the runtime proxy makes, and it covers whatever a
+# future CPython re-exports without an edit here.
+_OS_PATH_MODULE_LEAVES: frozenset[str] = frozenset()
+
+
+def _compute_os_path_module_leaves() -> frozenset[str]:
+    import os.path
+    import types as _types
+
+    return frozenset(
+        name
+        for name in dir(os.path)
+        if isinstance(getattr(os.path, name, None), _types.ModuleType)
+    )
+
+
+_OS_PATH_MODULE_LEAVES = _compute_os_path_module_leaves()
 
 
 def dangerous_modules() -> frozenset[str]:
@@ -222,6 +301,37 @@ def _resolve_call_name(func: ast.expr) -> str | None:
     return None
 
 
+def _calls_the_builtin(func: ast.expr, roots: dict[str, str]) -> bool:
+    """Whether a call to a ``_DANGEROUS_NAMES`` leaf is the BUILTIN of that name.
+
+    A bare ``eval(s)`` is. So is ``builtins.eval(s)``, and so is
+    ``import builtins as b; b.eval(s)`` -- ``_import_roots`` resolves the
+    alias, and follows a plain assignment for one hop as well.
+
+    ``re.compile``, ``torch.compile`` and ``model.eval()`` are not, and were
+    refused anyway until core#133 because the rule matched the leaf and
+    ignored the receiver (core#178, core#174). Nothing was gained by it: an
+    attribute-leaf ``compile`` is whatever the receiver defines, and the only
+    receiver that defines the real one is the module this checks for. The
+    in-canvas tier leans on the same fact from the other side -- its runtime
+    proxy refuses the builtin ``compile``/``eval``/``open`` by IDENTITY under
+    any name, and ``builtins`` is on its denied-attribute list -- so the
+    relaxation costs that tier nothing either.
+
+    An unresolvable receiver (``things[0].compile()``) answers False: for an
+    installed file the user chose the code, and for the script tier the object
+    that would have to be hiding there cannot be reached.
+    """
+    if isinstance(func, ast.Name):
+        return True
+    if isinstance(func, ast.Attribute):
+        base = _receiver_root(func)
+        if base is None:
+            return False
+        return roots.get(base, base) in _BUILTINS_RECEIVERS
+    return False
+
+
 def _check_getattr_arg_safety(
     call: ast.Call,
     denial_hint: str = "",
@@ -229,6 +339,8 @@ def _check_getattr_arg_safety(
     *,
     roots: dict[str, str] | None = None,
     safe_load_receivers: frozenset[str] | None = None,
+    denied_names: frozenset[str] = frozenset(),
+    scoped_attrs: dict[str, frozenset[str]] | None = None,
 ) -> None:
     """Disallow ``getattr(<dunder-like>, ...)`` even when arg 1 is a literal.
 
@@ -281,6 +393,23 @@ def _check_getattr_arg_safety(
                     roots=roots,
                     safe_load_receivers=safe_load_receivers,
                 )
+            receiver = _receiver_root(first)
+            if second.value in denied_names:
+                resolved = (roots or {}).get(receiver, receiver)
+                if resolved in _BUILTINS_RECEIVERS:
+                    raise PluginValidationError(
+                        f"getattr() retrieving {second.value!r} from the "
+                        f"'builtins' module is not allowed{denial_hint}",
+                        lineno=call.lineno,
+                    )
+            if scoped_attrs:
+                message = _receiver_scope_violation(
+                    second.value, receiver, roots, scoped_attrs
+                )
+                if message is not None:
+                    raise PluginValidationError(
+                        f"getattr(): {message}{denial_hint}", lineno=call.lineno
+                    )
 
 
 def _check_getattr_load(
@@ -321,15 +450,134 @@ def _check_getattr_load(
         )
 
 
+def _receiver_scope_violation(
+    attr: str,
+    receiver: str | None,
+    roots: dict[str, str] | None,
+    scoped: dict[str, frozenset[str]],
+) -> str | None:
+    """Message when *attr* is reached on a receiver its scope does not allow.
+
+    ``receiver_scoped_attrs`` is the "denied everywhere EXCEPT these roots"
+    shape, and it exists because two attributes with the same spelling can be
+    a Tier-0 module's headline function and a compiler entry point at the same
+    time: ``re.compile`` is the former, ``torch.compile`` is the latter
+    (TorchInductor generates C++/Triton and shells out to a real compiler,
+    which is the same door round 5 of core#131 closed by refusing
+    ``torch.utils.cpp_extension``).
+
+    Fails closed on an unresolvable receiver, exactly like
+    *safe_load_receivers*: ``(lambda: torch)().compile`` is what that is for.
+    """
+    allowed_roots = scoped.get(attr)
+    if allowed_roots is None:
+        return None
+    resolved = (roots or {}).get(receiver, receiver) if receiver is not None else None
+    if resolved in allowed_roots:
+        return None
+    shown = f"'{receiver}'" if receiver else "this expression"
+    return (
+        f"Access to '.{attr}' on {shown} is not allowed; under this policy "
+        f"'.{attr}' is available only on "
+        f"{', '.join(sorted(allowed_roots))}"
+    )
+
+
+def _is_tier0_path_import(
+    module: str | None, names: Iterable[str], from_import: bool
+) -> bool:
+    """Whether this import is the ``os.path`` slice Tier 0 keeps.
+
+    **One** form, and every leaf it binds must be on an explicit allowlist of
+    pure string helpers::
+
+        from os.path import join, basename, splitext    # the exception
+        from os.path import expandvars                  # NOT -- reads os.environ
+        from os.path import exists, getsize             # NOT -- real stat()
+        from os.path import genericpath                 # NOT -- a module
+        from os import path                             # NOT -- binds ntpath
+        import os / import os.path                      # NOT -- both bind ``os``
+
+    Two review rounds landed on this shape, and the way they landed is the
+    point. The first cut allowed ``from os import path`` and screened leaves
+    against the blocklist by NAME; that handed a zero-declaration plugin the
+    real ``os`` and ``sys``, verified end to end. The second screened leaves
+    by whether they ARE modules, which closed that -- and was still scoped to
+    the escape that had been *demonstrated* rather than to the property that
+    made it possible: **``os.path`` is a real module and its surface is not
+    string manipulation.** ``expandvars`` reads ``os.environ`` (it returned a
+    real API key), ``expanduser`` returns the home directory, and
+    ``exists`` / ``isfile`` / ``getsize`` call ``stat()`` on any path given.
+    None is a module, so no module screen could ever have seen them.
+
+    Hence an allowlist -- :data:`app.core.security_tiers.TIER0_PATH_HELPERS`,
+    every entry verified by CALLING it against the live ``os.path``. The
+    module screen stays as a second lock (a name added to the allowlist that
+    later becomes a module still fails) and because it is free.
+
+    ``*`` is refused: ``ntpath.__all__`` includes ``exists``, ``expanduser``
+    and ``getsize``, so a star import is exactly the leak this closes.
+
+    ``ntpath``, ``posixpath`` and ``genericpath`` are on the blocklist now
+    too, so the route that never needed this exception at all
+    (``import ntpath; ntpath.os...``, live since long before core#133) is
+    closed with it.
+    """
+    if not from_import or module != TIER0_PATH_MODULE:
+        return False
+    leaves = set(names)
+    if not leaves or not leaves <= _TIER0_PATH_HELPERS:
+        return False
+    # Belt and braces: the allowlist is a list of names, and a name is not a
+    # boundary. If a future CPython turns one of them into a module, the
+    # structural screen still refuses it.
+    return not (leaves & _OS_PATH_MODULE_LEAVES) and not (leaves & _DANGEROUS_MODULES)
+
+
+def _capability_denial(module: str, root: str, filename: str) -> str:
+    """The refusal, attributed to the tier that would unlock *root*.
+
+    The old message was ``Importing 'requests' is not allowed`` and stopped
+    there, which reads as a wall rather than as a door with a key. Every
+    refusal now names the tier: a capability the manifest can ask for, or
+    ``--trust-author`` for the roots no capability will ever cover.
+    """
+    capability = capability_for_module(root)
+    if capability is None:
+        return (
+            f"Importing '{module}' is not allowed in {filename}: no capability "
+            f"grants '{root}', because it can execute code or reach the "
+            f"interpreter hosting this plugin. A plugin that genuinely needs "
+            f"it has to be installed with --trust-author and list it in "
+            f"[security].allowed_modules"
+        )
+    hint = ""
+    if root == TIER0_PATH_ROOT:
+        hint = (
+            ". If you only need path helpers, "
+            "'from os.path import join, basename' needs no capability at all"
+        )
+    return (
+        f"Importing '{module}' is not allowed in {filename}: it requires "
+        f"capability '{capability}' -- permission to "
+        f"{describe_capability(capability)}. Declare it in the plugin "
+        f"manifest as [security] capabilities = [\"{capability}\"]; "
+        f"'cdui plugin install' then shows the request and asks the user to "
+        f"confirm before anything is written{hint}"
+    )
+
+
 def validate_python_source(
     content: bytes | str,
     filename: str = "<plugin>",
     *,
     allowed_modules: Iterable[str] | None = None,
+    capabilities: Iterable[str] | None = None,
     import_allowlist: Iterable[str] | None = None,
     extra_denied_names: Iterable[str] | None = None,
     denied_attributes: Iterable[str] | None = None,
     safe_load_receivers: Iterable[str] | None = None,
+    receiver_scoped_attrs: dict[str, Iterable[str]] | None = None,
     library_roots: Iterable[str] | None = None,
     denial_hint: str = "",
 ) -> None:
@@ -340,6 +588,15 @@ def validate_python_source(
     manifest under ``[security].allowed_modules`` and accepted by the user
     via ``--trust-author``). Dangerous builtin *calls* and dunder attribute
     access are never widened.
+
+    *capabilities* is core#133's middle answer: the capability names a
+    manifest declared under ``[security].capabilities`` and the user confirmed
+    at install time. Each one unlocks the module GROUP
+    :data:`app.core.security_tiers.CAPABILITY_MODULES` maps it to and nothing
+    else -- ``"network"`` does not bring ``subprocess`` with it, and no
+    capability lifts the pickle, dunder or RCE-leaf rules. Absent (the default,
+    and what a pre-#133 lockfile means) is the empty set, which is exactly the
+    behaviour every caller had before.
 
     *import_allowlist* switches the import rule from blocklist to allowlist:
     a module whose FULL DOTTED NAME is outside the set is refused whatever it
@@ -364,6 +621,15 @@ def validate_python_source(
     refused too, exactly as its own ``obj.save()`` already is under
     *denied_attributes*.
 
+    *receiver_scoped_attrs* is the same inversion applied per ATTRIBUTE NAME:
+    ``{"compile": ("re",)}`` refuses ``.compile`` on everything except a
+    receiver resolving to ``re``. It is what lets one spelling be a Tier-0
+    module's headline function (``re.compile``) and a compiler entry point
+    (``torch.compile``, which makes TorchInductor generate C++/Triton and
+    invoke a real compiler) without the policy having to pick one. Like
+    *safe_load_receivers* it fails closed on a receiver the walker cannot
+    resolve.
+
     *library_roots* names the receivers that are LIBRARIES rather than the
     caller's own objects, which lets two rules be stated structurally instead
     of by enumeration:
@@ -382,6 +648,7 @@ def validate_python_source(
     growing a special case.
     """
     allowed = frozenset(allowed_modules) if allowed_modules else frozenset()
+    unlocked = granted_modules(capabilities)
     allowlist = frozenset(import_allowlist) if import_allowlist is not None else None
     denied_names = _DANGEROUS_NAMES | frozenset(extra_denied_names or ())
     denied_attrs = frozenset(denied_attributes or ())
@@ -389,6 +656,10 @@ def validate_python_source(
     load_receivers = (
         frozenset(safe_load_receivers) if safe_load_receivers is not None else None
     )
+    scoped_attrs = {
+        attr: frozenset(allowed_roots)
+        for attr, allowed_roots in (receiver_scoped_attrs or {}).items()
+    }
 
     def fail(message: str, node: ast.AST | None = None) -> PluginValidationError:
         return PluginValidationError(
@@ -401,6 +672,7 @@ def validate_python_source(
         *,
         level: int = 0,
         names: Iterable[str] = (),
+        from_import: bool = False,
     ) -> None:
         """Apply whichever import rule this call selected.
 
@@ -410,7 +682,29 @@ def validate_python_source(
         ``from torch.utils.cpp_extension import load_inline`` then calls a
         bare ``load_inline(...)``. The same goes for a denied component
         anywhere in the dotted path.
+
+        *from_import* distinguishes ``from X import y`` from ``import X``,
+        which matters for exactly one rule -- the ``os.path`` exception below
+        -- because the two forms bind different objects.
         """
+        names = list(names)
+        # ``from json import __builtins__ as b`` then ``b['eval']``. Every
+        # OTHER spelling of a forbidden dunder is refused -- as a bare name, as
+        # an attribute, as a subscript target, through a literal getattr -- but
+        # an import BINDS it without writing any of those node types, so
+        # nothing looked at it. Every module has a ``__builtins__``, so the
+        # receiver did not even have to be interesting. Pre-existing, and it
+        # applies to BOTH gate shapes (a script's ``json`` is on its allowlist),
+        # which is why it runs before either verdict.
+        for leaf in names:
+            if leaf in _FORBIDDEN_DUNDERS:
+                raise fail(
+                    f"Importing the name {leaf!r} is not allowed in {filename}: "
+                    f"importing a dunder binds it without writing an attribute "
+                    f"access, which is the one spelling the other rules cannot "
+                    f"see",
+                    node,
+                )
         # Allowlist verdict first, so a module that is simply off the list
         # reads as "not allowed" rather than as whatever the denied-attribute
         # rule happens to say about one component of its name. The root check
@@ -441,10 +735,27 @@ def validate_python_source(
                     )
         if allowlist is not None:
             return
-        if module and module.split(".")[0] in _DANGEROUS_MODULES and (
-            module.split(".")[0] not in allowed
-        ):
-            raise fail(f"Importing '{module}' is not allowed in {filename}", node)
+        # ``from builtins import eval`` binds a bare ``eval`` that no Call
+        # rule below can tell from an ordinary local. The name rules refuse
+        # ``eval(...)`` and ``builtins.eval(...)``; this is the third
+        # spelling, and it is the only one that needs the import to see it.
+        if module == "builtins":
+            for leaf in names:
+                if leaf in denied_names:
+                    raise fail(
+                        f"Importing '{leaf}' from 'builtins' is not allowed in "
+                        f"{filename}: binding it to a name does not make it a "
+                        f"different function",
+                        node,
+                    )
+        root = (module or "").split(".")[0]
+        if not root or root not in _DANGEROUS_MODULES or root in allowed:
+            return
+        if _is_tier0_path_import(module, names, from_import):
+            return
+        if root in unlocked:
+            return
+        raise fail(_capability_denial(module or root, root, filename), node)
 
     try:
         tree = ast.parse(content, filename=filename)
@@ -494,6 +805,7 @@ def validate_python_source(
                 node,
                 level=node.level or 0,
                 names=[alias.name for alias in node.names],
+                from_import=True,
             )
 
         # ── Assignment onto a library module ─────────────────────────
@@ -538,6 +850,25 @@ def validate_python_source(
                     f"Access to '.{node.attr}' is not allowed in {filename}",
                     node,
                 )
+            # ``builtins.eval`` is the builtin ``eval``, and binding it to a
+            # name first (``e = builtins.eval``) means no Call-keyed rule ever
+            # sees it. Refused as an ATTRIBUTE for the same reason ``.load``
+            # is, and scoped to the one receiver that makes it true.
+            if node.attr in denied_names:
+                base = _receiver_root(node)
+                if base is not None and roots.get(base, base) in _BUILTINS_RECEIVERS:
+                    raise fail(
+                        f"Reading '.{node.attr}' from the 'builtins' module is "
+                        f"not allowed in {filename}: binding it to a name does "
+                        f"not make it a different function",
+                        node,
+                    )
+            if scoped_attrs:
+                message = _receiver_scope_violation(
+                    node.attr, _receiver_root(node), roots, scoped_attrs
+                )
+                if message is not None:
+                    raise fail(f"{message} in {filename}", node)
             # A library's PRIVATE names are how its own imports leak out:
             # ``collections._sys`` is the real ``sys``, ``statistics.random``
             # then ``._os`` is the real ``os``. Refused only for the receivers
@@ -587,7 +918,7 @@ def validate_python_source(
                 # Call node that ast.walk will visit, so we still gate on
                 # it there. Nothing left to check at this level.
                 continue
-            if name in denied_names:
+            if name in denied_names and _calls_the_builtin(node.func, roots):
                 if name in ("getattr", "setattr", "delattr"):
                     # Tighter version of the original exception: literal
                     # 2nd-arg string is still allowed, but only after we
@@ -599,6 +930,8 @@ def validate_python_source(
                         denied_attrs,
                         roots=roots,
                         safe_load_receivers=load_receivers,
+                        denied_names=denied_names,
+                        scoped_attrs=scoped_attrs,
                     )
                     if (
                         len(node.args) >= 2

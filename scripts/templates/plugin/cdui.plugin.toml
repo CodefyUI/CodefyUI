@@ -37,8 +37,41 @@ assets_dir      = "assets"
 #   [python_deps]
 #   numpy = ">=1.24"
 
-# OPTIONAL. The AST validator blocks dangerous imports (os, subprocess, …) on
-# install. If your nodes legitimately need one, list it here; users then have to
-# install with --trust-author.
+# OPTIONAL. Most plugins delete this whole section.
+#
+# An AST gate checks every .py file at install time. Three tiers:
+#
+#   Tier 0 — nothing to declare. Pure computation: math, statistics,
+#     collections, itertools, functools, json, re, dataclasses, typing, enum,
+#     decimal, random, numpy, torch, pandas — plus the path helpers, via
+#     `from os.path import join, basename`. That exact form, and only for the
+#     pure string helpers: join, basename, dirname, split, splitext,
+#     splitdrive, normpath, normcase, isabs, commonpath, commonprefix, and the
+#     sep/curdir/pardir/extsep/pathsep/altsep/defpath constants. Everything
+#     else on os.path reads the environment (expandvars, expanduser) or hits
+#     the disk (exists, isfile, getsize, abspath), so it needs "process-env" —
+#     as do `import os`, `import os.path`, `from os import path` and
+#     `import ntpath`, all of which hand over the whole os module.
+#     Plain open() is a builtin and needs nothing.
+#
+#   Tier 1 — capabilities. Ask for a group of modules by name. `cdui plugin
+#     install` prints the request, the user confirms, and the grant is
+#     recorded in the lockfile. Known capabilities:
+#       "network"      requests, urllib, http, socket — and note that
+#                      urlretrieve() writes files, so this implies a write
+#       "filesystem"   pathlib, tempfile, shutil, zip/tar/gzip, sqlite3, glob
+#                      — the file LIBRARIES; it does not gate open()
+#       "process-env"  the whole os module: read AND change the environment,
+#                      start other programs, delete or rename files
+#
+#   Tier 2 — allowed_modules. Anything at all, including subprocess, ctypes
+#     and importlib. Nobody can install your plugin without passing
+#     --trust-author, so reach for a capability first.
+#
+# torch.load(..., weights_only=True) and the dunder/reflection bans apply in
+# every tier. os.system(...) / os.popen(...) are refused only as CALLS, and
+# os.execv / os.spawnve are not refused at all once "process-env" is granted.
+# This is a guardrail, not a sandbox — declare honestly.
 [security]
+capabilities    = []
 allowed_modules = []

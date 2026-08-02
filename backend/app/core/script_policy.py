@@ -11,10 +11,24 @@ in how much the author is trusted:
   ``--trust-author`` widening the gate.
 
 The module lists live HERE, in one place, rather than in the node that
-happens to need them first: core#133 generalises the plugin-pack gate into
-the same tiered policy and imports :data:`TIER0_MODULES` from this module.
-Changing the tier-0 list therefore changes both consumers at once, which is
-the point.
+happens to need them first.
+
+Where core#133 landed, and why not here
+---------------------------------------
+core#133 gave plugin packs the same three-tier vocabulary (default /
+declared-capability / trusted), but its constants live in
+:mod:`app.core.security_tiers` rather than in this file, for two reasons.
+It has to be importable by ``scripts/plugins.py`` and by
+:mod:`app.core.plugin_validator` without a cycle, and -- more importantly --
+**"Tier 0" names two different surfaces**. For an installed file it is a
+policy STATEMENT (``TIER0_PURE_COMPUTE_MODULES``: these roots are never
+denied); for in-canvas code it is the audited ALLOWLIST below
+(:data:`TIER0_MODULE_PATHS`), which is deliberately a strict subset. ``pandas``
+is the clearest case: perfectly ordinary in a plugin, and an API containing
+``read_pickle`` (executes the file it reads) and ``read_html`` (fetches a URL)
+that no unreviewed-code surface should be handed without its own audit round.
+Widening the list below is a security decision and should look like one in a
+diff.
 
 Two layers, and only one of them is the boundary
 ------------------------------------------------
@@ -267,10 +281,25 @@ TIER0_MODULE_ATTR_EXEMPTIONS: frozenset[str] = frozenset({"signal", "code"})
 #: rather than an unreachable filesystem.
 TIER0_GATEWAY_MODULE_ALIASES: tuple[str, ...] = ("mp", "python_multiprocessing")
 
+#: Module names refused as tier-0 attributes that are NOT on the shared
+#: blocklist, and cannot be.
+#:
+#: ``builtins`` is the whole of it. It cannot go into
+#: :func:`app.core.plugin_validator.dangerous_modules` because that set is
+#: also :mod:`app.core.script_proxy`'s "which module DEFINES this value"
+#: rule, and ``builtins`` defines every ``int``, ``str`` and ``float`` a
+#: library hands back -- ``math.pi`` would be refused. As an attribute NAME it
+#: is safe to close and worth closing: ``json.codecs.builtins.eval`` was a
+#: live round-3 escape, and core#133's call rule (which now asks whether a
+#: ``.eval`` leaf belongs to ``builtins`` rather than refusing every ``.eval``)
+#: leans on this tier being unable to name the module at all.
+TIER0_GATEWAY_EXTRA_ATTRS: tuple[str, ...] = ("builtins",)
+
 TIER0_GATEWAY_MODULE_ATTRS: tuple[str, ...] = tuple(
     sorted(
         (dangerous_modules() - TIER0_MODULE_ATTR_EXEMPTIONS)
         | set(TIER0_GATEWAY_MODULE_ALIASES)
+        | set(TIER0_GATEWAY_EXTRA_ATTRS)
     )
 )
 
@@ -294,6 +323,27 @@ TIER0_GATEWAY_MODULE_ATTRS: tuple[str, ...] = tuple(
 #: tier-0 script has: of the eight allowed modules only ``json``, ``numpy``
 #: and ``torch`` define one at all, and the other two are the pickle doors.
 TIER0_SAFE_LOAD_RECEIVERS: tuple[str, ...] = ("json",)
+
+#: Attribute names allowed on SOME receivers and refused on every other one.
+#:
+#: One entry, and it exists because one spelling names two very different
+#: things. ``re.compile`` is the headline function of an advertised Tier-0
+#: module -- refusing it (core#178: the shared walker matched a call's leaf
+#: whatever the receiver was) told users to go write a custom node to compile
+#: a regex. ``torch.compile`` is not the same kind of thing at all: it hands
+#: the graph to TorchInductor, which generates C++/Triton and shells out to a
+#: real compiler, which is precisely the door round 5 closed by refusing
+#: ``torch.utils.cpp_extension``.
+#:
+#: So core#133 relaxes the call rule to ask WHOSE ``compile`` this is, and
+#: this constant keeps Tier 0's answer where it was: ``re``'s, and nobody
+#: else's. Installed plugins pass no scoping and get both, which is what
+#: core#178 asked for on that side -- a plugin is a file the user chose, and
+#: ``torch.compile`` is ordinary PyTorch code there.
+#:
+#: Fails closed on a receiver the walker cannot resolve, like every other
+#: inverted rule here.
+TIER0_RECEIVER_SCOPED_ATTRS: dict[str, tuple[str, ...]] = {"compile": ("re",)}
 
 #: The RCE leaves (``system``, ``popen``, ``spawnl``, ``execfile``, ...),
 #: refused by tier 0 as ATTRIBUTES rather than only as calls.
@@ -377,6 +427,7 @@ def validate_script_source(code: str, filename: str = SCRIPT_FILENAME) -> None:
         extra_denied_names=TIER0_DENIED_CALLS,
         denied_attributes=SCRIPT_PROXY_DENIED_ATTRS,
         safe_load_receivers=TIER0_SAFE_LOAD_RECEIVERS,
+        receiver_scoped_attrs=TIER0_RECEIVER_SCOPED_ATTRS,
         library_roots=TIER0_MODULES,
         denial_hint=ESCAPE_HATCH_HINT,
     )
