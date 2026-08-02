@@ -17,7 +17,9 @@ from app.core.plugin_validator import PluginValidationError
 from app.core.script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_FILENAME,
+    TIER0_GATEWAY_MODULE_ATTRS,
     TIER0_MODULES,
+    TIER0_SAFE_LOAD_RECEIVERS,
     validate_script_source,
 )
 from app.nodes.utility.python_script_node import (
@@ -607,10 +609,370 @@ def _escapes(code: str) -> bool:
             "open at module level",
             "fh = open('x')\n\ndef run(inputs, params):\n    return 1\n",
         ),
+        # ── review round 2: the frame walk ───────────────────────────
+        #
+        # A caught exception carries a traceback, a traceback carries the
+        # frame it was raised in, and that frame's ``f_back`` is ``_invoke``
+        # -- whose module globals hold ``importlib`` and ``builtins``. The
+        # restricted ``__builtins__`` the script executes with is beside the
+        # point once someone else's globals are in hand. All three of these
+        # returned live host objects: ``os.system``, ``os.getcwd()`` (the
+        # backend path) and file bytes read off disk.
+        (
+            "traceback walk to the caller's globals",
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        g = e.__traceback__.tb_frame.f_back.f_globals\n"
+            "        return getattr(g['importlib'].import_module('os'), 'system')\n",
+        ),
+        (
+            "traceback walk calling os.getcwd()",
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        g = e.__traceback__.tb_frame.f_back.f_globals\n"
+            "        return getattr(g['importlib'].import_module('os'), 'getcwd')()\n",
+        ),
+        (
+            "traceback walk to builtins.open",
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        g = e.__traceback__.tb_frame.f_back.f_globals\n"
+            "        return getattr(g['builtins'], 'open')('pyproject.toml').read()\n",
+        ),
+        (
+            "generator frame instead of a traceback",
+            "def run(inputs, params):\n"
+            "    def gen():\n"
+            "        yield 1\n"
+            "    return sorted(gen().gi_frame.f_globals)\n",
+        ),
+        (
+            "generator code object",
+            "def run(inputs, params):\n"
+            "    def gen():\n"
+            "        yield 1\n"
+            "    return str(gen().gi_code)\n",
+        ),
+        (
+            "frame attributes spelled with a literal getattr",
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        return getattr(getattr(e, '__traceback__'), 'tb_frame')\n",
+        ),
+        # ── review round 2: an allowlisted module as a gateway ───────
+        #
+        # The import allowlist means nothing if an allowed module hands the
+        # blocked one over by name. Every one of these returned the real
+        # host module; ``torch.os.getcwd()`` returned the backend path.
+        (
+            "os through torch",
+            "import torch\n\ndef run(inputs, params):\n    return torch.os.getcwd()\n",
+        ),
+        (
+            "sys through torch",
+            "import torch\n\ndef run(inputs, params):\n    return torch.sys.executable\n",
+        ),
+        (
+            "pickle through torch.serialization",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return str(torch.serialization.pickle)\n",
+        ),
+        (
+            "sys through json",
+            "import json\n\ndef run(inputs, params):\n    return str(json.codecs.sys)\n",
+        ),
+        (
+            "subprocess through numpy.f2py",
+            "import numpy\n\ndef run(inputs, params):\n"
+            "    return str(numpy.f2py.subprocess)\n",
+        ),
+        (
+            "importlib through torch.cuda",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return torch.cuda.importlib.import_module('os').getcwd()\n",
+        ),
+        (
+            "multiprocessing under torch's own alias",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return str(torch.cuda.tunable.mp)\n",
+        ),
+        (
+            "gateway reached with a literal getattr",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return getattr(torch, 'os').getcwd()\n",
+        ),
+        (
+            "gateway reached through a local alias",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    x = torch\n    return x.os.getcwd()\n",
+        ),
+        (
+            "gateway reached through an unresolvable receiver",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return (lambda: torch)().os.getcwd()\n",
+        ),
     ],
 )
 def test_escape_probe_fails_closed(label, code):
     assert not _escapes(code), f"escape still open: {label}"
+
+
+def _gate_rejects(code: str) -> bool:
+    """True when the GATE refuses *code* -- not merely when running it fails.
+
+    ``_escapes`` above counts any ``RuntimeError`` as a block, which is right
+    for a probe whose payload cannot exist without escaping. It is wrong for
+    the ``.load`` probes: ``torch.load('x.pt')`` on a missing file raises
+    ``FileNotFoundError``, so the lenient helper reports "blocked" for code
+    that sailed through the gate and called the real pickle loader. Every
+    receiver-laundering bypass below was invisible for exactly that reason.
+    """
+    try:
+        PythonScriptNode().execute({}, {"code": code})
+        return False
+    except PluginValidationError:
+        return True
+    except Exception:  # noqa: BLE001 - ran, therefore not gated
+        return False
+
+
+@pytest.mark.parametrize(
+    ("label", "code"),
+    [
+        (
+            "receiver laundered through a local name",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    b = torch\n    return b.load('x.pt')\n",
+        ),
+        (
+            "receiver laundered through a literal getattr",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return getattr(torch, 'load')('x.pt')\n",
+        ),
+        (
+            "receiver laundered through a lambda",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return (lambda: torch)().load('x.pt')\n",
+        ),
+        (
+            "receiver laundered through a subscript",
+            "import torch\n\ndef run(inputs, params):\n    return (torch,)[0].load('x.pt')\n",
+        ),
+        (
+            "numpy laundered through a local name",
+            "import numpy\n\ndef run(inputs, params):\n"
+            "    n = numpy\n    return n.load('x.npy')\n",
+        ),
+        (
+            "pre-bound module, no import statement at all",
+            "def run(inputs, params):\n    t = torch\n    return t.load('x.pt')\n",
+        ),
+        (
+            "alias of an alias",
+            "import torch as t\n\ndef run(inputs, params):\n"
+            "    u = t\n    return u.loads(b'')\n",
+        ),
+        # The spelled-out forms, kept here too so the strict helper covers
+        # the whole rule rather than only the shapes that were broken.
+        (
+            "spelled-out torch.load",
+            "import torch\n\ndef run(inputs, params):\n    return torch.load('x.pt')\n",
+        ),
+        (
+            "torch.load down an attribute chain",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return torch.serialization.load('x.pt')\n",
+        ),
+    ],
+)
+def test_the_gate_itself_rejects_a_laundered_load(label, code):
+    """Every one of these reached the real ``torch.load`` / ``numpy.load``.
+
+    They were reported as blocked only because the file they named did not
+    exist -- the guard resolved import aliases and nothing else, so any
+    receiver it could not tie back to an import walked through.
+    """
+    assert _gate_rejects(code), f"gate still lets this through: {label}"
+
+
+def test_a_laundered_load_names_what_it_objected_to():
+    with pytest.raises(PluginValidationError) as exc:
+        validate_script_source(
+            "import torch\n\ndef run(inputs, params):\n    b = torch\n    return b.load('x')\n"
+        )
+    message = str(exc.value)
+    assert "'b' (torch)" in message
+    assert "json" in message  # says what IS permitted, not only what is not
+
+
+def test_json_is_the_only_safe_load_receiver():
+    """Guard the constant itself: widening it is a security decision, not a
+    tidy-up, and it should be visible in a diff."""
+    assert TIER0_SAFE_LOAD_RECEIVERS == ("json",)
+
+
+def test_an_unresolvable_receiver_fails_closed_rather_than_open():
+    """The old rule returned early on a receiver it could not resolve, which
+    is precisely what the lambda and subscript forms manufacture."""
+    assert _gate_rejects(
+        "import torch\n\ndef run(inputs, params):\n    return [torch][0].load('x')\n"
+    )
+
+
+def test_frame_attributes_are_refused_whatever_the_receiver():
+    from app.core.plugin_validator import frame_introspection_attrs
+
+    for attr in sorted(frame_introspection_attrs()):
+        with pytest.raises(PluginValidationError, match="frame attribute"):
+            validate_script_source(f"def run(inputs, params):\n    return inputs.{attr}\n")
+        with pytest.raises(PluginValidationError, match="frame attribute"):
+            validate_script_source(
+                f"def run(inputs, params):\n    return getattr(inputs, {attr!r})\n"
+            )
+
+
+def test_traceback_is_a_forbidden_dunder():
+    """``__traceback__`` is the doorway to the whole frame chain and was the
+    one dunder the set was missing."""
+    from app.core.plugin_validator import forbidden_dunders
+
+    assert "__traceback__" in forbidden_dunders()
+    with pytest.raises(PluginValidationError, match="__traceback__"):
+        validate_script_source(
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        return e.__traceback__\n"
+        )
+
+
+def test_blocked_modules_are_refused_as_attributes_too():
+    """An allowlisted module handing over a blocked one by name defeats the
+    import allowlist without writing an import."""
+    for name in ("os", "sys", "subprocess", "importlib", "pickle", "ctypes", "socket"):
+        assert name in TIER0_GATEWAY_MODULE_ATTRS
+        with pytest.raises(PluginValidationError):
+            validate_script_source(
+                f"import torch\n\ndef run(inputs, params):\n    return torch.{name}\n"
+            )
+
+
+def test_the_gateway_rule_leaves_torch_signal_alone():
+    """``torch.signal`` is torch's own DSP namespace, not the stdlib module
+    of that name -- a name-keyed rule has to say so explicitly."""
+    assert "signal" not in TIER0_GATEWAY_MODULE_ATTRS
+    result = _run(
+        "import torch\n\ndef run(inputs, params):\n"
+        "    return float(torch.signal.windows.hann(8).sum())\n"
+    )
+    assert result["out1"] > 0
+
+
+def test_the_gateway_rule_leaves_ordinary_attribute_names_alone():
+    """``code`` is exempt as a word: this node's own parameter is called
+    ``code``, and the module of that name is unreachable regardless."""
+    assert "code" not in TIER0_GATEWAY_MODULE_ATTRS
+    result = _run(
+        "class Result:\n"
+        "    def __init__(self):\n"
+        "        self.code = 7\n"
+        "\n"
+        "\n"
+        "def run(inputs, params):\n"
+        "    return Result().code\n"
+    )
+    assert result["out1"] == 7
+
+
+def test_a_local_named_like_a_frame_attribute_is_still_legal():
+    """The frame rule is an ATTRIBUTE rule; binding the same word as a local
+    reaches no frame and must not be swept up."""
+    result = _run(
+        "def run(inputs, params):\n    f_code = 3\n    gi_frame = 4\n    return f_code + gi_frame\n"
+    )
+    assert result["out1"] == 7
+
+
+# ── The shared walker: what tier 0 tightens, and what it must not ────────
+#
+# ``validate_python_source`` also gates uploaded custom nodes and installed
+# plugin packs, which are checked as a BLOCKLIST because the user chose the
+# file. Tier 0's extra rules ride on arguments, so they must not leak into
+# that path -- and the two rules that DO apply to both (frame walking, a
+# laundered pickle receiver) are deliberate, so they are asserted rather
+# than left to be discovered as a regression.
+
+
+def _plugin_mode(code: str) -> None:
+    """Validate as an installed plugin: no tier-0 arguments at all."""
+    from app.core.plugin_validator import validate_python_source
+
+    validate_python_source(code, "plugin.py")
+
+
+def test_a_plugin_may_still_load_from_a_receiver_the_walker_cannot_resolve():
+    """The strict receiver rule is tier-0 only. A plugin calling
+    ``self.backend.load(path)`` is ordinary code, and the user installed it."""
+    _plugin_mode("def go(things):\n    return things[0].load('x')\n")
+    _plugin_mode("class C:\n    def load(self, p):\n        return p\n")
+
+
+def test_a_plugin_may_still_name_a_blocked_module_as_an_attribute():
+    """The gateway rule is tier-0 only; a plugin that legitimately imports
+    ``os`` reaches ``os.path`` through attributes all day."""
+    _plugin_mode("import json\n\ndef go(cfg):\n    return cfg.subprocess\n")
+
+
+def test_a_plugin_may_still_call_json_load():
+    _plugin_mode("import json\n\ndef go(fh):\n    return json.load(fh)\n")
+
+
+def test_the_frame_walk_is_closed_for_plugins_too():
+    """Deliberate widening: reading another frame's globals is a sandbox
+    escape wherever it is written, and no shipped plugin or custom node in
+    this repo touches these names."""
+    for snippet in (
+        "e.__traceback__",
+        "gen().gi_frame",
+        "frame.f_globals",
+        "tb.tb_frame",
+    ):
+        with pytest.raises(PluginValidationError):
+            _plugin_mode(f"def go(e, gen, frame, tb):\n    return {snippet}\n")
+
+
+def test_a_laundered_pickle_receiver_is_closed_for_plugins_too():
+    """``getattr(torch, 'load')(p)`` is the pickle call with the attribute
+    access spelled out of existence; the blocklist should see through it."""
+    with pytest.raises(PluginValidationError):
+        _plugin_mode("import torch\n\ndef go(p):\n    return getattr(torch, 'load')(p)\n")
+    with pytest.raises(PluginValidationError):
+        _plugin_mode("import torch\n\ndef go(p):\n    b = torch\n    return b.load(p)\n")
+
+
+def test_ordinary_torch_and_numpy_namespaces_still_resolve():
+    """The gateway rule adds 25 denied attribute names; assert the library
+    surface a statistics script actually uses survived it."""
+    result = _run(
+        "import numpy as np\n"
+        "import torch\n"
+        "\n"
+        "\n"
+        "def run(inputs, params):\n"
+        "    a = float(np.linalg.norm(np.ones(4)))\n"
+        "    b = float(torch.nn.functional.relu(torch.ones(3)).sum())\n"
+        "    return a + b\n"
+    )
+    assert result["out1"] == pytest.approx(5.0)
 
 
 def test_the_namespace_is_an_allowlist_not_a_blocklist():

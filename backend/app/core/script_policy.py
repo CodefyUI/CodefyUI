@@ -42,7 +42,11 @@ from __future__ import annotations
 
 import ast
 
-from .plugin_validator import PluginValidationError, validate_python_source
+from .plugin_validator import (
+    PluginValidationError,
+    dangerous_modules,
+    validate_python_source,
+)
 
 #: Modules an in-canvas script may import, and which are pre-bound in its
 #: namespace under these exact names. Deliberately short: numeric work, the
@@ -114,6 +118,80 @@ TIER0_DENIED_ATTRS: tuple[str, ...] = (
     "DataSource",
 )
 
+#: Attribute names that survive the gateway rule below despite naming a
+#: blocked module. ``torch.signal`` is torch's OWN DSP namespace
+#: (``torch.signal.windows.hann``), not the stdlib's process-signal module,
+#: and refusing it would cost a real statistics API for nothing: every route
+#: to the stdlib ``signal`` runs through a component this policy already
+#: closes. ``code`` is exempt as a word, not as a module -- it is far too
+#: ordinary an attribute name (this node's own parameter is called ``code``)
+#: and the ``code`` module is not reachable from any tier-0 module at all.
+TIER0_MODULE_ATTR_EXEMPTIONS: frozenset[str] = frozenset({"signal", "code"})
+
+#: Blocked module names, refused as ATTRIBUTES as well as imports.
+#:
+#: The import allowlist is worth nothing on its own, because an allowlisted
+#: module will hand you a blocked one if you ask it by name. Every one of
+#: these was live::
+#:
+#:     torch.os.getcwd()                    # the real os
+#:     torch.sys.executable
+#:     torch.serialization.pickle           # the real pickle
+#:     json.codecs.sys
+#:     numpy.f2py.subprocess.run([...])
+#:
+#: A scan of the tier-0 namespace two levels deep finds 14 blocked modules
+#: reachable this way -- ``os`` down 41 distinct paths, ``sys`` down 57 --
+#: so enumerating the paths is hopeless and the NAME has to be the rule.
+#:
+#: Derived from :func:`app.core.plugin_validator.dangerous_modules` rather
+#: than re-listed, so a module added to that blocklist closes its attribute
+#: route in the same commit. Receiver-independent, like the rest of
+#: :data:`TIER0_DENIED_ATTRS`: a receiver the walker cannot resolve is
+#: exactly what ``(lambda: torch)().os`` is for.
+#: Conventional aliases torch binds blocked modules under, which a rule
+#: keyed on the module's own NAME cannot see. Both of these are
+#: ``multiprocessing``: ``torch.cuda.tunable.mp`` was, after the name rule
+#: landed, the last remaining root from which a depth-4 scan could still
+#: reach a blocked module -- and everything the scan found beyond it
+#: (``.connection``, ``.queues``, ``.reduction``, ``.spawn``, ...) lives
+#: INSIDE multiprocessing, so cutting the root cuts the tree without
+#: blocking a pile of ordinary English words.
+#:
+#: Two entries is not a category. A library is free to bind ``os`` under any
+#: name it likes and this rule will not see it; that is the structural limit
+#: of a name-keyed blocklist, and the reason the docs promise a raised cost
+#: rather than an unreachable filesystem.
+TIER0_GATEWAY_MODULE_ALIASES: tuple[str, ...] = ("mp", "python_multiprocessing")
+
+TIER0_GATEWAY_MODULE_ATTRS: tuple[str, ...] = tuple(
+    sorted(
+        (dangerous_modules() - TIER0_MODULE_ATTR_EXEMPTIONS)
+        | set(TIER0_GATEWAY_MODULE_ALIASES)
+    )
+)
+
+#: The only receivers a tier-0 script may call ``.load()`` / ``.loads()`` on.
+#:
+#: An ALLOWLIST rather than the usual "is this receiver a known unpickler?"
+#: question, because that question can only be asked of a receiver the walker
+#: can resolve, and there are four one-line ways to make it unresolvable::
+#:
+#:     b = torch; b.load(x)          getattr(torch, 'load')(x)
+#:     (lambda: torch)().load(x)     (torch,)[0].load(x)
+#:
+#: all of which reached the real ``torch.load`` -- i.e. pickle, i.e. arbitrary
+#: code from a file the script names. Inverting the rule makes an unresolvable
+#: receiver fail closed. The cost is that a script's own ``obj.load()`` helper
+#: is refused as well; that is the same cost :data:`TIER0_DENIED_ATTRS`
+#: already imposes on a script's own ``obj.save()``, and the message says
+#: which name it objected to.
+#:
+#: ``json`` is here because parsing JSON is the one legitimate ``.loads`` a
+#: tier-0 script has: of the eight allowed modules only ``json``, ``numpy``
+#: and ``torch`` define one at all, and the other two are the pickle doors.
+TIER0_SAFE_LOAD_RECEIVERS: tuple[str, ...] = ("json",)
+
 #: Filename the script is compiled under. Shows up in tracebacks and in the
 #: error a failing node reports, so it must read as "your code", not as a
 #: temp path the user has never seen.
@@ -165,7 +243,8 @@ def validate_script_source(code: str, filename: str = SCRIPT_FILENAME) -> None:
         filename,
         import_allowlist=TIER0_MODULES,
         extra_denied_names=TIER0_DENIED_CALLS,
-        denied_attributes=TIER0_DENIED_ATTRS,
+        denied_attributes=TIER0_DENIED_ATTRS + TIER0_GATEWAY_MODULE_ATTRS,
+        safe_load_receivers=TIER0_SAFE_LOAD_RECEIVERS,
         denial_hint=ESCAPE_HATCH_HINT,
     )
     _reject_async_entry_point(code, filename)

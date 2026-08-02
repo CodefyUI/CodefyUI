@@ -120,6 +120,71 @@ async def test_validate_script_refuses_an_oversized_script(test_client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "code"),
+    [
+        (
+            "frame walk to the host's globals",
+            "def run(inputs, params):\n"
+            "    try:\n"
+            "        raise ValueError()\n"
+            "    except ValueError as e:\n"
+            "        g = e.__traceback__.tb_frame.f_back.f_globals\n"
+            "        return getattr(g['importlib'].import_module('os'), 'getcwd')()\n",
+        ),
+        (
+            "frame walk via a generator",
+            "def run(inputs, params):\n"
+            "    def gen():\n"
+            "        yield 1\n"
+            "    return sorted(gen().gi_frame.f_globals)\n",
+        ),
+        (
+            "os through an allowlisted module",
+            "import torch\n\ndef run(inputs, params):\n    return torch.os.getcwd()\n",
+        ),
+        (
+            "pickle loader with a laundered receiver",
+            "import torch\n\ndef run(inputs, params):\n"
+            "    b = torch\n    return b.load('x.pt')\n",
+        ),
+    ],
+)
+async def test_validate_script_says_no_to_the_round_two_escapes(test_client, label, code):
+    """The editor's own endpoint answered ``ok: true`` for every one of these
+    while the escape worked, which is the answer that mattered -- the user was
+    being told the script was within policy as it read a file off disk."""
+    resp = await test_client.post("/api/nodes/script/validate", json={"code": code})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False, f"endpoint still approves: {label}"
+    assert body["line"], "a rejection must point the editor at a line"
+
+
+@pytest.mark.asyncio
+async def test_validate_script_still_approves_ordinary_statistics_work(test_client):
+    """The round-2 rules add 25 denied attribute names and invert the pickle
+    rule; the endpoint must still say yes to the scripts the docs recommend."""
+    code = (
+        "import numpy as np\n"
+        "import json\n"
+        "\n"
+        "\n"
+        "def run(inputs, params):\n"
+        "    x = inputs['in1']\n"
+        "    summary = {'mean': float(np.mean(x)), 'std': float(np.std(x))}\n"
+        "    print(json.dumps(summary))\n"
+        "    return {'out1': summary}\n"
+    )
+    body = (
+        await test_client.post("/api/nodes/script/validate", json={"code": code})
+    ).json()
+    assert body["ok"] is True
+    assert body["error"] is None
+    assert body["defines_run"] is True
+
+
+@pytest.mark.asyncio
 async def test_python_script_node_is_registered_with_a_code_param(test_client):
     resp = await test_client.get("/api/nodes/PythonScript")
     assert resp.status_code == 200

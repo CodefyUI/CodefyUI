@@ -88,13 +88,15 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 * 其他任何匯入——`os`、`sys`、`pathlib`、`subprocess`、`socket`、`urllib`、`requests`，以及 `pandas`、`sklearn` 這類並不危險、只是不在清單上的模組。相對匯入同樣被拒絕。
 * `exec`、`eval`、`compile`、`__import__`、`open`、`input`、`globals`、`locals`、`vars`、`dir`、`breakpoint`、`exit`。
-* 直接使用模組機制的名稱——`__loader__`、`__spec__`、`__builtins__`、`__package__`——以及雙底線屬性存取（`__class__`、`__globals__`、`__subclasses__`、`__code__`……）。這些是通用的逃逸手法：`__loader__.load_module('nt')` 不用任何 import 就能拿到真正的 `os` 模組。
+* 直接使用模組機制的名稱——`__loader__`、`__spec__`、`__builtins__`、`__package__`——以及雙底線屬性存取（`__class__`、`__globals__`、`__subclasses__`、`__code__`、`__traceback__`……）。這份清單請讀成**我們已知的逃逸手法，一項一項列出來**，而不是「反射這一整類都處理好了」的保證。清單上的每一項都曾是真的能逃出去的路：`__loader__.load_module('nt')` 不用任何 import 就能拿到真正的 `os` 模組。
+* **走訪執行框架（frame）**，不論接收端是誰：`tb_frame`、`tb_next`、`f_back`、`f_globals`、`f_locals`、`f_builtins`、`f_code`、`gi_frame`、`gi_code`、`cr_frame`，以及這一族的其餘成員。被接住的例外身上帶著 traceback，traceback 身上帶著它被丟出時的那個 frame，而**呼叫**你的那個 frame 屬於 CodefyUI 自己：`e.__traceback__.tb_frame.f_back.f_globals` 會交出這個節點自己的模組全域變數，裡面就有 `importlib` 與 `builtins`。到了那一步，腳本原本拿到的是哪一套 builtins 已經不重要了——所以這些名稱是直接拒絕，而不是設法清理。
+* **你不能 import 的模組名稱，被當成屬性來取用**：`torch.os`、`torch.sys`、`torch.serialization.pickle`、`json.codecs.sys`、`numpy.f2py.subprocess`。函式庫自己也會 import 東西，所以一份只看 `import` 陳述句的允許清單，只要你向某個被允許的模組指名要，它就會把被封鎖的模組直接遞出來。這些名稱取自 import 規則用的同一份封鎖清單，只排除 `torch.signal`（那是 torch 自己的訊號處理命名空間，不是標準函式庫的同名模組）。
 * 允許的函式庫**內部**通往檔案系統、網路、編譯器或其他行程的那些門：`torch.hub`（會下載並執行遠端的 `hubconf.py`）、`torch.utils.cpp_extension`（編譯並執行 C++）、`torch.distributed`、`torch.multiprocessing`、`numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`、`numpy.ctypeslib`，以及 `script_policy.py` 裡 `TIER0_DENIED_ATTRS` 的其餘項目。用 import 把它們的名稱帶進來、或用字面值 `getattr` 取得，同樣會被拒絕。
-* 沒有明確寫 `weights_only=True` 的 `torch.load(...)` / `numpy.load(...)`，以及任何 `load(allow_pickle=True)`：它們會執行來源檔案裡的程式碼。接收端會透過你的 import 別名解析，所以 `import torch as t; t.load(...)` 一樣會被擋下。
+* 在 `json` 以外的任何東西上呼叫 `.load(...)` / `.loads(...)`，以及任何 `load(allow_pickle=True)` 或 `load(weights_only=<不是 True>)`：它們會執行來源檔案裡的程式碼。這條規則刻意訂得很鈍。接收端會透過 import 別名**以及**單純的指派來解析（`b = torch; b.load(x)`），但只要是檢查器解析不出來的接收端——`(lambda: torch)().load(x)`、`things[0].load(x)`——一律拒絕，而不是放行；代價是你自己寫的 `obj.load()` 輔助方法也會一起被拒絕。真的要載入時，請寫成 `torch.load(path, weights_only=True)`。
 
-`json.load` 與 `json.loads` **不**受最後這條規則影響——`json` 本來就是 Tier-0 模組，解析 JSON 正是它的用途。
+`json.load` 與 `json.loads` 是最後這條規則的例外——`json` 本來就是 Tier-0 模組，解析 JSON 正是它的用途。而且它是**唯一**的例外：八個允許的模組裡，只有 `json`、`numpy`、`torch` 有 `.load`，另外兩個正是 pickle 那兩道門。
 
-上述規則中有兩條在執行期還有第二道鎖：命名空間的 builtins 以明確的允許清單建立（所以 `open`、`eval` 這些不只是不能改，而是根本不存在），而 `__import__` 被換成會重新檢查模組清單的版本。雙底線與函式庫門戶這兩條規則**只在 AST 階段**檢查——程式碼開始執行後就沒有人再檢查一次，這正是這道關卡必須在編譯之前跑的原因。
+上述規則中有兩條在執行期還有第二道鎖：命名空間的 builtins 以明確的允許清單建立（所以 `open`、`eval` 這些不只是不能改，而是根本不存在），而 `__import__` 被換成會重新檢查模組清單的版本。其餘規則——雙底線、frame、模組名稱屬性、函式庫門戶、pickle——都**只在 AST 階段**檢查：程式碼開始執行後就沒有人再檢查一次，這正是這道關卡必須在編譯之前跑的原因。
 
 ### 需要清單以外的東西？
 
@@ -110,6 +112,7 @@ collections   itertools   json   math   numpy   re   statistics   torch
 這道關卡擋的是**容易的**逃逸手法。它**不是**沙箱，也沒有打算變成沙箱：
 
 * **它限制的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼。** numpy 與 torch 本身就大到內建了檔案 IO、下載功能與一個 C++ 編譯器。上面那份拒絕清單關掉的是我們知道的門；它是架在兩套龐大 API 之上的黑名單，只能視為提高逃逸的成本，絕不是「檔案與網路碰不到」的保證。
+* **這些封鎖清單認的是名稱，而名稱不是邊界。** 門戶規則之所以擋得住 `torch.os`，只因為那個屬性剛好**叫做** `os`；某個函式庫若把同一個模組綁在別的名字底下，這條規則就看不見。目前有一個這種別名——`torch.cuda.tunable.mp`——是手動補上的，這件事說明的是問題的形狀，而不是問題已經解決。掃過允許的模組後，目前找不到還能碰到的封鎖模組；但那是對「今天這一版 numpy 與 torch」的描述，不是這條規則本身的性質。
 * 腳本在 **CodefyUI 伺服器行程內**執行，使用你的使用者權限。沒有任何容器隔離。
 * 已經能在你畫布上打字的攻擊者，只要夠有決心，多半仍找得到出口。這道關卡提高的是隨手執行程式碼的成本，並不能讓這個面向對有備而來的對手變得安全。
 * 沒有任何 CPU 或記憶體限制，而且失控的腳本不只影響自己的節點。節點是在直譯器的**預設執行緒池**上執行，所以某個腳本裡的 `while True:` 會餓死這個行程裡**所有**節點的執行，直到伺服器重啟。「停止」是協作式的、只在節點**之間**檢查，無法中斷節點內部的迴圈——長迴圈必須自己呼叫 `should_stop()`。

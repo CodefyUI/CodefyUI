@@ -76,12 +76,14 @@ _UNPICKLING_RECEIVERS = frozenset({
     "shelve", "pandas",
 })
 
-# Dunder names that should *never* appear inside a plugin: they're the
-# universal Python sandbox-escape primitives. Includes the names used by:
+# Dunder names that should *never* appear inside a plugin. This is a list of
+# KNOWN escape primitives, not a closed category — read it as "these specific
+# doors are shut", never as "reflection is handled". Includes the names used by:
 #   * ``().__class__.__bases__[0].__subclasses__()[N](...)``  — class walk
 #   * ``getattr(__builtins__, "exec")``                       — builtins escape
 #   * ``func.__globals__["__builtins__"]``                    — globals escape
 #   * ``some_code.__code__.co_consts``                         — bytecode peek
+#   * ``exc.__traceback__.tb_frame.f_back.f_globals``          — frame walk
 _FORBIDDEN_DUNDERS = frozenset({
     "__class__", "__bases__", "__base__", "__mro__", "__subclasses__",
     "__builtins__", "__globals__", "__import__", "__dict__",
@@ -90,6 +92,33 @@ _FORBIDDEN_DUNDERS = frozenset({
     "__reduce__", "__reduce_ex__", "__getstate__", "__setstate__",
     "__init_subclass__", "__class_getitem__",
     "__loader__", "__spec__", "__package__",
+    "__traceback__",
+})
+
+# Frame-walking attributes. These carry no leading underscores, so none of the
+# dunder rules above ever saw them, and every one of them is a step on a path
+# from an ordinary object back to the *host's* module globals:
+#
+#     try:
+#         raise ValueError()
+#     except ValueError as e:
+#         g = e.__traceback__.tb_frame.f_back.f_globals   # the caller's globals
+#         g['importlib'].import_module('os').system(...)  # the real os module
+#
+#     it = mygen(); it.gi_frame.f_globals                 # same, via a generator
+#
+# The restricted ``__builtins__`` a script is executed with is irrelevant once
+# a frame object is in hand: ``f_globals`` and ``f_builtins`` belong to whoever
+# called you, and the node's own module imports ``builtins`` and ``importlib``.
+# Blocked whatever the receiver is, exactly like the dunder set — nothing
+# legitimately reads another frame's state.
+_FRAME_INTROSPECTION_ATTRS = frozenset({
+    "tb_frame", "tb_next",                            # traceback objects
+    "f_back", "f_globals", "f_locals", "f_builtins",  # frame objects
+    "f_code", "f_trace",
+    "gi_frame", "gi_code",                            # generators
+    "cr_frame", "cr_code",                            # coroutines
+    "ag_frame", "ag_code",                            # async generators
 })
 
 
@@ -103,14 +132,28 @@ def forbidden_dunders() -> frozenset[str]:
     return _FORBIDDEN_DUNDERS
 
 
+def frame_introspection_attrs() -> frozenset[str]:
+    """Public view of the frame-walking blocklist (mainly for tests)."""
+    return _FRAME_INTROSPECTION_ATTRS
+
+
 def _import_roots(tree: ast.AST) -> dict[str, str]:
-    """Map each name an import BINDS to the top-level module behind it.
+    """Map each name that BINDS a module to the top-level module behind it.
 
     ``import numpy as np`` -> ``{"np": "numpy"}``; ``import torch.nn as nn``
     -> ``{"nn": "torch"}``; ``from torch import hub`` -> ``{"hub": "torch"}``.
     Without this, every receiver rule could only match code that spells the
     module out, and ``import torch as t; t.load(...)`` walked straight past
     the pickle gate.
+
+    Plain assignments are followed for one hop as well, because an import
+    alias was never the only way to rename a module: ``b = torch`` then
+    ``b.load(x)`` is the same laundering with none of the import syntax, and
+    it worked. This is a flat, order-insensitive approximation -- a name
+    rebound twice resolves to whichever assignment ``ast.walk`` reached last.
+    That is deliberate: the receiver rules treat an unresolved name as
+    suspicious in allowlist mode, so a miss here costs a clearer message, not
+    a hole.
     """
     roots: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -123,6 +166,19 @@ def _import_roots(tree: ast.AST) -> dict[str, str]:
             top = node.module.split(".")[0]
             for alias in node.names:
                 roots[alias.asname or alias.name] = top
+
+    # Second pass: ``b = torch``, ``n = numpy``, ``h = torch.hub``. Runs after
+    # the imports so an alias-of-an-alias resolves through them.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        source = _receiver_root(node.value)
+        if source is None:
+            continue
+        resolved = roots.get(source, source)
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id != resolved:
+                roots[target.id] = resolved
     return roots
 
 
@@ -152,12 +208,18 @@ def _check_getattr_arg_safety(
     call: ast.Call,
     denial_hint: str = "",
     denied_attrs: frozenset[str] = frozenset(),
+    *,
+    roots: dict[str, str] | None = None,
+    safe_load_receivers: frozenset[str] | None = None,
 ) -> None:
     """Disallow ``getattr(<dunder-like>, ...)`` even when arg 1 is a literal.
 
     *denied_attrs* closes the spelling-it-differently route: a literal
     ``getattr(numpy, 'savetxt')`` reaches the same function the attribute
-    rule refuses, and reads as a deliberate attempt to get around it.
+    rule refuses, and reads as a deliberate attempt to get around it. The
+    frame-walking names and ``.load`` / ``.loads`` are closed here for the
+    same reason -- every rule enforced on ``ast.Attribute`` has to be
+    enforced here too, or the rule is decoration.
     """
     if not call.args:
         return
@@ -181,12 +243,64 @@ def _check_getattr_arg_safety(
                     f"{second.value!r} is not allowed{denial_hint}",
                     lineno=call.lineno,
                 )
+            if second.value in _FRAME_INTROSPECTION_ATTRS:
+                raise PluginValidationError(
+                    f"getattr() retrieving frame attribute {second.value!r} "
+                    f"is not allowed{denial_hint}",
+                    lineno=call.lineno,
+                )
             if second.value in denied_attrs:
                 raise PluginValidationError(
                     f"getattr() retrieving {second.value!r} is not allowed"
                     f"{denial_hint}",
                     lineno=call.lineno,
                 )
+            if second.value in ("load", "loads"):
+                _check_getattr_load(
+                    call,
+                    second.value,
+                    denial_hint,
+                    roots=roots,
+                    safe_load_receivers=safe_load_receivers,
+                )
+
+
+def _check_getattr_load(
+    call: ast.Call,
+    leaf: str,
+    denial_hint: str,
+    *,
+    roots: dict[str, str] | None,
+    safe_load_receivers: frozenset[str] | None,
+) -> None:
+    """Apply the ``.load`` receiver rule to ``getattr(x, 'load')``.
+
+    ``getattr(torch, 'load')(path)`` calls the same pickle-executing function
+    as ``torch.load(path)`` and never writes an attribute access, so the
+    Attribute branch never sees it. Resolve the receiver the same way
+    :func:`_enforce_safe_load` does and apply the same verdict; the keyword
+    escape hatch (``weights_only=True``) does not apply, because the kwargs
+    land on the *outer* call, which is a Call-of-a-Call this walker cannot
+    tie back to the getattr.
+    """
+    receiver = _receiver_root(call.args[0])
+    resolved = (roots or {}).get(receiver, receiver) if receiver is not None else None
+    if safe_load_receivers is not None:
+        if resolved in safe_load_receivers:
+            return
+        raise PluginValidationError(
+            f"getattr(..., {leaf!r}) is not allowed; under this policy "
+            f"'.{leaf}(...)' is permitted only on "
+            f"{', '.join(sorted(safe_load_receivers))}{denial_hint}",
+            lineno=call.lineno,
+        )
+    if resolved in _UNPICKLING_RECEIVERS:
+        raise PluginValidationError(
+            f"getattr({receiver}, {leaf!r}) is not allowed; it retrieves a "
+            f"function that executes code from the file it reads"
+            f"{denial_hint}",
+            lineno=call.lineno,
+        )
 
 
 def validate_python_source(
@@ -197,6 +311,7 @@ def validate_python_source(
     import_allowlist: Iterable[str] | None = None,
     extra_denied_names: Iterable[str] | None = None,
     denied_attributes: Iterable[str] | None = None,
+    safe_load_receivers: Iterable[str] | None = None,
     denial_hint: str = "",
 ) -> None:
     """Parse *content* and raise if it contains obviously dangerous patterns.
@@ -216,6 +331,18 @@ def validate_python_source(
     (``open``, ``input``, ... for scripts). *denied_attributes* refuses whole
     attribute names on top of the dunder set — the caller's list of "this
     library door is closed" leaves (``torch.hub``, ``numpy.savetxt``).
+
+    *safe_load_receivers* flips the pickle rule from blocklist to allowlist
+    the same way *import_allowlist* flips the import rule: ``.load(...)`` /
+    ``.loads(...)`` is refused on every receiver EXCEPT the named ones. The
+    blocklist form only ever matched a receiver it could resolve to a known
+    unpickler, which made it launderable in four different ways
+    (``b = torch; b.load(x)``, ``getattr(torch, 'load')(x)``,
+    ``(lambda: torch)().load(x)``, ``things[0].load(x)``). Callers that pass
+    it should expect the cost: a script's *own* ``obj.load()`` helper is
+    refused too, exactly as its own ``obj.save()`` already is under
+    *denied_attributes*.
+
     *denial_hint* is appended to every message raised here, so one caller can
     point users at the escape hatch its policy implies without every rule
     growing a special case.
@@ -224,6 +351,9 @@ def validate_python_source(
     allowlist = frozenset(import_allowlist) if import_allowlist is not None else None
     denied_names = _DANGEROUS_NAMES | frozenset(extra_denied_names or ())
     denied_attrs = frozenset(denied_attributes or ())
+    load_receivers = (
+        frozenset(safe_load_receivers) if safe_load_receivers is not None else None
+    )
 
     def fail(message: str, node: ast.AST | None = None) -> PluginValidationError:
         return PluginValidationError(
@@ -246,6 +376,16 @@ def validate_python_source(
         bare ``load_inline(...)``. The same goes for a denied component
         anywhere in the dotted path.
         """
+        # Allowlist verdict first, so a module that is simply off the list
+        # reads as "not allowed" rather than as whatever the denied-attribute
+        # rule happens to say about one component of its name. The root check
+        # only clears the ROOT, so the component scan below still has to run:
+        # ``import torch.hub`` has an allowlisted root and a closed leaf.
+        if allowlist is not None:
+            if level or not module:
+                raise fail(f"Relative imports are not allowed in {filename}", node)
+            if module.split(".")[0] not in allowlist:
+                raise fail(f"Importing '{module}' is not allowed in {filename}", node)
         if denied_attrs:
             for part in (module or "").split("."):
                 if part in denied_attrs:
@@ -261,10 +401,6 @@ def validate_python_source(
                         node,
                     )
         if allowlist is not None:
-            if level or not module:
-                raise fail(f"Relative imports are not allowed in {filename}", node)
-            if module.split(".")[0] not in allowlist:
-                raise fail(f"Importing '{module}' is not allowed in {filename}", node)
             return
         if module and module.split(".")[0] in _DANGEROUS_MODULES and (
             module.split(".")[0] not in allowed
@@ -321,6 +457,13 @@ def validate_python_source(
                     f"Access to attribute {node.attr!r} is not allowed in {filename}",
                     node,
                 )
+            if node.attr in _FRAME_INTROSPECTION_ATTRS:
+                raise fail(
+                    f"Access to frame attribute {node.attr!r} is not allowed "
+                    f"in {filename}: reading another frame's state reaches the "
+                    f"host process's own globals",
+                    node,
+                )
             if node.attr in denied_attrs:
                 raise fail(
                     f"Access to '.{node.attr}' is not allowed in {filename}",
@@ -351,7 +494,13 @@ def validate_python_source(
                     # 2nd-arg string is still allowed, but only after we
                     # verify it isn't being used to retrieve a forbidden
                     # dunder or applied to a forbidden first-arg name.
-                    _check_getattr_arg_safety(node, denial_hint, denied_attrs)
+                    _check_getattr_arg_safety(
+                        node,
+                        denial_hint,
+                        denied_attrs,
+                        roots=roots,
+                        safe_load_receivers=load_receivers,
+                    )
                     if (
                         len(node.args) >= 2
                         and isinstance(node.args[1], ast.Constant)
@@ -365,7 +514,9 @@ def validate_python_source(
                 # legitimately calls ``torch.load`` does so with
                 # ``weights_only=True`` keyword; we enforce that explicitly.
                 if node.func.attr in ("load", "loads"):
-                    _enforce_safe_load(node, filename, denial_hint, roots)
+                    _enforce_safe_load(
+                        node, filename, denial_hint, roots, load_receivers
+                    )
                 elif node.func.attr in _DANGEROUS_ATTR_LEAVES:
                     raise fail(
                         f"Call to '.{node.func.attr}(...)' is not allowed in {filename}",
@@ -378,6 +529,7 @@ def _enforce_safe_load(
     filename: str,
     denial_hint: str = "",
     roots: dict[str, str] | None = None,
+    safe_load_receivers: frozenset[str] | None = None,
 ) -> None:
     """Gate ``X.load(...)`` / ``X.loads(...)`` on what X actually is.
 
@@ -392,6 +544,11 @@ def _enforce_safe_load(
     It is equally a fix in the other direction: the leaf name alone used to
     condemn ``json.loads(...)``, a Tier-0 module's headline function, and told
     the user to go write a custom node to parse JSON.
+
+    With *safe_load_receivers* the verdict inverts: anything that does not
+    resolve to a named-safe receiver is refused, which is the only form that
+    survives a receiver the walker cannot resolve (``(lambda: torch)()``,
+    ``things[0]``). See :func:`validate_python_source` for the tradeoff.
     """
     leaf = call.func.attr if isinstance(call.func, ast.Attribute) else "load"
     # numpy.load with allow_pickle=True → reject
@@ -412,16 +569,40 @@ def _enforce_safe_load(
                 f"in {filename}; only weights_only=True is permitted{denial_hint}",
                 lineno=call.lineno,
             )
-    # No weights_only / allow_pickle kwarg supplied. Resolve the receiver:
-    # ``json.load`` / ``json.loads`` / ``yaml.safe_load`` are fine,
-    # ``torch.*.load`` / ``np.load`` / ``pickle.loads`` are not. An
-    # unresolvable receiver (``things[0].loads()``) is left alone -- this is a
-    # guardrail, and condemning every method called ``loads`` was a false
-    # positive with no matching security value.
+    # No weights_only / allow_pickle kwarg supplied. Resolve the receiver.
     receiver = _receiver_root(call.func)
+    resolved = (roots or {}).get(receiver, receiver) if receiver is not None else None
+
+    # Allowlist form (in-canvas scripts). Only the named receivers may call
+    # ``.load`` / ``.loads`` at all, so a receiver the walker cannot resolve --
+    # the whole point of ``(lambda: torch)().load(x)`` -- fails closed instead
+    # of being waved through.
+    if safe_load_receivers is not None:
+        if resolved in safe_load_receivers:
+            return
+        if receiver is None:
+            shown = "this expression"
+        elif receiver == resolved:
+            shown = repr(receiver)
+        else:
+            shown = f"{receiver!r} ({resolved})"
+        raise PluginValidationError(
+            f"Calling '.{leaf}(...)' on {shown} is not allowed in {filename}; "
+            f"under this policy only "
+            f"{', '.join(sorted(safe_load_receivers))} may be loaded from, "
+            f"because every other '.{leaf}' within reach executes code from "
+            f"the file it reads{denial_hint}",
+            lineno=call.lineno,
+        )
+
+    # Blocklist form (installed plugins and custom nodes). ``json.load`` /
+    # ``yaml.safe_load`` are fine, ``torch.*.load`` / ``np.load`` /
+    # ``pickle.loads`` are not. An unresolvable receiver (``things[0].loads()``)
+    # is left alone -- the user chose to install this file, and condemning
+    # every method called ``loads`` was a false positive with no matching
+    # security value.
     if receiver is None:
         return
-    resolved = (roots or {}).get(receiver, receiver)
     if resolved in _UNPICKLING_RECEIVERS:
         shown = receiver if receiver == resolved else f"{receiver} ({resolved})"
         raise PluginValidationError(
