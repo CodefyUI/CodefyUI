@@ -74,7 +74,12 @@ PythonScript failed at line 4: ZeroDivisionError: division by zero
 
 ## Tier-0 政策
 
-程式碼在**每次編輯**時就會檢查，而且是在編譯之前——用的是把關外掛套件的同一套 AST 檢查器（`backend/app/core/plugin_validator.py`），只是切換成允許清單模式。被拒絕時你會立刻在編輯器下方看到紅色訊息並標出該行，而不是在訓練流程跑了十分鐘後才失敗。
+這裡有兩層，而只有其中一層是真正的界線。
+
+1. **AST 關卡。** 程式碼在**每次編輯**時就會檢查，而且是在編譯之前——用的是把關外掛套件的同一套 AST 檢查器（`backend/app/core/plugin_validator.py`），只是切換成允許清單模式。被拒絕時你會立刻在編輯器下方看到紅色訊息並標出該行，而不是在訓練流程跑了十分鐘後才失敗。它的規則認的是**名稱**，這讓它跑得快、也讓它是個好編輯器提示，但不是一道好牆。
+2. **執行期的模組代理**（`backend/app/core/script_proxy.py`）。腳本實際執行的命名空間裡**沒有**主行程真正的模組物件，放的是受限的代理物件；它判斷的是一個屬性**解析出來的東西**：只要拿回來的模組不在 Tier-0 清單上，不管那個屬性叫什麼都會被拒絕。這一層才是真正守得住的界線。
+
+前後三次安全審查都穿過了第一層，每一次都是從沒人列進清單的名字進去的——先是 `__loader__`，再來是 `torch.os`，然後是 `collections._sys`（那就是真正的 `sys` 模組，而 `sys.modules['os']` 是其餘的一切）。這不是運氣不好，這就是「認名稱的清單」必然的結果。第二層問的是**我剛剛拿到的是什麼**，所以底線別名、`sys.modules` 下標、綁到區域變數上、乃至明年函式庫改版，全都是同一條規則。
 
 **可匯入的模組**（`backend/app/core/script_policy.py` 的 `TIER0_MODULES`）：
 
@@ -82,21 +87,39 @@ PythonScript failed at line 4: ZeroDivisionError: division by zero
 collections   itertools   json   math   numpy   re   statistics   torch
 ```
 
-這些模組也已經以同名**預先綁定**在命名空間裡，所以不寫 import 也能直接用 `math.floor(x)`；喜歡別名的話，`import numpy as np` 也可以。
+這些模組也已經以同名**預先綁定**在命名空間裡，所以不寫 import 也能直接用 `math.floor(x)`；喜歡別名的話，`import numpy as np` 也可以。兩種寫法綁到的都是代理物件而不是模組本身——`import` 走的是同一道守衛。
 
-**會被拒絕，並附上替代路徑說明：**
+### 代理會拒絕什麼
+
+* **清單以外的任何模組，不管用什麼方式碰到。** `collections._sys`、`statistics.random`、`json.codecs`、`torch.cuda.tunable.mp`（那其實是標準函式庫的 `multiprocessing`）——判斷依據是模組自己的身分，所以沒有別名可找、也沒有名字要補。**被允許**套件底下的子模組（`numpy.linalg`、`torch.nn.functional`、`torch.signal.windows`）會包成巢狀代理，正常可用。
+* **函式庫的私有屬性與雙底線屬性**：`re._parser`、`statistics._sum`、`numpy.__version__`。函式庫的私有名稱正是它自己那些 import 的所在。請改用公開 API，例如用 `torch.version.cuda` 而不是 `torch.__version__`。
+* **對模組取下標**——`m['os']`——這樣一份「模組的對照表」就不能成為繞過屬性規則的路。
+* **對函式庫屬性指派或刪除**：`torch.zeros = 我的函式` 以前會把 `torch` 改給行程裡其他所有節點。現在兩層都會拒絕。
+* 把模組當成函式呼叫、對模組做迭代，以及下面列出的每一個被封鎖屬性。
+
+一般的值會**原樣**回傳：`torch.zeros(3)` 就是普通的張量，不是代理。這是刻意的——連資料一起代理，等於在每個腳本的每一次 `.mean()` 前面都加上一層 Python 檢查。這同時也是唯一殘留風險的形狀，詳見安全模型那一節。
+
+**會被關卡拒絕，並附上替代路徑說明：**
 
 * 其他任何匯入——`os`、`sys`、`pathlib`、`subprocess`、`socket`、`urllib`、`requests`，以及 `pandas`、`sklearn` 這類並不危險、只是不在清單上的模組。相對匯入同樣被拒絕。
 * `exec`、`eval`、`compile`、`__import__`、`open`、`input`、`globals`、`locals`、`vars`、`dir`、`breakpoint`、`exit`。
 * 直接使用模組機制的名稱——`__loader__`、`__spec__`、`__builtins__`、`__package__`——以及雙底線屬性存取（`__class__`、`__globals__`、`__subclasses__`、`__code__`、`__traceback__`……）。這份清單請讀成**我們已知的逃逸手法，一項一項列出來**，而不是「反射這一整類都處理好了」的保證。清單上的每一項都曾是真的能逃出去的路：`__loader__.load_module('nt')` 不用任何 import 就能拿到真正的 `os` 模組。
 * **走訪執行框架（frame）**，不論接收端是誰：`tb_frame`、`tb_next`、`f_back`、`f_globals`、`f_locals`、`f_builtins`、`f_code`、`gi_frame`、`gi_code`、`cr_frame`，以及這一族的其餘成員。被接住的例外身上帶著 traceback，traceback 身上帶著它被丟出時的那個 frame，而**呼叫**你的那個 frame 屬於 CodefyUI 自己：`e.__traceback__.tb_frame.f_back.f_globals` 會交出這個節點自己的模組全域變數，裡面就有 `importlib` 與 `builtins`。到了那一步，腳本原本拿到的是哪一套 builtins 已經不重要了——所以這些名稱是直接拒絕，而不是設法清理。
-* **你不能 import 的模組名稱，被當成屬性來取用**：`torch.os`、`torch.sys`、`torch.serialization.pickle`、`json.codecs.sys`、`numpy.f2py.subprocess`。函式庫自己也會 import 東西，所以一份只看 `import` 陳述句的允許清單，只要你向某個被允許的模組指名要，它就會把被封鎖的模組直接遞出來。這些名稱取自 import 規則用的同一份封鎖清單，只排除 `torch.signal`（那是 torch 自己的訊號處理命名空間，不是標準函式庫的同名模組）。
-* 允許的函式庫**內部**通往檔案系統、網路、編譯器或其他行程的那些門：`torch.hub`（會下載並執行遠端的 `hubconf.py`）、`torch.utils.cpp_extension`（編譯並執行 C++）、`torch.distributed`、`torch.multiprocessing`、`numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`、`numpy.ctypeslib`，以及 `script_policy.py` 裡 `TIER0_DENIED_ATTRS` 的其餘項目。用 import 把它們的名稱帶進來、或用字面值 `getattr` 取得，同樣會被拒絕。
-* 在 `json` 以外的任何東西上呼叫 `.load(...)` / `.loads(...)`，以及任何 `load(allow_pickle=True)` 或 `load(weights_only=<不是 True>)`：它們會執行來源檔案裡的程式碼。這條規則刻意訂得很鈍。接收端會透過 import 別名**以及**單純的指派來解析（`b = torch; b.load(x)`），但只要是檢查器解析不出來的接收端——`(lambda: torch)().load(x)`、`things[0].load(x)`——一律拒絕，而不是放行；代價是你自己寫的 `obj.load()` 輔助方法也會一起被拒絕。真的要載入時，請寫成 `torch.load(path, weights_only=True)`。
+* **你不能 import 的模組名稱，被當成屬性來取用**：`torch.os`、`torch.sys`、`torch.serialization.pickle`、`json.codecs.sys`、`numpy.f2py.subprocess`。函式庫自己也會 import 東西，所以一份只看 `import` 陳述句的允許清單，只要你向某個被允許的模組指名要，它就會把被封鎖的模組直接遞出來。這些名稱取自 import 規則用的同一份封鎖清單，只排除 `torch.signal`（那是 torch 自己的訊號處理命名空間，不是標準函式庫的同名模組）。這一類現在由代理從結構上擋住；名稱規則留下來，是因為它是編輯器在你打字時就能顯示的版本。
+* **函式庫的私有屬性**——`collections._sys`、`statistics.random._os`、`re._parser`——只要接收端是那八個被允許的模組之一就會被拒絕。你自己類別裡的 `self._cache` 是普通的 Python，仍然合法。
+* **對函式庫指派**：`torch.zeros = 我的函式`、`del numpy.mean`。
+* 允許的函式庫**內部**通往檔案系統、網路、編譯器或其他行程的那些門：`torch.hub`（會下載並執行遠端的 `hubconf.py`）、`torch.utils.cpp_extension`（編譯並執行 C++）、`torch.distributed`、`torch.multiprocessing`、`numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`、`numpy.ctypeslib`，以及 `script_policy.py` 裡 `TIER0_DENIED_ATTRS` 的其餘項目。用 import 把它們的名稱帶進來、或用字面值 `getattr` 取得，同樣會被拒絕；`os.system` / `.popen` / `.spawnv` 現在也**當成屬性**擋掉，而不只是擋呼叫——因為 `f = obj.system` 之後再 `f(cmd)`，只差一行指派就繞過了任何「認呼叫」的規則。
+* 在 `json` 以外的任何東西上使用 `.load(...)` / `.loads(...)`——包括只是**讀取**這個屬性，例如 `f = torch.load`。這些函式會執行來源檔案裡的程式碼。這條規則刻意訂得很鈍。接收端會透過 import 別名**以及**單純的指派來解析（`b = torch; b.load(x)`），而只要是檢查器解析不出來的接收端——`(lambda: torch)().load(x)`、`things[0].load(x)`——一律拒絕，而不是放行；代價是你自己寫的 `obj.load()` 輔助方法也會一起被拒絕。
 
 `json.load` 與 `json.loads` 是最後這條規則的例外——`json` 本來就是 Tier-0 模組，解析 JSON 正是它的用途。而且它是**唯一**的例外：八個允許的模組裡，只有 `json`、`numpy`、`torch` 有 `.load`，另外兩個正是 pickle 那兩道門。
 
-上述規則中有兩條在執行期還有第二道鎖：命名空間的 builtins 以明確的允許清單建立（所以 `open`、`eval` 這些不只是不能改，而是根本不存在），而 `__import__` 被換成會重新檢查模組清單的版本。其餘規則——雙底線、frame、模組名稱屬性、函式庫門戶、pickle——都**只在 AST 階段**檢查：程式碼開始執行後就沒有人再檢查一次，這正是這道關卡必須在編譯之前跑的原因。
+:::note `weights_only=True` 不再是 Tier-0 的通融寫法
+這一頁先前告訴你「真的要載入時就寫 `torch.load(path, weights_only=True)`」。現在那樣寫會被拒絕。執行期的代理交出去的是**屬性**而不是呼叫：它看不到關鍵字引數，所以只要 `torch.load` 拿得到，`f = torch.load; f(p)` 連同任何引數就都拿得到。Tier 0 本來就沒有檔案存取（`open` 同樣被禁），所以現在兩層一致地說不，而不是讓關卡承諾執行期不認的事。要載入檢查點，請用[自訂節點](./custom-nodes.md)或內建的載入節點。
+:::
+
+**哪一層守哪一條。** builtins 允許清單（所以 `open`、`eval` 這些不只是不能改，而是根本不存在）、受守衛的 `__import__`，以及上面每一條模組／屬性規則，在代理層都有執行期的鎖。仍然**只在 AST 階段**檢查的是代理看不到的那些反射手法：雙底線屬性（`__class__`、`__globals__`、`__code__`……）、走訪執行框架（`f_globals`、`gi_frame`、`tb_frame`……），以及用計算出來的名字呼叫 `getattr`。這些活在一般 Python 物件上、而不是函式庫表面上，所以關卡仍然必須在編譯之前跑。
+
+**綠色標記不是保證。** 編輯器跑的是 AST 關卡，所以關卡挑不出毛病的腳本，仍然可能在執行途中被拒絕——`json.codecs` 是透過被允許的模組碰到的未列名模組，認名稱的關卡對它沒有規則可套，代理則直接拒絕。真的發生時，你會在執行紀錄裡看到同一段政策訊息，並附上你的行號。
 
 ### 需要清單以外的東西？
 
@@ -109,15 +132,18 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 在把 CodefyUI 開到網路介面上之前，請先讀這一節。
 
-這道關卡擋的是**容易的**逃逸手法。它**不是**沙箱，也沒有打算變成沙箱：
+這套政策擋的是**容易的**逃逸手法。它**不是**沙箱，也沒有打算變成沙箱：
 
-* **它限制的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼。** numpy 與 torch 本身就大到內建了檔案 IO、下載功能與一個 C++ 編譯器。上面那份拒絕清單關掉的是我們知道的門；它是架在兩套龐大 API 之上的黑名單，只能視為提高逃逸的成本，絕不是「檔案與網路碰不到」的保證。
-* **這些封鎖清單認的是名稱，而名稱不是邊界。** 門戶規則之所以擋得住 `torch.os`，只因為那個屬性剛好**叫做** `os`；某個函式庫若把同一個模組綁在別的名字底下，這條規則就看不見。目前有一個這種別名——`torch.cuda.tunable.mp`——是手動補上的，這件事說明的是問題的形狀，而不是問題已經解決。掃過允許的模組後，目前找不到還能碰到的封鎖模組；但那是對「今天這一版 numpy 與 torch」的描述，不是這條規則本身的性質。
+* **這道界線真正保證的是什麼。** 腳本拿不到頂層套件不在那八個允許模組裡的任何模組——不管是透過 import、屬性、私有別名、下標、綁到區域變數，還是字面值 `getattr`——因為檢查的是**拿回來的物件**，而不是被打出來的名字。承諾就只有這一句。它是規則本身的性質，而不是「今天這一版函式庫」的狀態；這正是這一頁上一版寫錯的地方：它宣稱「掃過之後找不到還能碰到的封鎖模組」，而在寫下那句話的當下，`collections._sys` 回傳的就是真正的 `sys` 模組。認名稱的掃描，永遠只能描述它剛好走過的那些名字。
+* **它框住的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼。** numpy 與 torch 本身就大到內建了檔案 IO、下載功能與一個 C++ 編譯器。那份拒絕清單關掉的是我們知道的門；它是架在兩套龐大 API 之上的黑名單，只能視為提高逃逸的成本，絕不是「檔案與網路碰不到」的保證。
+* **殘留風險：一般的值不會被代理。** 代理包的是模組。函式庫交回來的其他東西——張量、陣列、類別、函式——都是真正的物件；如果**它們**身上掛著一個模組，那就只有關卡的名稱規則看得到。目前 numpy／torch／標準函式庫的表面上沒有這種情況（把每個公開屬性往下走兩層，找不到任何一般的值身上掛著模組），但這一條確實是對「今天這些函式庫」的描述，這裡也就照實寫出來。
+* **反射手法仍然只由關卡擋。** `__globals__`、`__class__`、frame 屬性，以及用計算出來的名字呼叫 `getattr`，是由 AST 檢查器拒絕的，沒有別的東西擋——因為它們活在一般物件上，而不是函式庫表面上。
 * 腳本在 **CodefyUI 伺服器行程內**執行，使用你的使用者權限。沒有任何容器隔離。
-* 已經能在你畫布上打字的攻擊者，只要夠有決心，多半仍找得到出口。這道關卡提高的是隨手執行程式碼的成本，並不能讓這個面向對有備而來的對手變得安全。
+* 已經能在你畫布上打字的攻擊者，只要夠有決心，仍可能找得到出口。這套政策提高的是隨手執行程式碼的成本，並不能讓這個面向對有備而來的對手變得安全。
 * 沒有任何 CPU 或記憶體限制，而且失控的腳本不只影響自己的節點。節點是在直譯器的**預設執行緒池**上執行，所以某個腳本裡的 `while True:` 會餓死這個行程裡**所有**節點的執行，直到伺服器重啟。「停止」是協作式的、只在節點**之間**檢查，無法中斷節點內部的迴圈——長迴圈必須自己呼叫 `should_stop()`。
-* **模組物件是與主行程共用的。** 允許清單裡的模組就是本尊，不是複本，所以腳本裡的 `torch.zeros = 別的東西` 會影響其他所有節點、所有流程，直到伺服器重啟為止。run 與 run 之間不會還原任何東西。
 * `code` 參數跟其他參數一樣會存進流程 JSON。**打開來路不明的流程並按下執行，等於執行對方的 Python。** 政策檢查是這中間唯一的一道防線，這正是它在編譯之前就跑、而不是等到匯入時才跑的原因。
+
+**這個節點首次發布以來已修掉的問題**：污染模組。允許清單裡的模組以前交出去的是本尊，所以 `torch.zeros = 別的東西` 會改掉行程裡其他所有節點看到的版本。現在兩層都會拒絕。
 
 真正的界線是**誰能碰到這個編輯器**。CodefyUI 預設只綁定本機；除非你信任該網路上的所有人，否則請維持原狀。
 
@@ -226,4 +252,4 @@ def run(inputs, params):
 | 連接埠 | 每邊 1–8 個。 |
 | 擷取的輸出 | 每次執行 64,000 個字元，超過後截斷並附註。 |
 | 非同步 | `run` 必須是一般的 `def`；`async def run` 會在檢查階段被拒絕，`asyncio` 也無法匯入。 |
-| 狀態 | 每次執行都會拿到全新的命名空間，所以你自己的模組層級變數不會延續。但匯入進來的**模組**是主行程的那一份——見安全模型一節。真正需要保留的狀態請交給流程本身。 |
+| 狀態 | 每次執行都會拿到全新的命名空間，所以你自己的模組層級變數不會延續，而函式庫代理也拒絕被寫入。真正需要保留的狀態請交給流程本身。 |

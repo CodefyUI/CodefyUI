@@ -17,9 +17,12 @@ from app.core.plugin_validator import PluginValidationError
 from app.core.script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_FILENAME,
+    SCRIPT_PROXY_DENIED_ATTRS,
     TIER0_GATEWAY_MODULE_ATTRS,
     TIER0_MODULES,
+    TIER0_RCE_ATTR_LEAVES,
     TIER0_SAFE_LOAD_RECEIVERS,
+    ScriptPolicyError,
     validate_script_source,
 )
 from app.nodes.utility.python_script_node import (
@@ -1081,3 +1084,573 @@ def test_the_policy_message_does_not_promise_files_are_unreachable():
     assert "for file, network or process access" not in lowered
     assert "libraries" in PythonScriptNode.DESCRIPTION.lower()
     assert "guardrail, not a sandbox" in PythonScriptNode.DESCRIPTION.lower()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Review round 3: the runtime module proxy is the boundary
+# ═════════════════════════════════════════════════════════════════════════
+#
+# Rounds 1 and 2 each closed an escape by adding names to a list, and each
+# time the next reviewer found a name that was not on it:
+#
+#     collections._sys                    -> the real sys, under an alias
+#     collections._sys.modules['os']      -> every imported module, by key
+#     statistics.random._os.getcwd()      -> os, two private hops away
+#     json.codecs.builtins.eval           -> builtins, via an unlisted module
+#     f = osmod.system; f(cmd)            -> no Call-keyed rule can fire
+#     f = torch.load;   f(path)           -> ditto for the pickle rule
+#
+# The list was never the problem. The namespace handed the script the host's
+# REAL module objects, and a real module hands over whatever it holds. The
+# fix is structural: the namespace holds proxies that judge the RESOLVED
+# OBJECT -- is this a module, and is it on the list -- so an alias, a
+# subscript, a local binding and next year's library reshuffle are the same
+# rule. The probes below are driven through ``execute``, and a probe is
+# closed whether the GATE or the PROXY refused it: both are locks on the
+# same door and the test asserts the door is shut, not which lock held.
+
+
+def _refused(code: str, inputs: dict | None = None) -> str:
+    """``"GATE"``, ``"PROXY"``, ``"NAMEERROR"`` or ``"RAN"`` for *code*."""
+    try:
+        PythonScriptNode().execute(inputs or {}, {"code": code})
+        return "RAN"
+    except PluginValidationError:
+        return "GATE"
+    except ScriptPolicyError:  # pragma: no cover - wrapped by the node
+        return "PROXY"
+    except RuntimeError as exc:
+        text = str(exc)
+        if "ScriptPolicyError" in text:
+            return "PROXY"
+        if "NameError" in text:
+            return "NAMEERROR"
+        return "RAN"
+
+
+ROUND_THREE_PROBES = [
+    (
+        "the real sys under a private alias",
+        "def run(inputs, params):\n    return str(collections._sys)\n",
+    ),
+    (
+        "sys.modules subscript reaches every imported module",
+        "def run(inputs, params):\n"
+        "    s = collections._sys\n"
+        "    osmod = s.modules['os']\n"
+        "    return osmod.getcwd()\n",
+    ),
+    (
+        "os.system bound to a local, so no Call-keyed rule fires",
+        "def run(inputs, params):\n"
+        "    s = collections._sys\n"
+        "    osmod = s.modules['os']\n"
+        "    f = osmod.system\n"
+        "    return f('cmd /c ver')\n",
+    ),
+    (
+        "os two private hops from statistics",
+        "def run(inputs, params):\n    return statistics.random._os.getcwd()\n",
+    ),
+    (
+        "subprocess.run through sys.modules",
+        "def run(inputs, params):\n"
+        "    sp = collections._sys.modules['subprocess']\n"
+        "    return str(sp.run(['cmd', '/c', 'ver'], capture_output=True))\n",
+    ),
+    (
+        "builtins.eval through sys.modules",
+        "def run(inputs, params):\n"
+        "    b = collections._sys.modules['builtins']\n"
+        "    f = b.eval\n"
+        "    return f('6*7')\n",
+    ),
+    (
+        "builtins through an unlisted module (json.codecs)",
+        "def run(inputs, params):\n"
+        "    b = json.codecs.builtins\n"
+        "    f = b.eval\n"
+        "    return f('6*7')\n",
+    ),
+    (
+        "the pickle loader bound to a local instead of called",
+        "def run(inputs, params):\n    f = torch.load\n    return str(f)\n",
+    ),
+    (
+        "a private submodule of an allowed module",
+        "def run(inputs, params):\n    return str(re._parser)\n",
+    ),
+    (
+        "a private leaf of an allowed module",
+        "def run(inputs, params):\n    return str(statistics._sum)\n",
+    ),
+    (
+        "collections.abc as the private hop",
+        "def run(inputs, params):\n    return str(collections.abc._sys)\n",
+    ),
+    (
+        "module poisoning by assignment",
+        "def run(inputs, params):\n"
+        "    def evil(*a, **k):\n        return 'poisoned'\n"
+        "    torch.zeros = evil\n"
+        "    return 1\n",
+    ),
+    (
+        "module poisoning through setattr",
+        "def run(inputs, params):\n"
+        "    def evil(*a, **k):\n        return 'poisoned'\n"
+        "    setattr(torch, 'zeros', evil)\n"
+        "    return 1\n",
+    ),
+    (
+        "deleting a library attribute",
+        "def run(inputs, params):\n    del torch.zeros\n    return 1\n",
+    ),
+    (
+        "subscripting a module",
+        "def run(inputs, params):\n    m = torch\n    return str(m['os'])\n",
+    ),
+    (
+        "calling a module",
+        "def run(inputs, params):\n    m = torch\n    return m()\n",
+    ),
+    (
+        "an import statement binds the proxy too",
+        "import collections\n\ndef run(inputs, params):\n"
+        "    c = collections\n    return str(c._sys)\n",
+    ),
+    (
+        "torch.load with weights_only=True (tier 0 has no file access)",
+        "import torch\n\ndef run(inputs, params):\n"
+        "    return torch.load('x.pt', weights_only=True)\n",
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "code"), ROUND_THREE_PROBES)
+def test_round_three_probes_fail_closed(label, code):
+    """Every one of these ran to completion at ``f4a9185``; six of them were
+    full RCE (``os.system``, ``subprocess.run``, ``builtins.eval``)."""
+    assert _refused(code) in ("GATE", "PROXY"), f"escape still open: {label}"
+
+
+def test_the_boundary_is_the_resolved_object_not_the_attribute_name():
+    """The point of the whole round, asserted without naming a real escape.
+
+    A module bound onto an allowed one under a name no blocklist contains --
+    which is exactly what ``collections._sys`` and ``torch.cuda.tunable.mp``
+    are -- must be refused because of WHAT IT IS.
+    """
+    import math
+    import os
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    try:
+        math.perfectlyordinaryname = os  # a name no list will ever hold
+        with pytest.raises(ScriptPolicyError, match="not on the Tier-0 list"):
+            proxy.perfectlyordinaryname
+    finally:
+        del math.perfectlyordinaryname
+
+
+def test_a_submodule_of_an_allowed_package_is_wrapped_not_handed_over():
+    from app.core.script_proxy import RestrictedModule, module_proxy
+
+    import numpy
+
+    linalg = module_proxy(numpy).linalg
+    assert isinstance(linalg, RestrictedModule)
+    assert not isinstance(linalg, type(numpy))
+
+
+def test_plain_values_are_returned_unwrapped_so_tensor_work_is_unaffected():
+    """The performance contract: proxy the module surface, not the data.
+
+    A returned tensor must be a tensor -- wrapping it would put a Python
+    ``__getattribute__`` in front of every ``.mean()`` in every script.
+    """
+    import torch
+
+    from app.core.script_proxy import RestrictedModule, module_proxy
+
+    proxy = module_proxy(torch)
+    tensor = proxy.zeros(3)
+    assert isinstance(tensor, torch.Tensor)
+    assert not isinstance(tensor, RestrictedModule)
+    assert not isinstance(proxy.pi, RestrictedModule)
+
+
+def test_a_missing_attribute_still_raises_attributeerror():
+    """``getattr(mod, 'x', default)`` and ``hasattr`` must keep working; only
+    a POLICY refusal is a ScriptPolicyError."""
+    import math
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    with pytest.raises(AttributeError):
+        proxy.definitely_not_a_math_function
+    assert getattr(proxy, "definitely_not_a_math_function", 7) == 7
+
+
+def test_the_proxy_keeps_its_own_state_out_of_reach():
+    """A proxy that stored the real module in an ordinary attribute would
+    hand it back to the first script that guessed the name."""
+    import math
+
+    from app.core.script_proxy import module_proxy
+
+    proxy = module_proxy(math)
+    for name in ("_target", "_label", "_cache", "__dict__", "__class__"):
+        with pytest.raises((ScriptPolicyError, AttributeError)):
+            getattr(proxy, name)
+
+
+def test_the_proxy_holds_no_instance_state_at_all():
+    """Found while probing this very fix, and live for an afternoon.
+
+    The first cut kept the wrapped module in ``__slots__``. A slot is a
+    descriptor on the CLASS, and ``type`` is an allowed builtin, so
+    ``type(collections)._target.__get__(collections)`` returned the real
+    module -- a proxy that leaked what it wrapped. State now lives off the
+    object entirely: there is no descriptor to fetch and no ``__dict__`` to
+    read, so ``object.__getattribute__`` has nothing to hand over either.
+    """
+    import math
+
+    from app.core.script_proxy import RestrictedModule, module_proxy
+
+    proxy = module_proxy(math)
+    assert RestrictedModule.__slots__ == ()
+    for name in ("_target", "_label", "_cache", "__dict__"):
+        with pytest.raises(AttributeError):
+            object.__getattribute__(proxy, name)
+    # ...and no state on the class either, which is where a slot lives.
+    for name in ("_target", "_label", "_cache"):
+        with pytest.raises(AttributeError):
+            getattr(RestrictedModule, name)
+    # The escape as a script would write it, refused for the structural
+    # reason rather than by a rule about the word "_target".
+    with pytest.raises(RuntimeError) as exc:
+        PythonScriptNode().execute(
+            {},
+            {"code": "def run(inputs, params):\n"
+                     "    d = type(collections)._target\n"
+                     "    m = d.__get__(collections)\n"
+                     "    return m._sys.modules['os'].getcwd()\n"},
+        )
+    assert "no attribute '_target'" in str(exc.value)
+
+
+def test_the_namespace_hands_out_proxies_not_modules():
+    import types
+
+    from app.core.script_proxy import RestrictedModule, tier0_module_namespace
+
+    namespace = tier0_module_namespace()
+    assert set(namespace) <= set(TIER0_MODULES)
+    for name, value in namespace.items():
+        assert isinstance(value, RestrictedModule), name
+        assert not isinstance(value, types.ModuleType), name
+
+
+def test_no_module_outside_the_allowlist_is_reachable_through_the_proxies():
+    """The replacement for round 2's "a depth-5 name walk finds nothing".
+
+    That claim was a statement about the names in one version of numpy and
+    torch, and it was false at ``f4a9185``. This one is a statement about the
+    RULE: walk the proxy surface following every attribute the policy allows
+    and every module that comes back is, by construction, on the list. The
+    walk is a check that the construction holds, not the thing that makes it
+    true.
+    """
+    import types
+
+    from app.core.script_proxy import (
+        RestrictedModule,
+        tier0_module_namespace,
+        unwrap,
+    )
+
+    allowed = set(TIER0_MODULES)
+    seen: set[int] = set()
+    leaked: list[str] = []
+    visited = 0
+
+    def walk(proxy, path: str, depth: int) -> None:
+        nonlocal visited
+        if depth > 3:
+            return
+        target = unwrap(proxy)
+        if id(target) in seen:
+            return
+        seen.add(id(target))
+        visited += 1
+        for name in dir(target):
+            try:
+                value = getattr(proxy, name)
+            except Exception:  # noqa: BLE001 - refused or simply absent
+                continue
+            if isinstance(value, RestrictedModule):
+                inner = unwrap(value)
+                if inner.__name__.split(".")[0] not in allowed:
+                    leaked.append(f"{path}.{name} -> {inner.__name__}")
+                walk(value, f"{path}.{name}", depth + 1)
+            elif isinstance(value, types.ModuleType):
+                leaked.append(f"{path}.{name} -> UNWRAPPED {value.__name__}")
+
+    for root, proxy in tier0_module_namespace().items():
+        walk(proxy, root, 1)
+
+    assert visited > 50, "the walk should reach a real slice of the surface"
+    assert leaked == [], f"reachable outside the allowlist: {leaked[:10]}"
+
+
+def test_the_gate_and_the_proxy_agree_on_which_attributes_are_closed():
+    """Two locks, one list. A door closed in the editor but open at run time
+    (or the reverse) is how a policy drifts into decoration."""
+    from app.core.script_proxy import _DENIED_ATTRS  # noqa: SLF001
+
+    assert set(SCRIPT_PROXY_DENIED_ATTRS) == set(_DENIED_ATTRS)
+    for name in ("hub", "cpp_extension", "savetxt", "os", "sys", "system", "popen"):
+        assert name in SCRIPT_PROXY_DENIED_ATTRS
+
+
+def test_the_rce_leaves_are_refused_as_attributes_not_only_as_calls():
+    """``f = obj.system`` then ``f(cmd)`` has no Call node with a dangerous
+    leaf. Tier 0 refuses the attribute; the shared blocklist still does not,
+    because a plugin with a ``self.system`` field is ordinary code."""
+    assert "system" in TIER0_RCE_ATTR_LEAVES
+    with pytest.raises(PluginValidationError, match="system"):
+        validate_script_source("def run(inputs, params):\n    return inputs.system\n")
+    _plugin_mode("def go(cfg):\n    return cfg.system\n")
+
+
+def test_a_library_s_private_attributes_are_refused_at_the_gate_too():
+    """The proxy is the boundary, but the editor should say so while typing:
+    ``collections._sys`` is a red line, not a surprise ten minutes later."""
+    for snippet in ("collections._sys", "statistics.random._os", "re._parser"):
+        with pytest.raises(PluginValidationError, match="private attribute"):
+            validate_script_source(f"def run(inputs, params):\n    return {snippet}\n")
+
+
+def test_the_private_attribute_rule_only_applies_to_library_receivers():
+    """``self._cache`` is ordinary Python and must stay legal."""
+    result = _run(
+        "class Box:\n"
+        "    def __init__(self):\n"
+        "        self._items = [1, 2, 3]\n"
+        "\n"
+        "    def total(self):\n"
+        "        return sum(self._items)\n"
+        "\n"
+        "\n"
+        "def run(inputs, params):\n    return Box().total()\n"
+    )
+    assert result["out1"] == 6
+    # ...and the rule is tier-0 only: an installed plugin reads its own
+    # library internals all day.
+    _plugin_mode("import json\n\ndef go():\n    return json._default_encoder\n")
+
+
+def test_assigning_to_a_library_is_refused_but_ordinary_attributes_are_not():
+    with pytest.raises(PluginValidationError, match="shared with the host"):
+        validate_script_source(
+            "import torch\n\ndef run(inputs, params):\n    torch.zeros = None\n"
+        )
+    result = _run(
+        "class Box:\n    pass\n\n\n"
+        "def run(inputs, params):\n    b = Box()\n    b.value = 5\n    return b.value\n"
+    )
+    assert result["out1"] == 5
+    # Tier-0 only: a plugin patching a library attribute is its business.
+    _plugin_mode("import json\n\ndef go():\n    json.x = 1\n")
+
+
+def test_reading_a_pickle_loader_is_refused_even_without_calling_it():
+    """The Call-keyed rule is evaded by one assignment; the attribute rule
+    is not. ``json`` stays exempt, spelled out or aliased."""
+    with pytest.raises(PluginValidationError, match="binding the function"):
+        validate_script_source(
+            "import torch\n\ndef run(inputs, params):\n    f = torch.load\n    return f\n"
+        )
+    validate_script_source(
+        'import json\n\ndef run(inputs, params):\n    f = json.loads\n    return f("[]")\n'
+    )
+    validate_script_source(
+        'import json as j\n\ndef run(inputs, params):\n    return j.loads("[]")\n'
+    )
+
+
+def test_weights_only_is_no_longer_a_tier0_escape_hatch():
+    """A deliberate behaviour change, and the reason for it.
+
+    The proxy hands out ATTRIBUTES; it cannot see a keyword argument, so
+    ``torch.load`` reachable at all is ``f = torch.load; f(p)`` reachable.
+    Tier 0 has no file access by design (``open`` is denied), so the two
+    layers agree on "no" rather than the gate promising what the runtime
+    refuses. Checkpoint loading belongs in a custom node.
+    """
+    with pytest.raises(PluginValidationError):
+        validate_script_source(
+            "import torch\n\ndef run(inputs, params):\n"
+            "    return torch.load('x.pt', weights_only=True)\n"
+        )
+    # Installed plugins keep the escape hatch: they are files the user chose.
+    _plugin_mode("import torch\n\ndef go(p):\n    return torch.load(p, weights_only=True)\n")
+
+
+MUST_PASS_SCRIPTS = [
+    (
+        "json round-trip",
+        'import json\n\ndef run(inputs, params):\n'
+        '    return json.dumps(json.loads(\'{"a": 1}\'))\n',
+    ),
+    (
+        "json through an alias",
+        'import json as j\n\ndef run(inputs, params):\n    return j.loads("[1,2]")\n',
+    ),
+    (
+        "numpy.linalg",
+        "import numpy as np\n\ndef run(inputs, params):\n"
+        "    return float(np.linalg.norm(np.ones(4)))\n",
+    ),
+    (
+        "torch.nn.functional",
+        "import torch\n\ndef run(inputs, params):\n"
+        "    return float(torch.nn.functional.relu(torch.ones(3)).sum())\n",
+    ),
+    (
+        "torch.nn.functional through an import alias",
+        "import torch.nn.functional as F\nimport torch\n\ndef run(inputs, params):\n"
+        "    return float(F.softmax(torch.ones(3), dim=0).sum())\n",
+    ),
+    (
+        "from torch import nn",
+        "from torch import nn\n\ndef run(inputs, params):\n"
+        "    return int(nn.Linear(2, 2).weight.numel())\n",
+    ),
+    (
+        "import numpy.linalg as la",
+        "import numpy.linalg as la\nimport numpy as np\n\ndef run(inputs, params):\n"
+        "    return float(la.norm(np.ones(9)))\n",
+    ),
+    (
+        "from collections import Counter",
+        "from collections import Counter\n\ndef run(inputs, params):\n"
+        "    return {'out1': dict(Counter('aab'))}\n",
+    ),
+    (
+        "collections.Counter",
+        "import collections\n\ndef run(inputs, params):\n"
+        "    return {'out1': dict(collections.Counter('aab'))}\n",
+    ),
+    (
+        "statistics",
+        "import statistics\n\ndef run(inputs, params):\n"
+        "    return statistics.mean([1, 2, 3])\n",
+    ),
+    (
+        "numpy.random",
+        "import numpy as np\n\ndef run(inputs, params):\n"
+        "    return float(np.random.default_rng(0).normal(size=4).mean())\n",
+    ),
+    (
+        "math + itertools",
+        "import math\nimport itertools\n\ndef run(inputs, params):\n"
+        "    return math.sqrt(sum(1 for _ in itertools.repeat(0, 9)))\n",
+    ),
+    (
+        "re",
+        "import re\n\ndef run(inputs, params):\n"
+        "    return bool(re.match(r'a+', 'aaa'))\n",
+    ),
+    (
+        "a user class with helper methods",
+        "import numpy as np\n\n\nclass S:\n"
+        "    def __init__(self, v):\n        self.v = v\n\n"
+        "    def mean(self):\n        return float(np.mean(self.v))\n\n\n"
+        "def run(inputs, params):\n    return S([1.0, 2.0, 3.0]).mean()\n",
+    ),
+    (
+        "a local named like a frame attribute",
+        "def run(inputs, params):\n    f_code = 3\n    gi_frame = 4\n"
+        "    return f_code + gi_frame\n",
+    ),
+    (
+        "an attribute named .code",
+        "class R:\n    def __init__(self):\n        self.code = 7\n\n\n"
+        "def run(inputs, params):\n    return R().code\n",
+    ),
+    # ── the five recipes the docs ship ──────────────────────────────
+    (
+        "doc recipe: per-channel mean/std",
+        "import torch\n\n\ndef run(inputs, params):\n"
+        "    x = inputs['in1']\n"
+        "    flat = x.reshape(x.shape[0], x.shape[1], -1)\n"
+        "    mean = flat.mean(dim=(0, 2))\n"
+        "    std = flat.std(dim=(0, 2))\n"
+        "    print('channels:', mean.numel())\n"
+        "    return {'out1': torch.stack([mean, std])}\n",
+    ),
+    (
+        "doc recipe: class balance",
+        "import collections\n\n\ndef run(inputs, params):\n"
+        "    labels = inputs['in1']\n"
+        "    counts = collections.Counter(int(v) for v in labels.reshape(-1).tolist())\n"
+        "    total = sum(counts.values())\n"
+        "    return {'out1': {k: v / total for k, v in sorted(counts.items())}}\n",
+    ),
+    (
+        "doc recipe: robust summary",
+        "import numpy as np\nimport torch\n\n\ndef run(inputs, params):\n"
+        "    x = inputs['in1'].detach().cpu().numpy().reshape(-1)\n"
+        "    q1, med, q3 = np.percentile(x, [25, 50, 75])\n"
+        "    return {'out1': torch.tensor([float(q1), float(med), float(q3)])}\n",
+    ),
+    (
+        "doc recipe: tensor comparison",
+        "import torch\n\n\ndef run(inputs, params):\n"
+        "    a = inputs['in1']\n    b = inputs['in2']\n"
+        "    return {'out1': float((a - b).abs().max())}\n",
+    ),
+    (
+        "doc recipe: creating on the run device",
+        "import torch\n\n\ndef run(inputs, params):\n"
+        "    return {'out1': torch.zeros(4, device=device)}\n",
+    ),
+]
+
+
+@pytest.mark.parametrize(("label", "code"), MUST_PASS_SCRIPTS)
+def test_the_must_pass_set_still_runs_under_the_proxy(label, code):
+    """A boundary that breaks the library surface is not a fix, it is an
+    outage. Every script here ran before the proxy and must run after it."""
+    import torch
+
+    inputs = {
+        "in1": torch.arange(24.0).reshape(2, 3, 4),
+        "in2": torch.ones(2, 3, 4),
+    }
+    result = PythonScriptNode().execute(inputs, {"code": code})
+    assert "out1" in result, label
+
+
+def test_a_refused_attribute_reports_a_line_number_like_any_other_failure():
+    """A runtime refusal must land in the Execution Log the way a
+    ZeroDivisionError does -- policy text, and the user's line."""
+    with pytest.raises(RuntimeError) as exc:
+        PythonScriptNode().execute(
+            {},
+            {"code": "def run(inputs, params):\n"
+                     "    b = json.codecs.builtins\n"
+                     "    f = b.eval\n"
+                     "    return f('6*7')\n"},
+        )
+    message = str(exc.value)
+    assert "line 2" in message
+    assert "ScriptPolicyError" in message
+    assert "not on the Tier-0 list" in message
+    assert "Custom Nodes" in message  # the escape-hatch hint rides along

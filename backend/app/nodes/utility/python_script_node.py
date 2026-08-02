@@ -23,16 +23,27 @@ Execution Log rather than silently swallowed.
 
 The policy
 ----------
+Two locks, and only the second one is a boundary.
+
 Code is checked by :func:`app.core.script_policy.validate_script_source`
 BEFORE it is compiled -- the same AST walker that gates plugin packs, run in
-allowlist mode -- and then executed with an explicitly allowlisted set of
-builtins and an ``__import__`` that refuses anything off the Tier-0 list. The
-editor runs the same check on every keystroke, so a rejection is a red
-banner while typing rather than a failed run ten minutes later.
+allowlist mode. The editor runs that same check on every keystroke, so a
+rejection is a red banner while typing rather than a failed run ten minutes
+later. Its rules are keyed on names, which is why it is the *first* line and
+not the last one.
+
+The namespace the script actually runs in never contains the host's real
+module objects: :mod:`app.core.script_proxy` hands out restricted proxies
+that judge what an attribute RESOLVES to -- a module off the Tier-0 list is
+refused whatever it was called, so ``collections._sys``,
+``statistics.random._os`` and ``sys.modules['os']`` all fail on the same
+rule. Builtins are an explicit allowlist and ``__import__`` is replaced with
+a guarded one that also returns proxies.
 
 Read :mod:`app.core.script_policy` for the honest framing: this is a
-guardrail, not a sandbox; it limits which libraries a script can reach, not
-what those libraries can do; and it contains neither CPU nor memory.
+guardrail, not a sandbox; it bounds the library surface a script can
+navigate, not what the reachable functions do; and it contains neither CPU
+nor memory.
 
 Output capture
 --------------
@@ -48,8 +59,8 @@ docs say so.
 from __future__ import annotations
 
 import builtins
-import importlib
 import inspect
+import types
 from typing import Any
 
 from ...core.execution_context import ExecutionContext
@@ -66,6 +77,7 @@ from ...core.script_policy import (
     TIER0_MODULES,
     validate_script_source,
 )
+from ...core.script_proxy import module_proxy, tier0_module_namespace
 
 #: Upper bound on ports per side. Eight is past the point where a script is
 #: really a subgraph, and it keeps the node card a sane height.
@@ -239,36 +251,32 @@ def _guarded_import(
     fromlist: Any = (),
     level: int = 0,
 ) -> Any:
-    """``__import__`` restricted to the Tier-0 allowlist.
+    """``__import__`` restricted to the Tier-0 allowlist, returning a PROXY.
 
-    The AST gate already refuses code that imports anything else, so this is
-    the second lock on the same door: it also covers a graph that arrived by
-    some path other than the editor.
+    Two jobs. The allowlist check is the second lock on the door the AST gate
+    already guards, for a graph that arrived by some path other than the
+    editor. Wrapping the result is the important one: without it, ``import
+    collections`` would hand back the real module and every attribute rule the
+    proxy enforces would be one import statement away from irrelevant.
+
+    ``builtins.__import__`` returns the root package for a bare ``import
+    a.b`` and the named module when a ``fromlist`` is given; either way the
+    proxy is built from what it returned, and ``IMPORT_FROM`` then resolves
+    its names through the proxy's own policy.
     """
     if level:
         raise ImportError(f"Relative imports are not allowed.{ESCAPE_HATCH_HINT}")
     if name.split(".")[0] not in TIER0_MODULES:
         raise ImportError(f"Importing '{name}' is not allowed.{ESCAPE_HATCH_HINT}")
-    return builtins.__import__(name, globals, locals, fromlist, level)
-
-
-_module_cache: dict[str, Any] = {}
+    imported = builtins.__import__(name, globals, locals, fromlist, level)
+    if isinstance(imported, types.ModuleType):
+        return module_proxy(imported)
+    return imported  # pragma: no cover - __import__ always returns a module
 
 
 def _tier0_namespace() -> dict[str, Any]:
-    """Import (once) and hand back the pre-bound allowlisted modules.
-
-    A module that fails to import is left out rather than raising: the node
-    stays usable for pure-stdlib statistics on an installation without torch,
-    and an explicit ``import torch`` there still raises the real ImportError.
-    """
-    if not _module_cache:
-        for name in TIER0_MODULES:
-            try:
-                _module_cache[name] = importlib.import_module(name)
-            except ImportError:  # pragma: no cover - torch/numpy are hard deps
-                continue
-    return dict(_module_cache)
+    """The pre-bound allowlisted modules, each wrapped in its proxy."""
+    return tier0_module_namespace()
 
 
 class PythonScriptNode(BaseNode):

@@ -16,24 +16,41 @@ the same tiered policy and imports :data:`TIER0_MODULES` from this module.
 Changing the tier-0 list therefore changes both consumers at once, which is
 the point.
 
+Two layers, and only one of them is the boundary
+------------------------------------------------
+1. **The AST gate** (this module's :func:`validate_script_source`) runs before
+   the code is compiled and again on every keystroke in the editor. It is the
+   fast first line and the source of immediate feedback. Its rules are keyed
+   on NAMES, and a name is not a boundary: three consecutive adversarial
+   reviews walked through it through a name nobody had listed
+   (``__loader__``, ``torch.os``, ``collections._sys``).
+2. **The runtime module proxy** (:mod:`app.core.script_proxy`) is the actual
+   boundary. The namespace no longer contains the host's real module objects;
+   it contains proxies that judge the RESOLVED OBJECT -- *is what I just got a
+   module, and is it on the list?* -- so underscore aliases, ``sys.modules``
+   subscripts, values bound to a local, and next year's library reshuffle are
+   all covered structurally instead of by enumeration.
+
+The gate's rules are kept where the proxy makes them redundant, because two
+independent locks on one door is the point, and because a rejection while
+typing is worth more to a user than a failure mid-run.
+
 Honest framing -- the same one :mod:`app.core.plugin_validator` gives, and
 worth repeating because this is the surface where a *stranger's* code runs:
 **this is a guardrail, not a sandbox.**
 
-What the tier-0 gate actually does is limit WHICH LIBRARIES a script can
-reach. It does not, and cannot, limit what those libraries can DO. numpy and
-torch are large enough to contain file IO on their own (``numpy.savetxt``
-writes, ``numpy.fromfile`` reads, ``torch.hub.load`` downloads and executes a
-remote ``hubconf.py``, ``torch.utils.cpp_extension.load_inline`` compiles and
-runs C++). :data:`TIER0_DENIED_ATTRS` closes the doors we know about, but
-that list is a best-effort blocklist over two enormous APIs and should be
-read as raising the cost of an escape, never as a guarantee.
+What the proxy bounds is the LIBRARY SURFACE a script can navigate. It does
+not, and cannot, bound what the reachable functions DO: numpy and torch are
+large enough to contain file IO on their own (``numpy.savetxt`` writes,
+``numpy.fromfile`` reads, ``torch.hub.load`` downloads and executes a remote
+``hubconf.py``, ``torch.utils.cpp_extension.load_inline`` compiles and runs
+C++). :data:`TIER0_DENIED_ATTRS` closes the doors we know about, and that
+list is still a best-effort blocklist over two enormous APIs.
 
 Nothing here contains CPU or memory either: nodes run on the interpreter's
 DEFAULT thread pool, so an in-canvas ``while True:`` starves every node
 execution in the process, not merely its own thread, until the server is
-restarted. Module objects are shared with the host too -- a script can
-rebind ``torch.zeros`` for everything else running in this process.
+restarted.
 
 Treat "who can reach this editor" as the real boundary.
 """
@@ -44,9 +61,22 @@ import ast
 
 from .plugin_validator import (
     PluginValidationError,
+    dangerous_attr_leaves,
     dangerous_modules,
     validate_python_source,
 )
+
+
+class ScriptPolicyError(RuntimeError):
+    """Raised at RUN TIME when a script reaches for something Tier 0 refuses.
+
+    Lives here rather than in :mod:`app.core.script_proxy` so the proxy can
+    import the policy constants without the policy importing the proxy back.
+    A ``RuntimeError`` subclass on purpose: the engine reports
+    ``str(exception)`` for anything deriving from ``Exception``, so a script
+    that trips this gets the policy message and a line number in the
+    Execution Log, exactly like any other failure.
+    """
 
 #: Modules an in-canvas script may import, and which are pre-bound in its
 #: namespace under these exact names. Deliberately short: numeric work, the
@@ -90,7 +120,9 @@ TIER0_DENIED_CALLS: tuple[str, ...] = (
 #:
 #: Best-effort and openly so: it is a blocklist over numpy and torch, two
 #: APIs far too large to enumerate. Everything here is a real, checked
-#: escape; nothing here implies the list is complete.
+#: escape; nothing here implies the list is complete -- which is why it is no
+#: longer the boundary, only one of the locks. :mod:`app.core.script_proxy`
+#: enforces the same names at run time, on top of its resolved-object rule.
 TIER0_DENIED_ATTRS: tuple[str, ...] = (
     # torch: fetch-and-execute, compile-and-execute, IPC, distributed IO
     "hub",                        # torch.hub.load runs a remote hubconf.py
@@ -192,6 +224,30 @@ TIER0_GATEWAY_MODULE_ATTRS: tuple[str, ...] = tuple(
 #: and ``torch`` define one at all, and the other two are the pickle doors.
 TIER0_SAFE_LOAD_RECEIVERS: tuple[str, ...] = ("json",)
 
+#: The RCE leaves (``system``, ``popen``, ``spawnl``, ``execfile``, ...),
+#: refused by tier 0 as ATTRIBUTES rather than only as calls.
+#:
+#: The shared walker keys those on the CALL, which one assignment evades::
+#:
+#:     f = osmod.system     # no Call node with a dangerous leaf
+#:     f('cmd /c ...')      # the call's leaf is 'f'
+#:
+#: That was live. Making it an attribute rule costs a tier-0 script the
+#: ability to have its own ``.system`` attribute, which is a price only tier 0
+#: pays -- an installed plugin with a ``self.system`` field is ordinary code
+#: and the shared walker still allows it.
+TIER0_RCE_ATTR_LEAVES: tuple[str, ...] = tuple(sorted(dangerous_attr_leaves()))
+
+#: Every attribute name tier 0 refuses, in one place, so the AST gate and the
+#: runtime proxy cannot drift on what "closed" means.
+SCRIPT_PROXY_DENIED_ATTRS: tuple[str, ...] = tuple(
+    sorted(
+        set(TIER0_DENIED_ATTRS)
+        | set(TIER0_GATEWAY_MODULE_ATTRS)
+        | set(TIER0_RCE_ATTR_LEAVES)
+    )
+)
+
 #: Filename the script is compiled under. Shows up in tracebacks and in the
 #: error a failing node reports, so it must read as "your code", not as a
 #: temp path the user has never seen.
@@ -232,6 +288,11 @@ def validate_script_source(code: str, filename: str = SCRIPT_FILENAME) -> None:
     A thin, named front door onto the shared AST gate so callers (the node,
     the ``/api/nodes/script/validate`` endpoint, core#133) cannot drift on
     which knobs tier 0 sets.
+
+    Passing here does NOT mean a script can do what it is asking for: this is
+    the fast, name-keyed first line, and the boundary is the runtime proxy in
+    :mod:`app.core.script_proxy`. Code the gate accepts can still be refused
+    mid-run, with the same message shape and a line number.
     """
     if len(code) > MAX_SCRIPT_CHARS:
         raise PluginValidationError(
@@ -243,8 +304,9 @@ def validate_script_source(code: str, filename: str = SCRIPT_FILENAME) -> None:
         filename,
         import_allowlist=TIER0_MODULES,
         extra_denied_names=TIER0_DENIED_CALLS,
-        denied_attributes=TIER0_DENIED_ATTRS + TIER0_GATEWAY_MODULE_ATTRS,
+        denied_attributes=SCRIPT_PROXY_DENIED_ATTRS,
         safe_load_receivers=TIER0_SAFE_LOAD_RECEIVERS,
+        library_roots=TIER0_MODULES,
         denial_hint=ESCAPE_HATCH_HINT,
     )
     _reject_async_entry_point(code, filename)

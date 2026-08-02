@@ -74,7 +74,12 @@ The line named is the deepest frame inside your code, so a failure inside `stati
 
 ## The Tier-0 policy
 
-Code is checked **on every edit**, before it is ever compiled, by the same AST walker that gates plugin packs (`backend/app/core/plugin_validator.py`) running in allowlist mode. A rejection is a red banner under the editor with the offending line marked, not a failed run ten minutes into a training graph.
+There are two layers, and only one of them is a boundary.
+
+1. **The AST gate.** Code is checked **on every edit**, before it is ever compiled, by the same AST walker that gates plugin packs (`backend/app/core/plugin_validator.py`) running in allowlist mode. A rejection is a red banner under the editor with the offending line marked, not a failed run ten minutes into a training graph. Its rules are keyed on *names*, which makes it fast and makes it a good editor, not a good wall.
+2. **The runtime module proxy** (`backend/app/core/script_proxy.py`). The namespace your script runs in does **not** contain the host's real module objects. It contains restricted proxies that judge what an attribute *resolves to*: hand back a module that is not on the Tier-0 list and you are refused, whatever the attribute was called. This is the layer that actually holds.
+
+Three consecutive security reviews walked through layer 1, each time through a name nobody had listed — `__loader__`, then `torch.os`, then `collections._sys` (which is the real `sys` module, and `sys.modules['os']` is everything else). That is not a run of bad luck; it is what a name-keyed list does. Layer 2 asks *what did I just get* instead, so an underscore alias, a `sys.modules` subscript, a value bound to a local and next year's library reshuffle are all the same rule.
 
 **Importable modules** (`backend/app/core/script_policy.py`, `TIER0_MODULES`):
 
@@ -82,21 +87,39 @@ Code is checked **on every edit**, before it is ever compiled, by the same AST w
 collections   itertools   json   math   numpy   re   statistics   torch
 ```
 
-They are also **pre-bound** in the namespace under those exact names, so `math.floor(x)` works with no import line; `import numpy as np` works too, if you prefer the alias.
+They are also **pre-bound** in the namespace under those exact names, so `math.floor(x)` works with no import line; `import numpy as np` works too, if you prefer the alias. In both cases the name is bound to a proxy, not to the module — `import` goes through the same guard.
 
-**Refused, with a message pointing at the escape hatches:**
+### What the proxy refuses
+
+* **Any module outside the list, reached any way at all.** `collections._sys`, `statistics.random`, `json.codecs`, `torch.cuda.tunable.mp` (which is the stdlib `multiprocessing`) — the verdict comes from the module's own identity, so there is no alias to find and no name to add. A submodule of an *allowed* package (`numpy.linalg`, `torch.nn.functional`, `torch.signal.windows`) comes back as a nested proxy and works normally.
+* **Private and dunder attributes of a library**: `re._parser`, `statistics._sum`, `numpy.__version__`. A library's private names are exactly where its own imports live. Use the public API; `torch.version.cuda` rather than `torch.__version__`.
+* **Subscripting a module** — `m['os']` — so a mapping of modules cannot be a way around the attribute rules.
+* **Assigning to or deleting a library attribute**: `torch.zeros = mine` used to change `torch` for every other node in the process. It is now refused at both layers.
+* Calling a module, iterating one, and every denied attribute below.
+
+Plain values come back **unwrapped**: `torch.zeros(3)` is an ordinary tensor, not a proxy. That is deliberate — proxying the data as well as the module surface would put a Python-level check in front of every `.mean()` in every script. It is also the shape of the one residual: see the security section.
+
+**Refused by the gate, with a message pointing at the escape hatches:**
 
 * Any other import — `os`, `sys`, `pathlib`, `subprocess`, `socket`, `urllib`, `requests`, and equally `pandas` or `sklearn`, which are not dangerous, just not on the list. Relative imports are refused with them.
 * `exec`, `eval`, `compile`, `__import__`, `open`, `input`, `globals`, `locals`, `vars`, `dir`, `breakpoint`, `exit`.
 * Bare uses of the module machinery — `__loader__`, `__spec__`, `__builtins__`, `__package__` — and dunder attribute access (`__class__`, `__globals__`, `__subclasses__`, `__code__`, `__traceback__`, ...). Read that as *the escape primitives we know about*, listed one by one; it is not a promise that reflection as a category is handled. Each entry was a working escape: `__loader__.load_module('nt')` hands back the real `os` module without an import statement.
 * **Frame walking**, on any receiver: `tb_frame`, `tb_next`, `f_back`, `f_globals`, `f_locals`, `f_builtins`, `f_code`, `gi_frame`, `gi_code`, `cr_frame`, and the rest of that family. A caught exception carries a traceback, a traceback carries the frame it was raised in, and the frame that *called* yours belongs to CodefyUI: `e.__traceback__.tb_frame.f_back.f_globals` handed back the node's own module globals, and with them `importlib` and `builtins`. Whichever builtins the script was given stop mattering at that point, which is why these are refused rather than sanitised.
-* **The name of a module you may not import, used as an attribute**: `torch.os`, `torch.sys`, `torch.serialization.pickle`, `json.codecs.sys`, `numpy.f2py.subprocess`. Libraries import things, so an allowlist that reads only `import` statements hands the blocked module straight over the moment you ask an allowed one for it by name. The names come from the same blocklist the import rule uses, minus `torch.signal` (torch's own DSP namespace, not the stdlib module).
-* Doors *inside* the allowed libraries that lead back out to the filesystem, the network, a compiler or another process: `torch.hub` (downloads and executes a remote `hubconf.py`), `torch.utils.cpp_extension` (compiles and runs C++), `torch.distributed`, `torch.multiprocessing`, `numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`, `numpy.ctypeslib`, and the rest of `TIER0_DENIED_ATTRS` in `script_policy.py`. Importing one of those by name, or reaching it with a literal `getattr`, is refused the same way.
-* `.load(...)` and `.loads(...)` on anything but `json`, plus any `load(allow_pickle=True)` or `load(weights_only=<not True>)`: those execute code from the file they read. This rule is deliberately blunt. Receivers are resolved through import aliases *and* plain assignments (`b = torch; b.load(x)`), but a receiver the checker cannot resolve — `(lambda: torch)().load(x)`, `things[0].load(x)` — is refused rather than waved through, and the cost is that your own `obj.load()` helper is refused with them. Say `torch.load(path, weights_only=True)` when you mean it.
+* **The name of a module you may not import, used as an attribute**: `torch.os`, `torch.sys`, `torch.serialization.pickle`, `json.codecs.sys`, `numpy.f2py.subprocess`. Libraries import things, so an allowlist that reads only `import` statements hands the blocked module straight over the moment you ask an allowed one for it by name. The names come from the same blocklist the import rule uses, minus `torch.signal` (torch's own DSP namespace, not the stdlib module). The proxy covers this case structurally; the name rule stays as the version the editor can show you while you type.
+* **A library's private attributes** — `collections._sys`, `statistics.random._os`, `re._parser` — refused whenever the receiver is one of the eight allowed modules. `self._cache` in your own class is ordinary Python and stays legal.
+* **Assigning to a library**: `torch.zeros = mine`, `del numpy.mean`.
+* Doors *inside* the allowed libraries that lead back out to the filesystem, the network, a compiler or another process: `torch.hub` (downloads and executes a remote `hubconf.py`), `torch.utils.cpp_extension` (compiles and runs C++), `torch.distributed`, `torch.multiprocessing`, `numpy.savetxt` / `loadtxt` / `fromfile` / `tofile` / `save` / `memmap`, `numpy.ctypeslib`, and the rest of `TIER0_DENIED_ATTRS` in `script_policy.py`. Importing one of those by name, or reaching it with a literal `getattr`, is refused the same way — as is `os.system` / `.popen` / `.spawnv` *as an attribute*, not only as a call, because `f = obj.system` then `f(cmd)` is one assignment away from any call-shaped rule.
+* `.load(...)` and `.loads(...)` on anything but `json` — including simply *reading* the attribute, as in `f = torch.load`. Those functions execute code from the file they read. This rule is deliberately blunt. Receivers are resolved through import aliases *and* plain assignments (`b = torch; b.load(x)`), and a receiver the checker cannot resolve — `(lambda: torch)().load(x)`, `things[0].load(x)` — is refused rather than waved through. The cost is that your own `obj.load()` helper is refused with them.
 
 `json.load` and `json.loads` are the exception to that last rule — `json` is a Tier-0 module and parsing JSON is exactly what it is there for. It is the *only* exception: of the eight allowed modules only `json`, `numpy` and `torch` define a `.load` at all, and the other two are the pickle doors.
 
-Two of those rules have a second lock at run time: the namespace is built from an explicit allowlist of builtins (so `open`, `eval` and friends are not merely un-writable, they are absent), and `__import__` is replaced with one that re-checks the module list. Everything else — dunders, frames, module-name attributes, library doors, the pickle rule — is **AST-only**: nothing re-checks it once the code is running, which is precisely why the gate runs before the code is compiled.
+:::note `weights_only=True` is no longer a Tier-0 escape hatch
+Earlier versions of this page told you to write `torch.load(path, weights_only=True)` when you meant it. That is now refused. The runtime proxy hands out *attributes*, not calls: it cannot see a keyword argument, so `torch.load` being reachable at all means `f = torch.load; f(p)` is reachable, kwargs and all. Tier 0 has no file access by design — `open` is denied too — so both layers now say no rather than the gate promising what the runtime refuses. Load checkpoints from a [custom node](./custom-nodes.md) or the built-in loader nodes.
+:::
+
+**Which layer holds which rule.** The builtins allowlist (so `open`, `eval` and friends are absent, not merely un-writable), the guarded `__import__`, and every module/attribute rule above have a runtime lock in the proxy. What remains **AST-only** is reflection on values the proxy never sees: dunder attributes (`__class__`, `__globals__`, `__code__`, ...), frame walking (`f_globals`, `gi_frame`, `tb_frame`, ...) and `getattr` with a computed name. Those live on ordinary Python objects, not on the library surface, which is why the gate still runs before the code is compiled.
+
+**A green badge is not a guarantee.** The editor's check is the AST gate, so a script the gate has nothing to say about can still be refused mid-run — `json.codecs` is an unlisted module reached through an allowed one, and the name-keyed gate has no rule for it while the proxy refuses it outright. When that happens you get the same policy message, with your line number, in the Execution Log.
 
 ### Need something off the list?
 
@@ -109,15 +132,18 @@ That is what the other two paths are for, and they are better tools for it:
 
 Read this before you enable CodefyUI on a network interface.
 
-The gate blocks the *easy* escapes. It is **not** a sandbox, and it is not trying to be one:
+The policy blocks the *easy* escapes. It is **not** a sandbox, and it is not trying to be one:
 
-* **It limits which libraries a script can reach, not what those libraries can do.** numpy and torch are big enough to contain file IO, downloads and a C++ compiler on their own. The denied-attribute list above closes the doors we know about; it is a blocklist over two enormous APIs, and it should be read as raising the cost of an escape, never as a guarantee that files and the network are out of reach.
-* **The blocklists are keyed on names, and a name is not a boundary.** The gateway rule refuses `torch.os` because the attribute is *called* `os`; a library that binds the same module under a different name is invisible to it. One such alias — `torch.cuda.tunable.mp` — is closed by hand, which tells you the shape of the problem rather than solving it. A scan of the allowed modules finds no blocked module reachable today; that is a statement about today's numpy and torch, not a property of the rule.
+* **What the boundary actually guarantees.** A script cannot obtain a module whose top-level package is outside the eight allowed ones — not through an import, an attribute, a private alias, a subscript, a local binding, or a literal `getattr` — because the check is on the object that comes back, not on the name that was typed. That is the whole promise. It is a property of the rule rather than of today's library versions, which is what the previous version of this page got wrong: it claimed "a scan finds no blocked module reachable", and at the time of writing that claim `collections._sys` returned the real `sys` module. A name-keyed scan can only ever be a statement about the names it happened to walk.
+* **It bounds which libraries a script can reach, not what those libraries can do.** numpy and torch are big enough to contain file IO, downloads and a C++ compiler on their own. The denied-attribute list closes the doors we know about; it is a blocklist over two enormous APIs, and it should be read as raising the cost of an escape, never as a guarantee that files and the network are out of reach.
+* **The residual: plain values are not proxied.** The proxy wraps modules. Everything else a library hands back — tensors, arrays, classes, functions — is the real object, and if one of *those* held a module as an attribute, only the gate's name rules would see it. Nothing in the current numpy/torch/stdlib surface does (a walk of every public attribute two levels deep finds no plain value exposing a module at all), but that one is a statement about today's libraries, and it is stated here as such.
+* **Reflection is still gate-only.** `__globals__`, `__class__`, frame attributes and `getattr` with a computed name are refused by the AST walker and by nothing else, because they live on ordinary objects rather than on the library surface.
 * The script runs **in the CodefyUI server process**, with your user's permissions. Nothing containerises it.
-* A determined attacker who can already type into your canvas can probably still find a way out. The gate raises the cost of drive-by code execution; it does not make the surface safe against a motivated adversary.
+* A determined attacker who can already type into your canvas may still find a way out. The policy raises the cost of drive-by code execution; it does not make the surface safe against a motivated adversary.
 * Nothing limits CPU or memory, and a runaway is not contained to its own node. Nodes execute on the interpreter's **default thread pool**, so a `while True:` in one script starves *every* node execution in the process until the server is restarted. Stop is cooperative and checked *between* nodes, so it cannot interrupt a loop inside one — a long loop has to call `should_stop()` itself.
-* **Module objects are shared with the host process.** The allowlisted modules are the real ones, not copies, so a script that assigns `torch.zeros = something_else` changes it for every other node, in every graph, until the server restarts. Nothing is rolled back between runs.
 * The `code` param is saved in the graph JSON like any other parameter. **Opening a graph from an untrusted source and pressing Run executes that person's Python.** The policy check is the only thing between the two, which is exactly why it runs before the code is compiled rather than at import time.
+
+**Fixed since the first release of this node:** module poisoning. The allowlisted modules used to be handed over as the real objects, so `torch.zeros = something_else` changed them for every other node in the process. Both layers refuse it now.
 
 The real boundary is *who can reach the editor*. CodefyUI binds to localhost by default; keep it that way unless you trust everyone on the network.
 
@@ -226,4 +252,4 @@ def run(inputs, params):
 | Ports | 1–8 per side. |
 | Captured output | 64,000 characters per execution, then truncated with a notice. |
 | Async | `run` must be a plain `def`; `async def run` is rejected at the gate, and `asyncio` is not importable. |
-| State | Each execution gets a fresh namespace, so your own module-level variables do not carry over. The imported **modules** are the host's, though — see the security model. Use the graph for state you mean to keep. |
+| State | Each execution gets a fresh namespace, so your own module-level variables do not carry over, and the library proxies refuse to be written to. Use the graph for state you mean to keep. |

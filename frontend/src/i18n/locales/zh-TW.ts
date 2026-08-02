@@ -615,7 +615,7 @@ const zhTW: Record<TranslationKey, string> = {
   'nodeDetail.tabs.docs': '說明',
   'nodeDetail.code.title': '程式碼',
   'nodeDetail.code.contract': 'def run(inputs, params) -> dict：inputs 只包含有連線的連接埠（in1、in2…），回傳 {"out1": 值}；直接回傳單一值時會當作 out1。',
-  'nodeDetail.code.security': '這是防護欄，不是沙箱。這套政策限制的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼；程式碼仍以你的權限在 CodefyUI 行程內執行。只執行你信任的程式碼。',
+  'nodeDetail.code.security': '這是防護欄，不是沙箱。這套政策框住的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼；程式碼仍以你的權限在 CodefyUI 行程內執行。這裡的檢查只是第一道快速關卡：通過的腳本仍可能在執行時被拒絕。只執行你信任的程式碼。',
   'nodeDetail.code.inputs': '輸入連接埠',
   'nodeDetail.code.outputs': '輸出連接埠',
   'nodeDetail.code.inputCount': '輸入連接埠數量',

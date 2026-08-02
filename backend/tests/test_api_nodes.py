@@ -162,6 +162,77 @@ async def test_validate_script_says_no_to_the_round_two_escapes(test_client, lab
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "code"),
+    [
+        (
+            "the real sys under a private alias",
+            "def run(inputs, params):\n    return str(collections._sys)\n",
+        ),
+        (
+            "sys.modules subscript to os.getcwd()",
+            "def run(inputs, params):\n"
+            "    s = collections._sys\n"
+            "    return s.modules['os'].getcwd()\n",
+        ),
+        (
+            "os.system bound to a local first",
+            "def run(inputs, params):\n"
+            "    f = collections._sys.modules['os'].system\n"
+            "    return f('cmd /c ver')\n",
+        ),
+        (
+            "os two private hops from statistics",
+            "def run(inputs, params):\n    return statistics.random._os.getcwd()\n",
+        ),
+        (
+            "the pickle loader read rather than called",
+            "import torch\n\ndef run(inputs, params):\n    f = torch.load\n    return f\n",
+        ),
+        (
+            "poisoning a shared library module",
+            "import torch\n\ndef run(inputs, params):\n    torch.zeros = None\n",
+        ),
+    ],
+)
+async def test_validate_script_says_no_to_the_round_three_escapes(test_client, label, code):
+    """The editor answered ``ok: true`` for every one of these while they ran
+    ``os.system`` and ``subprocess.run`` through the shipped node."""
+    resp = await test_client.post("/api/nodes/script/validate", json={"code": code})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False, f"endpoint still approves: {label}"
+    assert body["line"], "a rejection must point the editor at a line"
+
+
+@pytest.mark.asyncio
+async def test_the_endpoint_can_approve_what_the_runtime_then_refuses(test_client):
+    """Stated as a test so nobody reads ``ok: true`` as "this will run".
+
+    The endpoint runs the AST gate, which is keyed on names: ``json.codecs``
+    is an unlisted module reached through an allowed one, so the gate has
+    nothing to object to. The runtime proxy refuses it on what it RESOLVES
+    to. That split is the architecture, not an oversight -- but a user who
+    reads the green badge as a guarantee would be wrong, and the docs say so.
+    """
+    code = (
+        "def run(inputs, params):\n"
+        "    b = json.codecs.builtins\n"
+        "    f = b.eval\n"
+        "    return f('6*7')\n"
+    )
+    body = (
+        await test_client.post("/api/nodes/script/validate", json={"code": code})
+    ).json()
+    assert body["ok"] is True
+
+    from app.nodes.utility.python_script_node import PythonScriptNode
+
+    with pytest.raises(RuntimeError, match="not on the Tier-0 list"):
+        PythonScriptNode().execute({}, {"code": code})
+
+
+@pytest.mark.asyncio
 async def test_validate_script_still_approves_ordinary_statistics_work(test_client):
     """The round-2 rules add 25 denied attribute names and invert the pickle
     rule; the endpoint must still say yes to the scripts the docs recommend."""

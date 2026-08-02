@@ -127,6 +127,18 @@ def dangerous_modules() -> frozenset[str]:
     return _DANGEROUS_MODULES
 
 
+def dangerous_attr_leaves() -> frozenset[str]:
+    """Public view of the RCE attribute leaves (``system``, ``popen``, ...).
+
+    Exposed so a stricter policy can refuse these as ATTRIBUTES rather than
+    only as calls. The Call-keyed form here is evaded by one assignment --
+    ``f = obj.system`` then ``f(cmd)`` -- and closing that for every caller
+    would condemn any plugin with a ``self.system`` attribute, so the tier
+    that wants it opts in through ``denied_attributes``.
+    """
+    return _DANGEROUS_ATTR_LEAVES
+
+
 def forbidden_dunders() -> frozenset[str]:
     """Public view of the dunder blocklist (mainly for tests)."""
     return _FORBIDDEN_DUNDERS
@@ -312,6 +324,7 @@ def validate_python_source(
     extra_denied_names: Iterable[str] | None = None,
     denied_attributes: Iterable[str] | None = None,
     safe_load_receivers: Iterable[str] | None = None,
+    library_roots: Iterable[str] | None = None,
     denial_hint: str = "",
 ) -> None:
     """Parse *content* and raise if it contains obviously dangerous patterns.
@@ -343,6 +356,19 @@ def validate_python_source(
     refused too, exactly as its own ``obj.save()`` already is under
     *denied_attributes*.
 
+    *library_roots* names the receivers that are LIBRARIES rather than the
+    caller's own objects, which lets two rules be stated structurally instead
+    of by enumeration:
+
+    * their PRIVATE attributes are refused -- ``collections._sys`` *is* the
+      real ``sys`` module, and no list of forbidden names will ever contain
+      every private alias in every library;
+    * assigning to their attributes is refused -- ``torch.zeros = mine``
+      rebinds the module for every other node in the process.
+
+    Both are opt-in because ``self._cache`` and ``self.x = 1`` are ordinary
+    code; only a *library* receiver makes them suspicious.
+
     *denial_hint* is appended to every message raised here, so one caller can
     point users at the escape hatch its policy implies without every rule
     growing a special case.
@@ -351,6 +377,7 @@ def validate_python_source(
     allowlist = frozenset(import_allowlist) if import_allowlist is not None else None
     denied_names = _DANGEROUS_NAMES | frozenset(extra_denied_names or ())
     denied_attrs = frozenset(denied_attributes or ())
+    libraries = frozenset(library_roots or ())
     load_receivers = (
         frozenset(safe_load_receivers) if safe_load_receivers is not None else None
     )
@@ -422,6 +449,28 @@ def validate_python_source(
 
     roots = _import_roots(tree)
 
+    def check_library_mutation(targets: Iterable[ast.expr], node: ast.AST) -> None:
+        """``torch.zeros = mine`` rebinds the module for the whole process.
+
+        Module objects are shared with the host, so poisoning one is not a
+        script-local act -- every other node in the run sees it. The runtime
+        proxy refuses the assignment outright; this is the same verdict early
+        enough to be a red line in the editor.
+        """
+        if not libraries:
+            return
+        for target in targets:
+            if not isinstance(target, ast.Attribute):
+                continue
+            base = _receiver_root(target)
+            if base is not None and roots.get(base, base) in libraries:
+                raise fail(
+                    f"Assigning to '{base}.{target.attr}' is not allowed in "
+                    f"{filename}: library modules are shared with the host "
+                    f"process, so rebinding one changes it for every node",
+                    node,
+                )
+
     for node in ast.walk(tree):
         # ── Import / ImportFrom ──────────────────────────────────────
         if isinstance(node, ast.Import):
@@ -434,6 +483,14 @@ def validate_python_source(
                 level=node.level or 0,
                 names=[alias.name for alias in node.names],
             )
+
+        # ── Assignment onto a library module ─────────────────────────
+        elif isinstance(node, ast.Assign):
+            check_library_mutation(node.targets, node)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            check_library_mutation([node.target], node)
+        elif isinstance(node, ast.Delete):
+            check_library_mutation(node.targets, node)
 
         # ── Bare names ───────────────────────────────────────────────
         #
@@ -469,6 +526,36 @@ def validate_python_source(
                     f"Access to '.{node.attr}' is not allowed in {filename}",
                     node,
                 )
+            # A library's PRIVATE names are how its own imports leak out:
+            # ``collections._sys`` is the real ``sys``, ``statistics.random``
+            # then ``._os`` is the real ``os``. Refused only for the receivers
+            # the caller named, because ``self._cache`` is ordinary code.
+            if libraries and node.attr.startswith("_"):
+                base = _receiver_root(node)
+                if base is not None and roots.get(base, base) in libraries:
+                    raise fail(
+                        f"Access to the private attribute '.{node.attr}' of "
+                        f"'{base}' is not allowed in {filename}: a library's "
+                        f"private names are where its own imports live",
+                        node,
+                    )
+            # ``f = torch.load`` then ``f(path)``: the receiver rule below
+            # fires on the CALL, and one assignment means there is no call
+            # with a ``.load`` leaf to fire on. In allowlist mode the same
+            # verdict is applied to the ATTRIBUTE, so the name cannot be
+            # carried out of reach of the rule.
+            if load_receivers is not None and node.attr in ("load", "loads"):
+                base = _receiver_root(node)
+                if base is None or roots.get(base, base) not in load_receivers:
+                    shown = f"'{base}'" if base else "this expression"
+                    raise fail(
+                        f"Reading '.{node.attr}' from {shown} is not allowed in "
+                        f"{filename}; under this policy only "
+                        f"{', '.join(sorted(load_receivers))} may be loaded "
+                        f"from, and binding the function to a name does not "
+                        f"change what it does",
+                        node,
+                    )
 
         # ── Subscript: ``__builtins__["exec"]`` form ─────────────────
         elif isinstance(node, ast.Subscript):
@@ -549,8 +636,20 @@ def _enforce_safe_load(
     resolve to a named-safe receiver is refused, which is the only form that
     survives a receiver the walker cannot resolve (``(lambda: torch)()``,
     ``things[0]``). See :func:`validate_python_source` for the tradeoff.
+
+    In that form the ``weights_only=True`` escape hatch does NOT apply. The
+    runtime module proxy that backs this policy hands out attributes, not
+    calls: it cannot see a keyword argument, so ``torch.load`` reachable *at
+    all* means ``f = torch.load; f(p)`` reachable, kwargs and all. A tier that
+    inverts the rule gets no file reading either -- ``open`` is denied there
+    too -- so the two agree instead of the gate promising what the runtime
+    refuses.
     """
     leaf = call.func.attr if isinstance(call.func, ast.Attribute) else "load"
+    if safe_load_receivers is not None:
+        _enforce_load_allowlist(call, leaf, filename, denial_hint, roots,
+                                safe_load_receivers)
+        return
     # numpy.load with allow_pickle=True → reject
     for kw in call.keywords:
         if kw.arg == "allow_pickle" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
@@ -573,28 +672,6 @@ def _enforce_safe_load(
     receiver = _receiver_root(call.func)
     resolved = (roots or {}).get(receiver, receiver) if receiver is not None else None
 
-    # Allowlist form (in-canvas scripts). Only the named receivers may call
-    # ``.load`` / ``.loads`` at all, so a receiver the walker cannot resolve --
-    # the whole point of ``(lambda: torch)().load(x)`` -- fails closed instead
-    # of being waved through.
-    if safe_load_receivers is not None:
-        if resolved in safe_load_receivers:
-            return
-        if receiver is None:
-            shown = "this expression"
-        elif receiver == resolved:
-            shown = repr(receiver)
-        else:
-            shown = f"{receiver!r} ({resolved})"
-        raise PluginValidationError(
-            f"Calling '.{leaf}(...)' on {shown} is not allowed in {filename}; "
-            f"under this policy only "
-            f"{', '.join(sorted(safe_load_receivers))} may be loaded from, "
-            f"because every other '.{leaf}' within reach executes code from "
-            f"the file it reads{denial_hint}",
-            lineno=call.lineno,
-        )
-
     # Blocklist form (installed plugins and custom nodes). ``json.load`` /
     # ``yaml.safe_load`` are fine, ``torch.*.load`` / ``np.load`` /
     # ``pickle.loads`` are not. An unresolvable receiver (``things[0].loads()``)
@@ -611,3 +688,37 @@ def _enforce_safe_load(
             f"obvious{denial_hint}",
             lineno=call.lineno,
         )
+
+
+def _enforce_load_allowlist(
+    call: ast.Call,
+    leaf: str,
+    filename: str,
+    denial_hint: str,
+    roots: dict[str, str] | None,
+    safe_load_receivers: frozenset[str],
+) -> None:
+    """Allowlist form of the pickle rule: only named receivers may be loaded.
+
+    A receiver the walker cannot resolve -- the whole point of
+    ``(lambda: torch)().load(x)`` and ``things[0].load(x)`` -- fails closed
+    instead of being waved through.
+    """
+    receiver = _receiver_root(call.func)
+    resolved = (roots or {}).get(receiver, receiver) if receiver is not None else None
+    if resolved in safe_load_receivers:
+        return
+    if receiver is None:
+        shown = "this expression"
+    elif receiver == resolved:
+        shown = repr(receiver)
+    else:
+        shown = f"{receiver!r} ({resolved})"
+    raise PluginValidationError(
+        f"Calling '.{leaf}(...)' on {shown} is not allowed in {filename}; "
+        f"under this policy only "
+        f"{', '.join(sorted(safe_load_receivers))} may be loaded from, "
+        f"because every other '.{leaf}' within reach executes code from "
+        f"the file it reads{denial_hint}",
+        lineno=call.lineno,
+    )
