@@ -411,38 +411,214 @@ def test_every_allowlisted_path_helper_is_real_and_is_not_a_module():
         assert not isinstance(getattr(os.path, name), types.ModuleType)
 
 
-def test_no_allowlisted_path_helper_reads_the_environment_or_the_cwd():
-    """Verified by CALLING them, not by reading them.
+# ── the purity guard ───────────────────────────────────────────────────────
+#
+# Three screens, and the reason there are three is this file's own recurring
+# lesson applied to its own test. The first version inspected the RETURNED
+# VALUE, which tests the symptom rather than the property: the whole predicate
+# family (``exists``, ``isfile``, ``isdir``, ``islink``, ``ismount``,
+# ``lexists``) sails past it by returning a bool while still calling
+# ``stat()`` on any path you name.
+#
+# Screen 2 was specified as an audit hook. Measured on this interpreter it
+# catches ZERO of them, because **``os.stat`` raises no audit event** -- the
+# CPython audit table covers ``open``, ``os.listdir``, ``os.scandir``,
+# ``os.chdir`` and friends, but not ``stat`` or ``getcwd``. It is kept
+# anyway: it costs four lines and it is the only screen that sees a helper
+# reaching the disk through something other than the ``os`` names screen 3
+# replaces.
+#
+# Screen 3 is the one that does the work: replace the ``os`` functions the
+# path modules actually call -- plus ``os.environ`` and, on Windows, the
+# private ``os.path._get*`` helpers -- and fail if the call touches any of
+# them. That asks the property directly: does this helper consult the
+# filesystem, the environment, or the working directory?
 
-    A source audit for ``os.`` usage passed ``abspath`` as pure, because on
-    Windows it reaches ``nt._getfullpathname`` under a name the audit was not
-    looking for. So each helper is invoked on a path that does not exist and
-    that contains an unexpanded ``%VAR%``, ``$VAR`` and ``~``, and the result
-    must contain neither the variable's value nor the working directory.
+_OS_INTERCEPTS = (
+    "stat", "lstat", "fstat", "readlink", "getcwd", "getcwdb",
+    "listdir", "scandir", "open", "statvfs",
+)
+
+#: Windows routes ``abspath`` / ``ismount`` / ``relpath`` through these
+#: instead of through ``os``. They are why ``abspath`` read as pure to a
+#: source audit that only looked for ``os.``.
+_OS_PATH_INTERCEPTS = (
+    "_getfullpathname", "_getfinalpathname", "_getfinalpathname_nonstrict",
+    "_getvolumepathname", "_nt_readlink", "_abspath_fallback",
+)
+
+#: Call shapes for the handful of helpers that do not take one path.
+_PATH_HELPER_ARGS: dict[str, tuple] = {
+    "join": ("a", "b"),
+    "commonpath": (["a", "b"],),
+    "commonprefix": (["a", "b"],),
+    "samefile": ("a", "b"),
+    "sameopenfile": (1, 2),
+    "samestat": (None, None),
+    "relpath": ("a", "b"),
+}
+
+_AUDIT_STATE: dict[str, object] = {"installed": False, "armed": False, "events": []}
+
+
+def _install_audit_hook() -> None:
+    """Add the process-wide hook once. It cannot be removed, so it is cheap
+    and inert unless ``armed``."""
+    if _AUDIT_STATE["installed"]:
+        return
+    import sys as _sys
+
+    def _hook(event: str, _args) -> None:
+        if _AUDIT_STATE["armed"] and (event.startswith("os.") or event == "open"):
+            _AUDIT_STATE["events"].append(event)  # type: ignore[union-attr]
+
+    _sys.addaudithook(_hook)
+    _AUDIT_STATE["installed"] = True
+
+
+def _probe_path_helper(name: str) -> set[str]:
+    """Call ``os.path.<name>`` under all three screens; return what it touched.
+
+    An empty set means: touched no intercepted ``os`` function, raised no
+    audited event, and returned neither the probe environment variable's value
+    nor the working directory.
     """
     import os
     import os.path
 
-    os.environ["CDUI_PATH_PURITY_PROBE"] = "SHOULD-NEVER-APPEAR"
+    _install_audit_hook()
+    touched: list[str] = []
+
+    def _tracker(label: str):
+        def _call(*_a, **_k):
+            touched.append(label)
+            raise OSError("intercepted by the purity guard")
+        return _call
+
+    class _EnvProxy:
+        def __contains__(self, _key):
+            touched.append("os.environ")
+            return False
+
+        def __getitem__(self, key):
+            touched.append("os.environ")
+            raise KeyError(key)
+
+        def get(self, _key, default=None):
+            touched.append("os.environ")
+            return default
+
+    value = getattr(os.path, name)
+    if not callable(value):
+        return set()
+
+    saved_os = {k: getattr(os, k) for k in _OS_INTERCEPTS if hasattr(os, k)}
+    saved_path = {
+        k: getattr(os.path, k) for k in _OS_PATH_INTERCEPTS if hasattr(os.path, k)
+    }
+    real_environ = os.environ
+    marker = "SHOULD-NEVER-APPEAR"
+    os.environ["CDUI_PATH_PURITY_PROBE"] = marker
+    cwd = os.getcwd()
+    # The ``~`` has to LEAD: ``expanduser`` expands only that position, and a
+    # probe path with ``~`` in the middle let it slip the guard entirely.
+    args = _PATH_HELPER_ARGS.get(name, ("~/%CDUI_PATH_PURITY_PROBE%/x",))
+
+    _AUDIT_STATE["events"] = []
     try:
-        probe = "%CDUI_PATH_PURITY_PROBE%/$CDUI_PATH_PURITY_PROBE/~"
-        cwd = os.getcwd()
-        for name in tiers.TIER0_PATH_HELPERS:
-            value = getattr(os.path, name)
-            if not callable(value):
-                assert isinstance(value, (str, type(None))), name
-                continue
-            if name in ("commonpath", "commonprefix"):
-                result = value([probe, probe])
-            elif name == "join":
-                result = value(probe, probe)
-            else:
-                result = value(probe)
-            rendered = str(result)
-            assert "SHOULD-NEVER-APPEAR" not in rendered, f"{name} read os.environ"
-            assert cwd not in rendered, f"{name} resolved against the cwd"
+        for key in saved_os:
+            setattr(os, key, _tracker(f"os.{key}"))
+        for key in saved_path:
+            setattr(os.path, key, _tracker(f"os.path.{key}"))
+        os.environ = _EnvProxy()  # type: ignore[assignment]
+        _AUDIT_STATE["armed"] = True
+        try:
+            result = str(value(*args))
+        except Exception:
+            result = ""
     finally:
-        os.environ.pop("CDUI_PATH_PURITY_PROBE", None)
+        _AUDIT_STATE["armed"] = False
+        os.environ = real_environ  # type: ignore[assignment]
+        for key, original in saved_os.items():
+            setattr(os, key, original)
+        for key, original in saved_path.items():
+            setattr(os.path, key, original)
+        real_environ.pop("CDUI_PATH_PURITY_PROBE", None)
+
+    touched.extend(_AUDIT_STATE["events"])  # type: ignore[arg-type]
+    if marker in result:
+        touched.append("returned os.environ")
+    if cwd and cwd in result:
+        touched.append("returned the cwd")
+    return set(touched)
+
+
+def test_no_allowlisted_path_helper_touches_the_environment_the_disk_or_the_cwd():
+    """Every entry on the allowlist, verified by CALLING it under all three
+    screens -- on whichever platform is running the suite, so ``ntpath`` here
+    and ``posixpath`` on CI."""
+    import os.path
+
+    for name in tiers.TIER0_PATH_HELPERS:
+        value = getattr(os.path, name)
+        if not callable(value):
+            assert isinstance(value, (str, bool, type(None))), (
+                f"{name} is a {type(value).__name__}, which is not an inert constant"
+            )
+            continue
+        touched = _probe_path_helper(name)
+        assert touched == set(), f"{name} touched {sorted(touched)}"
+
+
+def test_the_purity_guard_catches_every_impure_name_on_os_path():
+    """The guard's own sensitivity, measured rather than asserted.
+
+    A guard that inspects nothing passes trivially -- which is exactly how the
+    value-only version shipped while catching 3 of the 25 names it would have
+    to catch. So: take every public name on ``os.path`` that is NOT on the
+    allowlist, and require that adding it would be caught by SOME screen in
+    this file. Each name lands in exactly one bucket, and a name that lands in
+    none fails the test.
+    """
+    import os.path
+    import types
+
+    #: Genuinely inert: not callable, so there is nothing to call.
+    inert = {"devnull", "supports_unicode_filenames", "ALLOW_MISSING"}
+    #: Pure: compares two ``stat_result`` objects and calls nothing. A plugin
+    #: cannot obtain one at Tier 0 anyway -- the same shape as ``json.dump``
+    #: needing a file object it cannot get.
+    pure_but_unusable = {"samestat"}
+
+    by_module_screen: list[str] = []
+    by_interception: list[str] = []
+    accounted_inert: list[str] = []
+    unaccounted: list[str] = []
+
+    for name in sorted(dir(os.path)):
+        if name.startswith("_") or name in set(tiers.TIER0_PATH_HELPERS):
+            continue
+        value = getattr(os.path, name)
+        if isinstance(value, types.ModuleType):
+            by_module_screen.append(name)          # the module screen catches these
+        elif name in inert or name in pure_but_unusable:
+            accounted_inert.append(name)
+        elif _probe_path_helper(name):
+            by_interception.append(name)
+        else:
+            unaccounted.append(name)
+
+    assert unaccounted == [], (
+        f"these os.path names are neither allowlisted nor caught by any screen: "
+        f"{unaccounted} -- either they are pure and belong on TIER0_PATH_HELPERS, "
+        f"or the guard has a hole"
+    )
+    # Non-vacuity: the buckets must actually contain the names we know about.
+    assert {"os", "sys", "genericpath"} <= set(by_module_screen)
+    assert {
+        "expandvars", "expanduser", "exists", "isfile", "isdir", "islink",
+        "lexists", "getsize", "getmtime", "abspath", "realpath", "relpath",
+    } <= set(by_interception), f"interception only caught {by_interception}"
 
 
 def test_the_helpers_a_plugin_actually_wants_still_work():

@@ -106,7 +106,9 @@ $ cdui plugin install alice/metric-logger
 
 ### 每一級都成立的規則
 
-`torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及 `eval` / `exec` / `compile` / `__import__`，不論宣告了什麼都一律拒絕。**能力永遠買不到反射能力。**
+`torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及**內建函式** `eval` / `exec` / `compile` / `__import__`——不論是裸呼叫或透過 `builtins` 模組——不論宣告了什麼都一律拒絕。**能力永遠買不到反射能力。**
+
+攔的是那些內建函式，不是那個字：只是剛好同名的**方法**屬於一般程式碼，在每一級都會通過，所以 `torch.compile(model)` 與 `model.eval()` 對外掛而言是允許的。這是刻意的——拒絕它們一直是個長年的誤判——也正是為什麼規則問的是「這個 `eval` 是誰的」，而不是去比對這個字。
 
 但這不代表能力永遠買不到執行程式的權力。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就繞過了這條規則——而一旦授予 `process-env`，`os.spawnve` / `os.execv` / `os.startfile` 根本不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；之所以在這裡重講一次，是因為這一段先前的版本宣稱了相反的事。
 
@@ -119,6 +121,7 @@ $ cdui plugin install alice/metric-logger
   - **`filesystem` 並不會攔截寫檔。** `open(p, "w")` 是內建函式、不需要 import，在第 0 級什麼都不宣告就能過。我們考慮過攔它然後放棄了：模式字串經常是算出來的（`open(p, "w" if overwrite else "r")`），所以這個檢查只要一個變數就能繞過，卻會誤傷誠實的外掛——是一個沒有相應安全價值的誤判。
   - **`network` 隱含了寫檔能力**，透過 `urllib.request.urlretrieve(url, dest)`。
 - **能力涵蓋的是黑名單上的模組根名稱，不是整個類別。** `requests` 有被攔；`httpx` 從來就不在黑名單上，所以一個 import 它的外掛什麼都不用宣告就能連網。把 PyPI 上每一個 HTTP 用戶端都列進清單，不是清單做得到的事。
+- **「沒有任何能力會交出一個本身就是用來執行程式碼的模組」講的是能力**對照表**，不是對「被授權的外掛能碰到什麼」的保證。** 標準函式庫的模組彼此 import，並把結果留成一般屬性，所以 `import shutil`（屬於 `filesystem`）之後，`shutil.sys.modules['subprocess'].run(...)` 就只差一行。閘門攔的是它認得的模組名稱**作為 import 出現時**；它不會去走訪自己放行進來的物件圖。請注意這並沒有提高任何權限——同樣這一行在本功能之前的任何 CodefyUI 上、什麼都不宣告就能執行，因為 `shutil` 在那裡一樣可以 import。這是閘門的極限，不是分級制度帶來的代價。
 - **有兩條路徑刻意完全跳過閘門。** 內建外掛包隨這個 repo 一起發行、由 PR 審查；`cdui plugin link` 載入的是**你自己的**工作目錄，並且會印出警告說明。`cdui project restore` 也會以非互動方式授予專案 manifest 宣告的能力——它本來就帶著 `--trust-author`，所以不會增加額外曝險，但這代表一份專案檔本身也是一個信任決定。
 - **任何能寫入 `installed.json` 的東西，都能預先批准下一次更新。** lockfile 正是 `cdui plugin update` 用來「這個能力已授權過、不必再問」的依據，所以能編輯它的程式碼（包含已取得 `filesystem` 的外掛，或任何用 `open` 的外掛）都可以在自己的條目裡加上一項能力，讓下一次更新靜默接受。這屬於入侵後的持久化，而非第一步的提權——但 lockfile 是一份信任存放區，它的保護程度就等於你帳號的保護程度。
 - **宣告是作者的意圖聲明。** 它提高了順手攻擊的成本，也讓你在同意前有東西可讀。真正該問的問題仍然是：「我信任寫這個東西的人嗎？」
