@@ -74,6 +74,7 @@ from ...core.node_base import (
 from ...core.script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_FILENAME,
+    TIER0_MODULE_PATHS,
     TIER0_MODULES,
     validate_script_source,
 )
@@ -266,6 +267,18 @@ def _guarded_import(
     """
     if level:
         raise ImportError(f"Relative imports are not allowed.{ESCAPE_HATCH_HINT}")
+    # The ROOT, deliberately, even though the policy is keyed on full module
+    # PATHS everywhere else. This function is not only reached by the script:
+    # CPython's C-level import builds its globals from the frame on top, so a
+    # library lazily importing its own internals *while the script is running*
+    # arrives here too, indistinguishable by anything in the arguments
+    # (``numpy._core._methods`` shows up with ``__name__ == 'codefyui_script'``
+    # and an empty fromlist). Refusing it by path broke a must-pass recipe.
+    #
+    # Nothing is lost: the path rule is enforced where the script can actually
+    # see the result. A bare ``import numpy.f2py`` binds the ROOT package, and
+    # ``from numpy.f2py import x`` hands back ``numpy.f2py`` itself -- which
+    # ``module_proxy`` then refuses. The AST gate refuses both while typing.
     if name.split(".")[0] not in TIER0_MODULES:
         raise ImportError(f"Importing '{name}' is not allowed.{ESCAPE_HATCH_HINT}")
     imported = builtins.__import__(name, globals, locals, fromlist, level)

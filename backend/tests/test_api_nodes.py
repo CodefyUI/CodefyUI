@@ -209,38 +209,35 @@ async def test_validate_script_says_no_to_the_round_three_escapes(test_client, l
 async def test_the_endpoint_can_approve_what_the_runtime_then_refuses(test_client):
     """Stated as a test so nobody reads ``ok: true`` as "this will run".
 
-    The endpoint runs the AST gate, which is keyed on names: ``json.codecs``
-    is an unlisted module reached through an allowed one, so the gate has
-    nothing to object to. The runtime proxy refuses it on what it RESOLVES
-    to. That split is the architecture, not an oversight -- but a user who
-    reads the green badge as a guarantee would be wrong, and the docs say so.
+    The endpoint runs the AST gate, which is keyed on names: ``numpy.f2py``
+    and ``torch.utils`` are numpy's and torch's own subpackages reached
+    through an allowed module, so the gate has nothing to object to. The
+    runtime proxy refuses them on what they RESOLVE to. That split is the
+    architecture, not an oversight -- but a user who reads the green badge as
+    a guarantee would be wrong, and the docs say so.
     """
     from app.nodes.utility.python_script_node import PythonScriptNode
 
     cases = [
-        (
-            "def run(inputs, params):\n"
-            "    b = json.codecs.builtins\n"
-            "    f = b.eval\n"
-            "    return f('6*7')\n",
-            "not on the Tier-0 list",
-        ),
-        # The consequential one: pathlib.Path re-exported by numpy, which is
-        # arbitrary file read and write. Nothing in it is spelled like a rule.
-        (
-            "def run(inputs, params):\n"
-            "    P = numpy.f2py.crackfortran.Path\n"
-            "    P('round4.txt').write_text('pwned')\n"
-            "    return 1\n",
-            "reads and writes files",
-        ),
+        # A literal eval(), inside numpy.
+        "def run(inputs, params):\n"
+        "    f = numpy.f2py.crackfortran.myeval\n"
+        "    return f('1+1')\n",
+        # pathlib.Path re-exported by numpy: arbitrary file read and write.
+        "def run(inputs, params):\n"
+        "    P = numpy.f2py.crackfortran.Path\n"
+        "    P('round5.txt').write_text('pwned')\n"
+        "    return 1\n",
+        # torch's own subprocess wrapper, shell=True.
+        "def run(inputs, params):\n"
+        "    return str(torch.utils.collect_env.run('cmd /c ver'))\n",
     ]
-    for code, refusal in cases:
+    for code in cases:
         body = (
             await test_client.post("/api/nodes/script/validate", json={"code": code})
         ).json()
         assert body["ok"] is True
-        with pytest.raises(RuntimeError, match=refusal):
+        with pytest.raises(RuntimeError, match="not on the Tier-0 list"):
             PythonScriptNode().execute({}, {"code": code})
 
 

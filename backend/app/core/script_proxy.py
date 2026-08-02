@@ -69,14 +69,20 @@ from .plugin_validator import dangerous_modules, frame_introspection_attrs
 from .script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_PROXY_DENIED_ATTRS,
+    TIER0_MODULE_PATHS,
     TIER0_MODULES,
     TIER0_SAFE_LOAD_RECEIVERS,
     ScriptPolicyError,
 )
 
-#: Top-level packages a proxy may hand back. Anything else -- reached under
-#: ANY attribute name, at ANY depth -- is refused.
-_ALLOWED_ROOTS: frozenset[str] = frozenset(TIER0_MODULES)
+#: The exact module paths a proxy may hand back. Anything else -- reached
+#: under ANY attribute name, at ANY depth -- is refused.
+#:
+#: Keyed on the full dotted name rather than the root since review round 5:
+#: ``torch.utils``, ``torch.package``, ``torch.fx``, ``torch.serialization``,
+#: ``numpy.f2py``, ``numpy.testing`` and ``numpy.lib.format`` all have an
+#: allowlisted root and each one held a working escape.
+_ALLOWED_MODULE_PATHS: frozenset[str] = frozenset(TIER0_MODULE_PATHS)
 
 #: Attribute names refused whatever they resolve to. The union of the Tier-0
 #: denied doors, the blocked-module names, and the RCE leaves, so the runtime
@@ -162,7 +168,11 @@ _BANNED_BUILTINS: frozenset[Any] = frozenset(
         for name in (
             "open", "eval", "exec", "compile", "__import__", "input",
             "breakpoint", "globals", "locals", "vars", "dir", "exit", "quit",
-            "help", "memoryview",
+            "help",
+            # NOT ``memoryview``: the node's builtins allowlist deliberately
+            # exposes it, so refusing it here would make the two layers
+            # disagree about the same name -- and a memoryview needs a buffer
+            # someone already handed you, which is not a capability of its own.
         )
     )
     if callable(obj)
@@ -191,7 +201,7 @@ def module_proxy(module: types.ModuleType) -> "RestrictedModule":
     """
     name = getattr(module, "__name__", "") or ""
     parts = name.split(".")
-    if not name or parts[0] not in _ALLOWED_ROOTS:
+    if not name or name not in _ALLOWED_MODULE_PATHS:
         raise _refuse(
             f"Reaching the '{name or '?'}' module is not allowed: it is not on "
             "the Tier-0 list, and how a script got hold of it does not change "
@@ -366,6 +376,13 @@ class RestrictedModule:
         _STATE[id(self)] = (self, module, getattr(module, "__name__", "?"), {})
 
     def __getattribute__(self, name: str) -> Any:
+        # NOTE: ``memo`` caches APPROVED values by name, for the life of the
+        # process. That is safe -- the verdict for a given (module, name) is
+        # deterministic, and a script cannot write to a proxy (``__setattr__``
+        # refuses) so it cannot poison an entry. It does mean a probe that
+        # monkey-patches a module attribute AFTER something has read it sees
+        # the old value; that falsified a synthetic probe run during review,
+        # and is worth knowing before writing one.
         _, target, label, memo = _STATE[id(self)]
         cached = memo.get(name, _MISS)
         if cached is not _MISS:

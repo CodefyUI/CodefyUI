@@ -1288,6 +1288,53 @@ ROUND_THREE_PROBES = [
         "    with numpy.testing.tempdir() as d:\n"
         "        return str(d)\n",
     ),
+    # ── review round 5: a subpackage is not a capability either ──────
+    #
+    # numpy and torch ship subpackages that are tooling rather than numerics,
+    # and "any module whose root is allowed" handed every one of them over.
+    # None of these is a capability type and none is defined by a blocked
+    # module, so the round-4 value rules could not see them: they are numpy's
+    # and torch's own functions doing what those subpackages exist to do.
+    (
+        "torch's own subprocess wrapper (shell=True)",
+        "def run(inputs, params):\n"
+        "    return str(torch.utils.collect_env.run('cmd /c ver'))\n",
+    ),
+    (
+        "a literal eval() inside numpy.f2py",
+        "def run(inputs, params):\n"
+        "    f = numpy.f2py.crackfortran.myeval\n"
+        "    return f('1+1')\n",
+    ),
+    (
+        "torch.package, which writes and then executes source",
+        "def run(inputs, params):\n    return str(torch.package.PackageExporter)\n",
+    ),
+    (
+        "open_memmap, which creates a file at any path",
+        "def run(inputs, params):\n    return str(numpy.lib.format.open_memmap)\n",
+    ),
+    (
+        "torch.fx, whose to_folder writes real .py source",
+        "def run(inputs, params):\n    return str(torch.fx.symbolic_trace)\n",
+    ),
+    (
+        "torch.serialization's mkdtemp",
+        "def run(inputs, params):\n    return str(torch.serialization.mkdtemp())\n",
+    ),
+    (
+        "numpy.testing's process spawner",
+        "def run(inputs, params):\n    return str(numpy.testing.check_support_sve)\n",
+    ),
+    (
+        "importing a refused subpackage by name",
+        "from numpy.f2py import crackfortran\n\ndef run(inputs, params):\n    return 1\n",
+    ),
+    (
+        "importing a refused subpackage as a module",
+        "import torch.utils\n\ndef run(inputs, params):\n"
+        "    return str(torch.utils.collect_env)\n",
+    ),
 ]
 
 
@@ -1468,8 +1515,63 @@ def test_no_module_outside_the_allowlist_is_reachable_through_the_proxies():
     for root, proxy in tier0_module_namespace().items():
         walk(proxy, root, 1)
 
-    assert visited > 50, "the walk should reach a real slice of the surface"
+    # Round 5 narrowed the allowlist from roots to paths, so the reachable
+    # surface IS the allowlist: 15 modules rather than the 330 a root rule
+    # exposed. A small number here is the fix working, not the walk failing.
+    assert visited >= 10, "the walk should reach the allowlisted modules"
     assert leaked == [], f"reachable outside the allowlist: {leaked[:10]}"
+
+
+def test_the_allowlist_is_module_paths_not_roots():
+    """Guard the constant itself: adding an entry is a security decision and
+    should be visible in a diff. ``torch.utils`` alone restores an arbitrary
+    OS command with captured stdout."""
+    from app.core.script_policy import TIER0_MODULE_PATHS
+
+    for refused in (
+        "torch.utils", "torch.package", "torch.fx", "torch.profiler",
+        "torch.serialization", "numpy.f2py", "numpy.testing",
+        "numpy.lib", "numpy.lib.format", "torch.hub",
+    ):
+        assert refused not in TIER0_MODULE_PATHS
+    # ...and every root stays reachable, or the node has no library at all.
+    for allowed in TIER0_MODULES:
+        assert allowed in TIER0_MODULE_PATHS
+
+
+def test_only_allowlisted_module_paths_are_reachable():
+    """The rule, asserted directly rather than through one escape."""
+    from app.core.script_policy import TIER0_MODULE_PATHS
+    from app.core.script_proxy import (
+        RestrictedModule,
+        tier0_module_namespace,
+        unwrap,
+    )
+
+    seen: set[int] = set()
+    reached: set[str] = set()
+
+    def walk(proxy, depth: int) -> None:
+        target = unwrap(proxy)
+        if id(target) in seen or depth > 4:
+            return
+        seen.add(id(target))
+        reached.add(target.__name__)
+        for name in dir(target):
+            try:
+                value = getattr(proxy, name)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(value, RestrictedModule):
+                walk(value, depth + 1)
+
+    for proxy in tier0_module_namespace().values():
+        walk(proxy, 1)
+
+    assert reached <= set(TIER0_MODULE_PATHS), (
+        f"reachable outside the path allowlist: "
+        f"{sorted(reached - set(TIER0_MODULE_PATHS))}"
+    )
 
 
 def test_the_capability_rule_is_keyed_on_the_type_not_the_name():
@@ -1640,7 +1742,11 @@ def test_no_file_capability_is_reachable_through_the_proxies():
 
     def walk(proxy, path: str, depth: int) -> None:
         nonlocal inspected
-        if depth > 3:
+        # Depth 4, matching the figure the docs quote. At 3 the walk misses
+        # ``torch.cuda.amp.common.find_spec`` -- one of the seven this rule
+        # claims to close -- so a shallower assertion would have been quoting
+        # numbers it never checked.
+        if depth > 4:
             return
         target = unwrap(proxy)
         if id(target) in seen:
@@ -1908,9 +2014,8 @@ def test_a_refused_attribute_reports_a_line_number_like_any_other_failure():
         PythonScriptNode().execute(
             {},
             {"code": "def run(inputs, params):\n"
-                     "    b = json.codecs.builtins\n"
-                     "    f = b.eval\n"
-                     "    return f('6*7')\n"},
+                     "    f = numpy.f2py.crackfortran.myeval\n"
+                     "    return f('1+1')\n"},
         )
     message = str(exc.value)
     assert "line 2" in message

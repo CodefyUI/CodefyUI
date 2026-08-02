@@ -57,6 +57,12 @@ _DANGEROUS_MODULES = frozenset({
     "pathlib", "tempfile", "signal", "pickle", "shelve",
     "code", "codeop", "compileall", "marshal", "dill",
     "runpy", "atexit", "asyncio", "multiprocessing", "threading",
+    # File IO that is not spelled ``open``. Every one of these reads or
+    # writes a real path, and several also execute (``zipfile`` extracting
+    # over a path, ``sqlite3`` loading an extension). They were missing, so a
+    # library re-exporting one was a handover the value rules could not see.
+    "zipfile", "gzip", "tarfile", "bz2", "lzma", "codecs",
+    "sqlite3", "glob", "fileinput", "webbrowser",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver
@@ -336,9 +342,11 @@ def validate_python_source(
     access are never widened.
 
     *import_allowlist* switches the import rule from blocklist to allowlist:
-    a top-level module outside the set is refused whatever it is, and
-    relative imports (which name no module at all) are refused with it. This
-    is the shape in-canvas scripts use — see :mod:`app.core.script_policy`.
+    a module whose FULL DOTTED NAME is outside the set is refused whatever it
+    is, and relative imports (which name no module at all) are refused with
+    it. Paths, not roots — ``torch.utils`` and ``numpy.f2py`` have an
+    allowlisted root and each one held a working escape. This is the shape
+    in-canvas scripts use — see :mod:`app.core.script_policy`.
 
     *extra_denied_names* adds to the denied *call* names for this call only
     (``open``, ``input``, ... for scripts). *denied_attributes* refuses whole
@@ -411,7 +419,11 @@ def validate_python_source(
         if allowlist is not None:
             if level or not module:
                 raise fail(f"Relative imports are not allowed in {filename}", node)
-            if module.split(".")[0] not in allowlist:
+            # The FULL dotted name, not just the root: ``torch.utils`` and
+            # ``numpy.f2py`` have an allowlisted root and each one held a
+            # working escape, so *import_allowlist* is a list of module PATHS
+            # and every component of the path has to be on it.
+            if module not in allowlist:
                 raise fail(f"Importing '{module}' is not allowed in {filename}", node)
         if denied_attrs:
             for part in (module or "").split("."):

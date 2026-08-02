@@ -89,6 +89,15 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 這些模組也已經以同名**預先綁定**在命名空間裡，所以不寫 import 也能直接用 `math.floor(x)`；喜歡別名的話，`import numpy as np` 也可以。兩種寫法綁到的都是代理物件而不是模組本身——`import` 走的是同一道守衛。
 
+**可觸及的子套件**是逐一列入允許清單（`TIER0_MODULE_PATHS`），不是由根套件自動涵蓋：
+
+```
+collections.abc   numpy.linalg   numpy.random
+torch.nn          torch.nn.functional   torch.signal   torch.signal.windows
+```
+
+這些根套件底下的其他東西——`torch.utils`、`torch.package`、`torch.fx`、`torch.serialization`、`numpy.f2py`、`numpy.testing`、`numpy.lib.format`——一律拒絕，因為它們每一個都藏著一行就能逃出去的路。如果你需要的做法剛好少了某一個，那是刻意畫的線而不是疏漏：說一聲，可以單獨評估。
+
 ### 代理會拒絕什麼
 
 * **清單以外的任何模組，不管用什麼方式碰到。** `collections._sys`、`statistics.random`、`json.codecs`、`torch.cuda.tunable.mp`（那其實是標準函式庫的 `multiprocessing`）——判斷依據是模組自己的身分，所以沒有別名可找、也沒有名字要補。**被允許**套件底下的子模組（`numpy.linalg`、`torch.nn.functional`、`torch.signal.windows`）會包成巢狀代理，正常可用。
@@ -121,7 +130,7 @@ collections   itertools   json   math   numpy   re   statistics   torch
 
 **哪一層守哪一條。** builtins 允許清單（所以 `open`、`eval` 這些不只是不能改，而是根本不存在）、受守衛的 `__import__`，以及上面每一條模組／屬性規則，在代理層都有執行期的鎖。仍然**只在 AST 階段**檢查的是代理看不到的那些反射手法：雙底線屬性（`__class__`、`__globals__`、`__code__`……）、走訪執行框架（`f_globals`、`gi_frame`、`tb_frame`……），以及用計算出來的名字呼叫 `getattr`。這些活在一般 Python 物件上、而不是函式庫表面上，所以關卡仍然必須在編譯之前跑。
 
-**綠色標記不是保證。** 編輯器跑的是 AST 關卡，所以關卡挑不出毛病的腳本，仍然可能在執行途中被拒絕——`json.codecs` 是透過被允許的模組碰到的未列名模組，認名稱的關卡對它沒有規則可套，代理則直接拒絕。真的發生時，你會在執行紀錄裡看到同一段政策訊息，並附上你的行號。
+**綠色標記不是保證。** 編輯器跑的是 AST 關卡，所以關卡挑不出毛病的腳本，仍然可能在執行途中被拒絕——`numpy.f2py.crackfortran.myeval` 與 `torch.utils.collect_env.run` 都是透過被允許的模組碰到的 numpy／torch 自家子套件，這兩行裡沒有任何一個字看起來像規則，代理則直接拒絕。真的發生時，你會在執行紀錄裡看到同一段政策訊息，並附上你的行號。
 
 ### 需要清單以外的東西？
 
@@ -139,7 +148,8 @@ collections   itertools   json   math   numpy   re   statistics   torch
 * **這道界線真正保證的是什麼。** 腳本拿不到頂層套件不在那八個允許模組裡的任何模組——不管是透過 import、屬性、私有別名、下標、綁到區域變數，還是字面值 `getattr`——因為檢查的是**拿回來的物件**，而不是被打出來的名字。在這之上，本身就是已知檔案 IO 能力、或由被封鎖模組所定義的值，也會用同一種「看型別」的檢查擋掉。承諾就是這兩句；以下全都是**沒有**承諾的事。它們是規則本身的性質，而不是「今天這一版函式庫」的狀態；這正是這一頁上一版寫錯的地方：它宣稱「掃過之後找不到還能碰到的封鎖模組」，而在寫下那句話的當下，`collections._sys` 回傳的就是真正的 `sys` 模組。認名稱的掃描，永遠只能描述它剛好走過的那些名字。
 * **它框住的是腳本能碰到哪些函式庫，而不是那些函式庫能做什麼。** numpy 與 torch 本身就大到內建了檔案 IO、下載功能與一個 C++ 編譯器。那份拒絕清單關掉的是我們知道的門；它是架在兩套龐大 API 之上的黑名單，只能視為提高逃逸的成本，絕不是「檔案與網路碰不到」的保證。
 * **不是模組的能力，改用型別擋掉。** 類別不是模組，所以上面那條模組規則從來看不到 `pathlib.Path`——而 `Path` 就是任意檔案讀取**與寫入**。它曾能透過 `numpy.f2py.crackfortran.Path`、`numpy.f2py.f2py2e.rules.Path`、`torch.fx.graph_module.Path`、`torch.package.package_exporter.Path` 拿到，還能在 `numpy.testing.NUMPY_ROOT` 拿到一個**實例**：同一個類別、五種寫法，沒有一個是任何清單會收錄的名字。現在有第二條規則，對「值」問的是第一條規則對「模組」問的同一件事——**這到底是什麼東西**——並拒絕本身是（或屬於）已知檔案 IO 型別的值（`pathlib.PurePath`、`io.IOBase`、`mmap.mmap`、`os.DirEntry`，含子類別），以及由本政策封鎖的模組所**定義**的值（`subprocess.Popen`、`threading.RLock`、`importlib.find_spec`……不論被哪個函式庫重新匯出）。
-* **殘留風險：型別清單是有限的。** 這條能力規則涵蓋檔案 IO 型別、任何被封鎖模組（以及它們的 C 實作模組 `nt`、`posix`、`_io`、`_thread`……）所定義的東西，還有本政策從命名空間移除的那些 builtins——後者是用物件本身的身分比對，所以 `os.getcwd` 或 `open` 被重新匯出成別的名字時，它仍是同一個函式、同樣被拒絕。它**不**涵蓋：型別由被允許函式庫自己定義的能力（numpy 自己的 `testing.tempdir` 就是一個，已用名稱寫進拒絕清單——那是替這項殘留打的補丁，不是把它修好），以及任何呼叫的回傳值——代理交出去的是屬性，函式拿回傳值做什麼已經超出它的範圍。掃過 330 個模組、9,475 個一般值，目前找不到任何能力；把這條規則關掉再掃一次會找到七個，這既是這條規則實際擋下多少的誠實量測，也說明這個表面有多容易變動。這是對「今天這些函式庫」的描述，不是規則本身的性質。
+* **子套件是逐一列入允許清單，不是看根套件。** 「只要頂層套件被允許就放行」是先前的規則，實際量過之後才發現它太寬鬆：numpy 與 torch 各自都帶了一些本質上是工具、而不是數值運算的子套件，而下面每一項都只要一行——`torch.utils.collect_env.run("cmd /c whoami")`（torch 自己包的 `subprocess`，而且 `shell=True`）、`numpy.f2py.crackfortran.myeval(...)`（貨真價實的 `eval()`）、`torch.package`（把原始碼寫出去再執行它）、`numpy.lib.format.open_memmap(p, mode="w+")`（在任意路徑建立檔案）、`torch.fx.symbolic_trace(m).to_folder(p)`（寫出真正的 `.py`）、`torch.serialization.mkdtemp()`。它們都不是能力**型別**，也都不是被封鎖模組所定義的——它們是 numpy 與 torch 自己的函式，做的正是那些子套件存在的目的，所以型別規則看不到它們。現在允許清單是一份**完整模組名稱**的清單（`TIER0_MODULE_PATHS`），子套件只有列在上面才碰得到。
+* **殘留風險：型別清單是有限的，模組清單也是。** 這條能力規則涵蓋檔案 IO 型別、任何被封鎖模組（以及它們的 C 實作模組 `nt`、`posix`、`_io`、`_thread`……）所定義的東西，還有本政策從命名空間移除的那些 builtins——後者是用物件本身的身分比對，所以 `os.getcwd` 或 `open` 被重新匯出成別的名字時，它仍是同一個函式、同樣被拒絕。它**不**涵蓋：型別由被允許函式庫自己定義的能力，以及任何呼叫的回傳值——代理交出去的是屬性，函式拿回傳值做什麼已經超出它的範圍。**掃過可觸及的表面**（政策允許的每一個屬性，深度 4）：走過 15 個模組、2,052 個一般值，找不到任何能力。把型別規則關掉再掃一次，同樣找不到——這才是誠實的解讀：自從子套件允許清單落地之後，那些型別規則變成「目前後面沒有東西」的第二道鎖，而不是真正在擋的那一層。在它落地之前，同樣的掃描橫跨 330 個模組，型別規則當時擋下了七個真實可用的能力。這兩個數字描述的都是今天的函式庫，不是規則本身的性質。
 * **反射手法仍然只由關卡擋。** `__globals__`、`__class__`、frame 屬性，以及用計算出來的名字呼叫 `getattr`，是由 AST 檢查器拒絕的，沒有別的東西擋——因為它們活在一般物件上，而不是函式庫表面上。
 * 腳本在 **CodefyUI 伺服器行程內**執行，使用你的使用者權限。沒有任何容器隔離。
 * 已經能在你畫布上打字的攻擊者，只要夠有決心，仍可能找得到出口。這套政策提高的是隨手執行程式碼的成本，並不能讓這個面向對有備而來的對手變得安全。

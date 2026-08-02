@@ -94,6 +94,49 @@ TIER0_MODULES: tuple[str, ...] = (
     "torch",
 )
 
+#: The exact module PATHS a script may reach -- the allowlist one level down.
+#:
+#: "Any module whose root is allowed" was the rule until review round 5, and
+#: it was too coarse by a wide margin. numpy and torch each ship subpackages
+#: that are, by design, tooling rather than numerics, and every one of these
+#: was a one-liner at that rule::
+#:
+#:     torch.utils.collect_env.run("cmd /c whoami")   # subprocess, shell=True
+#:     numpy.f2py.crackfortran.myeval("...")          # a literal eval()
+#:     torch.package.PackageExporter(...)             # writes+executes source
+#:     numpy.lib.format.open_memmap(p, mode="w+")     # creates any file
+#:     torch.fx.symbolic_trace(m).to_folder(p)        # writes real .py
+#:     torch.serialization.mkdtemp()                  # a temp directory
+#:
+#: None of them is a capability *type* and none is defined by a blocked
+#: module, so the round-4 value rules could not see them: they are torch's and
+#: numpy's own functions doing what those subpackages exist to do. The honest
+#: fix is not to chase the functions but to stop handing over the subpackages
+#: that hold them.
+#:
+#: So this is an allowlist of dotted names, not of roots. It contains what the
+#: documented recipes actually use and nothing else -- verified against the
+#: must-pass set rather than assumed. Adding an entry is a security decision
+#: and should be visible in a diff: ``torch.utils`` alone would restore the
+#: first line above.
+TIER0_MODULE_PATHS: tuple[str, ...] = (
+    "collections",
+    "collections.abc",
+    "itertools",
+    "json",
+    "math",
+    "numpy",
+    "numpy.linalg",
+    "numpy.random",
+    "re",
+    "statistics",
+    "torch",
+    "torch.nn",
+    "torch.nn.functional",
+    "torch.signal",
+    "torch.signal.windows",
+)
+
 #: Builtin names denied on top of :mod:`app.core.plugin_validator`'s own set
 #: (``exec``/``eval``/``compile``/``globals``/...). These are the ones a
 #: *script* has no business calling: file access, a prompt that would park a
@@ -311,7 +354,7 @@ def validate_script_source(code: str, filename: str = SCRIPT_FILENAME) -> None:
     validate_python_source(
         code,
         filename,
-        import_allowlist=TIER0_MODULES,
+        import_allowlist=TIER0_MODULE_PATHS,
         extra_denied_names=TIER0_DENIED_CALLS,
         denied_attributes=SCRIPT_PROXY_DENIED_ATTRS,
         safe_load_receivers=TIER0_SAFE_LOAD_RECEIVERS,
