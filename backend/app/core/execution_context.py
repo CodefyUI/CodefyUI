@@ -104,9 +104,13 @@ class ArtifactSignal:
 class WarningSignal:
     """Something the run should tell the user about, short of failing.
 
-    The run service turns this into a ``run_warning`` event, which the
-    canvas already surfaces as a toast and the Runs panel as a log line --
-    the same path ``DroppedSignal`` takes. It exists because some warnings
+    The run service turns this into a ``run_warning`` event, which lands in
+    the durable run log and is read back by the Runs panel. The canvas does
+    NOT show it: ``useGraphExecution`` registers no ``run_warning`` handler
+    and no toast in the frontend is reachable from a run event. Say so
+    plainly rather than letting the next reader assume this is louder than
+    it is -- surfacing it on the canvas is filed, not done. It exists
+    because some warnings
     are not observability: #135's node-state eviction can DISCARD TRAINED
     WEIGHTS to stay inside its byte budget, and a ``logger.info`` line in a
     server console is not a place a user watching the UI will ever look.
@@ -450,7 +454,8 @@ class ExecutionContext:
     ) -> None:
         """Tell the user something without failing the run. NON-BLOCKING.
 
-        Reaches the canvas as a toast and the Runs panel as a log line. Use
+        Reaches the durable run log, and the Runs panel reads it back. Not
+        the canvas -- see ``WarningSignal``. Use
         it for the things a server log cannot carry -- the ones where the
         user has to know something happened to their run, not merely to the
         process. Silently discarded on a run with no durable consumer, like

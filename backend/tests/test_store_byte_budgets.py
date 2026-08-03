@@ -343,10 +343,11 @@ def test_a_structural_reset_is_not_reported_as_a_budget_eviction():
 
 
 def test_the_eviction_warning_reaches_the_run_event_stream():
-    """The half a user watching the canvas can actually notice.
+    """The half that outlives the server console.
 
-    ``run_warning`` is the same event the dropped-signal notice uses, which
-    the canvas renders as a toast and the Runs panel as a log line.
+    ``run_warning`` is the same event the dropped-signal notice uses. It
+    lands in the durable run log and the Runs panel reads it back; the
+    canvas does not render it. This test pins the outbox, not the stream.
     """
     from app.core.execution_context import ExecutionContext, WarningSignal
     from app.core.stateful_module import StatefulModuleMixin

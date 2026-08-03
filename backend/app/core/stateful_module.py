@@ -131,9 +131,10 @@ def _report_eviction(
 ) -> None:
     """Put a weight-discarding eviction where the user will see it.
 
-    Onto the run's event stream, which the canvas renders as a toast and
-    the Runs panel as a log line. The store has already logged it at
-    WARNING; this is the half a user watching the UI can actually notice.
+    Onto the run's durable event stream, which the Runs panel reads back.
+    The canvas does not render it -- see ``WarningSignal``. The store has
+    already logged it at WARNING; this is the half that survives past the
+    server console.
 
     Never raises: an eviction notice must not be able to fail the node that
     happened to trigger it.

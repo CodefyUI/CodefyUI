@@ -119,8 +119,11 @@ def value_bytes(value: Any) -> int:
     wrapper whose ``nbytes`` is a property that raises), so "no object in
     this repo triggers it" is not a guarantee about anything.
 
-    A measurement that gives up returns what it had counted so far. A
-    partial byte count evicts slightly early; an exception loses a run.
+    A measurement that gives up returns 0, not the partial total: the walk
+    is recursive, so the count lives in the frames the exception unwound.
+    Under-counting keeps a value that should have been evicted, which costs
+    memory; an exception loses a run. That is the trade being made, and it
+    is worth knowing which way it errs before trusting a budget.
     """
     try:
         return _walk(value)
