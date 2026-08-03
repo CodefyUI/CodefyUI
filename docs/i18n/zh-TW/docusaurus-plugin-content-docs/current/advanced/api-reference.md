@@ -10,7 +10,7 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 
 | 端點 | 方法 | 說明 |
 |----------|--------|-------------|
-| `/api/health` | GET | 健康探測——回傳 `nodes_loaded`、`presets_loaded`。 |
+| `/api/health` | GET | 健康探測——回傳 `nodes_loaded`、`presets_loaded`，以及 `caches`（各記憶體內儲存區目前佔用的位元組與其上限，參閱[訓練記憶體](./training-memory)）。 |
 | `/api/nodes` | GET | 列出所有節點定義。 |
 | `/api/nodes/{node_name}` | GET | 取得單一節點定義。 |
 | `/api/nodes/reload` | POST | 熱重載所有內建與自訂節點。 |

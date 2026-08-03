@@ -34,7 +34,7 @@ This list is the source of truth at the time of writing, but the backend is auth
 
 - **`Start`** (Control) — the execution entry point. Every runnable graph needs one; see [Your First Graph](./first-graph).
 - **`TensorInput`** (Data) — an inline grid editor to hand-feed explicit tensors into a pipeline; the backbone of [Teaching Inspector](./teaching-inspector) demos.
-- **`TrainingLoop`** (Training) — drives training and emits the live loss chart in the Results panel.
+- **`TrainingLoop`** (Training) — drives training and emits the live loss chart in the Results panel. Its Advanced section holds the memory levers (`precision`, `accumulate_steps`); see [Training Memory](/advanced/training-memory).
 - **`EmbeddingScatter`** (LLM) — projects embeddings to 2D (PCA / t-SNE) for a zoomable scatter plot.
 - **`AttentionHeatmap`** (LLM) — renders attention matrices as images.
 - **`Switch`** (Data Flow) — conditional routing so only one branch executes.
