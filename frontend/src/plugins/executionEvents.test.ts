@@ -758,6 +758,10 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     // the budget.
     const delivered = seen.reduce((sum, e) => sum + executionEventWeight(e), 0);
     expect(delivered).toBeLessThanOrEqual(MAX_BUFFERED_EXECUTION_WEIGHT);
+    // Two-sided on purpose. An upper bound alone is satisfied by ANY smaller
+    // cap - including the event count this replaced - so without the lower
+    // bound this test passes on the very defect the change exists to fix.
+    expect(delivered).toBeGreaterThan(MAX_BUFFERED_EXECUTION_WEIGHT / 2);
     expect(seen.length).toBeLessThan(overflow);
     // Both lifecycle events survived the eviction.
     expect(seen[0].type).toBe('run_started');
@@ -844,5 +848,59 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     for (let i = 1; i < seqs.length; i += 1) {
       expect(seqs[i]).toBe(seqs[i - 1] + 1);
     }
+  });
+
+  it('a teardown with a full buffer does not leave the budget spent', () => {
+    // The weight total is kept incrementally, so every path that empties the
+    // buffer has to zero it too. Tearing down while a hidden tab is holding
+    // events is the path that is easy to miss: nothing flushes there, so a
+    // leaked total never self-heals, and the next plugin to subscribe finds a
+    // buffer that can hold exactly one event.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [ws] = seedTabs(1);
+    const stop = subscribeExecutionEvents(() => {});
+    for (let i = 0; i < 400; i += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor: i + 1,
+        points: Array.from({ length: 50 }, (_, k) => ({
+          name: 'loss', value: k, step: i, node_id: null,
+        })),
+      });
+    }
+    stop(); // last subscriber leaves; the buffer is discarded unflushed
+
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    for (let i = 0; i < 100; i += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r2', cursor: i + 1,
+        points: [{ name: 'loss', value: i, step: i, node_id: null }],
+      });
+    }
+    flushExecutionEvents();
+    // 100 events at weight 2 is 1% of the budget: nothing should be evicted.
+    expect(seen).toHaveLength(100);
+  });
+
+  it('never buys room with a lifecycle event, however heavy the arrival', () => {
+    // Metrics are re-readable from api.runs.metrics(); run_finished is not.
+    // So an arriving event that cannot fit overshoots the budget rather than
+    // cascading through the events a plugin can never recover.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: 2 });
+    ws.emit({
+      type: 'metric', run_id: 'r1', cursor: 3,
+      points: Array.from({ length: MAX_BUFFERED_EXECUTION_WEIGHT * 3 }, (_, k) => ({
+        name: 'loss', value: k, step: k, node_id: null,
+      })),
+    });
+    flushExecutionEvents();
+
+    expect(seen.map((e) => e.type)).toEqual(['run_started', 'run_finished', 'metric']);
   });
 });

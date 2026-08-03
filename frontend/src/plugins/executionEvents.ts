@@ -153,9 +153,10 @@ export type ExecutionEventHandler = (event: ExecutionEvent) => void;
  * misses `run_finished` waits forever. Every drop punches a hole in `seq`,
  * which is how a subscriber finds out.
  *
- * The value is roomy on purpose: ~20k objects is a few megabytes, and at a
- * realistic 50 points per flush it holds around 400 batches — several minutes
- * of a hidden tab — before anything is sacrificed.
+ * The value is roomy on purpose: ~20k objects is a few megabytes, and the
+ * backend flushes at most `METRIC_FLUSH_MAX_POINTS` (64) points per metric,
+ * so this holds around 300 batches — a couple of minutes of a hidden tab —
+ * before anything is sacrificed.
  */
 export const MAX_BUFFERED_EXECUTION_WEIGHT = 20000;
 
@@ -358,8 +359,16 @@ function acceptFrame(run_id: string, cursor: number): number | null {
   return 1;
 }
 
-/** Make room at the cap, sacrificing metrics and statuses before lifecycle. */
-function evictOne(): void {
+/**
+ * Drop the oldest sacrificeable event; report whether there was one.
+ *
+ * Returns false when nothing but lifecycle events are left, and the caller
+ * must take that for an answer. The whole point of the priority is that a
+ * plugin which misses a metric can re-read it from `api.runs.metrics()`,
+ * while one that misses `run_finished` waits forever — so room is never
+ * bought with a lifecycle event, however heavy the arriving one is.
+ */
+function evictOne(): boolean {
   while (
     evictFrom < buffer.length
     && buffer[evictFrom].type !== 'metric'
@@ -367,11 +376,11 @@ function evictOne(): void {
   ) {
     evictFrom += 1;
   }
-  // Nothing but lifecycle events left: bounded is bounded, so the oldest goes.
-  if (evictFrom >= buffer.length) evictFrom = 0;
+  if (evictFrom >= buffer.length) return false;
   const [dropped] = buffer.splice(evictFrom, 1);
   bufferedWeight -= executionEventWeight(dropped);
   droppedSinceWarning += 1;
+  return true;
 }
 
 /**
@@ -401,16 +410,17 @@ function onFrame(raw: unknown): void {
   for (const draft of drafts) {
     const event = sealed(draft, seq);
     const weight = executionEventWeight(event);
-    while (
-      buffer.length > 0
-      && bufferedWeight + weight > MAX_BUFFERED_EXECUTION_WEIGHT
-    ) {
-      evictOne();
+    let fits = bufferedWeight + weight <= MAX_BUFFERED_EXECUTION_WEIGHT;
+    while (!fits && evictOne()) {
+      fits = bufferedWeight + weight <= MAX_BUFFERED_EXECUTION_WEIGHT;
     }
-    // A single event heavier than the whole budget still goes in once the
-    // buffer is empty: one event is the smallest thing this buffer can hold,
-    // so the alternative is dropping it outright. The bound is therefore
-    // "the budget, or one event, whichever is larger" — never unbounded.
+    // It goes in even when it does not fit. Two ways that happens, and
+    // accepting the overshoot is right for both: the buffer is empty and the
+    // event alone outweighs the budget (one event is the smallest thing this
+    // can hold, so the alternative is dropping it outright), or everything
+    // left is lifecycle (which `evictOne` refuses to trade, by design). The
+    // overshoot is bounded by one event plus the lifecycle events in flight,
+    // which weigh one apiece — never a metric batch, and never unbounded.
     buffer.push(event);
     bufferedWeight += weight;
   }
@@ -443,7 +453,7 @@ export function flushExecutionEvents(): void {
   //
   // The snapshot alone is not enough, though. "Unsubscribe on run_finished,
   // then tear my state down" is the obvious plugin idiom, and without the
-  // membership re-check below the rest of the batch — up to the whole 2000
+  // membership re-check below the rest of the batch — a whole buffer's worth
   // under overflow — would still be delivered into code that has already
   // torn itself down. The host would contain the resulting throws, but the
   // plugin author would be reading warnings for an unsubscribe that did not.
@@ -495,6 +505,7 @@ function stopListening(): void {
   for (const tabId of Array.from(attached.keys())) detachTab(tabId);
   flusher.cancel();
   buffer = [];
+  bufferedWeight = 0;
   evictFrom = 0;
   watermarks.clear();
   droppedSinceWarning = 0;
