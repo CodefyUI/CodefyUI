@@ -19,6 +19,12 @@ from .backward_pass import (
     select_backward_target,
     zero_module_grads,
 )
+from .error_handling import (
+    NodeOOMError,
+    is_out_of_memory,
+    memory_digest,
+    release_cached_memory,
+)
 from .execution_context import (
     INTERRUPTED_KEY,
     ArtifactSignal,
@@ -1111,6 +1117,41 @@ async def execute_graph(
             except Exception:  # noqa: BLE001 - observability must not kill a run
                 logger.warning("signal delivery failed", exc_info=True)
 
+    def _handle_oom(exc: Exception, node_id: str, node_type: str) -> Exception:
+        """Recover from an accelerator OOM and rewrite it as a NodeOOMError.
+
+        Order matters. The allocator digest is read FIRST, so it describes
+        the failure rather than the cleanup that follows it. Then the two
+        things actually worth doing: drop whatever this node had cached
+        (those tensors are on the device that just ran out, and they are by
+        construction the shape of thing that failed to allocate), and hand
+        the caching allocator's free blocks back.
+
+        Neither recovers the run -- it is over -- and that is the point.
+        They recover the PROCESS, so the next run the user starts after
+        halving their batch size finds the card in the state they expect
+        rather than inheriting a fragmented reserve. What cannot be freed
+        here is whatever the traceback still holds a reference to; that
+        goes when the exception does.
+        """
+        device = context.device if context is not None else ""
+        digest = memory_digest(device)
+        dropped = 0
+        if cache is not None:
+            dropped = cache.clear_node(node_id)
+        release_cached_memory(device)
+        logger.warning(
+            "Node %s (%s) ran out of memory on %s; dropped %d cached "
+            "entr%s for it and released the allocator's free blocks.%s",
+            node_id, node_type, device or "the current device", dropped,
+            "y" if dropped == 1 else "ies",
+            f" {digest}" if digest else "",
+        )
+        return NodeOOMError.from_exception(
+            exc, node_id=node_id, node_type=node_type, device=device,
+            digest=digest,
+        )
+
     async def _execute_single_node(node_id: str) -> None:
         """Execute one node with cancellation, caching, and error recovery."""
         if context and context.cancelled:
@@ -1251,7 +1292,10 @@ async def execute_graph(
                     # ``(node_id, "tensor")`` for ``result["tensor"]`` —
                     # see attach_retain_grad's recursion through dict keys.
                 if cache is not None and node_cacheable and node_id in node_cache_keys:
-                    cache.put(node_cache_keys[node_id], result)
+                    # ``node_id`` is carried so an out-of-memory failure can
+                    # drop exactly this node's cached results (#135) rather
+                    # than the whole cache or nothing at all.
+                    cache.put(node_cache_keys[node_id], result, node_id)
                 if record_outputs and output_store is not None and run_id:
                     for port, value in result.items():
                         if port.startswith("__"):
@@ -1287,6 +1331,17 @@ async def execute_graph(
                 await _emit_preset_aware(node_id, terminal, result)
                 return
             except Exception as e:
+                if is_out_of_memory(e):
+                    last_error = _handle_oom(e, node_id, node_type)
+                    # Never retried. The same allocation on the same device
+                    # gets the same answer, and the only thing a retry adds
+                    # is another few seconds before the user sees the
+                    # message telling them what to change. Auto-shrinking
+                    # the batch instead was considered and rejected: it
+                    # would change the numbers a run produces without
+                    # saying so, so the same graph would mean two different
+                    # things depending on how much VRAM happened to be free.
+                    break
                 last_error = e
                 if attempt < attempts - 1:
                     await asyncio.sleep(0.5 * (attempt + 1))  # backoff
