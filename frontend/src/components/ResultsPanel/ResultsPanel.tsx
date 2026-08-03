@@ -6,13 +6,27 @@ import { friendlyError } from '../../utils/errorMessages';
 import { LossChart } from './LossChart';
 import { RunsPanel } from './RunsPanel';
 import { ChartView } from '../shared/ChartView';
+import { PluginDockPanel, usePluginPanels } from '../PluginPanels/PluginPanels';
 import styles from './ResultsPanel.module.css';
 
 const MIN_HEIGHT = 80;
 const MAX_HEIGHT = 600;
 const DEFAULT_HEIGHT = 200;
 
-type PanelTab = 'log' | 'training' | 'runs';
+/**
+ * A plugin panel's tab is its registry key behind a `plugin:` prefix (#132).
+ * The prefix, rather than the bare key, is what keeps the union closed and
+ * narrowable — a plugin id can never collide with a built-in tab name.
+ */
+type PanelTab = 'log' | 'training' | 'runs' | `plugin:${string}`;
+
+const PLUGIN_TAB_PREFIX = 'plugin:';
+
+function pluginTabKey(tab: PanelTab): string | null {
+  return tab.startsWith(PLUGIN_TAB_PREFIX)
+    ? tab.slice(PLUGIN_TAB_PREFIX.length)
+    : null;
+}
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -145,6 +159,16 @@ export function ResultsPanel() {
   useEffect(() => {
     setExpandedIdx(null);
   }, [activeTab.id]);
+
+  // Plugin dock tabs (#132). A plugin can unregister a panel — or be
+  // unloaded — while its tab is the selected one, which would otherwise leave
+  // the dock on a tab that no longer exists showing nothing at all.
+  const pluginPanels = usePluginPanels('bottom');
+  const activePluginPanelKey = pluginTabKey(panelTab);
+  useEffect(() => {
+    if (activePluginPanelKey === null) return;
+    if (!pluginPanels.some((p) => p.key === activePluginPanelKey)) setPanelTab('log');
+  }, [pluginPanels, activePluginPanelKey]);
 
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -295,11 +319,26 @@ export function ResultsPanel() {
               </span>
             )}
           </button>
+          {/* Plugin tabs (#132) sit after the built-ins, in registration
+              order. The host owns the chrome; the plugin owns the body. */}
+          {pluginPanels.map((panel) => (
+            <button type="button"
+              key={panel.key}
+              className={`${styles.panelTabBtn} ${panelTab === `${PLUGIN_TAB_PREFIX}${panel.key}` ? styles.panelTabActive : ''}`}
+              onClick={() => setPanelTab(`${PLUGIN_TAB_PREFIX}${panel.key}`)}
+              title={panel.title}
+              data-testid={`plugin-dock-tab-${panel.key}`}
+            >
+              {panel.icon && <span aria-hidden="true">{panel.icon} </span>}
+              {panel.title}
+            </button>
+          ))}
         </div>
         <div className={styles.headerRight}>
-          {/* Clear empties THIS tab's log, which the Runs tab does not show
-              — offering it there would look like a way to delete runs. */}
-          {panelTab !== 'runs' && (
+          {/* Clear empties THIS tab's log, which neither the Runs tab nor a
+              plugin tab shows — offering it there would look like a way to
+              delete runs, or to clear the plugin's own panel. */}
+          {panelTab !== 'runs' && activePluginPanelKey === null && (
             <button type="button"
               onClick={clearLogs}
               disabled={logs.length === 0}
@@ -400,6 +439,13 @@ export function ResultsPanel() {
           panelHeight={panelHeight}
           onWatchRun={() => setPanelTab('log')}
         />
+      )}
+
+      {/* Exactly like the built-in tabs, a plugin tab's body is mounted only
+          while it is the active one — the plugin's ELEMENT survives the
+          switch because the registry, not React, owns it (#132). */}
+      {!collapsed && activePluginPanelKey !== null && (
+        <PluginDockPanel panelKey={activePluginPanelKey} />
       )}
 
       {!collapsed && panelTab === 'training' && (

@@ -115,7 +115,7 @@ describe('storage surface', () => {
 describe('meta', () => {
   it('exposes apiVersion and pluginId', () => {
     const api = freshApi();
-    expect(api.apiVersion).toBe(2);
+    expect(api.apiVersion).toBe(3);
     expect(api.pluginId).toBe('test-plugin');
   });
 });

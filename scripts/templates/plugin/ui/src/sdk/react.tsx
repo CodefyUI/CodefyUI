@@ -11,8 +11,8 @@
 import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  ActivateFn, ApplyResult, CodefyUIPluginAPI, GraphOp,
-  NodeDefinition, NodeRenderContext, PluginNodeRenderer,
+  ActivateFn, ApplyResult, CodefyUIPluginAPI, ExecutionEvent, GraphOp,
+  NodeDefinition, NodeRenderContext, PluginNodeRenderer, PluginPanelOptions,
   SerializedGraph, ToastType,
 } from './types';
 
@@ -64,6 +64,35 @@ export function defineTool(
   Component: React.ComponentType<{ api: CodefyUIPluginAPI }>,
 ): ActivateFn {
   return (api) => mountTool(api, opts, Component);
+}
+
+/**
+ * Mount a React component into a dock panel — requires `apiVersion >= 3`.
+ *
+ * ```tsx
+ * mountPanel(api, { id: 'runs', title: 'My Runs' }, RunsView);
+ * ```
+ *
+ * The root is created ONCE, against the element the host hands back, and that
+ * element outlives every tab switch — so your component keeps its state while
+ * the user is elsewhere. It also keeps RUNNING while the panel is hidden, so
+ * pass `onShow`/`onHide` (or read `element.isConnected`) if you have work
+ * worth pausing.
+ */
+export function mountPanel(
+  api: CodefyUIPluginAPI,
+  opts: PluginPanelOptions,
+  Component: React.ComponentType<{ api: CodefyUIPluginAPI }>,
+): HTMLElement {
+  const el = api.ui.addPanel(opts);
+  createRoot(el).render(
+    <React.StrictMode>
+      <ApiContext.Provider value={api}>
+        <Component api={api} />
+      </ApiContext.Provider>
+    </React.StrictMode>,
+  );
+  return el;
 }
 
 /**
@@ -141,6 +170,24 @@ export function useToast(): (message: string, type?: ToastType) => void {
 export function useCodefyFetch(): (url: string, init?: RequestInit) => Promise<Response> {
   const api = useCodefyUI();
   return React.useCallback((url, init) => api.http.fetch(url, init), [api]);
+}
+
+/**
+ * Run your own callback for every run event — requires `apiVersion >= 3`.
+ *
+ * The latest callback is always used, so an inline arrow is fine; the
+ * subscription itself is set up once.
+ */
+export function useExecutionEvents(cb: (event: ExecutionEvent) => void): void {
+  const api = useCodefyUI();
+  const ref = React.useRef(cb);
+  ref.current = cb;
+  React.useEffect(() => api.events.onExecution((e) => ref.current(e)), [api]);
+}
+
+/** The read-only runs facade — requires `apiVersion >= 3`. Stable. */
+export function useRuns(): CodefyUIPluginAPI['runs'] {
+  return useCodefyUI().runs;
 }
 
 /** Persistent, plugin-namespaced string state — like useState backed by storage. */

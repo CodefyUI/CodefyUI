@@ -693,16 +693,18 @@ describe('run endpoints', () => {
   });
 
   describe('listRuns', () => {
+    // The run readers go through `apiFetch` (#132), which normalises the
+    // init argument, so these assert the URL rather than the whole call.
     it('sends no query at all when nothing is narrowed', async () => {
       const fetchMock = mockFetch(200, { runs: [], total: 0, limit: 50, offset: 0 });
       await listRuns();
-      expect(fetchMock).toHaveBeenCalledWith('/api/runs');
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/runs');
     });
 
     it('repeats ?status= per status rather than joining with commas', async () => {
       const fetchMock = mockFetch(200, { runs: [], total: 0, limit: 50, offset: 0 });
       await listRuns({ status: ['queued', 'running'], limit: 10, offset: 20 });
-      expect(fetchMock).toHaveBeenCalledWith(
+      expect(fetchMock.mock.calls[0][0]).toBe(
         '/api/runs?status=queued&status=running&limit=10&offset=20',
       );
     });

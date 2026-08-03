@@ -1,7 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadPluginFrontends } from './PluginHost';
+import { loadPluginFrontends, unloadPluginFrontends } from './PluginHost';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
+import { useTabStore } from '../store/tabStore';
+import type { CodefyUIPluginAPI } from './api';
+import { _clearPluginPanels, getPluginPanels } from './panels';
+import {
+  _clearPluginToolbarButtons, getPluginToolbarButtons,
+} from './toolbarButtons';
+import {
+  _resetExecutionEvents, executionEventSubscriberCount, executionEventTapCount,
+} from './executionEvents';
+import { _clearNodeRenderers, getNodeRenderer } from './nodeRenderers';
 
 beforeEach(() => {
   useNodeDefStore.setState({
@@ -117,5 +127,134 @@ describe('loadPluginFrontends', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * The unload contract (#132): activating a plugin and tearing it down again
+ * must leave the editor exactly as it found it.
+ *
+ * This is the mount/unmount cycle the acceptance criterion asks for, run
+ * repeatedly — a leak that adds one subscriber per activation is invisible in
+ * a single round trip and obvious over five.
+ */
+describe('plugin unload leaves nothing behind', () => {
+  /** Everything a plugin can leave registered, counted in one place. */
+  function residue() {
+    return {
+      panels: getPluginPanels().length,
+      buttons: getPluginToolbarButtons().length,
+      executionSubscribers: executionEventSubscriberCount(),
+      socketTaps: executionEventTapCount(),
+      renderer: getNodeRenderer('demo:Node') !== undefined,
+    };
+  }
+
+  const EMPTY = {
+    panels: 0, buttons: 0, executionSubscribers: 0, socketTaps: 0, renderer: false,
+  };
+
+  /** A plugin that uses every part of the API that outlives activate(). */
+  function greedyPlugin(panels: HTMLElement[] = []) {
+    return (api: CodefyUIPluginAPI) => {
+      panels.push(api.ui.addPanel({ id: 'dock', title: 'Dock' }));
+      panels.push(api.ui.addPanel({ id: 'side', title: 'Side', dock: 'right' }));
+      api.ui.addToolbarButton({ id: 'go', icon: '*', tooltip: 'Go', onClick: () => {} });
+      api.ui.addFloatingWidget({ id: 'fab' });
+      api.events.onExecution(() => {});
+      api.graph.onGraphChanged(() => {});
+      api.nodes.registerRenderer('demo:Node', { mount: () => {} });
+    };
+  }
+
+  beforeEach(() => {
+    useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
+    useTabStore.getState().addTab('test');
+    _clearPluginPanels();
+    _clearPluginToolbarButtons();
+    _resetExecutionEvents();
+    _clearNodeRenderers();
+  });
+
+  afterEach(() => {
+    _clearPluginPanels();
+    _clearPluginToolbarButtons();
+    _resetExecutionEvents();
+    _clearNodeRenderers();
+  });
+
+  it('registers everything on activate and unregisters everything on unload', async () => {
+    mockPluginsResponse([
+      { id: 'demo', enabled: true, frontend_entry: '/plugins/demo/frontend/index.js' },
+    ]);
+    const created: HTMLElement[] = [];
+    const importer = vi.fn(async () => ({ default: greedyPlugin(created) }));
+    await loadPluginFrontends(() => document.createElement('div'), importer);
+
+    expect(residue()).toEqual({
+      panels: 2, buttons: 1, executionSubscribers: 1, socketTaps: 1, renderer: true,
+    });
+    // Attach a panel the way the dock would, to prove unload detaches it.
+    document.body.appendChild(created[0]);
+
+    unloadPluginFrontends();
+    expect(residue()).toEqual(EMPTY);
+    expect(created[0].isConnected).toBe(false);
+  });
+
+  it('does not accumulate across repeated activate/unload cycles', async () => {
+    mockPluginsResponse([
+      { id: 'demo', enabled: true, frontend_entry: '/plugins/demo/frontend/index.js' },
+    ]);
+    const importer = vi.fn(async () => ({ default: greedyPlugin() }));
+
+    for (let i = 0; i < 5; i += 1) {
+      await loadPluginFrontends(() => document.createElement('div'), importer);
+      expect(residue(), `after activation ${i + 1}`).toEqual({
+        panels: 2, buttons: 1, executionSubscribers: 1, socketTaps: 1, renderer: true,
+      });
+      unloadPluginFrontends();
+      expect(residue(), `after unload ${i + 1}`).toEqual(EMPTY);
+    }
+  });
+
+  it('unregisters a plugin whose own cleanup throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockPluginsResponse([
+      { id: 'demo', enabled: true, frontend_entry: '/plugins/demo/frontend/index.js' },
+    ]);
+    // Registering the panel LAST means its tracked cleanup runs last, after
+    // the throwing one has already aborted... nothing: each cleanup is
+    // isolated, and the id sweep is the second line of defence.
+    const importer = vi.fn(async () => ({
+      default: (api: CodefyUIPluginAPI) => {
+        api.graph.onGraphChanged(() => {});
+        api.ui.addPanel({ id: 'dock', title: 'Dock' });
+        api.ui.addToolbarButton({ id: 'go', icon: '*', tooltip: 'Go', onClick: () => {} });
+        // A plugin that breaks the host's teardown contract.
+        api.events.onExecution(() => {});
+        throw new Error('activate exploded after registering');
+      },
+    }));
+    await loadPluginFrontends(() => document.createElement('div'), importer);
+    expect(getPluginPanels()).toHaveLength(1);
+
+    unloadPluginFrontends();
+    expect(getPluginPanels()).toHaveLength(0);
+    expect(getPluginToolbarButtons()).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('unload is idempotent', async () => {
+    mockPluginsResponse([
+      { id: 'demo', enabled: true, frontend_entry: '/plugins/demo/frontend/index.js' },
+    ]);
+    await loadPluginFrontends(
+      () => document.createElement('div'),
+      vi.fn(async () => ({ default: greedyPlugin() })),
+    );
+    unloadPluginFrontends();
+    expect(() => unloadPluginFrontends()).not.toThrow();
+    expect(residue()).toEqual(EMPTY);
   });
 });

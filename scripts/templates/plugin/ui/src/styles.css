@@ -26,6 +26,18 @@
 }
 .cdui-panel__btn:hover { background: #0f766e; }
 
+/* Dock panel (api.ui.addPanel) — see examples/run-metrics-panel.tsx.
+   The host styles the container only, so a panel brings its own type and
+   colour. Keep it close to the editor's palette and it will look native. */
+.cdui-metrics { font: 12px/1.5 system-ui, -apple-system, sans-serif; color: #cfd8dc; }
+.cdui-metrics__head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cdui-metrics__head b { color: #2dd4bf; font-family: monospace; }
+.cdui-metrics__status { color: #8fa3ad; text-transform: uppercase; font-size: 11px; }
+.cdui-metrics__empty { color: #78909c; padding: 8px 0; }
+.cdui-metrics__table { border-collapse: collapse; min-width: 320px; }
+.cdui-metrics__table th { text-align: left; color: #8fa3ad; font-weight: 600; padding: 2px 16px 2px 0; }
+.cdui-metrics__table td { padding: 2px 16px 2px 0; font-family: monospace; }
+
 /* Custom node body (api.nodes.registerRenderer) */
 .cdui-node-body { padding: 6px 8px; font: 12px/1.4 system-ui, -apple-system, sans-serif; color: #cde9e4; }
 .cdui-node-body__title { font-weight: 600; color: #2dd4bf; margin-bottom: 4px; }

@@ -1,0 +1,67 @@
+/* PluginPanels.module.css — host chrome around plugin-owned elements.
+ *
+ * These rules style the CONTAINER only. What a plugin renders inside is its
+ * own; the host deliberately sets no colours, fonts or resets on the panel
+ * element's children, so a plugin's stylesheet is never fighting ours. */
+
+/* ── bottom dock ─────────────────────────────────────────────────────────── */
+
+.dockBody {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 4px 8px;
+}
+
+/* ── right dock ──────────────────────────────────────────────────────────── */
+
+.rightColumn {
+  width: 300px;
+  flex-shrink: 0;
+  background: #151515;
+  border-left: 1px solid #2a2a2a;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #1a1a1a;
+  border-bottom: 1px solid #262626;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8fa3ad;
+}
+
+.icon {
+  font-size: 0.8rem;
+  line-height: 1;
+  color: #4db6ac;
+}
+
+.sectionTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionBody {
+  padding: 8px 10px;
+  overflow: auto;
+  min-height: 0;
+}

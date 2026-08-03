@@ -8,12 +8,19 @@ name: Backend Tests
 #      regenerating the lock would otherwise sail through review.
 #   3. Test failures introduced in PRs that don't touch the install path
 #      (the existing install-check workflow only fires on releases).
+#   4. Plugin-SDK drift. `tests/test_plugin_dx.py` guards the scaffold and the
+#      vendored copy of the plugin contract, so it has to fire for changes to
+#      `scripts/` and to the contract itself — neither of which lives under
+#      `backend/`. Without those two paths the drift check could only ever
+#      fail locally, which is the same as not having it.
 on:
   pull_request:
     paths:
       - 'backend/**'
       - 'examples/**'
       - 'plugins/**'
+      - 'scripts/**'
+      - 'frontend/src/plugins/contract.ts'
       - '.github/workflows/backend-test.yml'
   push:
     branches:
@@ -22,6 +29,8 @@ on:
       - 'backend/**'
       - 'examples/**'
       - 'plugins/**'
+      - 'scripts/**'
+      - 'frontend/src/plugins/contract.ts'
       - '.github/workflows/backend-test.yml'
   workflow_dispatch:
 

@@ -4,6 +4,9 @@ import { ResultsPanel } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
 import { useI18n } from '../../i18n';
+import {
+  _clearPluginPanels, registerPluginPanel, removePluginPanel,
+} from '../../plugins/panels';
 
 // Stub LossChart so the SVG sub-tree doesn't interfere with assertions and
 // ResizeObserver bookkeeping stays out of these tests. We assert the props it
@@ -750,5 +753,86 @@ describe('ResultsPanel — legacy magic prefixes (deprecated, #117)', () => {
       'data:image/png;base64,TEdD',
       'data:image/png;base64,QUJD',
     ]);
+  });
+});
+
+// ── plugin dock tabs (#132) ──────────────────────────────────────────────
+
+describe('plugin panels in the dock', () => {
+  afterEach(() => _clearPluginPanels());
+
+  function seedPanel(title = 'Sweeps') {
+    const el = registerPluginPanel('sweeps', { id: 'main', title });
+    el.appendChild(document.createElement('canvas'));
+    return el;
+  }
+
+  it('adds a tab after the built-in ones', () => {
+    seedPanel();
+    render(<ResultsPanel />);
+    const labels = [...screen.getByText(t('results.title')).parentElement!.children]
+      .map((c) => c.textContent);
+    expect(labels).toEqual([
+      t('results.title'), t('results.training'), t('runs.tab'), 'Sweeps',
+    ]);
+  });
+
+  it('shows no plugin tab for a right-docked panel', () => {
+    registerPluginPanel('side', { id: 'main', title: 'Side', dock: 'right' });
+    render(<ResultsPanel />);
+    expect(screen.queryByTestId('plugin-dock-tab-side:main')).not.toBeInTheDocument();
+  });
+
+  it('mounts the panel element when its tab is selected', () => {
+    const el = seedPanel();
+    render(<ResultsPanel />);
+    expect(el.isConnected).toBe(false);
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    expect(screen.getByTestId('plugin-dock-panel-sweeps:main').firstChild).toBe(el);
+  });
+
+  it('keeps the SAME element across a dock tab switch', () => {
+    const el = seedPanel();
+    const child = el.firstChild;
+    render(<ResultsPanel />);
+
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    fireEvent.click(screen.getByText(t('results.title')));
+    expect(el.isConnected).toBe(false);
+    expect(screen.queryByTestId('plugin-dock-panel-sweeps:main')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    expect(screen.getByTestId('plugin-dock-panel-sweeps:main').firstChild).toBe(el);
+    expect(el.firstChild).toBe(child);
+  });
+
+  it('detaches the panel while the dock is collapsed', () => {
+    const el = seedPanel();
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    expect(el.isConnected).toBe(false);
+  });
+
+  it('hides Clear on a plugin tab — it empties the log, not the plugin', () => {
+    seedPanel();
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    expect(screen.queryByText(t('results.clear'))).not.toBeInTheDocument();
+  });
+
+  it('falls back to the log tab when the selected panel is unregistered', () => {
+    seedPanel();
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByTestId('plugin-dock-tab-sweeps:main'));
+    act(() => removePluginPanel('sweeps', 'main'));
+    expect(screen.queryByTestId('plugin-dock-tab-sweeps:main')).not.toBeInTheDocument();
+    expect(screen.getByText(t('results.empty'))).toBeInTheDocument();
+  });
+
+  it('shows a panel registered while the dock is already on screen', () => {
+    render(<ResultsPanel />);
+    act(() => { seedPanel('Late'); });
+    expect(screen.getByTestId('plugin-dock-tab-sweeps:main')).toHaveTextContent('Late');
   });
 });

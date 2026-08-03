@@ -10,7 +10,33 @@ A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the 
 
 :::note Availability
 Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
+
+Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 1.5.0 and later). Feature-check before you use them — see [API versions](#api-versions).
 :::
+
+## API versions
+
+`api.apiVersion` is a number that only ever grows, and every release so far has been **purely additive**: nothing that worked at an older version has been removed or changed shape. A plugin written for apiVersion 2 keeps working on an apiVersion 3 editor with no changes at all.
+
+| `apiVersion` | CodefyUI | Added |
+|--------------|----------|-------|
+| 1 | 1.3.0 | `ui.addFloatingWidget`, `ui.toast`, `graph.*`, `http.fetch`, `storage.*` |
+| 2 | 1.3.0 | `nodes.registerRenderer` |
+| 3 | 1.5.0 | `ui.addPanel` / `removePanel`, `ui.addToolbarButton` / `removeToolbarButton`, `events.onExecution`, `runs.*` |
+
+Check it before reaching for anything newer than the version you require, and degrade rather than throw:
+
+```js
+export default function activate(api) {
+  if (api.apiVersion >= 3) {
+    mountDashboard(api.ui.addPanel({ id: "dash", title: "Dashboard" }));
+  } else {
+    mountDashboard(api.ui.addFloatingWidget({ id: "dash" }));
+  }
+}
+```
+
+Because the additions are additive, a breaking change would come with an `apiVersion` bump and a migration note — never silently.
 
 ## Declaring a frontend entry point
 
@@ -71,7 +97,7 @@ export default function activate(api) {
 
 The editor calls `activate` once per page load and does **not** await its return value — do your setup synchronously (you may still start async work; the editor just won't wait for it). Errors thrown synchronously inside `activate` are caught per-plugin, logged to the browser console, and surfaced as a toast; they cannot crash the editor or other plugins. The import is also bounded by a 10-second timeout. (Only the *default export being a function* is required; the name `activate` is convention.)
 
-## CodefyUIPluginAPI v1 reference
+## CodefyUIPluginAPI reference
 
 ### `api.ui` — editor UI
 
@@ -79,6 +105,74 @@ The editor calls `activate` once per page load and does **not** await its return
 |--------|-----------|-------------|
 | `addFloatingWidget` | `({ id }) => HTMLElement` | Create (or reuse) a container `<div>` in the editor's floating-widget stack and return it. `id` must be unique per plugin. You own the returned element — fill it with your own DOM, or mount a React root into it. |
 | `toast` | `(message, level?) => void` | Show a transient notification. `level` is `"info"` (default), `"warning"`, or `"error"`. |
+| `addPanel` | `(opts) => HTMLElement` | **apiVersion 3.** Register a dock panel and return its container element. |
+| `removePanel` | `(id: string) => void` | **apiVersion 3.** Remove one of your panels. |
+| `addToolbarButton` | `(opts) => () => void` | **apiVersion 3.** Add a toolbar button; returns a remove function. |
+| `removeToolbarButton` | `(id: string) => void` | **apiVersion 3.** Remove one of your buttons by id. |
+
+#### Dock panels
+
+Requires `api.apiVersion >= 3`.
+
+```ts
+interface PluginPanelOptions {
+  id: string;                 // unique within your plugin
+  title: string;              // tab label, or right-hand section heading
+  icon?: string;              // short glyph shown before the title
+  dock?: "bottom" | "right";  // defaults to "bottom"
+  onShow?: () => void;        // the element was attached to the document
+  onHide?: () => void;        // ...and detached again
+}
+```
+
+A `"bottom"` panel becomes a tab in the editor's bottom dock, after Execution Log, Training and Runs. A `"right"` panel becomes a section in the right-hand column, alongside the node config and inspector panels. The host owns the tab chrome, the ordering and the placement; you own everything inside the element.
+
+**The element is yours for the life of the panel.** Its identity never changes, so mount into it exactly once:
+
+```js
+const el = api.ui.addPanel({ id: "runs", title: "My Runs", icon: "~" });
+createRoot(el).render(<MyPanel />);   // once, not per tab switch
+```
+
+The editor mounts only the *active* dock tab, so the container your panel sits in is torn down and rebuilt as the user moves between tabs. Your element is not: the editor detaches it and re-attaches it, with its children and their state intact. Calling `addPanel` again with the same `id` returns the same element and just updates the title, icon and dock.
+
+What that costs you is the one thing to be careful about: your code keeps *running* while the panel is off screen, rendering into an element that is not in the document. If the panel does anything expensive — a chart, a poll, an animation — gate it:
+
+```js
+api.ui.addPanel({
+  id: "runs", title: "My Runs",
+  onShow: () => chart.start(),
+  onHide: () => chart.stop(),
+});
+```
+
+Write both callbacks so that calling them twice in a row is harmless: React's development mode replays mount effects, so a single tab switch can produce an extra `onHide`/`onShow` pair.
+
+Panels are removed automatically when your plugin is unloaded or hot-reloaded; `removePanel` is for panels you want gone earlier.
+
+#### Toolbar buttons
+
+Requires `api.apiVersion >= 3`.
+
+```ts
+interface PluginToolbarButtonOptions {
+  id: string;        // unique within your plugin
+  icon: string;      // short glyph — the toolbar has room for a glyph
+  tooltip: string;   // hover and accessible text; an icon is not a label
+  onClick: () => void;
+}
+```
+
+```js
+const remove = api.ui.addToolbarButton({
+  id: "sweep", icon: "~", tooltip: "Start a sweep",
+  onClick: () => startSweep(),
+});
+```
+
+Buttons land in one group at the right of the toolbar, in registration order. There is no way to ask for a position, and the editor decides how many are shown: on a wide window up to three sit inline, and on a narrow one they collapse into a single overflow menu. That is what keeps five installed plugins from pushing Run off the toolbar, so write the `tooltip` as if it were the label — in the menu, it is.
+
+If `onClick` throws, the editor logs it and carries on; the toolbar is not affected.
 
 ### `api.graph` — graph read and write
 
@@ -155,6 +249,129 @@ api.nodes.registerRenderer('my_plugin:MyNode', {
 
 The [plugin template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)'s SDK wraps this with `createRoot`, so you can write the body as a React component.
 
+### `api.events` — live run events
+
+Requires `api.apiVersion >= 3`.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `onExecution` | `(cb: (event: ExecutionEvent) => void) => () => void` | Subscribe to the run event stream. Returns an unsubscribe function. |
+
+```ts
+type ExecutionEvent =
+  | { type: "run_started";  run_id: string; cursor: number; seq: number }
+  | { type: "node_status";  run_id: string; cursor: number; seq: number;
+      node_id: string; status: string; error?: string }
+  | { type: "metric";       run_id: string; cursor: number; seq: number;
+      points: readonly RunMetricPoint[] }
+  | { type: "run_finished"; run_id: string; cursor: number; seq: number;
+      status: "succeeded" | "failed" | "cancelled" | "interrupted";
+      error?: string };
+```
+
+```js
+const off = api.events.onExecution((event) => {
+  if (event.type === "metric") {
+    for (const p of event.points) record(p.name, p.step, p.value);
+  }
+  if (event.type === "run_finished") summarise(event.run_id, event.status);
+});
+```
+
+Things worth knowing before you build on it:
+
+- **A `metric` event carries the whole batch it was recorded as,** in `points`. Those are [`RunMetricPoint`](#apiruns--run-history-read-only)s — the *same* type `api.runs.metrics()` returns — so one fold function can serve the live tail and the REST back-fill. In particular `value` is `null` for a non-finite number on both sides: a diverged loss is a **gap in the curve, not a zero**, and it is delivered rather than skipped. (The one difference: `ts` is populated on points from `api.runs.metrics()` and absent on live ones.)
+- **Events are frozen.** One event object is shared by every subscriber, so it and its `points` are `Object.freeze`d — you cannot mutate what another plugin receives, and you should copy before transforming.
+- **Events are batched onto animation frames.** A run pushing hundreds of metrics a second reaches you as one burst of calls per frame, not one call per message — the same batching the editor uses for its own node badges. A backgrounded or occluded editor window is never painted, so nothing is delivered until it comes back; what piles up in the meantime is bounded by what it costs to keep — an event plus each metric point it carries, capped at about twenty thousand of those — and past the cap the oldest metrics and node statuses are dropped (`run_started` and `run_finished` never are). The unit matters because one `metric` event carries a whole batch: a run writing fat batches and one writing single points get the same memory budget, not the same number of events. Re-read metrics from `api.runs.metrics()` if you need every point.
+- **It is a tail, not a transcript.** The editor replays a run's whole recorded log whenever it attaches to one — on a page reload with a run in flight, or when the user picks a run to watch in the Runs panel. Those replayed entries pass through the same stream, and the host filters out every one already delivered, so a re-attach can never hand you a duplicate to double-count. The exceptions are spelled out under [when the editor attaches to a run you have not seen](#when-the-editor-attaches-to-a-run-you-have-not-seen).
+- **Unsubscribe** when you are done; it takes effect immediately, including part-way through a batch. The editor also unsubscribes you automatically on unload or hot-reload.
+- **The stream covers the runs the editor is attached to** — the ones started from a canvas tab, plus any run the user chose to watch from the Runs panel. A run submitted by `cdui run` that nobody is watching is visible through `api.runs`, not here.
+- **If your callback throws,** the editor logs it and moves on. No other subscriber is affected, but you lose that event.
+
+#### `cursor` and `seq`
+
+Every event carries two numbers, and mixing them up is the easiest way to build a dashboard that lies to its user.
+
+**`cursor` is where the event sits in the run's durable log** — the same cursor `GET /api/runs/{id}/events` pages by and `api.runs.get(id).last_cursor` reports. Use it to line an event up against the REST side.
+
+It is strictly increasing within a run, but it is **not dense, and a jump in it means nothing**. The log also holds entries this stream does not publish, and each one consumes a cursor:
+
+- `artifact` — every checkpoint a run saves writes one;
+- `run_warning`;
+- a refused submit, and a cancel that had nothing to cancel;
+- a metric entry the server collapsed because its payload was too large.
+
+A perfectly healthy training run that checkpoints every epoch therefore produces a cursor gap every epoch. Do not treat that as data loss.
+
+**`seq` is the stream's own counter, and it is the one that signals loss.** It counts the events delivered for a run, densely: the next event you receive for a run has `seq` exactly one higher than the last one you received — unless the host dropped events under the buffering limit described above, which is the only thing that can put a hole in it.
+
+```js
+// Per run: remember the last seq you saw, and react to a hole.
+const lastSeq = new Map();
+api.events.onExecution((event) => {
+  const previous = lastSeq.get(event.run_id);
+  lastSeq.set(event.run_id, event.seq);
+  if (previous !== undefined && event.seq > previous + 1) {
+    // The only cause is buffer overflow. Recover from REST.
+    void api.runs.metrics(event.run_id).then(backfill);
+  }
+  apply(event);
+});
+```
+
+The first `seq` you see for a run is your baseline, not necessarily `1`: it counts from when the *editor* started streaming that run, which may be before your plugin subscribed.
+
+#### When the editor attaches to a run you have not seen
+
+The de-duplication above is bookkeeping the editor keeps **per run, once, for the whole page** — not per plugin. Two consequences:
+
+- When the editor attaches to a run **nothing has streamed yet** — the user clicking a run in the Runs panel — the server replays that run's recorded log from the start, and you receive it, in cursor order, before the live tail begins. Every entry still arrives exactly once, but the first events you see for that run describe the past.
+- When the editor attaches to a run **something has already streamed**, the replay is filtered out for everyone. If your plugin subscribed later than another one, you inherit that filtering, so you may see *nothing at all* from the replay of a run you personally never saw. Do not rely on a replay to populate yourself; use `api.runs` for that, which is what it is for.
+
+If you need to know whether an event describes the past, `api.runs.get(run_id)` reports `last_cursor`. Note it is not a one-liner for a run that is still going: you are reading a moving target *after* the replay has already started, so the honest pattern is to buffer events until the promise resolves and only then classify them.
+
+One bound worth knowing rather than discovering: the editor remembers the last **1024** runs it has streamed. Attaching to more than 1024 distinct runs in a single page session and then returning to one from the beginning of that session will replay it to you a second time. No ordinary session comes close, and the number is here so the limit is a documented condition rather than a surprise.
+
+### `api.runs` — run history (read-only)
+
+Requires `api.apiVersion >= 3`.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `list` | `(opts?) => Promise<RunListPage>` | Newest-first page of runs. `opts` is `{ status?, limit?, offset? }`. |
+| `get` | `(id: string) => Promise<RunInfo \| null>` | One run, or `null` when the server has never heard of it. |
+| `metrics` | `(id: string, name?: string) => Promise<RunMetrics>` | Recorded scalar series, ordered `(name, step)`. |
+
+```js
+const page = await api.runs.list({ status: ["running"], limit: 1 });
+const active = page.runs[0];
+if (active) {
+  const recorded = await api.runs.metrics(active.id);
+  for (const point of recorded.metrics) {
+    if (point.value !== null) record(point.name, point.step, point.value);
+  }
+}
+```
+
+```ts
+interface RunListPage { runs: RunSummary[]; total: number; limit: number; offset: number }
+interface RunInfo extends RunSummary { last_cursor: number }
+interface RunMetrics { run_id: string; names: string[]; metrics: RunMetricPoint[] }
+interface RunMetricPoint {
+  node_id: string | null; name: string; step: number;
+  value: number | null;   // null is a diverged (non-finite) value — a gap, not a zero
+  ts?: string;            // ISO-8601 UTC; set here, absent on live metric events
+}
+```
+
+`RunMetricPoint` is the same type the live `metric` event carries in `points`, so a dashboard can fold both with one function. `ts` is the only field that differs between the two sources: `api.runs.metrics()` records when each point was written, the live stream carries only what a chart plots against `step`. A fold that ignores `ts` works on both unchanged.
+
+`RunSummary` mirrors a row of the run history: `id`, `name`, `status`, `error`, `options`, `queue_key`, `created_at`, `started_at`, `finished_at`, `git_commit`, `git_dirty`, `plugin_pins`, `queue_position`, `final_metrics` and `active`. The full shapes are in the vendored SDK types, and the endpoints behind them are documented in the [API Reference](/advanced/api-reference).
+
+The facade exists so the common case needs no hand-rolled fetching: the editor performs the requests through its own API client, with whatever authentication they need already attached. You never construct a URL, and the token is never passed to your code or returned by anything on `api.runs` — that is a convenience, not a sandbox (see [Trust model](#trust-model)).
+
+It is deliberately **read-only in this version**. There is no `submit` and no `cancel`: starting or stopping work on someone's machine should happen behind a UI they opened, not behind a plugin call. If you need that, drive it from a button the user pressed, through `api.http.fetch`.
+
 ### `api.http` — session-aware fetch
 
 | Method | Signature | Description |
@@ -211,6 +428,64 @@ export default function activate(api) {
   panel.appendChild(btn);
 }
 ```
+
+## A live run-metrics panel
+
+The example below is the apiVersion 3 surface doing the thing it was added for: a dock tab that lists a run's metrics as they arrive. It pairs the two halves — `events.onExecution` for the live tail, `runs` for everything that happened before the panel opened — and subscribes *before* back-filling so nothing falls through the gap between them.
+
+```js
+// frontend/index.js
+export default function activate(api) {
+  if (api.apiVersion < 3) return;
+
+  const series = new Map();   // name -> { last, points }
+
+  // One fold for both halves: `event.points` and `runs.metrics().metrics`
+  // are the same RunMetricPoint[].
+  const fold = (points) => {
+    for (const p of points) {
+      const previous = series.get(p.name);
+      series.set(p.name, {
+        // null is a diverged value — a gap, so keep the last finite one.
+        last: p.value ?? previous?.last ?? null,
+        points: (previous?.points ?? 0) + 1,
+      });
+    }
+  };
+
+  const render = () => {
+    if (!el.isConnected) return;   // the tab is not open; nothing to paint
+    el.textContent = [...series.entries()]
+      .map(([name, s]) =>
+        `${name}  last=${s.last === null ? "--" : s.last.toFixed(4)}  n=${s.points}`)
+      .join("\n");
+  };
+
+  const el = api.ui.addPanel({
+    id: "run-metrics", title: "Run Metrics", icon: "~",
+    onShow: render,   // paint on the way in, so the tab is never blank
+  });
+
+  // 1. the live tail
+  api.events.onExecution((event) => {
+    if (event.type === "run_started") series.clear();
+    if (event.type === "metric") fold(event.points);
+    render();
+  });
+
+  // 2. the back-fill, for a run that started before this panel existed
+  api.runs.list({ status: ["running"], limit: 1 }).then(async (page) => {
+    const active = page.runs[0];
+    if (!active) return;
+    const recorded = await api.runs.metrics(active.id);
+    // Same fold, filtered to the series the live tail has not covered.
+    fold(recorded.metrics.filter((p) => !series.has(p.name)));
+    render();
+  });
+}
+```
+
+The [plugin scaffold](/advanced/plugins) ships the same example as a React component at `ui/src/examples/run-metrics-panel.tsx`, using the SDK's `mountPanel`, `useExecutionEvents` and `useRuns` bindings.
 
 ## See also
 
