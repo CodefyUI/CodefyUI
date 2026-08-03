@@ -101,6 +101,31 @@ class ArtifactSignal:
 
 
 @dataclass(frozen=True)
+class WarningSignal:
+    """Something the run should tell the user about, short of failing.
+
+    The run service turns this into a ``run_warning`` event, which lands in
+    the durable run log and is read back by the Runs panel. The canvas does
+    NOT show it: ``useGraphExecution`` registers no ``run_warning`` handler
+    and no toast in the frontend is reachable from a run event. Say so
+    plainly rather than letting the next reader assume this is louder than
+    it is -- surfacing it on the canvas is filed, not done. It exists
+    because some warnings
+    are not observability: #135's node-state eviction can DISCARD TRAINED
+    WEIGHTS to stay inside its byte budget, and a ``logger.info`` line in a
+    server console is not a place a user watching the UI will ever look.
+
+    ``kind`` is a stable token a client may branch on; ``detail`` is the
+    human sentence. Both are set by the producer, because a warning nobody
+    can act on is worse than none.
+    """
+
+    kind: str
+    detail: str
+    node_id: str | None = None
+
+
+@dataclass(frozen=True)
 class DroppedSignal:
     """*count* items the outbox discarded to stay bounded.
 
@@ -418,6 +443,26 @@ class ExecutionContext:
             return
         self.outbox.put(MetricSignal(
             name=str(name), value=numeric, step=index,
+            node_id=node_id or self.current_node_id or None,
+        ))
+
+    def log_warning(
+        self,
+        kind: str,
+        detail: str,
+        node_id: str | None = None,
+    ) -> None:
+        """Tell the user something without failing the run. NON-BLOCKING.
+
+        Reaches the durable run log, and the Runs panel reads it back. Not
+        the canvas -- see ``WarningSignal``. Use
+        it for the things a server log cannot carry -- the ones where the
+        user has to know something happened to their run, not merely to the
+        process. Silently discarded on a run with no durable consumer, like
+        every other signal.
+        """
+        self.outbox.put(WarningSignal(
+            kind=str(kind), detail=str(detail),
             node_id=node_id or self.current_node_id or None,
         ))
 

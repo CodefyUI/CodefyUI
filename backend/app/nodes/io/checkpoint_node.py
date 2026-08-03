@@ -32,6 +32,16 @@ class CheckpointSaverNode(BaseNode):
                 description="LR scheduler whose position in the schedule to store",
                 optional=True,
             ),
+            PortDefinition(
+                name="grad_scaler_state",
+                data_type=DataType.ANY,
+                description=(
+                    "fp16 loss-scale state to store. Wire "
+                    "TrainingLoop.grad_scaler_state here; leave unconnected "
+                    "for fp32 and bf16 runs"
+                ),
+                optional=True,
+            ),
         ]
 
     @classmethod
@@ -69,6 +79,7 @@ class CheckpointSaverNode(BaseNode):
             epoch=params.get("epoch", 0),
             losses=inputs.get("losses"),
             lr_scheduler=inputs.get("lr_scheduler"),
+            scaler_state=inputs.get("grad_scaler_state"),
         )
         return {"path": str(target), "model": model}
 
@@ -104,6 +115,15 @@ class CheckpointLoaderNode(BaseNode):
             PortDefinition(name="epoch", data_type=DataType.SCALAR, description="Epoch number from checkpoint (wire to TrainingLoop.start_epoch)"),
             PortDefinition(name="losses", data_type=DataType.TENSOR, description="Loss history from checkpoint"),
             PortDefinition(name="lr_scheduler", data_type=DataType.ANY, description="LR scheduler with restored state (None if none was wired in)"),
+            PortDefinition(
+                name="grad_scaler_state",
+                data_type=DataType.ANY,
+                description=(
+                    "fp16 loss-scale state from the checkpoint, or None. "
+                    "Wire to TrainingLoop.grad_scaler_state to resume an "
+                    "fp16 run at the scale it reached"
+                ),
+            ),
         ]
 
     @classmethod
@@ -215,4 +235,9 @@ class CheckpointLoaderNode(BaseNode):
             "epoch": epoch,
             "losses": losses,
             "lr_scheduler": lr_scheduler,
+            # Absent from every checkpoint written before #135 and from
+            # every fp32/bf16 run since, so None is the ordinary answer
+            # rather than a failure -- ``TrainingLoop`` treats it as "start
+            # from a fresh loss scale".
+            "grad_scaler_state": checkpoint.get("scaler_state_dict"),
         }

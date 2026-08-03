@@ -102,10 +102,13 @@ class DiffusionTrainingLoopNode(BaseNode):
         schedule = str(params.get("schedule", "linear"))
         beta_start = float(params.get("beta_start", 0.0001))
         beta_end = float(params.get("beta_end", 0.05))
-        device = str(params.get("device", "cpu"))
+        # Through ``resolve_device`` since #135 rather than an inline
+        # ``device == "cuda"`` equality check, which let ``cuda:1`` past the
+        # availability guard and on to an unvalidated ``.to()``.
+        from ...core.device_utils import resolve_device
+
+        device = resolve_device(str(params.get("device", "cpu")))
         seed = int(params.get("seed", 0))
-        if device == "cuda" and not torch.cuda.is_available():
-            device = "cpu"
 
         torch.manual_seed(seed)
         if schedule == "cosine":

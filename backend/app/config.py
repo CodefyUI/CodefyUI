@@ -153,6 +153,33 @@ class Settings(BaseSettings):
     # as a cap on payload volume, not as an RSS guarantee.
     STATS_CACHE_MAX_BYTES: int = 8 * 1024 * 1024
 
+    # ── In-memory store budgets (#135) ─────────────────────────────────
+    # The three stores that hold tensors between runs used to be bounded by
+    # ENTRY COUNT, which on a single 32 GB card is a limit in name only:
+    # 256 cached node outputs is either 40 MB of scalars or 200 GB of
+    # feature maps, and a count cannot tell those apart. Each store now
+    # carries a byte budget as well, evicting LRU by accumulated tensor
+    # storage (``core.memory_budget``), and reports its usage in
+    # /api/health.
+    #
+    # MEGABYTES, not bytes, unlike every other cap above. These are numbers
+    # a user tunes against the RAM or VRAM in their machine — "1024" reads
+    # as a gigabyte, "1073741824" reads as a typo waiting to happen. Both
+    # limits apply: whichever binds first evicts. 0 disables the BYTE
+    # budget for that store and leaves the count in charge.
+    #
+    # The defaults total 4 GB, which is deliberately generous for a
+    # workstation and deliberately finite: the point is that a long session
+    # cannot climb without limit, not that it should feel constrained.
+    #
+    # Note the execution cache is per WEBSOCKET CONNECTION, so this budget
+    # is per connection; the other two are one per server. /api/health
+    # reports the instance count alongside the total for exactly that
+    # reason.
+    EXECUTION_CACHE_MAX_MB: int = 1024
+    RUN_OUTPUT_STORE_MAX_MB: int = 2048
+    NODE_STATE_STORE_MAX_MB: int = 1024
+
     NODES_DIR: Path = Path(__file__).parent / "nodes"
     CUSTOM_NODES_DIR: Path = Path(__file__).parent / "custom_nodes"
     GRAPHS_DIR: Path = Path(__file__).parent.parent / "data" / "graphs"

@@ -28,7 +28,16 @@ key                          contents
 ``losses``                   optional tensor of per-epoch training losses
 ``scheduler_state_dict``     optional ``lr_scheduler.state_dict()`` (#118)
 ``scheduler_class``          optional class name guarding the restore (#118)
+``scaler_state_dict``        optional ``GradScaler.state_dict()`` (#135)
 ===========================  ============================================
+
+``scaler_state_dict`` is present only for an fp16 run, and holds five plain
+scalars (``scale``, ``growth_factor``, ``backoff_factor``,
+``growth_interval``, ``_growth_tracker``) -- no tensors, so it costs nothing
+and satisfies the ``weights_only=True`` rule below by construction. Losing
+it is survivable (a fresh scaler re-finds its loss scale within a few
+hundred steps) but not free: those steps are taken at the wrong scale, and
+the ones that overflow are skipped outright.
 
 **The format is append-only.** New keys are added with ``.get()`` on the read
 side and never made mandatory, so a newer loader reads an older checkpoint and
@@ -156,8 +165,17 @@ def build_checkpoint(
     epoch: int = 0,
     losses: Any = None,
     lr_scheduler: Any = None,
+    scaler_state: Any = None,
 ) -> dict[str, Any]:
-    """The payload dict, exactly as documented in this module's docstring."""
+    """The payload dict, exactly as documented in this module's docstring.
+
+    *scaler_state* accepts either a ``GradScaler`` or the dict its
+    ``state_dict()`` returns, because both are things a caller plausibly
+    holds: ``TrainingLoop`` has the live scaler, while ``CheckpointSaver``
+    is handed the dict over a graph edge. Anything else is ignored with a
+    warning rather than raising -- the port is ``DataType.ANY``, so an
+    unrelated value wired into it must not cost the user their checkpoint.
+    """
     checkpoint: dict[str, Any] = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
@@ -181,7 +199,34 @@ def build_checkpoint(
             )
         checkpoint["scheduler_state_dict"] = lr_scheduler.state_dict()
         checkpoint["scheduler_class"] = type(lr_scheduler).__name__
+    scaler_dict = _scaler_state_dict(scaler_state)
+    if scaler_dict:
+        checkpoint["scaler_state_dict"] = scaler_dict
     return checkpoint
+
+
+def _scaler_state_dict(scaler_state: Any) -> dict[str, Any] | None:
+    """Normalise a live ``GradScaler`` or its state dict down to the dict."""
+    if scaler_state is None:
+        return None
+    if isinstance(scaler_state, dict):
+        return dict(scaler_state) or None
+    reader = getattr(scaler_state, "state_dict", None)
+    if callable(reader):
+        try:
+            state = reader()
+        except Exception:  # noqa: BLE001 - never lose a checkpoint over this
+            logger.warning("could not read the loss scaler's state",
+                           exc_info=True)
+            return None
+        return dict(state) if isinstance(state, dict) and state else None
+    logger.warning(
+        "The grad_scaler_state input is a %s, which is neither a GradScaler "
+        "state dict nor a GradScaler; the checkpoint is written without it. "
+        "Wire TrainingLoop's grad_scaler_state output to this port.",
+        type(scaler_state).__name__,
+    )
+    return None
 
 
 def write_checkpoint(
@@ -192,6 +237,7 @@ def write_checkpoint(
     epoch: int = 0,
     losses: Any = None,
     lr_scheduler: Any = None,
+    scaler_state: Any = None,
     resolve: bool = True,
 ) -> Path:
     """Build and save a checkpoint atomically; return where it landed.
@@ -213,6 +259,7 @@ def write_checkpoint(
     target.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = build_checkpoint(
         model, optimizer, epoch=epoch, losses=losses, lr_scheduler=lr_scheduler,
+        scaler_state=scaler_state,
     )
     staged = target.with_name(f"{target.name}.{uuid4().hex[:8]}.tmp")
     try:

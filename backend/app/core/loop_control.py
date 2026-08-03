@@ -188,6 +188,7 @@ def save_interrupt_checkpoint(
     batch: int,
     losses: Any = None,
     lr_scheduler: Any = None,
+    scaler_state: Any = None,
     node_id: str | None = None,
 ) -> str | None:
     """Persist where an interrupted training node got to. Never raises.
@@ -249,7 +250,8 @@ def save_interrupt_checkpoint(
             run_id, resolved_node_id, epoch=epoch, batch=batch)
         write_checkpoint(
             target, model, optimizer, epoch=epoch, losses=losses,
-            lr_scheduler=lr_scheduler, resolve=False,
+            lr_scheduler=lr_scheduler, scaler_state=scaler_state,
+            resolve=False,
         )
     except Exception:  # noqa: BLE001 - see the docstring
         logger.warning(

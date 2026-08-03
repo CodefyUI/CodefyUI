@@ -12,6 +12,12 @@ CodefyUI runs on PyTorch, so it inherits PyTorch's device backends: **CPU**, **N
 
 A single global **device** setting drives all tensor-source nodes, so you set it once rather than per node. The backend exposes the devices PyTorch can actually see (via `device_utils.get_available_devices()`), and the UI populates each device dropdown from that list. A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present.
 
+## Addressing one card out of several
+
+On a machine with more than one CUDA device, every dropdown also lists the cards individually — `cuda:0`, `cuda:1`, and so on — alongside the bare `cuda`, which means "whichever card torch is currently pointed at". A single-GPU machine shows only `cuda`, because there the two name the same hardware.
+
+An index that does not exist on this machine falls back to the **current CUDA device**, not to the CPU: a graph pinned to `cuda:2` on a workstation should still train on the GPU when it is opened on a laptop. Each card also gets its own run queue. See **[Training Memory](./training-memory)** for the full picture, including what is deliberately out of scope (distributed training).
+
 ## The float64 + MPS constraint
 
 MPS is **float32-native** and rejects float64 tensors. CodefyUI normalizes this in `device_utils.to_device`, but if you write a [custom node](./custom-nodes) that creates tensors directly, keep them in float32 on Apple GPUs to avoid runtime errors.

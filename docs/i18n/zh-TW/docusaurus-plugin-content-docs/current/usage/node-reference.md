@@ -34,7 +34,7 @@ CodefyUI 內建 **94 個節點**，涵蓋 **15 大類別**。已安裝的 [外�
 
 - **`Start`**（控制）— 執行的進入點。每個可執行的圖都需要一個；見 [你的第一個圖](./first-graph)。
 - **`TensorInput`**（資料）— 一個內嵌格子編輯器，用來手動把明確指定的張量餵進管線；是 [教學檢視器](./teaching-inspector) 範例的骨幹。
-- **`TrainingLoop`**（訓練）— 驅動訓練，並在結果面板發出即時 loss 圖表。
+- **`TrainingLoop`**（訓練）— 驅動訓練，並在結果面板發出即時 loss 圖表。它的進階區塊放著記憶體相關的開關（`precision`、`accumulate_steps`），詳見[訓練記憶體](/advanced/training-memory)。
 - **`EmbeddingScatter`**（LLM）— 把 embedding 投影到 2D（PCA / t-SNE），畫成可縮放的散佈圖。
 - **`AttentionHeatmap`**（LLM）— 把 attention 矩陣渲染成影像。
 - **`Switch`**（資料流）— 條件式路由，讓只有一條分支會執行。

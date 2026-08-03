@@ -64,6 +64,7 @@ from .core.auth import (
     session_token,
     write_token_file,
 )
+from .core.cache import execution_cache_stats
 from .core.db import Database
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
@@ -283,8 +284,13 @@ async def lifespan(app: FastAPI):
                 name=f"plugin_{plugin_id}_assets",
             )
 
-    # In-memory store for captured per-run node outputs (Teaching Inspector)
-    app.state.run_output_store = RunOutputStore(max_runs=20)
+    # In-memory store for captured per-run node outputs (Teaching Inspector).
+    # Bounded by runs AND by bytes (#135) — twenty runs of MNIST batches and
+    # twenty runs of 4K feature maps are three orders of magnitude apart.
+    app.state.run_output_store = RunOutputStore(
+        max_runs=20,
+        max_bytes=settings.RUN_OUTPUT_STORE_MAX_MB * 1024 * 1024,
+    )
 
     # Memoised /stats payloads for those captures (#129). Bounded by BYTES —
     # a stat payload ranges from ~1.5 KB to ~50 KB, so an entry count would
@@ -295,7 +301,10 @@ async def lifespan(app: FastAPI):
 
     # Persistent ``nn.Module`` instances per (graph, node, structure-hash).
     # Lifetime: server process. Survives Run clicks; lost on restart.
-    app.state.node_state_store = NodeStateStore(max_modules=200)
+    app.state.node_state_store = NodeStateStore(
+        max_modules=200,
+        max_bytes=settings.NODE_STATE_STORE_MAX_MB * 1024 * 1024,
+    )
 
     # ── Stage-2 storage: published apps, API keys, run records ─────────
     # Routes access it via getattr(app.state, "db", None) and 503 when
@@ -442,12 +451,39 @@ app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)
 
 
+async def _cache_usage() -> dict[str, dict[str, int]]:
+    """What the three in-memory stores are holding right now (#135).
+
+    Additive on /api/health because "is the server about to run out of
+    memory" is a health question, and until this existed the only way to
+    answer it was to attach a profiler. Each block reports current bytes
+    against the configured budget, plus the count-based limit that still
+    applies alongside it.
+
+    Every store is optional here: the lifespan does not run under httpx's
+    ASGITransport, so a test client reaches this endpoint with nothing on
+    ``app.state``. A missing store is omitted rather than reported as zero,
+    which would read as "empty" instead of "not running".
+    """
+    usage: dict[str, dict[str, int]] = {
+        "execution_cache": execution_cache_stats(),
+    }
+    output_store = getattr(app.state, "run_output_store", None)
+    if output_store is not None:
+        usage["run_output_store"] = await output_store.stats()
+    state_store = getattr(app.state, "node_state_store", None)
+    if state_store is not None:
+        usage["node_state_store"] = state_store.stats()
+    return usage
+
+
 @app.get("/api/health")
 async def health():
     body = {
         "status": "ok",
         "nodes_loaded": len(registry.nodes),
         "presets_loaded": len(preset_registry.presets),
+        "caches": await _cache_usage(),
     }
     if settings.PROJECT_DIR is not None:
         # Additive (spec ID4), project mode ONLY: the refactor guard requires

@@ -76,6 +76,7 @@ class EvaluateModelNode(BaseNode):
         import torch
         from torch.utils.data import DataLoader
 
+        from ...core.device_utils import resolve_device
         from ...core.loop_control import (
             EVENT_BATCH,
             ProgressThrottle,
@@ -92,9 +93,11 @@ class EvaluateModelNode(BaseNode):
             raise ValueError("EvaluateModel requires a `dataset` input.")
 
         batch_size = max(1, int(params.get("batch_size", 256)))
-        device = str(params.get("device", "cpu"))
-        if device == "cuda" and not torch.cuda.is_available():
-            device = "cpu"
+        # Through ``resolve_device`` since #135 rather than an inline
+        # ``device == "cuda"`` equality check: that check let ``cuda:1``
+        # past the availability guard entirely, and an out-of-range index
+        # reached ``.to()`` unvalidated.
+        device = resolve_device(str(params.get("device", "cpu")))
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         model = model.to(device)

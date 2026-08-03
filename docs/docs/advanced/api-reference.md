@@ -10,7 +10,7 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Health probe — returns `nodes_loaded`, `presets_loaded`. |
+| `/api/health` | GET | Health probe — returns `nodes_loaded`, `presets_loaded`, and `caches` (current bytes held by each in-memory store against its budget; see [Training Memory](./training-memory)). |
 | `/api/nodes` | GET | List all node definitions. |
 | `/api/nodes/{node_name}` | GET | Get a single node definition. |
 | `/api/nodes/reload` | POST | Hot-reload all built-in and custom nodes. |
