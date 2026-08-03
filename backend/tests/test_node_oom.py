@@ -24,13 +24,25 @@ from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import registry
 
 
-def _cuda_oom() -> BaseException:
-    """The exception torch raises when a CUDA allocation does not fit."""
-    import torch
+OOM_MESSAGE = (
+    "CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total "
+    "capacity of 15.99 GiB of which 0 bytes is free.")
 
-    return torch.OutOfMemoryError(
-        "CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total "
-        "capacity of 15.99 GiB of which 0 bytes is free.")
+#: `torch.OutOfMemoryError` arrived in torch 2.5 and the declared floor is
+#: lower, so the tests raise whichever shape the INSTALLED torch actually
+#: produces. That is not a workaround -- it is the same reason
+#: `is_out_of_memory` checks the type and the message: on an older build a
+#: CUDA allocation failure really is a bare `RuntimeError`, and the handler
+#: has to work there too.
+_TORCH_OOM = getattr(__import__("torch"), "OutOfMemoryError", None)
+has_oom_type = _TORCH_OOM is not None
+requires_oom_type = pytest.mark.skipif(
+    not has_oom_type, reason="torch < 2.5 has no OutOfMemoryError type")
+
+
+def _cuda_oom() -> BaseException:
+    """The exception this torch raises when a CUDA allocation does not fit."""
+    return (_TORCH_OOM or RuntimeError)(OOM_MESSAGE)
 
 
 class _HungryNode(BaseNode):
@@ -77,6 +89,12 @@ def _graph():
 
 
 # ── classification ────────────────────────────────────────────────────────
+
+
+@requires_oom_type
+def test_the_dedicated_torch_oom_type_is_recognised():
+    """By TYPE, not by message -- the message match is the fallback."""
+    assert is_out_of_memory(_TORCH_OOM("no message about memory here")) is True
 
 
 def test_a_torch_oom_is_recognised():
