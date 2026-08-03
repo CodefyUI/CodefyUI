@@ -31,6 +31,7 @@ from .execution_context import (
 )
 from .node_base import BaseNode
 from .node_registry import registry
+from .seeding import apply_determinism, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
 
@@ -1022,8 +1023,22 @@ async def execute_graph(
             if preset_done[preset_id] >= preset_total[preset_id]:
                 await _maybe_await(on_progress(preset_id, "completed", None))
 
+    # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
+    # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed
+    # each other mid-execute -- the same seed would then give a different
+    # answer on every scheduling, which is the precise opposite of what a
+    # seed is for. Reproducibility beats the throughput of a graph whose
+    # independent branches could have overlapped; an unseeded run is
+    # unaffected and keeps its parallelism.
     max_workers = context.max_workers if context else 4
+    if context is not None and context.seed is not None:
+        max_workers = 1
     semaphore = asyncio.Semaphore(max_workers)
+
+    # Deterministic kernels, applied once for the whole run rather than per
+    # node: it is a process-wide torch setting, not a per-call argument.
+    if context is not None and context.deterministic:
+        apply_determinism(True)
 
     # ── worker-thread → loop delivery ────────────────────────────────────
     #
@@ -1186,6 +1201,16 @@ async def execute_graph(
                     # Tell stateful nodes which node-id they belong to.
                     if context is not None:
                         context.current_node_id = node_id
+
+                    # Per-node seeding (#134). Every node starts from a seed
+                    # derived from (run seed, node id), so its weight init,
+                    # dropout mask and shuffle order depend on the run seed
+                    # and its own identity -- never on what the rest of the
+                    # graph drew first. Re-applied on every RETRY attempt
+                    # too, so a retried node re-runs from the same state
+                    # rather than continuing the failed attempt's stream.
+                    if context is not None and context.seed is not None:
+                        seed_rngs(context.derive_seed(node_id))
 
                     fn = functools.partial(
                         invoke_node,

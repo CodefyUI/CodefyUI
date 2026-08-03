@@ -91,6 +91,100 @@ async def test_ws_connect_and_execute():
 
 
 @pytest.mark.asyncio
+async def test_ws_execute_records_the_seed_and_deterministic_options():
+    """core#134: the canvas can ask for a reproducible run.
+
+    Asserted through the STORED run row rather than a mock of the handler:
+    ``exec_runs.options`` is what a re-run has to be rebuilt from and what
+    the Runs panel reads the seed off, so that is where the value has to
+    land.
+    """
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "seed": 4242,
+                "deterministic": True,
+                "nodes": [
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                ],
+                "edges": [
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                ],
+            }))
+
+            run_id = None
+            for _ in range(20):
+                msg = json.loads(await ws.receive_text())
+                run_id = run_id or msg.get("run_id")
+                if msg["type"] in ("execution_complete", "execution_error"):
+                    break
+
+    assert run_id, "no run id came back off the socket"
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.options["seed"] == 4242
+    assert record.options["deterministic"] is True
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_without_a_seed_stores_none():
+    """The default is unseeded, and stored as null rather than 0."""
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "nodes": [
+                    {"id": "start", "type": "Start", "data": {"params": {}}},
+                    {"id": "1", "type": "_TestSource", "data": {"params": {}}},
+                ],
+                "edges": [
+                    {"id": "et", "source": "start", "target": "1",
+                     "sourceHandle": "trigger", "type": "trigger"},
+                ],
+            }))
+            run_id = None
+            for _ in range(20):
+                msg = json.loads(await ws.receive_text())
+                run_id = run_id or msg.get("run_id")
+                if msg["type"] in ("execution_complete", "execution_error"):
+                    break
+
+    record = await app.state.run_service.store.get_run(run_id)
+    assert record.options["seed"] is None
+    assert record.options["deterministic"] is False
+
+
+@pytest.mark.asyncio
+async def test_ws_execute_rejects_a_non_integer_seed():
+    """Validation stays in ``normalize_options``; the socket does not coerce.
+
+    Coercing here would turn a client bug into a silently different run.
+    """
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "seed": "forty-two",
+                "nodes": [{"id": "start", "type": "Start", "data": {"params": {}}}],
+                "edges": [],
+            }))
+            msg = json.loads(await ws.receive_text())
+            assert msg["type"] == "execution_error"
+            assert "seed" in msg["error"]
+
+
+@pytest.mark.asyncio
 async def test_ws_unknown_action():
     """Unknown actions should return an error message."""
     async with AsyncClient(

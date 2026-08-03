@@ -536,7 +536,7 @@ _DEFAULT_OPTIONS = {
     "device": "cpu", "seed": None, "lane": "queued", "graph_id": "",
     "error_mode": "fail_fast", "max_retries": 0, "record_outputs": False,
     "verbose": False, "weights_persistent": False, "backward_mode": False,
-    "auto_backward": False,
+    "auto_backward": False, "deterministic": False,
 }
 
 
@@ -551,7 +551,7 @@ def test_options_accept_every_documented_key():
         "device": " CUDA ", "seed": 7, "record_outputs": True, "lane": "gpu",
         "verbose": True, "graph_id": "canvas-1", "weights_persistent": True,
         "backward_mode": True, "auto_backward": True,
-        "error_mode": "retry", "max_retries": 3,
+        "error_mode": "retry", "max_retries": 3, "deterministic": True,
     }
     assert set(asked) == OPTION_KEYS, "the vocabulary grew without a test"
     assert normalize_options(asked) == {**asked, "device": "cuda"}

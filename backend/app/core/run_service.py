@@ -133,6 +133,8 @@ from .run_store import (
     RunStore,
     json_safe,
 )
+from .seeding import MAX_SEED as SEEDING_MAX_SEED
+from .seeding import apply_determinism, seed_rngs
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +193,11 @@ STOP_REASON_INTERRUPTED = "interrupted"
 #: :class:`InteractiveSession`.
 OPTION_KEYS = frozenset({
     "device", "seed", "record_outputs", "lane",
+    # Reproducibility (#134). ``deterministic`` rides with ``seed`` because
+    # it is the other half of the same request: a seed fixes what is drawn,
+    # this asks torch for kernels that combine those draws the same way
+    # twice.
+    "deterministic",
     # Canvas/teaching flags (#121). They mirror the fields the WebSocket
     # execute message has carried since the A1-A3 educational features and
     # map 1:1 onto ``ExecutionContext``.
@@ -215,7 +222,10 @@ LANE_INTERACTIVE = "interactive"
 MAX_LANE_LENGTH = 64
 MAX_NAME_LENGTH = 64
 MAX_GRAPH_ID_LENGTH = 128
-MAX_SEED = 2 ** 32 - 1
+#: Re-exported from :mod:`app.core.seeding`, which owns the seed space now
+#: that seeds are DERIVED rather than just applied. Kept as a module
+#: attribute because it is part of this module's published surface.
+MAX_SEED = SEEDING_MAX_SEED
 
 #: ``graph_engine.execute_graph``'s error policies, validated as a value for
 #: the same reason ``device`` is: a typo'd ``"fail-fast"`` would silently
@@ -559,7 +569,7 @@ def normalize_options(raw: Any) -> dict[str, Any]:
     # module store to persist into, so the flag simply has no effect.
     flags = {}
     for key in ("record_outputs", "verbose", "weights_persistent",
-                "backward_mode", "auto_backward"):
+                "backward_mode", "auto_backward", "deterministic"):
         value = raw.get(key, False)
         if not isinstance(value, bool):
             raise RunSubmitError(f"{key} must be true or false")
@@ -842,34 +852,22 @@ def metric_step(payload: Any, *, fallback: int) -> int:
 
 
 def apply_seed(seed: int | None) -> None:
-    """Seed the RNGs a run might touch. Best effort, PROCESS-GLOBAL.
+    """Seed the RNGs a run might touch, before the graph starts.
 
-    Deliberately honest about its limits: ``torch.manual_seed`` and friends
-    set global state, so two concurrent runs with different seeds do NOT get
-    independent streams — the second submit reseeds the first run's
-    generator mid-flight. Reproducibility here means "run this one alone and
-    get the same numbers", which is what a stored ``seed`` is worth today.
-    Per-run generator isolation is a node-level change, not a service one.
+    Thin alias for :func:`app.core.seeding.seed_rngs`, kept because it is
+    this module's published name for the operation. It sets the RUN-level
+    baseline: anything that draws outside a node's ``execute`` (preset
+    expansion, a validator) is covered by it.
+
+    It is no longer what makes a run reproducible. That is the per-node
+    derivation in ``graph_engine`` — this call alone leaves the answer
+    dependent on the order in which concurrently-scheduled nodes happened to
+    draw, which is exactly the bug #134 fixed. Still PROCESS-GLOBAL, so two
+    runs with different seeds executing at once do not get independent
+    streams; the per-node seeding narrows that window to one node's execute
+    but does not close it.
     """
-    if seed is None:
-        return
-    import random
-
-    random.seed(seed)
-    try:
-        import numpy as np
-
-        np.random.seed(seed)
-    except Exception:  # pragma: no cover - numpy always present in practice
-        logger.debug("numpy seeding skipped", exc_info=True)
-    try:
-        import torch
-
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-    except Exception:  # pragma: no cover - torch always present in practice
-        logger.debug("torch seeding skipped", exc_info=True)
+    seed_rngs(seed)
 
 
 # ── in-process fan-out ────────────────────────────────────────────────────
@@ -1451,6 +1449,13 @@ class RunService:
             graph_id=str(options.get("graph_id") or ""),
             backward_mode=bool(options.get("backward_mode")),
             auto_backward=bool(options.get("auto_backward")),
+            # Reproducibility (#134). The seed reaching the CONTEXT — not
+            # just ``apply_seed`` before the graph starts — is what lets the
+            # engine derive a per-node seed and lets a node build its own
+            # generator, which is the difference between "seeded" and
+            # "actually reproducible".
+            seed=options.get("seed"),
+            deterministic=bool(options.get("deterministic")),
             # A server-owned run is an isolated, reproducible unit by
             # default: its stored graph_snapshot + options must fully
             # describe what ran, and inheriting live nn.Module weights from
@@ -1632,6 +1637,7 @@ class RunService:
         """Run the graph and classify the outcome. Never raises but cancel."""
         try:
             apply_seed(options.get("seed"))
+            apply_determinism(bool(options.get("deterministic")))
             await execute_graph(
                 graph["nodes"],
                 graph["edges"],
