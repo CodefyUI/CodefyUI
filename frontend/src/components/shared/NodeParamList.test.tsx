@@ -130,6 +130,87 @@ describe('NodeParamList', () => {
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 
+  // ── two-tier basic / advanced (core#134) ──────────────────────────────
+
+  it('hides advanced params behind a collapsed section by default', () => {
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([
+          param({ name: 'lr' }),
+          param({ name: 'betas', advanced: true }),
+          param({ name: 'eps', advanced: true }),
+        ])}
+        params={{ lr: 0.1 }}
+      />,
+    );
+    expect(screen.getByTestId('field-lr')).toBeInTheDocument();
+    expect(screen.queryByTestId('field-betas')).toBeNull();
+    expect(screen.queryByTestId('field-eps')).toBeNull();
+    // The header still says how much is hidden, so nobody has to open it to
+    // find out whether there is anything there.
+    const toggle = screen.getByRole('button', { name: /Advanced/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveTextContent('2');
+  });
+
+  it('reveals the advanced params when the section is expanded', () => {
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([param({ name: 'lr' }), param({ name: 'betas', advanced: true })])}
+        params={{ lr: 0.1, betas: '0.9, 0.999' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    expect(screen.getByTestId('field-betas')).toHaveTextContent('betas=0.9, 0.999');
+    expect(screen.getByRole('button', { name: /Advanced/ })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('commits an advanced edit through the same store action', () => {
+    seedNode(nodeWith({ betas: '0.9, 0.999' }));
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([param({ name: 'betas', advanced: true })])}
+        params={{ betas: '0.9, 0.999' }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    fireEvent.click(screen.getByTestId('field-betas'));
+    expect(useTabStore.getState().getActiveTab().nodes[0].data.params.betas).toBe('EDITED');
+  });
+
+  it('omits the Advanced section entirely when nothing is advanced', () => {
+    render(
+      <NodeParamList nodeId="n1" definition={def([param({ name: 'lr' })])} params={{ lr: 1 }} />,
+    );
+    expect(screen.queryByRole('button', { name: /Advanced/ })).toBeNull();
+  });
+
+  it('does not count advanced params that visible_when has ruled out', () => {
+    // An SGD optimizer must not advertise Adam's hidden knobs.
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={def([
+          param({ name: 'type' }),
+          param({ name: 'betas', advanced: true, visible_when: { type: ['Adam', 'AdamW'] } }),
+          param({ name: 'nesterov', advanced: true, visible_when: { type: 'SGD' } }),
+        ])}
+        params={{ type: 'SGD' }}
+      />,
+    );
+    const toggle = screen.getByRole('button', { name: /Advanced/ });
+    expect(toggle).toHaveTextContent('1');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('field-nesterov')).toBeInTheDocument();
+    expect(screen.queryByTestId('field-betas')).toBeNull();
+  });
+
   it('passes the sibling params through and applies an extra class', () => {
     const { container } = render(
       <NodeParamList

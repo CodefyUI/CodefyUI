@@ -309,7 +309,7 @@ async def test_submit_records_normalized_options(client):
         "device": "cpu", "seed": 3, "lane": "gpu", "graph_id": "",
         "error_mode": "fail_fast", "max_retries": 0, "record_outputs": False,
         "verbose": False, "weights_persistent": False, "backward_mode": False,
-        "auto_backward": False,
+        "auto_backward": False, "deterministic": False,
     }
     assert record["queue_key"] == "cpu"
 

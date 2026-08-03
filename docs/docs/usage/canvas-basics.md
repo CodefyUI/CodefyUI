@@ -30,6 +30,12 @@ Installed [plugin packs](/advanced/plugins) add their own nodes here too, namesp
 
 Select a node and the right-hand panel shows its parameters. Parameter widgets are driven by the backend definition — integers, floats, text, booleans, dropdowns (`select`), file pickers (model / image), and inline tensor-grid editors. Some parameters are **conditionally visible** (`visible_when`) and appear only when a related option is set.
 
+Parameters come in two tiers. The everyday ones render straight away; the rest are collected behind a collapsed **Advanced** section whose header shows how many are hidden, so a node's default view stays readable in a classroom. Advanced parameters are fully real — they are saved with the graph, exported by the Python exporter, and behave identically to the basic ones. They are simply out of the way until you want them.
+
+Conditional visibility applies first: an `Optimizer` set to `SGD` does not count Adam's `betas` toward its Advanced badge, because that knob does not apply. A rule may name several accepted values, so a parameter shared by four of the nine optimizers shows up for all four.
+
+The same form renders in the side panel and in the Node Detail Modal (double-click a node), so the two can never disagree.
+
 ## The results panel
 
 The bottom panel is tabbed and resizable:

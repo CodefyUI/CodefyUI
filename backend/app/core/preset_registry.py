@@ -141,6 +141,12 @@ class PresetRegistry:
                     options=p.options,
                     min_value=p.min_value,
                     max_value=p.max_value,
+                    # Forwarded so an exposed preset param behaves like the
+                    # inner one it stands for. ``visible_when`` was dropped
+                    # here before #134, which quietly made a conditional
+                    # param unconditional the moment it was exposed.
+                    visible_when=p.visible_when,
+                    advanced=p.advanced,
                 )
         return None
 

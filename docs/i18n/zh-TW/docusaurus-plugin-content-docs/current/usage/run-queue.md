@@ -96,7 +96,8 @@ cdui run infer.json --record-outputs
 | --- | --- |
 | `--name <文字>` | 存在 run 上的名稱，列出 run 的地方都會顯示 |
 | `--device <裝置>` | `cpu` \| `auto` \| `cuda` \| `cuda:N` \| `mps`（預設 `auto`，目前會解析成 `cpu`）。解析後的裝置就是它加入的佇列。 |
-| `--seed <n>` | `random`、NumPy 與 torch 的隨機種子 |
+| `--seed <n>` | 用 `n` 為每個節點設定種子，讓執行可以重現。設了種子的執行會一次只跑一個節點 — 見 **[可重現的執行](./running-graphs#可重現的執行亂數種子)**。 |
+| `--deterministic` | 同時要求 PyTorch 使用決定性運算核心（`warn_only`） |
 | `--record-outputs` | 保留節點輸出供事後檢視 |
 | `--wait` | 串流進度直到 run 結束（**預設**） |
 | `--detach` | 印出 run id 後立刻以 0 離開 |

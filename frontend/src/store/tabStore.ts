@@ -199,6 +199,12 @@ export interface TabState {
   // A3: gradient capture
   backwardMode: boolean;
   autoBackward: boolean;
+  // core#134: reproducibility. `null` means "no seed" — the run uses
+  // whatever entropy torch picks, which is the historical behaviour and
+  // stays the default. A number makes the run reproducible: every node is
+  // seeded from it and the engine executes serially.
+  seed: number | null;
+  deterministic: boolean;
 }
 
 function createTabState(id: string, name: string): TabState {
@@ -238,6 +244,8 @@ function createTabState(id: string, name: string): TabState {
     weightsPersistent: true,
     backwardMode: false,
     autoBackward: false,
+    seed: null,
+    deterministic: false,
   };
 }
 
@@ -359,6 +367,9 @@ interface TabStoreState {
   togglePersistWeights: () => void;
   toggleBackward: () => void;
   toggleAutoBackward: () => void;
+  /** core#134: `null` clears the seed; a number makes the run reproducible. */
+  setSeed: (seed: number | null) => void;
+  toggleDeterministic: () => void;
 }
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
@@ -606,6 +617,8 @@ export interface PersistedTab {
    */
   lastRunId?: string;
   verboseMode?: boolean;
+  seed?: number | null;
+  deterministic?: boolean;
   graphId?: string;
   weightsPersistent?: boolean;
   backwardMode?: boolean;
@@ -657,6 +670,8 @@ function buildPersistedTab(t: TabState): PersistedTab {
     ...(t.status === 'running' && t.lastRunId ? { lastRunId: t.lastRunId } : {}),
     recordOutputs: t.recordOutputs,
     verboseMode: t.verboseMode,
+    seed: t.seed,
+    deterministic: t.deterministic,
     graphId: t.graphId,
     weightsPersistent: t.weightsPersistent,
     backwardMode: t.backwardMode,
@@ -700,6 +715,8 @@ function scalarSignature(t: TabState): string {
     t.weightsPersistent ? '1' : '0',
     t.backwardMode ? '1' : '0',
     t.autoBackward ? '1' : '0',
+    t.seed ?? '',
+    t.deterministic ? '1' : '0',
   ]);
 }
 
@@ -784,6 +801,8 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
     recordOutputs: t.recordOutputs ?? true,
     verboseMode: t.verboseMode ?? false,
+    seed: t.seed ?? null,
+    deterministic: t.deterministic ?? false,
     // Preserve persisted graphId — required so backend NodeStateStore
     // keeps weights linked to this tab across sessions. Falls back to
     // the freshly generated UUID for legacy tabs.
@@ -2039,6 +2058,25 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         autoBackward: !tab.autoBackward,
+      })),
+    }),
+
+  // ── Reproducibility (core#134) ──
+
+  setSeed: (seed) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+        // Normalised here rather than at each call site so every entry point
+        // agrees on what "no seed" is: null. A cleared field and a
+        // half-typed one that parsed to NaN mean the same thing to a run.
+        seed: seed === null || Number.isNaN(seed) ? null : Math.trunc(seed),
+      })),
+    }),
+
+  toggleDeterministic: () =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        deterministic: !tab.deterministic,
       })),
     }),
 }));

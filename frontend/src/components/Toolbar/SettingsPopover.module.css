@@ -284,3 +284,35 @@
   border-color: #475569;
   color: #e5e7eb;
 }
+
+/* Seed field (core#134). Matches .select's chrome so the Training section
+   reads as one control column; narrow because a 32-bit seed is at most ten
+   digits and a full-width box would dominate the row. */
+.numberInput {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.71875rem;
+  font-weight: 600;
+  border-radius: 0.3125rem;
+  font-family: inherit;
+  width: 7.5rem;
+  text-align: right;
+}
+
+.numberInput:hover {
+  border-color: #475569;
+  color: #e5e7eb;
+}
+
+.numberInput:focus {
+  outline: none;
+  border-color: var(--cd-accent, #2dd4bf);
+  color: #e5e7eb;
+}
+
+.numberInput::placeholder {
+  color: #64748b;
+  font-weight: 500;
+}

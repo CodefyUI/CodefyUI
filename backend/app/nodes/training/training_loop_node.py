@@ -415,6 +415,39 @@ class TrainingLoopNode(BaseNode):
                     "batch is a lot of rows)"
                 ),
             ),
+            ParamDefinition(
+                name="max_steps",
+                param_type=ParamType.INT,
+                default=0,
+                description=(
+                    "Stop after this many optimizer steps in total, whatever "
+                    "epochs says (0 = no limit)"
+                ),
+                min_value=0,
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="log_interval",
+                param_type=ParamType.INT,
+                default=1,
+                description=(
+                    "Record every Nth batch when batch metrics are on. Raise "
+                    "it to thin out a long run's chart."
+                ),
+                min_value=1,
+                visible_when={"batch_metrics": True},
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="deterministic",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Ask torch for deterministic kernels. Ops with no "
+                    "deterministic implementation warn instead of failing."
+                ),
+                advanced=True,
+            ),
         ]
 
     def execute(
@@ -436,6 +469,7 @@ class TrainingLoopNode(BaseNode):
             save_interrupt_checkpoint,
             stop_checker,
         )
+        from ...core.seeding import apply_determinism
 
         model = inputs["model"]
         dataloader = inputs["dataloader"]
@@ -450,6 +484,22 @@ class TrainingLoopNode(BaseNode):
         patience = params.get("early_stopping_patience", 0)
         grad_clip = params.get("grad_clip_norm", 0.0)
         batch_metrics = bool(params.get("batch_metrics", False))
+        max_steps = int(params.get("max_steps", 0) or 0)
+        log_interval = max(1, int(params.get("log_interval", 1) or 1))
+
+        # ORed with the run option rather than overriding it: the run-level
+        # switch is "make this whole run reproducible" and a node must not
+        # be able to opt out of it. Turning it on here covers the case the
+        # run option cannot reach — a graph exported to Python, or a canvas
+        # run whose submitter did not ask.
+        #
+        # Safe to latch from inside a node because ``execute_graph`` wraps
+        # every run in ``deterministic_scope`` and hands the process setting
+        # back afterwards. Without that, opening someone else's saved graph
+        # would have made every LATER run in the server deterministic.
+        if bool(params.get("deterministic", False)) or getattr(
+                context, "deterministic", False):
+            apply_determinism(True)
 
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
@@ -508,6 +558,10 @@ class TrainingLoopNode(BaseNode):
         # and which loop it was in. None until someone presses Stop.
         stopped_at: dict[str, Any] | None = None
         global_batch = 0
+        # Set when ``max_steps`` ends the run. Distinct from ``stopped_at``:
+        # that means "a human pressed Stop and these results are partial",
+        # this means "the configured budget was spent and the run is done".
+        step_budget_reached = False
 
         # ``epoch`` is the ABSOLUTE epoch index for the whole training run, not
         # an offset into this call: a resume at start_epoch=2 with epochs=4 runs
@@ -555,10 +609,18 @@ class TrainingLoopNode(BaseNode):
                 batch_count += 1
                 global_batch += 1
 
-                if batch_metrics and context is not None:
+                if (batch_metrics and context is not None
+                        and global_batch % log_interval == 0):
                     # A series of its own, stepped by GLOBAL batch index --
                     # not "train_loss at a finer resolution", which would put
                     # two different x-axes in one series.
+                    #
+                    # ``log_interval`` thins the series without touching the
+                    # step numbers, so a chart drawn at interval 10 lines up
+                    # with one drawn at interval 1 -- it simply has fewer
+                    # points. Keying off ``global_batch`` rather than
+                    # ``batch_index`` keeps the spacing even across an epoch
+                    # boundary whose batch count is not a multiple of it.
                     context.log_metric("train_loss_batch", batch_loss,
                                        global_batch)
                 throttle.emit({
@@ -568,6 +630,16 @@ class TrainingLoopNode(BaseNode):
                     "total_batches": total_batches,
                     "loss": round(batch_loss, 6),
                 })
+
+                # A step budget, checked AFTER the step so ``max_steps=1``
+                # means one step actually happened. It ends the epoch early,
+                # and the epoch-level bookkeeping below still runs on the
+                # partial epoch -- an epoch that trained on half its batches
+                # has a real average loss, and dropping it would leave the
+                # chart with nothing to show for the work.
+                if max_steps and global_batch >= max_steps:
+                    step_budget_reached = True
+                    break
 
             if stopped_at is not None:
                 break
@@ -706,6 +778,16 @@ class TrainingLoopNode(BaseNode):
                 logger.info("Early stopping triggered at epoch %d (best epoch: %d)", epoch + 1, best_epoch)
                 break
 
+            # The step budget ends the whole run, not just the epoch it was
+            # reached in. Checked here, alongside early stopping, because it
+            # is the same kind of event: a configured reason to finish, and
+            # a normal completion rather than an interruption.
+            if step_budget_reached:
+                logger.info(
+                    "max_steps=%d reached at epoch %d; stopping",
+                    max_steps, epoch + 1)
+                break
+
             # #122: a stop that arrives between epochs. Checked AFTER early
             # stopping so a run that finished on its own terms is reported as
             # finished, not interrupted.
@@ -759,6 +841,12 @@ class TrainingLoopNode(BaseNode):
             "stopped_early": best_state_dict is not None and patience_counter >= patience,
             "lr_history": lr_history,
             "interrupted": stopped_at is not None,
+            # How much training actually happened, and whether the budget is
+            # why it ended. ``total_steps`` is reported unconditionally
+            # because "how many optimizer steps was that?" is the question
+            # ``max_steps`` makes people ask.
+            "total_steps": global_batch,
+            "stopped_at_max_steps": step_budget_reached,
         }
         if stopped_at is not None:
             metrics["interrupt_checkpoint"] = checkpoint_path

@@ -2042,7 +2042,13 @@ def _parse_run_args(argv_tail: list, prog: str = "cdui run"):
                         "which the server currently resolves to cpu). The "
                         "RESOLVED device is the queue this run joins.")
     p.add_argument("--seed", type=int, default=None,
-                   help="seed for random / numpy / torch")
+                   help="seed for random / numpy / torch. Every node is "
+                        "seeded from it, and the run executes serially so "
+                        "the same seed gives the same numbers.")
+    p.add_argument("--deterministic", action="store_true",
+                   help="also ask torch for deterministic kernels; ops with "
+                        "no deterministic implementation warn instead of "
+                        "failing the run")
     p.add_argument("--record-outputs", action="store_true",
                    help="capture node outputs for later inspection")
     mode = p.add_mutually_exclusive_group()
@@ -2130,6 +2136,8 @@ def _run_submit_body(args) -> dict:
         getattr(args, "record_outputs", False))}
     if args.seed is not None:
         options["seed"] = args.seed
+    if getattr(args, "deterministic", False):
+        options["deterministic"] = True
     body = {"graph": graph, "options": options}
     if args.name:
         body["name"] = args.name

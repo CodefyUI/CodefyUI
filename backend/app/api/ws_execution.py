@@ -338,6 +338,13 @@ class _ExecutionSocket:
             "record_outputs": bool(data.get("record_outputs", False)),
             "error_mode": data.get("error_mode", "fail_fast"),
             "max_retries": data.get("max_retries", 0),
+            # Reproducibility (#134). Passed through UNVALIDATED on purpose:
+            # ``normalize_options`` owns the seed's type and range, and
+            # coercing here would turn a client bug ("seed": "42") into a
+            # silently different run instead of the RunSubmitError the
+            # canvas already knows how to show.
+            "seed": data.get("seed"),
+            "deterministic": bool(data.get("deterministic", False)),
             # Educational feature flags. The defaults below are the pre-v2
             # ones verbatim, including weights_persistent defaulting to
             # TRUE here (the canvas keeps its weights) where the service's

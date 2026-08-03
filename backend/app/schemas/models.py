@@ -23,6 +23,10 @@ class ParamDefinitionSchema(BaseModel):
     # Conditional visibility — forwarded verbatim to the frontend.
     # See ParamDefinition.visible_when for semantics.
     visible_when: dict[str, Any] | None = None
+    # Two-tier parameter UI — see ParamDefinition.advanced. Defaults to
+    # False so a plugin built against an older host, whose params carry no
+    # such flag, keeps every parameter in the basic tier.
+    advanced: bool = False
 
 
 class NodeDefinition(BaseModel):

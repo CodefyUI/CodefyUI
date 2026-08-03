@@ -152,6 +152,21 @@ def test_submit_body_omits_what_was_not_asked_for(graph_file):
     assert body["options"]["device"] == "auto"
 
 
+def test_deterministic_flag_reaches_the_options(graph_file):
+    """core#134: the other half of a reproducible run."""
+    args = dev._parse_run_args([str(graph_file), "--seed", "7",
+                                "--deterministic"])
+    body = dev._run_submit_body(args)
+    assert body["options"]["deterministic"] is True
+    # And it survives the server's own validator, which rejects unknown keys.
+    assert normalize_options(body["options"])["deterministic"] is True
+
+
+def test_deterministic_is_omitted_when_not_asked_for(graph_file):
+    body = dev._run_submit_body(dev._parse_run_args([str(graph_file)]))
+    assert "deterministic" not in body["options"]
+
+
 def test_submit_body_is_accepted_by_the_server_contract(graph_file):
     """The envelope the CLI builds must survive the API's own validators."""
     args = dev._parse_run_args([str(graph_file), "--name", "nightly",

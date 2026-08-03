@@ -367,7 +367,17 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {!isSequentialModel && def && def.params.length > 0 && (
         <div className={styles.paramsSection}>
           {def.params
-            .filter((p) => isParamVisible(p, data.params))
+            .filter((p) => {
+              if (!isParamVisible(p, data.params)) return false;
+              if (!p.advanced) return true;
+              // An advanced param earns a row on the CARD only once someone
+              // has moved it off its default (core#134). The card is the
+              // at-a-glance summary read across a projector: six untouched
+              // PyTorch defaults would say less than the three values that
+              // matter. A tuned one still shows, because that is exactly the
+              // thing a reader of the graph needs to know.
+              return String(data.params[p.name] ?? p.default) !== String(p.default);
+            })
             .map((p) => {
               const val = data.params[p.name] ?? p.default;
               // CODE params are the node's whole point, not a value beside a

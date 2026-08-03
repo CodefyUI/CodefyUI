@@ -81,6 +81,8 @@ async def run(
     validate_only: bool = False,
     verbose: bool = False,
     device: str | None = None,
+    seed: int | None = None,
+    deterministic: bool = False,
 ) -> None:
     t0 = time.time()
 
@@ -129,13 +131,26 @@ async def run(
     logger.info("Starting graph execution...")
     logger.info("-" * 60)
     context = None
-    if device:
+    if device or seed is not None or deterministic:
         from app.core.device_utils import resolve_device
         from app.core.execution_context import ExecutionContext
+        from app.core.seeding import seed_rngs
 
-        resolved = resolve_device(device)
+        resolved = resolve_device(device) if device else "cpu"
         logger.info("Global device: %s", resolved)
-        context = ExecutionContext(device=resolved)
+        if seed is not None:
+            # Announced, because a seeded run is also a SERIAL run — the
+            # engine drops to one worker so per-node seeding cannot be
+            # clobbered mid-execute. A user wondering why a wide graph got
+            # slower should be able to read the reason here.
+            logger.info("Seed: %d (nodes execute serially)", seed)
+            seed_rngs(seed)
+        if deterministic:
+            # Announced only; the engine applies it through
+            # ``deterministic_scope`` and takes it back when the run ends.
+            logger.info("Deterministic algorithms: on (warn_only)")
+        context = ExecutionContext(device=resolved, seed=seed,
+                                   deterministic=deterministic)
     try:
         outputs = await execute_graph(
             nodes,
@@ -194,13 +209,18 @@ def main() -> None:
     parser.add_argument("--validate-only", action="store_true", help="Only validate, do not execute")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed output and tracebacks")
     parser.add_argument("--device", default=None, help="Global compute device: cpu / cuda / mps (default cpu)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed every node from this value; makes the run reproducible")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Ask torch for deterministic kernels (warns on ops that have none)")
     args = parser.parse_args()
 
     level = "DEBUG" if args.verbose else "INFO"
     setup_logging(level=level)
 
     _init_registries()
-    asyncio.run(run(args.graph, validate_only=args.validate_only, verbose=args.verbose, device=args.device))
+    asyncio.run(run(args.graph, validate_only=args.validate_only, verbose=args.verbose,
+                    device=args.device, seed=args.seed, deterministic=args.deterministic))
 
 
 if __name__ == "__main__":

@@ -203,6 +203,7 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 - `device: "auto"` (or an unavailable device) silently resolves to CPU; the envelope's `device` field shows what you actually got.
 - A single >65,536-element tensor output fails the whole call — remove that GraphOutput or use `record_outputs` + the slicing outputs API (`GET /api/execution/outputs/{run_id}/{node_id}/{port}?slice=...`); an outputs filter is deferred.
 - Concurrent runs share the process default thread pool (the per-run parallelism limit of 4 is not a global limit) — heavy runs contend for CPU/GPU.
+- A call waits while a **seeded** run is executing anywhere in the server, and a seeded run waits for the calls already going. Ordinary calls still overlap each other. See [reproducible runs](./running-graphs#reproducible-runs-seed) — count it against `timeout_s` if the same server is also used for seeded training.
 - After a timeout, no new node starts after a cancel; the in-flight node finishes in the background (nodes may poll `context.cancelled` to stop sooner).
 - Client disconnects do not stop a run; only the timeout does. Results of a disconnected run are discarded unless `record_outputs=true`.
 

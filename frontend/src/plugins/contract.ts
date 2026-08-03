@@ -38,7 +38,10 @@ export interface ParamDefinition {
   options: string[];
   min_value: number | null;
   max_value: number | null;
+  /** Conditional visibility. A value may be an array, read as "any of". */
   visible_when?: Record<string, unknown> | null;
+  /** Collected behind the collapsed "Advanced" section. Absent = basic. */
+  advanced?: boolean;
 }
 
 export interface NodeDefinition {

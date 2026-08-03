@@ -140,6 +140,11 @@ export function getPortColor(dataType: string): string {
  * Matching is shallow equality after string coercion — sufficient for
  * SELECT / INT / BOOL / FLOAT params, which cover every realistic use of
  * conditional visibility.
+ *
+ * An expected value may be an ARRAY, read as "any of these" (core#134).
+ * Optimizer's `betas` belongs to four of the nine algorithms, and a
+ * single-value rule could only ever name one of them. A scalar keeps its
+ * original meaning, so no existing rule changes behaviour.
  */
 export function isParamVisible(
   param: import('../types').ParamDefinition,
@@ -149,8 +154,9 @@ export function isParamVisible(
   if (!rule) return true;
   const live = params ?? {};
   for (const [siblingName, expected] of Object.entries(rule)) {
-    const actual = live[siblingName];
-    if (String(actual) !== String(expected)) return false;
+    const actual = String(live[siblingName]);
+    const accepted = Array.isArray(expected) ? expected : [expected];
+    if (!accepted.some((candidate) => String(candidate) === actual)) return false;
   }
   return true;
 }

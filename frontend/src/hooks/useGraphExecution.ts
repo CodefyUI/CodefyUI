@@ -504,6 +504,14 @@ export function useGraphExecution() {
       auto_backward: tab.autoBackward,
       // Global compute device (nodes with device='auto' follow this).
       device: useUIStore.getState().globalDevice,
+      // core#134: reproducibility. Sent only when set — `seed: null` is a
+      // valid option value, but omitting it keeps the message byte-identical
+      // to the pre-#134 one for everyone who never touches the field.
+      // `!= null` covers BOTH null and undefined: a tab persisted before
+      // #134 has no `seed` key at all, and `{seed: undefined}` would
+      // serialise to a message shape nobody expects.
+      ...(tab.seed != null ? { seed: tab.seed } : {}),
+      ...(tab.deterministic ? { deterministic: true } : {}),
       ...(changedNodes.length > 0 ? { changed_nodes: changedNodes } : {}),
     });
   }, [getActiveTab, getSerializedGraph, clearLogs, clearExecutionStatus, clearOutputSummaries, setTabStatus, addTabLog]);

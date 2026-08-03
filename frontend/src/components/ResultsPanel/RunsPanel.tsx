@@ -204,6 +204,9 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
   if (!detail) return null;
 
   const seed = run?.options?.seed;
+  // Shown next to the seed because the two together are what "reproducible"
+  // means: the seed fixes what was drawn, this fixes how it was combined.
+  const deterministic = run?.options?.deterministic === true;
 
   return (
     <div className={styles.detail} data-testid="run-detail">
@@ -216,6 +219,11 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
         {typeof seed === 'number' && (
           <span className={styles.detailMeta}>
             {t('runs.detail.seed')} {seed}
+          </span>
+        )}
+        {deterministic && (
+          <span className={styles.detailMeta}>
+            {t('runs.detail.deterministic')}
           </span>
         )}
         <button

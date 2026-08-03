@@ -31,6 +31,7 @@ from .execution_context import (
 )
 from .node_base import BaseNode
 from .node_registry import registry
+from .seeding import deterministic_scope, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
 
@@ -1022,8 +1023,27 @@ async def execute_graph(
             if preset_done[preset_id] >= preset_total[preset_id]:
                 await _maybe_await(on_progress(preset_id, "completed", None))
 
+    # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
+    # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed
+    # each other mid-execute -- the same seed would then give a different
+    # answer on every scheduling, which is the precise opposite of what a
+    # seed is for. Reproducibility beats the throughput of a graph whose
+    # independent branches could have overlapped; an unseeded run is
+    # unaffected and keeps its parallelism.
     max_workers = context.max_workers if context else 4
+    if context is not None and context.seed is not None:
+        max_workers = 1
     semaphore = asyncio.Semaphore(max_workers)
+
+    # Deterministic kernels are a process-wide torch setting, not a per-call
+    # argument, so they are applied once for the whole run and — since
+    # #188's review — TAKEN BACK when it ends. The scope is entered
+    # unconditionally, not only when determinism was requested: a
+    # ``TrainingLoop`` whose own ``deterministic`` param is on would
+    # otherwise latch the setting for every later run in the server, so
+    # merely opening someone else's saved graph would change how the next
+    # one computes.
+    wants_determinism = context is not None and context.deterministic
 
     # ── worker-thread → loop delivery ────────────────────────────────────
     #
@@ -1187,6 +1207,16 @@ async def execute_graph(
                     if context is not None:
                         context.current_node_id = node_id
 
+                    # Per-node seeding (#134). Every node starts from a seed
+                    # derived from (run seed, node id), so its weight init,
+                    # dropout mask and shuffle order depend on the run seed
+                    # and its own identity -- never on what the rest of the
+                    # graph drew first. Re-applied on every RETRY attempt
+                    # too, so a retried node re-runs from the same state
+                    # rather than continuing the failed attempt's stream.
+                    if context is not None and context.seed is not None:
+                        seed_rngs(context.derive_seed(node_id))
+
                     fn = functools.partial(
                         invoke_node,
                         instance,
@@ -1274,6 +1304,12 @@ async def execute_graph(
             node_errors[node_id] = str(last_error)
             await _emit_preset_aware(node_id, "error", error_detail)
 
+    # Entered by hand rather than with a ``with`` block so the whole body
+    # below keeps its indentation; the paired exit lives in the ``finally``
+    # that already owns this function's teardown.
+    determinism = deterministic_scope(wants_determinism)
+    determinism.__enter__()
+
     pump_task = asyncio.create_task(_pump(), name=f"outbox-pump:{run_id or '-'}")
     try:
         # Before the forward pass: zero any accumulated gradients on persisted
@@ -1360,6 +1396,9 @@ async def execute_graph(
             pump_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pump_task
+            # Hand determinism back to whatever the process had before this
+            # run. Last, so nothing above can skip it.
+            determinism.__exit__(None, None, None)
 
 
 async def _maybe_await(val: Any) -> Any:

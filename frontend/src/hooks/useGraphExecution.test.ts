@@ -692,6 +692,68 @@ describe('useGraphExecution - execute', () => {
     expect(ws.send.mock.calls[0][0].action).toBe('execute');
   });
 
+  // ── reproducibility options (core#134) ────────────────────────────────
+
+  it('omits seed and deterministic when the tab has not set them', async () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    const message = ws.send.mock.calls[0][0];
+    // Absent, not `null`: the message stays byte-identical to the pre-#134
+    // one for everyone who never touches the field.
+    expect('seed' in message).toBe(false);
+    expect('deterministic' in message).toBe(false);
+  });
+
+  it('sends the tab seed and deterministic flag when they are set', async () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+        seed: 1234,
+        deterministic: true,
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    const message = ws.send.mock.calls[0][0];
+    expect(message.seed).toBe(1234);
+    expect(message.deterministic).toBe(true);
+  });
+
+  it('sends seed 0 rather than dropping it as falsy', async () => {
+    setTabs([
+      makeTab('t1', {
+        nodes: [{ id: 'n1', data: { label: 'N' } }],
+        edges: [{ id: 'e1', source: 's', target: 'n1', data: { type: 'trigger' } }],
+        seed: 0,
+      }),
+    ]);
+    const ws = tabById('t1').ws as FakeWs;
+    const { result } = renderHook(() => useGraphExecution());
+
+    await act(async () => {
+      await result.current.execute();
+    });
+
+    expect(ws.send.mock.calls[0][0].seed).toBe(0);
+  });
+
   it('logs an error and aborts when the ws connection fails', async () => {
     const failingWs = makeFakeWs(false);
     failingWs.connect.mockRejectedValueOnce(new Error('no server'));

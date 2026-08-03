@@ -2500,3 +2500,48 @@ describe('insertGraph — viewport fit (core#128 review)', () => {
     expect(useUIStore.getState().layoutFitRequest).toBeNull();
   });
 });
+
+// ── Reproducibility settings (core#134) ──────────────────────────────────
+
+describe('seed and deterministic', () => {
+  beforeEach(resetToSingleTab);
+
+  it('a new tab is unseeded and non-deterministic', () => {
+    store().addTab('fresh');
+    const tab = store().getActiveTab();
+    expect(tab.seed).toBeNull();
+    expect(tab.deterministic).toBe(false);
+  });
+
+  it('setSeed stores an integer and null clears it', () => {
+    store().setSeed(1234);
+    expect(store().getActiveTab().seed).toBe(1234);
+    store().setSeed(null);
+    expect(store().getActiveTab().seed).toBeNull();
+  });
+
+  it('setSeed keeps 0, which is a real seed and not "unset"', () => {
+    store().setSeed(0);
+    expect(store().getActiveTab().seed).toBe(0);
+  });
+
+  it('setSeed truncates a fractional value rather than storing it', () => {
+    // The number input can emit "12.5" while someone is typing; a run needs
+    // an integer, and truncating here means no call site has to remember.
+    store().setSeed(12.9);
+    expect(store().getActiveTab().seed).toBe(12);
+  });
+
+  it('setSeed reads NaN as "no seed"', () => {
+    store().setSeed(1234);
+    store().setSeed(Number('not a number'));
+    expect(store().getActiveTab().seed).toBeNull();
+  });
+
+  it('toggleDeterministic flips the flag', () => {
+    store().toggleDeterministic();
+    expect(store().getActiveTab().deterministic).toBe(true);
+    store().toggleDeterministic();
+    expect(store().getActiveTab().deterministic).toBe(false);
+  });
+});

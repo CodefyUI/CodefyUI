@@ -1587,3 +1587,106 @@ def test_nodes_without_a_code_param_keep_the_one_line_params_literal():
     script = generate_python(nodes, edges, name="stats")
 
     assert "    params = {'label': 'mean'}" in script
+
+
+# ── advanced params round-trip (core#134) ─────────────────────────────────
+
+
+def _advanced_params_graph() -> tuple[list[dict], list[dict]]:
+    """One node per training role, each with its advanced params set."""
+    nodes = [
+        {"id": "start", "type": "Start", "data": {"params": {}}},
+        {"id": "data", "type": "SyntheticShapes", "data": {"params": {}}},
+        {"id": "model", "type": "SequentialModel", "data": {"params": {}}},
+        {"id": "opt", "type": "Optimizer", "data": {"params": {
+            "type": "AdamW", "lr": 0.002, "weight_decay": 0.01,
+            "betas": "0.85, 0.995", "eps": 1e-06, "amsgrad": True,
+        }}},
+        {"id": "loss", "type": "Loss", "data": {"params": {
+            "type": "CrossEntropyLoss", "label_smoothing": 0.1,
+            "reduction": "sum", "weight": "1, 5", "ignore_index": 7,
+        }}},
+        {"id": "loader", "type": "DataLoader", "data": {"params": {
+            "batch_size": 16, "shuffle": True, "num_workers": 2,
+            "pin_memory": True, "drop_last": True,
+            "persistent_workers": True, "prefetch_factor": 4,
+        }}},
+        {"id": "train", "type": "TrainingLoop", "data": {"params": {
+            "epochs": 3, "device": "cpu", "max_steps": 25,
+            "log_interval": 5, "deterministic": True,
+        }}},
+    ]
+
+    def edge(source, source_handle, target, target_handle):
+        return {
+            "id": f"{source}.{source_handle}->{target}.{target_handle}",
+            "source": source, "sourceHandle": source_handle,
+            "target": target, "targetHandle": target_handle,
+        }
+
+    edges = [
+        {"id": "t1", "source": "start", "target": "data",
+         "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "t2", "source": "start", "target": "model",
+         "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "t3", "source": "start", "target": "loss",
+         "sourceHandle": "trigger", "type": "trigger"},
+        edge("data", "dataset", "loader", "dataset"),
+        edge("loader", "dataloader", "train", "dataloader"),
+        edge("model", "model", "opt", "model"),
+        edge("model", "model", "train", "model"),
+        edge("opt", "optimizer", "train", "optimizer"),
+        edge("loss", "loss_fn", "train", "loss_fn"),
+    ]
+    return nodes, edges
+
+
+def test_advanced_params_round_trip_through_the_exported_script():
+    """Hidden in the UI, identical on the wire.
+
+    Codegen bakes each node's params as a literal dict and the real node
+    class consumes it, so this is a round-trip assertion rather than a
+    translation one -- and it is exactly the assertion that fails if a
+    future "only export what the user changed" optimisation appears.
+    """
+    from app.core.codegen import generate_python
+
+    nodes, edges = _advanced_params_graph()
+    script = generate_python(nodes, edges, name="advanced-params")
+    _compile_check(script)
+
+    for node_id in ("opt", "loss", "loader", "train"):
+        node = next(n for n in nodes if n["id"] == node_id)
+        exported = _exported_params(script, node_id)
+        assert exported == node["data"]["params"], node_id
+
+
+@pytest.mark.asyncio
+async def test_advanced_params_survive_a_real_graph_save_and_load(
+    test_client, tmp_path, monkeypatch,
+):
+    """Through the ACTUAL persistence path, not a json round-trip of a dict.
+
+    The first version of this test asserted ``json.loads(json.dumps(x)) == x``,
+    which is true of any dict and touches no repo code — it would not have
+    noticed if saving started dropping params. This one goes through
+    ``POST /api/graph/save`` and ``GET /api/graph/load/{name}``, where the
+    secret scrubber and the project-mode file split actually live.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "GRAPHS_DIR", tmp_path / "graphs")
+    nodes, edges = _advanced_params_graph()
+
+    saved = await test_client.post("/api/graph/save", json={
+        "name": "advanced-params-roundtrip", "nodes": nodes, "edges": edges,
+    })
+    assert saved.status_code == 200, saved.text
+
+    loaded = await test_client.get("/api/graph/load/advanced-params-roundtrip")
+    assert loaded.status_code == 200, loaded.text
+
+    restored = {n["id"]: n for n in loaded.json()["nodes"]}
+    for node_id in ("opt", "loss", "loader", "train"):
+        expected = next(n for n in nodes if n["id"] == node_id)
+        assert restored[node_id]["data"]["params"] == expected["data"]["params"], node_id

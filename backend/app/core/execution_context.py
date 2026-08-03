@@ -291,6 +291,16 @@ class ExecutionContext:
     # the chosen accelerator.
     device: str = "cpu"
 
+    # Reproducibility (#134). ``seed`` is the run's ONE source of randomness:
+    # None means "whatever entropy torch picks", an int means every node is
+    # seeded from ``derive_seed(seed, node_id)`` before it executes and the
+    # engine runs nodes serially so those seeds cannot clobber each other.
+    # ``deterministic`` additionally asks torch for reproducible kernels
+    # (warn_only, so an op with no deterministic implementation warns rather
+    # than killing the run).
+    seed: int | None = None
+    deterministic: bool = False
+
     # A1: verbose step-trace mode. Instrumented nodes emit __steps__ when True.
     verbose: bool = False
 
@@ -311,6 +321,38 @@ class ExecutionContext:
     # (node_id, port) -> tensor reference whose .grad we want to capture
     # after the backward pass. graph_engine writes here; capture_grads reads.
     grad_targets: dict[tuple[str, str], Any] = field(default_factory=dict)
+
+    # ── reproducibility ──────────────────────────────────────────────────
+
+    def derive_seed(self, label: str) -> int | None:
+        """A child seed for *label*, or ``None`` on an unseeded run.
+
+        The label is normally a node id, so a node's randomness depends on
+        the run seed and its own identity and on NOTHING else -- not on how
+        many numbers the nodes before it drew, and not on the order the
+        engine happened to schedule them in. A node that needs several
+        independent streams qualifies further (``f"{node_id}:worker"``).
+
+        Returning ``None`` rather than a fallback seed is load-bearing: a
+        caller must be able to tell "no seed was requested" from "seed 0",
+        because the first means "leave torch's entropy alone".
+        """
+        if self.seed is None:
+            return None
+        from .seeding import derive_seed
+
+        return derive_seed(self.seed, label)
+
+    def make_generator(self, label: str) -> Any | None:
+        """A ``torch.Generator`` for *label*, or ``None`` when unseeded.
+
+        ``None`` is exactly what ``DataLoader(generator=...)`` expects when
+        no generator is wanted, so consumers can pass the result straight
+        through without branching.
+        """
+        from .seeding import make_generator
+
+        return make_generator(self.derive_seed(label))
 
     def cancel(self) -> None:
         """Signal cancellation. Safe from any thread."""

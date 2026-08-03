@@ -100,7 +100,48 @@ class ParamDefinition:
     # Example: ``visible_when={"preset": "Custom"}`` on Conv2dKernel's
     # ``weights`` param means the editor only shows when ``preset`` is
     # set to ``"Custom"``. None means always visible.
+    #
+    # A value may also be a LIST, meaning "any of these" (#134):
+    # ``visible_when={"type": ["Adam", "AdamW"]}`` on Optimizer's
+    # ``amsgrad``. Comparison is by string form on both sides, so a select
+    # option and its literal spelling always agree.
     visible_when: dict[str, Any] | None = None
+    # Two-tier parameter UI (#134). An advanced param is fully real —
+    # persisted, exported, identical in every way — it is simply collected
+    # behind a collapsed "Advanced" section so the default view of a node
+    # stays readable in a classroom. Use it for the knobs that wrap a
+    # library default nobody changes until they need to; leave the ones a
+    # lesson actually turns basic.
+    advanced: bool = False
+
+
+def is_param_visible(
+    definition: "ParamDefinition", params: dict[str, Any] | None,
+) -> bool:
+    """Would the editor show this param for *params*? The backend twin of
+    the frontend's ``isParamVisible``, and it must agree with it.
+
+    It exists because a hidden param is still PRESENT: the canvas writes
+    every default onto a new node, and switching the sibling that hides one
+    does not clear it. So a node asked to reject an inapplicable value would
+    name a field the user cannot see and cannot reset -- "Optimizer
+    'Adagrad' does not accept eps" on a form with no eps on it. For a
+    param the current configuration hides, the honest reading of a leftover
+    value is "not set".
+
+    Comparison is by string form on both sides, and a list value means "any
+    of", exactly as the frontend does it.
+    """
+    rule = definition.visible_when
+    if not rule:
+        return True
+    live = params or {}
+    for sibling, expected in rule.items():
+        actual = str(live.get(sibling))
+        accepted = expected if isinstance(expected, list) else [expected]
+        if not any(str(candidate) == actual for candidate in accepted):
+            return False
+    return True
 
 
 class BaseNode(ABC):

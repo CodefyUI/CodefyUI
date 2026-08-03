@@ -143,6 +143,38 @@ describe('BaseNode', () => {
     expect(screen.getByText('128')).toBeTruthy();
   });
 
+  // ── advanced params on the card (core#134) ───────────────────────────
+
+  function advancedDef() {
+    return makeDef({
+      params: [
+        {
+          name: 'lr', param_type: 'float', default: 0.001, description: '',
+          options: [], min_value: null, max_value: null,
+        },
+        {
+          name: 'betas', param_type: 'string', default: '0.9, 0.999',
+          description: '', options: [], min_value: null, max_value: null,
+          advanced: true,
+        },
+      ],
+    });
+  }
+
+  it('keeps an untouched advanced param off the node card', () => {
+    renderBody(baseData({ definition: advancedDef(), params: { lr: 0.001 } }));
+    expect(screen.getByText('lr')).toBeTruthy();
+    expect(screen.queryByText('betas')).toBeNull();
+  });
+
+  it('shows an advanced param on the card once it differs from its default', () => {
+    renderBody(
+      baseData({ definition: advancedDef(), params: { lr: 0.001, betas: '0.5, 0.9' } }),
+    );
+    expect(screen.getByText('betas')).toBeTruthy();
+    expect(screen.getByText('0.5, 0.9')).toBeTruthy();
+  });
+
   it('masks a non-empty SECRET param value on the node card', () => {
     const def = makeDef({
       params: [

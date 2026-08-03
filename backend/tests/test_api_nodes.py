@@ -276,3 +276,105 @@ async def test_python_script_node_is_registered_with_a_code_param(test_client):
     # The palette template shows the default one-in / one-out shape.
     assert [p["name"] for p in node["inputs"]] == ["in1"]
     assert [p["name"] for p in node["outputs"]] == ["out1"]
+
+
+# ── two-tier parameter schema (core#134) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_every_param_carries_the_advanced_flag(test_client):
+    """The flag is on the WIRE, not just on the Python dataclass.
+
+    ``ParamDefinitionSchema`` is a hand-written mirror of
+    ``ParamDefinition`` and ``_node_to_definition`` copies field by field, so
+    a new attribute is dropped silently unless both are updated. This is the
+    test that notices.
+    """
+    nodes = (await test_client.get("/api/nodes")).json()
+    params = [p for node in nodes for p in node["params"]]
+
+    assert params, "no node declares a parameter"
+    assert all("advanced" in p for p in params)
+    assert all(isinstance(p["advanced"], bool) for p in params)
+
+
+@pytest.mark.asyncio
+async def test_advanced_and_basic_params_are_both_present(test_client):
+    """A flag nothing sets is a flag that proves nothing."""
+    node = (await test_client.get("/api/nodes/Optimizer")).json()
+    params = {p["name"]: p for p in node["params"]}
+
+    assert params["lr"]["advanced"] is False
+    assert params["momentum"]["advanced"] is False
+    assert params["betas"]["advanced"] is True
+    assert params["amsgrad"]["advanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_visible_when_supports_a_list_of_accepted_values(test_client):
+    """Per-type visibility needs "any of", not just equality.
+
+    Four optimizers take ``betas``; a single-value rule could only name one
+    of them.
+    """
+    node = (await test_client.get("/api/nodes/Optimizer")).json()
+    params = {p["name"]: p for p in node["params"]}
+
+    assert params["betas"]["visible_when"] == {
+        "type": ["Adam", "AdamW", "NAdam", "RAdam"]}
+    assert params["nesterov"]["visible_when"] == {"type": ["SGD"]}
+
+
+@pytest.mark.asyncio
+async def test_loss_and_dataloader_advertise_their_new_params(test_client):
+    loss = {p["name"]: p for p in
+            (await test_client.get("/api/nodes/Loss")).json()["params"]}
+    assert loss["label_smoothing"]["advanced"] is False
+    assert loss["reduction"]["advanced"] is True
+    assert loss["reduction"]["options"] == ["mean", "sum", "none"]
+
+    loader = {p["name"]: p for p in
+              (await test_client.get("/api/nodes/DataLoader")).json()["params"]}
+    assert loader["pin_memory"]["advanced"] is False
+    assert loader["drop_last"]["advanced"] is True
+    assert loader["prefetch_factor"]["advanced"] is True
+
+
+# ── zh-TW coverage for the training nodes (#188 review, M8) ──────────────
+
+
+def test_training_node_params_all_have_a_zh_tw_description():
+    """Every param of the four training nodes is translated.
+
+    This project mirrors user-facing strings in both locales and its primary
+    audience reads Chinese, but nothing enforced it for NODE catalogs — so
+    #134 shipped 17 English descriptions rendering directly beneath
+    translated ones. The source of truth is ``define_params()``, so the
+    check is against the real schema rather than a second hand-kept list.
+
+    Scoped to the nodes this issue touched; widening it to the whole
+    registry is a separate cleanup with a much longer tail.
+    """
+    import re
+    from pathlib import Path
+
+    from app.core.node_registry import registry
+
+    catalog = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
+               "i18n" / "nodeLocales" / "zh-TW.ts").read_text(encoding="utf-8")
+
+    missing: list[str] = []
+    for node_name in ("Optimizer", "Loss", "DataLoader", "TrainingLoop"):
+        node_cls = registry.get(node_name)
+        assert node_cls is not None, node_name
+        block = re.search(
+            rf"\n  {node_name}: \{{(.*?)\n  \}},", catalog, re.DOTALL)
+        assert block, f"{node_name} has no zh-TW entry at all"
+        body = block.group(1)
+        for param in node_cls.define_params():
+            if not re.search(rf"\n      {re.escape(param.name)}: ", body):
+                missing.append(f"{node_name}.{param.name}")
+
+    assert not missing, (
+        "these params render in English under zh-TW; add them to "
+        f"frontend/src/i18n/nodeLocales/zh-TW.ts: {missing}")

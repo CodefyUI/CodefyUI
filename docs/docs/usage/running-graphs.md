@@ -44,6 +44,36 @@ Opting out **propagates downstream**: every node fed by one of these re-executes
 
 The trade-off is deliberate — a graph that starts from a file reader re-reads that file on every run. Correctness first: the alternative (hashing file size and modification time into the key) is a possible future optimization, not something you can rely on today.
 
+## Reproducible runs (seed)
+
+By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training** to make a run repeatable.
+
+With a seed set:
+
+- Every node is seeded from a value derived from `(seed, node id)`, so what a node draws depends on the seed and on its own identity — not on how much randomness the rest of the graph consumed first, and not on the order the engine happened to schedule things in.
+- `DataLoader` gets its own generator, so the epoch shuffle order is fixed too, and each worker process gets its own independent stream.
+- **The run executes one node at a time**, and **it does not overlap another run.** Seeding writes process-global RNG state, so a second node — or a second *run* — drawing from it at the same moment moves the numbers. A seeded run therefore waits for the runs already in flight, then runs alone, and anything submitted behind it waits for it. Unseeded runs are unaffected: they still run in parallel with each other, and their nodes still run in parallel.
+
+Two runs of the same graph with the same seed produce bitwise-identical loss curves on CPU. Different seeds produce genuinely different ones.
+
+"Another run" means every graph this server is executing, including a headless `POST /api/graph/run/{name}` call: it waits while a seeded run is going, and a seeded run waits for it. Headless calls that are not seeded still overlap each other freely.
+
+The cost is worth stating plainly: a seeded run is slower (about 3-4x on a graph of independent branches, near zero on the usual mostly-linear teaching graph), and it can wait behind a long job even when started from the canvas. Reproducibility is opt-in, and a run that asked for it would rather be late than wrong.
+
+**Deterministic algorithms** is the other half. It asks PyTorch for kernels that combine those draws the same way every time (`torch.use_deterministic_algorithms(True, warn_only=True)`). It is `warn_only` on purpose: an operation with no deterministic implementation prints a warning rather than killing the run, so you get "everything reproducible was made reproducible" instead of a stack trace from inside cuDNN.
+
+The seed is stored with the run and shown in the **Runs** panel, so an interesting result can always be traced back to the settings that produced it.
+
+From the CLI:
+
+```bash
+cdui run graph.json --seed 1234 --deterministic
+```
+
+:::note
+A seed fixes the *software's* randomness. Exact bitwise agreement is promised on CPU; across different GPUs, driver versions or PyTorch builds, floating-point reduction order can still differ.
+:::
+
 ## Stopping
 
 Click **Stop** to cancel an in-flight run. **Stop is the only thing that cancels a run.**
