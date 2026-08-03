@@ -185,7 +185,10 @@ def test_an_fp16_run_hands_its_loss_scale_out_for_a_checkpoint():
     result = _train("fp16")
     state = result["grad_scaler_state"]
     assert isinstance(state, dict) and "scale" in state
-    assert result["metrics"]["skipped_steps"] >= 0
+    # Reported whenever there IS a scaler, because zero is a meaningful
+    # reading ("the loss scale never overflowed") rather than an absence.
+    # This eight-batch run on well-conditioned data has no overflow in it.
+    assert result["metrics"]["skipped_steps"] == 0
 
 
 def test_an_fp16_run_resumes_from_the_scale_it_was_handed():

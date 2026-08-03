@@ -105,6 +105,23 @@ class NodeStateStore:
         nbytes = value_bytes(module)
 
         with self._lock:
+            # Untracked first, and not merely for tidiness: the builder
+            # ran OUTSIDE the lock, so two executor threads that both
+            # missed on the same key both arrive here. Without this, the
+            # second one adds its bytes to a total that already counts the
+            # first (a drift that never recovers, so the byte budget
+            # eventually evicts live modules) and appends a second copy of
+            # the key to the LRU deque (a phantom that makes the count
+            # limit evict early). Both failures end in the same place --
+            # a node silently losing its weights between runs, which is
+            # the one thing this store exists to prevent.
+            #
+            # ``_untrack_locked`` rather than ``_forget_locked``: the
+            # per-key lock must SURVIVE, because the thread that lost this
+            # race may be holding it to serialise a forward pass, and
+            # handing the next caller a fresh lock would silently drop
+            # that guarantee.
+            self._untrack_locked(key)
             self._store[key] = module
             self._bytes[key] = nbytes
             self._total_bytes += nbytes
@@ -131,14 +148,22 @@ class NodeStateStore:
 
     # ── internals (caller holds ``self._lock``) ─────────────────────
 
-    def _forget_locked(self, key: tuple[str, str, str]) -> None:
-        """Drop one entry from every index the store keeps."""
+    def _untrack_locked(self, key: tuple[str, str, str]) -> None:
+        """Drop one entry from the module / bytes / LRU indexes.
+
+        Leaves the per-key lock alone; see :meth:`_forget_locked` for the
+        version that removes that too.
+        """
         self._store.pop(key, None)
         self._total_bytes -= self._bytes.pop(key, 0)
         try:
             self._lru.remove(key)
         except ValueError:
             pass
+
+    def _forget_locked(self, key: tuple[str, str, str]) -> None:
+        """Drop one entry from every index the store keeps."""
+        self._untrack_locked(key)
         self._key_locks.pop(key, None)
 
     def _keys_for_node_locked(

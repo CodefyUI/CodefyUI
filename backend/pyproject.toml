@@ -31,7 +31,12 @@ dependencies = [
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "Pillow>=10.0.0",
-    "torch>=2.0.0",
+    # 2.5 is the honest floor since core#135: `torch.OutOfMemoryError` (the
+    # class the OOM handler classifies on) arrived in 2.5, and
+    # `torch.amp.GradScaler(device=...)` -- the non-deprecated spelling the
+    # fp16 path uses -- in 2.4. The old `>=2.0.0` was already fiction; it
+    # is now fiction that a test would trip over.
+    "torch>=2.5.0",
     "torchvision>=0.15.0",
     "gymnasium>=0.29.0",
     "safetensors>=0.4.0",

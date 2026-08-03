@@ -110,7 +110,11 @@ from typing import Any, AsyncIterator, Callable, NamedTuple
 from ..config import settings
 from .cache import ExecutionCache
 from .db import utc_now_iso
-from .device_utils import resolve_device
+#: ``_current_cuda_index`` is imported rather than re-implemented here:
+#: "which card does a bare ``cuda`` mean in this process" is one policy
+#: decision, and #135 gave ``device_utils`` a second copy of it for the
+#: index-validation fallback. Two copies of a policy drift.
+from .device_utils import _current_cuda_index, resolve_device
 from .execution_context import (
     ArtifactSignal,
     CancellationError,
@@ -291,24 +295,6 @@ DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
 #: tomorrow inherits the conservative limit instead of silently getting the
 #: CPU one.
 CPU_QUEUE_KEY = "cpu"
-
-
-def _current_cuda_index() -> int:
-    """Which GPU a bare ``cuda`` means in THIS process.
-
-    ``torch.cuda.current_device()``, because that is the index torch itself
-    will use — hardcoding 0 would be wrong on any process that changed it.
-    Falls back to 0 when torch cannot say; the caller only reaches here for
-    a string ``resolve_device`` already vouched for, so that is a
-    belt-and-braces path rather than the normal one.
-    """
-    try:
-        import torch
-
-        return int(torch.cuda.current_device())
-    except Exception:  # pragma: no cover - torch present and CUDA-checked
-        logger.debug("could not read the current CUDA device", exc_info=True)
-        return 0
 
 
 def canonical_queue_key(device: str) -> str:

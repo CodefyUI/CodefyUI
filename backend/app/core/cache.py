@@ -115,6 +115,10 @@ class ExecutionCache:
         caching it would evict everything else and then still not fit under
         the limit, which is the worst of both. It is a cache miss next time,
         which is the correct outcome for a value the budget cannot hold.
+        Note that any PREVIOUS value under the same key goes with it: the
+        key encodes the whole computation, so an entry being replaced is
+        one the node has just recomputed, and keeping the old copy would
+        make the budget's refusal invisible.
         """
         self._drop(key)
         nbytes = value_bytes(outputs)

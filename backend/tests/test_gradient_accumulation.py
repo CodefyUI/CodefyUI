@@ -197,6 +197,63 @@ def test_max_steps_counts_optimizer_steps_not_batches():
     assert trained["metrics"]["stopped_at_max_steps"] is True
 
 
+@pytest.mark.parametrize("max_steps", [1, 2, 3, 4, 5])
+def test_max_steps_is_never_overshot_by_a_tail_window(max_steps):
+    """The budget holds even when the epoch does not divide by the window.
+
+    Ten batches accumulated four deep gives windows of 4, 4 and a TAIL of
+    2. The tail is a real optimizer step, so it has to be counted against
+    ``max_steps`` and has to be refused once the budget is spent --
+    otherwise a run told to take three steps takes four, and reads an
+    extra epoch's first batch to discover it.
+    """
+    model, x, y = _fixture()  # 32 samples
+    extra_x = torch.cat([x, x[:8]])
+    extra_y = torch.cat([y, y[:8]])  # 40 samples -> 10 batches of 4
+    trained = _train(copy.deepcopy(model), extra_x, extra_y, batch_size=4,
+                     params={"accumulate_steps": 4, "max_steps": max_steps,
+                             "epochs": 5})
+
+    assert trained["metrics"]["total_steps"] == max_steps
+    assert trained["metrics"]["stopped_at_max_steps"] is True
+
+
+def test_an_interrupted_window_leaves_no_gradient_behind():
+    """A discarded window is CLEARED, not merely left un-stepped.
+
+    The model is persisted between runs, so a full model's worth of
+    ``.grad`` would stay resident on the device until some later run's
+    first epoch happened to zero it -- in the one feature whose whole
+    subject is bounding memory.
+    """
+    class _StopAfter:
+        def __init__(self, batches: int) -> None:
+            self.seen = 0
+            self.batches = batches
+
+        def should_stop(self) -> bool:
+            self.seen += 1
+            return self.seen > self.batches
+
+    model, x, y = _fixture()
+    model = copy.deepcopy(model)
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x, y), batch_size=4, shuffle=False)
+    TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": loader,
+            "optimizer": torch.optim.SGD(model.parameters(), lr=LR),
+            "loss_fn": nn.MSELoss(),
+        },
+        {"epochs": 1, "device": "cpu", "accumulate_steps": 8},
+        context=_StopAfter(3),
+    )
+
+    for name, param in model.named_parameters():
+        assert param.grad is None or torch.count_nonzero(param.grad) == 0, name
+
+
 def test_the_reported_loss_does_not_depend_on_accumulation():
     """The recorded loss is the UNDIVIDED one this batch actually measured.
 

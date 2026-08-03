@@ -21,6 +21,7 @@ from .backward_pass import (
 )
 from .error_handling import (
     NodeOOMError,
+    current_cuda_device,
     is_out_of_memory,
     memory_digest,
     release_cached_memory,
@@ -1135,6 +1136,12 @@ async def execute_graph(
         goes when the exception does.
         """
         device = context.device if context is not None else ""
+        if not device:
+            # A bare ``execute_graph`` (an exported script, a test) has no
+            # context and therefore no run device. Naming the current CUDA
+            # device keeps the digest and the cleanup pointed at the same
+            # place, instead of one of them silently going quiet.
+            device = current_cuda_device()
         digest = memory_digest(device)
         dropped = 0
         if cache is not None:
@@ -1227,6 +1234,13 @@ async def execute_graph(
 
         attempts = max_retries + 1 if error_mode == "retry" else 1
         last_error: Exception | None = None
+        #: Captured INSIDE the handler. ``traceback.format_exc()`` read
+        #: after the ``except`` block has exited returns the string
+        #: "NoneType: None", because CPython restores the exception state
+        #: on the way out -- so the DEBUG traceback below used to be that
+        #: placeholder for every failure, including the out-of-memory one
+        #: this release goes out of its way to make legible.
+        last_traceback: str | None = None
 
         for attempt in range(attempts):
             if context and context.cancelled:
@@ -1331,6 +1345,7 @@ async def execute_graph(
                 await _emit_preset_aware(node_id, terminal, result)
                 return
             except Exception as e:
+                last_traceback = traceback.format_exc()
                 if is_out_of_memory(e):
                     last_error = _handle_oom(e, node_id, node_type)
                     # Never retried. The same allocation on the same device
@@ -1349,8 +1364,8 @@ async def execute_graph(
         # All attempts failed
         assert last_error is not None
         error_detail: dict[str, str] = {"error": str(last_error)}
-        if settings.DEBUG:
-            error_detail["traceback"] = traceback.format_exc()
+        if settings.DEBUG and last_traceback:
+            error_detail["traceback"] = last_traceback
         if error_mode == "fail_fast":
             await _emit_preset_aware(node_id, "error", error_detail)
             raise last_error

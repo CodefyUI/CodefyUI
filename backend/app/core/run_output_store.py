@@ -98,12 +98,15 @@ class RunOutputStore:
             if oldest == keep:
                 index += 1
                 continue
+            # Read BEFORE the drop, so the message reports the overrun it
+            # is reacting to rather than the total left after the fix.
+            over = self._total_bytes
             self._drop(oldest)
             logger.info(
                 "run output store over budget (%s of %s); dropped the "
-                "captures of run %s",
-                format_bytes(self._total_bytes), format_bytes(self._max_bytes),
-                oldest,
+                "captures of run %s, leaving %s",
+                format_bytes(over), format_bytes(self._max_bytes), oldest,
+                format_bytes(self._total_bytes),
             )
 
     def _drop(self, run_id: str) -> None:

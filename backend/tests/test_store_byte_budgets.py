@@ -260,6 +260,39 @@ def test_a_structural_change_gives_the_old_modules_bytes_back():
     assert store.stats()["bytes"] == pytest.approx(1 * MB, rel=0.05)
 
 
+def test_two_threads_building_the_same_module_do_not_drift_the_total():
+    """``get_or_create`` runs the builder OUTSIDE the lock, on purpose.
+
+    Module construction can be slow and can take CUDA's own locks, so two
+    executor threads can both miss on one key and both arrive at the
+    insert. Before the guard, the second one's bytes were added on top of
+    the first's (a drift that never recovers, so the budget eventually
+    evicts live modules) and the key landed in the LRU deque twice (a
+    phantom that makes the count limit evict early).
+    """
+    import threading
+
+    store = NodeStateStore(max_modules=100, max_bytes=64 * MB)
+    start = threading.Barrier(2)
+
+    def build():
+        start.wait(timeout=5)
+        return _linear_of(1)
+
+    threads = [threading.Thread(
+        target=lambda: store.get_or_create("g", "n", "h", build))
+        for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(store) == 1
+    assert store.stats()["bytes"] == pytest.approx(1 * MB, rel=0.05)
+    assert store.reset_node("g", "n") == 1
+    assert store.stats()["bytes"] == 0
+
+
 def test_the_module_count_limit_still_applies():
     store = NodeStateStore(max_modules=2, max_bytes=1024 * MB)
     for node in ("a", "b", "c"):
@@ -274,12 +307,18 @@ def test_the_module_count_limit_still_applies():
 async def test_health_reports_what_the_stores_hold(test_client):
     response = await test_client.get("/api/health")
     caches = response.json()["caches"]
-    assert set(caches["execution_cache"]) >= {"instances", "entries", "bytes"}
-    # The lifespan does not run under the test transport, so the two
-    # server-owned stores are absent rather than reported as empty.
+    # The execution cache is always reported: it is a process-wide
+    # registry rather than something hung off app.state, so it does not
+    # depend on the lifespan having run.
+    assert set(caches["execution_cache"]) >= {
+        "instances", "entries", "bytes", "max_bytes_each"}
+    assert caches["execution_cache"]["max_bytes_each"] > 0
+    # The other two are omitted rather than reported as zero when the
+    # lifespan has not run (it does not, under httpx's ASGITransport) --
+    # "empty" and "not running" must not read the same. The next test
+    # covers what they say when they DO exist.
     for name in ("run_output_store", "node_state_store"):
-        if name in caches:
-            assert caches[name]["max_bytes"] > 0
+        assert name not in caches or caches[name]["max_bytes"] > 0
 
 
 async def test_health_reports_the_stores_when_they_exist(test_client):

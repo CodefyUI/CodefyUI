@@ -150,6 +150,22 @@ def is_out_of_memory(exc: BaseException) -> bool:
     return "out of memory" in text or "cuda oom" in text
 
 
+def current_cuda_device() -> str:
+    """``"cuda:N"`` for the device torch is pointed at, or ``""``.
+
+    For the caller who has to report an out-of-memory failure without a
+    run context to read the device off.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return ""
+        return f"cuda:{int(torch.cuda.current_device())}"
+    except Exception:  # noqa: BLE001 - no torch, no driver, no device
+        return ""
+
+
 def memory_digest(device: str = "") -> str:
     """One paragraph of allocator numbers for *device*, or "" when unknown.
 

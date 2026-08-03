@@ -797,12 +797,30 @@ class TrainingLoopNode(BaseNode):
             # epoch whose batch count is not a multiple of accumulate_steps
             # quietly train on less data than it read.
             #
-            # Not applied on an interruption: a stop means "these results are
-            # partial", and stepping on the way out would move the weights
-            # once more after the user asked for the run to end.
-            if pending and stopped_at is None:
-                if apply_gradients():
-                    optimizer_steps += 1
+            # NOT applied when the run is ending, for either reason. A stop
+            # means "these results are partial", and stepping on the way out
+            # would move the weights once more after the user asked for the
+            # run to end. A spent ``max_steps`` budget is the same statement
+            # in a different voice -- the tail would be an (N+1)th optimizer
+            # step on a run that was told to take N, which is exactly what
+            # the parameter exists to prevent.
+            #
+            # Either way the accumulated gradient is CLEARED rather than
+            # left behind: the model is persisted in the node state store
+            # between runs, so a full model's worth of ``.grad`` would stay
+            # resident until some later run's first epoch zeroed it.
+            if pending:
+                if stopped_at is None and not step_budget_reached:
+                    if apply_gradients():
+                        optimizer_steps += 1
+                    # Re-checked here and not only inside the batch loop:
+                    # a budget reached BY the tail step must end the run now,
+                    # rather than after the next epoch has read one more
+                    # batch to discover it.
+                    if max_steps and optimizer_steps >= max_steps:
+                        step_budget_reached = True
+                else:
+                    optimizer.zero_grad()
                 pending = 0
 
             if stopped_at is not None:
