@@ -94,3 +94,36 @@ async def test_create_preset_scrubs_secret_values_from_disk(
     assert "sk-ant-should-not-persist" not in written
     # Sanity: the file really is the preset we created.
     assert json.loads(written)["preset_name"] == "LLM Preset"
+
+
+@pytest.mark.asyncio
+async def test_exposed_param_keeps_visibility_and_tier(
+    test_client, _isolated_presets,
+):
+    """core#134: an exposed param must behave like the inner one it stands for.
+
+    ``_resolve_param_def`` copies field by field, and before #134 it dropped
+    ``visible_when`` entirely -- so a conditional param became unconditional
+    the moment it was exposed through a preset, and the editor offered
+    Adam's betas on an SGD node. ``advanced`` would have been lost the same
+    way.
+    """
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Optimizer Preset",
+        "nodes": [
+            {"id": "opt", "type": "Optimizer", "data": {"params": {
+                "type": "Adam", "lr": 0.01, "betas": "0.9, 0.999",
+            }}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text
+
+    by_name = {p["param_name"]: p for p in resp.json()["exposed_params"]}
+    betas = by_name["betas"]["param_def"]
+    assert betas["advanced"] is True
+    assert betas["visible_when"] == {"type": ["Adam", "AdamW", "NAdam", "RAdam"]}
+
+    lr = by_name["lr"]["param_def"]
+    assert lr["advanced"] is False
+    assert lr["visible_when"] is None

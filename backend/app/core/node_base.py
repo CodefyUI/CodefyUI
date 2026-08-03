@@ -100,7 +100,19 @@ class ParamDefinition:
     # Example: ``visible_when={"preset": "Custom"}`` on Conv2dKernel's
     # ``weights`` param means the editor only shows when ``preset`` is
     # set to ``"Custom"``. None means always visible.
+    #
+    # A value may also be a LIST, meaning "any of these" (#134):
+    # ``visible_when={"type": ["Adam", "AdamW"]}`` on Optimizer's
+    # ``amsgrad``. Comparison is by string form on both sides, so a select
+    # option and its literal spelling always agree.
     visible_when: dict[str, Any] | None = None
+    # Two-tier parameter UI (#134). An advanced param is fully real —
+    # persisted, exported, identical in every way — it is simply collected
+    # behind a collapsed "Advanced" section so the default view of a node
+    # stays readable in a classroom. Use it for the knobs that wrap a
+    # library default nobody changes until they need to; leave the ones a
+    # lesson actually turns basic.
+    advanced: bool = False
 
 
 class BaseNode(ABC):

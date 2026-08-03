@@ -1,6 +1,43 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.param_values import parse_float_sequence
+
+#: The select vocabulary. Every entry accepts ``reduction``; the sets below
+#: say which accept anything else.
+LOSS_TYPES = [
+    "CrossEntropyLoss", "MSELoss", "BCEWithLogitsLoss", "L1Loss",
+    "SmoothL1Loss", "NLLLoss", "KLDivLoss", "HuberLoss", "BCELoss",
+    "MarginRankingLoss", "CosineEmbeddingLoss",
+]
+
+#: Losses taking a per-class (or per-element) ``weight`` tensor.
+_WEIGHT_TYPES = frozenset({
+    "CrossEntropyLoss", "NLLLoss", "BCELoss", "BCEWithLogitsLoss",
+})
+#: Losses that can skip a target label entirely.
+_IGNORE_INDEX_TYPES = frozenset({"CrossEntropyLoss", "NLLLoss"})
+#: Label smoothing is classification-only, and torch puts it on exactly one
+#: of the classes we expose.
+_LABEL_SMOOTHING_TYPES = frozenset({"CrossEntropyLoss"})
+#: Positive-class rebalancing for binary logits.
+_POS_WEIGHT_TYPES = frozenset({"BCEWithLogitsLoss"})
+
+REDUCTIONS = ["mean", "sum", "none"]
+
+#: torch's own default, repeated here so "unchanged" is checkable.
+DEFAULT_IGNORE_INDEX = -100
+
+
+def _reject_inapplicable(loss_type: str, param: str, value: Any) -> None:
+    """Raise when a param was set on a loss that has no such argument.
+
+    Ignoring it would be worse: a user who set ``pos_weight`` on MSELoss and
+    saw no error would conclude their class imbalance was handled.
+    """
+    raise ValueError(
+        f"Loss '{loss_type}' does not accept {param}; got {value!r}. "
+        f"Leave {param} at its default or pick a different loss.")
 
 
 class LossNode(BaseNode):
@@ -26,11 +63,72 @@ class LossNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="CrossEntropyLoss",
                 description="Loss function type",
-                options=["CrossEntropyLoss", "MSELoss", "BCEWithLogitsLoss", "L1Loss", "SmoothL1Loss", "NLLLoss", "KLDivLoss", "HuberLoss", "BCELoss", "MarginRankingLoss", "CosineEmbeddingLoss"],
+                options=list(LOSS_TYPES),
+            ),
+            # Basic, not advanced: label smoothing is a lesson in its own
+            # right (why an over-confident correct answer should still cost
+            # something), not a knob to bury.
+            ParamDefinition(
+                name="label_smoothing",
+                param_type=ParamType.FLOAT,
+                default=0.0,
+                description=(
+                    "Soften the one-hot target: 0 = hard targets, 0.1 is a "
+                    "common regulariser"
+                ),
+                min_value=0.0,
+                max_value=1.0,
+                visible_when={"type": sorted(_LABEL_SMOOTHING_TYPES)},
+            ),
+            ParamDefinition(
+                name="reduction",
+                param_type=ParamType.SELECT,
+                default="mean",
+                description=(
+                    "How per-sample losses are combined: mean, sum, or none "
+                    "(keep them per-sample)"
+                ),
+                options=list(REDUCTIONS),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="weight",
+                param_type=ParamType.STRING,
+                default="",
+                description=(
+                    "Per-class weights as a comma-separated list, e.g. "
+                    "'1, 5' for an imbalanced two-class problem. Empty = "
+                    "every class weighted equally."
+                ),
+                visible_when={"type": sorted(_WEIGHT_TYPES)},
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="ignore_index",
+                param_type=ParamType.INT,
+                default=DEFAULT_IGNORE_INDEX,
+                description=(
+                    "Target value that contributes no loss and no gradient, "
+                    "e.g. a padding label"
+                ),
+                visible_when={"type": sorted(_IGNORE_INDEX_TYPES)},
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="pos_weight",
+                param_type=ParamType.STRING,
+                default="",
+                description=(
+                    "Weight of the positive class, as one number or one per "
+                    "output. Empty = unweighted."
+                ),
+                visible_when={"type": sorted(_POS_WEIGHT_TYPES)},
+                advanced=True,
             ),
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        import torch
         import torch.nn as nn
 
         loss_type = params.get("type", "CrossEntropyLoss")
@@ -53,6 +151,45 @@ class LossNode(BaseNode):
         if loss_cls is None:
             raise ValueError(f"Unsupported loss function type: {loss_type}")
 
-        loss_fn = loss_cls()
+        # ``reduction`` is the one argument all eleven share.
+        reduction = params.get("reduction", "mean") or "mean"
+        if reduction not in REDUCTIONS:
+            raise ValueError(
+                f"Unsupported reduction: {reduction!r}; expected one of "
+                f"{REDUCTIONS}")
+        kwargs: dict[str, Any] = {"reduction": reduction}
+
+        label_smoothing = float(params.get("label_smoothing", 0.0) or 0.0)
+        if loss_type in _LABEL_SMOOTHING_TYPES:
+            kwargs["label_smoothing"] = label_smoothing
+        elif label_smoothing:
+            _reject_inapplicable(loss_type, "label_smoothing", label_smoothing)
+
+        # Weight tensors are registered as BUFFERS by the loss module, so
+        # ``to_device(loss_fn, device)`` in the training loop moves them
+        # along with it — building on CPU here is correct for a CUDA run too.
+        weight = parse_float_sequence(params.get("weight"), name="weight")
+        if loss_type in _WEIGHT_TYPES:
+            if weight is not None:
+                kwargs["weight"] = torch.tensor(weight, dtype=torch.float32)
+        elif weight is not None:
+            _reject_inapplicable(loss_type, "weight", weight)
+
+        ignore_index = int(params.get("ignore_index", DEFAULT_IGNORE_INDEX))
+        if loss_type in _IGNORE_INDEX_TYPES:
+            kwargs["ignore_index"] = ignore_index
+        elif ignore_index != DEFAULT_IGNORE_INDEX:
+            _reject_inapplicable(loss_type, "ignore_index", ignore_index)
+
+        pos_weight = parse_float_sequence(
+            params.get("pos_weight"), name="pos_weight")
+        if loss_type in _POS_WEIGHT_TYPES:
+            if pos_weight is not None:
+                kwargs["pos_weight"] = torch.tensor(
+                    pos_weight, dtype=torch.float32)
+        elif pos_weight is not None:
+            _reject_inapplicable(loss_type, "pos_weight", pos_weight)
+
+        loss_fn = loss_cls(**kwargs)
 
         return {"loss_fn": loss_fn}
