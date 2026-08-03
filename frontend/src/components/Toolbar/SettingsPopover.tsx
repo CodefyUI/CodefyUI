@@ -34,6 +34,8 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const persistent = activeTab.weightsPersistent ?? true;
   const backward = activeTab.backwardMode ?? false;
   const autoBackward = activeTab.autoBackward ?? false;
+  const seed = activeTab.seed ?? null;
+  const deterministic = activeTab.deterministic ?? false;
   const graphId = activeTab.graphId ?? '';
   const activeSegment = activeTab.activeSegment;
 
@@ -42,6 +44,8 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   const togglePersistWeights = useTabStore((s) => s.togglePersistWeights);
   const toggleBackward = useTabStore((s) => s.toggleBackward);
   const toggleAutoBackward = useTabStore((s) => s.toggleAutoBackward);
+  const setSeed = useTabStore((s) => s.setSeed);
+  const toggleDeterministic = useTabStore((s) => s.toggleDeterministic);
   const setActiveSegment = useTabStore((s) => s.setActiveSegment);
   const addSegmentGroup = useTabStore((s) => s.addSegmentGroup);
   const removeSegmentGroup = useTabStore((s) => s.removeSegmentGroup);
@@ -458,6 +462,48 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
                   /* v8 ignore start */
                   if (backward) toggleAutoBackward();
                   /* v8 ignore stop */
+                }}
+              />
+            }
+          />
+
+          {/* Reproducibility (core#134). A blank field is "no seed", which
+              is the historical behaviour; any number makes the run
+              repeatable and, as a consequence, serial. */}
+          <Row
+            name={t('settings.seed.name')}
+            desc={t('settings.seed.desc')}
+            ctrl={
+              <input
+                type="number"
+                className={styles.numberInput}
+                aria-label={t('settings.seed.name')}
+                placeholder={t('settings.seed.placeholder')}
+                value={seed === null ? '' : seed}
+                min={0}
+                step={1}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  setSeed(raw === '' ? null : Number(raw));
+                }}
+              />
+            }
+          />
+
+          <Row
+            name={t('settings.deterministic.name')}
+            desc={t('settings.deterministic.desc')}
+            onClick={toggleDeterministic}
+            ctrl={
+              <button
+                type="button"
+                aria-label={t('settings.deterministic.name')}
+                aria-pressed={deterministic}
+                className={`${styles.toggle} ${deterministic ? styles.on : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleDeterministic();
                 }}
               />
             }

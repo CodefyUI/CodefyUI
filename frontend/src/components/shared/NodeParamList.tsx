@@ -1,4 +1,5 @@
-import type { NodeDefinition } from '../../types';
+import { useState } from 'react';
+import type { NodeDefinition, ParamDefinition } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { isParamVisible } from '../../utils';
@@ -23,9 +24,10 @@ interface NodeParamListProps {
  *
  * Extracted from `NodeConfigPanel` when the Node Detail Modal (#127) grew a
  * second parameter surface. Both render THIS component, so conditional
- * visibility (`visible_when`), the range / description hints, the per-field
- * validation `ParamField` applies, and — most importantly — the store action
- * the edit lands on cannot drift between the side panel and the modal.
+ * visibility (`visible_when`), the two-tier basic/advanced split (core#134),
+ * the range / description hints, the per-field validation `ParamField`
+ * applies, and — most importantly — the store action the edit lands on
+ * cannot drift between the side panel and the modal.
  *
  * Edits go through `updateNodeParams`, which marks the node dirty for partial
  * re-execution. It deliberately pushes no undo snapshot: parameter typing is
@@ -36,6 +38,10 @@ interface NodeParamListProps {
 export function NodeParamList({ nodeId, definition, params, className }: NodeParamListProps) {
   const updateNodeParams = useTabStore((s) => s.updateNodeParams);
   const { t, tn } = useI18n();
+  // Collapsed on every open, on purpose. Teaching mode's default view is the
+  // one a class sees; a sticky "expanded" from an earlier session would make
+  // that view depend on history rather than on the node.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const nodeName = definition?.node_name ?? '';
 
@@ -44,33 +50,66 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
     updateNodeParams(nodeId, { [paramName]: value });
   };
 
+  // `visible_when` is applied FIRST: a param the current configuration has no
+  // use for should not be counted in the Advanced badge either, or an SGD
+  // node would advertise six hidden Adam knobs.
   const visible = (definition?.params ?? []).filter((param) => isParamVisible(param, params));
+  const basic = visible.filter((param) => !param.advanced);
+  const advanced = visible.filter((param) => param.advanced);
+
+  const renderField = (param: ParamDefinition) => (
+    <div key={param.name}>
+      <ParamField
+        param={param}
+        value={params[param.name]}
+        onChange={handleChange}
+        siblingParams={params}
+      />
+      {param.description && (
+        <div className={styles.paramHint}>
+          {tn(nodeName, `param.${param.name}`, param.description)}
+        </div>
+      )}
+      {(param.min_value !== null || param.max_value !== null) && (
+        <div className={styles.paramHint}>
+          {t('config.range', {
+            min: param.min_value !== null ? param.min_value : '-∞',
+            max: param.max_value !== null ? param.max_value : '+∞',
+          })}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className={className ? `${styles.list} ${className}` : styles.list}>
-      {visible.map((param) => (
-        <div key={param.name}>
-          <ParamField
-            param={param}
-            value={params[param.name]}
-            onChange={handleChange}
-            siblingParams={params}
-          />
-          {param.description && (
-            <div className={styles.paramHint}>
-              {tn(nodeName, `param.${param.name}`, param.description)}
-            </div>
-          )}
-          {(param.min_value !== null || param.max_value !== null) && (
-            <div className={styles.paramHint}>
-              {t('config.range', {
-                min: param.min_value !== null ? param.min_value : '-∞',
-                max: param.max_value !== null ? param.max_value : '+∞',
-              })}
+      {basic.map(renderField)}
+
+      {advanced.length > 0 && (
+        <div className={styles.advanced}>
+          <button
+            type="button"
+            className={styles.advancedToggle}
+            onClick={() => setAdvancedOpen((open) => !open)}
+            aria-expanded={advancedOpen}
+            aria-controls={`advanced-params-${nodeId ?? 'none'}`}
+          >
+            <span className={styles.advancedChevron} aria-hidden="true">
+              {advancedOpen ? '▾' : '▸'}
+            </span>
+            {t('config.advanced')}
+            <span className={styles.advancedCount}>{advanced.length}</span>
+          </button>
+          {advancedOpen && (
+            <div
+              id={`advanced-params-${nodeId ?? 'none'}`}
+              className={styles.advancedBody}
+            >
+              {advanced.map(renderField)}
             </div>
           )}
         </div>
-      ))}
+      )}
     </div>
   );
 }

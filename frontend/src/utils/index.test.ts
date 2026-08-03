@@ -74,6 +74,31 @@ describe('isParamVisible', () => {
     expect(isParamVisible(numeric, { kernel_size: '5' })).toBe(true);
   });
 
+  // core#134: "any of" rules, for a param several sibling values share.
+  it('accepts an array of expected values as "any of"', () => {
+    const param = buildParam({
+      name: 'betas',
+      visible_when: { type: ['Adam', 'AdamW', 'NAdam', 'RAdam'] },
+    });
+    expect(isParamVisible(param, { type: 'Adam' })).toBe(true);
+    expect(isParamVisible(param, { type: 'RAdam' })).toBe(true);
+    expect(isParamVisible(param, { type: 'SGD' })).toBe(false);
+    expect(isParamVisible(param, {})).toBe(false);
+  });
+
+  it('coerces inside an array rule too', () => {
+    const param = buildParam({ visible_when: { kernel_size: [3, 5] } });
+    expect(isParamVisible(param, { kernel_size: '5' })).toBe(true);
+    expect(isParamVisible(param, { kernel_size: 7 })).toBe(false);
+  });
+
+  it('treats an empty array as "never visible"', () => {
+    // Degenerate, but it must not silently mean "always": a rule listing no
+    // acceptable value has nothing it can match.
+    const param = buildParam({ visible_when: { type: [] } });
+    expect(isParamVisible(param, { type: 'Adam' })).toBe(false);
+  });
+
   it('treats undefined live params as no match', () => {
     const param = buildParam({ name: 'weights', visible_when: { preset: 'Custom' } });
     expect(isParamVisible(param, undefined)).toBe(false);

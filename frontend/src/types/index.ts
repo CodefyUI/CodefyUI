@@ -25,8 +25,19 @@ export interface ParamDefinition {
    * Example: ``{ preset: "Custom" }`` on Conv2dKernel's ``weights`` means
    * the editor only shows when ``preset === "Custom"``. ``null`` /
    * undefined means always visible.
+   *
+   * A value may be an ARRAY, read as "any of these" (core#134):
+   * ``{ type: ["Adam", "AdamW"] }`` on Optimizer's ``amsgrad``.
    */
   visible_when?: Record<string, unknown> | null;
+  /**
+   * Two-tier parameter UI (core#134). An advanced param is fully real —
+   * persisted, exported, identical in every way — it is simply collected
+   * behind a collapsed "Advanced" section so the default view of a node
+   * stays readable. Absent means basic, which is what a plugin built
+   * against an older host sends.
+   */
+  advanced?: boolean;
 }
 
 export interface SegmentGroup {

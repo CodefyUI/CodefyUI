@@ -467,6 +467,28 @@ describe('RunsPanel — detail view', () => {
       });
   });
 
+  // core#134: the seed alone does not say a run was reproducible -- whether
+  // torch was asked for deterministic kernels is the other half.
+  it('omits the deterministic marker when the run did not ask for it', async () => {
+    await renderPanel([liveRun]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    expect(
+      within(screen.getByTestId('run-detail')).queryByText(t('runs.detail.deterministic')),
+    ).toBeNull();
+  });
+
+  it('shows the deterministic marker beside the seed when it was requested', async () => {
+    const strict = { ...liveRun, options: { device: 'cuda', seed: 1234, deterministic: true } };
+    api.getRun.mockResolvedValue({ ...strict, last_cursor: 4 });
+    await renderPanel([strict]);
+    fireEvent.click(rowOf('r1'));
+    await screen.findByTestId('run-detail');
+    const detail = within(screen.getByTestId('run-detail'));
+    expect(detail.getByText(t('runs.detail.deterministic'))).toBeInTheDocument();
+    expect(detail.getByText(`${t('runs.detail.seed')} 1234`)).toBeInTheDocument();
+  });
+
   it('opens on row click with multi-series chart, artifacts and a log tail', async () => {
     await renderPanel([liveRun]);
     fireEvent.click(rowOf('r1'));

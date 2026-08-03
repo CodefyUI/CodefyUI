@@ -70,6 +70,10 @@ function baseTab() {
     graphId: 'graph-xyz',
     activeSegment: null as any,
     segmentGroups: [] as any[],
+    // core#134. `null` is the real default; the popover must also survive a
+    // tab persisted before #134, which carries neither key.
+    seed: null as number | null,
+    deterministic: false,
   };
 }
 
@@ -393,6 +397,40 @@ describe('SettingsPopover', () => {
     render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Capture gradients' }));
     expect(useTabStore.getState().tabs[0].backwardMode).toBe(true);
+  });
+
+  // ── Training: reproducibility (core#134) ──────────────────────────
+
+  it('starts with an empty seed field, meaning unseeded', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    // A tab persisted before core#134 carries no `seed` key at all, so the
+    // field must render empty for undefined as well as for null.
+    expect(screen.getByLabelText('Random seed')).toHaveValue(null);
+  });
+
+  it('writes a typed seed to the tab', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '1234' } });
+    expect(useTabStore.getState().tabs[0].seed).toBe(1234);
+  });
+
+  it('clearing the seed field goes back to unseeded', () => {
+    setupTab({ seed: 42 });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '' } });
+    expect(useTabStore.getState().tabs[0].seed).toBe(null);
+  });
+
+  it('keeps seed 0 rather than reading it as "unset"', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    fireEvent.change(screen.getByLabelText('Random seed'), { target: { value: '0' } });
+    expect(useTabStore.getState().tabs[0].seed).toBe(0);
+  });
+
+  it('toggles deterministic algorithms', () => {
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Deterministic algorithms' }));
+    expect(useTabStore.getState().tabs[0].deterministic).toBe(true);
   });
 
   it('auto-loss toggle is disabled while backward is off and enabled when on', () => {
