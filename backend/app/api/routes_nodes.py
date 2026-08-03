@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from ..core.device_utils import get_available_devices
+from ..core.device_utils import device_options, get_available_devices
 from ..core.node_base import BaseNode
 from ..core.node_registry import registry
 from ..core.plugin_validator import PluginValidationError
@@ -16,17 +16,12 @@ from ..schemas import NodeDefinition, ParamDefinitionSchema, PortDefinitionSchem
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
 
-def _filter_device_options(param_name: str, options: list[str]) -> list[str]:
-    """For params named 'device', remove backends that aren't available in this environment.
-
-    ``"auto"`` (follow the global device selector) is always kept — it's not a
-    physical backend so it bypasses the availability filter.
-    """
-    if param_name != "device" or not options:
-        return options
-    available = set(get_available_devices())
-    filtered = [o for o in options if o == "auto" or o in available]
-    return filtered if filtered else ["cpu"]
+#: For params named 'device': drop backends this environment does not have,
+#: and expand ``cuda`` into ``cuda:0``/``cuda:1``/... on a multi-GPU box.
+#: The rule lives in ``core.device_utils`` so the node API and the global
+#: selector cannot drift apart; the alias is kept because it names what this
+#: module uses it for.
+_filter_device_options = device_options
 
 
 def _provider_for(cls: type[BaseNode]) -> str:

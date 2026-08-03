@@ -11,6 +11,58 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _current_cuda_index() -> int:
+    """The index a bare ``cuda`` means in THIS process.
+
+    ``run_service`` has its own copy of this for the queue key; both read
+    ``torch.cuda.current_device()`` because that is the index torch itself
+    would pick, and hardcoding 0 would be wrong in a process that changed
+    it.
+    """
+    try:
+        import torch
+
+        return int(torch.cuda.current_device())
+    except Exception:  # noqa: BLE001 - only reached with CUDA already checked
+        logger.debug("could not read the current CUDA device", exc_info=True)
+        return 0
+
+
+def cuda_device_count() -> int:
+    """How many CUDA devices this process can see. 0 when there is no CUDA.
+
+    Not ``lru_cache``d, unlike :func:`get_available_devices`: a test that
+    monkeypatches ``torch.cuda.device_count`` to pretend there are four
+    cards must see its own answer, and the call is a cheap read of a value
+    torch itself caches after the first driver query.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return 0
+        return int(torch.cuda.device_count())
+    except Exception:  # noqa: BLE001 - no torch, no driver, no devices
+        return 0
+
+
+def split_device(device: str) -> tuple[str, int | None]:
+    """``"cuda:1"`` -> ``("cuda", 1)``; ``"cuda"`` -> ``("cuda", None)``.
+
+    ``None`` for the index means "whichever one torch is currently pointed
+    at", which is a different statement from ``0`` and has to stay
+    distinguishable -- see :func:`resolve_device`, which validates an
+    explicit index and leaves an absent one alone.
+    """
+    kind, separator, index = (device or "").partition(":")
+    if not separator:
+        return kind, None
+    try:
+        return kind, int(index)
+    except ValueError:
+        return kind, None
+
+
 @lru_cache(maxsize=1)
 def get_available_devices() -> list[str]:
     """Return the list of available PyTorch devices.
@@ -18,6 +70,13 @@ def get_available_devices() -> list[str]:
     Always includes "cpu". Adds "cuda" if torch.cuda.is_available(),
     "mps" if torch.backends.mps.is_available(). If torch is not installed,
     only "cpu" is returned.
+
+    On a machine with more than one CUDA device the per-index forms
+    (``cuda:0``, ``cuda:1``, ...) are listed as well, so a node can be
+    pinned to a specific card (core#135). A SINGLE-GPU box deliberately
+    lists only the bare ``cuda``: there ``cuda`` and ``cuda:0`` name the
+    same piece of hardware, and offering both is a choice with no meaning
+    behind it.
     """
     devices = ["cpu"]
     try:
@@ -25,6 +84,9 @@ def get_available_devices() -> list[str]:
 
         if torch.cuda.is_available():
             devices.append("cuda")
+            count = cuda_device_count()
+            if count > 1:
+                devices.extend(f"cuda:{i}" for i in range(count))
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             devices.append("mps")
     except ImportError:
@@ -39,6 +101,19 @@ def resolve_device(requested: str | None) -> str:
     unavailable. Centralizes the availability check that the device-aware
     "sink" nodes (Training/Inference/Checkpoint/ModelLoader) used to each
     duplicate inline.
+
+    **Out-of-range index (core#135).** ``cuda:3`` on a two-card box, or on
+    the laptop a colleague opens the saved graph on, degrades to the
+    CURRENT cuda device rather than to the CPU. Both are guesses, and this
+    is the one that respects what the user asked for: they said "train on a
+    GPU", and answering that with a forty-minute CPU run is a worse
+    surprise than answering it with the only GPU present. The warning names
+    the count so the substitution is visible in the log. ``mps`` has no
+    index vocabulary beyond ``mps:0``, and is normalised the same way.
+
+    Never raises. Every caller -- node params, run options, the exported
+    script, the CLI -- treats this as a total function that always yields a
+    string torch will accept.
     """
     device = (requested or "cpu").strip().lower() or "cpu"
     try:
@@ -48,20 +123,69 @@ def resolve_device(requested: str | None) -> str:
 
     if device == "cpu":
         return "cpu"
-    if device.startswith("cuda"):
+    kind, index = split_device(device)
+    if kind == "cuda":
         if not torch.cuda.is_available():
             logger.warning("CUDA not available, falling back to CPU")
             return "cpu"
+        count = cuda_device_count()
+        if index is not None and not (0 <= index < count):
+            current = _current_cuda_index()
+            logger.warning(
+                "CUDA device index %d was requested but this machine has %d "
+                "(valid indices 0..%d); using cuda:%d instead.",
+                index, count, max(count - 1, 0), current,
+            )
+            return f"cuda:{current}"
         return device
-    if device.startswith("mps"):
+    if kind == "mps":
         if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
             logger.warning("MPS not available, falling back to CPU")
             return "cpu"
+        if index is not None and index != 0:
+            logger.warning(
+                "MPS has a single device; mps:%d is not addressable, using "
+                "mps instead.", index,
+            )
+            return "mps"
         return device
     # Unknown value (e.g. "auto" sent as a global device) — never hand an
     # invalid string to torch; degrade to CPU.
     logger.warning("Unknown device %r, falling back to CPU", device)
     return "cpu"
+
+
+def device_options(param_name: str, options: list[str]) -> list[str]:
+    """The ``device`` SELECT vocabulary this machine can actually offer.
+
+    Two jobs, in this order:
+
+    * drop backends that are not present -- a CUDA option on a laptop with
+      no CUDA is an invitation to a run that silently lands on the CPU;
+    * expand ``cuda`` into the per-index forms when there is more than one
+      card (core#135), so a node can be pinned to ``cuda:1`` without the
+      user hand-editing the graph JSON.
+
+    ``"auto"`` (follow the global device selector) is not a backend and
+    bypasses both. A node that declares no device options, or a param that
+    is not called ``device``, is returned untouched.
+    """
+    if param_name != "device" or not options:
+        return options
+    available = set(get_available_devices())
+    filtered: list[str] = []
+    for option in options:
+        if option != "auto" and option not in available:
+            continue
+        filtered.append(option)
+        if option == "cuda":
+            # Generated from the count rather than sorted out of
+            # ``available``: a lexical sort puts cuda:10 before cuda:2.
+            filtered.extend(
+                f"cuda:{i}" for i in range(cuda_device_count())
+                if f"cuda:{i}" in available
+            )
+    return filtered if filtered else ["cpu"]
 
 
 def is_mps_device(device: Any) -> bool:
@@ -143,16 +267,32 @@ def describe_accelerator() -> dict[str, Any]:
 
     if torch.cuda.is_available():
         is_rocm = getattr(torch.version, "hip", None) is not None
-        try:
-            name = torch.cuda.get_device_name(0)
-        except Exception:  # noqa: BLE001 — name lookup is best-effort
-            name = ""
+        label = "AMD ROCm" if is_rocm else "NVIDIA CUDA"
+        count = cuda_device_count()
+
+        def _name(index: int) -> str:
+            try:
+                return torch.cuda.get_device_name(index)
+            except Exception:  # noqa: BLE001 — name lookup is best-effort
+                return ""
+
         devices.append({
             "value": "cuda",
-            "label": "AMD ROCm" if is_rocm else "NVIDIA CUDA",
-            "detail": name,
+            "label": label,
+            "detail": _name(_current_cuda_index()),
             "available": True,
         })
+        # Per-card entries only when there is a choice to make (core#135).
+        # On a single-GPU box ``cuda`` and ``cuda:0`` are the same hardware,
+        # and a selector offering both makes the user pick between two
+        # spellings of one answer.
+        if count > 1:
+            devices.extend({
+                "value": f"cuda:{index}",
+                "label": f"{label} #{index}",
+                "detail": _name(index),
+                "available": True,
+            } for index in range(count))
         default = "cuda"
 
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
