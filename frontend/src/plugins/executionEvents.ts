@@ -122,7 +122,7 @@ export type ExecutionEventDraft =
  * `seq` is this module's own counter, incremented once per event actually
  * handed to subscribers, per run. It is dense by construction: the only thing
  * that can put a hole in it is the buffer dropping events under
- * `MAX_BUFFERED_EXECUTION_EVENTS`. So `seq` answers "did I miss anything?"
+ * `MAX_BUFFERED_EXECUTION_WEIGHT`. So `seq` answers "did I miss anything?"
  * and `cursor` answers "where is this in the log?", and neither has to lie to
  * do the other's job.
  */
@@ -131,26 +131,38 @@ export type ExecutionEvent = ExecutionEventDraft & { readonly seq: number };
 export type ExecutionEventHandler = (event: ExecutionEvent) => void;
 
 /**
- * How many EVENTS may wait for a frame that is not coming.
+ * How much may wait for a frame that is not coming, measured in RETAINED
+ * OBJECTS: one unit for an event, plus one for each metric point it carries.
  *
  * An occluded or backgrounded document keeps `requestAnimationFrame` but
- * never calls it back, so a long training run in a hidden window would
- * otherwise grow this buffer without bound. At the cap the oldest
- * non-lifecycle events are dropped first: a plugin that misses a metric can
- * re-read it from `api.runs.metrics()`, but one that misses `run_finished`
- * waits forever. Every drop punches a hole in `seq`, which is how a
- * subscriber finds out.
+ * never calls it back, and a dashboard watching a long training run in a
+ * backgrounded tab is not a corner case — it is this API working as intended
+ * — so the buffer has to be bounded by something that reflects what it
+ * actually holds.
  *
- * Read the unit carefully: this counts events, and one `metric` event holds a
- * whole recorded batch. The backend flushes metrics on a 0.5s floor, so a run
- * writing several series at a high step rate can put hundreds or low
- * thousands of points in a single event — meaning the retained-object
- * worst case is this number MULTIPLIED by the batch size, not equal to it.
- * A cost-aware bound (weighting an event by its point count) would express
- * the memory intent directly; see the #132 report for the measurement and the
- * recommendation.
+ * Counting events does not. A `metric` event carries a whole recorded batch,
+ * and the backend flushes metrics on a 0.5s floor, so a run writing several
+ * series at a high step rate puts hundreds or low thousands of points in one
+ * event. An event count of 2000 therefore bounded anywhere from 2,000 to
+ * ~2,000,000 retained objects depending on the run — three orders of
+ * magnitude of slack, in the one scenario the API exists for. Weighing an
+ * event by `1 + points.length` bounds the thing that costs memory.
+ *
+ * At the cap the oldest non-lifecycle events are dropped first: a plugin that
+ * misses a metric can re-read it from `api.runs.metrics()`, but one that
+ * misses `run_finished` waits forever. Every drop punches a hole in `seq`,
+ * which is how a subscriber finds out.
+ *
+ * The value is roomy on purpose: ~20k objects is a few megabytes, and at a
+ * realistic 50 points per flush it holds around 400 batches — several minutes
+ * of a hidden tab — before anything is sacrificed.
  */
-export const MAX_BUFFERED_EXECUTION_EVENTS = 2000;
+export const MAX_BUFFERED_EXECUTION_WEIGHT = 20000;
+
+/** What one buffered event costs against `MAX_BUFFERED_EXECUTION_WEIGHT`. */
+export function executionEventWeight(event: ExecutionEvent): number {
+  return event.type === 'metric' ? 1 + event.points.length : 1;
+}
 
 /**
  * How many runs keep a delivery watermark.
@@ -278,6 +290,15 @@ let buffer: ExecutionEvent[] = [];
  */
 let evictFrom = 0;
 
+/**
+ * Running total of `executionEventWeight` over everything in `buffer`.
+ *
+ * Kept incrementally rather than recomputed: the buffer is walked on every
+ * accepted frame, and summing point counts across it each time would make the
+ * hidden-tab path quadratic in exactly the scenario the bound exists for.
+ */
+let bufferedWeight = 0;
+
 /** What the stream remembers about one run. */
 interface RunWatermark {
   /** Highest durable cursor accepted for this run. */
@@ -348,7 +369,8 @@ function evictOne(): void {
   }
   // Nothing but lifecycle events left: bounded is bounded, so the oldest goes.
   if (evictFrom >= buffer.length) evictFrom = 0;
-  buffer.splice(evictFrom, 1);
+  const [dropped] = buffer.splice(evictFrom, 1);
+  bufferedWeight -= executionEventWeight(dropped);
   droppedSinceWarning += 1;
 }
 
@@ -377,8 +399,20 @@ function onFrame(raw: unknown): void {
   const seq = acceptFrame(first.run_id, first.cursor);
   if (seq === null) return;
   for (const draft of drafts) {
-    if (buffer.length >= MAX_BUFFERED_EXECUTION_EVENTS) evictOne();
-    buffer.push(sealed(draft, seq));
+    const event = sealed(draft, seq);
+    const weight = executionEventWeight(event);
+    while (
+      buffer.length > 0
+      && bufferedWeight + weight > MAX_BUFFERED_EXECUTION_WEIGHT
+    ) {
+      evictOne();
+    }
+    // A single event heavier than the whole budget still goes in once the
+    // buffer is empty: one event is the smallest thing this buffer can hold,
+    // so the alternative is dropping it outright. The bound is therefore
+    // "the budget, or one event, whichever is larger" — never unbounded.
+    buffer.push(event);
+    bufferedWeight += weight;
   }
   flusher.schedule();
 }
@@ -395,10 +429,12 @@ export function flushExecutionEvents(): void {
   const batch = buffer;
   buffer = [];
   evictFrom = 0;
+  bufferedWeight = 0;
   if (droppedSinceWarning > 0) {
     console.warn(
       `[plugins] dropped ${droppedSinceWarning} execution event(s): more than `
-      + `${MAX_BUFFERED_EXECUTION_EVENTS} were waiting for an animation frame.`,
+      + `${MAX_BUFFERED_EXECUTION_WEIGHT} retained objects (events plus metric `
+      + `points) were waiting for an animation frame.`,
     );
     droppedSinceWarning = 0;
   }

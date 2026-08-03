@@ -3,7 +3,8 @@ import { useTabStore } from '../store/tabStore';
 import type { ExecutionWebSocket } from '../api/ws';
 import {
   EXECUTION_EVENT_WATERMARK_RUNS,
-  MAX_BUFFERED_EXECUTION_EVENTS,
+  MAX_BUFFERED_EXECUTION_WEIGHT,
+  executionEventWeight,
   _resetExecutionEvents,
   executionEventSubscriberCount,
   executionEventTapCount,
@@ -633,7 +634,10 @@ describe('seq -- the dense counter that actually signals loss', () => {
 
     // Then the window goes dark and more arrives than the buffer holds.
     const dropped = 200;
-    const total = MAX_BUFFERED_EXECUTION_EVENTS + dropped;
+    // Every metric below carries one point, so each costs 2 against the
+    // weight budget: the event itself plus its point.
+    const capacity = Math.floor(MAX_BUFFERED_EXECUTION_WEIGHT / 2);
+    const total = capacity + dropped;
     for (let i = 0; i < total; i += 1) {
       ws.emit({
         type: 'metric', run_id: 'r1', cursor: i + 2,
@@ -643,7 +647,7 @@ describe('seq -- the dense counter that actually signals loss', () => {
     flushExecutionEvents();
 
     const seqs = seen.map((e) => e.seq);
-    expect(seqs).toHaveLength(MAX_BUFFERED_EXECUTION_EVENTS + 1);
+    expect(seqs).toHaveLength(capacity + 1);
     // Numbers were handed out to all of them, so the survivors run to the end
     // and the ones the buffer sacrificed are simply absent.
     expect(seqs[seqs.length - 1]).toBe(total + 1);
@@ -739,7 +743,7 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     // An occluded document keeps requestAnimationFrame but never calls it, so
     // nothing flushes while this runs.
     ws.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
-    const overflow = MAX_BUFFERED_EXECUTION_EVENTS + 500;
+    const overflow = Math.floor(MAX_BUFFERED_EXECUTION_WEIGHT / 2) + 500;
     for (let i = 0; i < overflow; i += 1) {
       ws.emit({
         type: 'metric', run_id: 'r1', cursor: i + 2,
@@ -749,7 +753,12 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     ws.emit({ type: 'execution_complete', run_id: 'r1', cursor: overflow + 2 });
 
     flushExecutionEvents();
-    expect(seen.length).toBe(MAX_BUFFERED_EXECUTION_EVENTS);
+    // What the cap promises is a bound on RETAINED OBJECTS, not on events, so
+    // that is what gets asserted: the delivered batch never weighed more than
+    // the budget.
+    const delivered = seen.reduce((sum, e) => sum + executionEventWeight(e), 0);
+    expect(delivered).toBeLessThanOrEqual(MAX_BUFFERED_EXECUTION_WEIGHT);
+    expect(seen.length).toBeLessThan(overflow);
     // Both lifecycle events survived the eviction.
     expect(seen[0].type).toBe('run_started');
     expect(seen[seen.length - 1]).toMatchObject({
@@ -774,7 +783,10 @@ describe('the buffer stays bounded when no frame ever comes', () => {
     subscribeExecutionEvents((e) => seen.push(e));
 
     const POINTS_PER_FRAME = 200;
-    for (let i = 0; i < MAX_BUFFERED_EXECUTION_EVENTS + 100; i += 1) {
+    // Comfortably more frames than the weight budget can hold, so eviction
+    // definitely runs.
+    const frames = Math.ceil(MAX_BUFFERED_EXECUTION_WEIGHT / POINTS_PER_FRAME) + 100;
+    for (let i = 0; i < frames; i += 1) {
       ws.emit({
         type: 'metric', run_id: 'r1', cursor: i + 1,
         points: Array.from({ length: POINTS_PER_FRAME }, (_, k) => ({
@@ -789,6 +801,48 @@ describe('the buffer stays bounded when no frame ever comes', () => {
       expect(event.type).toBe('metric');
       expect((event as Extract<ExecutionEvent, { type: 'metric' }>).points)
         .toHaveLength(POINTS_PER_FRAME);
+    }
+  });
+
+  it('bounds retained points, so fat frames are held to the same budget as thin ones', () => {
+    // The bound this pins: what a hidden tab retains is metric POINTS, not
+    // events. Counting events let a run writing big batches hold three orders
+    // of magnitude more than one writing single points, in the exact scenario
+    // this API exists for (a dashboard watching a long run in a background
+    // tab). Weight makes both runs cost the same.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [ws] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+
+    const FAT = 1000;
+    const frames = Math.ceil(MAX_BUFFERED_EXECUTION_WEIGHT / FAT) + 50;
+    for (let i = 0; i < frames; i += 1) {
+      ws.emit({
+        type: 'metric', run_id: 'r1', cursor: i + 1,
+        points: Array.from({ length: FAT }, (_, k) => ({
+          name: 'loss', value: k, step: i * FAT + k, node_id: null,
+        })),
+      });
+    }
+    flushExecutionEvents();
+
+    const retainedPoints = seen.reduce(
+      (sum, e) => sum + (e.type === 'metric' ? e.points.length : 0), 0,
+    );
+    expect(retainedPoints).toBeLessThanOrEqual(MAX_BUFFERED_EXECUTION_WEIGHT);
+    // Not vacuous: the budget is actually close to full, and far fewer frames
+    // survived than an event-count cap of the same number would have kept.
+    expect(retainedPoints).toBeGreaterThan(MAX_BUFFERED_EXECUTION_WEIGHT / 2);
+    expect(seen.length).toBeLessThan(frames);
+
+    // Eviction under weight still punches a visible hole: the survivors are
+    // the newest frames, so seq starts well past 1 and runs unbroken to the end.
+    const seqs = seen.map((e) => e.seq);
+    expect(seqs[0]).toBeGreaterThan(1);
+    expect(seqs[seqs.length - 1]).toBe(frames);
+    for (let i = 1; i < seqs.length; i += 1) {
+      expect(seqs[i]).toBe(seqs[i - 1] + 1);
     }
   });
 });
