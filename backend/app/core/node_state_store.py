@@ -17,7 +17,14 @@ Key composition: ``(graph_id, node_id, structure_hash)``.
     we evict any sibling key for the same (graph_id, node_id), and build a
     fresh module — old weights are no longer dimensionally compatible.
 
-LRU eviction caps total stored modules at ``max_modules`` to bound memory.
+LRU eviction caps total stored modules at ``max_modules`` AND at
+``max_bytes`` (core#135). Both are needed: 200 modules is a few megabytes of
+Linear layers or a hundred gigabytes of transformer blocks, and only the
+byte budget can tell those apart. Sizes are measured when a module is built
+(parameters plus buffers -- see ``core.memory_budget``), which means the
+gradients a module grows once it is trained are NOT re-counted; re-walking
+every stored module on every lookup would put an O(total parameters) cost on
+the hot path of every layer node.
 
 Thread safety: graph_engine runs ``execute()`` on a thread-pool executor
 (``loop.run_in_executor``). All mutating accessors are guarded by a
@@ -28,19 +35,33 @@ re-entrant.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import deque
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
+from .memory_budget import format_bytes, value_bytes
+
 if TYPE_CHECKING:
     import torch
 
+logger = logging.getLogger(__name__)
+
 
 class NodeStateStore:
-    def __init__(self, max_modules: int = 200) -> None:
+    def __init__(
+        self, max_modules: int = 200, *, max_bytes: int | None = None,
+    ) -> None:
         self._max = max_modules
+        if max_bytes is None:
+            from ..config import settings
+
+            max_bytes = int(settings.NODE_STATE_STORE_MAX_MB) * 1024 * 1024
+        self._max_bytes = max(0, int(max_bytes))
         self._store: dict[tuple[str, str, str], "torch.nn.Module"] = {}
         self._lru: deque[tuple[str, str, str]] = deque()
+        self._bytes: dict[tuple[str, str, str], int] = {}
+        self._total_bytes = 0
         self._lock = threading.Lock()
         self._key_locks: dict[tuple[str, str, str], threading.Lock] = {}
 
@@ -73,30 +94,60 @@ class NodeStateStore:
                 return existing
 
             # Structure changed for this node — drop stale siblings.
-            stale = [
-                k for k in self._store
-                if k[0] == graph_id and k[1] == node_id
-            ]
-            for s in stale:
-                self._store.pop(s, None)
-                try:
-                    self._lru.remove(s)
-                except ValueError:
-                    pass
-                self._key_locks.pop(s, None)
+            for stale in self._keys_for_node_locked(graph_id, node_id):
+                self._forget_locked(stale)
 
         # Builder runs OUTSIDE the lock — module construction can be slow
-        # and may itself acquire locks (e.g. CUDA initialisation).
+        # and may itself acquire locks (e.g. CUDA initialisation). Sizing it
+        # is out here for the same reason: walking a large module's
+        # parameters is pure reading and does not need the store's lock.
         module = builder()
+        nbytes = value_bytes(module)
 
         with self._lock:
             self._store[key] = module
+            self._bytes[key] = nbytes
+            self._total_bytes += nbytes
             self._lru.append(key)
             while len(self._lru) > self._max:
-                evict = self._lru.popleft()
-                self._store.pop(evict, None)
-                self._key_locks.pop(evict, None)
+                self._forget_locked(self._lru[0])
+            # The module just built is never the one evicted: a store whose
+            # budget cannot hold one module would otherwise throw away the
+            # instance it is about to hand back, and the caller would train
+            # a module the store no longer has — silently losing its weights
+            # between runs, which is the one thing this store exists to
+            # prevent. It stays, over budget and visible in /api/health.
+            while (self._max_bytes and self._total_bytes > self._max_bytes
+                   and len(self._lru) > 1):
+                evicted = self._lru[0]
+                self._forget_locked(evicted)
+                logger.info(
+                    "node state store over budget (%s of %s); dropped the "
+                    "persisted module for node %s",
+                    format_bytes(self._total_bytes),
+                    format_bytes(self._max_bytes), evicted[1],
+                )
         return module
+
+    # ── internals (caller holds ``self._lock``) ─────────────────────
+
+    def _forget_locked(self, key: tuple[str, str, str]) -> None:
+        """Drop one entry from every index the store keeps."""
+        self._store.pop(key, None)
+        self._total_bytes -= self._bytes.pop(key, 0)
+        try:
+            self._lru.remove(key)
+        except ValueError:
+            pass
+        self._key_locks.pop(key, None)
+
+    def _keys_for_node_locked(
+        self, graph_id: str, node_id: str,
+    ) -> list[tuple[str, str, str]]:
+        return [
+            k for k in self._store
+            if k[0] == graph_id and k[1] == node_id
+        ]
 
     def per_key_lock(self, graph_id: str, node_id: str, structure_hash: str) -> threading.Lock:
         """Return a lock that callers can use to serialise forward passes
@@ -114,17 +165,9 @@ class NodeStateStore:
     def reset_node(self, graph_id: str, node_id: str) -> int:
         """Drop all persisted modules for one node. Returns count evicted."""
         with self._lock:
-            stale = [
-                k for k in self._store
-                if k[0] == graph_id and k[1] == node_id
-            ]
+            stale = self._keys_for_node_locked(graph_id, node_id)
             for s in stale:
-                self._store.pop(s, None)
-                try:
-                    self._lru.remove(s)
-                except ValueError:
-                    pass
-                self._key_locks.pop(s, None)
+                self._forget_locked(s)
             return len(stale)
 
     def reset_graph(self, graph_id: str) -> int:
@@ -132,12 +175,7 @@ class NodeStateStore:
         with self._lock:
             stale = [k for k in self._store if k[0] == graph_id]
             for s in stale:
-                self._store.pop(s, None)
-                try:
-                    self._lru.remove(s)
-                except ValueError:
-                    pass
-                self._key_locks.pop(s, None)
+                self._forget_locked(s)
             return len(stale)
 
     def reset_all(self) -> int:
@@ -145,8 +183,20 @@ class NodeStateStore:
             n = len(self._store)
             self._store.clear()
             self._lru.clear()
+            self._bytes.clear()
+            self._total_bytes = 0
             self._key_locks.clear()
             return n
+
+    def stats(self) -> dict[str, int]:
+        """What this store holds, for ``/api/health``."""
+        with self._lock:
+            return {
+                "modules": len(self._store),
+                "max_modules": self._max,
+                "bytes": self._total_bytes,
+                "max_bytes": self._max_bytes,
+            }
 
     def iter_for_graph(
         self, graph_id: str,

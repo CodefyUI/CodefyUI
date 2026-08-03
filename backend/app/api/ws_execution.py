@@ -137,6 +137,10 @@ class _ExecutionSocket:
         # fresh cache, and still does. It is lent to every run this socket
         # starts, which is what makes "edit one node, hit Run, only that
         # subtree re-executes" work across Run clicks.
+        #
+        # Its byte budget (#135) is therefore PER CONNECTION, not per
+        # server: ten open editor tabs are ten budgets. /api/health reports
+        # the instance count next to the total for that reason.
         self._cache = ExecutionCache()
         self._run_id: str | None = None
         self._pump: asyncio.Task[None] | None = None
