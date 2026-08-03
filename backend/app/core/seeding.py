@@ -174,8 +174,15 @@ def deterministic_scope(enabled: bool):
     The residual, stated rather than pretended away: while runs overlap, a
     run that did not ask for determinism can be dragged into a neighbour's.
     That is inherent in a process-global torch setting -- the alternative is
-    serialising every run in the server -- and it is bounded: determinism
-    cannot outlive the last run that wanted it. A run that needs the
+    serialising every run in the server.
+
+    Be precise about how far it reaches, because the obvious guess is wrong.
+    It is NOT bounded by the last run that asked for determinism: refcounting
+    holds the baseline until the depth returns to zero, so an unbroken chain
+    of overlapping plain runs keeps the setting on long after the run that
+    asked for it finished. The real bound is process idleness -- determinism
+    lifts once nothing at all is executing -- and every headless invoke opens
+    a scope too, so it counts toward that chain. A run that needs the
     guarantee in both directions takes a seed, which also makes it run alone
     (see ``run_service._RunExclusion``).
 
