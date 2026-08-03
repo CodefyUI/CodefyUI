@@ -101,6 +101,27 @@ class ArtifactSignal:
 
 
 @dataclass(frozen=True)
+class WarningSignal:
+    """Something the run should tell the user about, short of failing.
+
+    The run service turns this into a ``run_warning`` event, which the
+    canvas already surfaces as a toast and the Runs panel as a log line --
+    the same path ``DroppedSignal`` takes. It exists because some warnings
+    are not observability: #135's node-state eviction can DISCARD TRAINED
+    WEIGHTS to stay inside its byte budget, and a ``logger.info`` line in a
+    server console is not a place a user watching the UI will ever look.
+
+    ``kind`` is a stable token a client may branch on; ``detail`` is the
+    human sentence. Both are set by the producer, because a warning nobody
+    can act on is worse than none.
+    """
+
+    kind: str
+    detail: str
+    node_id: str | None = None
+
+
+@dataclass(frozen=True)
 class DroppedSignal:
     """*count* items the outbox discarded to stay bounded.
 
@@ -418,6 +439,25 @@ class ExecutionContext:
             return
         self.outbox.put(MetricSignal(
             name=str(name), value=numeric, step=index,
+            node_id=node_id or self.current_node_id or None,
+        ))
+
+    def log_warning(
+        self,
+        kind: str,
+        detail: str,
+        node_id: str | None = None,
+    ) -> None:
+        """Tell the user something without failing the run. NON-BLOCKING.
+
+        Reaches the canvas as a toast and the Runs panel as a log line. Use
+        it for the things a server log cannot carry -- the ones where the
+        user has to know something happened to their run, not merely to the
+        process. Silently discarded on a run with no durable consumer, like
+        every other signal.
+        """
+        self.outbox.put(WarningSignal(
+            kind=str(kind), detail=str(detail),
             node_id=node_id or self.current_node_id or None,
         ))
 

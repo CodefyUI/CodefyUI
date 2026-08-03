@@ -121,6 +121,7 @@ from .execution_context import (
     DroppedSignal,
     ExecutionContext,
     MetricSignal,
+    WarningSignal,
 )
 from .graph_engine import GraphValidationError, build_preset_fallback, execute_graph
 from .node_state_store import NodeStateStore
@@ -1939,6 +1940,11 @@ class RunService:
                         "detail": ("progress/metric signals were dropped to "
                                    "keep the run's outbox bounded; the "
                                    "series may have gaps"),
+                    })
+                elif isinstance(signal, WarningSignal):
+                    await self._emit(active.run_id, EVENT_WARNING, {
+                        "kind": signal.kind, "detail": signal.detail,
+                        "node_id": signal.node_id,
                     })
                 else:  # pragma: no cover - a node pack's own signal type
                     logger.debug("run %s: ignoring unknown signal %r",

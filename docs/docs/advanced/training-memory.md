@@ -80,6 +80,8 @@ Each card gets **its own run queue**, so a six-hour job on `cuda:0` never delays
 
 **An index that does not exist** — `cuda:3` on a two-card box, or a graph saved on a workstation and opened on a laptop — falls back to the *current CUDA device*, with a warning naming the count. Not to the CPU: you asked to train on a GPU, and answering that with a silent forty-minute CPU run is the worse surprise.
 
+A device string that is not addressable at all — `cuda:`, `cuda:abc` (an unexpanded `${CUDA_INDEX}`, say), `cuda:0:1`, `cuda: 0` — lands in the same place, for the same reason. The `cuda` prefix is still an unambiguous request for a GPU; only the index is wrong. Before this, those strings reached PyTorch verbatim and came back as `RuntimeError: Invalid device string`, which named neither the graph nor the parameter they came from.
+
 :::note Distributed training is out of scope
 A run is single-process and single-device. There is no `DistributedDataParallel`, no multi-card data parallelism, and no multi-node anything — one run uses one card. Several runs can occupy several cards at once, one per card, through the per-device queues.
 

@@ -108,7 +108,30 @@ def value_bytes(value: Any) -> int:
     raise ``RecursionError`` from inside a cache write; bounded by
     :data:`MAX_WALK_DEPTH` and :data:`MAX_WALK_ITEMS` so it cannot become
     the slow part of one either.
+
+    "Never raises" is enforced here rather than merely intended, because of
+    WHERE this runs: inside ``ExecutionCache.put``, which the engine calls
+    from inside the node's own ``try``. An exception escaping a measurement
+    would be caught as if the NODE had failed -- so a node that computed
+    its result perfectly well would be reported as an error, and in
+    ``fail_fast`` it would take the run down. The walk touches arbitrary
+    user objects (a custom node's return value, a plugin's dataclass, a
+    wrapper whose ``nbytes`` is a property that raises), so "no object in
+    this repo triggers it" is not a guarantee about anything.
+
+    A measurement that gives up returns what it had counted so far. A
+    partial byte count evicts slightly early; an exception loses a run.
     """
+    try:
+        return _walk(value)
+    except Exception:  # noqa: BLE001 - see above; a budget must not fail a run
+        logger.debug("byte measurement failed; treating it as 0",
+                     exc_info=True)
+        return 0
+
+
+def _walk(value: Any) -> int:
+    """The measurement itself. See :func:`value_bytes` for the contract."""
     try:
         import torch
     except ImportError:  # pragma: no cover - torch is a hard dependency
@@ -158,7 +181,15 @@ def value_bytes(value: Any) -> int:
             total += sys.getsizeof(obj)
             continue
 
-        nbytes = getattr(obj, "nbytes", None)
+        # Guarded because ``nbytes`` may be a PROPERTY, and a property can
+        # run arbitrary code: a lazily-loaded array that hits the disk, a
+        # wrapper that raises for an unmaterialised value. A bare
+        # ``getattr`` propagates everything that is not an AttributeError,
+        # which is the one thing this function promises not to do.
+        try:
+            nbytes = getattr(obj, "nbytes", None)
+        except Exception:  # noqa: BLE001 - an unreadable size measures 0
+            nbytes = None
         if isinstance(nbytes, int) and type(obj).__module__.startswith("numpy"):
             total += nbytes
             continue

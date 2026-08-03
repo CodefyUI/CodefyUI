@@ -300,7 +300,12 @@ _CLI_TAIL = '''def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device",
         default="auto",
-        help="Execution device: auto, cpu, cuda, or mps (default: auto).",
+        help=(
+            "Execution device: auto, cpu, cuda, cuda:N (a specific GPU), "
+            "or mps (default: auto). An unavailable backend falls back to "
+            "the CPU and an unusable GPU index falls back to the default "
+            "GPU; either way the substitution is logged."
+        ),
     )
     parser.add_argument(
         "--timeout",

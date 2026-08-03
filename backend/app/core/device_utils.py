@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -10,14 +11,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Every device string torch will accept from this application, and the
+#: only shapes :func:`resolve_device` passes through. Anything else is a
+#: typo, an unexpanded shell variable, or a hand-edited graph -- and
+#: reaching torch with it produces ``RuntimeError: Invalid device string``,
+#: an error that names neither the graph nor the parameter it came from.
+#:
+#: Deliberately stricter than "does it start with cuda": ``cuda:``,
+#: ``cuda:abc``, ``cuda:0:1``, ``cuda:1e3`` and ``cuda: 0`` all read as
+#: CUDA to a ``startswith`` check and none of them is addressable. Note
+#: that ``int(" 0")`` is 0 in Python, so the space in the last one survives
+#: a parse-and-check approach and only a syntax check catches it.
+#:
+#: Mirrors ``run_service.DEVICE_PATTERN``, which validates the same
+#: vocabulary at submit time; this one is the last line, covering the
+#: entry points that never pass through a run submission -- the exported
+#: script's ``--device``, a hand-edited SELECT param (nothing validates
+#: option values at runtime), and a direct ``execute_graph``.
+DEVICE_SYNTAX = re.compile(r"^(cpu|cuda|mps)(?::(\d+))?$")
+
 
 def _current_cuda_index() -> int:
     """The index a bare ``cuda`` means in THIS process.
 
-    ``run_service`` has its own copy of this for the queue key; both read
-    ``torch.cuda.current_device()`` because that is the index torch itself
-    would pick, and hardcoding 0 would be wrong in a process that changed
-    it.
+    ``torch.cuda.current_device()``, because that is the index torch itself
+    would pick; hardcoding 0 would be wrong in a process that changed it.
+    ``run_service.canonical_queue_key`` imports this rather than keeping a
+    second copy, so the queue and the runtime always agree on which card a
+    bare ``cuda`` means.
     """
     try:
         import torch
@@ -26,6 +47,17 @@ def _current_cuda_index() -> int:
     except Exception:  # noqa: BLE001 - only reached with CUDA already checked
         logger.debug("could not read the current CUDA device", exc_info=True)
         return 0
+
+
+def _mps_available() -> bool:
+    """True when Apple's MPS backend is present AND usable."""
+    try:
+        import torch
+
+        return bool(hasattr(torch.backends, "mps")
+                    and torch.backends.mps.is_available())
+    except Exception:  # noqa: BLE001 - no torch, no backend
+        return False
 
 
 def cuda_device_count() -> int:
@@ -51,8 +83,15 @@ def split_device(device: str) -> tuple[str, int | None]:
 
     ``None`` for the index means "whichever one torch is currently pointed
     at", which is a different statement from ``0`` and has to stay
-    distinguishable -- see :func:`resolve_device`, which validates an
-    explicit index and leaves an absent one alone.
+    distinguishable.
+
+    **A lenient parser, not a validator.** An unreadable suffix
+    (``"cuda:abc"``) also yields ``None``, which is the same answer it
+    gives for no suffix at all -- so this cannot be used to decide whether
+    a string is addressable. :data:`DEVICE_SYNTAX` and
+    :func:`resolve_device` are what answer that question; this exists for
+    callers that only want the KIND, and for the fallback path that has
+    already established the string is malformed.
     """
     kind, separator, index = (device or "").partition(":")
     if not separator:
@@ -111,6 +150,22 @@ def resolve_device(requested: str | None) -> str:
     the count so the substitution is visible in the log. ``mps`` has no
     index vocabulary beyond ``mps:0``, and is normalised the same way.
 
+    **Malformed index.** ``cuda:``, ``cuda:abc``, ``cuda:0:1``, ``cuda:1e3``
+    and ``cuda: 0`` are all rejected by :data:`DEVICE_SYNTAX` and treated
+    exactly like an out-of-range one: the ``cuda`` prefix is still an
+    unambiguous request for a GPU, so the fallback respects it and the
+    warning names what was wrong. Before this they were returned VERBATIM
+    and torch answered with ``RuntimeError: Invalid device string``, naming
+    neither the graph nor the parameter the string came from. They reach
+    here through the exported script's free-form ``--device`` and through a
+    hand-edited SELECT param, neither of which passes a run submission's
+    validation.
+
+    The value returned is always REBUILT from what was understood, never
+    echoed. That is what makes ``cuda: 0`` safe: the space survives
+    ``int()``, so a parse-and-check would accept it and hand torch a string
+    it rejects.
+
     Never raises. Every caller -- node params, run options, the exported
     script, the CLI -- treats this as a total function that always yields a
     string torch will accept.
@@ -123,13 +178,42 @@ def resolve_device(requested: str | None) -> str:
 
     if device == "cpu":
         return "cpu"
-    kind, index = split_device(device)
+
+    syntax = DEVICE_SYNTAX.match(device)
+    if syntax is None:
+        # The kind is stripped so ``"cuda : 0"`` degrades the same way
+        # ``"cuda: 0"`` does; both are the same mistake.
+        kind, _ = split_device(device)
+        kind = kind.strip()
+        if kind == "cuda" and torch.cuda.is_available():
+            current = _current_cuda_index()
+            logger.warning(
+                "%r is not a usable device string (expected cuda or "
+                "cuda:N); using cuda:%d instead.", device, current,
+            )
+            # The SAME landing place as an out-of-range index, deliberately:
+            # both are "you asked for a GPU and named it wrong", and two
+            # spellings of one recovery would be two behaviours to learn.
+            return f"cuda:{current}"
+        if kind == "mps" and _mps_available():
+            logger.warning(
+                "%r is not a usable device string (expected mps or mps:0); "
+                "using mps instead.", device,
+            )
+            return "mps"
+        logger.warning("Unknown device %r, falling back to CPU", device)
+        return "cpu"
+
+    kind = syntax.group(1)
+    index = int(syntax.group(2)) if syntax.group(2) is not None else None
     if kind == "cuda":
         if not torch.cuda.is_available():
             logger.warning("CUDA not available, falling back to CPU")
             return "cpu"
         count = cuda_device_count()
-        if index is not None and not (0 <= index < count):
+        if index is None:
+            return "cuda"
+        if not (0 <= index < count):
             current = _current_cuda_index()
             logger.warning(
                 "CUDA device index %d was requested but this machine has %d "
@@ -137,9 +221,9 @@ def resolve_device(requested: str | None) -> str:
                 index, count, max(count - 1, 0), current,
             )
             return f"cuda:{current}"
-        return device
+        return f"cuda:{index}"
     if kind == "mps":
-        if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        if not _mps_available():
             logger.warning("MPS not available, falling back to CPU")
             return "cpu"
         if index is not None and index != 0:

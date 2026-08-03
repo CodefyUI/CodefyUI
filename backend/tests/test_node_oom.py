@@ -97,6 +97,30 @@ def test_the_dedicated_torch_oom_type_is_recognised():
     assert is_out_of_memory(_TORCH_OOM("no message about memory here")) is True
 
 
+def test_both_spellings_of_the_oom_class_are_recognised():
+    """``torch.cuda.OutOfMemoryError`` is the one that exists on 2.0-2.4.
+
+    That range is exactly what this project's declared floor still admits,
+    so checking only the 2.5+ ``torch.OutOfMemoryError`` spelling would
+    leave those builds falling through to the MESSAGE match -- which is the
+    fallback, not the answer. On 2.5+ the two names are one object and this
+    asserts the same thing twice, which costs nothing and keeps the
+    guarantee pinned if they ever diverge again.
+    """
+    import torch
+
+    for spelling in ("OutOfMemoryError",):
+        cls = getattr(torch, spelling, None)
+        if isinstance(cls, type):
+            assert is_out_of_memory(cls("silent")) is True
+        cuda_cls = getattr(torch.cuda, spelling, None)
+        if isinstance(cuda_cls, type):
+            assert is_out_of_memory(cuda_cls("silent")) is True
+    # At least one of the two must exist on any supported build.
+    assert (isinstance(getattr(torch, "OutOfMemoryError", None), type)
+            or isinstance(getattr(torch.cuda, "OutOfMemoryError", None), type))
+
+
 def test_a_torch_oom_is_recognised():
     assert is_out_of_memory(_cuda_oom()) is True
 

@@ -146,6 +146,55 @@ def test_a_tensor_on_the_meta_device_falls_back_to_the_element_formula():
     assert value_bytes(tensor) == 4000
 
 
+# ── the "never raises" promise, enforced rather than intended ─────────────
+
+
+class _ExplodingSize:
+    """A ``nbytes`` PROPERTY that raises -- a lazily-loaded array, a wrapper
+    around an unmaterialised value, or any custom node's return type."""
+
+    @property
+    def nbytes(self):
+        raise RuntimeError("nbytes exploded")
+
+
+class _ExplodingIteration:
+    """Something dict-like whose iteration fails."""
+
+    def keys(self):
+        raise RuntimeError("keys exploded")
+
+
+def test_an_exploding_nbytes_property_measures_zero_instead_of_raising():
+    """A bare ``getattr`` propagates anything that is not AttributeError.
+
+    It matters because of WHERE this runs: inside ``ExecutionCache.put``,
+    inside the node's own ``try``. An escape would report a node that
+    computed its result perfectly well as a failure, and in fail_fast it
+    would take the run down.
+    """
+    assert value_bytes(_ExplodingSize()) == 0
+
+
+def test_an_exploding_object_inside_a_container_does_not_poison_the_walk():
+    payload = {"real": torch.zeros(1000), "bad": _ExplodingSize()}
+    assert value_bytes(payload) >= 4000
+
+
+def test_nothing_the_walk_can_meet_escapes_as_an_exception():
+    for hostile in (_ExplodingSize(), _ExplodingIteration(),
+                    [_ExplodingSize()], {"k": _ExplodingIteration()}):
+        assert value_bytes(hostile) >= 0  # the point is that it RETURNS
+
+
+def test_a_module_whose_parameters_raise_is_survivable():
+    class _BrokenModule(nn.Module):
+        def parameters(self, recurse=True):
+            raise RuntimeError("parameters exploded")
+
+    assert value_bytes(_BrokenModule()) == 0
+
+
 def test_format_bytes_reads_like_a_size():
     assert format_bytes(512) == "512 B"
     assert format_bytes(1536) == "1.5 KB"

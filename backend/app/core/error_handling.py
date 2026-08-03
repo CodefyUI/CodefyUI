@@ -123,11 +123,16 @@ def is_out_of_memory(exc: BaseException) -> bool:
 
     Three shapes, because torch has three:
 
-    * ``torch.OutOfMemoryError`` (aliased as ``torch.cuda.OutOfMemoryError``),
-      which is what a CUDA allocation failure raises on any modern build;
+    * the dedicated exception class, under BOTH of its spellings.
+      ``torch.cuda.OutOfMemoryError`` is the one that exists on 2.0-2.4 --
+      precisely the range this project's declared floor still admits --
+      and ``torch.OutOfMemoryError`` is the 2.5+ name it became an alias
+      of. Checking only the newer spelling would leave the older builds
+      relying on the message match below, which is the fallback rather
+      than the answer.
     * a plain ``RuntimeError`` whose message says so -- MPS reports
-      ``"MPS backend out of memory"`` this way, and so do older torch builds
-      and several out-of-tree backends;
+      ``"MPS backend out of memory"`` this way, and so do several
+      out-of-tree backends;
     * a ``MemoryError``, which is what the CPU allocator raises.
 
     The message match is deliberately narrow (``out of memory`` /
@@ -139,8 +144,14 @@ def is_out_of_memory(exc: BaseException) -> bool:
     try:
         import torch
 
-        oom_type = getattr(torch, "OutOfMemoryError", None)
-        if oom_type is not None and isinstance(exc, oom_type):
+        oom_types = tuple({
+            candidate for candidate in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(torch.cuda, "OutOfMemoryError", None),
+            )
+            if isinstance(candidate, type)
+        })
+        if oom_types and isinstance(exc, oom_types):
             return True
     except Exception:  # noqa: BLE001 - classification must never raise
         pass

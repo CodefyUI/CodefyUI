@@ -26,12 +26,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     import torch
 
     from .execution_context import ExecutionContext
+
+logger = logging.getLogger(__name__)
 
 
 class StatefulModuleMixin:
@@ -82,6 +85,13 @@ class StatefulModuleMixin:
         each node needing its own device handling. Moving is idempotent and,
         for a persisted module, carries its trained weights across a
         device switch.
+
+        When storing this module pushes the store past a limit and some
+        OTHER node's weights are discarded to make room, the loss is
+        reported on the run's event stream (#135 review). A server log line
+        is not somewhere a user watching the canvas will look, and the thing
+        being lost is training -- the next run silently restarts that node
+        from a fresh initialisation.
         """
         if (
             context is None
@@ -97,6 +107,8 @@ class StatefulModuleMixin:
                 context.current_node_id,
                 h,
                 lambda: self.build_module(params),
+                on_evict=lambda keys, reason: _report_eviction(
+                    context, keys, reason),
             )
 
         if context is not None and getattr(context, "device", None):
@@ -104,3 +116,44 @@ class StatefulModuleMixin:
 
             module = to_device(module, context.device)
         return module
+
+
+#: How many evicted node ids a single warning names before it stops
+#: listing them. A budget that evicts twenty nodes at once has a message
+#: nobody reads; the count still tells the whole story.
+_MAX_NAMED_EVICTIONS = 3
+
+
+def _report_eviction(
+    context: "ExecutionContext",
+    keys: list[tuple[str, str, str]],
+    reason: str,
+) -> None:
+    """Put a weight-discarding eviction where the user will see it.
+
+    Onto the run's event stream, which the canvas renders as a toast and
+    the Runs panel as a log line. The store has already logged it at
+    WARNING; this is the half a user watching the UI can actually notice.
+
+    Never raises: an eviction notice must not be able to fail the node that
+    happened to trigger it.
+    """
+    if not keys:
+        return
+    try:
+        names = [key[1] for key in keys]
+        shown = ", ".join(names[:_MAX_NAMED_EVICTIONS])
+        if len(names) > _MAX_NAMED_EVICTIONS:
+            shown += f" and {len(names) - _MAX_NAMED_EVICTIONS} more"
+        limit = ("byte budget (CODEFYUI_NODE_STATE_STORE_MAX_MB)"
+                 if reason == "bytes" else
+                 "module count limit")
+        context.log_warning(
+            "node_state_evicted",
+            f"The persisted weights of {len(names)} node(s) were discarded "
+            f"to stay inside the node state store's {limit}: {shown}. "
+            f"Those nodes will start from a fresh initialisation on the "
+            f"next run.",
+        )
+    except Exception:  # noqa: BLE001 - a notice must not fail the node
+        logger.debug("could not report a node state eviction", exc_info=True)

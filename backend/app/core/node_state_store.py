@@ -73,6 +73,7 @@ class NodeStateStore:
         node_id: str,
         structure_hash: str,
         builder: Callable[[], "torch.nn.Module"],
+        on_evict: Callable[[list[tuple[str, str, str]], str], None] | None = None,
     ) -> "torch.nn.Module":
         """Return the persisted module or build a new one.
 
@@ -80,6 +81,14 @@ class NodeStateStore:
         entries for that node are evicted before the new module is created.
         Weights from a different shape would crash the forward pass anyway,
         and keeping them around would just waste memory.
+
+        *on_evict* is called with the keys this call displaced and the
+        reason (``"bytes"`` or ``"count"``), so a caller with a run context
+        can put the loss somewhere the USER sees. It exists because these
+        evictions are not cache misses -- they discard TRAINED WEIGHTS, and
+        the next run silently starts that node from a fresh initialisation.
+        Called outside the lock, and never for the structural-change path,
+        which is a deliberate reset rather than a budget decision.
         """
         key = (graph_id, node_id, structure_hash)
         with self._lock:
@@ -126,7 +135,9 @@ class NodeStateStore:
             self._bytes[key] = nbytes
             self._total_bytes += nbytes
             self._lru.append(key)
+            by_count: list[tuple[str, str, str]] = []
             while len(self._lru) > self._max:
+                by_count.append(self._lru[0])
                 self._forget_locked(self._lru[0])
             # The module just built is never the one evicted: a store whose
             # budget cannot hold one module would otherwise throw away the
@@ -134,16 +145,39 @@ class NodeStateStore:
             # a module the store no longer has — silently losing its weights
             # between runs, which is the one thing this store exists to
             # prevent. It stays, over budget and visible in /api/health.
+            by_bytes: list[tuple[str, str, str]] = []
             while (self._max_bytes and self._total_bytes > self._max_bytes
                    and len(self._lru) > 1):
-                evicted = self._lru[0]
-                self._forget_locked(evicted)
-                logger.info(
-                    "node state store over budget (%s of %s); dropped the "
-                    "persisted module for node %s",
-                    format_bytes(self._total_bytes),
-                    format_bytes(self._max_bytes), evicted[1],
-                )
+                by_bytes.append(self._lru[0])
+                self._forget_locked(self._lru[0])
+            budget, cap = self._max_bytes, self._total_bytes
+
+        # WARNING, not info (#135 review). These lines are the only record
+        # that a node's trained weights are gone, and the byte budget binds
+        # long before the module count does -- a 1 GB budget holds about ten
+        # ResNet-50s, and the gradients this store deliberately does not
+        # re-count make the real figure smaller still. Reported outside the
+        # lock so a slow consumer cannot stall the store.
+        for evicted in by_bytes:
+            logger.warning(
+                "node state store over budget (%s of %s); DISCARDED the "
+                "persisted weights of node %s. It will start from a fresh "
+                "initialisation on the next run. Raise "
+                "CODEFYUI_NODE_STATE_STORE_MAX_MB to keep it.",
+                format_bytes(cap), format_bytes(budget), evicted[1],
+            )
+        for evicted in by_count:
+            logger.warning(
+                "node state store holds its maximum of %d modules; "
+                "DISCARDED the persisted weights of node %s. It will start "
+                "from a fresh initialisation on the next run.",
+                self._max, evicted[1],
+            )
+        if on_evict is not None:
+            if by_bytes:
+                on_evict(by_bytes, "bytes")
+            if by_count:
+                on_evict(by_count, "count")
         return module
 
     # ── internals (caller holds ``self._lock``) ─────────────────────

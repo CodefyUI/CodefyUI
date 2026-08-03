@@ -82,8 +82,79 @@ def test_an_out_of_range_index_degrades_to_the_current_card(four_cards, caplog):
     assert "cuda:0" in caplog.text and "4" in caplog.text
 
 
-def test_a_negative_index_is_out_of_range_too(four_cards):
+def test_a_negative_index_is_rejected(four_cards):
+    """Caught by the syntax check (``\\d+``), so it lands where a malformed
+    string does -- which is the same place an out-of-range one does."""
     assert resolve_device("cuda:-1") == "cuda:0"
+
+
+# ── malformed strings, at every entry point they can arrive through ───────
+
+
+@pytest.mark.parametrize("bad", [
+    "cuda:abc",     # a typo, or an unexpanded ${CUDA_INDEX}
+    "cuda:",        # a trailing separator
+    "cuda:0:1",     # two indices
+    "cuda:1e3",     # scientific notation; int() rejects it, humans do not
+    "cuda: 0",      # a space -- int(" 0") is 0, so only a SYNTAX check sees it
+    "cuda : 0",     # ... and the same mistake one character earlier
+    "cuda:+1",      # a sign
+    "cuda:٠",       # a non-ASCII digit; int() accepts it, torch does not
+])
+def test_a_malformed_index_never_reaches_torch(four_cards, bad):
+    """Every one of these used to be returned VERBATIM.
+
+    torch then answered ``RuntimeError: Invalid device string``, naming
+    neither the graph nor the parameter the string came from. They arrive
+    through the exported script's free-form ``--device`` and through a
+    hand-edited SELECT param, neither of which a run submission validates.
+    """
+    resolved = resolve_device(bad)
+    assert resolved == "cuda:0", bad
+    # The real proof: torch accepts what came back.
+    assert torch.device(resolved).type == "cuda"
+
+
+@pytest.mark.parametrize("bad", ["cuda:abc", "cuda:", "cuda:0:1", "cuda: 0"])
+def test_a_malformed_index_lands_on_the_cpu_when_there_is_no_cuda(no_cuda, bad):
+    assert resolve_device(bad) == "cpu"
+
+
+def test_a_malformed_mps_index_is_rejected_too(monkeypatch):
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("mps:abc") == "mps"
+    assert resolve_device("mps:") == "mps"
+
+
+def test_an_unrecognised_kind_still_goes_to_the_cpu(four_cards):
+    assert resolve_device("gpu:0") == "cpu"
+    assert resolve_device("cudda:0") == "cpu"
+
+
+def test_the_resolved_string_is_rebuilt_rather_than_echoed(four_cards):
+    """``cuda: 0`` is why. The space survives ``int()``, so a
+    parse-and-check would accept it and hand torch a string it rejects."""
+    assert resolve_device("  CUDA:2  ") == "cuda:2"
+    assert resolve_device("CUDA") == "cuda"
+
+
+def test_split_device_is_a_parser_and_not_a_validator():
+    """It cannot tell "no index" from "broken index" -- both are None.
+
+    Pinned because that is exactly the gap the malformed-index bug lived
+    in: a check written against ``split_device`` looks like validation and
+    is not.
+    """
+    assert split_device("cuda") == ("cuda", None)
+    assert split_device("cuda:abc") == ("cuda", None)
+
+
+def test_the_exported_script_documents_the_indexed_form():
+    """The one device entry point with no `choices=` to constrain it."""
+    from app.core import codegen
+
+    source = __import__("inspect").getsource(codegen)
+    assert "cuda:N" in source
 
 
 def test_an_index_on_a_machine_with_no_cuda_still_lands_on_the_cpu(no_cuda):

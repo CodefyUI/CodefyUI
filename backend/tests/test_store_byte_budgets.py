@@ -293,6 +293,97 @@ def test_two_threads_building_the_same_module_do_not_drift_the_total():
     assert store.stats()["bytes"] == 0
 
 
+def test_discarding_trained_weights_is_reported_to_the_caller():
+    """An eviction here is not a cache miss -- it throws away TRAINING.
+
+    The byte budget binds long before the count does (a 1 GB budget holds
+    about ten ResNet-50s, and the gradients this store deliberately does
+    not re-count make the real figure smaller), so this is a path users
+    reach, and the next run silently restarts that node from a fresh
+    initialisation. The store therefore hands its caller the keys it
+    discarded rather than only writing a log line.
+    """
+    store = NodeStateStore(max_modules=100, max_bytes=THREE_ENTRY_BUDGET)
+    seen: list[tuple[list, str]] = []
+    for node in ("a", "b", "c"):
+        store.get_or_create("g", node, "h", lambda: _linear_of(1))
+    assert seen == [], "nothing should have been evicted yet"
+
+    store.get_or_create("g", "d", "h", lambda: _linear_of(1),
+                        on_evict=lambda keys, reason: seen.append((keys, reason)))
+
+    assert len(seen) == 1
+    keys, reason = seen[0]
+    assert reason == "bytes"
+    assert [k[1] for k in keys] == ["a"]
+
+
+def test_a_count_eviction_is_reported_with_its_own_reason():
+    store = NodeStateStore(max_modules=2, max_bytes=1024 * MB)
+    seen: list[tuple[list, str]] = []
+    for node in ("a", "b"):
+        store.get_or_create("g", node, "h", lambda: nn.Linear(2, 2))
+    store.get_or_create("g", "c", "h", lambda: nn.Linear(2, 2),
+                        on_evict=lambda keys, reason: seen.append((keys, reason)))
+    assert [(len(k), r) for k, r in seen] == [(1, "count")]
+
+
+def test_a_structural_reset_is_not_reported_as_a_budget_eviction():
+    """Changing a node's shape drops its own old module on purpose.
+
+    That is a deliberate reset, not the store running out of room, and
+    warning about it would train users to ignore the warning that matters.
+    """
+    store = NodeStateStore(max_modules=100, max_bytes=64 * MB)
+    seen: list = []
+    store.get_or_create("g", "a", "shape1", lambda: _linear_of(1))
+    store.get_or_create("g", "a", "shape2", lambda: _linear_of(1),
+                        on_evict=lambda keys, reason: seen.append(reason))
+    assert seen == []
+
+
+def test_the_eviction_warning_reaches_the_run_event_stream():
+    """The half a user watching the canvas can actually notice.
+
+    ``run_warning`` is the same event the dropped-signal notice uses, which
+    the canvas renders as a toast and the Runs panel as a log line.
+    """
+    from app.core.execution_context import ExecutionContext, WarningSignal
+    from app.core.stateful_module import StatefulModuleMixin
+
+    class _Layer(StatefulModuleMixin):
+        def build_module(self, params):
+            return _linear_of(1)
+
+    context = ExecutionContext()
+    context.node_state_store = NodeStateStore(
+        max_modules=100, max_bytes=THREE_ENTRY_BUDGET)
+    context.graph_id = "g"
+
+    layer = _Layer()
+    for node_id in ("a", "b", "c", "d"):
+        context.current_node_id = node_id
+        layer.get_or_build_module(context, {"width": 1})
+
+    signals, _ = context.outbox.drain()
+    warnings = [s for s in signals if isinstance(s, WarningSignal)]
+    assert len(warnings) == 1
+    assert warnings[0].kind == "node_state_evicted"
+    assert "fresh initialisation" in warnings[0].detail
+    assert "CODEFYUI_NODE_STATE_STORE_MAX_MB" in warnings[0].detail
+
+
+def test_the_eviction_notice_cannot_fail_the_node_that_triggered_it():
+    from app.core.stateful_module import _report_eviction
+
+    class _Hostile:
+        def log_warning(self, *a, **k):
+            raise RuntimeError("reporting exploded")
+
+    _report_eviction(_Hostile(), [("g", "n", "h")], "bytes")  # must not raise
+    _report_eviction(_Hostile(), [], "bytes")
+
+
 def test_the_module_count_limit_still_applies():
     store = NodeStateStore(max_modules=2, max_bytes=1024 * MB)
     for node in ("a", "b", "c"):
