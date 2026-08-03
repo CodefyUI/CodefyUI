@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.run_output_store import RunOutputStore
+from app.core.run_service import run_exclusion
 from app.main import app
 
 ENVELOPE_KEYS = {
@@ -318,6 +319,31 @@ class _SlowPassNode(BaseNode):
         return {"value": inputs.get("value")}
 
 
+#: Appended to by ``_MarkNode`` whenever it actually executes. The gate test
+#: below asserts on emptiness, so it is reset per test by the fixture.
+_EXECUTED: list[str] = []
+
+
+class _MarkNode(BaseNode):
+    """Records that it ran, and passes the value through."""
+
+    NODE_NAME = "_Mark"
+    CATEGORY = "Test"
+    DESCRIPTION = "Notes that execution reached it"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        _EXECUTED.append("ran")
+        return {"value": inputs.get("value")}
+
+
 class _BoomNode(BaseNode):
     """Raises on execute — drives the execution_error taxonomy row."""
 
@@ -410,6 +436,8 @@ def _register_test_nodes():
     registry._nodes["_Opaque"] = _OpaqueNode
     registry._nodes["_BigTensor"] = _BigTensorNode
     registry._nodes["_NodeTimeout"] = _NodeTimeoutNode
+    registry._nodes["_Mark"] = _MarkNode
+    _EXECUTED.clear()
     yield
 
 
@@ -876,3 +904,63 @@ async def test_disconnect_does_not_cancel_run(test_client):
             break
         await asyncio.sleep(0.1)
     assert recorded == "still here"
+
+
+# ── the reproducibility gate covers this path too (#188 re-review, D2) ────
+
+
+@pytest.mark.asyncio
+async def test_a_headless_invoke_does_not_execute_beside_a_seeded_run(
+    test_client,
+):
+    """This endpoint is the second ``execute_graph`` call site.
+
+    It builds its own context and launches the engine directly, with no
+    RunService anywhere, so before this it ran its nodes right through a
+    seeded run and moved that run's numbers: 8/8 node values diverged in the
+    re-review's constructed race, the same signature as before the gate
+    existed. Meanwhile both locales promise, unqualified, that a seeded run
+    does not overlap another run.
+
+    An exclusive hold stands in for the seeded run here — that is exactly
+    what ``RunService`` takes for one — and the invoke must not reach its
+    nodes until the hold is given back.
+    """
+    await _save_graph(test_client, _chain_graph("run-gated", "_Mark"))
+
+    async with run_exclusion().exclusive():
+        request = asyncio.create_task(test_client.post(
+            "/api/graph/run/run-gated", json={"inputs": {"x": "hi"}}))
+        await asyncio.sleep(0.4)   # every chance to run, if nothing stops it
+
+        assert not _EXECUTED, "the invoke executed alongside a seeded run"
+        assert not request.done()
+
+    resp = await asyncio.wait_for(request, timeout=30)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["outputs"] == {"y": "hi"}
+    assert _EXECUTED == ["ran"], "the invoke never ran after the gate opened"
+
+
+@pytest.mark.asyncio
+async def test_headless_invokes_still_overlap_each_other(test_client):
+    """The gate must not turn the invoke endpoint into a queue of one.
+
+    An unseeded execution takes the SHARED hold, so two invokes overlap the
+    way they always did. ``_SlowPass`` sleeps in the executor thread, so if
+    they were serialised the pair would take twice as long as one.
+    """
+    await _save_graph(test_client, _chain_graph(
+        "run-parallel", "_SlowPass", {"seconds": 1.0}))
+
+    started = time.monotonic()
+    first, second = await asyncio.gather(
+        test_client.post("/api/graph/run/run-parallel",
+                         json={"inputs": {"x": "a"}}),
+        test_client.post("/api/graph/run/run-parallel",
+                         json={"inputs": {"x": "b"}}),
+    )
+    elapsed = time.monotonic() - started
+
+    assert first.status_code == 200 and second.status_code == 200
+    assert elapsed < 1.8, f"the two invokes were serialised ({elapsed:.2f}s)"

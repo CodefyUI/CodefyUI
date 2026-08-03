@@ -56,6 +56,8 @@ With a seed set:
 
 Two runs of the same graph with the same seed produce bitwise-identical loss curves on CPU. Different seeds produce genuinely different ones.
 
+"Another run" means every graph this server is executing, including a headless `POST /api/graph/run/{name}` call: it waits while a seeded run is going, and a seeded run waits for it. Headless calls that are not seeded still overlap each other freely.
+
 The cost is worth stating plainly: a seeded run is slower (about 3-4x on a graph of independent branches, near zero on the usual mostly-linear teaching graph), and it can wait behind a long job even when started from the canvas. Reproducibility is opt-in, and a run that asked for it would rather be late than wrong.
 
 **Deterministic algorithms** is the other half. It asks PyTorch for kernels that combine those draws the same way every time (`torch.use_deterministic_algorithms(True, warn_only=True)`). It is `warn_only` on purpose: an operation with no deterministic implementation prints a warning rather than killing the run, so you get "everything reproducible was made reproducible" instead of a stack trace from inside cuDNN.

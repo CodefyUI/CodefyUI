@@ -53,10 +53,12 @@ from app.core.run_service import (
     RunService,
     RunServiceUnavailable,
     RunSubmitError,
+    _RunExclusion,
     cap_event_payload,
     json_size,
     normalize_name,
     normalize_options,
+    run_exclusion,
 )
 from app.core.run_store import (
     STATUS_CANCELLED,
@@ -1634,3 +1636,152 @@ async def test_unseeded_runs_still_overlap_each_other(service, store):
     release.set()
 
     assert peak >= 2, "the cpu queue admits 2; unseeded runs must still overlap"
+
+
+# ── the gate belongs to the PROCESS (#188 re-review, D2/D3) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_run_shuts_out_the_headless_execution_path(
+    service, store,
+):
+    """"Runs alone" has to mean alone in the process, not in the service.
+
+    ``POST /api/graph/run/{name}`` executes graphs without a RunService at
+    all, so a gate owned by one service instance left that path free to draw
+    from the same global RNGs mid-run — measured at 8/8 node values diverged
+    between a solo and a concurrent seeded run, the same signature as before
+    the gate existed.
+
+    Asserted from inside the seeded run: anything else asking for the
+    ordinary shared hold must NOT be admitted while it holds the gate.
+    """
+    admitted: list[bool] = []
+    original = service._execute
+
+    async def _watched(active, graph, options, session=None):
+        async def _headless():
+            async with run_exclusion().shared():
+                return None
+
+        try:
+            await asyncio.wait_for(_headless(), timeout=0.25)
+            admitted.append(True)
+        except asyncio.TimeoutError:
+            admitted.append(False)
+        return await original(active, graph, options, session)
+
+    service._execute = _watched
+
+    result = await service.submit(_graph(), options={"seed": 5})
+    await _await_terminal(store, result.run_id)
+
+    assert admitted == [False], (
+        "a graph executed outside RunService ran alongside a seeded run")
+
+
+@pytest.mark.asyncio
+async def test_an_unseeded_run_still_admits_the_headless_path(service, store):
+    """The other half: the gate must not serialise the whole server."""
+    admitted: list[bool] = []
+    original = service._execute
+
+    async def _watched(active, graph, options, session=None):
+        async def _headless():
+            async with run_exclusion().shared():
+                return None
+
+        try:
+            await asyncio.wait_for(_headless(), timeout=2.0)
+            admitted.append(True)
+        except asyncio.TimeoutError:
+            admitted.append(False)
+        return await original(active, graph, options, session)
+
+    service._execute = _watched
+
+    result = await service.submit(_graph(), options={})
+    await _await_terminal(store, result.run_id)
+
+    assert admitted == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hold", ["exclusive", "shared"])
+async def test_two_cancels_do_not_wedge_the_gate_shut(hold):
+    """A second cancel on the release path used to close the gate forever.
+
+    The release must await the condition lock to notify, and awaiting a
+    CONTENDED lock inside a ``finally`` is a cancellation point: the first
+    cancel unwound the run into the ``finally``, the second landed while it
+    waited for the lock, and the CancelledError escaped BEFORE the hold was
+    given back. Every later run on that process then blocked forever.
+    ``shutdown`` cancels exactly once today, which is why this is a low bug
+    and not a live one — but it is one ``task.cancel()`` away from being
+    live.
+    """
+    gate = _RunExclusion()
+    holding = asyncio.Event()
+
+    async def _hold() -> None:
+        async with getattr(gate, hold)():
+            holding.set()
+            await asyncio.sleep(30)
+
+    task = asyncio.create_task(_hold())
+    await asyncio.wait_for(holding.wait(), timeout=2.0)
+
+    # Contend the condition lock so the release has to await it.
+    async with gate._condition:
+        task.cancel()
+        await asyncio.sleep(0)   # into the finally, blocked on the lock
+        task.cancel()            # the cancel that used to escape
+        await asyncio.sleep(0)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not gate.busy, "the gate stayed held after a cancelled run"
+    # And it is genuinely reusable, not merely reporting a clean flag.
+    async def _take() -> str:
+        async with gate.exclusive():
+            return "in"
+
+    assert await asyncio.wait_for(_take(), timeout=2.0) == "in"
+    if gate._wakes:
+        await asyncio.gather(*list(gate._wakes))
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_waiter_does_not_block_the_next_run():
+    """The queue behind a cancelled waiter must still drain.
+
+    ``exclusive`` counts itself as a waiting writer before it waits, so a
+    cancelled wait that left the count raised would shut out every reader
+    for the life of the process.
+    """
+    gate = _RunExclusion()
+    holding = asyncio.Event()
+
+    async def _hold() -> None:
+        async with gate.shared():
+            holding.set()
+            await asyncio.sleep(0.3)
+
+    async def _writer() -> None:
+        async with gate.exclusive():
+            pass
+
+    holder = asyncio.create_task(_hold())
+    await asyncio.wait_for(holding.wait(), timeout=2.0)
+    waiter = asyncio.create_task(_writer())
+    await asyncio.sleep(0.05)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await holder
+
+    async def _reader() -> str:
+        async with gate.shared():
+            return "in"
+
+    assert await asyncio.wait_for(_reader(), timeout=2.0) == "in"

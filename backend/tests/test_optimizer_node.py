@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from app.nodes.training import optimizer_node
 from app.nodes.training.optimizer_node import OptimizerNode
 
 
@@ -279,3 +280,37 @@ def test_defaults_reproduce_the_pre_change_optimizer_exactly(opt_type):
         if key == "params":
             continue
         assert built[key] == expected, f"{opt_type}.{key} drifted"
+
+
+# ── the invariant that keeps the rejection honest (#188 re-review, D5) ────
+
+
+def test_every_conditional_param_hides_exactly_where_it_does_not_apply():
+    """Visibility and applicability are the SAME set, per conditional param.
+
+    So an inapplicable value is a hidden value, and hidden means "not set" —
+    which is why ``_reject_inapplicable`` fires for exactly one param today:
+    ``weight_decay``, the only inapplicable one with no rule to hide it.
+    That is a property of these definitions, not a coincidence, and this
+    test is what makes it one: add a param that is visible where it does not
+    apply and it fails, which is the moment to decide what should happen.
+    """
+    definitions = {p.name: p for p in OptimizerNode.define_params()}
+
+    for param, applies_to in {
+        "momentum": optimizer_node._MOMENTUM_TYPES,
+        "betas": optimizer_node._BETAS_TYPES,
+        "eps": optimizer_node._EPS_TYPES,
+        "amsgrad": optimizer_node._AMSGRAD_TYPES,
+        "nesterov": optimizer_node._SGD_ONLY,
+        "dampening": optimizer_node._SGD_ONLY,
+    }.items():
+        assert definitions[param].visible_when == {"type": sorted(applies_to)}, (
+            f"{param} is shown for algorithms that cannot take it")
+
+    always_visible = {name for name, d in definitions.items()
+                      if not d.visible_when}
+    assert always_visible == {"type", "lr", "weight_decay"}, (
+        "a new always-visible param needs an explicit decision: every "
+        "algorithm must accept it, or execute() must reject it where it "
+        "does not (see weight_decay)")

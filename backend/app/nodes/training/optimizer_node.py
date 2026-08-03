@@ -50,7 +50,15 @@ def _reject_inapplicable(
 
     Silence is the wrong answer for a VISIBLE param: someone who typed
     ``weight_decay=0.1`` on Rprop has a mental model to correct, and a run
-    that quietly ignores it teaches them the wrong thing.
+    that quietly ignores it teaches them the wrong thing. ``weight_decay``
+    is the one that reaches the raise today, because it is the one
+    inapplicable param with no ``visible_when`` to hide it -- every other
+    rule below is built from the SAME frozenset as its applicability check,
+    so an inapplicable value is a hidden value by construction. That is a
+    property of the current definitions, not a coincidence, and
+    ``test_every_conditional_param_hides_exactly_where_it_does_not_apply``
+    fails the day someone adds a param where it stops holding, which is the
+    day this branch starts firing for them too.
 
     Silence is the RIGHT answer for a param the current ``type`` hides. The
     canvas materialises every default onto a node and never clears one when
@@ -193,15 +201,16 @@ class OptimizerNode(BaseNode):
         # drop the kwarg when the user left it at the default 0.0 — that's
         # equivalent to "not supplied" — but raise a clear error if they
         # intentionally set a non-zero value the optimizer can't honour.
+        # Through the shared helper, like every other param: it is always
+        # visible (no ``visible_when``), so it always raises — and routing
+        # it here is what keeps that branch a live guard rather than a
+        # decorative one.
         accepted = set(inspect.signature(optimizer_cls.__init__).parameters)
         kwargs: dict[str, Any] = {"lr": lr}
         if "weight_decay" in accepted:
             kwargs["weight_decay"] = weight_decay
         elif weight_decay:
-            raise ValueError(
-                f"Optimizer '{opt_type}' does not accept weight_decay; "
-                f"got {weight_decay}. Set weight_decay=0 or pick a different optimizer."
-            )
+            _reject_inapplicable(opt_type, "weight_decay", weight_decay, params)
 
         # Each block: apply where the algorithm has the knob, complain where
         # it does not and the user changed it, stay silent where it does not

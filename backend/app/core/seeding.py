@@ -36,6 +36,7 @@ import functools
 import hashlib
 import logging
 import os
+import threading
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -132,54 +133,94 @@ def apply_determinism(enabled: bool) -> None:
         logger.debug("deterministic algorithms not applied", exc_info=True)
 
 
+#: Nesting depth and the state to put back at depth 0. Guarded by a lock
+#: because a server drives its runs from the event loop while
+#: ``run_graph.py`` and the device smoke script drive theirs from their own
+#: thread -- the counter is protected rather than assumed single-threaded.
+_DETERMINISM_LOCK = threading.Lock()
+_DETERMINISM_DEPTH = 0
+_DETERMINISM_BASELINE: tuple[bool, bool, bool, str | None] | None = None
+
+
+def determinism_depth() -> int:
+    """How many :func:`deterministic_scope` scopes are open. For tests."""
+    return _DETERMINISM_DEPTH
+
+
 @contextlib.contextmanager
 def deterministic_scope(enabled: bool):
-    """Bound determinism to ONE run instead of latching the whole process.
+    """Bound determinism to the RUNS, instead of latching the whole process.
 
     ``torch.use_deterministic_algorithms`` is process-wide with no per-run
     variant, so without this a single deterministic run silently made every
     later run in that server deterministic until restart -- and because
     ``TrainingLoopNode`` ORs in its own ``deterministic`` param, merely
     OPENING someone else's saved graph could do it. The setting is a
-    property of a run; it now dies with the run.
+    property of a run; it now dies with the runs.
 
     Entered UNCONDITIONALLY by the engine, not only when determinism was
     requested, precisely so a node that turns it on mid-run is scoped too.
+
+    REFCOUNTED, not save-and-restore per scope (#188 re-review, D1). Two
+    OVERLAPPING runs with different values used to latch it on for the life
+    of the process: A recorded "was off" and set it on, B then recorded
+    "was on", A restored off, and B put its poisoned reading back -- on,
+    forever, for every later run. The cpu queue admits two runs by default
+    and neither of them has to be seeded, so that is an ordinary Tuesday and
+    not a corner. The baseline is therefore captured by the FIRST scope to
+    open and put back by the LAST one to close, which is the only reading of
+    a process-wide setting that composes.
+
+    The residual, stated rather than pretended away: while runs overlap, a
+    run that did not ask for determinism can be dragged into a neighbour's.
+    That is inherent in a process-global torch setting -- the alternative is
+    serialising every run in the server -- and it is bounded: determinism
+    cannot outlive the last run that wanted it. A run that needs the
+    guarantee in both directions takes a seed, which also makes it run alone
+    (see ``run_service._RunExclusion``).
 
     Restores ``CUBLAS_WORKSPACE_CONFIG`` as well. Clearing it does not
     un-apply anything in this process (cuBLAS reads it once, at CUDA context
     creation), but it stops the value leaking into every subprocess spawned
     afterwards -- a DataLoader worker among them.
-
-    Concurrency caveat, stated rather than pretended away: with two
-    overlapping runs the restore is last-one-wins, exactly as the set is.
-    Runs that need a guarantee take a seed, and a seeded run does not
-    overlap anything (see ``run_service._RunExclusion``).
     """
+    global _DETERMINISM_DEPTH, _DETERMINISM_BASELINE
     try:
         import torch
-
-        previous = torch.are_deterministic_algorithms_enabled()
-        previous_warn = torch.is_deterministic_algorithms_warn_only_enabled()
     except Exception:  # pragma: no cover - torch always present in practice
         yield
         return
 
-    had_cublas = "CUBLAS_WORKSPACE_CONFIG" in os.environ
-    previous_cublas = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    with _DETERMINISM_LOCK:
+        if _DETERMINISM_DEPTH == 0:
+            _DETERMINISM_BASELINE = (
+                torch.are_deterministic_algorithms_enabled(),
+                torch.is_deterministic_algorithms_warn_only_enabled(),
+                "CUBLAS_WORKSPACE_CONFIG" in os.environ,
+                os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+            )
+        _DETERMINISM_DEPTH += 1
     try:
         apply_determinism(enabled)
         yield
     finally:
-        try:
-            torch.use_deterministic_algorithms(previous,
-                                               warn_only=previous_warn)
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("determinism not restored", exc_info=True)
-        if had_cublas:
-            os.environ["CUBLAS_WORKSPACE_CONFIG"] = previous_cublas or ""
-        else:
-            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+        with _DETERMINISM_LOCK:
+            _DETERMINISM_DEPTH -= 1
+            baseline = (_DETERMINISM_BASELINE
+                        if _DETERMINISM_DEPTH == 0 else None)
+            if baseline is not None:
+                _DETERMINISM_BASELINE = None
+        if baseline is not None:
+            previous, previous_warn, had_cublas, previous_cublas = baseline
+            try:
+                torch.use_deterministic_algorithms(previous,
+                                                   warn_only=previous_warn)
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("determinism not restored", exc_info=True)
+            if had_cublas:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = previous_cublas or ""
+            else:
+                os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 
 
 def make_generator(seed: int | None) -> Any | None:
@@ -229,13 +270,15 @@ def make_worker_init_fn(seed: int | None) -> Callable[[int], None] | None:
 
     ``None`` when unseeded, which is also ``DataLoader``'s default.
 
-    torch already reseeds ``torch``'s RNG per worker; it does NOT touch
-    ``random`` or ``numpy``, and a dataset whose ``__getitem__`` augments
-    with either would hand every worker the SAME augmentations (the classic
-    "my four workers produced four identical crops" bug). Seeding all three
-    from ``derive_seed(seed, "worker:N")`` closes that and keeps the streams
-    a function of the run seed alone -- so worker count changes what is
-    drawn, but re-running with the same settings does not.
+    torch does seed all three RNGs per worker on the pinned version, from
+    ``base_seed + worker_id`` -- what it does NOT do is make that base a
+    function of anything we control. It draws it from the loader's
+    ``generator``, or from the process-global RNG when there is none, at
+    ITERATION time: inside the training loop, after every other node has
+    drawn. Overriding it with ``derive_seed(seed, "worker:N")`` makes each
+    worker's stream a function of the run seed and this loader's identity
+    and nothing else -- so worker count changes what is drawn, but
+    re-running with the same settings does not.
 
     The result must survive ``pickle``; see :func:`seed_worker`.
     """

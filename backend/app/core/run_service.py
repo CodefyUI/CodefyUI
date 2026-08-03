@@ -101,6 +101,7 @@ import json
 import logging
 import re
 import time
+import weakref
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -890,6 +891,12 @@ class _RunExclusion:
     Unseeded runs are unaffected and still overlap each other freely, which
     is what keeps this from being a global serialisation of the server.
 
+    "Alone" means alone in the PROCESS, so every path that executes a graph
+    has to take it -- ``RunService._drive`` below and
+    ``routes_graph_run``'s headless invoke, which has no RunService at all.
+    That is why the gate is reached through :func:`run_exclusion` rather
+    than owned by a service instance.
+
     WRITER-PREFERRING on purpose. A plain readers-writer lock lets a steady
     trickle of unseeded submissions starve a seeded run forever, and "your
     reproducible run never starts" is a worse failure than "your throughput
@@ -905,7 +912,8 @@ class _RunExclusion:
     database were never isolated from each other and are no worse now.
     """
 
-    __slots__ = ("_condition", "_readers", "_writer", "_waiting_writers")
+    __slots__ = ("_condition", "_readers", "_writer", "_waiting_writers",
+                 "_wakes")
 
     def __init__(self) -> None:
         # Built lazily-bound: asyncio primitives take the running loop on
@@ -915,6 +923,9 @@ class _RunExclusion:
         self._readers = 0
         self._writer = False
         self._waiting_writers = 0
+        # Strong references to in-flight wake-ups; asyncio keeps only weak
+        # ones, so a task nobody holds can be collected before it runs.
+        self._wakes: set[asyncio.Task] = set()
 
     @property
     def busy(self) -> bool:
@@ -934,10 +945,9 @@ class _RunExclusion:
         try:
             yield
         finally:
-            async with self._condition:
-                self._readers -= 1
-                if self._readers == 0:
-                    self._condition.notify_all()
+            self._readers -= 1
+            if self._readers == 0:
+                await self._wake()
 
     @asynccontextmanager
     async def exclusive(self) -> AsyncIterator[None]:
@@ -961,9 +971,69 @@ class _RunExclusion:
         try:
             yield
         finally:
-            async with self._condition:
-                self._writer = False
-                self._condition.notify_all()
+            self._writer = False
+            await self._wake()
+
+    async def _wake(self) -> None:
+        """Let the waiters re-test the gate. NOT skippable by a cancel.
+
+        The counters above are given back with a plain assignment, which has
+        no suspension point and therefore no cancellation point: whatever
+        happens here, the gate is already free. Only the notification needs
+        the condition lock, and awaiting a CONTENDED lock inside a
+        ``finally`` IS a cancellation point — a second ``Task.cancel``
+        landing there used to escape with ``_writer`` still True, closing
+        the gate for every run in the process (#188 re-review, D3). One
+        cancel was survivable because ``Lock.acquire`` has a non-awaiting
+        fast path; two were not.
+
+        ``shield`` is what fixes it: the notification is its own task, so
+        the cancel takes this await and leaves the task running. The
+        CancelledError still propagates, as it must.
+        """
+        try:
+            notify = asyncio.ensure_future(self._notify_all())
+        except RuntimeError:  # pragma: no cover - loop already gone
+            # Nothing can be waiting without a loop to wait on, and the
+            # counters are already back. Never let a teardown-time failure
+            # here replace the exception on its way out.
+            return
+        self._wakes.add(notify)
+        notify.add_done_callback(self._wakes.discard)
+        notify.add_done_callback(_swallow_task_result)
+        await asyncio.shield(notify)
+
+    async def _notify_all(self) -> None:
+        async with self._condition:
+            self._condition.notify_all()
+
+
+def _swallow_task_result(task: asyncio.Task) -> None:
+    """Retrieve a finished task's outcome so asyncio does not log it."""
+    if not task.cancelled():
+        task.exception()
+
+
+#: One gate per event loop, which in production means one per server
+#: process. NOT one per ``RunService``: the thing it protects is the
+#: process-global RNG state, and ``POST /api/graph/run/{name}`` executes
+#: graphs without a RunService at all (#188 re-review, D2) — a per-instance
+#: gate left that path free to move a seeded run's numbers, measured at 8/8
+#: node values diverged. Keyed by loop rather than a module singleton
+#: because ``asyncio.Condition`` binds to the first loop that awaits it and
+#: every test gets a fresh loop.
+_EXCLUSIONS: "weakref.WeakKeyDictionary[Any, _RunExclusion]" = (
+    weakref.WeakKeyDictionary())
+
+
+def run_exclusion() -> _RunExclusion:
+    """The reproducibility gate for the running loop. Never None."""
+    loop = asyncio.get_running_loop()
+    gate = _EXCLUSIONS.get(loop)
+    if gate is None:
+        gate = _RunExclusion()
+        _EXCLUSIONS[loop] = gate
+    return gate
 
 
 # ── in-process fan-out ────────────────────────────────────────────────────
@@ -1185,11 +1255,12 @@ class RunService:
         # easier to get subtly wrong than incrementing where the slot is
         # actually taken and released.
         self._slots: dict[str, int] = {}
-        # Reproducibility gate (#134 review). Orthogonal to the queue's
-        # admission: the queue decides how many runs may be IN FLIGHT, this
-        # decides which of them may be EXECUTING at the same moment. A
-        # seeded run takes it exclusively; every other run takes it shared.
-        self._exclusion = _RunExclusion()
+        # No reproducibility gate here on purpose: ``_drive`` reaches it
+        # through ``run_exclusion()``. It is orthogonal to the queue's
+        # admission (the queue decides how many runs may be IN FLIGHT, the
+        # gate decides which of them may be EXECUTING at the same moment)
+        # and it guards process-global RNG state, which the headless invoke
+        # route touches without ever constructing a RunService.
         # The interactive lane's two bounds. ``_interactive_inflight``
         # includes runs whose row is still being written (submit reserves
         # BEFORE it awaits ``create_run``), which is what stops two
@@ -1670,7 +1741,7 @@ class RunService:
             # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
             # still reported as `queued` rather than as a `running` run
             # emitting nothing — the status stays true while it waits.
-            async with self._exclusion.for_seed(options.get("seed")):
+            async with run_exclusion().for_seed(options.get("seed")):
                 if not await self._begin(active):
                     return
                 status, error = await self._execute(active, graph, options,

@@ -15,7 +15,9 @@ order. If either escaped the seed, these tests fail.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from typing import Any
 
 import pytest
@@ -29,6 +31,7 @@ from app.core.seeding import (
     CUBLAS_WORKSPACE_CONFIG,
     MAX_SEED,
     apply_determinism,
+    determinism_depth,
     deterministic_scope,
     derive_seed,
     make_generator,
@@ -463,6 +466,149 @@ async def test_determinism_restores_an_already_on_setting(_determinism_probe):
     await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
 
     assert torch.are_deterministic_algorithms_enabled()
+
+
+# ── overlapping runs must not latch it either (#188 re-review, D1) ───────
+
+
+def test_overlapping_scopes_restore_what_the_first_one_found():
+    """The exact interleaving the re-review measured, made harmless.
+
+    ``enter(True)`` reads "off" and sets on; ``enter(False)`` then reads
+    "on"; ``exit(True)`` restores off; ``exit(False)`` puts its poisoned
+    reading back — and determinism was on for every later run in that
+    server, forever. Both runs are unseeded in the report, so neither takes
+    the exclusion gate, and the cpu queue admits two.
+
+    Refcounting is what fixes it: the baseline belongs to the first scope
+    open, and only the last one to close puts it back.
+    """
+    previously = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(False)
+    os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+    outer = deterministic_scope(True)
+    inner = deterministic_scope(False)
+    try:
+        outer.__enter__()
+        inner.__enter__()
+        assert torch.are_deterministic_algorithms_enabled()
+        assert determinism_depth() == 2
+
+        outer.__exit__(None, None, None)
+        # The run that asked for determinism has finished, but the run
+        # sharing the process has not: taking it away here would change how
+        # THAT run computes half way through.
+        assert torch.are_deterministic_algorithms_enabled()
+        assert os.environ.get("CUBLAS_WORKSPACE_CONFIG") == CUBLAS_WORKSPACE_CONFIG
+
+        inner.__exit__(None, None, None)
+        assert not torch.are_deterministic_algorithms_enabled()
+        assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+        assert determinism_depth() == 0
+    finally:
+        torch.use_deterministic_algorithms(previously, warn_only=warn_only)
+        os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+
+
+def test_a_raising_scope_still_gives_its_count_back():
+    """A leaked depth would mean determinism is never restored again."""
+    with pytest.raises(RuntimeError):
+        with deterministic_scope(True):
+            raise RuntimeError("boom")
+
+    assert determinism_depth() == 0
+    assert not torch.are_deterministic_algorithms_enabled()
+
+
+@pytest.mark.asyncio
+async def test_two_overlapping_runs_do_not_latch_determinism(
+    _determinism_probe,
+):
+    """The same interleaving, driven through two real overlapping runs.
+
+    One run asks for determinism, the other does not, and they are made to
+    overlap the way the cpu queue's depth of 2 lets them: the deterministic
+    run finishes FIRST, which is the order that used to leave the flag on
+    for the life of the process.
+
+    The plain run is dragged into its neighbour's determinism while they
+    overlap — unavoidable for a process-global torch setting, and bounded:
+    it cannot outlive the last run that wanted it. That is what this
+    asserts.
+    """
+    deterministic_entered = threading.Event()
+    plain_entered = threading.Event()
+    deterministic_finished = threading.Event()
+    seen: dict[str, bool] = {}
+
+    class _DeterministicHalf(BaseNode):
+        NODE_NAME = "_OverlapDeterministic"
+        CATEGORY = "Test"
+        DESCRIPTION = "Waits until the plain run is inside its scope too."
+
+        @classmethod
+        def define_inputs(cls):
+            return []
+
+        @classmethod
+        def define_outputs(cls):
+            return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+        def execute(self, inputs, params):
+            deterministic_entered.set()
+            assert plain_entered.wait(timeout=10), "the plain run never started"
+            seen["deterministic"] = torch.are_deterministic_algorithms_enabled()
+            return {"value": None}
+
+    class _PlainHalf(_DeterministicHalf):
+        NODE_NAME = "_OverlapPlain"
+        DESCRIPTION = "Outlives the deterministic run, then finishes."
+
+        def execute(self, inputs, params):
+            plain_entered.set()
+            assert deterministic_entered.wait(timeout=10)
+            assert deterministic_finished.wait(timeout=10), (
+                "the deterministic run never finished")
+            seen["plain"] = torch.are_deterministic_algorithms_enabled()
+            return {"value": None}
+
+    registry._nodes[_DeterministicHalf.NODE_NAME] = _DeterministicHalf
+    registry._nodes[_PlainHalf.NODE_NAME] = _PlainHalf
+
+    def _graph(node_type: str):
+        return (
+            [{"id": "start", "type": "Start", "data": {"params": {}}},
+             {"id": "n", "type": node_type, "data": {"params": {}}}],
+            [{"id": "t1", "source": "start", "target": "n",
+              "sourceHandle": "trigger", "type": "trigger"}],
+        )
+
+    async def _deterministic_run():
+        nodes, edges = _graph(_DeterministicHalf.NODE_NAME)
+        try:
+            await execute_graph(
+                nodes, edges,
+                context=ExecutionContext(device="cpu", deterministic=True))
+        finally:
+            deterministic_finished.set()
+
+    try:
+        plain_nodes, plain_edges = _graph(_PlainHalf.NODE_NAME)
+        await asyncio.gather(
+            _deterministic_run(),
+            execute_graph(plain_nodes, plain_edges,
+                          context=ExecutionContext(device="cpu")),
+        )
+    finally:
+        registry._nodes.pop(_DeterministicHalf.NODE_NAME, None)
+        registry._nodes.pop(_PlainHalf.NODE_NAME, None)
+
+    assert seen["deterministic"] is True, "the run that asked for it lost it"
+    assert seen["plain"] is True, "borrowed while they overlapped"
+    assert not torch.are_deterministic_algorithms_enabled(), (
+        "determinism outlived both runs")
+    assert determinism_depth() == 0
 
 
 def test_deterministic_scope_restores_the_cublas_env_var():

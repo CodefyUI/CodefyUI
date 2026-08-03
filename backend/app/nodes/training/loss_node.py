@@ -6,7 +6,6 @@ from ...core.node_base import (
     ParamDefinition,
     ParamType,
     PortDefinition,
-    is_param_visible,
 )
 from ...core.param_values import parse_float_sequence
 
@@ -36,34 +35,26 @@ REDUCTIONS = ["mean", "sum", "none"]
 DEFAULT_IGNORE_INDEX = -100
 
 
-_PARAM_DEFS: dict[str, ParamDefinition] = {}
-
-
-def _reject_inapplicable(
-    loss_type: str, param: str, value: Any, params: dict[str, Any],
-) -> None:
-    """Complain about a param this loss has no argument for -- IF it is one
-    the user can actually see.
-
-    Ignoring a VISIBLE one would be worse than an error: someone who set
-    ``pos_weight`` and saw nothing would conclude their class imbalance was
-    handled.
-
-    A param the current ``type`` HIDES is a different case. The canvas
-    materialises every default onto a node and never clears one when the
-    sibling that hides it changes, so tuning ``label_smoothing`` on
-    CrossEntropy and then switching to MSE used to fail the run naming a
-    field that is not on the form. A hidden leftover means "not set", and
-    it comes back when it applies again.
-    """
-    if not _PARAM_DEFS:
-        _PARAM_DEFS.update({p.name: p for p in LossNode.define_params()})
-    definition = _PARAM_DEFS.get(param)
-    if definition is not None and not is_param_visible(definition, params):
-        return
-    raise ValueError(
-        f"Loss '{loss_type}' does not accept {param}; got {value!r}. "
-        f"Leave {param} at its default or pick a different loss.")
+# Nothing here rejects an inapplicable param, and that is deliberate.
+#
+# Every optional param below declares ``visible_when`` from the SAME
+# frozenset as its applicability check in ``execute``, so a value this loss
+# cannot take is a value the editor is not showing -- and a leftover on a
+# hidden field means "not set", not "fail the run". (The canvas writes every
+# default onto a node and never clears one when the sibling that hides it
+# changes, so an error would name a field that is not on the form and cannot
+# be reset without hand-editing the graph JSON.)
+#
+# The #188 review's I5 fix added a guard that raised for a VISIBLE
+# inapplicable param; the re-review then measured it at 0 raising
+# combinations out of 55 -- dead code reading as a live guard. It is removed
+# rather than left decorative, and the invariant it rested on is asserted
+# directly, by
+# ``test_every_conditional_param_hides_exactly_where_it_does_not_apply``
+# in ``tests/test_loss_node.py``: add a param that is visible where it does
+# not apply and that test fails, telling you to handle it explicitly -- the
+# way ``Optimizer.weight_decay``, the one param of that shape in either
+# node, does by raising.
 
 
 class LossNode(BaseNode):
@@ -185,36 +176,29 @@ class LossNode(BaseNode):
                 f"{REDUCTIONS}")
         kwargs: dict[str, Any] = {"reduction": reduction}
 
+        # Each block: apply where this loss takes the argument, ignore where
+        # it does not — see the note at the top of the file for why "ignore"
+        # is the right answer and not a shrug.
         label_smoothing = float(params.get("label_smoothing", 0.0) or 0.0)
         if loss_type in _LABEL_SMOOTHING_TYPES:
             kwargs["label_smoothing"] = label_smoothing
-        elif label_smoothing:
-            _reject_inapplicable(loss_type, "label_smoothing", label_smoothing, params)
 
         # Weight tensors are registered as BUFFERS by the loss module, so
         # ``to_device(loss_fn, device)`` in the training loop moves them
         # along with it — building on CPU here is correct for a CUDA run too.
         weight = parse_float_sequence(params.get("weight"), name="weight")
-        if loss_type in _WEIGHT_TYPES:
-            if weight is not None:
-                kwargs["weight"] = torch.tensor(weight, dtype=torch.float32)
-        elif weight is not None:
-            _reject_inapplicable(loss_type, "weight", weight, params)
+        if loss_type in _WEIGHT_TYPES and weight is not None:
+            kwargs["weight"] = torch.tensor(weight, dtype=torch.float32)
 
         ignore_index = int(params.get("ignore_index", DEFAULT_IGNORE_INDEX))
         if loss_type in _IGNORE_INDEX_TYPES:
             kwargs["ignore_index"] = ignore_index
-        elif ignore_index != DEFAULT_IGNORE_INDEX:
-            _reject_inapplicable(loss_type, "ignore_index", ignore_index, params)
 
         pos_weight = parse_float_sequence(
             params.get("pos_weight"), name="pos_weight")
-        if loss_type in _POS_WEIGHT_TYPES:
-            if pos_weight is not None:
-                kwargs["pos_weight"] = torch.tensor(
-                    pos_weight, dtype=torch.float32)
-        elif pos_weight is not None:
-            _reject_inapplicable(loss_type, "pos_weight", pos_weight, params)
+        if loss_type in _POS_WEIGHT_TYPES and pos_weight is not None:
+            kwargs["pos_weight"] = torch.tensor(
+                pos_weight, dtype=torch.float32)
 
         loss_fn = loss_cls(**kwargs)
 

@@ -184,8 +184,12 @@ def test_seeded_loader_carries_a_worker_init_fn_only_when_it_has_workers():
 
 
 class _RandomTagDataset(torch.utils.data.Dataset):
-    """Each item carries a draw from ``random`` — the stream torch does NOT
-    reseed per worker. Module level so ``spawn`` can pickle it.
+    """Each item carries a draw from ``random``, tagged with the worker that
+    produced it. Module level so ``spawn`` can pickle it.
+
+    The worker id is reported by the dataset rather than inferred from the
+    batch index: torch hands batches out round-robin today, and a test that
+    assumed it compared worker 0 with itself (#188 re-review, D4).
     """
 
     def __init__(self, n: int = 8) -> None:
@@ -195,7 +199,12 @@ class _RandomTagDataset(torch.utils.data.Dataset):
         return self.n
 
     def __getitem__(self, index: int):
-        return torch.tensor([float(index)]), torch.tensor(random.random())
+        info = torch.utils.data.get_worker_info()
+        worker_id = -1 if info is None else info.id
+        # float64 so the draw survives the process boundary exactly; the
+        # default float32 rounds it and the comparison below is exact.
+        return (torch.tensor([worker_id]),
+                torch.tensor(random.random(), dtype=torch.float64))
 
 
 def test_the_worker_init_fn_can_be_pickled():
@@ -216,6 +225,42 @@ def test_the_worker_init_fn_can_be_pickled():
     assert random.random() == first, "the revived callable seeds differently"
 
 
+def _tagged_draws(seed, dataset, node_id="loader-1"):
+    """Run a real 2-worker loader; return ``{worker id: [draws in order]}``.
+
+    Grouped by the worker that reported each item, so the comparison below
+    is genuinely across processes.
+    """
+    loader = _loader(
+        {"batch_size": 2, "shuffle": False, "num_workers": 2},
+        context=_Ctx(seed=seed, node_id=node_id), dataset=dataset)
+    by_worker: dict[int, list[float]] = {}
+    for workers, values in loader:
+        for worker_id, value in zip(workers.tolist(), values.tolist()):
+            by_worker.setdefault(int(worker_id[0]), []).append(float(value))
+    return by_worker
+
+
+def _predicted_draws(seed, node_id, worker_id, count):
+    """What ``worker_init_fn`` promises worker *worker_id* will draw.
+
+    Computed from the derivation alone — (run seed, this loader's node id,
+    this worker) — which is the property the function exists for. torch's
+    own per-worker seeding would produce a different stream, so this is
+    what tells "our seeding took effect" apart from "torch seeded it".
+    """
+    from app.core.execution_context import ExecutionContext
+    from app.core.seeding import derive_seed, seed_rngs
+
+    base = ExecutionContext(seed=seed).derive_seed(f"dataloader:{node_id}")
+    state = random.getstate()
+    try:
+        seed_rngs(derive_seed(base, f"worker:{worker_id}"))
+        return [random.random() for _ in range(count)]
+    finally:
+        random.setstate(state)
+
+
 def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
     """The end-to-end proof: real worker processes, real batches.
 
@@ -224,24 +269,40 @@ def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
     brief's ``label_smoothing`` criterion exists to catch. This one starts
     the workers, so it fails outright if the callable cannot cross the
     process boundary.
+
+    Its distinctness guard used to compare worker 0 with itself, which left
+    two real bugs green (#188 re-review, D4): dropping ``worker_init_fn``
+    entirely, and handing every worker the SAME seed — the exact "my four
+    workers produced four identical crops" failure the function exists to
+    prevent. The three assertions below are each aimed at one of those.
     """
     dataset = _RandomTagDataset(8)
 
-    def _tags(seed):
-        loader = _loader(
-            {"batch_size": 2, "shuffle": False, "num_workers": 2},
-            context=_Ctx(seed=seed), dataset=dataset)
-        return [round(float(tag), 12) for _, batch in loader for tag in batch]
+    first = _tagged_draws(21, dataset)
+    again = _tagged_draws(21, dataset)
+    other = _tagged_draws(22, dataset)
 
-    first = _tags(21)
-    again = _tags(21)
-    other = _tags(22)
+    assert sorted(first) == [0, 1], (
+        f"expected two worker processes, saw {sorted(first)}")
+    assert sum(len(v) for v in first.values()) == 8, "no batches were produced"
 
-    assert len(first) == 8, "the loader produced no batches"
-    # Same seed -> the workers drew the same augmentations.
+    # Same seed -> the workers drew the same augmentations; a different run
+    # seed -> genuinely different ones.
     assert first == again
-    # A different run seed -> genuinely different ones.
     assert first != other
-    # And the two workers did not walk the same stream: with per-worker
-    # seeding the 8 values are distinct rather than two repeated halves.
-    assert first[:2] != first[4:6]
+
+    # The two workers did not walk the same stream. Across PROCESSES, not
+    # across two draws of one process: this is what a same-seed-for-every-
+    # worker bug breaks, and the old guard did not look at it.
+    assert first[0] != first[1]
+    everything = [v for values in first.values() for v in values]
+    assert len(set(everything)) == 8, f"duplicate draws across workers: {first}"
+
+    # And the streams are OURS — derived from (run seed, node id, worker id)
+    # rather than from torch's own base_seed. Without this, deleting
+    # ``worker_init_fn`` leaves every assertion above satisfied, because
+    # torch seeds its workers from the generator we already seeded.
+    for worker_id, values in first.items():
+        assert values == _predicted_draws(21, "loader-1", worker_id,
+                                          len(values)), (
+            f"worker {worker_id} did not draw from its derived seed")

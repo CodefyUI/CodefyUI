@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+from app.nodes.training import loss_node
 from app.nodes.training.loss_node import LossNode
 
 
@@ -214,3 +215,39 @@ def test_defaults_reproduce_the_pre_change_loss_exactly(loss_type):
             assert torch.equal(actual, expected), f"{loss_type}.{attribute}"
         else:
             assert actual == expected, f"{loss_type}.{attribute}"
+
+
+# ── the invariant that replaces the dead rejection (#188 re-review, D5) ───
+
+
+def test_every_conditional_param_hides_exactly_where_it_does_not_apply():
+    """Visibility and applicability are the SAME set, per param.
+
+    That is what makes "a leftover on a hidden field means not set" a
+    complete answer: an inapplicable value cannot be a visible one, so there
+    is nothing left to reject. The node used to carry a guard that raised
+    for a visible inapplicable param, and the re-review measured it at 0
+    raising combinations out of 55 — dead code reading as a live guard, so
+    it is gone and this stands in its place.
+
+    Add a param that is visible where it does not apply and this fails,
+    which is the moment to decide what should happen — as
+    ``Optimizer.weight_decay``, the one param of that shape in either node,
+    decided by raising.
+    """
+    definitions = {p.name: p for p in LossNode.define_params()}
+
+    for param, applies_to in {
+        "label_smoothing": loss_node._LABEL_SMOOTHING_TYPES,
+        "weight": loss_node._WEIGHT_TYPES,
+        "ignore_index": loss_node._IGNORE_INDEX_TYPES,
+        "pos_weight": loss_node._POS_WEIGHT_TYPES,
+    }.items():
+        assert definitions[param].visible_when == {"type": sorted(applies_to)}, (
+            f"{param} is shown for types that cannot take it")
+
+    always_visible = {name for name, d in definitions.items()
+                      if not d.visible_when}
+    assert always_visible == {"type", "reduction"}, (
+        "a new always-visible param needs an explicit decision: every loss "
+        "must accept it, or execute() must reject it where it does not")

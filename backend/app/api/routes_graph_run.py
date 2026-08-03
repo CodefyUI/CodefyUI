@@ -36,6 +36,7 @@ from ..core.graph_engine import (
     validate_graph,
 )
 from ..core.node_registry import registry
+from ..core.run_service import run_exclusion
 from ..schemas import (
     ContractInputSchema,
     ContractOutputSchema,
@@ -471,18 +472,39 @@ async def execute_contract_run(
         if status == "error":
             last_error_node_id["value"] = node_id
 
+    async def _execute_under_the_gate() -> Any:
+        """Execute, holding the process's reproducibility gate.
+
+        This is the SECOND ``execute_graph`` call site — the first is
+        ``RunService``, which has taken the gate since #134's review. Left
+        outside it, a headless invoke ran its nodes alongside a seeded
+        canvas run and moved that run's numbers: 8/8 node values diverged,
+        the exact pre-gate signature. This request is unseeded, so it takes
+        the SHARED hold: invokes still overlap each other and the ordinary
+        parallel runs; only a seeded run makes them wait, and only for as
+        long as it runs.
+
+        Taken INSIDE the task rather than around the await below, so the
+        hold covers the execution itself — a timeout returns 500 while the
+        nodes are still unwinding, and those nodes must not be running
+        outside the gate.
+        """
+        async with run_exclusion().shared():
+            return await execute_graph(
+                patched_nodes,
+                edges,
+                on_progress=_on_progress,
+                context=ctx,
+                error_mode="fail_fast",
+                run_id=run_id,
+                output_store=output_store,
+                record_outputs=(run_req.record_outputs
+                                and output_store is not None),
+                preset_fallback=preset_fallback,
+            )
+
     t0 = time.monotonic()
-    task = asyncio.create_task(execute_graph(
-        patched_nodes,
-        edges,
-        on_progress=_on_progress,
-        context=ctx,
-        error_mode="fail_fast",
-        run_id=run_id,
-        output_store=output_store,
-        record_outputs=run_req.record_outputs and output_store is not None,
-        preset_fallback=preset_fallback,
-    ))
+    task = asyncio.create_task(_execute_under_the_gate())
     task.add_done_callback(_retrieve_background_exception)
     try:
         engine_result = await asyncio.wait_for(
