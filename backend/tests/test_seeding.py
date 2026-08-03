@@ -15,6 +15,7 @@ order. If either escaped the seed, these tests fail.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -25,8 +26,10 @@ from app.core.graph_engine import execute_graph
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import registry
 from app.core.seeding import (
+    CUBLAS_WORKSPACE_CONFIG,
     MAX_SEED,
     apply_determinism,
+    deterministic_scope,
     derive_seed,
     make_generator,
     make_worker_init_fn,
@@ -347,15 +350,136 @@ def test_execution_context_derives_and_generates():
     assert unseeded.make_generator("x") is None
 
 
-@pytest.mark.asyncio
-async def test_context_deterministic_flag_reaches_torch():
+# ── determinism is scoped to the run, not latched (#188 review, I4) ──────
+
+
+class _DeterminismProbeNode(BaseNode):
+    """Records what torch's determinism flag was WHILE the graph ran."""
+
+    NODE_NAME = "_DeterminismProbe"
+    CATEGORY = "Utility"
+    DESCRIPTION = "Test node: samples the deterministic flag mid-run."
+
+    #: ``(enabled, warn_only)`` sampled INSIDE the run. Both are restored on
+    #: the way out, so neither can be read afterwards.
+    seen: list[tuple[bool, bool]] = []
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        _DeterminismProbeNode.seen.append((
+            torch.are_deterministic_algorithms_enabled(),
+            torch.is_deterministic_algorithms_warn_only_enabled(),
+        ))
+        return {"value": None}
+
+
+@pytest.fixture
+def _determinism_probe():
+    registry._nodes["_DeterminismProbe"] = _DeterminismProbeNode
+    _DeterminismProbeNode.seen = []
     previously = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
     torch.use_deterministic_algorithms(False)
     try:
-        nodes, edges = _training_graph(epochs=1)
-        await execute_graph(
-            nodes, edges,
-            context=ExecutionContext(device="cpu", deterministic=True))
-        assert torch.are_deterministic_algorithms_enabled()
+        yield _DeterminismProbeNode
     finally:
-        torch.use_deterministic_algorithms(previously)
+        torch.use_deterministic_algorithms(previously, warn_only=warn_only)
+        registry._nodes.pop("_DeterminismProbe", None)
+
+
+def _probe_graph(loop_params: dict | None = None) -> tuple[list, list]:
+    return (
+        [
+            {"id": "start", "type": "Start", "data": {"params": {}}},
+            {"id": "probe", "type": "_DeterminismProbe", "data": {"params": {}}},
+        ],
+        [{"id": "t1", "source": "start", "target": "probe",
+          "sourceHandle": "trigger", "type": "trigger"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_deterministic_flag_reaches_torch(_determinism_probe):
+    """It must be ON while the graph runs — sampled by a node, not after."""
+    nodes, edges = _probe_graph()
+    await execute_graph(
+        nodes, edges,
+        context=ExecutionContext(device="cpu", deterministic=True))
+
+    # warn_only, deliberately: strict mode would kill the run on the first
+    # op with no deterministic kernel.
+    assert _determinism_probe.seen == [(True, True)]
+
+
+@pytest.mark.asyncio
+async def test_determinism_is_handed_back_when_the_run_ends(_determinism_probe):
+    """A deterministic run must not latch the whole server process.
+
+    Before the #188 review ``apply_determinism(False)`` was a deliberate
+    no-op, so one run turned determinism on for every LATER run until
+    restart. The setting is a property of a run; it now dies with it.
+    """
+    nodes, edges = _probe_graph()
+    await execute_graph(
+        nodes, edges,
+        context=ExecutionContext(device="cpu", deterministic=True))
+    assert not torch.are_deterministic_algorithms_enabled()
+
+    # The next run, which asked for nothing, must compute the old way.
+    _determinism_probe.seen = []
+    await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
+    assert _determinism_probe.seen == [(False, False)]
+
+
+@pytest.mark.asyncio
+async def test_a_node_cannot_latch_determinism_past_its_own_run(
+    _determinism_probe,
+):
+    """``TrainingLoop.deterministic`` is a NODE param on a saved graph.
+
+    Opening someone else's graph must not change how every later run in the
+    server computes — which is why the scope is entered unconditionally
+    rather than only when the run asked for determinism.
+    """
+    nodes, edges = _training_graph(
+        epochs=1, loop_params={"deterministic": True})
+    await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
+
+    assert not torch.are_deterministic_algorithms_enabled()
+
+
+@pytest.mark.asyncio
+async def test_determinism_restores_an_already_on_setting(_determinism_probe):
+    """Restore means "back to what it was", not "off"."""
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    nodes, edges = _probe_graph()
+    await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
+
+    assert torch.are_deterministic_algorithms_enabled()
+
+
+def test_deterministic_scope_restores_the_cublas_env_var():
+    """The env var leaks into every subprocess spawned afterwards.
+
+    It does nothing in THIS process once the CUDA context exists, but a
+    DataLoader worker started later would inherit it.
+    """
+    os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+    with deterministic_scope(True):
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == CUBLAS_WORKSPACE_CONFIG
+    assert "CUBLAS_WORKSPACE_CONFIG" not in os.environ
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+    try:
+        with deterministic_scope(True):
+            pass
+        assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
+    finally:
+        os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)

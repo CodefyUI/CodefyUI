@@ -52,9 +52,11 @@ With a seed set:
 
 - Every node is seeded from a value derived from `(seed, node id)`, so what a node draws depends on the seed and on its own identity — not on how much randomness the rest of the graph consumed first, and not on the order the engine happened to schedule things in.
 - `DataLoader` gets its own generator, so the epoch shuffle order is fixed too, and each worker process gets its own independent stream.
-- **The run executes one node at a time.** Seeding writes process-global RNG state, so two nodes running concurrently would reseed each other mid-execute. Reproducibility is worth more here than the overlap; an unseeded run keeps its parallelism.
+- **The run executes one node at a time**, and **it does not overlap another run.** Seeding writes process-global RNG state, so a second node — or a second *run* — drawing from it at the same moment moves the numbers. A seeded run therefore waits for the runs already in flight, then runs alone, and anything submitted behind it waits for it. Unseeded runs are unaffected: they still run in parallel with each other, and their nodes still run in parallel.
 
 Two runs of the same graph with the same seed produce bitwise-identical loss curves on CPU. Different seeds produce genuinely different ones.
+
+The cost is worth stating plainly: a seeded run is slower (about 3-4x on a graph of independent branches, near zero on the usual mostly-linear teaching graph), and it can wait behind a long job even when started from the canvas. Reproducibility is opt-in, and a run that asked for it would rather be late than wrong.
 
 **Deterministic algorithms** is the other half. It asks PyTorch for kernels that combine those draws the same way every time (`torch.use_deterministic_algorithms(True, warn_only=True)`). It is `warn_only` on purpose: an operation with no deterministic implementation prints a warning rather than killing the run, so you get "everything reproducible was made reproducible" instead of a stack trace from inside cuDNN.
 

@@ -1661,9 +1661,32 @@ def test_advanced_params_round_trip_through_the_exported_script():
         assert exported == node["data"]["params"], node_id
 
 
-def test_advanced_params_survive_a_graph_json_round_trip():
-    """Nothing strips them on the way to disk and back."""
-    nodes, edges = _advanced_params_graph()
-    restored = json.loads(json.dumps({"nodes": nodes, "edges": edges}))
+@pytest.mark.asyncio
+async def test_advanced_params_survive_a_real_graph_save_and_load(
+    test_client, tmp_path, monkeypatch,
+):
+    """Through the ACTUAL persistence path, not a json round-trip of a dict.
 
-    assert restored["nodes"] == nodes
+    The first version of this test asserted ``json.loads(json.dumps(x)) == x``,
+    which is true of any dict and touches no repo code — it would not have
+    noticed if saving started dropping params. This one goes through
+    ``POST /api/graph/save`` and ``GET /api/graph/load/{name}``, where the
+    secret scrubber and the project-mode file split actually live.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "GRAPHS_DIR", tmp_path / "graphs")
+    nodes, edges = _advanced_params_graph()
+
+    saved = await test_client.post("/api/graph/save", json={
+        "name": "advanced-params-roundtrip", "nodes": nodes, "edges": edges,
+    })
+    assert saved.status_code == 200, saved.text
+
+    loaded = await test_client.get("/api/graph/load/advanced-params-roundtrip")
+    assert loaded.status_code == 200, loaded.text
+
+    restored = {n["id"]: n for n in loaded.json()["nodes"]}
+    for node_id in ("opt", "loss", "loader", "train"):
+        expected = next(n for n in nodes if n["id"] == node_id)
+        assert restored[node_id]["data"]["params"] == expected["data"]["params"], node_id

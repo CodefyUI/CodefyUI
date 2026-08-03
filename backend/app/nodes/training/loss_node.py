@@ -1,6 +1,13 @@
 from typing import Any
 
-from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.node_base import (
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+    is_param_visible,
+)
 from ...core.param_values import parse_float_sequence
 
 #: The select vocabulary. Every entry accepts ``reduction``; the sets below
@@ -29,12 +36,31 @@ REDUCTIONS = ["mean", "sum", "none"]
 DEFAULT_IGNORE_INDEX = -100
 
 
-def _reject_inapplicable(loss_type: str, param: str, value: Any) -> None:
-    """Raise when a param was set on a loss that has no such argument.
+_PARAM_DEFS: dict[str, ParamDefinition] = {}
 
-    Ignoring it would be worse: a user who set ``pos_weight`` on MSELoss and
-    saw no error would conclude their class imbalance was handled.
+
+def _reject_inapplicable(
+    loss_type: str, param: str, value: Any, params: dict[str, Any],
+) -> None:
+    """Complain about a param this loss has no argument for -- IF it is one
+    the user can actually see.
+
+    Ignoring a VISIBLE one would be worse than an error: someone who set
+    ``pos_weight`` and saw nothing would conclude their class imbalance was
+    handled.
+
+    A param the current ``type`` HIDES is a different case. The canvas
+    materialises every default onto a node and never clears one when the
+    sibling that hides it changes, so tuning ``label_smoothing`` on
+    CrossEntropy and then switching to MSE used to fail the run naming a
+    field that is not on the form. A hidden leftover means "not set", and
+    it comes back when it applies again.
     """
+    if not _PARAM_DEFS:
+        _PARAM_DEFS.update({p.name: p for p in LossNode.define_params()})
+    definition = _PARAM_DEFS.get(param)
+    if definition is not None and not is_param_visible(definition, params):
+        return
     raise ValueError(
         f"Loss '{loss_type}' does not accept {param}; got {value!r}. "
         f"Leave {param} at its default or pick a different loss.")
@@ -163,7 +189,7 @@ class LossNode(BaseNode):
         if loss_type in _LABEL_SMOOTHING_TYPES:
             kwargs["label_smoothing"] = label_smoothing
         elif label_smoothing:
-            _reject_inapplicable(loss_type, "label_smoothing", label_smoothing)
+            _reject_inapplicable(loss_type, "label_smoothing", label_smoothing, params)
 
         # Weight tensors are registered as BUFFERS by the loss module, so
         # ``to_device(loss_fn, device)`` in the training loop moves them
@@ -173,13 +199,13 @@ class LossNode(BaseNode):
             if weight is not None:
                 kwargs["weight"] = torch.tensor(weight, dtype=torch.float32)
         elif weight is not None:
-            _reject_inapplicable(loss_type, "weight", weight)
+            _reject_inapplicable(loss_type, "weight", weight, params)
 
         ignore_index = int(params.get("ignore_index", DEFAULT_IGNORE_INDEX))
         if loss_type in _IGNORE_INDEX_TYPES:
             kwargs["ignore_index"] = ignore_index
         elif ignore_index != DEFAULT_IGNORE_INDEX:
-            _reject_inapplicable(loss_type, "ignore_index", ignore_index)
+            _reject_inapplicable(loss_type, "ignore_index", ignore_index, params)
 
         pos_weight = parse_float_sequence(
             params.get("pos_weight"), name="pos_weight")
@@ -188,7 +214,7 @@ class LossNode(BaseNode):
                 kwargs["pos_weight"] = torch.tensor(
                     pos_weight, dtype=torch.float32)
         elif pos_weight is not None:
-            _reject_inapplicable(loss_type, "pos_weight", pos_weight)
+            _reject_inapplicable(loss_type, "pos_weight", pos_weight, params)
 
         loss_fn = loss_cls(**kwargs)
 

@@ -492,6 +492,11 @@ class TrainingLoopNode(BaseNode):
         # be able to opt out of it. Turning it on here covers the case the
         # run option cannot reach — a graph exported to Python, or a canvas
         # run whose submitter did not ask.
+        #
+        # Safe to latch from inside a node because ``execute_graph`` wraps
+        # every run in ``deterministic_scope`` and hands the process setting
+        # back afterwards. Without that, opening someone else's saved graph
+        # would have made every LATER run in the server deterministic.
         if bool(params.get("deterministic", False)) or getattr(
                 context, "deterministic", False):
             apply_determinism(True)

@@ -1,6 +1,13 @@
 from typing import Any
 
-from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.node_base import (
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+    is_param_visible,
+)
 from ...core.param_values import parse_float_sequence
 
 #: The select vocabulary, and the source of every ``visible_when`` list
@@ -32,14 +39,33 @@ DEFAULT_BETAS = "0.9, 0.999"
 DEFAULT_EPS = 1e-8
 
 
-def _reject_inapplicable(opt_type: str, param: str, value: Any) -> None:
-    """Raise when a param was set on an algorithm that has no such knob.
+_PARAM_DEFS: dict[str, ParamDefinition] = {}
 
-    Silence would be worse than an error here: a user who typed
-    ``nesterov=true`` under Adam has a mental model to correct, and a run
-    that quietly ignores it teaches them the wrong thing. Mirrors the
-    long-standing ``weight_decay`` message so the two read alike.
+
+def _reject_inapplicable(
+    opt_type: str, param: str, value: Any, params: dict[str, Any],
+) -> None:
+    """Complain about a param this algorithm has no knob for -- IF it is one
+    the user can actually see.
+
+    Silence is the wrong answer for a VISIBLE param: someone who typed
+    ``weight_decay=0.1`` on Rprop has a mental model to correct, and a run
+    that quietly ignores it teaches them the wrong thing.
+
+    Silence is the RIGHT answer for a param the current ``type`` hides. The
+    canvas materialises every default onto a node and never clears one when
+    the sibling that hides it changes, so tuning ``eps`` under Adam and then
+    switching to Adagrad used to fail the run naming a field that is not on
+    the form -- unfixable without editing the JSON by hand. A hidden
+    leftover means "not set"; it is preserved for when it applies again,
+    which is exactly what the editor does with it.
     """
+    if not _PARAM_DEFS:
+        _PARAM_DEFS.update(
+            {p.name: p for p in OptimizerNode.define_params()})
+    definition = _PARAM_DEFS.get(param)
+    if definition is not None and not is_param_visible(definition, params):
+        return
     raise ValueError(
         f"Optimizer '{opt_type}' does not accept {param}; got {value!r}. "
         f"Leave {param} at its default or pick a different optimizer.")
@@ -184,7 +210,7 @@ class OptimizerNode(BaseNode):
         if opt_type in _MOMENTUM_TYPES:
             kwargs["momentum"] = momentum
         elif momentum:
-            _reject_inapplicable(opt_type, "momentum", momentum)
+            _reject_inapplicable(opt_type, "momentum", momentum, params)
 
         betas = parse_float_sequence(
             params.get("betas", DEFAULT_BETAS), name="betas", length=2)
@@ -192,20 +218,20 @@ class OptimizerNode(BaseNode):
             if betas is not None:
                 kwargs["betas"] = betas
         elif betas is not None and betas != (0.9, 0.999):
-            _reject_inapplicable(opt_type, "betas", betas)
+            _reject_inapplicable(opt_type, "betas", betas, params)
 
         eps = params.get("eps", DEFAULT_EPS)
         eps = DEFAULT_EPS if eps is None else float(eps)
         if opt_type in _EPS_TYPES:
             kwargs["eps"] = eps
         elif eps != DEFAULT_EPS:
-            _reject_inapplicable(opt_type, "eps", eps)
+            _reject_inapplicable(opt_type, "eps", eps, params)
 
         amsgrad = bool(params.get("amsgrad", False))
         if opt_type in _AMSGRAD_TYPES:
             kwargs["amsgrad"] = amsgrad
         elif amsgrad:
-            _reject_inapplicable(opt_type, "amsgrad", amsgrad)
+            _reject_inapplicable(opt_type, "amsgrad", amsgrad, params)
 
         nesterov = bool(params.get("nesterov", False))
         dampening = float(params.get("dampening", 0.0) or 0.0)
@@ -214,9 +240,9 @@ class OptimizerNode(BaseNode):
             kwargs["dampening"] = dampening
         else:
             if nesterov:
-                _reject_inapplicable(opt_type, "nesterov", nesterov)
+                _reject_inapplicable(opt_type, "nesterov", nesterov, params)
             if dampening:
-                _reject_inapplicable(opt_type, "dampening", dampening)
+                _reject_inapplicable(opt_type, "dampening", dampening, params)
 
         optimizer = optimizer_cls(model.parameters(), **kwargs)
 

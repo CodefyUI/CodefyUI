@@ -31,7 +31,7 @@ from .execution_context import (
 )
 from .node_base import BaseNode
 from .node_registry import registry
-from .seeding import apply_determinism, seed_rngs
+from .seeding import deterministic_scope, seed_rngs
 from .step_trace import Step
 from .type_system import is_compatible
 
@@ -1035,10 +1035,15 @@ async def execute_graph(
         max_workers = 1
     semaphore = asyncio.Semaphore(max_workers)
 
-    # Deterministic kernels, applied once for the whole run rather than per
-    # node: it is a process-wide torch setting, not a per-call argument.
-    if context is not None and context.deterministic:
-        apply_determinism(True)
+    # Deterministic kernels are a process-wide torch setting, not a per-call
+    # argument, so they are applied once for the whole run and — since
+    # #188's review — TAKEN BACK when it ends. The scope is entered
+    # unconditionally, not only when determinism was requested: a
+    # ``TrainingLoop`` whose own ``deterministic`` param is on would
+    # otherwise latch the setting for every later run in the server, so
+    # merely opening someone else's saved graph would change how the next
+    # one computes.
+    wants_determinism = context is not None and context.deterministic
 
     # ── worker-thread → loop delivery ────────────────────────────────────
     #
@@ -1299,6 +1304,12 @@ async def execute_graph(
             node_errors[node_id] = str(last_error)
             await _emit_preset_aware(node_id, "error", error_detail)
 
+    # Entered by hand rather than with a ``with`` block so the whole body
+    # below keeps its indentation; the paired exit lives in the ``finally``
+    # that already owns this function's teardown.
+    determinism = deterministic_scope(wants_determinism)
+    determinism.__enter__()
+
     pump_task = asyncio.create_task(_pump(), name=f"outbox-pump:{run_id or '-'}")
     try:
         # Before the forward pass: zero any accumulated gradients on persisted
@@ -1385,6 +1396,9 @@ async def execute_graph(
             pump_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pump_task
+            # Hand determinism back to whatever the process had before this
+            # run. Last, so nothing above can skip it.
+            determinism.__exit__(None, None, None)
 
 
 async def _maybe_await(val: Any) -> Any:

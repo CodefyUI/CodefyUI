@@ -34,6 +34,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
+from app.core.seeding import derive_seed
 from app.core.run_service import (
     EVENT_ARTIFACT,
     EVENT_METRIC,
@@ -1449,3 +1450,187 @@ async def test_shutdown_is_idempotent(store, service):
     await service.shutdown()
     await service.shutdown()
     assert service.active_run_ids() == []
+
+
+# ── the seed reaches the CONTEXT, not just the row (#188 review, I2) ──────
+#
+# The single line in ``_start`` that passes `seed=` / `deterministic=` into
+# ``ExecutionContext`` is what makes reproducibility real for every canvas
+# and CLI run, and the review severed it at runtime with the whole suite
+# staying green: every test either built an ``ExecutionContext`` by hand or
+# asserted only on ``record.options``, which is the STORED value.
+#
+# These tests go through ``RunService.submit`` and observe what the executing
+# node actually received, so cutting that wire fails them.
+
+_SEED_PROBE = "_SeedProbe"
+
+
+class _SeedProbeNode(BaseNode):
+    """Reports the run-scoped seed state the ENGINE handed it."""
+
+    NODE_NAME = _SEED_PROBE
+    CATEGORY = "Utility"
+    DESCRIPTION = "Test node: echoes the seed derived from its context."
+
+    @classmethod
+    def define_inputs(cls):
+        # ``_graph`` wires src.value -> mid.value, so a middle needs the port.
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params, progress_callback=None, *, context=None):
+        derived = context.derive_seed("probe") if context is not None else None
+        if context is not None:
+            # Logged as metrics because that is what survives to the store;
+            # a server-owned run does not hand its outputs back.
+            context.log_metric("probe_has_seed", 1.0 if derived else 0.0, 0)
+            if derived is not None:
+                context.log_metric("probe_seed", float(derived), 0)
+            context.log_metric(
+                "probe_deterministic",
+                1.0 if getattr(context, "deterministic", False) else 0.0, 0)
+        return {"value": inputs.get("value")}
+
+
+@pytest.fixture
+def _probe_node():
+    registry._nodes[_SEED_PROBE] = _SeedProbeNode
+    yield
+    registry._nodes.pop(_SEED_PROBE, None)
+
+
+async def _probe_metrics(service, store, options):
+    result = await service.submit(_graph(_SEED_PROBE), options=options)
+    await _await_terminal(store, result.run_id)
+    points = await store.get_metrics(result.run_id)
+    return {p.name: p.value for p in points}
+
+
+@pytest.mark.asyncio
+async def test_a_submitted_seed_reaches_the_executing_node(
+    service, store, _probe_node,
+):
+    """Submit -> queue -> context -> node. Cut the wire and this fails."""
+    metrics = await _probe_metrics(service, store, {"seed": 4242})
+
+    assert metrics["probe_has_seed"] == 1.0
+    assert metrics["probe_seed"] == float(derive_seed(4242, "probe"))
+
+
+@pytest.mark.asyncio
+async def test_two_submissions_with_one_seed_derive_the_same_node_seed(
+    service, store, _probe_node,
+):
+    """The property a user cares about, observed through the real service."""
+    first = await _probe_metrics(service, store, {"seed": 7})
+    again = await _probe_metrics(service, store, {"seed": 7})
+    other = await _probe_metrics(service, store, {"seed": 8})
+
+    assert first["probe_seed"] == again["probe_seed"]
+    assert first["probe_seed"] != other["probe_seed"]
+
+
+@pytest.mark.asyncio
+async def test_an_unseeded_submission_leaves_the_node_unseeded(
+    service, store, _probe_node,
+):
+    """No seed must mean NO seed, not "seeded with 0"."""
+    metrics = await _probe_metrics(service, store, {})
+
+    assert metrics["probe_has_seed"] == 0.0
+    assert "probe_seed" not in metrics
+
+
+@pytest.mark.asyncio
+async def test_the_deterministic_option_reaches_the_executing_node(
+    service, store, _probe_node,
+):
+    on = await _probe_metrics(service, store, {"deterministic": True})
+    off = await _probe_metrics(service, store, {})
+
+    assert on["probe_deterministic"] == 1.0
+    assert off["probe_deterministic"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_seeded_run_does_not_overlap_another_run(service, store):
+    """The bitwise promise, made true rather than narrowed.
+
+    Per-node seeding writes PROCESS-GLOBAL RNGs, so a second run drawing
+    from them moves the first run's numbers — measured at 8/8 values
+    diverged before ``_RunExclusion`` existed, at the shipped cpu queue depth
+    of 2. A seeded run now waits for the runs in flight and runs alone.
+
+    Asserted on the OVERLAP itself rather than on floats: the numbers are
+    the symptom, the overlap is the cause, and a test on the cause cannot
+    pass by luck.
+    """
+    inflight: list[str] = []
+    overlaps: list[tuple[str, ...]] = []
+    original = service._execute
+
+    async def _watched(active, graph, options, session=None):
+        label = "seeded" if options.get("seed") is not None else "plain"
+        inflight.append(label)
+        if len(inflight) > 1:
+            overlaps.append(tuple(inflight))
+        try:
+            return await original(active, graph, options, session)
+        finally:
+            inflight.remove(label)
+
+    service._execute = _watched
+
+    await asyncio.gather(
+        service.submit(_graph(), options={"seed": 11}),
+        service.submit(_graph(), options={}),
+        service.submit(_graph(), options={"seed": 12}),
+    )
+    for _ in range(600):
+        if not service._runs and not any(service._pending.values()):
+            break
+        await asyncio.sleep(0.02)
+
+    assert not any("seeded" in pair for pair in overlaps), (
+        f"a seeded run overlapped another run: {overlaps}")
+
+
+@pytest.mark.asyncio
+async def test_unseeded_runs_still_overlap_each_other(service, store):
+    """The gate must not become a global serialisation of the server."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    concurrent = 0
+    peak = 0
+    original = service._execute
+
+    async def _watched(active, graph, options, session=None):
+        nonlocal concurrent, peak
+        concurrent += 1
+        peak = max(peak, concurrent)
+        entered.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        try:
+            return await original(active, graph, options, session)
+        finally:
+            concurrent -= 1
+
+    service._execute = _watched
+
+    await service.submit(_graph(), options={})
+    await service.submit(_graph(), options={})
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    for _ in range(100):
+        if peak >= 2:
+            break
+        await asyncio.sleep(0.02)
+    release.set()
+
+    assert peak >= 2, "the cpu queue admits 2; unseeded runs must still overlap"

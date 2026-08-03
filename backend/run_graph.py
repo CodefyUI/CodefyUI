@@ -134,7 +134,7 @@ async def run(
     if device or seed is not None or deterministic:
         from app.core.device_utils import resolve_device
         from app.core.execution_context import ExecutionContext
-        from app.core.seeding import apply_determinism, seed_rngs
+        from app.core.seeding import seed_rngs
 
         resolved = resolve_device(device) if device else "cpu"
         logger.info("Global device: %s", resolved)
@@ -146,8 +146,9 @@ async def run(
             logger.info("Seed: %d (nodes execute serially)", seed)
             seed_rngs(seed)
         if deterministic:
+            # Announced only; the engine applies it through
+            # ``deterministic_scope`` and takes it back when the run ends.
             logger.info("Deterministic algorithms: on (warn_only)")
-            apply_determinism(True)
         context = ExecutionContext(device=resolved, seed=seed,
                                    deterministic=deterministic)
     try:

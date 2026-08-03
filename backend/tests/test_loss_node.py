@@ -84,9 +84,22 @@ def test_label_smoothing_measurably_changes_cross_entropy():
     assert smoothed.item() > plain.item()
 
 
-def test_label_smoothing_is_rejected_on_a_loss_that_has_none():
-    with pytest.raises(ValueError, match="does not accept label_smoothing"):
-        _loss({"type": "MSELoss", "label_smoothing": 0.1})
+@pytest.mark.parametrize("param,value", [
+    ("label_smoothing", 0.1),
+    ("weight", "1, 5"),
+    ("ignore_index", 0),
+    ("pos_weight", "3"),
+])
+def test_a_param_the_type_hides_is_ignored_rather_than_fatal(param, value):
+    """Tune it on CrossEntropy, switch to MSE, and the run must still work.
+
+    ``visible_when`` hides the editor but never clears the value, so an
+    error here names a field the user cannot see. Regression for the #188
+    review's I5 — all four raised before.
+    """
+    built = _loss({"type": "MSELoss", param: value})
+    assert isinstance(built, nn.MSELoss)
+    assert built.reduction == "mean"
 
 
 @pytest.mark.parametrize("loss_type", [
@@ -141,9 +154,10 @@ def test_blank_weight_means_unweighted():
     assert _loss({"type": "CrossEntropyLoss", "weight": "   "}).weight is None
 
 
-def test_weight_is_rejected_on_a_loss_that_has_none():
-    with pytest.raises(ValueError, match="does not accept weight"):
-        _loss({"type": "MSELoss", "weight": "1, 5"})
+def test_a_hidden_leftover_comes_back_when_it_applies_again():
+    tuned = {"type": "CrossEntropyLoss", "label_smoothing": 0.1}
+    _loss({**tuned, "type": "MSELoss"})              # ignored, no raise
+    assert _loss(tuned).label_smoothing == 0.1      # honoured again
 
 
 def test_ignore_index_drops_the_marked_target():
@@ -161,9 +175,7 @@ def test_ignore_index_drops_the_marked_target():
         nn.CrossEntropyLoss(ignore_index=7)(logits, with_padding))
 
 
-def test_ignore_index_is_rejected_on_a_loss_that_has_none():
-    with pytest.raises(ValueError, match="does not accept ignore_index"):
-        _loss({"type": "MSELoss", "ignore_index": 0})
+
 
 
 def test_pos_weight_rebalances_binary_logits():
@@ -178,9 +190,7 @@ def test_pos_weight_rebalances_binary_logits():
         _loss({"type": "BCEWithLogitsLoss"})(logits, targets).item()
 
 
-def test_pos_weight_is_rejected_on_a_loss_that_has_none():
-    with pytest.raises(ValueError, match="does not accept pos_weight"):
-        _loss({"type": "MSELoss", "pos_weight": "3"})
+
 
 
 @pytest.mark.parametrize("loss_type", [

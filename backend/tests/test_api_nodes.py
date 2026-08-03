@@ -338,3 +338,43 @@ async def test_loss_and_dataloader_advertise_their_new_params(test_client):
     assert loader["pin_memory"]["advanced"] is False
     assert loader["drop_last"]["advanced"] is True
     assert loader["prefetch_factor"]["advanced"] is True
+
+
+# ── zh-TW coverage for the training nodes (#188 review, M8) ──────────────
+
+
+def test_training_node_params_all_have_a_zh_tw_description():
+    """Every param of the four training nodes is translated.
+
+    This project mirrors user-facing strings in both locales and its primary
+    audience reads Chinese, but nothing enforced it for NODE catalogs — so
+    #134 shipped 17 English descriptions rendering directly beneath
+    translated ones. The source of truth is ``define_params()``, so the
+    check is against the real schema rather than a second hand-kept list.
+
+    Scoped to the nodes this issue touched; widening it to the whole
+    registry is a separate cleanup with a much longer tail.
+    """
+    import re
+    from pathlib import Path
+
+    from app.core.node_registry import registry
+
+    catalog = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
+               "i18n" / "nodeLocales" / "zh-TW.ts").read_text(encoding="utf-8")
+
+    missing: list[str] = []
+    for node_name in ("Optimizer", "Loss", "DataLoader", "TrainingLoop"):
+        node_cls = registry.get(node_name)
+        assert node_cls is not None, node_name
+        block = re.search(
+            rf"\n  {node_name}: \{{(.*?)\n  \}},", catalog, re.DOTALL)
+        assert block, f"{node_name} has no zh-TW entry at all"
+        body = block.group(1)
+        for param in node_cls.define_params():
+            if not re.search(rf"\n      {re.escape(param.name)}: ", body):
+                missing.append(f"{node_name}.{param.name}")
+
+    assert not missing, (
+        "these params render in English under zh-TW; add them to "
+        f"frontend/src/i18n/nodeLocales/zh-TW.ts: {missing}")

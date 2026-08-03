@@ -134,7 +134,7 @@ from .run_store import (
     json_safe,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
-from .seeding import apply_determinism, seed_rngs
+from .seeding import seed_rngs
 
 logger = logging.getLogger(__name__)
 
@@ -870,6 +870,102 @@ def apply_seed(seed: int | None) -> None:
     seed_rngs(seed)
 
 
+# ── run exclusion ─────────────────────────────────────────────────────────
+
+
+class _RunExclusion:
+    """A seeded run does not overlap another run. Readers-writer, in-process.
+
+    Per-node seeding writes the PROCESS-GLOBAL RNGs, so ``execute_graph``
+    already serialises the nodes WITHIN a seeded run. That is only half the
+    problem: the cpu queue admits two runs at once by default, and a second
+    run drawing from the same global generators between (or during) the
+    first run's nodes moves its numbers just as surely. Measured before this
+    gate existed: 8/8 node values diverged between a solo and a concurrent
+    run at the same seed.
+
+    So the promise the docs make -- same seed, same loss curve -- is made
+    TRUE here rather than narrowed in prose: a seeded run waits for the runs
+    already going, then runs alone, and the runs behind it wait for it.
+    Unseeded runs are unaffected and still overlap each other freely, which
+    is what keeps this from being a global serialisation of the server.
+
+    WRITER-PREFERRING on purpose. A plain readers-writer lock lets a steady
+    trickle of unseeded submissions starve a seeded run forever, and "your
+    reproducible run never starts" is a worse failure than "your throughput
+    run waited". New shared holders therefore queue behind a waiting
+    exclusive one.
+
+    The cost is real and worth stating: a seeded canvas run can now wait
+    behind a long queued job, even though the interactive lane otherwise
+    bypasses the FIFO. Reproducibility is opt-in; a run that asked for it
+    would rather be late than wrong.
+
+    In-process only, like every other lock here. Two servers pointed at one
+    database were never isolated from each other and are no worse now.
+    """
+
+    __slots__ = ("_condition", "_readers", "_writer", "_waiting_writers")
+
+    def __init__(self) -> None:
+        # Built lazily-bound: asyncio primitives take the running loop on
+        # first await, and a RunService is constructed before the loop in
+        # some tests.
+        self._condition = asyncio.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    @property
+    def busy(self) -> bool:
+        """True when anything holds the gate. For assertions and logging."""
+        return self._writer or self._readers > 0
+
+    def for_seed(self, seed: int | None):
+        """The right hold for a run: exclusive when seeded, shared otherwise."""
+        return self.exclusive() if seed is not None else self.shared()
+
+    @asynccontextmanager
+    async def shared(self) -> AsyncIterator[None]:
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: not self._writer and self._waiting_writers == 0)
+            self._readers += 1
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._condition.notify_all()
+
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        async with self._condition:
+            # Counted BEFORE waiting, so new readers see a writer pending and
+            # queue behind it. Decremented in a ``finally`` because a
+            # cancelled wait (shutdown) must not leave the count raised —
+            # that would block every reader for the life of the process.
+            self._waiting_writers += 1
+            try:
+                if self._writer or self._readers:
+                    logger.info(
+                        "seeded run waiting for %d run(s) to finish; a seeded "
+                        "run executes alone so its numbers are reproducible",
+                        self._readers + (1 if self._writer else 0))
+                await self._condition.wait_for(
+                    lambda: not self._writer and self._readers == 0)
+            finally:
+                self._waiting_writers -= 1
+            self._writer = True
+        try:
+            yield
+        finally:
+            async with self._condition:
+                self._writer = False
+                self._condition.notify_all()
+
+
 # ── in-process fan-out ────────────────────────────────────────────────────
 
 
@@ -1089,6 +1185,11 @@ class RunService:
         # easier to get subtly wrong than incrementing where the slot is
         # actually taken and released.
         self._slots: dict[str, int] = {}
+        # Reproducibility gate (#134 review). Orthogonal to the queue's
+        # admission: the queue decides how many runs may be IN FLIGHT, this
+        # decides which of them may be EXECUTING at the same moment. A
+        # seeded run takes it exclusively; every other run takes it shared.
+        self._exclusion = _RunExclusion()
         # The interactive lane's two bounds. ``_interactive_inflight``
         # includes runs whose row is still being written (submit reserves
         # BEFORE it awaits ``create_run``), which is what stops two
@@ -1566,10 +1667,14 @@ class RunService:
             if active.context.should_stop():
                 await self._finalize(active, self._stopped_status(active), None)
                 return
-            if not await self._begin(active):
-                return
-            status, error = await self._execute(active, graph, options,
-                                                session)
+            # Taken BEFORE ``_begin`` so a seeded run waiting its turn is
+            # still reported as `queued` rather than as a `running` run
+            # emitting nothing — the status stays true while it waits.
+            async with self._exclusion.for_seed(options.get("seed")):
+                if not await self._begin(active):
+                    return
+                status, error = await self._execute(active, graph, options,
+                                                    session)
             await self._finalize(active, status, error)
         except asyncio.CancelledError:
             raise
@@ -1637,7 +1742,11 @@ class RunService:
         """Run the graph and classify the outcome. Never raises but cancel."""
         try:
             apply_seed(options.get("seed"))
-            apply_determinism(bool(options.get("deterministic")))
+            # Determinism is NOT applied here any more: ``execute_graph``
+            # owns it through ``deterministic_scope``, which also takes it
+            # back when the run ends. Setting it here would latch the
+            # process outside that scope — the one-way latch the #188
+            # review found.
             await execute_graph(
                 graph["nodes"],
                 graph["edges"],

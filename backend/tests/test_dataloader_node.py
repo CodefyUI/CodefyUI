@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import pickle
+import random
+
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
+from app.core.seeding import make_worker_init_fn
 from app.nodes.data.dataloader_node import DataLoaderNode
 
 
@@ -174,3 +178,70 @@ def test_no_seed_means_no_generator():
 def test_seeded_loader_carries_a_worker_init_fn_only_when_it_has_workers():
     assert _loader({"num_workers": 0}, context=_Ctx(seed=3)).worker_init_fn is None
     assert _loader({"num_workers": 2}, context=_Ctx(seed=3)).worker_init_fn is not None
+
+
+# ── multi-worker loaders must actually RUN (#188 review, C1) ─────────────
+
+
+class _RandomTagDataset(torch.utils.data.Dataset):
+    """Each item carries a draw from ``random`` — the stream torch does NOT
+    reseed per worker. Module level so ``spawn`` can pickle it.
+    """
+
+    def __init__(self, n: int = 8) -> None:
+        self.n = n
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, index: int):
+        return torch.tensor([float(index)]), torch.tensor(random.random())
+
+
+def test_the_worker_init_fn_can_be_pickled():
+    """``spawn`` PICKLES this argument, and a closure cannot be pickled.
+
+    Windows and macOS spawn by default, and Python 3.14+ moves non-Mac POSIX
+    to ``forkserver``, which pickles too. A closure here raised
+    ``Can't pickle local object`` at ITERATION time — inside TrainingLoop,
+    naming neither the seeding nor the DataLoader node. Cheap, direct
+    regression guard for the shape of the callable.
+    """
+    init = make_worker_init_fn(11)
+    revived = pickle.loads(pickle.dumps(init))
+
+    revived(0)
+    first = random.random()
+    init(0)
+    assert random.random() == first, "the revived callable seeds differently"
+
+
+def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
+    """The end-to-end proof: real worker processes, real batches.
+
+    The shipped test asserted only that ``worker_init_fn is not None`` and
+    never iterated — precisely the "accepted but not applied" failure the
+    brief's ``label_smoothing`` criterion exists to catch. This one starts
+    the workers, so it fails outright if the callable cannot cross the
+    process boundary.
+    """
+    dataset = _RandomTagDataset(8)
+
+    def _tags(seed):
+        loader = _loader(
+            {"batch_size": 2, "shuffle": False, "num_workers": 2},
+            context=_Ctx(seed=seed), dataset=dataset)
+        return [round(float(tag), 12) for _, batch in loader for tag in batch]
+
+    first = _tags(21)
+    again = _tags(21)
+    other = _tags(22)
+
+    assert len(first) == 8, "the loader produced no batches"
+    # Same seed -> the workers drew the same augmentations.
+    assert first == again
+    # A different run seed -> genuinely different ones.
+    assert first != other
+    # And the two workers did not walk the same stream: with per-worker
+    # seeding the 8 values are distinct rather than two repeated halves.
+    assert first[:2] != first[4:6]

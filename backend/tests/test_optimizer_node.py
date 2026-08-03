@@ -214,17 +214,44 @@ def test_dampening_changes_the_second_step():
     assert _second_step_delta(0.0) > _second_step_delta(0.5)
 
 
-@pytest.mark.parametrize("param,value", [
-    ("momentum", 0.9),
-    ("nesterov", True),
-    ("dampening", 0.5),
-    ("amsgrad", True),
+def test_an_inapplicable_visible_param_is_an_error_not_a_shrug():
+    """``weight_decay`` is always on the form, so Rprop must complain."""
+    with pytest.raises(ValueError, match="does not accept weight_decay"):
+        _param_group({"type": "Rprop", "weight_decay": 0.1})
+
+
+@pytest.mark.parametrize("param,value,other_type", [
+    ("momentum", 0.9, "Adam"),
+    ("nesterov", True, "Adam"),
+    ("dampening", 0.5, "Adam"),
+    ("amsgrad", True, "SGD"),
+    ("betas", "0.5, 0.9", "SGD"),
+    ("eps", 1e-07, "Adagrad"),
 ])
-def test_setting_an_inapplicable_param_is_an_error_not_a_shrug(param, value):
-    """Adam has no ``nesterov``. Saying so beats ignoring it."""
-    with pytest.raises(ValueError, match="does not accept"):
-        _param_group({"type": "Adam" if param != "amsgrad" else "SGD",
-                      param: value})
+def test_a_param_the_type_hides_is_ignored_rather_than_fatal(
+    param, value, other_type,
+):
+    """Tune it on Adam, switch to Adagrad, and the run must still work.
+
+    The canvas writes every default onto a node and never clears one when
+    the sibling that hides it changes, so the leftover value is invisible:
+    an error naming it points at a field that is not on the form and cannot
+    be reset without hand-editing the graph JSON. Hidden means "not set".
+
+    Regression for the #188 review's I5 — every one of these raised before.
+    """
+    group = _param_group({"type": other_type, param: value})
+
+    assert group["lr"] == 0.001
+    # And the leftover really is inert, not quietly applied.
+    assert param not in group or group[param] != value
+
+
+def test_a_hidden_leftover_comes_back_when_it_applies_again():
+    """The value is preserved, not destroyed — same as the editor does."""
+    tuned = {"type": "Adam", "eps": 1e-07}
+    _param_group({**tuned, "type": "Adagrad"})       # ignored, no raise
+    assert _param_group(tuned)["eps"] == 1e-07       # honoured again
 
 
 @pytest.mark.parametrize("opt_type", ["Adam", "SGD", "AdamW", "RMSprop",

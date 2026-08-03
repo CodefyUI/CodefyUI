@@ -31,6 +31,8 @@ torch's own default entropy and the engine keeps its parallelism.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -113,9 +115,9 @@ def apply_determinism(enabled: bool) -> None:
     tells the user which op could not comply, which is the honest answer:
     "everything reproducible was made reproducible".
 
-    Idempotent, and a no-op when *enabled* is false -- it never turns
-    determinism back OFF, because it does not own the process-wide setting
-    and another run may have asked for it.
+    Idempotent, and a no-op when *enabled* is false. Turning it back off is
+    :func:`deterministic_scope`'s job, not this function's -- it does not
+    know what the setting was before it was called.
     """
     if not enabled:
         return
@@ -128,6 +130,56 @@ def apply_determinism(enabled: bool) -> None:
             torch.backends.cudnn.benchmark = False
     except Exception:  # pragma: no cover - torch always present in practice
         logger.debug("deterministic algorithms not applied", exc_info=True)
+
+
+@contextlib.contextmanager
+def deterministic_scope(enabled: bool):
+    """Bound determinism to ONE run instead of latching the whole process.
+
+    ``torch.use_deterministic_algorithms`` is process-wide with no per-run
+    variant, so without this a single deterministic run silently made every
+    later run in that server deterministic until restart -- and because
+    ``TrainingLoopNode`` ORs in its own ``deterministic`` param, merely
+    OPENING someone else's saved graph could do it. The setting is a
+    property of a run; it now dies with the run.
+
+    Entered UNCONDITIONALLY by the engine, not only when determinism was
+    requested, precisely so a node that turns it on mid-run is scoped too.
+
+    Restores ``CUBLAS_WORKSPACE_CONFIG`` as well. Clearing it does not
+    un-apply anything in this process (cuBLAS reads it once, at CUDA context
+    creation), but it stops the value leaking into every subprocess spawned
+    afterwards -- a DataLoader worker among them.
+
+    Concurrency caveat, stated rather than pretended away: with two
+    overlapping runs the restore is last-one-wins, exactly as the set is.
+    Runs that need a guarantee take a seed, and a seeded run does not
+    overlap anything (see ``run_service._RunExclusion``).
+    """
+    try:
+        import torch
+
+        previous = torch.are_deterministic_algorithms_enabled()
+        previous_warn = torch.is_deterministic_algorithms_warn_only_enabled()
+    except Exception:  # pragma: no cover - torch always present in practice
+        yield
+        return
+
+    had_cublas = "CUBLAS_WORKSPACE_CONFIG" in os.environ
+    previous_cublas = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    try:
+        apply_determinism(enabled)
+        yield
+    finally:
+        try:
+            torch.use_deterministic_algorithms(previous,
+                                               warn_only=previous_warn)
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("determinism not restored", exc_info=True)
+        if had_cublas:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = previous_cublas or ""
+        else:
+            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 
 
 def make_generator(seed: int | None) -> Any | None:
@@ -155,6 +207,23 @@ def make_generator(seed: int | None) -> Any | None:
         return None
 
 
+def seed_worker(base_seed: int, worker_id: int) -> None:
+    """Seed one DataLoader worker process. MODULE LEVEL, and that is the point.
+
+    ``DataLoader`` hands ``worker_init_fn`` to each worker, and under the
+    **spawn** start method -- the default on Windows and on macOS since 3.8,
+    and where Python 3.14+ is taking non-Mac POSIX via ``forkserver`` -- that
+    argument is PICKLED. A closure cannot be pickled:
+    ``AttributeError: Can't pickle local object``. So the callable handed to
+    torch has to be a module-level function with its base seed bound by
+    :func:`functools.partial`, which pickles by reference.
+
+    This crashed at ITERATION time, inside ``TrainingLoop``, naming neither
+    seeding nor the DataLoader node -- so it is worth the indirection.
+    """
+    seed_rngs(derive_seed(base_seed, f"worker:{worker_id}"))
+
+
 def make_worker_init_fn(seed: int | None) -> Callable[[int], None] | None:
     """A ``worker_init_fn`` giving each DataLoader worker its own stream.
 
@@ -167,12 +236,9 @@ def make_worker_init_fn(seed: int | None) -> Callable[[int], None] | None:
     from ``derive_seed(seed, "worker:N")`` closes that and keeps the streams
     a function of the run seed alone -- so worker count changes what is
     drawn, but re-running with the same settings does not.
+
+    The result must survive ``pickle``; see :func:`seed_worker`.
     """
     if seed is None:
         return None
-    base = int(seed) % SEED_SPACE
-
-    def _init(worker_id: int) -> None:
-        seed_rngs(derive_seed(base, f"worker:{worker_id}"))
-
-    return _init
+    return functools.partial(seed_worker, int(seed) % SEED_SPACE)
