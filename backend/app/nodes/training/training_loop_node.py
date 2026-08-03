@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from ...core.amp import PRECISIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
@@ -334,6 +335,28 @@ class TrainingLoopNode(BaseNode):
     ``val_losses`` one entry shorter than ``losses``, because that epoch's
     training finished and its validation did not.
 
+    **Fitting a bigger run on one card (#135).** Two independent levers,
+    both off by default:
+
+    * ``precision`` -- ``bf16`` runs the forward pass and the loss under
+      ``autocast``, roughly halving activation memory on Ampere and newer
+      with no scaler and no numerical babysitting. ``fp16`` does the same
+      for older cards and adds a ``GradScaler``. See ``core.amp`` for what
+      each device can honour and what happens when it cannot.
+    * ``accumulate_steps`` -- run N micro-batches, dividing each one's loss
+      by N, and step the optimizer once. Gradients are then mathematically
+      the same as one batch N times larger (exactly, when the loss is a
+      mean and every micro-batch is full), so a batch size the card cannot
+      hold becomes a batch size it can.
+
+    The two compose, and both interact with the rest of the loop in ways
+    worth stating: gradient clipping happens at STEP time over the whole
+    accumulated gradient (never per micro-batch, which would clip a
+    quarter of a gradient to the full-gradient threshold); ``max_steps``
+    counts OPTIMIZER steps, so it means the same thing at any
+    ``accumulate_steps``; and ``train_loss_batch`` keeps being stepped by
+    micro-batch, because that is what it measures.
+
     **Metrics (#122).** Per epoch, stepped by the ABSOLUTE epoch number:
     ``train_loss``, ``lr``, ``val_loss`` when a validation loader is wired,
     and ``patience_counter``/``best_epoch`` when early stopping is on. Under
@@ -369,6 +392,16 @@ class TrainingLoopNode(BaseNode):
                 ),
                 optional=True,
             ),
+            PortDefinition(
+                name="grad_scaler_state",
+                data_type=DataType.ANY,
+                description=(
+                    "fp16 loss-scale state to resume from. Wire "
+                    "CheckpointLoader.grad_scaler_state here; ignored unless "
+                    "precision is fp16"
+                ),
+                optional=True,
+            ),
         ]
 
     @classmethod
@@ -378,6 +411,14 @@ class TrainingLoopNode(BaseNode):
             PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch"),
             PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch (empty if no val_dataloader)"),
             PortDefinition(name="metrics", data_type=DataType.ANY, description="Training metrics dict (final_loss, best_epoch, lr_history, etc.)"),
+            PortDefinition(
+                name="grad_scaler_state",
+                data_type=DataType.ANY,
+                description=(
+                    "fp16 loss-scale state to store in a checkpoint "
+                    "(None unless precision is fp16)"
+                ),
+            ),
         ]
 
     @classmethod
@@ -416,12 +457,41 @@ class TrainingLoopNode(BaseNode):
                 ),
             ),
             ParamDefinition(
+                name="precision",
+                param_type=ParamType.SELECT,
+                default="fp32",
+                description=(
+                    "Mixed precision. bf16 roughly halves activation memory "
+                    "on Ampere and newer with no other change; fp16 does the "
+                    "same on older cards and adds a loss scaler. A device "
+                    "that cannot honour the choice falls back to fp32 and "
+                    "says so."
+                ),
+                options=list(PRECISIONS),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="accumulate_steps",
+                param_type=ParamType.INT,
+                default=1,
+                description=(
+                    "Run this many batches before each optimizer step, "
+                    "dividing each one's loss by the same number. 4 at "
+                    "batch_size 8 gives the gradients of batch_size 32 "
+                    "while only ever holding 8 in memory (1 = off)."
+                ),
+                min_value=1,
+                advanced=True,
+            ),
+            ParamDefinition(
                 name="max_steps",
                 param_type=ParamType.INT,
                 default=0,
                 description=(
                     "Stop after this many optimizer steps in total, whatever "
-                    "epochs says (0 = no limit)"
+                    "epochs says. Counts optimizer steps, not batches, so it "
+                    "means the same thing at any accumulate_steps "
+                    "(0 = no limit)"
                 ),
                 min_value=0,
                 advanced=True,
@@ -460,6 +530,7 @@ class TrainingLoopNode(BaseNode):
     ) -> dict[str, Any]:
         import torch
 
+        from ...core.amp import AmpPolicy
         from ...core.device_utils import resolve_node_device, to_device
         from ...core.loop_control import (
             EVENT_BATCH,
@@ -486,6 +557,13 @@ class TrainingLoopNode(BaseNode):
         batch_metrics = bool(params.get("batch_metrics", False))
         max_steps = int(params.get("max_steps", 0) or 0)
         log_interval = max(1, int(params.get("log_interval", 1) or 1))
+        accumulate_steps = max(1, int(params.get("accumulate_steps", 1) or 1))
+
+        # Built once for the whole call, so the fallback warning is logged
+        # once rather than per batch, and so an fp16 run's loss scale is one
+        # continuous trajectory instead of restarting every epoch.
+        policy = AmpPolicy.for_device(params.get("precision"), device)
+        policy.load_state_dict(inputs.get("grad_scaler_state"))
 
         # ORed with the run option rather than overriding it: the run-level
         # switch is "make this whole run reproducible" and a node must not
@@ -539,7 +617,22 @@ class TrainingLoopNode(BaseNode):
             "grad_clip_norm": grad_clip if grad_clip > 0 else "disabled",
             "has_validation": val_dataloader is not None,
             "has_lr_scheduler": lr_scheduler is not None,
+            # Both the request and what the device could honour, because
+            # "I asked for bf16" and "this ran in bf16" are different
+            # statements and only one of them is visible from the loss curve.
+            "precision": policy.precision,
+            "precision_requested": policy.requested,
+            "accumulate_steps": accumulate_steps,
         }
+        batch_size = getattr(dataloader, "batch_size", None)
+        if accumulate_steps > 1 and isinstance(batch_size, int):
+            training_config["effective_batch_size"] = batch_size * accumulate_steps
+        if policy.fell_back:
+            logger.warning(
+                "precision=%s was requested but %s runs this in %s; the run "
+                "continues at the lower memory saving.",
+                policy.requested, device, policy.precision,
+            )
 
         if progress_callback:
             progress_callback({"event": "config", "config": training_config})
@@ -558,10 +651,36 @@ class TrainingLoopNode(BaseNode):
         # and which loop it was in. None until someone presses Stop.
         stopped_at: dict[str, Any] | None = None
         global_batch = 0
+        # Optimizer steps that actually moved the weights. Equal to
+        # ``global_batch`` in the default configuration, and the honest
+        # denominator once accumulation (several batches per step) or fp16
+        # (a step skipped on an overflowing gradient) is in play.
+        optimizer_steps = 0
         # Set when ``max_steps`` ends the run. Distinct from ``stopped_at``:
         # that means "a human pressed Stop and these results are partial",
         # this means "the configured budget was spent and the run is done".
         step_budget_reached = False
+
+        def apply_gradients() -> bool:
+            """Clip, step, and clear -- one accumulation window's update.
+
+            Clipping happens HERE rather than after each micro-batch's
+            backward, because the thing that must be bounded is the
+            gradient the optimizer actually uses. Clipping a quarter of a
+            gradient against the whole-gradient threshold would leave the
+            sum unbounded and the individual contributions distorted.
+
+            The unscale before it is what makes the norm meaningful under
+            fp16: the gradients are still multiplied by the loss scale at
+            this point, so a clip measured on them would compare a number
+            around 65536x too large against the threshold.
+            """
+            if grad_clip > 0:
+                policy.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            applied = policy.step(optimizer)
+            optimizer.zero_grad()
+            return applied
 
         # ``epoch`` is the ABSOLUTE epoch index for the whole training run, not
         # an offset into this call: a resume at start_epoch=2 with epochs=4 runs
@@ -572,6 +691,13 @@ class TrainingLoopNode(BaseNode):
             model.train()
             running_loss = 0.0
             batch_count = 0
+            # Micro-batches whose gradients are sitting in ``.grad`` waiting
+            # for a step. Reset per epoch: an accumulation window never
+            # spans an epoch boundary, so an epoch's last partial window is
+            # applied as a step of its own rather than being carried into
+            # the next epoch's first window.
+            pending = 0
+            optimizer.zero_grad()
 
             for batch_index, batch_data in enumerate(dataloader):
                 # #122: once per batch, before any work. A plain
@@ -590,24 +716,43 @@ class TrainingLoopNode(BaseNode):
                     data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                     targets = None
 
-                optimizer.zero_grad()
-                outputs = model(data)
+                # The forward pass AND the loss go under autocast: torch
+                # picks the right dtype per op, and keeping the loss inside
+                # is what makes reductions that need float32 (softmax,
+                # cross-entropy) run in float32 rather than in bf16.
+                with policy.autocast():
+                    outputs = model(data)
 
-                if targets is not None:
-                    loss = loss_fn(outputs, targets)
-                else:
-                    loss = loss_fn(outputs)
+                    if targets is not None:
+                        loss = loss_fn(outputs, targets)
+                    else:
+                        loss = loss_fn(outputs)
 
-                loss.backward()
+                # Divided by the WINDOW size, not by how many micro-batches
+                # this window ended up with. Every micro-batch then
+                # contributes exactly 1/N of the update, which is what makes
+                # N windows of B equal to one batch of N*B. A final short
+                # window therefore takes a proportionally smaller step, which
+                # is the honest treatment of a smaller sample -- normalising
+                # it back up would give a full-sized update computed from
+                # fewer examples.
+                policy.scale(loss / accumulate_steps).backward()
+                pending += 1
 
-                if grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-
-                optimizer.step()
+                # The UNSCALED, undivided loss: what this batch actually
+                # measured. The division is a detail of how the gradient is
+                # assembled and must not leak into the reported curve, or
+                # the same run at a different accumulate_steps would draw a
+                # different chart.
                 batch_loss = loss.item()
                 running_loss += batch_loss
                 batch_count += 1
                 global_batch += 1
+
+                if pending >= accumulate_steps:
+                    if apply_gradients():
+                        optimizer_steps += 1
+                    pending = 0
 
                 if (batch_metrics and context is not None
                         and global_batch % log_interval == 0):
@@ -637,9 +782,28 @@ class TrainingLoopNode(BaseNode):
                 # partial epoch -- an epoch that trained on half its batches
                 # has a real average loss, and dropping it would leave the
                 # chart with nothing to show for the work.
-                if max_steps and global_batch >= max_steps:
+                #
+                # Counted in OPTIMIZER steps, so "stop after 100 steps"
+                # means the same amount of learning whether the batches are
+                # accumulated or not. At the default accumulate_steps=1 the
+                # two counters are the same number.
+                if max_steps and optimizer_steps >= max_steps:
                     step_budget_reached = True
                     break
+
+            # The tail of a partial accumulation window. Applied rather than
+            # discarded: those micro-batches already paid for their forward
+            # and backward passes, and dropping their gradient would make an
+            # epoch whose batch count is not a multiple of accumulate_steps
+            # quietly train on less data than it read.
+            #
+            # Not applied on an interruption: a stop means "these results are
+            # partial", and stepping on the way out would move the weights
+            # once more after the user asked for the run to end.
+            if pending and stopped_at is None:
+                if apply_gradients():
+                    optimizer_steps += 1
+                pending = 0
 
             if stopped_at is not None:
                 break
@@ -671,11 +835,20 @@ class TrainingLoopNode(BaseNode):
                             data = to_device(batch_data, device) if hasattr(batch_data, "to") else batch_data
                             targets = None
 
-                        outputs = model(data)
-                        if targets is not None:
-                            loss = loss_fn(outputs, targets)
-                        else:
-                            loss = loss_fn(outputs)
+                        # Validation runs under the SAME autocast as
+                        # training. Two reasons, and the second is the one
+                        # that bites: the memory saving is largest exactly
+                        # here (no gradients to keep, so activations are
+                        # the whole cost), and a validation loss computed
+                        # in a different precision from the training loss
+                        # is not comparable with it -- which is the only
+                        # thing anyone ever does with it.
+                        with policy.autocast():
+                            outputs = model(data)
+                            if targets is not None:
+                                loss = loss_fn(outputs, targets)
+                            else:
+                                loss = loss_fn(outputs)
                         val_running_loss += loss.item()
                         val_batch_count += 1
                         throttle.emit({
@@ -827,6 +1000,7 @@ class TrainingLoopNode(BaseNode):
                 context, model, optimizer,
                 epoch=completed_epochs, batch=stopped_at["batch"],
                 losses=losses_tensor, lr_scheduler=lr_scheduler,
+                scaler_state=policy.state_dict(),
             )
 
         # Epoch numbers are absolute; counts are for this call only.
@@ -844,10 +1018,23 @@ class TrainingLoopNode(BaseNode):
             # How much training actually happened, and whether the budget is
             # why it ended. ``total_steps`` is reported unconditionally
             # because "how many optimizer steps was that?" is the question
-            # ``max_steps`` makes people ask.
-            "total_steps": global_batch,
+            # ``max_steps`` makes people ask. It counts OPTIMIZER steps;
+            # ``total_batches`` counts the forward passes that fed them, and
+            # the two differ exactly when accumulation or an fp16 skip is in
+            # play.
+            "total_steps": optimizer_steps,
+            "total_batches": global_batch,
             "stopped_at_max_steps": step_budget_reached,
+            "accumulate_steps": accumulate_steps,
+            "precision": policy.precision,
         }
+        if policy.fell_back:
+            metrics["precision_requested"] = policy.requested
+        if policy.uses_scaler:
+            # Zero is a meaningful reading here ("the loss scale never
+            # overflowed"), so it is reported whenever there was a scaler
+            # to do the skipping rather than only when it did.
+            metrics["skipped_steps"] = policy.skipped_steps
         if stopped_at is not None:
             metrics["interrupt_checkpoint"] = checkpoint_path
 
@@ -856,6 +1043,9 @@ class TrainingLoopNode(BaseNode):
             "losses": losses_tensor,
             "val_losses": val_losses_tensor,
             "metrics": metrics,
+            # None on every fp32 and bf16 run, which is what CheckpointSaver
+            # expects to see for "there is no loss scale to store".
+            "grad_scaler_state": policy.state_dict(),
         }
         if stopped_at is not None:
             result.update(interrupted_result(
