@@ -518,6 +518,18 @@ class TrainingLoopNode(BaseNode):
                 ),
                 advanced=True,
             ),
+            ParamDefinition(
+                name="tensorboard",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Also write the metrics as TensorBoard event files, "
+                    "under the run's own folder. Open them with "
+                    "`tensorboard --logdir <path>`; the path is listed as an "
+                    "artifact of the run."
+                ),
+                advanced=True,
+            ),
         ]
 
     def execute(
@@ -527,6 +539,71 @@ class TrainingLoopNode(BaseNode):
         progress_callback: Any | None = None,
         *,
         context: Any = None,
+    ) -> dict[str, Any]:
+        """Own the TensorBoard writer's lifetime; train in ``_run_training``.
+
+        The split exists for one reason: ``close_and_register`` must run on
+        the exception path too. "No row, no file" (``core.checkpoints``, and
+        ``open_run_writer``'s own docstring) means a directory nothing
+        references is litter no retention sweep can find -- and a run that
+        raises mid-training is *exactly* when the partial loss curve matters
+        most. Registering it here means a crashed run's curves are listed as
+        an artifact and reachable from the Runs panel, instead of sitting on
+        disk with nothing pointing at them.
+
+        Queueing it in a ``finally`` also makes it genuinely LAST, after
+        ``save_interrupt_checkpoint``, which is what
+        ``close_and_register``'s tail-safety docstring always claimed and
+        did not previously get: the outbox drops the OLDEST item, so an
+        artifact row queued before a burst of per-batch progress frames is
+        the one that disappears.
+        """
+        from ...core.tensorboard import close_and_register, open_run_writer
+
+        # #136: the same series, in a second place. Opened BEFORE any
+        # training so the "no row, no file" check happens before the
+        # directory is created, not after a full run has filled it.
+        #
+        # It also sits before this method's input unpacking and parameter
+        # coercion, and that ordering is deliberate -- core#136 re-review,
+        # N-3. The cost is that an ``execute`` which dies while reading its
+        # own inputs now leaves a 40-byte header-only directory AND an
+        # artifact row, where it previously left nothing. The gain is that
+        # every failure AFTER that point -- ``model.to(device)`` running out
+        # of memory, an optimizer that rejects the model's parameters, a
+        # first batch that raises -- leaves a directory that is INDEXED
+        # rather than orphaned. Those failures already created the directory
+        # before this change; what they did not create was the row pointing
+        # at it, so they were litter no retention sweep could find. Trading
+        # "nothing" for "a row" on a narrow window (graph validation already
+        # rejects unconnected required inputs) to convert real orphans into
+        # listed artifacts is the right way round. Please do not "fix" this
+        # by moving the open below the input unpacking.
+        tb_writer = (open_run_writer(context)
+                     if bool(params.get("tensorboard", False)) else None)
+        try:
+            result = self._run_training(
+                inputs, params, progress_callback,
+                context=context, tb_writer=tb_writer,
+            )
+        finally:
+            # Total by contract (see close_and_register): raising in here
+            # would REPLACE whatever killed the run with an error about
+            # logging, which is the one thing instrumentation must never do.
+            tb_logdir = close_and_register(tb_writer, context)
+
+        if tb_logdir is not None and isinstance(result.get("metrics"), dict):
+            result["metrics"]["tensorboard_logdir"] = tb_logdir
+        return result
+
+    def _run_training(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        progress_callback: Any | None = None,
+        *,
+        context: Any = None,
+        tb_writer: Any = None,
     ) -> dict[str, Any]:
         import torch
 
@@ -578,6 +655,19 @@ class TrainingLoopNode(BaseNode):
         if bool(params.get("deterministic", False)) or getattr(
                 context, "deterministic", False):
             apply_determinism(True)
+
+        def record_metric(name: str, value: Any, step: int) -> None:
+            """One point, to the run's metric store and to TensorBoard.
+
+            One call site for both so the two can never drift into
+            disagreeing about what was recorded -- which would be the worst
+            possible failure for something whose only job is to say what
+            happened.
+            """
+            if context is not None:
+                context.log_metric(name, value, step)
+            if tb_writer is not None:
+                tb_writer.add_scalar(name, value, step)
 
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
@@ -754,8 +844,7 @@ class TrainingLoopNode(BaseNode):
                         optimizer_steps += 1
                     pending = 0
 
-                if (batch_metrics and context is not None
-                        and global_batch % log_interval == 0):
+                if batch_metrics and global_batch % log_interval == 0:
                     # A series of its own, stepped by GLOBAL batch index --
                     # not "train_loss at a finer resolution", which would put
                     # two different x-axes in one series.
@@ -766,8 +855,8 @@ class TrainingLoopNode(BaseNode):
                     # points. Keying off ``global_batch`` rather than
                     # ``batch_index`` keeps the spacing even across an epoch
                     # boundary whose batch count is not a multiple of it.
-                    context.log_metric("train_loss_batch", batch_loss,
-                                       global_batch)
+                    record_metric("train_loss_batch", batch_loss,
+                                  global_batch)
                 throttle.emit({
                     "event": EVENT_BATCH,
                     "epoch": epoch + 1,
@@ -932,15 +1021,14 @@ class TrainingLoopNode(BaseNode):
             # patience_counter and best_epoch. All of them are here; the one
             # deliberate change is that ``loss`` is now ``train_loss``, which
             # names the same number and lines up with ``val_loss``.
-            if context is not None:
-                context.log_metric("train_loss", avg_train_loss, epoch + 1)
-                if avg_val_loss is not None:
-                    context.log_metric("val_loss", avg_val_loss, epoch + 1)
-                context.log_metric("lr", current_lr, epoch + 1)
-                if patience > 0:
-                    context.log_metric("patience_counter", patience_counter,
-                                       epoch + 1)
-                    context.log_metric("best_epoch", best_epoch, epoch + 1)
+            record_metric("train_loss", avg_train_loss, epoch + 1)
+            if avg_val_loss is not None:
+                record_metric("val_loss", avg_val_loss, epoch + 1)
+            record_metric("lr", current_lr, epoch + 1)
+            if patience > 0:
+                record_metric("patience_counter", patience_counter,
+                              epoch + 1)
+                record_metric("best_epoch", best_epoch, epoch + 1)
 
             if progress_callback:
                 progress_data = {
@@ -1002,6 +1090,7 @@ class TrainingLoopNode(BaseNode):
         # partial epoch (its weight updates are in the model, its loss
         # average is not), so the resumed run re-runs it from batch 0.
         completed_epochs = start_epoch + len(epoch_losses)
+
         checkpoint_path: str | None = None
         if stopped_at is not None:
             # The epoch the stop landed IN, 1-based. Only the ``train`` phase
@@ -1048,6 +1137,9 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
+        # ``tensorboard_logdir`` is added by ``execute`` after the writer is
+        # closed and registered, which happens in a ``finally`` outside this
+        # method so a run that raises still gets its artifact row.
         if policy.uses_scaler:
             # Zero is a meaningful reading here ("the loss scale never
             # overflowed"), so it is reported whenever there was a scaler

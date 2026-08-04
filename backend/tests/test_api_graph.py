@@ -191,6 +191,66 @@ async def test_export_scrubs_secret_params(test_client):
     assert "sk-export-secret" not in script
 
 
+def _minimal_export_graph(seed=None, **extra):
+    graph = {
+        "name": "seed-range",
+        "nodes": [
+            {"id": "start", "type": "Start",
+             "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+            {"id": "flip", "type": "RandomHorizontalFlip",
+             "position": {"x": 200, "y": 0}, "data": {"params": {"p": 0.5}}},
+        ],
+        "edges": [
+            {"id": "t1", "source": "start", "target": "flip",
+             "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        ],
+        **extra,
+    }
+    if seed is not None:
+        graph["seed"] = seed
+    return graph
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [-1, 2 ** 32, 10 ** 26])
+async def test_export_refuses_a_seed_the_run_path_would_refuse(test_client, seed):
+    """core#136 re-review, N-4. One seed range, not two.
+
+    ``run_service`` rejects anything outside ``0..MAX_SEED`` before a run
+    starts. ``/export`` used to bake the same values into ``GRAPH_SEED``
+    verbatim, so a hand-rolled request could produce a script whose results
+    the canvas could not reproduce -- it would refuse the seed outright.
+    An export that disagrees with the graph it came from is worse than one
+    that fails to build.
+    """
+    resp = await test_client.post("/api/graph/export",
+                                  json=_minimal_export_graph(seed))
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", [0, 1, 2 ** 32 - 1])
+async def test_export_still_accepts_every_seed_a_run_accepts(test_client, seed):
+    """The bound is the run path's bound, inclusive at both ends.
+
+    ``0`` in particular: it is falsy, and the endpoints of a range are
+    exactly where an off-by-one hides.
+    """
+    resp = await test_client.post("/api/graph/export",
+                                  json=_minimal_export_graph(seed))
+    assert resp.status_code == 200, resp.text
+    assert f"GRAPH_SEED = {seed}" in resp.json()["script"]
+
+
+@pytest.mark.asyncio
+async def test_export_without_a_seed_is_unchanged(test_client):
+    """An older client sends no ``seed`` at all and still exports."""
+    resp = await test_client.post("/api/graph/export",
+                                  json=_minimal_export_graph())
+    assert resp.status_code == 200, resp.text
+    assert "GRAPH_SEED = None" in resp.json()["script"]
+
+
 @pytest.mark.asyncio
 async def test_export_scrubs_secrets_from_embedded_preset(test_client):
     """Portable preset defaults and overrides are scrubbed before embedding."""

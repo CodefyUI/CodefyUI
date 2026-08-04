@@ -437,7 +437,10 @@ export function Toolbar() {
     }
     const name = activeTab.name || 'graph';
     try {
-      const result = await exportGraph(nodes, edges, name, serialized.presets);
+      const result = await exportGraph(nodes, edges, name, serialized.presets, {
+        seed: activeTab.seed,
+        deterministic: activeTab.deterministic,
+      });
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -448,7 +451,8 @@ export function Toolbar() {
     } catch (e) {
       addToast(t('toolbar.exportPython.fail', { error: (e as Error).message }), 'error');
     }
-  }, [getSerializedGraph, activeTab.name, t, addToast]);
+  }, [getSerializedGraph, activeTab.name, activeTab.seed,
+      activeTab.deterministic, t, addToast]);
 
   const handleExportDiagram = useCallback(
     async (format: 'svg' | 'png') => {

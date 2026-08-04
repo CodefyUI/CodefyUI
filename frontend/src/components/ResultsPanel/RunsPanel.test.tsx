@@ -697,6 +697,103 @@ describe('RunsPanel — detail edge cases', () => {
   });
 });
 
+// ── detail: the metrics CSV button ────────────────────────────────────────
+
+describe('RunsPanel — detail CSV export', () => {
+  const run = makeRun({ id: 'r1', name: 'resnet', status: 'succeeded' });
+
+  beforeEach(() => {
+    api.getRun.mockResolvedValue({ ...run, last_cursor: 1 });
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'r1', status: 'succeeded', active: false, events: [], cursor: 1,
+    });
+    api.getRunMetrics.mockResolvedValue({
+      run_id: 'r1',
+      names: ['train_loss'],
+      metrics: [{ node_id: 'loop', name: 'train_loss', step: 1, value: 0.5 }],
+    });
+  });
+
+  /**
+   * Open a run's detail and hand back the panel element.
+   *
+   * The click is flushed inside `act` so the whole open — the run, its
+   * metrics, its artifacts and the follower's one terminal page — has
+   * landed before anything is asserted. `findBy*` would return the moment
+   * the panel appears and leave the rest to settle mid-assertion.
+   */
+  async function openDetail(runId = 'r1') {
+    await act(async () => { fireEvent.click(rowOf(runId)); });
+    return screen.getByTestId('run-detail');
+  }
+
+  it('sits in the metrics section of the detail panel, beside the row button', async () => {
+    await renderPanel([run]);
+    const detail = await openDetail();
+
+    const button = within(detail).getByTestId('detail-csv');
+    expect(button).toHaveTextContent(t('runs.detail.downloadCsv'));
+    // Two separate controls with the same job, not one control found twice:
+    // the row's short "CSV" is not in the panel, and the panel's button is
+    // not in the row.
+    expect(within(detail).queryByText(t('runs.action.csv'))).toBeNull();
+    expect(within(rowOf('r1')).queryByTestId('detail-csv')).toBeNull();
+    expect(within(rowOf('r1')).getByText(t('runs.action.csv'))).toBeInTheDocument();
+    expect(screen.getAllByTitle(t('runs.action.csvTitle'))).toHaveLength(2);
+  });
+
+  it('exports the run the panel is showing, not some other row', async () => {
+    await renderPanel([makeRun({ id: 'other', name: 'older-run' }), run]);
+    const detail = await openDetail('r1');
+
+    // Spelled out rather than left to the click: this block's `getRunMetrics`
+    // returns a finite reading, so this is the ORDINARY run -- rows on the
+    // server, a chart on screen -- and "enabled there" is the baseline the
+    // diverged and failed-fetch cases below are exceptions to.
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
+    fireEvent.click(within(detail).getByTestId('detail-csv'));
+    await waitFor(() => expect(api.downloadRunMetricsCsv).toHaveBeenCalledWith('r1'));
+    expect(api.downloadRunMetricsCsv).toHaveBeenCalledTimes(1);
+    expect(api.downloadRunMetricsCsv).not.toHaveBeenCalledWith('other');
+  });
+
+  it('stays enabled for a diverged run whose every reading is non-finite', async () => {
+    // The server records a ROW for a NaN loss and leaves its value cell
+    // empty, so the CSV is COMPLETE while the chart is empty -- `runStore`
+    // drops non-finite points before they become a series. Gating on the
+    // chart greyed the button out on precisely the runs whose numbers
+    // someone most wants to open in a spreadsheet.
+    api.getRunMetrics.mockResolvedValue({
+      run_id: 'r1',
+      names: ['train_loss'],
+      metrics: [
+        { node_id: 'loop', name: 'train_loss', step: 1, value: null },
+        { node_id: 'loop', name: 'train_loss', step: 2, value: null },
+      ],
+    });
+    await renderPanel([run]);
+    const detail = await openDetail();
+    expect(within(detail).getByText(t('runs.detail.noMetrics'))).toBeInTheDocument();
+
+    expect(within(detail).queryByTestId('loss-chart')).toBeNull();
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
+    fireEvent.click(within(detail).getByTestId('detail-csv'));
+    await waitFor(() => expect(api.downloadRunMetricsCsv).toHaveBeenCalledWith('r1'));
+  });
+
+  it('stays enabled when the metrics request failed and left the chart blank', async () => {
+    // `select()` swallows a failed `/metrics` read, so an empty chart here
+    // means "we could not ask", not "there is nothing". The server is still
+    // the one holding the rows.
+    api.getRunMetrics.mockRejectedValue(new Error('metrics endpoint asleep'));
+    await renderPanel([run]);
+    const detail = await openDetail();
+    expect(within(detail).getByText(t('runs.detail.noMetrics'))).toBeInTheDocument();
+
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
+  });
+});
+
 // ── keyboard access ───────────────────────────────────────────────────────
 
 describe('RunsPanel — keyboard', () => {
@@ -745,6 +842,25 @@ describe('RunsPanel — busy rows', () => {
     for (const label of ['runs.action.cancel', 'runs.action.reattach', 'runs.action.csv'] as const) {
       expect(within(row).getByText(t(label))).toBeDisabled();
     }
+  });
+
+  it('disables the detail panel export too, and only for that run', async () => {
+    const run = makeRun({ id: 'a', name: 'done' });
+    api.getRun.mockResolvedValue({ ...run, last_cursor: 0 });
+    api.getRunEvents.mockResolvedValue({
+      run_id: 'a', status: 'succeeded', active: false, events: [], cursor: 0,
+    });
+    await renderPanel([run]);
+    await act(async () => { fireEvent.click(rowOf('a')); });
+    const detail = screen.getByTestId('run-detail');
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
+
+    act(() => { useRunStore.setState({ busy: { a: true } }); });
+    expect(within(detail).getByTestId('detail-csv')).toBeDisabled();
+
+    // Another run's in-flight action must not reach the open panel.
+    act(() => { useRunStore.setState({ busy: { b: true } }); });
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
   });
 
   it('leaves other rows alone', async () => {

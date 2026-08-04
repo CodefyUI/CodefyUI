@@ -91,7 +91,8 @@ export function NodeConfigPanel() {
         ) : null}
 
         {/* I/O info section — live ports, so a param-driven node (Split,
-            PythonScript) lists what it actually has right now. */}
+            PythonScript, ComposeTransform) lists what it actually has
+            right now. */}
         {def && (liveInputs.length > 0 || liveOutputs.length > 0) && (
           <div style={{ marginTop: 20 }}>
             <div className={styles.sectionHeaderPorts}>{t('config.ports')}</div>

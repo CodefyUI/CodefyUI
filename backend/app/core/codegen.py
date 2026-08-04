@@ -209,6 +209,13 @@ identical to running the graph on the canvas.
 It requires a compatible CodefyUI backend Python environment (including
 every custom/plugin node and third-party dependency used by the graph).
 
+The canvas's seed is baked in below as ``GRAPH_SEED`` and is the default for
+``--seed``, so a seeded graph reproduces here exactly as it did on the
+canvas -- same weight init, same shuffling, same crops and flips.  Pass
+``--no-seed`` for fresh entropy.  Note that TensorBoard event files are NOT
+written by an exported script: it records no artifacts, so there would be no
+row referencing the directory.
+
 Development checkout examples:
   Windows: backend/.venv/Scripts/python.exe exported_graph.py
   macOS/Linux: backend/.venv/bin/python exported_graph.py
@@ -269,6 +276,13 @@ def _call(node_type, node_id, params, ctx, inputs=None):
         raise RuntimeError(f"Unknown node type: {node_type}")
     if ctx is not None:
         ctx.current_node_id = node_id
+        if ctx.seed is not None:
+            # What the graph engine does before every node: a seed derived
+            # from (run seed, node id), so a node's weight init, dropout
+            # mask, shuffle order and augmentation depend on the run seed
+            # and its own identity and on NOTHING else -- not on how many
+            # numbers the nodes before it drew.
+            _RT.seed_rngs(ctx.derive_seed(node_id))
     wired = {
         key: value for key, value in (inputs or {}).items() if value is not _ABSENT
     }
@@ -338,6 +352,34 @@ _CLI_TAIL = '''def _parser() -> argparse.ArgumentParser:
         help="UTF-8 JSON file containing GraphInput values.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=GRAPH_SEED,
+        help=(
+            "Run seed. Every node is seeded from (seed, node id), so weight "
+            "init, shuffling and augmentation reproduce exactly. Defaults to "
+            "the seed set on the canvas when this file was exported; pass "
+            "--no-seed for fresh entropy on every run."
+        ),
+    )
+    parser.add_argument(
+        "--no-seed",
+        dest="seed",
+        action="store_const",
+        const=None,
+        help="Ignore the exported seed and use torch's own entropy.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=GRAPH_DETERMINISTIC,
+        help=(
+            "Ask torch for reproducible kernels as well as a fixed seed "
+            "(warn_only, so an op with no deterministic implementation warns "
+            "rather than failing). Slower."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-node progress and a traceback on failure.",
@@ -377,6 +419,7 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
         from app.core.graph_engine import invoke_node
         from app.core.node_registry import registry
         from app.core.runtime import initialize_runtime
+        from app.core.seeding import deterministic_scope, seed_rngs
     except (ImportError, ModuleNotFoundError) as exc:
         missing = getattr(exc, "name", None) or str(exc)
         raise RuntimeError(
@@ -393,6 +436,8 @@ def _load_runtime(project_dir: Path | None) -> SimpleNamespace:
         invoke_node=invoke_node,
         registry=registry,
         initialize_runtime=initialize_runtime,
+        deterministic_scope=deterministic_scope,
+        seed_rngs=seed_rngs,
     )
 
 
@@ -467,6 +512,11 @@ def _run(args: argparse.Namespace) -> int:
             device=resolved_device,
             weights_persistent=False,
             graph_id=f"export:{GRAPH_NAME}",
+            # The canvas seed is baked in as the default above, so an
+            # exported graph reproduces what the canvas produced without
+            # anyone remembering to pass a flag.
+            seed=None if args.seed is None else int(args.seed),
+            deterministic=bool(args.deterministic),
         )
 
         if args.timeout is not None:
@@ -479,7 +529,10 @@ def _run(args: argparse.Namespace) -> int:
         output_stream = (
             redirect_stdout(sys.stderr) if _HAS_GRAPH_OUTPUT else nullcontext()
         )
-        with output_stream:
+        # The engine wraps every run the same way and hands the process
+        # setting back afterwards, so a TrainingLoop whose own deterministic
+        # param is on cannot leak that state past this run.
+        with _RT.deterministic_scope(context.deterministic), output_stream:
             results = run_graph(context, provided)
     except Exception as exc:
         print(f"Graph execution failed: {exc}", file=sys.stderr)
@@ -610,6 +663,9 @@ def generate_python(
     edges: list[dict],
     name: str = "Untitled",
     presets: list[dict] | None = None,
+    *,
+    seed: int | None = None,
+    deterministic: bool = False,
 ) -> str:
     """Return a runnable Python program for the graph *nodes* / *edges*.
 
@@ -618,6 +674,14 @@ def generate_python(
     the executable graph the canvas would run.  Raises
     :class:`app.core.graph_engine.GraphValidationError` for graphs the
     engine would refuse to run.
+
+    *seed* and *deterministic* are the canvas's reproducibility settings,
+    baked in as the defaults for the generated ``--seed`` /
+    ``--deterministic`` flags.  Without them the exported script built an
+    unseeded ``ExecutionContext``, so ``derive_seed`` returned ``None``, no
+    ``SeededAugmentation`` was ever installed, and an exported augmenting
+    graph produced different crops on every invocation -- while the
+    augmentation docs promised the opposite.
     """
     preset_fallback = build_preset_fallback(presets or [])
     exec_nodes, exec_edges, internal_to_preset = prepare_executable_graph(
@@ -897,6 +961,12 @@ def generate_python(
     literals = (
         f"GRAPH_NAME = {_literal(name)}\n"
         f"_HAS_GRAPH_OUTPUT = {has_graph_output!r}\n"
+        "\n"
+        "# Reproducibility, baked from the canvas at export time (core#136).\n"
+        "# These are the DEFAULTS for --seed / --deterministic; override them\n"
+        "# on the command line, or edit them here.\n"
+        f"GRAPH_SEED = {_literal(seed)}\n"
+        f"GRAPH_DETERMINISTIC = {bool(deterministic)!r}\n"
         "\n"
         "# Raw GraphInput/GraphOutput declarations (data, not code), consumed\n"
         "# by the canonical app.core.api_contract helpers at run time.\n"

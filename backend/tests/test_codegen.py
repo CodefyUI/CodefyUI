@@ -1690,3 +1690,340 @@ async def test_advanced_params_survive_a_real_graph_save_and_load(
     for node_id in ("opt", "loss", "loader", "train"):
         expected = next(n for n in nodes if n["id"] == node_id)
         assert restored[node_id]["data"]["params"] == expected["data"]["params"], node_id
+
+
+# ── transform chains (core#136) ──────────────────────────────────────────
+
+
+def _transform_chain_graph(dataset_path: Path) -> tuple[list[dict], list[dict]]:
+    """ImageFolder + a four-step chain + a batch, printed.
+
+    Deliberately DETERMINISTIC (no augmentation): the exported script is
+    compared against the in-process engine byte for byte, and a random crop
+    would make the two runs legitimately differ.
+    """
+    def node(node_id: str, node_type: str, **params) -> dict:
+        return {"id": node_id, "type": node_type,
+                "position": {"x": 0, "y": 0}, "data": {"params": params}}
+
+    def data_edge(source: str, source_handle: str,
+                  target: str, target_handle: str) -> dict:
+        return {"id": f"{source}->{target}", "source": source, "target": target,
+                "sourceHandle": source_handle, "targetHandle": target_handle,
+                "type": "data"}
+
+    nodes = [
+        node("start", "Start"),
+        node("resize", "ResizeTransform", size=2, interpolation="bilinear"),
+        node("tensor", "ToTensorTransform"),
+        node("norm", "NormalizeTransform", preset="Half", mean="0.5", std="0.5"),
+        node("folder", "ImageFolderDataset",
+             path=str(dataset_path), split="(none)"),
+        node("batch", "DatasetBatch", batch_size=2, start_index=0),
+        node("print", "Print", label="chain"),
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "resize",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        data_edge("resize", "transform", "tensor", "transform"),
+        data_edge("tensor", "transform", "norm", "transform"),
+        data_edge("norm", "transform", "folder", "eval_transform"),
+        data_edge("folder", "dataset", "batch", "dataset"),
+        data_edge("batch", "images", "print", "value"),
+    ]
+    return nodes, edges
+
+
+def _image_folder_fixture(tmp_path: Path) -> Path:
+    from PIL import Image
+
+    root = tmp_path / "glyphs"
+    for index, name in enumerate(("cat", "dog")):
+        folder = root / name
+        folder.mkdir(parents=True)
+        Image.new("RGB", (4, 4), (index * 90, 30, 200)).save(folder / "0.png")
+    return root
+
+
+def test_export_emits_the_transform_chain_in_dependency_order(tmp_path: Path):
+    """Each step becomes its own ``_call``, ordered by the edges.
+
+    The chain has no branches, so a codegen that emitted the steps in graph
+    declaration order rather than topological order would still produce
+    valid Python -- and a pipeline in the wrong order.
+    """
+    from app.core.codegen import generate_python
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="transform chain")
+    _compile_check(script)
+
+    emitted = [node_type for _fn, _id, node_type in _node_functions(script)]
+    for step in ("ResizeTransform", "ToTensorTransform", "NormalizeTransform",
+                 "ImageFolderDataset"):
+        assert step in emitted, step
+    assert (emitted.index("ResizeTransform")
+            < emitted.index("ToTensorTransform")
+            < emitted.index("NormalizeTransform")
+            < emitted.index("ImageFolderDataset"))
+
+
+def test_export_carries_the_transform_params_verbatim(tmp_path: Path):
+    from app.core.codegen import generate_python
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="transform chain")
+    assert "'preset': 'Half'" in script
+    assert "'size': 2" in script
+
+
+def test_the_exported_transform_chain_builds_the_pipeline_it_should(
+        tmp_path: Path):
+    """core#136 review, M-7. Equality against a hand-written Compose.
+
+    The old assertions here checked node ORDER and the presence of two
+    param substrings, which is why mutating ``ResizeTransform`` to emit a
+    ``CenterCrop`` -- a node that IS in this graph -- left all 64 tests in
+    this file green. The acceptance criterion is "codegen emits an
+    equivalent ``transforms.Compose``", so the pipeline the exported script
+    actually builds is compared against one written out by hand here, step
+    by step, with the arguments spelled out.
+
+    The name carries "transform" on purpose (core#136 re-review, N-5). The
+    acceptance criterion's own command is ``pytest tests/test_codegen.py -k
+    transform``, and under the first spelling of this name that filter
+    deselected the one test that catches the mutation -- so the obvious way
+    to check this area reported ``10 passed`` while the file was red.
+    """
+    from torchvision import transforms as T
+
+    from app.core.codegen import generate_python
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="transform chain")
+    results = _run_generated_module(script)
+
+    expected = T.Compose([
+        T.Resize((2, 2), interpolation=T.InterpolationMode.BILINEAR),
+        T.ToTensor(),
+        T.Normalize((0.5,), (0.5,)),
+    ])
+    assert repr(results["norm"]["transform"]) == repr(expected)
+
+
+def _run_generated_module(script: str, **context_overrides):
+    """Execute a generated script's ``run_graph`` in this process.
+
+    The generated file is a module whose ``main()`` is behind the usual
+    ``__main__`` guard, so its runtime prelude and node functions can be
+    driven directly. That keeps these tests about what the emitted code
+    BUILDS rather than about anything the CLI prints -- and means no
+    debug-only flag has to exist in shipped exports to make it observable.
+
+    The context is built from the script's OWN baked ``GRAPH_SEED`` /
+    ``GRAPH_DETERMINISTIC``, which is what its CLI uses as the default, so a
+    test reading the result is reading what a plain invocation would do.
+    """
+    from app.core.execution_context import ExecutionContext
+
+    module: dict = {"__name__": "generated_export"}
+    exec(compile(script, "<generated>", "exec"), module)  # noqa: S102
+    module["_RT"] = module["_load_runtime"](None)
+    module["_RT"].initialize_runtime()
+    settings = {
+        "seed": module.get("GRAPH_SEED"),
+        "deterministic": bool(module.get("GRAPH_DETERMINISTIC", False)),
+    }
+    settings.update(context_overrides)
+    return module["run_graph"](ExecutionContext(**settings), {})
+
+
+# ── the export carries the seed (core#136 review, M-6) ───────────────────
+#
+# Before this, ``grep -c seed codegen.py`` returned 0: the exported script
+# built an unseeded ExecutionContext, so derive_seed returned None,
+# seed_pipeline returned the pipeline unwrapped, no SeededAugmentation was
+# ever installed, and three invocations of an exported augmenting graph gave
+# three different results -- while data-augmentation.md promised "the same
+# seed produces the same crops, flips and colour shifts, every time".
+#
+# The codegen graph above is deliberately deterministic, so it structurally
+# could not have noticed. These use a RANDOM chain on purpose.
+
+
+def _augmenting_graph(dataset_path: Path) -> tuple[list[dict], list[dict]]:
+    def node(node_id: str, node_type: str, **params) -> dict:
+        return {"id": node_id, "type": node_type,
+                "position": {"x": 0, "y": 0}, "data": {"params": params}}
+
+    def data_edge(source: str, source_handle: str,
+                  target: str, target_handle: str) -> dict:
+        return {"id": f"{source}->{target}", "source": source, "target": target,
+                "sourceHandle": source_handle, "targetHandle": target_handle,
+                "type": "data"}
+
+    nodes = [
+        node("start", "Start"),
+        node("flip", "RandomHorizontalFlip", p=0.5),
+        node("tensor", "ToTensorTransform"),
+        node("folder", "ImageFolderDataset",
+             path=str(dataset_path), split="(none)"),
+        node("batch", "DatasetBatch", batch_size=8, start_index=0),
+        node("print", "Print", label="aug"),
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "flip",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        data_edge("flip", "transform", "tensor", "transform"),
+        data_edge("tensor", "transform", "folder", "train_transform"),
+        data_edge("folder", "dataset", "batch", "dataset"),
+        data_edge("batch", "images", "print", "value"),
+    ]
+    return nodes, edges
+
+
+def _asymmetric_fixture(tmp_path: Path) -> Path:
+    """Images a horizontal flip actually changes."""
+    import torch
+    from PIL import Image
+
+    root = tmp_path / "asym"
+    folder = root / "cat"
+    folder.mkdir(parents=True)
+    generator = torch.Generator().manual_seed(17)
+    for index in range(8):
+        pixels = torch.randint(0, 256, (4, 4, 3), generator=generator,
+                               dtype=torch.uint8)
+        Image.fromarray(pixels.numpy(), mode="RGB").save(
+            folder / f"{index}.png")
+    return root
+
+
+def test_the_export_bakes_the_canvas_seed_as_the_cli_default(tmp_path: Path):
+    from app.core.codegen import generate_python
+
+    nodes, edges = _augmenting_graph(_asymmetric_fixture(tmp_path))
+    seeded = generate_python(nodes, edges, name="aug", seed=4321,
+                             deterministic=True)
+    _compile_check(seeded)
+    assert "GRAPH_SEED = 4321" in seeded
+    assert "GRAPH_DETERMINISTIC = True" in seeded
+
+    unseeded = generate_python(nodes, edges, name="aug")
+    assert "GRAPH_SEED = None" in unseeded
+    assert "GRAPH_DETERMINISTIC = False" in unseeded
+
+
+def test_an_exported_seeded_graph_installs_the_augmentation_wrapper(
+        tmp_path: Path):
+    """The mechanism M-6 was missing, at the point it goes missing.
+
+    The context here comes from the script's OWN baked ``GRAPH_SEED``, so
+    an export that forgot to bake it leaves ``derive_seed`` returning None
+    and the pipeline unwrapped.
+    """
+    from app.nodes.data.transforms._base import SeededAugmentation
+
+    from app.core.codegen import generate_python
+
+    nodes, edges = _augmenting_graph(_asymmetric_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="aug", seed=4321)
+    results = _run_generated_module(script)
+    assert isinstance(results["folder"]["dataset"].transform,
+                      SeededAugmentation)
+
+    unseeded = generate_python(nodes, edges, name="aug")
+    plain = _run_generated_module(unseeded)
+    assert not isinstance(plain["folder"]["dataset"].transform,
+                          SeededAugmentation)
+
+
+@pytest.mark.asyncio
+async def test_an_exported_seeded_graph_reproduces_the_engine(tmp_path: Path):
+    """The whole promise, end to end and across a process boundary.
+
+    Three invocations of the exported script in fresh ``-I`` subprocesses,
+    plus one in-process engine run, all have to agree -- and a different
+    seed has to disagree, or the assertion above it would hold for a script
+    that had simply stopped augmenting.
+    """
+    from app.core.codegen import generate_python
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges = _augmenting_graph(_asymmetric_fixture(tmp_path))
+    outputs = await execute_graph(
+        nodes, edges, context=ExecutionContext(seed=4321))
+    in_process = outputs["print"]["__log__"]
+
+    script = generate_python(nodes, edges, name="aug", seed=4321)
+    runs = []
+    for attempt in range(3):
+        export_dir = tmp_path / f"export{attempt}"
+        export_dir.mkdir()
+        completed = _run_exported_script(script, export_dir, "--device", "cpu")
+        assert completed.returncode == 0, completed.stderr
+        runs.append(completed.stdout)
+
+    assert runs[0] == runs[1] == runs[2], "the export is not reproducible"
+    assert in_process in runs[0], (
+        "the exported script does not reproduce the canvas")
+
+    other = tmp_path / "other"
+    other.mkdir()
+    different = _run_exported_script(
+        generate_python(nodes, edges, name="aug", seed=1),
+        other, "--device", "cpu")
+    assert different.returncode == 0, different.stderr
+    assert different.stdout != runs[0], (
+        "two different seeds produced the same augmentation, so the seed is "
+        "not reaching the transform")
+
+
+def test_no_seed_leaves_an_exported_run_on_torchs_own_entropy(tmp_path: Path):
+    """``--no-seed`` means what "no seed" means everywhere else."""
+    from app.core.codegen import generate_python
+
+    nodes, edges = _augmenting_graph(_asymmetric_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="aug", seed=4321)
+    first = tmp_path / "a"
+    first.mkdir()
+    second = tmp_path / "b"
+    second.mkdir()
+    runs = [
+        _run_exported_script(script, path, "--device", "cpu", "--no-seed")
+        for path in (first, second)
+    ]
+    for completed in runs:
+        assert completed.returncode == 0, completed.stderr
+    assert runs[0].stdout != runs[1].stdout
+
+
+@pytest.mark.asyncio
+async def test_exported_transform_chain_matches_the_engine(tmp_path: Path):
+    """The round trip: engine result == exported-script result.
+
+    Nothing is hand-computed. The chain runs once through ``execute_graph``
+    and once through a fresh ``-I`` subprocess driving the generated script,
+    and the tensor ``Print`` saw has to be the same text both times.
+    """
+    from app.core.codegen import generate_python
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    outputs = await execute_graph(nodes, edges, context=ExecutionContext())
+    in_process = outputs["print"]["__log__"]
+    assert in_process.startswith("[chain] ")
+    # The chain really ran: 2 images, 3 channels, resized 4x4 -> 2x2.
+    assert "torch.Size" not in in_process  # Print renders values, not shapes
+    assert outputs["batch"]["images"].shape == (2, 3, 2, 2)
+
+    script = generate_python(nodes, edges, name="transform chain")
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    # stdout, not stderr: the runner only redirects Print to stderr when the
+    # graph has a GraphOutput node reserving stdout for its JSON.
+    assert in_process in completed.stdout

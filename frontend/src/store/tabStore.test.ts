@@ -513,6 +513,44 @@ describe('param updates', () => {
     expect([...activeTab().dirtyNodeIds].sort()).toEqual([script.id, sink.id].sort());
   });
 
+  it('drops a transform-chain edge when ComposeTransform loses a step', () => {
+    // The third dynamic-port node, and the reason the comment on
+    // `staleEdges` no longer names a closed pair: the resolver walk is
+    // generic, and shrinking `steps` has to prune like `chunks` does.
+    const composeDef = makeDef({
+      node_name: 'ComposeTransform',
+      inputs: [
+        { name: 'step_1', data_type: 'TRANSFORM', description: '', optional: true },
+        { name: 'step_2', data_type: 'TRANSFORM', description: '', optional: true },
+      ],
+      outputs: [{ name: 'transform', data_type: 'TRANSFORM', description: '', optional: false }],
+      params: [
+        { name: 'steps', param_type: 'int', default: 2, description: '', options: [], min_value: 2, max_value: 8 },
+      ],
+    });
+    store().addNode(makeDef({ node_name: 'RandomFlip' }), { x: 0, y: 0 });
+    store().addNode(composeDef, { x: 200, y: 0 });
+    const [source, compose] = activeTab().nodes;
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((tab) =>
+        tab.id === useTabStore.getState().activeTabId
+          ? {
+              ...tab,
+              edges: [
+                { id: 'first', source: source.id, target: compose.id, sourceHandle: 'transform', targetHandle: 'step_1' },
+                { id: 'third', source: source.id, target: compose.id, sourceHandle: 'transform', targetHandle: 'step_3' },
+              ],
+            }
+          : tab,
+      ),
+    });
+    store().updateNodeParams(compose.id, { steps: 3 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['first', 'third']);
+
+    store().updateNodeParams(compose.id, { steps: 2 });
+    expect(activeTab().edges.map((e) => e.id)).toEqual(['first']);
+  });
+
   it('never drops a trigger edge when ports change', () => {
     const scriptDef = makeDef({
       node_name: 'PythonScript',

@@ -439,15 +439,24 @@ export async function exportGraph(
   edges: any[],
   name?: string,
   presets?: PresetDefinition[],
+  // core#136: the canvas's reproducibility settings travel with the export
+  // and become the exported script's --seed / --deterministic defaults.
+  // Without them an exported augmenting graph drew fresh entropy on every
+  // invocation, while the docs promised the same crops every time.
+  run?: { seed?: number | null; deterministic?: boolean },
 ) {
   const body: {
     nodes: any[];
     edges: any[];
     name?: string;
     presets?: PresetDefinition[];
+    seed?: number | null;
+    deterministic?: boolean;
   } = { nodes, edges };
   if (name) body.name = name;
   if (presets && presets.length > 0) body.presets = presets;
+  if (run?.seed !== undefined && run.seed !== null) body.seed = run.seed;
+  if (run?.deterministic) body.deterministic = true;
   const res = await apiFetch(`${BASE_URL}/graph/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

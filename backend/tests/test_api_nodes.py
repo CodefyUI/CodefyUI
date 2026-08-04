@@ -340,31 +340,97 @@ async def test_loss_and_dataloader_advertise_their_new_params(test_client):
     assert loader["prefetch_factor"]["advanced"] is True
 
 
-# ── zh-TW coverage for the training nodes (#188 review, M8) ──────────────
+# ── zh-TW coverage (#188 review M8; widened by the core#136 review) ──────
+
+#: Nodes whose params are pinned as fully translated. Anything here that
+#: gains a param without a zh-TW entry fails below.
+#:
+#: The four training nodes come from #188. The eleven after them are
+#: core#136's: the review found that this test was still hardcoded to the
+#: original four, so eleven new nodes and twenty-three new param keys were
+#: translated correctly and pinned by nothing -- the same gap the test was
+#: written for.
+TRANSLATED_NODES = (
+    "Optimizer",
+    "Loss",
+    "DataLoader",
+    "TrainingLoop",
+    "ImageFolderDataset",
+    "Transform",
+    "ComposeTransform",
+    "ColorJitter",
+    "NormalizeTransform",
+    "RandAugment",
+    "RandomCrop",
+    "RandomHorizontalFlip",
+    "RandomRotation",
+    "ResizeTransform",
+    "ToTensorTransform",
+)
+
+#: Built-in nodes with no zh-TW block at all. PRE-EXISTING debt, all of it
+#: older than core#136 -- listed rather than fixed because translating
+#: sixteen nodes is its own change. The point of the list is the ratchet in
+#: ``test_no_new_node_ships_without_a_zh_tw_entry``: this set may shrink,
+#: never grow. Delete a name from here when you translate it.
+UNTRANSLATED_NODES = frozenset({
+    "Argmax",
+    "Conv2dExplicit",
+    "Conv2dKernel",
+    "DatasetBatch",
+    "DecisionBoundary",
+    "DiffusionTrainingLoop",
+    "EvaluateModel",
+    "GraphInput",
+    "GraphOutput",
+    "LLMChat",
+    "RandomForestClassifier",
+    "RowSelector",
+    "ScalarMultiply",
+    "ScatterPlot2D",
+    "SyntheticSegmentation",
+    "SyntheticShapes",
+})
+
+
+def _node_catalog() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[2] / "frontend" / "src" /
+            "i18n" / "nodeLocales" / "zh-TW.ts").read_text(encoding="utf-8")
+
+
+def _builtin_node_names() -> list[str]:
+    """Registry names defined by core, excluding plugins and custom nodes.
+
+    A developer machine with a plugin installed must not fail this file over
+    a translation core does not own.
+    """
+    from app.core.node_registry import registry
+
+    return sorted(
+        name for name in registry.nodes
+        if registry.get(name).__module__.startswith("app.nodes")
+    )
 
 
 def test_training_node_params_all_have_a_zh_tw_description():
-    """Every param of the four training nodes is translated.
+    """Every param of every node in ``TRANSLATED_NODES`` is translated.
 
     This project mirrors user-facing strings in both locales and its primary
     audience reads Chinese, but nothing enforced it for NODE catalogs — so
     #134 shipped 17 English descriptions rendering directly beneath
     translated ones. The source of truth is ``define_params()``, so the
     check is against the real schema rather than a second hand-kept list.
-
-    Scoped to the nodes this issue touched; widening it to the whole
-    registry is a separate cleanup with a much longer tail.
     """
     import re
-    from pathlib import Path
 
     from app.core.node_registry import registry
 
-    catalog = (Path(__file__).resolve().parents[2] / "frontend" / "src" /
-               "i18n" / "nodeLocales" / "zh-TW.ts").read_text(encoding="utf-8")
+    catalog = _node_catalog()
 
     missing: list[str] = []
-    for node_name in ("Optimizer", "Loss", "DataLoader", "TrainingLoop"):
+    for node_name in TRANSLATED_NODES:
         node_cls = registry.get(node_name)
         assert node_cls is not None, node_name
         block = re.search(
@@ -378,3 +444,44 @@ def test_training_node_params_all_have_a_zh_tw_description():
     assert not missing, (
         "these params render in English under zh-TW; add them to "
         f"frontend/src/i18n/nodeLocales/zh-TW.ts: {missing}")
+
+
+def test_no_new_node_ships_without_a_zh_tw_entry():
+    """A ratchet, so the untranslated set can shrink but never grow.
+
+    The scoped test above only guards nodes someone remembered to add to
+    ``TRANSLATED_NODES`` -- which is exactly how core#136's eleven nodes
+    ended up unpinned. This one is derived from the registry, so a node
+    added tomorrow with no translation fails without anyone editing a list.
+    """
+    import re
+
+    catalog = _node_catalog()
+    untranslated = {
+        name for name in _builtin_node_names()
+        if not re.search(rf"\n  {re.escape(name)}: \{{", catalog)
+    }
+
+    new = sorted(untranslated - UNTRANSLATED_NODES)
+    assert not new, (
+        "these nodes have no zh-TW entry and render entirely in English; "
+        "add them to frontend/src/i18n/nodeLocales/zh-TW.ts: " + str(new))
+
+    fixed = sorted(UNTRANSLATED_NODES - untranslated)
+    assert not fixed, (
+        "these are translated now -- delete them from UNTRANSLATED_NODES so "
+        "the ratchet keeps holding: " + str(fixed))
+
+
+def test_the_zh_tw_catalog_has_no_entries_for_nodes_that_do_not_exist():
+    """A renamed or deleted node leaves a dead translation behind."""
+    import re
+
+    from app.core.node_registry import registry
+
+    catalog = _node_catalog()
+    entries = set(re.findall(r"\n  ([A-Za-z][\w:]*): \{", catalog))
+    dead = sorted(entry for entry in entries if registry.get(entry) is None)
+    assert not dead, (
+        "these zh-TW entries name nodes the registry does not have: "
+        + str(dead))

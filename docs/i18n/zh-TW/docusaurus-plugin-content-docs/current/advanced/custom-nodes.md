@@ -57,7 +57,7 @@ class MyNode(BaseNode):
 
 ## 資料型別
 
-連接埠使用共用的 `DataType` 列舉：`TENSOR`、`MODEL`、`DATASET`、`DATALOADER`、`OPTIMIZER`、`LOSS_FN`、`SCALAR`、`STRING`、`IMAGE`、`LIST`、`ANY`、`TRIGGER`。型別相符才能讓一條邊有效；`TRIGGER` 型別從 [`Start`](/usage/first-graph) 節點驅動執行順序。
+連接埠使用共用的 `DataType` 列舉：`TENSOR`、`MODEL`、`DATASET`、`DATALOADER`、`OPTIMIZER`、`LOSS_FN`、`SCALAR`、`STRING`、`IMAGE`、`LIST`、`TRANSFORM`、`ANY`、`TRIGGER`。型別相符才能讓一條邊有效；`TRIGGER` 型別從 [`Start`](/usage/first-graph) 節點驅動執行順序。
 
 ## 在執行結果面板顯示圖片
 

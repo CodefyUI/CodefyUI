@@ -178,6 +178,8 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
   const { t } = useI18n();
   const detail = useRunStore((s) => s.detail);
   const select = useRunStore((s) => s.select);
+  const exportCsv = useRunStore((s) => s.exportCsv);
+  const busy = useRunStore((s) => s.busy);
   // The LIST row first (a poll keeps it fresh), then the detail's own copy.
   // A filter change or a status transition can drop the run out of `runs`
   // while its detail is open, and a header that blanks out then would look
@@ -247,7 +249,29 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
       )}
 
       <div className={styles.detailSection}>
-        <div className={styles.sectionHeader}>{t('runs.detail.metrics')}</div>
+        <div className={styles.sectionHeaderRow}>
+          <div className={styles.sectionHeader}>{t('runs.detail.metrics')}</div>
+          {/* The same export the run row offers, put where someone reading
+              the chart is actually looking — and gated exactly the same
+              way, on that run's in-flight action alone.
+
+              The CHART is deliberately not the test. `runStore` drops every
+              non-finite reading before it becomes a series, while the server
+              still writes a row for it (an empty value cell), so a diverged
+              run has a complete CSV and a blank curve. A `/metrics` request
+              that failed reads the same way. Either would grey this button
+              out while the SAME run's row button downloads the file. */}
+          <button
+            type="button"
+            className={styles.rowBtn}
+            data-testid="detail-csv"
+            disabled={busy[detail.runId] === true}
+            onClick={() => void exportCsv(detail.runId)}
+            title={t('runs.action.csvTitle')}
+          >
+            {t('runs.detail.downloadCsv')}
+          </button>
+        </div>
         {chart.length === 0 ? (
           <div className={styles.detailEmpty}>
             {detail.loading ? t('runs.loading') : t('runs.detail.noMetrics')}

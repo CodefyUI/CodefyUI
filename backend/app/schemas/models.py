@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# ``app.core.seeding`` imports nothing but the standard library, so taking
+# the seed bound from its definition rather than restating it here costs no
+# import-order risk -- and restating it is how the run path and the export
+# path drift apart.
+from ..core.seeding import MAX_SEED
 
 
 class PortDefinitionSchema(BaseModel):
@@ -76,6 +82,31 @@ class GraphData(BaseModel):
     # Persisted so the Teaching Inspector's segment overlays survive a
     # save/load round-trip. Optional; older graph files simply omit it.
     segmentGroups: list[SegmentGroupData] = []
+
+
+class GraphExportRequest(GraphData):
+    """A graph plus the run settings an exported script has to carry.
+
+    Separate from :class:`GraphData` because these are properties of a RUN,
+    not of the saved graph: ``/save`` must not start writing them into graph
+    files. Both are optional, so an older client (or a hand-rolled ``curl``)
+    still exports, it just exports an unseeded script -- which is what every
+    export did before core#136.
+    """
+
+    #: Canvas seed, baked in as the default for the generated ``--seed``.
+    #: ``None`` means the canvas had no seed set.
+    #:
+    #: core#136 re-review, N-4. Bounded to the SAME range the run path
+    #: enforces (``run_service._validate_options``). Without it a hand-rolled
+    #: request could bake ``-1`` or ``2**86`` into ``GRAPH_SEED``, producing
+    #: an export whose results the canvas would refuse to reproduce because
+    #: it rejects that seed outright -- an export that disagrees with the
+    #: graph it was exported from is worse than one that fails to build.
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
+    #: Canvas "deterministic kernels" toggle, default for
+    #: ``--deterministic`` / ``--no-deterministic``.
+    deterministic: bool = False
 
 
 class GraphValidationResponse(BaseModel):

@@ -105,6 +105,36 @@ describe('exportGraph', () => {
     expect(JSON.parse(init.body)).toEqual({ nodes: [], edges: [] });
   });
 
+  // core#136 review, M-6. The exported script had no seed at all, so an
+  // exported augmenting graph drew fresh entropy on every invocation while
+  // the docs promised the same crops every time. The canvas seed now
+  // travels with the export and becomes the script's `--seed` default.
+  it('sends the canvas seed so the exported script reproduces the run', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    await exportGraph([], [], undefined, undefined, { seed: 4321, deterministic: true });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      nodes: [],
+      edges: [],
+      seed: 4321,
+      deterministic: true,
+    });
+  });
+
+  it('sends seed 0 rather than dropping it as falsy', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    await exportGraph([], [], undefined, undefined, { seed: 0, deterministic: false });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ nodes: [], edges: [], seed: 0 });
+  });
+
+  it('omits seed entirely when the canvas has none, so the export is unseeded', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    await exportGraph([], [], undefined, undefined, { seed: null, deterministic: false });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ nodes: [], edges: [] });
+  });
+
   it('sends embedded preset definitions needed for portable expansion', async () => {
     const fetchMock = mockFetch(200, { script: '...' });
     const preset = { preset_name: 'Portable', nodes: [], edges: [] } as any;

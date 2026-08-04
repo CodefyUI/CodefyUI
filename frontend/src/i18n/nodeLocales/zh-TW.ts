@@ -280,11 +280,18 @@ const zhTW: NodeTranslations = {
     },
   },
   Dataset: {
-    description: '載入標準資料集（MNIST、CIFAR10 或 FashionMNIST）',
+    description: '載入標準影像資料集。把變換鏈接到 train_transform / eval_transform 就能控制前處理與資料增強；沒有接的話會套用 ToTensor 與 Normalize(0.5)。',
     params: {
       name: '要載入的資料集',
       split: '資料分割',
       data_dir: '下載/儲存資料集的目錄',
+    },
+  },
+  ImageFolderDataset: {
+    description: '從「一個類別一個資料夾」的結構載入自己的影像。標籤由資料夾名稱依字母順序決定。',
+    params: {
+      path: '放置各個分割的資料夾。相對路徑會相對於同時放著 models/ 與 images/ 的資料目錄。',
+      split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」；這時沒有分割可以區分兩個 transform 埠，所以接了哪一個就用哪一個，兩個都接時以 train_transform 為準。',
     },
   },
   SyntheticDataset: {
@@ -330,11 +337,76 @@ const zhTW: NodeTranslations = {
     },
   },
   Transform: {
-    description: '對資料集套用常見影像變換（調整大小、正規化、轉為張量）',
+    description: '對資料集套用變換流程。三個內建步驟以外的需求，請把變換鏈接到 transform；一旦接上，下面的參數就會被忽略。',
     params: {
-      resize: '調整大小維度（0 表示不調整）',
-      normalize: '套用正規化（mean=0.5, std=0.5）',
-      to_tensor: '將 PIL 影像轉為張量',
+      resize: '調整大小維度（0 表示不調整）。接上變換鏈時會被忽略。',
+      normalize: '套用正規化（mean=0.5, std=0.5）。接上變換鏈時會被忽略；資料集統計值的預設組合在 NormalizeTransform。',
+      to_tensor: '將 PIL 影像轉為張量。接上變換鏈時會被忽略。',
+    },
+  },
+
+  // ── Data / 變換鏈（core#136）──
+  ResizeTransform: {
+    description: '把每個樣本縮放成指定邊長的正方形。放在 ToTensorTransform 之前。',
+    params: {
+      size: '縮放後正方形的邊長（像素）',
+      interpolation: '重取樣濾波器。nearest 保留硬邊緣（遮罩、標籤圖）；bicubic 在照片上比較銳利。',
+    },
+  },
+  ToTensorTransform: {
+    description: '把 PIL 影像轉成範圍 [0, 1] 的 CxHxW 浮點張量。多數變換鏈的分界點：幾何與色彩步驟放在它之前，NormalizeTransform 放在它之後。',
+  },
+  NormalizeTransform: {
+    description: '對每個通道做 (x - mean) / std 標準化。需要張量，所以放在 ToTensorTransform 之後。',
+    params: {
+      preset: '用來標準化的通道統計值。Half 會把 [0, 1] 映射到 [-1, 1]，也是 CodefyUI 在有預設組合之前一直採用的做法；想重現論文結果時，請選你實際訓練的資料集。',
+      mean: '每個通道的平均值，以逗號分隔。只給一個值就套用到所有通道。',
+      std: '每個通道的標準差，以逗號分隔。只給一個值就套用到所有通道。',
+    },
+  },
+  RandomCrop: {
+    description: '先補邊，再隨機取一個 size x size 的視窗。size 32 搭配 padding 4 就是標準的 CIFAR-10 資料增強：物體每個 epoch 都會偏移幾個像素，模型因此不再依賴它原本的位置。',
+    params: {
+      size: '裁切後正方形的邊長（像素）',
+      padding: '裁切前四邊各補上的像素數。設 0 會真的裁出比原圖小的視窗；補的量等於想要的位移量時，輸出大小會和輸入一樣。',
+      padding_mode: '補上的邊框內容。constant 是黑色，reflect 則鏡射影像邊緣（不會留下人工邊框讓模型去學）。',
+    },
+  },
+  RandomHorizontalFlip: {
+    description: '以機率 p 左右鏡射影像。在照片上幾乎是免費的準確率；但對於左右有意義的資料（數字、文字）就是錯的。',
+    params: {
+      p: '每個樣本被翻轉的機率',
+    },
+  },
+  RandomRotation: {
+    description: '把每個樣本旋轉一個從 [-degrees, +degrees] 均勻抽出的角度。小角度對手寫與衛星影像有幫助；角度過大則會破壞任何方向性有意義的類別。',
+    params: {
+      degrees: '旋轉範圍的半寬（度）。設 15 表示每個樣本最多往任一邊轉 15 度。',
+      expand: '放大輸出畫布，避免角落被裁掉。這會改變影像尺寸，所以下游任何假設固定形狀的節點後面都要再接一個縮放。',
+      fill: '旋轉後空出來的角落要填什麼值。0 是黑色。',
+    },
+  },
+  ColorJitter: {
+    description: '隨機調整亮度、對比、飽和度與色相。讓模型明白，暖光燈下的貓還是貓。預設值就是多數 ImageNet 訓練腳本採用的組合。',
+    params: {
+      brightness: '亮度會乘上一個從 [1-b, 1+b] 抽出的係數。設 0 表示停用。',
+      contrast: '範圍規則與亮度相同。設 0 表示停用。',
+      saturation: '範圍規則與亮度相同。設 0 表示停用。',
+      hue: '色相會平移一個從 [-h, +h] 抽出的量，色環寬度為 1，所以上限是 0.5。請設小一點：超過 0.2 左右，某個類別賴以辨識的顏色就不再是那個類別的顏色了。',
+    },
+  },
+  RandAugment: {
+    description: '從固定的操作集合（傾斜、平移、旋轉、色調分離、曝光過度、色彩、對比、亮度、銳利度、直方圖等化、自動對比、identity）隨機挑 num_ops 個套用，強度都一樣。需要 PIL 影像或 uint8 張量，所以放在 ToTensorTransform 之前。',
+    params: {
+      num_ops: '每個樣本要套用幾個操作。論文的預設值是 2。',
+      magnitude: '所有操作的強度，範圍是 0 到 num_magnitude_bins - 1。模型與資料集越大就調越高；小模型配小資料集，通常還沒需要 15 就已經欠擬合了。',
+      num_magnitude_bins: '強度刻度的解析度。torchvision 的預設值是 31；改動它會連帶改變 magnitude 的意義。',
+    },
+  },
+  ComposeTransform: {
+    description: '把數條變換鏈依照埠的順序合併成一條：step_1 先跑。節點接節點本身就會組合，所以只有在兩條鏈分開建立、又要合成同一條流程時才需要它。',
+    params: {
+      steps: '要合併幾條鏈',
     },
   },
   CSVReader: {
@@ -408,6 +480,7 @@ const zhTW: NodeTranslations = {
       max_steps: '總共跑滿這麼多次優化器更新後就停止，不論 epochs 設定為何。算的是優化器更新次數而不是批次數，所以不管 accumulate_steps 設多少意思都一樣（0 = 不限制）',
       log_interval: '開啟批次指標時，每 N 批記錄一次。長時間執行時調高可以讓圖表稀疏一點。',
       deterministic: '要求 PyTorch 使用決定性的運算核心。沒有決定性實作的運算會發出警告，而不會讓執行失敗。',
+      tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
     },
   },
   BackwardOnce: {
