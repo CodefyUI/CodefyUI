@@ -16,7 +16,11 @@ from ..core.secret_params import (
     scrub_graph_secrets,
     scrub_preset_definition_secrets,
 )
-from ..schemas import GraphData, GraphValidationResponse
+from ..schemas import (
+    GraphData,
+    GraphExportRequest,
+    GraphValidationResponse,
+)
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
 logger = logging.getLogger(__name__)
@@ -186,7 +190,7 @@ async def list_graphs():
 
 
 @router.post("/export")
-async def export_graph(graph: GraphData):
+async def export_graph(graph: GraphExportRequest):
     """Export a graph as a single-file, headless CodefyUI Python runner."""
     from ..core.codegen import generate_python
     from ..core.graph_engine import prepare_executable_graph
@@ -225,6 +229,11 @@ async def export_graph(graph: GraphData):
             edges,
             name=graph.name,
             presets=presets,
+            # core#136: the canvas seed travels with the export, so an
+            # exported augmenting graph reproduces the crops the canvas
+            # produced instead of drawing fresh entropy every invocation.
+            seed=graph.seed,
+            deterministic=graph.deterministic,
         )
         # A successful response must never download syntactically broken
         # Python, even if a future template edit regresses quoting/bracketing.

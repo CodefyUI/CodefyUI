@@ -78,6 +78,24 @@ class GraphData(BaseModel):
     segmentGroups: list[SegmentGroupData] = []
 
 
+class GraphExportRequest(GraphData):
+    """A graph plus the run settings an exported script has to carry.
+
+    Separate from :class:`GraphData` because these are properties of a RUN,
+    not of the saved graph: ``/save`` must not start writing them into graph
+    files. Both are optional, so an older client (or a hand-rolled ``curl``)
+    still exports, it just exports an unseeded script -- which is what every
+    export did before core#136.
+    """
+
+    #: Canvas seed, baked in as the default for the generated ``--seed``.
+    #: ``None`` means the canvas had no seed set.
+    seed: int | None = None
+    #: Canvas "deterministic kernels" toggle, default for
+    #: ``--deterministic`` / ``--no-deterministic``.
+    deterministic: bool = False
+
+
 class GraphValidationResponse(BaseModel):
     valid: bool
     errors: list[str] = []

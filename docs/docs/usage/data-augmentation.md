@@ -116,11 +116,12 @@ For a dataset that is not one folder per class — a CSV of paths, a custom arch
 
 Augmentation is random, so a reproducible run has to reproduce the augmentations too. Give the run a **seed** (in the run options) and it does: the same seed produces the same crops, flips and colour shifts, every time.
 
-Three details are worth knowing:
+Four details are worth knowing:
 
 - **The stream is isolated.** A chain's randomness depends on the run seed and the identity of the node that attached it, and on nothing else. Changing the model or the dropout rate does not change which crops you get. What the batch size and the worker count still decide, once `num_workers` is above zero, is which sample draws from where in that stream — each worker has its own. So those two settings change what lands on a given image, but re-running the same configuration reproduces it exactly.
 - **It still varies.** Reproducible does not mean frozen: samples differ from each other, and epoch 2 differs from epoch 1. That is the whole point of augmentation, and it holds with `num_workers` set as well as without.
 - **An unseeded run is unchanged.** Without a seed the pipeline keeps torch's own entropy and pays no overhead at all. The extra bookkeeping is only installed when a run asks for a seed *and* the chain actually contains a random step.
+- **An exported script keeps the seed.** "Export as Python" bakes the canvas's seed into the generated file as `GRAPH_SEED`, and it is the default for the script's own `--seed`. So the exported graph reproduces what the canvas produced — same crops, same flips — without anyone remembering to pass a flag. Override it with `--seed 123`, or pass `--no-seed` for fresh entropy on every invocation. The determinism toggle travels the same way, as `--deterministic` / `--no-deterministic`.
 
 ## TensorBoard
 

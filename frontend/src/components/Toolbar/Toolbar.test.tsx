@@ -1069,8 +1069,45 @@ describe('Toolbar', () => {
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), 'graph', [],
+      expect.anything(), expect.anything(), 'graph', [], expect.anything(),
     ));
+  });
+
+  // core#136 review, M-6. The exported script carried no seed at all, so an
+  // exported augmenting graph drew fresh entropy every invocation while the
+  // docs promised the same crops every time. The tab's run settings now go
+  // with the export and become the script's --seed / --deterministic
+  // defaults.
+  it('Export Python: sends the tab seed and determinism toggle', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
+    setActiveTab({
+      seed: 4321,
+      deterministic: true,
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
+    const run = mockedRest.exportGraph.mock.calls[0][4];
+    expect(run).toEqual({ seed: 4321, deterministic: true });
+  });
+
+  it('Export Python: an unseeded tab exports without a seed', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
+    setActiveTab({
+      seed: null,
+      deterministic: false,
+      nodes: [{ id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } }],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
+    expect(mockedRest.exportGraph.mock.calls[0][4]).toEqual({
+      seed: null,
+      deterministic: false,
+    });
   });
 
   it('Export Python: exportGraph rejection toasts error', async () => {
