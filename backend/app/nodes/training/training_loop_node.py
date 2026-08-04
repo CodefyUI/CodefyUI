@@ -518,6 +518,18 @@ class TrainingLoopNode(BaseNode):
                 ),
                 advanced=True,
             ),
+            ParamDefinition(
+                name="tensorboard",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Also write the metrics as TensorBoard event files, "
+                    "under the run's own folder. Open them with "
+                    "`tensorboard --logdir <path>`; the path is listed as an "
+                    "artifact of the run."
+                ),
+                advanced=True,
+            ),
         ]
 
     def execute(
@@ -541,6 +553,7 @@ class TrainingLoopNode(BaseNode):
             stop_checker,
         )
         from ...core.seeding import apply_determinism
+        from ...core.tensorboard import close_and_register, open_run_writer
 
         model = inputs["model"]
         dataloader = inputs["dataloader"]
@@ -578,6 +591,25 @@ class TrainingLoopNode(BaseNode):
         if bool(params.get("deterministic", False)) or getattr(
                 context, "deterministic", False):
             apply_determinism(True)
+
+        # #136: the same series, in a second place. Opened BEFORE any
+        # training so the "no row, no file" check happens before the
+        # directory is created, not after a full run has filled it.
+        tb_writer = (open_run_writer(context)
+                     if bool(params.get("tensorboard", False)) else None)
+
+        def record_metric(name: str, value: Any, step: int) -> None:
+            """One point, to the run's metric store and to TensorBoard.
+
+            One call site for both so the two can never drift into
+            disagreeing about what was recorded -- which would be the worst
+            possible failure for something whose only job is to say what
+            happened.
+            """
+            if context is not None:
+                context.log_metric(name, value, step)
+            if tb_writer is not None:
+                tb_writer.add_scalar(name, value, step)
 
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
@@ -754,8 +786,7 @@ class TrainingLoopNode(BaseNode):
                         optimizer_steps += 1
                     pending = 0
 
-                if (batch_metrics and context is not None
-                        and global_batch % log_interval == 0):
+                if batch_metrics and global_batch % log_interval == 0:
                     # A series of its own, stepped by GLOBAL batch index --
                     # not "train_loss at a finer resolution", which would put
                     # two different x-axes in one series.
@@ -766,8 +797,8 @@ class TrainingLoopNode(BaseNode):
                     # points. Keying off ``global_batch`` rather than
                     # ``batch_index`` keeps the spacing even across an epoch
                     # boundary whose batch count is not a multiple of it.
-                    context.log_metric("train_loss_batch", batch_loss,
-                                       global_batch)
+                    record_metric("train_loss_batch", batch_loss,
+                                  global_batch)
                 throttle.emit({
                     "event": EVENT_BATCH,
                     "epoch": epoch + 1,
@@ -932,15 +963,14 @@ class TrainingLoopNode(BaseNode):
             # patience_counter and best_epoch. All of them are here; the one
             # deliberate change is that ``loss`` is now ``train_loss``, which
             # names the same number and lines up with ``val_loss``.
-            if context is not None:
-                context.log_metric("train_loss", avg_train_loss, epoch + 1)
-                if avg_val_loss is not None:
-                    context.log_metric("val_loss", avg_val_loss, epoch + 1)
-                context.log_metric("lr", current_lr, epoch + 1)
-                if patience > 0:
-                    context.log_metric("patience_counter", patience_counter,
-                                       epoch + 1)
-                    context.log_metric("best_epoch", best_epoch, epoch + 1)
+            record_metric("train_loss", avg_train_loss, epoch + 1)
+            if avg_val_loss is not None:
+                record_metric("val_loss", avg_val_loss, epoch + 1)
+            record_metric("lr", current_lr, epoch + 1)
+            if patience > 0:
+                record_metric("patience_counter", patience_counter,
+                              epoch + 1)
+                record_metric("best_epoch", best_epoch, epoch + 1)
 
             if progress_callback:
                 progress_data = {
@@ -1002,6 +1032,15 @@ class TrainingLoopNode(BaseNode):
         # partial epoch (its weight updates are in the model, its loss
         # average is not), so the resumed run re-runs it from batch 0.
         completed_epochs = start_epoch + len(epoch_losses)
+
+        # Closed and registered here rather than in a ``finally``: both of
+        # this function's remaining artifact producers queue at the very
+        # end, with no progress frames between them, which is what
+        # ``ArtifactSignal``'s drop-oldest queue requires. A run that dies
+        # by exception never reaches this line; ``EventFileWriter.__del__``
+        # is what flushes the events it did write.
+        tb_logdir = close_and_register(tb_writer, context)
+
         checkpoint_path: str | None = None
         if stopped_at is not None:
             # The epoch the stop landed IN, 1-based. Only the ``train`` phase
@@ -1048,6 +1087,8 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
+        if tb_logdir is not None:
+            metrics["tensorboard_logdir"] = tb_logdir
         if policy.uses_scaler:
             # Zero is a meaningful reading here ("the loss scale never
             # overflowed"), so it is reported whenever there was a scaler
