@@ -19,6 +19,8 @@ portable artifact with nothing to install alongside it.
 
 1. Select two or more nodes (Shift+click, or drag a box around them).
 2. Right-click one of them and choose **Collapse to subgraph**.
+3. Give the block a name. The default is `Subgraph`; you can rename it later
+   from the breadcrumb.
 
 The selection is replaced by one instance node. Every edge that crossed the
 selection becomes a **boundary port** on that node, named after the inner port
@@ -45,11 +47,19 @@ Collapse says no rather than producing a graph that reads wrong:
 appears at the top — `Main ▸ MyBlock` — and everything you already know works:
 drag, connect, delete, parameter edits, undo.
 
-Undo inside a block stays inside it. Your outer history is put back when you
-leave, so you can never accidentally undo your way out through the boundary.
+Undo inside a block stays inside it: the block gets its own history while you
+are in there, and your outer history is put back when you leave — so you can
+never accidentally undo your way out through the boundary.
 
-Click the block's name in the breadcrumb to rename it, **Back** to leave one
-level, or **Main** to jump all the way out.
+Leaving a block is itself **one undo step**. Everything you changed inside
+lands as a single entry on the outer history, so one Ctrl+Z after you come out
+reverts the whole visit and leaves whatever you did *outside* the block
+untouched. Entering and leaving without changing anything adds no undo entry at
+all.
+
+Click the block's name in the breadcrumb to rename it (not offered on a graph
+opened read-only), **Back** to leave one level, or **Main** to jump all the way
+out.
 
 Deleting a node inside a block also removes the boundary port it provided, and
 the outer edge that named that port goes with it.
@@ -59,6 +69,10 @@ the outer edge that named that port goes with it.
 Copy an instance node, or collapse the same block twice, and both nodes point
 at the same definition. Edit it through either one and both change — this is
 the reuse a flattened preset cannot give you.
+
+Delete the last instance of a block and its definition stops being saved with
+the graph, so a file never carries a block nothing on the canvas can reach.
+Undo brings both back.
 
 :::note Per-instance parameters are out of scope in v1
 Two instances of a subgraph are **identical blocks**. There is no way to give
@@ -92,6 +106,10 @@ reported with a path naming both sides:
 Graph contains a cycle: blk1/relu -> blk1/conv -> blk1/relu
   (crosses subgraph instance(s): blk1)
 ```
+
+Every enclosing block is named, so a loop two boundaries down points at both
+the block you can see and the one inside it
+(`crosses subgraph instance(s): blk1, blk1/inner`).
 
 A subgraph that contains itself, directly or through another subgraph, is
 refused by name before anything runs.
@@ -128,6 +146,15 @@ def flow_1(ctx, results, provided):
 The block structure survives into the exported file instead of dissolving into
 a flat run of node calls. Each generated node function also carries a comment
 saying which subgraph it came from.
+
+One exception, and the export says so when it applies: a block can only become
+a single function if all of its nodes can run back to back. If something
+outside the block has to run in the middle of it — because you wired the block
+into a node that then feeds it again, or because the block contains a node with
+no inputs of its own — the export emits its nodes in their real running order
+instead, with a comment naming what got in the way. The script still runs, and
+still computes what the canvas computes; it just does not get the extra
+function.
 
 ## Limitations in v1
 
