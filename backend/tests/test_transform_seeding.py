@@ -22,7 +22,10 @@ So the properties under test are, in the order they matter:
 
 from __future__ import annotations
 
+import inspect
 import pickle
+import re
+import warnings
 
 import pytest
 import torch
@@ -181,25 +184,152 @@ def test_the_v2_only_random_transforms_are_recognised(name):
     assert name in RANDOM_TRANSFORM_NAMES
 
 
-def test_every_torchvision_random_transform_is_listed():
-    """A guard against the set drifting behind torchvision.
+#: Public classes in ``transforms``/``transforms.v2`` that are containers or
+#: bases rather than steps, so the drift guard below does not judge them.
+_NOT_A_STEP = frozenset({"Transform", "Compose", "RandomTransforms"})
 
-    Name-only, so nothing is instantiated. If a torchvision upgrade adds a
-    ``Random*`` transform this fails loudly, which is the whole point: the
-    cost of noticing late is a run whose augmentation froze after epoch 1.
-    """
+#: Every way torchvision spells "draw a number" in a transform's own body.
+#: ``.uniform_(`` covers the ``torch.empty(...).uniform_()`` idiom several
+#: v2 transforms use instead of ``torch.rand``.
+_RNG_CALL = re.compile(
+    r"\btorch\.(rand|randn|randint|randperm|normal|multinomial|bernoulli)\b"
+    r"|\.uniform_\(|\brandom\.[a-z]")
+
+#: Triple-quoted blocks are stripped before the scan above runs: v2's
+#: ``FiveCrop`` -- a deterministic transform -- has ``torch.rand(3, 256,
+#: 256)`` in its docstring EXAMPLE, and scanning raw source made it the
+#: guard's one false positive.
+_TRIPLE_QUOTED = re.compile(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'')
+
+
+def _torchvision_transform_classes():
+    """Every public transform class in v1 and v2, as ``(name, class)``."""
     from torchvision import transforms as T
     from torchvision.transforms import v2
 
+    for module in (T, v2):
+        for name in dir(module):
+            if name.startswith("_") or name in _NOT_A_STEP:
+                continue
+            obj = getattr(module, name)
+            if isinstance(obj, type):
+                yield name, obj
+
+
+def _looks_random(name, cls):
+    """Independent evidence that *cls* draws from an RNG. Never our own set.
+
+    Five signals, any one of which is enough. They are deliberately
+    OVERLAPPING, because each on its own has a blind spot: the name rule
+    misses ``AugMix``/``CutMix``/``JPEG``/``MixUp``/``ScaleJitter``, the two
+    structural rules miss transforms that draw inline in ``forward``, and
+    the source scan misses ``GaussianNoise``, which draws inside the
+    functional kernel it delegates to. Together they land on exactly the 36
+    names the module lists, on torchvision 0.26 and 0.27 alike.
+    """
+    import torch
+    from torchvision.transforms import v2
+
+    if name.startswith("Random"):
+        return "name"
+    # v1's idiom: parameters drawn in a ``get_params`` staticmethod. This is
+    # the same signal ``pipeline_is_random``'s backstop uses at runtime.
+    if callable(getattr(cls, "get_params", None)):
+        return "get_params"
+    # v2's idiom: ``make_params`` overridden, or the "apply with probability
+    # p" base class.
+    base_make = getattr(v2.Transform, "make_params", None)
+    own_make = getattr(cls, "make_params", None)
+    if base_make is not None and own_make is not None and own_make is not base_make:
+        return "make_params"
+    apply_base = getattr(v2._transform, "_RandomApplyTransform", None)
+    if apply_base is not None and issubclass(cls, apply_base):
+        return "p-gate"
+    try:
+        if _RNG_CALL.search(_TRIPLE_QUOTED.sub("", inspect.getsource(cls))):
+            return "source"
+    except (OSError, TypeError):  # pragma: no cover - sdist always has source
+        pass
+    # Last resort, and the only signal that reaches a transform whose draw
+    # lives in the functional it calls: build it and run it twice under two
+    # different global seeds. Anything needing constructor arguments raises
+    # and is simply not judged by this signal.
+    try:
+        instance = cls()
+        sample = torch.rand(3, 8, 8)
+        torch.manual_seed(1)
+        first = instance(sample)
+        torch.manual_seed(2)
+        if not torch.equal(first, instance(sample)):
+            return "probe"
+    except Exception:
+        pass
+    return None
+
+
+def test_every_torchvision_random_transform_is_listed():
+    """A guard against the set drifting behind torchvision.
+
+    core#136 re-review, N-2. The first version of this test walked only
+    ``startswith("Random")``, which judged 24 of the 36 entries and would
+    have let a future ``AugMix``-shaped addition through -- 5 of the 12
+    names this PR had to add by hand are shaped exactly like that. It also
+    only ever asserted one direction, so an entry torchvision had DELETED
+    could sit here forever looking like coverage.
+
+    Both directions now, and the "is it random" question is answered by
+    torchvision's own code rather than by restating our list -- see
+    :func:`_looks_random`.
+    """
+    import torch
+
     from app.nodes.data.transforms._base import RANDOM_TRANSFORM_NAMES
 
-    found = {
-        name
-        for module in (T, v2)
-        for name in dir(module)
-        if name.startswith("Random") and isinstance(getattr(module, name), type)
-    }
-    assert found - RANDOM_TRANSFORM_NAMES == set()
+    state = torch.random.get_rng_state()
+    try:
+        with warnings.catch_warnings():
+            # The probe instantiates deprecated classes such as v2.ToTensor.
+            warnings.simplefilter("ignore")
+            classified = {name: _looks_random(name, cls)
+                          for name, cls in _torchvision_transform_classes()}
+    finally:
+        torch.random.set_rng_state(state)
+
+    random_now = {name for name, signal in classified.items() if signal}
+    assert random_now - RANDOM_TRANSFORM_NAMES == set(), (
+        "torchvision has random transforms this set does not know about; "
+        "unlisted means unwrapped, which freezes augmentation after epoch 1 "
+        f"at num_workers>0: "
+        f"{ {n: classified[n] for n in random_now - RANDOM_TRANSFORM_NAMES} }")
+    assert RANDOM_TRANSFORM_NAMES - set(classified) == set(), (
+        "these names are no longer public torchvision transforms, so they "
+        "match nothing and only look like coverage: "
+        f"{sorted(RANDOM_TRANSFORM_NAMES - set(classified))}")
+
+
+def test_the_drift_guard_judges_every_listed_name():
+    """The guard above is only worth its runtime if it sees all 36.
+
+    Its predecessor covered 24. This pins the coverage itself, so narrowing
+    ``_looks_random`` back to a name test fails here rather than silently
+    shrinking what the ratchet watches.
+    """
+    import torch
+
+    from app.nodes.data.transforms._base import RANDOM_TRANSFORM_NAMES
+
+    state = torch.random.get_rng_state()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            judged = {name for name, cls in _torchvision_transform_classes()
+                      if _looks_random(name, cls)}
+    finally:
+        torch.random.set_rng_state(state)
+
+    assert RANDOM_TRANSFORM_NAMES - judged == set(), (
+        "the oracle no longer recognises these listed names: "
+        f"{sorted(RANDOM_TRANSFORM_NAMES - judged)}")
 
 
 def test_a_custom_transform_in_torchvisions_own_idiom_is_recognised():
@@ -227,7 +357,7 @@ def test_a_custom_transform_in_torchvisions_own_idiom_is_recognised():
 
 
 def test_the_backstop_does_not_fire_on_torchvisions_deterministic_steps():
-    """A false positive only costs 6 microseconds, but there are none."""
+    """A false positive only costs ~30 microseconds, but there are none."""
     from torchvision import transforms as T
 
     for step in (T.ToTensor(), T.PILToTensor(), T.Normalize((0.5,), (0.5,)),
@@ -418,6 +548,149 @@ def test_the_wrapper_survives_pickling():
     restored = pickle.loads(pickle.dumps(wrapper))
     assert restored.seed == wrapper.seed
     assert torch.equal(restored(image), wrapper(image))
+
+
+def _python_random_datasets(seed: int = 4242):
+    """Two datasets whose ONLY visible randomness is Python's ``random``.
+
+    ``torchvision.transforms.RandomChoice`` picks with ``random.choices`` and
+    ``RandomOrder`` shuffles with ``random.shuffle`` -- the two places in
+    torchvision that draw from the ``random`` module rather than from torch.
+    Both branches below are deterministic in themselves (``RandomPosterize``
+    consumes one torch draw for its ``p`` check, but ``p=1.0`` makes the
+    outcome fixed), so anything that varies between two epochs varied
+    because the container's ``random`` draw varied.
+    """
+    from torchvision import transforms as T
+
+    def branches():
+        return [T.Grayscale(num_output_channels=3),
+                T.RandomPosterize(bits=2, p=1.0)]
+
+    made = []
+    for index, name in enumerate(("RandomChoice", "RandomOrder")):
+        dataset = _ImageDataset(count=16)
+        attach_transform(
+            dataset,
+            T.Compose([getattr(T, name)(branches()), T.ToTensor()]),
+            _context(seed, f"tf{index}"))
+        made.append(dataset)
+    return made
+
+
+def test_a_v1_random_container_still_varies_across_epochs_in_real_workers():
+    """core#136 re-review, R-1. Real spawned workers, two real epochs.
+
+    ``RANDOM_TRANSFORM_NAMES`` lists both v1 containers, so they are DETECTED
+    and wrapped -- but detection buys nothing unless the wrapper can actually
+    control the stream they draw from. Forking only torch's generator left
+    ``make_worker_init_fn``'s fixed per-worker ``random`` seed in charge, and
+    that is re-applied at the start of every epoch, so epoch 2 replayed epoch
+    1's choices exactly: augmentation silently OFF after the first epoch,
+    which is the failure the whole set exists to prevent.
+
+    Everything here is the real thing: spawned worker processes, the repo's
+    own ``worker_init_fn``, ``persistent_workers`` off (so torch recreates
+    the workers per epoch, which is what re-runs the init), and two branches
+    that neither agree nor commute -- asserted below, so the test cannot
+    quietly become vacuous the way a flat-colour fixture would.
+
+    Both containers ride in ONE ``ConcatDataset`` because worker startup
+    dominates the runtime: one loader per epoch instead of two, and the
+    halves are sliced apart afterwards so each container is judged on its
+    own.
+    """
+    from torch.utils.data import ConcatDataset
+    from torchvision import transforms as T
+
+    from app.core.seeding import make_worker_init_fn
+
+    probe = _ImageDataset(count=1)._images[0]
+    gray, posterize = T.Grayscale(3), T.RandomPosterize(bits=2, p=1.0)
+    to_tensor = T.ToTensor()
+    assert not torch.equal(to_tensor(gray(probe)), to_tensor(posterize(probe))), \
+        "the two branches must disagree or RandomChoice pins nothing"
+    assert not torch.equal(to_tensor(posterize(gray(probe))),
+                           to_tensor(gray(posterize(probe)))), \
+        "the two branches must not commute or RandomOrder pins nothing"
+
+    choice_dataset, order_dataset = _python_random_datasets()
+    assert isinstance(choice_dataset.transform, SeededAugmentation)
+    assert isinstance(order_dataset.transform, SeededAugmentation)
+    combined = ConcatDataset([choice_dataset, order_dataset])
+
+    torch.manual_seed(999)
+    epochs = []
+    for _ in range(2):
+        loader = DataLoader(combined, batch_size=4, shuffle=False,
+                            num_workers=2,
+                            worker_init_fn=make_worker_init_fn(4242))
+        epochs.append(torch.cat([batch for batch, _ in loader]))
+
+    half = len(choice_dataset)
+    assert not torch.equal(epochs[0][:half], epochs[1][:half]), \
+        "RandomChoice froze after epoch 1"
+    assert not torch.equal(epochs[0][half:], epochs[1][half:]), \
+        "RandomOrder froze after epoch 1"
+
+
+def test_the_wrapper_hands_the_callers_python_random_back_untouched():
+    """The ``random`` half of the isolation contract, in the main process.
+
+    Reseeding the module-global ``random`` without restoring it would leave
+    the rest of the graph walking a stream the augmentation chose, which is
+    the same coupling the torch fork exists to break.
+    """
+    import random
+
+    dataset = _ImageDataset()
+    attach_transform(dataset, _augmenting_chain(), _context(4242))
+
+    random.seed(5)
+    expected = [random.random() for _ in range(3)]
+    random.seed(5)
+    for _ in range(4):
+        dataset.transform(dataset._images[0])
+    assert [random.random() for _ in range(3)] == expected
+
+
+class _PythonRandomDraw:
+    """A transform whose whole output is one draw from Python's ``random``.
+
+    Stands in for v1 ``RandomChoice``/``RandomOrder``, which is where
+    torchvision reaches for the ``random`` module instead of torch.
+    """
+
+    def __call__(self, sample):
+        import random
+
+        return random.random()
+
+
+def _python_draws(seed: int, count: int = 4) -> list[float]:
+    wrapper = SeededAugmentation(_PythonRandomDraw(), seed)
+    return [wrapper(None) for _ in range(count)]
+
+
+def test_the_python_random_draws_are_a_function_of_the_run_seed_alone():
+    """core#136 re-review, R-1, at the level a unit test can see it.
+
+    The ambient ``random`` state is set to something different before each
+    of the two runs -- standing in for ``worker_init_fn``'s fixed per-worker
+    seed, and for whatever else in the process drew last. If the wrapper
+    does not seed ``random`` itself, that ambient state decides the draws
+    and the two runs disagree.
+    """
+    import random
+
+    random.seed(1)
+    first = _python_draws(4242)
+    random.seed(2)
+    second = _python_draws(4242)
+
+    assert first == second, "the draws followed the ambient RNG, not the seed"
+    assert len(set(first)) == len(first), "every sample drew the same number"
+    assert _python_draws(4243) != first, "the run seed does not reach them"
 
 
 # ── through the engine ───────────────────────────────────────────────────

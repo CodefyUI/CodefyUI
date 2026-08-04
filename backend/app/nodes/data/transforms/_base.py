@@ -48,6 +48,7 @@ and is still a function of the run seed alone.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any
 
 from ....core.node_base import (
@@ -89,7 +90,7 @@ CHAIN_OUTPUT_DESC = "The chain so far, with this step appended"
 #: unrecognised random pipeline produced identical epochs 1/2/3.
 #:
 #: Erring towards over-recognition is therefore the right bias: a
-#: deterministic pipeline wrapped by mistake costs ~6 microseconds a sample
+#: deterministic pipeline wrapped by mistake costs ~30 microseconds a sample
 #: and nothing else, while a random one missed costs the experiment. Hence
 #: also the ``get_params`` backstop in :func:`pipeline_is_random`.
 RANDOM_TRANSFORM_NAMES = frozenset({
@@ -179,10 +180,14 @@ def pipeline_is_random(pipeline: Any) -> bool:
     of. It is torchvision's own idiom -- a random transform draws its
     parameters in a ``get_params`` staticmethod and a deterministic one has
     nothing to draw -- so a custom or plugin transform written in that
-    idiom is recognised without being listed here. It catches 8 of
-    torchvision's own v1 randoms and none of its deterministic transforms,
-    and a false positive would only cost the ~6 microseconds of a wrapper
-    nothing needs.
+    idiom is recognised without being listed here. It catches 10 of
+    torchvision's own v1 randoms and none of its deterministic transforms
+    (counted on both 0.26 and the 0.27 that the 3.10 floor resolves to:
+    ``AutoAugment``, ``ColorJitter``, ``ElasticTransform``, ``GaussianBlur``,
+    ``RandomAffine``, ``RandomCrop``, ``RandomErasing``,
+    ``RandomPerspective``, ``RandomResizedCrop``, ``RandomRotation``), and a
+    false positive would only cost the ~30 microseconds of a wrapper nothing
+    needs.
     """
     if pipeline is None:
         return False
@@ -212,6 +217,24 @@ class SeededAugmentation:
     CPU-side, and reseeding a CUDA generator per sample would both cost a
     synchronisation and corrupt the model's own GPU randomness.
 
+    **Python's ``random`` is forked too, and it is not optional.** Two
+    torchvision transforms draw from the ``random`` MODULE rather than from
+    torch -- v1 ``RandomChoice`` (``random.choices``) and v1 ``RandomOrder``
+    (``random.shuffle``); the v2 spellings of both use torch. Forking only
+    torch left those two listed in :data:`RANDOM_TRANSFORM_NAMES`, detected,
+    and wrapped, while the stream they actually read stayed under
+    ``seeding.make_worker_init_fn``'s fixed per-worker seed -- which torch
+    re-applies at the start of every epoch. Measured with real spawned
+    workers: epochs 1, 2 and 3 came out byte-identical, i.e. exactly the
+    silent-augmentation-off failure this class exists to prevent, on two
+    names the docstring claimed were covered. ``numpy`` is deliberately NOT
+    forked: no torchvision transform draws from it, and its state ops cost
+    several times what ``random``'s do.
+
+    The ``random`` stream gets its own derived seed rather than torch's.
+    Both are Mersenne Twisters, and handing one integer to both is the one
+    way this wrapper could couple the two streams it exists to keep apart.
+
     **Per-stream counters, not one counter.** ``num_workers > 0`` pickles a
     copy of this object into every worker, so a single counter would restart
     at 0 in each of them and in each epoch. The stream key carries the
@@ -221,9 +244,19 @@ class SeededAugmentation:
     and its counter simply keeps going, which gives epoch 2 different
     augmentations from epoch 1 for the same reason.
 
-    Costs about 6 microseconds per sample on top of a transform that
-    typically costs 80, and is only installed when the pipeline actually
-    contains randomness and the run actually has a seed.
+    Costs about 30 microseconds per sample on top of a transform that
+    typically costs 75, and is only installed when the pipeline actually
+    contains randomness and the run actually has a seed. Measured on this
+    repo's own ``RandomCrop -> RandomHorizontalFlip -> ToTensor`` chain over
+    a 32x32 image, best of 11 x 3000 calls: 74-77 us bare, 88-90 us with the
+    torch fork alone, 105-106 us with both. Of the ``random`` half, 10.5 us
+    is ``getstate`` + ``seed`` + ``setstate``, which have no cheaper
+    spelling -- there is no ``fork_rng`` for the ``random`` module and no
+    snapshot API smaller than the 625-word state tuple. The trade was taken
+    deliberately: the alternative is a documented hole in the one guarantee
+    this class exists to provide, on a path that is per-sample but sits in
+    the DataLoader, where ``num_workers > 0`` moves it off the critical path
+    entirely.
     """
 
     __slots__ = ("transform", "seed", "_counters")
@@ -255,9 +288,17 @@ class SeededAugmentation:
         from ....core.seeding import SEED_SPACE, derive_seed
 
         child = derive_seed(self.seed, self._next_label())
-        with torch.random.fork_rng(devices=[], enabled=True):
-            torch.default_generator.manual_seed(child % SEED_SPACE)
-            return self.transform(sample)
+        # ``random`` has no fork_rng, so save/restore by hand -- and restore
+        # in a ``finally``, because a transform that raises must not leave
+        # the rest of the process walking the stream we chose for it.
+        saved = random.getstate()
+        try:
+            random.seed(derive_seed(child, "random-module"))
+            with torch.random.fork_rng(devices=[], enabled=True):
+                torch.default_generator.manual_seed(child % SEED_SPACE)
+                return self.transform(sample)
+        finally:
+            random.setstate(saved)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"SeededAugmentation(seed={self.seed}, {self.transform!r})"
