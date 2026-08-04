@@ -7,6 +7,7 @@ import { loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
+import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
@@ -207,7 +208,7 @@ function LoadSubMenuPanel({
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
-  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups } = useTabStore();
+  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups, setSubgraphs } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   const { reload, fetchDefinitions } = useNodeDefStore();
@@ -296,7 +297,8 @@ export function Toolbar() {
             mergedPresets.push(p);
           }
         }
-        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
+        const loadedSubgraphs = Array.isArray(graphData.subgraphs) ? graphData.subgraphs : [];
+        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, loadedSubgraphs);
         const resolvedEdges = resolveSerializedEdges(rawEdges, resolvedNodes);
         // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
         // directly -- NOT via applyLayout, which pushes an undo snapshot and a
@@ -311,6 +313,7 @@ export function Toolbar() {
           setNodes(resolvedNodes);
         }
         setEdges(resolvedEdges);
+        setSubgraphs(loadedSubgraphs);
         setDescription(typeof graphData.description === 'string' ? graphData.description : '');
         setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
         const tooNew = isFormatTooNew(graphData.format_version);
@@ -330,7 +333,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -354,10 +357,12 @@ export function Toolbar() {
               mergedPresets.push(p);
             }
           }
-          const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
+          const importedSubgraphs = Array.isArray(data.subgraphs) ? data.subgraphs : [];
+          const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, importedSubgraphs);
           const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
           setNodes(resolvedNodes);
           setEdges(resolvedEdges);
+          setSubgraphs(importedSubgraphs);
           setDescription(typeof data.description === 'string' ? data.description : '');
           setSegmentGroups(Array.isArray(data.segmentGroups) ? data.segmentGroups : []);
           // Same format-version gate as handleLoadGraph (ID8 fast-follow):
@@ -382,17 +387,17 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {
-    const { nodes, edges, presets, segmentGroups } = getSerializedGraph();
+    const { nodes, edges, presets, segmentGroups, subgraphs } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.exportJson.empty'), 'warning');
       return;
     }
     const name = activeTab.name || 'graph';
-    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups };
+    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -403,9 +408,46 @@ export function Toolbar() {
   }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
-    const { nodes, edges } = getSerializedGraph();
+    const { nodes, edges, subgraphs } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.export.empty'), 'warning');
+      return;
+    }
+    // core#137. A preset is stored server-side as {nodes, edges} and nothing
+    // else -- there is no slot for a subgraph definition. Building one from a
+    // canvas that contains an instance node would register a preset holding a
+    // bare `subgraph:<id>` node whose definition can never accompany it:
+    // broken for everyone who ever drops it, and broken permanently, because
+    // the preset outlives the graph it came from.
+    //
+    // Refuse rather than strip the instances. Stripping is the silent option:
+    // the user asked to turn THIS canvas into a reusable block and would get
+    // one quietly missing an arbitrary piece of it (plus every edge that
+    // touched the removed instance), with nothing in the result to say so.
+    // Refusing costs one step the user already knows how to take -- Expand on
+    // the block, from its context menu -- and the retry then yields a preset
+    // that really does contain the whole graph.
+    const instanceIds = Array.from(
+      new Set(
+        nodes
+          .map((n) => subgraphIdOf(n.type))
+          .filter((id): id is string => id !== null),
+      ),
+    );
+    if (instanceIds.length > 0) {
+      // `.trim()` before the fallback, and the id itself defaulted: a
+      // whitespace-only name is truthy, so `|| id` alone rendered
+      // "collapsed blocks ( )", and an instance whose type is a bare
+      // `subgraph:` yields an EMPTY id, which rendered "collapsed blocks ()".
+      // Both are messages that name nothing while looking like they do.
+      const names = instanceIds.map((id) => {
+        const name = subgraphs.find((d) => d.id === id)?.name?.trim();
+        return name || id || t('subgraph.unnamed');
+      });
+      addToast(
+        t('toolbar.export.subgraphRefused', { names: names.join(', ') }),
+        'error',
+      );
       return;
     }
     const name = await prompt({
@@ -437,10 +479,20 @@ export function Toolbar() {
     }
     const name = activeTab.name || 'graph';
     try {
-      const result = await exportGraph(nodes, edges, name, serialized.presets, {
-        seed: activeTab.seed,
-        deterministic: activeTab.deterministic,
-      });
+      // core#137 (the trailing argument): an instance node is just
+      // `subgraph:<id>` until the definition it names travels with it, and
+      // definitions are graph-local -- there is no server-side registry to
+      // resolve the id against. Omit them and the backend rejects any graph
+      // containing a collapsed block with `Unknown subgraph: <id>`, i.e. a
+      // flat 400 on Export -> Python for the entire feature.
+      const result = await exportGraph(
+        nodes,
+        edges,
+        name,
+        serialized.presets,
+        { seed: activeTab.seed, deterministic: activeTab.deterministic },
+        serialized.subgraphs,
+      );
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

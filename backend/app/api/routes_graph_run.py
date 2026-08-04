@@ -339,6 +339,7 @@ async def execute_contract_run(
     run_id: str,
     output_store: Any,
     preset_fallback: dict | None = None,
+    subgraphs: Any = None,
 ) -> tuple[int, dict[str, Any], dict[str, float]]:
     """Steps 5-12 of a contract run: pre-flight, inject, execute, collect,
     serialize. Shared by the editor route below and Stage-2 invoke
@@ -415,7 +416,9 @@ async def execute_contract_run(
                           "any entry point"
                       ),
                       details=wiring.unreachable)
-    validation_errors = validate_graph(nodes, edges, preset_fallback=preset_fallback)
+    validation_errors = validate_graph(
+        nodes, edges, preset_fallback=preset_fallback, subgraphs=subgraphs,
+    )
     if validation_errors:
         return _error(409, code="invalid_graph",
                       message="graph failed validation",
@@ -501,6 +504,7 @@ async def execute_contract_run(
                 record_outputs=(run_req.record_outputs
                                 and output_store is not None),
                 preset_fallback=preset_fallback,
+                subgraphs=subgraphs,
             )
 
     t0 = time.monotonic()
@@ -667,6 +671,7 @@ async def run_graph_as_function(name: str, request: Request):
     http_status, envelope, _node_timings = await execute_contract_run(
         name, nodes, edges, run_req, run_id, output_store,
         preset_fallback=preset_fallback,
+        subgraphs=graph_data.get("subgraphs", []),
     )
     if http_status != 200:
         return JSONResponse(status_code=http_status, content=envelope)

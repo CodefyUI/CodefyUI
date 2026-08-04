@@ -649,3 +649,84 @@ async def test_management_get_routes_reject_anonymous(app_db):
         assert (await anon.get("/api/apps")).status_code == 403
         assert (await anon.get("/api/apps/x/versions")).status_code == 403
         assert (await anon.delete("/api/apps/x")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_a_secret_inside_a_subgraph_definition(
+    test_client, app_db, _graphs_dir,
+):
+    """core#137: the publish pre-flight walks subgraph definitions.
+
+    A graph file whose top-level nodes are clean but which carries a key in a
+    node INSIDE a collapsed block must not become an immutable, API-exposed
+    snapshot. The violation is addressed ``<definition id>/<inner id>`` --
+    the same ``<container>/<inner>`` shape expansion flattens ids to, so the
+    message points at a slot the user can actually navigate to.
+    """
+    graph = _echo_graph(name="leaky-block")
+    graph["nodes"].append({
+        "id": "blk", "type": "subgraph:secretblock",
+        "position": {"x": 0, "y": 300}, "data": {"params": {}},
+    })
+    graph["subgraphs"] = [{
+        "id": "secretblock", "name": "Secret Block", "description": "",
+        "nodes": [
+            {"id": "llm", "type": "LLMChat", "position": {"x": 0, "y": 0},
+             "data": {"params": {"provider": "ChatGPT API",
+                                 "openai_api_key": "sk-leaked-in-block"}}},
+        ],
+        "edges": [],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }]
+    (_graphs_dir / "leaky-block.json").write_text(json.dumps(graph))
+
+    resp = await test_client.post(
+        "/api/apps/leaky-block-app/publish",
+        json={"graph": "leaky-block", "create": True})
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "secret_in_graph"
+    assert "secretblock/llm" in detail["message"]
+    assert "openai_api_key" in detail["message"]
+    assert {"node_id": "secretblock/llm",
+            "param": "openai_api_key"} in detail["details"]
+
+    # Rejected publish created nothing.
+    count = await app_db.run(lambda conn: conn.execute(
+        "SELECT COUNT(*) FROM apps").fetchone()[0])
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_a_preset_secret_inside_a_definition(
+    test_client, app_db, _graphs_dir, _secret_preset,
+):
+    """The definition walk resolves preset internals too, so a key baked
+    into a preset node's internalParams INSIDE a block is caught as well."""
+    graph = _echo_graph(name="leaky-block-preset")
+    graph["nodes"].append({
+        "id": "blk", "type": "subgraph:pblock",
+        "position": {"x": 0, "y": 300}, "data": {"params": {}},
+    })
+    graph["subgraphs"] = [{
+        "id": "pblock", "name": "Preset Block", "description": "",
+        "nodes": [
+            {"id": "p1", "type": "preset:SecretChat",
+             "position": {"x": 0, "y": 0},
+             "data": {"internalParams": {
+                 "chat": {"openai_api_key": "sk-leaked-in-block-preset"},
+             }}},
+        ],
+        "edges": [],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }]
+    (_graphs_dir / "leaky-block-preset.json").write_text(json.dumps(graph))
+
+    resp = await test_client.post(
+        "/api/apps/leaky-block-preset-app/publish",
+        json={"graph": "leaky-block-preset", "create": True})
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "secret_in_graph"
+    assert {"node_id": "pblock/p1",
+            "param": "chat.openai_api_key"} in detail["details"]

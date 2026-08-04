@@ -402,11 +402,18 @@ export async function validateScript(code: string): Promise<ScriptValidation> {
   return res.json();
 }
 
-export async function validateGraph(nodes: any[], edges: any[], presets: any[] = []) {
+export async function validateGraph(
+  nodes: any[],
+  edges: any[],
+  presets: any[] = [],
+  subgraphs: any[] = [],
+) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes, edges, presets }),
+    // Subgraph definitions are graph-local (core#137): there is no registry
+    // to fall back on, so validation only sees inside a block if we send it.
+    body: JSON.stringify({ nodes, edges, presets, subgraphs }),
   });
   if (!res.ok) throw new Error(`Validation failed: ${res.statusText}`);
   return res.json();
@@ -444,6 +451,12 @@ export async function exportGraph(
   // Without them an exported augmenting graph drew fresh entropy on every
   // invocation, while the docs promised the same crops every time.
   run?: { seed?: number | null; deterministic?: boolean },
+  // core#137: subgraph definitions are graph-local -- the instance node only
+  // carries `subgraph:<id>`, and there is no server-side registry to look the
+  // id up in. Omit these and `prepare_executable_graph` rejects the whole
+  // export with `Unknown subgraph: <id>`, so every graph containing a
+  // collapsed block was un-exportable from the UI.
+  subgraphs?: any[],
 ) {
   const body: {
     nodes: any[];
@@ -452,9 +465,13 @@ export async function exportGraph(
     presets?: PresetDefinition[];
     seed?: number | null;
     deterministic?: boolean;
+    subgraphs?: any[];
   } = { nodes, edges };
   if (name) body.name = name;
   if (presets && presets.length > 0) body.presets = presets;
+  // Same only-when-present rule as `presets`: the backend defaults the field
+  // to `[]`, so a graph with no blocks keeps posting the body it always did.
+  if (subgraphs && subgraphs.length > 0) body.subgraphs = subgraphs;
   if (run?.seed !== undefined && run.seed !== null) body.seed = run.seed;
   if (run?.deterministic) body.deterministic = true;
   const res = await apiFetch(`${BASE_URL}/graph/export`, {

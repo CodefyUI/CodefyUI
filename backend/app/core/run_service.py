@@ -613,6 +613,7 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
     # as an empty edge list because an empty dict is falsy.
     edges = [] if raw.get("edges") is None else raw["edges"]
     presets = [] if raw.get("presets") is None else raw["presets"]
+    subgraphs = [] if raw.get("subgraphs") is None else raw["subgraphs"]
     if not isinstance(nodes, list):
         raise RunSubmitError("graph.nodes must be a list")
     if not nodes:
@@ -621,7 +622,14 @@ def normalize_graph(raw: Any) -> dict[str, Any]:
         raise RunSubmitError("graph.edges must be a list")
     if not isinstance(presets, list):
         raise RunSubmitError("graph.presets must be a list")
-    return {"nodes": nodes, "edges": edges, "presets": presets}
+    if not isinstance(subgraphs, list):
+        raise RunSubmitError("graph.subgraphs must be a list")
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "presets": presets,
+        "subgraphs": subgraphs,
+    }
 
 
 def json_size(value: Any) -> int:
@@ -1774,6 +1782,7 @@ class RunService:
             return None
         snapshot.setdefault("edges", [])
         snapshot.setdefault("presets", [])
+        snapshot.setdefault("subgraphs", [])
         return snapshot
 
     async def _begin(self, active: _ActiveRun) -> bool:
@@ -1826,6 +1835,7 @@ class RunService:
                 output_store=self._output_store,
                 record_outputs=active.record_outputs,
                 preset_fallback=build_preset_fallback(graph["presets"]),
+                subgraphs=graph["subgraphs"],
             )
             return STATUS_SUCCEEDED, None
         except CancellationError:

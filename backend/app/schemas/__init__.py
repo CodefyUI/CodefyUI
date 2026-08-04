@@ -21,6 +21,9 @@ from .models import (
     RunError,
     RunTiming,
     SegmentGroupData,
+    SubgraphDefinition,
+    SubgraphInterfaceData,
+    SubgraphPortData,
 )
 
 __all__ = [
@@ -46,4 +49,7 @@ __all__ = [
     "RunError",
     "RunTiming",
     "SegmentGroupData",
+    "SubgraphDefinition",
+    "SubgraphInterfaceData",
+    "SubgraphPortData",
 ]

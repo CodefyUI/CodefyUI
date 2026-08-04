@@ -82,6 +82,11 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
     // (issue #88). Tests that need other values override them explicitly.
     projectOrigin: null,
     readOnly: false,
+    // Same reason (core#137): a test that seeds a collapsed block would
+    // otherwise hand its definitions to every test that runs after it, and
+    // `subgraphs` is now a positional argument of `exportGraph` — the leak
+    // shows up as a neighbouring test asserting on the wrong export payload.
+    subgraphs: [],
     ...overrides,
   };
   useTabStore.setState({ tabs: [tab as never], activeTabId: 'tab-1' });
@@ -983,6 +988,61 @@ describe('Toolbar', () => {
     );
   });
 
+  // core#137 review, MAJOR 2 (sibling). A preset is stored as {nodes, edges}
+  // with no slot for a subgraph definition, so exporting a canvas containing
+  // an instance node would have registered a preset holding a bare
+  // `subgraph:<id>` node that no definition can ever accompany -- permanently
+  // broken, and outliving the graph it came from. Refuse and name the block
+  // rather than silently strip it out of the user's preset.
+  it('Export Subgraph: refuses a canvas containing a collapsed block and names it', async () => {
+    // createPreset is a shared factory mock; restoreAllMocks leaves its call
+    // history alone, so the "was not called" assertion below would otherwise
+    // read the earlier Export Subgraph tests' calls.
+    mockedRest.createPreset.mockClear();
+    setActiveTab({
+      nodes: [
+        { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { type: 'Add', params: {} } },
+        { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
+      ],
+      subgraphs: [
+        {
+          id: 'blk', name: 'Encoder', description: '', nodes: [], edges: [],
+          interface: { inputs: [], outputs: [], triggerTargets: [] },
+        },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Subgraph'));
+    const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
+    expect(errors).toHaveLength(1);
+    // The message has to say WHICH block, or the user cannot act on it.
+    expect(errors[0].message).toContain('Encoder');
+    // And it must refuse before the name prompt, not after -- asking for a
+    // name and then failing would be the worse UX of the two.
+    expect(useDialogStore.getState().active).toBeNull();
+    expect(mockedRest.createPreset).not.toHaveBeenCalled();
+  });
+
+  it('Export Subgraph: falls back to the definition id when a block is unnamed', () => {
+    setActiveTab({
+      nodes: [
+        { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
+      ],
+      subgraphs: [
+        {
+          id: 'blk', name: '', description: '', nodes: [], edges: [],
+          interface: { inputs: [], outputs: [], triggerTargets: [] },
+        },
+      ],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Subgraph'));
+    const errors = useToastStore.getState().toasts.filter((t) => t.type === 'error');
+    expect(errors[0].message).toContain('blk');
+  });
+
   it('Export Python: empty canvas warns', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
@@ -1059,6 +1119,35 @@ describe('Toolbar', () => {
     expect(presets).toEqual([preset]);
   });
 
+  // core#137 review, MAJOR 2. `exportGraph` was never given the definitions,
+  // so the backend saw `subgraph:<id>` instance nodes it could not resolve
+  // and answered 400 `Unknown subgraph: <id>` -- the whole codegen half of
+  // the feature, and the documented example, unreachable from the UI.
+  it('Export Python: sends subgraph definitions alongside the instance nodes', async () => {
+    mockedRest.exportGraph.mockResolvedValueOnce({ script: 'print(1)' });
+    const definition = {
+      id: 'blk',
+      name: 'Encoder',
+      description: '',
+      nodes: [{ id: 'inner', type: 'Add', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    };
+    setActiveTab({
+      nodes: [
+        { id: 'inst', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { type: 'subgraph:blk', params: {} } },
+      ],
+      subgraphs: [definition],
+    });
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Export'));
+    fireEvent.click(screen.getByText('Export as Python'));
+    await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalled());
+    const call = mockedRest.exportGraph.mock.calls[0];
+    expect(call[0].map((node: any) => node.type)).toEqual(['subgraph:blk']);
+    expect(call[5]).toEqual([definition]);
+  });
+
   it('Export Python: uses "graph" fallback when tab name empty', async () => {
     mockedRest.exportGraph.mockResolvedValueOnce({ script: 'x' });
     setActiveTab({
@@ -1068,8 +1157,10 @@ describe('Toolbar', () => {
     render(<Toolbar />);
     fireEvent.click(screen.getByText('Export'));
     fireEvent.click(screen.getByText('Export as Python'));
+    // The trailing [] is `subgraphs` (core#137) -- a graph with no collapsed
+    // blocks still sends the argument, it is just empty.
     await waitFor(() => expect(mockedRest.exportGraph).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), 'graph', [], expect.anything(),
+      expect.anything(), expect.anything(), 'graph', [], expect.anything(), [],
     ));
   });
 

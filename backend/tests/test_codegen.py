@@ -2027,3 +2027,513 @@ async def test_exported_transform_chain_matches_the_engine(tmp_path: Path):
     # stdout, not stderr: the runner only redirects Print to stderr when the
     # graph has a GraphOutput node reserving stdout for its JSON.
     assert in_process in completed.stdout
+
+
+# ── Subgraph export (core#137) ───────────────────────────────────────────
+
+
+def _subgraph_export_graph() -> tuple[list[dict], list[dict], list[dict]]:
+    """Two instances of one subgraph, chained, feeding a Print.
+
+    Two instances on purpose: it is the case where a per-DEFINITION function
+    would be wrong (each instance has its own node ids and its own results
+    slots) and where a shared mutable structure would show up as one instance
+    overwriting the other's outputs.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "one", "type": "subgraph:double", "position": {"x": 2, "y": 0},
+         "data": {"params": {}}},
+        {"id": "two", "type": "subgraph:double", "position": {"x": 3, "y": 0},
+         "data": {"params": {}}},
+        {"id": "out", "type": "Print", "position": {"x": 4, "y": 0},
+         "data": {"params": {"label": "TOTAL"}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e1", "source": "src", "target": "one",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+        {"id": "e2", "source": "one", "target": "two",
+         "sourceHandle": "out", "targetHandle": "in", "type": "data"},
+        {"id": "e3", "source": "two", "target": "out",
+         "sourceHandle": "out", "targetHandle": "value", "type": "data"},
+    ]
+    subgraphs = [{
+        "id": "double",
+        "name": "Double",
+        "nodes": [
+            {"id": "mul", "type": "ScalarMultiply",
+             "position": {"x": 0, "y": 0},
+             "data": {"params": {"scalar": 2.0}}},
+            {"id": "avg", "type": "Mean", "position": {"x": 1, "y": 0},
+             "data": {"params": {"dim": "-1", "keepdim": True}}},
+        ],
+        "edges": [
+            {"id": "i", "source": "mul", "target": "avg",
+             "sourceHandle": "tensor", "targetHandle": "tensor",
+             "type": "data"},
+        ],
+        "interface": {
+            "inputs": [
+                {"port": "in", "innerNode": "mul", "innerPort": "tensor"},
+            ],
+            "outputs": [
+                {"port": "out", "innerNode": "avg", "innerPort": "tensor"},
+            ],
+            "triggerTargets": ["mul"],
+        },
+    }]
+    return nodes, edges, subgraphs
+
+
+def test_export_emits_one_function_per_subgraph_instance():
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    _compile_check(script)
+
+    module = ast.parse(script)
+    names = [
+        stmt.name for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef)
+        and stmt.name.startswith("subgraph_")
+    ]
+    assert len(names) == 2, names
+    assert all(name.startswith("subgraph_double") for name in names), names
+
+    # The instance node type never reaches the script -- it was expanded.
+    assert "'subgraph:double'" not in script
+    # ... and each expanded node says where it came from.
+    assert "# from subgraph 'double' (node 'one')" in script
+    assert "# from subgraph 'double' (node 'two')" in script
+
+
+def test_a_subgraph_function_holds_its_members_and_the_flow_calls_it_once():
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    module = ast.parse(script)
+    bodies = {
+        stmt.name: ast.unparse(stmt)
+        for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef)
+    }
+    subgraph_names = sorted(n for n in bodies if n.startswith("subgraph_"))
+    flow_body = bodies["flow_1"]
+
+    for name in subgraph_names:
+        # Called exactly once from the flow.
+        assert flow_body.count(f"{name}(ctx, results, provided)") == 1
+
+    # Members are inside the subgraph function, not the flow.
+    first = bodies[subgraph_names[0]]
+    assert "results['one/mul']" in first
+    assert "results['one/avg']" in first
+    assert "results['one/mul']" not in flow_body
+    # The flow reads the block's output through results, since the local for
+    # an inner node does not exist in the flow's scope.
+    assert "results['two/avg']" in flow_body
+
+
+def test_exported_subgraph_script_actually_runs(tmp_path):
+    """The generated program must RUN, not merely compile."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(
+        nodes, edges, name="SubgraphDemo", subgraphs=subgraphs
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    # 1.0 -> x2 -> mean -> x2 -> mean == 4.0, printed by the Print node.
+    assert "TOTAL" in completed.stdout, completed.stdout
+    assert "4." in completed.stdout, completed.stdout
+
+
+async def test_exported_subgraph_script_agrees_with_the_engine(tmp_path):
+    """Same graph, two runners, same number."""
+    import re as _re
+
+    from app.core.codegen import generate_python
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    engine = await execute_graph(nodes, edges, subgraphs=subgraphs)
+    engine_value = float(engine["two/avg"]["tensor"].reshape(-1)[0])
+
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    numbers = _re.findall(r"-?\d+\.\d*", completed.stdout)
+    assert numbers, completed.stdout
+    assert float(numbers[-1]) == pytest.approx(engine_value)
+
+
+# ── Subgraph instances that cannot be ONE call (core#137 review) ─────────
+#
+# Emitting an instance as a single call at the position of its first member
+# is only correct when the whole block is schedulable there. Three graphs
+# below break that in three different ways; all three run in the engine, so
+# the exported script has to run too.
+
+
+def _subgraph_function_names(script: str) -> list[str]:
+    module = ast.parse(script)
+    return [
+        stmt.name for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef)
+        and stmt.name.startswith("subgraph_")
+    ]
+
+
+def _outside_node_in_the_middle_graph():
+    """An outside node reads one member and feeds another.
+
+    The editor refuses to COLLAPSE this shape, but two edge drags after a
+    legal collapse recreate it, and an imported / plugin-built graph never
+    asked the editor. 1 -> x2 (in) -> x10 (outside) -> x5 (in) == 100.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "blk", "type": "subgraph:ab", "position": {"x": 2, "y": 0},
+         "data": {"params": {}}},
+        {"id": "mid", "type": "ScalarMultiply", "position": {"x": 3, "y": 0},
+         "data": {"params": {"scalar": 10.0}}},
+        {"id": "out", "type": "Print", "position": {"x": 4, "y": 0},
+         "data": {"params": {"label": "TOTAL"}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e1", "source": "src", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "inA", "type": "data"},
+        {"id": "e2", "source": "blk", "target": "mid",
+         "sourceHandle": "outA", "targetHandle": "tensor", "type": "data"},
+        {"id": "e3", "source": "mid", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "inB", "type": "data"},
+        {"id": "e4", "source": "blk", "target": "out",
+         "sourceHandle": "outB", "targetHandle": "value", "type": "data"},
+    ]
+    subgraphs = [{
+        "id": "ab",
+        "name": "AB",
+        "nodes": [
+            {"id": "a", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+             "data": {"params": {"scalar": 2.0}}},
+            {"id": "b", "type": "ScalarMultiply", "position": {"x": 1, "y": 0},
+             "data": {"params": {"scalar": 5.0}}},
+        ],
+        "edges": [],
+        "interface": {
+            "inputs": [
+                {"port": "inA", "innerNode": "a", "innerPort": "tensor"},
+                {"port": "inB", "innerNode": "b", "innerPort": "tensor"},
+            ],
+            "outputs": [
+                {"port": "outA", "innerNode": "a", "innerPort": "tensor"},
+                {"port": "outB", "innerNode": "b", "innerPort": "tensor"},
+            ],
+            "triggerTargets": ["a"],
+        },
+    }]
+    return nodes, edges, subgraphs
+
+
+def test_exported_script_runs_when_an_outside_node_sits_inside_a_subgraph(
+    tmp_path,
+):
+    """The reviewer's repro: hoisting reads 'mid' before it exists."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _outside_node_in_the_middle_graph()
+    script = generate_python(
+        nodes, edges, name="NonConvex", subgraphs=subgraphs
+    )
+    _compile_check(script)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert "TOTAL" in completed.stdout, completed.stdout
+    assert "100." in completed.stdout, completed.stdout
+
+
+def test_a_subgraph_an_outside_node_sits_inside_is_emitted_inline(tmp_path):
+    """No function for it, and the script says why -- silence is worse."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _outside_node_in_the_middle_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+
+    assert _subgraph_function_names(script) == []
+    # The members are still named as the block's, and the flow explains the
+    # degradation rather than silently flattening.
+    assert "# from subgraph 'ab' (node 'blk')" in script
+    module = ast.parse(script)
+    flow = next(
+        stmt for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "flow_1"
+    )
+    body = ast.unparse(flow)
+    assert "results['blk/a']" in body
+    assert "results['blk/b']" in body
+    assert "inlined" in script and "'blk'" in script
+
+
+async def test_inlined_subgraph_export_agrees_with_the_engine(tmp_path):
+    """The engine runs this graph fine; the export must produce its number."""
+    import re as _re
+
+    from app.core.codegen import generate_python
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges, subgraphs = _outside_node_in_the_middle_graph()
+    engine = await execute_graph(nodes, edges, subgraphs=subgraphs)
+    engine_value = float(engine["blk/b"]["tensor"].reshape(-1)[0])
+
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    numbers = _re.findall(r"-?\d+\.\d*", completed.stdout)
+    assert numbers, completed.stdout
+    assert float(numbers[-1]) == pytest.approx(engine_value)
+
+
+def _split_flow_subgraph_graph():
+    """One instance whose members land in two disconnected flows.
+
+    ``side`` prints on its own; only ``a`` is wired to the outside world, so
+    ``_split_flows`` puts {src, blk/a, out} and {blk/mk, blk/side} in
+    different components -- and a per-flow "already emitted" set would call
+    the block's function once in each.
+
+    Two Start markers, one per half: a single one would trigger both halves
+    and weld them into a single component, and no Start at all is refused
+    ("Graph has no entry points") before codegen ever sees the graph.
+    """
+    nodes = [
+        {"id": "start1", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "start2", "type": "Start", "position": {"x": 0, "y": 2},
+         "data": {"params": {}}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "blk", "type": "subgraph:pair", "position": {"x": 2, "y": 0},
+         "data": {"params": {}}},
+        {"id": "out", "type": "Print", "position": {"x": 3, "y": 0},
+         "data": {"params": {"label": "MAIN"}}},
+    ]
+    edges = [
+        {"id": "t1", "source": "start1", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "t2", "source": "start2", "target": "blk",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e1", "source": "src", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+        {"id": "e2", "source": "blk", "target": "out",
+         "sourceHandle": "out", "targetHandle": "value", "type": "data"},
+    ]
+    subgraphs = [{
+        "id": "pair",
+        "name": "Pair",
+        "nodes": [
+            {"id": "a", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+             "data": {"params": {"scalar": 2.0}}},
+            {"id": "mk", "type": "TensorCreate", "position": {"x": 0, "y": 1},
+             "data": {"params": {"shape": "1,1", "fill": "full",
+                                 "value": 7.0}}},
+            {"id": "side", "type": "Print", "position": {"x": 1, "y": 1},
+             "data": {"params": {"label": "SIDE"}}},
+        ],
+        "edges": [
+            {"id": "i", "source": "mk", "target": "side",
+             "sourceHandle": "tensor", "targetHandle": "value",
+             "type": "data"},
+        ],
+        "interface": {
+            "inputs": [
+                {"port": "in", "innerNode": "a", "innerPort": "tensor"},
+            ],
+            "outputs": [
+                {"port": "out", "innerNode": "a", "innerPort": "tensor"},
+            ],
+            # Only the free half: triggering `a` too would put start2 in the
+            # same component as everything else.
+            "triggerTargets": ["mk"],
+        },
+    }]
+    return nodes, edges, subgraphs
+
+
+def test_a_subgraph_split_across_flows_runs_each_member_exactly_once(tmp_path):
+    """Two flows must not each call the same block function."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _split_flow_subgraph_graph()
+    script = generate_python(
+        nodes, edges, name="SplitFlow", subgraphs=subgraphs
+    )
+    _compile_check(script)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert completed.stdout.count("SIDE") == 1, completed.stdout
+    assert completed.stdout.count("MAIN") == 1, completed.stdout
+    assert _subgraph_function_names(script) == []
+
+
+def _late_input_subgraph_graph():
+    """A CONVEX block whose outside input is ordered after its first member.
+
+    ``mk`` has no inputs, so Kahn puts it early; ``use`` is fed through
+    ``step``, which lands AFTER it. Nothing outside the block is both fed by
+    it and feeding it -- the block is convex -- yet hoisting both members to
+    ``mk``'s position still reads ``step`` before it is assigned.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "step", "type": "ScalarMultiply", "position": {"x": 2, "y": 0},
+         "data": {"params": {"scalar": 4.0}}},
+        {"id": "blk", "type": "subgraph:late", "position": {"x": 3, "y": 0},
+         "data": {"params": {}}},
+        {"id": "sink", "type": "Print", "position": {"x": 4, "y": 1},
+         "data": {"params": {"label": "MK"}}},
+        {"id": "out", "type": "Print", "position": {"x": 4, "y": 0},
+         "data": {"params": {"label": "USE"}}},
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        # Keeps mk in the same weakly-connected component as everything else,
+        # so this graph tests ordering and NOT the split-flow case.
+        {"id": "t2", "source": "start", "target": "blk",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e1", "source": "src", "target": "step",
+         "sourceHandle": "tensor", "targetHandle": "tensor", "type": "data"},
+        {"id": "e2", "source": "step", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+        {"id": "e3", "source": "blk", "target": "sink",
+         "sourceHandle": "mk_out", "targetHandle": "value", "type": "data"},
+        {"id": "e4", "source": "blk", "target": "out",
+         "sourceHandle": "use_out", "targetHandle": "value", "type": "data"},
+    ]
+    subgraphs = [{
+        "id": "late",
+        "name": "Late",
+        "nodes": [
+            {"id": "mk", "type": "TensorCreate", "position": {"x": 0, "y": 0},
+             "data": {"params": {"shape": "1,1", "fill": "full",
+                                 "value": 3.0}}},
+            {"id": "use", "type": "ScalarMultiply",
+             "position": {"x": 0, "y": 1},
+             "data": {"params": {"scalar": 2.0}}},
+        ],
+        "edges": [],
+        "interface": {
+            "inputs": [
+                {"port": "in", "innerNode": "use", "innerPort": "tensor"},
+            ],
+            "outputs": [
+                {"port": "mk_out", "innerNode": "mk", "innerPort": "tensor"},
+                {"port": "use_out", "innerNode": "use", "innerPort": "tensor"},
+            ],
+            "triggerTargets": ["mk"],
+        },
+    }]
+    return nodes, edges, subgraphs
+
+
+def test_exported_script_runs_when_a_subgraph_input_arrives_late(tmp_path):
+    """Convexity alone is not enough: this block is convex and still breaks."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _late_input_subgraph_graph()
+    script = generate_python(
+        nodes, edges, name="LateInput", subgraphs=subgraphs
+    )
+    _compile_check(script)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+    assert "MK" in completed.stdout, completed.stdout
+    assert "3." in completed.stdout, completed.stdout
+    assert "USE" in completed.stdout, completed.stdout
+    assert "8." in completed.stdout, completed.stdout
+
+
+def test_a_self_referential_container_map_does_not_hang_the_exporter(
+    monkeypatch,
+):
+    """A malformed expansion map must finish, not spin.
+
+    The exporter walks ``internal node -> container`` to find the OUTERMOST
+    container. A map that points at itself, or in a ring, used to make that
+    walk loop forever -- an export that never returns and never errors.
+    Runs on a worker thread so a regression fails the test instead of
+    hanging the suite.
+    """
+    import threading
+
+    from app.core import codegen as codegen_module
+    from app.core.codegen import generate_python
+
+    real = codegen_module.prepare_executable_graph
+
+    def poisoned(*args, **kwargs):
+        exec_nodes, exec_edges, mapping = real(*args, **kwargs)
+        ids = [node["id"] for node in exec_nodes]
+        mapping[ids[0]] = ids[0]                    # contains itself
+        mapping[ids[1]], mapping[ids[2]] = ids[2], ids[1]  # contain each other
+        return exec_nodes, exec_edges, mapping
+
+    monkeypatch.setattr(codegen_module, "prepare_executable_graph", poisoned)
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    produced: list[str] = []
+    worker = threading.Thread(
+        target=lambda: produced.append(
+            generate_python(nodes, edges, subgraphs=subgraphs)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(15)
+    assert not worker.is_alive(), "generate_python spun on a container ring"
+    assert produced, "generate_python failed instead of returning a script"
+    _compile_check(produced[0])
+
+
+def test_the_convex_case_is_still_grouped_into_one_function_per_instance():
+    """The new check must not take grouping from graphs that deserve it."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    assert len(_subgraph_function_names(script)) == 2
+    assert "inlined" not in script

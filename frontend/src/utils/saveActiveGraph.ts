@@ -69,10 +69,18 @@ export async function saveActiveGraph(opts: { saveAs?: boolean } = {}): Promise<
   }
 
   try {
-    const { nodes, edges, presets, segmentGroups } = store.getSerializedGraph();
+    // `subgraphs` (core#137) is NOT optional dressing: a collapsed block's
+    // instance node only stores `subgraph:<id>`, and the definition holding
+    // its inner nodes/edges lives solely in this list. Drop it here and the
+    // saved file keeps the instance while losing everything inside it —
+    // unrecoverably, since nothing else on disk has a copy. The bug was
+    // invisible in normal use because the tab's IndexedDB autosave DOES
+    // persist `subgraphs`, so blocks survived browser reloads and were only
+    // lost when the user did the deliberate, trust-building thing: Save.
+    const { nodes, edges, presets, segmentGroups, subgraphs } = store.getSerializedGraph();
     await saveGraph({
       nodes, edges, name: targetName,
-      description: tab.description ?? '', presets, segmentGroups,
+      description: tab.description ?? '', presets, segmentGroups, subgraphs,
     });
     store.setCurrentGraphFile(sanitizeGraphName(targetName));
     if (projectMode) store.stampActiveTabProject(projectDir);

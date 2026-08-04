@@ -1,0 +1,2982 @@
+{
+  "_comment": "core#137 cross-layer contract. `flat` and `collapsed` are the same computation; the frontend test regenerates `collapsed` from `flat`, the backend test runs both and compares the numbers. Regenerate with the frontend contract test, never by hand.",
+  "name": "Combine",
+  "subgraphId": "combine",
+  "instanceId": "blk",
+  "selection": [
+    "a",
+    "m1",
+    "m2"
+  ],
+  "flat": {
+    "nodes": [
+      {
+        "id": "start",
+        "type": "Start",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "params": {}
+        }
+      },
+      {
+        "id": "a",
+        "type": "TensorCreate",
+        "position": {
+          "x": 120,
+          "y": 0
+        },
+        "data": {
+          "params": {
+            "shape": "2,2",
+            "fill": "full",
+            "value": 2
+          }
+        }
+      },
+      {
+        "id": "b",
+        "type": "TensorCreate",
+        "position": {
+          "x": 120,
+          "y": 120
+        },
+        "data": {
+          "params": {
+            "shape": "2,2",
+            "fill": "full",
+            "value": 3
+          }
+        }
+      },
+      {
+        "id": "m1",
+        "type": "ScalarMultiply",
+        "position": {
+          "x": 280,
+          "y": 0
+        },
+        "data": {
+          "params": {
+            "scalar": 5
+          }
+        }
+      },
+      {
+        "id": "m2",
+        "type": "ScalarMultiply",
+        "position": {
+          "x": 280,
+          "y": 120
+        },
+        "data": {
+          "params": {
+            "scalar": 7
+          }
+        }
+      },
+      {
+        "id": "sum",
+        "type": "Add",
+        "position": {
+          "x": 440,
+          "y": 60
+        },
+        "data": {
+          "params": {
+            "alpha": 1
+          }
+        }
+      },
+      {
+        "id": "avg",
+        "type": "Mean",
+        "position": {
+          "x": 600,
+          "y": 60
+        },
+        "data": {
+          "params": {
+            "dim": "-1",
+            "keepdim": false
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "t1",
+        "source": "start",
+        "target": "a",
+        "sourceHandle": "trigger",
+        "targetHandle": "__trigger",
+        "type": "trigger"
+      },
+      {
+        "id": "t2",
+        "source": "start",
+        "target": "b",
+        "sourceHandle": "trigger",
+        "targetHandle": "__trigger",
+        "type": "trigger"
+      },
+      {
+        "id": "e1",
+        "source": "a",
+        "target": "m1",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor"
+      },
+      {
+        "id": "e2",
+        "source": "b",
+        "target": "m2",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor"
+      },
+      {
+        "id": "e3",
+        "source": "m1",
+        "target": "sum",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor_a"
+      },
+      {
+        "id": "e4",
+        "source": "m2",
+        "target": "sum",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor_b"
+      },
+      {
+        "id": "e5",
+        "source": "sum",
+        "target": "avg",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor"
+      }
+    ]
+  },
+  "collapsed": {
+    "nodes": [
+      {
+        "id": "start",
+        "type": "Start",
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "params": {}
+        }
+      },
+      {
+        "id": "b",
+        "type": "TensorCreate",
+        "position": {
+          "x": 120,
+          "y": 120
+        },
+        "data": {
+          "params": {
+            "shape": "2,2",
+            "fill": "full",
+            "value": 3
+          }
+        }
+      },
+      {
+        "id": "sum",
+        "type": "Add",
+        "position": {
+          "x": 440,
+          "y": 60
+        },
+        "data": {
+          "params": {
+            "alpha": 1
+          }
+        }
+      },
+      {
+        "id": "avg",
+        "type": "Mean",
+        "position": {
+          "x": 600,
+          "y": 60
+        },
+        "data": {
+          "params": {
+            "dim": "-1",
+            "keepdim": false
+          }
+        }
+      },
+      {
+        "id": "blk",
+        "type": "subgraph:combine",
+        "position": {
+          "x": 120,
+          "y": 0
+        },
+        "data": {
+          "params": {}
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "t2",
+        "source": "start",
+        "target": "b",
+        "sourceHandle": "trigger",
+        "targetHandle": "__trigger",
+        "type": "trigger"
+      },
+      {
+        "id": "e2",
+        "source": "b",
+        "target": "blk",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor"
+      },
+      {
+        "id": "e3",
+        "source": "blk",
+        "target": "sum",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor_a"
+      },
+      {
+        "id": "e4",
+        "source": "blk",
+        "target": "sum",
+        "sourceHandle": "tensor_2",
+        "targetHandle": "tensor_b"
+      },
+      {
+        "id": "e5",
+        "source": "sum",
+        "target": "avg",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor"
+      },
+      {
+        "id": "t1-sg",
+        "source": "start",
+        "target": "blk",
+        "sourceHandle": "trigger",
+        "targetHandle": "__trigger",
+        "type": "trigger"
+      }
+    ],
+    "subgraphs": [
+      {
+        "id": "combine",
+        "name": "Combine",
+        "description": "",
+        "nodes": [
+          {
+            "id": "a",
+            "type": "TensorCreate",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "data": {
+              "params": {
+                "shape": "2,2",
+                "fill": "full",
+                "value": 2
+              }
+            }
+          },
+          {
+            "id": "m1",
+            "type": "ScalarMultiply",
+            "position": {
+              "x": 160,
+              "y": 0
+            },
+            "data": {
+              "params": {
+                "scalar": 5
+              }
+            }
+          },
+          {
+            "id": "m2",
+            "type": "ScalarMultiply",
+            "position": {
+              "x": 160,
+              "y": 120
+            },
+            "data": {
+              "params": {
+                "scalar": 7
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "e1",
+            "source": "a",
+            "target": "m1",
+            "sourceHandle": "tensor",
+            "targetHandle": "tensor"
+          }
+        ],
+        "interface": {
+          "inputs": [
+            {
+              "port": "tensor",
+              "innerNode": "m2",
+              "innerPort": "tensor",
+              "data_type": "TENSOR"
+            }
+          ],
+          "outputs": [
+            {
+              "port": "tensor",
+              "innerNode": "m1",
+              "innerPort": "tensor",
+              "data_type": "TENSOR"
+            },
+            {
+              "port": "tensor_2",
+              "innerNode": "m2",
+              "innerPort": "tensor",
+              "data_type": "TENSOR"
+            }
+          ],
+          "triggerTargets": [
+            "a"
+          ]
+        }
+      }
+    ]
+  },
+  "demo60": {
+    "flat": {
+      "nodes": [
+        {
+          "id": "start",
+          "type": "Start",
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "data": {
+            "params": {}
+          }
+        },
+        {
+          "id": "src0",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 1
+            }
+          }
+        },
+        {
+          "id": "b0m0",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 220,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m1",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 310,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m2",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 400,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m3",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 490,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m4",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 580,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m5",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 670,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m6",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 760,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m7",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 850,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m8",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 940,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m9",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1030,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m10",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1120,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m11",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1210,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b0m12",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1300,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "src1",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 2
+            }
+          }
+        },
+        {
+          "id": "b1m0",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 220,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m1",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 310,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m2",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 400,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m3",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 490,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m4",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 580,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m5",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 670,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m6",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 760,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m7",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 850,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m8",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 940,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m9",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1030,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m10",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1120,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m11",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1210,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b1m12",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1300,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "src2",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 3
+            }
+          }
+        },
+        {
+          "id": "b2m0",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 220,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m1",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 310,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m2",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 400,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m3",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 490,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m4",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 580,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m5",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 670,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m6",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 760,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m7",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 850,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m8",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 940,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m9",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1030,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m10",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1120,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m11",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1210,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b2m12",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1300,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "src3",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 4
+            }
+          }
+        },
+        {
+          "id": "b3m0",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m1",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 310,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m2",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 400,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m3",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 490,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m4",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 580,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m5",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 670,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m6",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 760,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m7",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 850,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m8",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 940,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m9",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1030,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m10",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1120,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m11",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1210,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "b3m12",
+          "type": "ScalarMultiply",
+          "position": {
+            "x": 1300,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "scalar": 1
+            }
+          }
+        },
+        {
+          "id": "sum1",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "id": "sum2",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "id": "sum3",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "t0",
+          "source": "start",
+          "target": "src0",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e0_0",
+          "source": "src0",
+          "target": "b0m0",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_1",
+          "source": "b0m0",
+          "target": "b0m1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_2",
+          "source": "b0m1",
+          "target": "b0m2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_3",
+          "source": "b0m2",
+          "target": "b0m3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_4",
+          "source": "b0m3",
+          "target": "b0m4",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_5",
+          "source": "b0m4",
+          "target": "b0m5",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_6",
+          "source": "b0m5",
+          "target": "b0m6",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_7",
+          "source": "b0m6",
+          "target": "b0m7",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_8",
+          "source": "b0m7",
+          "target": "b0m8",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_9",
+          "source": "b0m8",
+          "target": "b0m9",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_10",
+          "source": "b0m9",
+          "target": "b0m10",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_11",
+          "source": "b0m10",
+          "target": "b0m11",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e0_12",
+          "source": "b0m11",
+          "target": "b0m12",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t1",
+          "source": "start",
+          "target": "src1",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e1_0",
+          "source": "src1",
+          "target": "b1m0",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_1",
+          "source": "b1m0",
+          "target": "b1m1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_2",
+          "source": "b1m1",
+          "target": "b1m2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_3",
+          "source": "b1m2",
+          "target": "b1m3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_4",
+          "source": "b1m3",
+          "target": "b1m4",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_5",
+          "source": "b1m4",
+          "target": "b1m5",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_6",
+          "source": "b1m5",
+          "target": "b1m6",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_7",
+          "source": "b1m6",
+          "target": "b1m7",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_8",
+          "source": "b1m7",
+          "target": "b1m8",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_9",
+          "source": "b1m8",
+          "target": "b1m9",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_10",
+          "source": "b1m9",
+          "target": "b1m10",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_11",
+          "source": "b1m10",
+          "target": "b1m11",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e1_12",
+          "source": "b1m11",
+          "target": "b1m12",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t2",
+          "source": "start",
+          "target": "src2",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e2_0",
+          "source": "src2",
+          "target": "b2m0",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_1",
+          "source": "b2m0",
+          "target": "b2m1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_2",
+          "source": "b2m1",
+          "target": "b2m2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_3",
+          "source": "b2m2",
+          "target": "b2m3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_4",
+          "source": "b2m3",
+          "target": "b2m4",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_5",
+          "source": "b2m4",
+          "target": "b2m5",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_6",
+          "source": "b2m5",
+          "target": "b2m6",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_7",
+          "source": "b2m6",
+          "target": "b2m7",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_8",
+          "source": "b2m7",
+          "target": "b2m8",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_9",
+          "source": "b2m8",
+          "target": "b2m9",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_10",
+          "source": "b2m9",
+          "target": "b2m10",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_11",
+          "source": "b2m10",
+          "target": "b2m11",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e2_12",
+          "source": "b2m11",
+          "target": "b2m12",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t3",
+          "source": "start",
+          "target": "src3",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e3_0",
+          "source": "src3",
+          "target": "b3m0",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_1",
+          "source": "b3m0",
+          "target": "b3m1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_2",
+          "source": "b3m1",
+          "target": "b3m2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_3",
+          "source": "b3m2",
+          "target": "b3m3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_4",
+          "source": "b3m3",
+          "target": "b3m4",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_5",
+          "source": "b3m4",
+          "target": "b3m5",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_6",
+          "source": "b3m5",
+          "target": "b3m6",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_7",
+          "source": "b3m6",
+          "target": "b3m7",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_8",
+          "source": "b3m7",
+          "target": "b3m8",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_9",
+          "source": "b3m8",
+          "target": "b3m9",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_10",
+          "source": "b3m9",
+          "target": "b3m10",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_11",
+          "source": "b3m10",
+          "target": "b3m11",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "e3_12",
+          "source": "b3m11",
+          "target": "b3m12",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "sa1",
+          "source": "b0m12",
+          "target": "sum1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb1",
+          "source": "b1m12",
+          "target": "sum1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        },
+        {
+          "id": "sa2",
+          "source": "sum1",
+          "target": "sum2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb2",
+          "source": "b2m12",
+          "target": "sum2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        },
+        {
+          "id": "sa3",
+          "source": "sum2",
+          "target": "sum3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb3",
+          "source": "b3m12",
+          "target": "sum3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        }
+      ]
+    },
+    "collapsed": {
+      "nodes": [
+        {
+          "id": "start",
+          "type": "Start",
+          "position": {
+            "x": 0,
+            "y": 0
+          },
+          "data": {
+            "params": {}
+          }
+        },
+        {
+          "id": "src0",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 0
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 1
+            }
+          }
+        },
+        {
+          "id": "src1",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 2
+            }
+          }
+        },
+        {
+          "id": "src2",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 3
+            }
+          }
+        },
+        {
+          "id": "src3",
+          "type": "TensorCreate",
+          "position": {
+            "x": 100,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "shape": "1,2",
+              "fill": "full",
+              "value": 4
+            }
+          }
+        },
+        {
+          "id": "sum1",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 200
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "id": "sum2",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 400
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "id": "sum3",
+          "type": "Add",
+          "position": {
+            "x": 1500,
+            "y": 600
+          },
+          "data": {
+            "params": {
+              "alpha": 1
+            }
+          }
+        },
+        {
+          "id": "inst0",
+          "type": "subgraph:blk0",
+          "position": {
+            "x": 220,
+            "y": 0
+          },
+          "data": {
+            "params": {}
+          }
+        },
+        {
+          "id": "inst1",
+          "type": "subgraph:blk1",
+          "position": {
+            "x": 220,
+            "y": 200
+          },
+          "data": {
+            "params": {}
+          }
+        },
+        {
+          "id": "inst2",
+          "type": "subgraph:blk2",
+          "position": {
+            "x": 220,
+            "y": 400
+          },
+          "data": {
+            "params": {}
+          }
+        },
+        {
+          "id": "inst3",
+          "type": "subgraph:blk3",
+          "position": {
+            "x": 220,
+            "y": 600
+          },
+          "data": {
+            "params": {}
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "t0",
+          "source": "start",
+          "target": "src0",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e0_0",
+          "source": "src0",
+          "target": "inst0",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t1",
+          "source": "start",
+          "target": "src1",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e1_0",
+          "source": "src1",
+          "target": "inst1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t2",
+          "source": "start",
+          "target": "src2",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e2_0",
+          "source": "src2",
+          "target": "inst2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "t3",
+          "source": "start",
+          "target": "src3",
+          "sourceHandle": "trigger",
+          "targetHandle": "__trigger",
+          "type": "trigger"
+        },
+        {
+          "id": "e3_0",
+          "source": "src3",
+          "target": "inst3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor"
+        },
+        {
+          "id": "sa1",
+          "source": "inst0",
+          "target": "sum1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb1",
+          "source": "inst1",
+          "target": "sum1",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        },
+        {
+          "id": "sa2",
+          "source": "sum1",
+          "target": "sum2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb2",
+          "source": "inst2",
+          "target": "sum2",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        },
+        {
+          "id": "sa3",
+          "source": "sum2",
+          "target": "sum3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_a"
+        },
+        {
+          "id": "sb3",
+          "source": "inst3",
+          "target": "sum3",
+          "sourceHandle": "tensor",
+          "targetHandle": "tensor_b"
+        }
+      ],
+      "subgraphs": [
+        {
+          "id": "blk0",
+          "name": "Branch 0",
+          "description": "",
+          "nodes": [
+            {
+              "id": "b0m0",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 0,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m1",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 90,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m2",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 180,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m3",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 270,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m4",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 360,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m5",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 450,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m6",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 540,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m7",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 630,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m8",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 720,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m9",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 810,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m10",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 900,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m11",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 990,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b0m12",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 1080,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "e0_1",
+              "source": "b0m0",
+              "target": "b0m1",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_2",
+              "source": "b0m1",
+              "target": "b0m2",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_3",
+              "source": "b0m2",
+              "target": "b0m3",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_4",
+              "source": "b0m3",
+              "target": "b0m4",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_5",
+              "source": "b0m4",
+              "target": "b0m5",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_6",
+              "source": "b0m5",
+              "target": "b0m6",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_7",
+              "source": "b0m6",
+              "target": "b0m7",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_8",
+              "source": "b0m7",
+              "target": "b0m8",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_9",
+              "source": "b0m8",
+              "target": "b0m9",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_10",
+              "source": "b0m9",
+              "target": "b0m10",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_11",
+              "source": "b0m10",
+              "target": "b0m11",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e0_12",
+              "source": "b0m11",
+              "target": "b0m12",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            }
+          ],
+          "interface": {
+            "inputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b0m0",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "outputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b0m12",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "triggerTargets": []
+          }
+        },
+        {
+          "id": "blk1",
+          "name": "Branch 1",
+          "description": "",
+          "nodes": [
+            {
+              "id": "b1m0",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 0,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m1",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 90,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m2",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 180,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m3",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 270,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m4",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 360,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m5",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 450,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m6",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 540,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m7",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 630,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m8",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 720,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m9",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 810,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m10",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 900,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m11",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 990,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b1m12",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 1080,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "e1_1",
+              "source": "b1m0",
+              "target": "b1m1",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_2",
+              "source": "b1m1",
+              "target": "b1m2",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_3",
+              "source": "b1m2",
+              "target": "b1m3",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_4",
+              "source": "b1m3",
+              "target": "b1m4",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_5",
+              "source": "b1m4",
+              "target": "b1m5",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_6",
+              "source": "b1m5",
+              "target": "b1m6",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_7",
+              "source": "b1m6",
+              "target": "b1m7",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_8",
+              "source": "b1m7",
+              "target": "b1m8",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_9",
+              "source": "b1m8",
+              "target": "b1m9",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_10",
+              "source": "b1m9",
+              "target": "b1m10",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_11",
+              "source": "b1m10",
+              "target": "b1m11",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e1_12",
+              "source": "b1m11",
+              "target": "b1m12",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            }
+          ],
+          "interface": {
+            "inputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b1m0",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "outputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b1m12",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "triggerTargets": []
+          }
+        },
+        {
+          "id": "blk2",
+          "name": "Branch 2",
+          "description": "",
+          "nodes": [
+            {
+              "id": "b2m0",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 0,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m1",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 90,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m2",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 180,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m3",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 270,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m4",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 360,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m5",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 450,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m6",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 540,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m7",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 630,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m8",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 720,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m9",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 810,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m10",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 900,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m11",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 990,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b2m12",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 1080,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "e2_1",
+              "source": "b2m0",
+              "target": "b2m1",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_2",
+              "source": "b2m1",
+              "target": "b2m2",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_3",
+              "source": "b2m2",
+              "target": "b2m3",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_4",
+              "source": "b2m3",
+              "target": "b2m4",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_5",
+              "source": "b2m4",
+              "target": "b2m5",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_6",
+              "source": "b2m5",
+              "target": "b2m6",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_7",
+              "source": "b2m6",
+              "target": "b2m7",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_8",
+              "source": "b2m7",
+              "target": "b2m8",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_9",
+              "source": "b2m8",
+              "target": "b2m9",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_10",
+              "source": "b2m9",
+              "target": "b2m10",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_11",
+              "source": "b2m10",
+              "target": "b2m11",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e2_12",
+              "source": "b2m11",
+              "target": "b2m12",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            }
+          ],
+          "interface": {
+            "inputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b2m0",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "outputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b2m12",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "triggerTargets": []
+          }
+        },
+        {
+          "id": "blk3",
+          "name": "Branch 3",
+          "description": "",
+          "nodes": [
+            {
+              "id": "b3m0",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 0,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m1",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 90,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m2",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 180,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m3",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 270,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m4",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 360,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m5",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 450,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m6",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 540,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m7",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 630,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m8",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 720,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m9",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 810,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m10",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 900,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m11",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 990,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            },
+            {
+              "id": "b3m12",
+              "type": "ScalarMultiply",
+              "position": {
+                "x": 1080,
+                "y": 0
+              },
+              "data": {
+                "params": {
+                  "scalar": 1
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "e3_1",
+              "source": "b3m0",
+              "target": "b3m1",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_2",
+              "source": "b3m1",
+              "target": "b3m2",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_3",
+              "source": "b3m2",
+              "target": "b3m3",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_4",
+              "source": "b3m3",
+              "target": "b3m4",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_5",
+              "source": "b3m4",
+              "target": "b3m5",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_6",
+              "source": "b3m5",
+              "target": "b3m6",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_7",
+              "source": "b3m6",
+              "target": "b3m7",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_8",
+              "source": "b3m7",
+              "target": "b3m8",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_9",
+              "source": "b3m8",
+              "target": "b3m9",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_10",
+              "source": "b3m9",
+              "target": "b3m10",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_11",
+              "source": "b3m10",
+              "target": "b3m11",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            },
+            {
+              "id": "e3_12",
+              "source": "b3m11",
+              "target": "b3m12",
+              "sourceHandle": "tensor",
+              "targetHandle": "tensor"
+            }
+          ],
+          "interface": {
+            "inputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b3m0",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "outputs": [
+              {
+                "port": "tensor",
+                "innerNode": "b3m12",
+                "innerPort": "tensor",
+                "data_type": "TENSOR"
+              }
+            ],
+            "triggerTargets": []
+          }
+        }
+      ]
+    }
+  }
+}

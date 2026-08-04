@@ -73,6 +73,53 @@ class SegmentGroupData(BaseModel):
     tailNodeId: str
 
 
+class SubgraphPortData(BaseModel):
+    """One boundary port of a subgraph (core#137).
+
+    ``port`` is the handle name the INSTANCE node exposes on the canvas;
+    ``innerNode``/``innerPort`` say which node inside the definition it
+    stands for. Expansion rewrites every edge touching ``port`` into an
+    edge touching the inner port, which is what makes a collapsed graph
+    execute identically to the graph it was collapsed from.
+    """
+    port: str
+    innerNode: str
+    innerPort: str
+    #: Declared for the canvas so the instance node can colour the handle.
+    #: Never consulted by expansion — the inner node's own port definition
+    #: is what validation type-checks against.
+    data_type: str = ""
+
+
+class SubgraphInterfaceData(BaseModel):
+    """The boundary of a subgraph: what an instance node exposes."""
+    inputs: list[SubgraphPortData] = []
+    outputs: list[SubgraphPortData] = []
+    #: Inner node ids an incoming TRIGGER edge fans out to. Collapse records
+    #: exactly the inner nodes that were triggered before it ran, so the
+    #: expanded graph has the same entry points as the original. Empty means
+    #: "fan out to the inner roots" (see ``expand_subgraphs``).
+    triggerTargets: list[str] = []
+
+
+class SubgraphDefinition(BaseModel):
+    """A reusable block of graph, referenced by ``subgraph:<id>`` nodes.
+
+    Local to one graph file (v1): definitions travel in the graph's own
+    ``subgraphs`` list rather than a server-side registry, so a graph is
+    still one portable artifact. Every instance node with the same ``id``
+    shares this one definition -- editing it changes all of them.
+    """
+    id: str
+    name: str = ""
+    description: str = ""
+    nodes: list[NodeData] = []
+    edges: list[EdgeData] = []
+    interface: SubgraphInterfaceData = Field(
+        default_factory=SubgraphInterfaceData
+    )
+
+
 class GraphData(BaseModel):
     nodes: list[NodeData]
     edges: list[EdgeData]
@@ -82,6 +129,8 @@ class GraphData(BaseModel):
     # Persisted so the Teaching Inspector's segment overlays survive a
     # save/load round-trip. Optional; older graph files simply omit it.
     segmentGroups: list[SegmentGroupData] = []
+    # Subgraph definitions (core#137). Optional; older graph files omit it.
+    subgraphs: list[SubgraphDefinition] = []
 
 
 class GraphExportRequest(GraphData):

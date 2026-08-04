@@ -11,6 +11,13 @@ exported JSON. This module is the single source of truth for:
 - detecting a leftover non-empty secret in an already-on-disk graph
   (publish pre-flight for hand-edited files).
 
+A graph carries nodes in three places, and every function here that walks
+one has to walk all three or the guard is only as strong as the shallowest
+walk: top-level ``nodes``, portable ``presets[].nodes``, and -- since
+core#137 -- ``subgraphs[].nodes``. A node inside a collapsed block is an
+ordinary node with ordinary params; nothing about sitting in a block makes
+its API key less of a secret.
+
 Every function operates on the serialized node shape ``{"id", "type",
 "data": {"params": {...}}}`` used by GraphData / the saved JSON, so the
 save path (pydantic dump -> dict) and the publish path (json.loads dict)
@@ -199,19 +206,71 @@ def scrub_preset_definition_secrets(
     return changed
 
 
+def scrub_subgraph_definition_secrets(
+    subgraphs: Iterable[Any],
+    *,
+    preset_fallback: Mapping[str, Any] | None = None,
+) -> int:
+    """Blank every SECRET-typed value inside subgraph definitions (in place).
+
+    A definition's ``nodes`` are ORDINARY serialized nodes -- same shape,
+    same params, same ``internalParams`` for a preset among them -- so this
+    is just :func:`scrub_graph_secrets` applied per definition. It exists as
+    one named function because the save route and the export route both need
+    it: two hand-written loops is how one of them ended up without the
+    ``preset_fallback`` the other passed.
+
+    Nesting needs no recursion: ``subgraphs`` is a FLAT list and a block
+    inside a block is a ``subgraph:<id>`` reference into it, so every node at
+    every depth is reached by iterating the list once.
+
+    Returns the number of values changed.
+    """
+    changed = 0
+    for definition in subgraphs or []:
+        if not isinstance(definition, dict):
+            continue
+        inner_nodes = definition.get("nodes")
+        if not isinstance(inner_nodes, list):
+            continue
+        changed += scrub_graph_secrets(
+            [n for n in inner_nodes if isinstance(n, dict)],
+            preset_fallback=preset_fallback,
+        )
+    return changed
+
+
 def find_secret_violations(
     nodes: Iterable[dict[str, Any]],
+    *,
+    subgraphs: Iterable[Any] | None = None,
+    preset_fallback: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Report every non-empty SECRET-typed param still present in ``nodes``.
 
     Each entry is ``{"node_id": <id>, "param": <param name>}``. Used by the
     publish pre-flight to reject a hand-edited graph file that a client
     dropped into the graphs dir with a secret baked in.
+
+    ``subgraphs`` (core#137) is the graph's own definition list. A node
+    inside a collapsed block is an ORDINARY node with ordinary params, so it
+    can hold a key exactly the way a top-level node can -- and a walk that
+    stops at the top level lets such a file publish cleanly into an
+    immutable, API-exposed snapshot. Inner violations are addressed
+    ``<definition id>/<inner id>``, mirroring the ``<container>/<inner>``
+    shape expansion flattens ids to, so the message names a slot the user can
+    navigate to. Definitions carry no nesting of their own -- a block inside
+    a block is a ``subgraph:<id>`` REFERENCE into this same flat list -- so
+    walking every entry covers arbitrary depth without recursing.
+
+    ``preset_fallback`` resolves presets defined only in the graph's own
+    ``presets[]``; without it a preset node's ``internalParams`` slots cannot
+    be identified as secret at all.
     """
     violations: list[dict[str, str]] = []
-    for node in nodes:
+
+    def scan(node: dict[str, Any], node_id: str) -> None:
         node_type = node.get("type", "")
-        node_id = str(node.get("id", ""))
         # Regular node: report its own declared SECRET params.
         names = secret_param_names(node_type)
         if names:
@@ -223,7 +282,7 @@ def find_secret_violations(
         # Preset node: report secrets baked into data.internalParams. The
         # param is reported as ``<inner_id>.<param>`` so the message names the
         # exact inner slot the client must clear.
-        preset_secrets = _preset_secret_param_map(node_type)
+        preset_secrets = _preset_secret_param_map(node_type, preset_fallback)
         if preset_secrets:
             internal_params = _internal_params_of(node) or {}
             for internal_id in sorted(preset_secrets):
@@ -236,4 +295,25 @@ def find_secret_violations(
                             "node_id": node_id,
                             "param": f"{internal_id}.{name}",
                         })
+
+    for node in nodes:
+        scan(node, str(node.get("id", "")))
+
+    # Lazy import for the same reason preset_registry is imported lazily
+    # above: keeping graph_engine out of this module's import graph.
+    from .graph_engine import SUBGRAPH_SEPARATOR
+
+    for definition in subgraphs or []:
+        if not isinstance(definition, dict):
+            continue
+        definition_id = str(definition.get("id", ""))
+        inner_nodes = definition.get("nodes")
+        if not isinstance(inner_nodes, list):
+            continue
+        for inner in inner_nodes:
+            if not isinstance(inner, dict):
+                continue
+            inner_id = str(inner.get("id", ""))
+            scan(inner, f"{definition_id}{SUBGRAPH_SEPARATOR}{inner_id}")
+
     return violations

@@ -41,6 +41,10 @@ const en = {
   'toolbar.export.prompt': 'Enter a name for this subgraph:',
   'toolbar.export.success': 'Subgraph "{name}" exported successfully! It now appears in the Nodes panel.',
   'toolbar.export.fail': 'Export failed: {error}',
+  // core#137: a preset carries only nodes + edges, so it cannot hold the
+  // definition an instance node points at. Refusing names the blocks so the
+  // user knows exactly which ones to expand first.
+  'toolbar.export.subgraphRefused': 'Cannot export as a subgraph while the canvas contains collapsed blocks ({names}). A preset cannot carry their contents — expand them first, then export.',
   'toolbar.exportPython': 'Export as Python',
   'toolbar.exportPython.title': 'Download a headless Python runner (requires the CodefyUI backend environment)',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',
@@ -193,6 +197,45 @@ const en = {
   'contextMenu.addImageNote': 'Add Image Note',
   'contextMenu.bypass': 'Bypass',
   'contextMenu.unbypass': 'Remove Bypass',
+  'contextMenu.collapseToSubgraph': 'Collapse to subgraph',
+  'contextMenu.enterSubgraph': 'Enter subgraph',
+  'contextMenu.expandSubgraph': 'Expand subgraph here',
+
+  // Subgraphs (core#137)
+  'subgraph.badge': 'Subgraph',
+  'subgraph.nodeCount': '{count} nodes',
+  'subgraph.missing': 'definition missing',
+  // Last-resort name for a block with neither a name nor an id -- an
+  // instance whose type is a bare `subgraph:`, which only a hand-edited or
+  // plugin-produced file can produce. Naming it "()" would be worse.
+  'subgraph.unnamed': 'an unnamed block',
+  'subgraph.breadcrumb.root': 'Main',
+  'subgraph.breadcrumb.back': 'Back',
+  'subgraph.breadcrumb.jump': 'Go back to this level',
+  'subgraph.breadcrumb.exitAll': 'Back to the main graph',
+  'subgraph.rename.hint': 'Click to rename this subgraph',
+  'subgraph.rename.label': 'Subgraph name',
+  'subgraph.collapse.too-few':
+    'Select at least two nodes to collapse them into a subgraph',
+  'subgraph.collapse.contains-start':
+    'A Start node cannot go inside a subgraph - it marks where the whole graph begins',
+  'subgraph.collapse.contains-note':
+    'Notes are annotations, not part of a subgraph - deselect them first',
+  'subgraph.collapse.read-only': 'This graph is open read-only',
+  'subgraph.collapse.namePrompt': 'Name this subgraph',
+  'subgraph.collapse.notConvex':
+    'These nodes sit between the ones you selected, so the block would feed back into itself: {nodes}. Add them to the selection.',
+  // Overflow tail for the list above. Error toasts never auto-dismiss and the
+  // list is not scrollable, so a graph with fifty blockers (or one node with
+  // a very long label) would otherwise paint a wall of text over the canvas
+  // with no way to get rid of it. The blockers are all added to the selection
+  // anyway, so the message only has to name enough of them to be recognisable.
+  'subgraph.collapse.andMore': 'and {count} more',
+  'subgraph.detail.interface': 'Subgraph interface',
+  'subgraph.detail.inputs': 'Inputs',
+  'subgraph.detail.outputs': 'Outputs',
+  'subgraph.detail.enter': 'Enter subgraph',
+  'subgraph.detail.empty': 'This subgraph exposes no ports',
 
   // Notes
   'note.placeholder': 'Click to edit...',
@@ -629,6 +672,7 @@ const en = {
   'nodeDetail.tabs.backward': 'Backward',
   'nodeDetail.tabs.stats': 'Stats',
   'nodeDetail.tabs.docs': 'Docs',
+  'nodeDetail.tabs.subgraph': 'Subgraph',
   'nodeDetail.code.title': 'Script',
   'nodeDetail.code.contract': 'def run(inputs, params) -> dict — inputs holds one key per connected port (in1, in2, ...); return {"out1": value}. A bare value becomes out1.',
   'nodeDetail.code.security': 'A guardrail, not a sandbox. The policy bounds which libraries a script can reach, not what those libraries can do, and the code runs in the CodefyUI process with your permissions. This check is the fast first pass: a script it accepts can still be refused while it runs. Only run scripts you trust.',

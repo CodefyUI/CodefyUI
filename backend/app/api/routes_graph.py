@@ -15,6 +15,7 @@ from ..core.project import (
 from ..core.secret_params import (
     scrub_graph_secrets,
     scrub_preset_definition_secrets,
+    scrub_subgraph_definition_secrets,
 )
 from ..schemas import (
     GraphData,
@@ -89,6 +90,7 @@ async def validate(graph: GraphData):
     errors = validate_graph(
         nodes, edges,
         preset_fallback=build_preset_fallback([p.model_dump() for p in graph.presets]),
+        subgraphs=[s.model_dump() for s in graph.subgraphs],
     )
     return GraphValidationResponse(valid=len(errors) == 0, errors=errors)
 
@@ -107,11 +109,21 @@ async def save_graph(graph: GraphData):
     payload = graph.model_dump()
     # Defense-in-depth: even if a client bypasses the editor (which already
     # blanks SECRET params before sending), never write a secret to disk.
+    #
+    # All THREE places a graph carries nodes, or the promise above is only
+    # true for whichever the client happened to put the key in: top-level
+    # nodes, portable preset definitions, and subgraph definitions (core#137,
+    # which is what made `/save` start receiving definitions at all).
     portable_presets = payload.get("presets", [])
     scrub_preset_definition_secrets(portable_presets)
+    preset_fallback = build_preset_fallback(portable_presets)
     scrub_graph_secrets(
         payload.get("nodes", []),
-        preset_fallback=build_preset_fallback(portable_presets),
+        preset_fallback=preset_fallback,
+    )
+    scrub_subgraph_definition_secrets(
+        payload.get("subgraphs", []),
+        preset_fallback=preset_fallback,
     )
     if _project_mode():
         from ..core.project import write_graph_pair
@@ -213,12 +225,24 @@ async def export_graph(graph: GraphExportRequest):
     scrub_preset_definition_secrets(presets)
     preset_fallback = build_preset_fallback(presets)
     scrub_graph_secrets(nodes, preset_fallback=preset_fallback)
+    # Subgraph internals are ordinary nodes with ordinary params, so they get
+    # the same secret scrub the top level gets -- an exported file must never
+    # carry a key just because the node holding it sits inside a block. Same
+    # `preset_fallback` as the top-level call: a preset node inside a block
+    # keeps its secret slots in `internalParams`, and identifying those slots
+    # needs the definition, which for a graph-embedded preset exists only in
+    # this request's own `presets[]`.
+    subgraphs = [s.model_dump() for s in graph.subgraphs]
+    scrub_subgraph_definition_secrets(
+        subgraphs, preset_fallback=preset_fallback
+    )
 
     try:
         prepare_executable_graph(
             nodes,
             edges,
             preset_fallback=preset_fallback,
+            subgraphs=subgraphs,
         )
     except GraphValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -229,6 +253,7 @@ async def export_graph(graph: GraphExportRequest):
             edges,
             name=graph.name,
             presets=presets,
+            subgraphs=subgraphs,
             # core#136: the canvas seed travels with the export, so an
             # exported augmenting graph reproduces the crops the canvas
             # produced instead of drawing fresh entropy every invocation.

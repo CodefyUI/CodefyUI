@@ -46,6 +46,49 @@ export interface SegmentGroup {
   tailNodeId: string;
 }
 
+/**
+ * One boundary port of a subgraph (core#137).
+ *
+ * `port` is the handle the INSTANCE node shows on the canvas; `innerNode` /
+ * `innerPort` say which node inside the definition it stands for. The port
+ * name is only a label -- validation and execution type-check the inner port.
+ */
+export interface SubgraphPort {
+  port: string;
+  innerNode: string;
+  innerPort: string;
+  data_type: string;
+}
+
+export interface SubgraphInterface {
+  inputs: SubgraphPort[];
+  outputs: SubgraphPort[];
+  /**
+   * Inner nodes an incoming trigger edge fans out to. Collapse records
+   * exactly the inner nodes that were triggered before it ran, so the
+   * expanded graph keeps the same entry points -- which is what makes
+   * collapse and expand produce the same run.
+   */
+  triggerTargets: string[];
+}
+
+/**
+ * A reusable block of graph, local to one graph file (v1).
+ *
+ * Instances reference it by id and carry NO overrides: two instances of one
+ * definition are identical blocks, and editing the definition changes both.
+ * Per-instance parameter overrides are deliberately out of scope for v1.
+ */
+export interface SubgraphDefinition {
+  id: string;
+  name: string;
+  description: string;
+  /** Serialized (not React Flow) nodes -- the same shape a graph file uses. */
+  nodes: any[];
+  edges: any[];
+  interface: SubgraphInterface;
+}
+
 export interface NodeDefinition {
   node_name: string;
   category: string;
@@ -156,6 +199,7 @@ export interface GraphSaveData {
   description: string;
   presets?: PresetDefinition[];
   segmentGroups?: SegmentGroup[];
+  subgraphs?: SubgraphDefinition[];
 }
 
 // Teaching Inspector: full-value responses from /api/execution/outputs

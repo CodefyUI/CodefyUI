@@ -1,0 +1,21 @@
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px 6px;
+  font-size: 10px;
+}
+
+.badge {
+  padding: 1px 6px;
+  border: 1px solid rgba(45, 212, 191, 0.5);
+  border-radius: 3px;
+  color: #2dd4bf;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.count {
+  color: #888;
+}

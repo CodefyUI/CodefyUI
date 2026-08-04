@@ -176,3 +176,90 @@ def test_preset_internal_params_round_trip():
     assert m["data"]["params"] == {"exposed_lr": 0.01}
     assert m["data"]["internalParams"] == {"inner": {"label": "tuned"}}
     assert merged["presets"] == payload["presets"]
+
+
+# ── Subgraph definitions (core#137) ─────────────────────────────────────
+#
+# A definition is LOGIC (a reviewer must see a wiring edit) but the positions
+# of the nodes inside it are GEOMETRY, so dragging in a sub-canvas must dirty
+# only the layout file -- the same rule the top level already follows.
+
+
+def _subgraph_payload(inner_x=7, scalar=2.0):
+    return {
+        "name": "demo",
+        "description": "",
+        "nodes": [
+            {"id": "blk", "type": "subgraph:b1", "position": {"x": 0, "y": 0},
+             "data": {"params": {}}},
+        ],
+        "edges": [],
+        "presets": [],
+        "segmentGroups": [],
+        "subgraphs": [{
+            "id": "b1",
+            "name": "Block",
+            "description": "",
+            "nodes": [
+                {"id": "mul", "type": "ScalarMultiply",
+                 "position": {"x": inner_x, "y": 3},
+                 "data": {"params": {"scalar": scalar}}},
+            ],
+            "edges": [],
+            "interface": {
+                "inputs": [{"port": "in", "innerNode": "mul",
+                            "innerPort": "tensor", "data_type": "TENSOR"}],
+                "outputs": [{"port": "out", "innerNode": "mul",
+                             "innerPort": "tensor", "data_type": "TENSOR"}],
+                "triggerTargets": ["mul"],
+            },
+        }],
+    }
+
+
+def test_split_puts_definitions_in_logic_and_inner_positions_in_layout():
+    logic, layout = split_graph(_subgraph_payload())
+    definition = logic["subgraphs"][0]
+    assert definition["id"] == "b1"
+    assert definition["interface"]["inputs"][0]["innerNode"] == "mul"
+    inner = definition["nodes"][0]
+    assert inner["data"]["params"]["scalar"] == 2.0
+    assert "position" not in inner  # geometry left the logic file
+    assert layout["subgraphPositions"] == {"b1": {"mul": {"x": 7, "y": 3}}}
+
+
+def test_merge_restores_inner_positions():
+    logic, layout = split_graph(_subgraph_payload())
+    merged, missing = merge_graph(logic, layout)
+    inner = merged["subgraphs"][0]["nodes"][0]
+    assert inner["position"] == {"x": 7, "y": 3}
+    assert missing is False
+
+
+def test_dragging_inside_a_subgraph_dirties_only_the_layout():
+    logic_a, layout_a = split_graph(_subgraph_payload(inner_x=7))
+    logic_b, layout_b = split_graph(_subgraph_payload(inner_x=99))
+    assert logic_a == logic_b
+    assert layout_a != layout_b
+
+
+def test_editing_a_definition_param_dirties_only_the_logic():
+    logic_a, layout_a = split_graph(_subgraph_payload(scalar=2.0))
+    logic_b, layout_b = split_graph(_subgraph_payload(scalar=5.0))
+    assert layout_a == layout_b
+    assert logic_a != logic_b
+
+
+def test_a_sub_canvas_never_opened_does_not_force_a_top_level_relayout():
+    """No entry in subgraphPositions must not set layout_missing."""
+    logic, layout = split_graph(_subgraph_payload())
+    layout["subgraphPositions"] = {}
+    merged, missing = merge_graph(logic, layout)
+    assert missing is False
+    assert "position" not in merged["subgraphs"][0]["nodes"][0]
+
+
+def test_merge_tolerates_a_graph_with_no_subgraphs_at_all():
+    logic, layout = split_graph(_payload())
+    merged, _ = merge_graph(logic, layout)
+    assert merged["subgraphs"] == []

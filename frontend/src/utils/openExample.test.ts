@@ -153,3 +153,100 @@ describe('insertExample', () => {
     expect(plain.data.bypassed).toBeUndefined();
   });
 });
+
+// ── Subgraph definitions (core#137) ─────────────────────────────────────
+
+/** A one-node definition an example can ship, plus the instance for it. */
+function exampleWithBlock() {
+  return {
+    name: 'Blocky',
+    nodes: [
+      raw('plain'),
+      { id: 'inst', type: 'subgraph:blk', position: { x: 10, y: 10 }, data: { params: {} } },
+    ],
+    edges: [],
+    subgraphs: [
+      {
+        id: 'blk',
+        name: 'Block',
+        description: '',
+        nodes: [raw('inner')],
+        edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+    ],
+  };
+}
+
+describe('examples that ship subgraph definitions', () => {
+  it('openExample lands the definitions, not just the instance node', async () => {
+    mockedRest.loadExample.mockResolvedValue(exampleWithBlock());
+
+    await expect(openExample('x')).resolves.toBe(true);
+
+    expect(activeTab().subgraphs.map((d) => d.id)).toEqual(['blk']);
+    // Serialization is what a save/run sees; an instance with no definition
+    // renders "definition missing" and fails `Unknown subgraph` on the server.
+    expect(store().getSerializedGraph().subgraphs.map((d) => d.id)).toEqual(['blk']);
+    // The instance renders from the definition it names, not from a stub.
+    const instance = activeTab().nodes.find((n) => n.id === 'inst')!;
+    expect(instance.data.label).toBe('Block');
+  });
+
+  it('openExample replaces segment overlays instead of leaving stale ones', async () => {
+    // Opening an example REPLACES the graph, so a segment left over from the
+    // graph that was there names ids nothing wears any more -- and
+    // `segmentGroups` is persisted through save, so it would be written to
+    // disk. Both Toolbar readers already replace it; this is the third door.
+    store().setSegmentGroups([
+      { id: 'old', headNodeId: 'gone', tailNodeId: 'also-gone' } as never,
+    ]);
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+
+    await openExample('x');
+
+    expect(activeTab().segmentGroups).toEqual([]);
+  });
+
+  it('openExampleInNewTab lands them in the new tab', async () => {
+    mockedRest.loadExample.mockResolvedValue(exampleWithBlock());
+    const firstTabId = store().activeTabId;
+
+    await expect(openExampleInNewTab('x')).resolves.toBe(true);
+
+    expect(activeTab().subgraphs.map((d) => d.id)).toEqual(['blk']);
+    // ...and only in the new tab.
+    expect(store().getTab(firstTabId)!.subgraphs).toEqual([]);
+  });
+
+  it('insertExample merges them into the canvas it joined', async () => {
+    mockedRest.loadExample.mockResolvedValue(exampleWithBlock());
+
+    await expect(insertExample('x')).resolves.toBe(true);
+
+    expect(activeTab().subgraphs.map((d) => d.id)).toEqual(['blk']);
+    expect(store().getSerializedGraph().subgraphs.map((d) => d.id)).toEqual(['blk']);
+  });
+
+  it('insertExample keeps the LOCAL definition on an id collision', async () => {
+    // Same rule paste follows: the definition already here is the one this
+    // tab's other instances share, so a template must not edit them.
+    store().setSubgraphs([
+      {
+        id: 'blk', name: 'Mine', description: '',
+        nodes: [], edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+    ] as never);
+    mockedRest.loadExample.mockResolvedValue(exampleWithBlock());
+
+    await insertExample('x');
+
+    expect(activeTab().subgraphs).toHaveLength(1);
+    expect(activeTab().subgraphs[0].name).toBe('Mine');
+    // The inserted instance is drawn from the definition that WON, so the
+    // canvas never paints ports the block does not have.
+    const inserted = activeTab().nodes.find((n) => n.selected && n.data.subgraphId)!;
+    expect(inserted.data.label).toBe('Mine');
+  });
+});

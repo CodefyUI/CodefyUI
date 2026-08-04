@@ -284,7 +284,10 @@ describe('EmptyCanvasOverlay', () => {
     await waitFor(() => expect(setNodes).toHaveBeenCalled());
     // resolveSerializedNodes/Edges were called with [] fallbacks; the edges
     // resolver also receives the resolved nodes for per-data-type coloring.
-    expect(mockedUtils.resolveSerializedNodes).toHaveBeenCalledWith([], [], expect.any(Array));
+    // The trailing [] is the example's own subgraph definitions (core#137):
+    // an instance node's rendered ports come from its definition's
+    // interface, so the resolver has to be given them.
+    expect(mockedUtils.resolveSerializedNodes).toHaveBeenCalledWith([], [], expect.any(Array), []);
     expect(mockedUtils.resolveSerializedEdges).toHaveBeenCalledWith([], [{ id: 'n1' }]);
     // blank name => no rename
     expect(renameTab).not.toHaveBeenCalled();
