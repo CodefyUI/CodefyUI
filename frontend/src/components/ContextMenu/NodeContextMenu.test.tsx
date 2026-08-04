@@ -7,6 +7,7 @@ import {
   type ContextMenuPosition,
 } from './NodeContextMenu';
 import { useTabStore } from '../../store/tabStore';
+import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import type { Node } from '@xyflow/react';
 import type { NodeData } from '../../types';
@@ -409,5 +410,92 @@ describe('useNodeContextMenuItems — bypass', () => {
         'Delete',
       ]);
     }
+  });
+});
+
+// ── Subgraph entries (core#137) ─────────────────────────────────────────
+
+function makePlainNode(id: string, type = 'Dataset'): Node<NodeData> {
+  return {
+    id,
+    type: 'baseNode',
+    position: { x: 0, y: 0 },
+    data: {
+      label: id,
+      type,
+      params: {},
+      definition: {
+        node_name: type, category: 'x', description: '',
+        inputs: [], outputs: [], params: [],
+      },
+    },
+  };
+}
+
+describe('subgraph context menu entries', () => {
+  const callbacks = {
+    onDelete: vi.fn(), onRename: vi.fn(),
+    onDuplicate: vi.fn(), onOpenDetails: vi.fn(),
+  };
+
+  it('offers Collapse only once two or more nodes are selected', () => {
+    const store = useTabStore.getState();
+    store.setNodes([makePlainNode('a'), makePlainNode('b')]);
+
+    const single = renderHook(() => useNodeContextMenuItems('a', callbacks));
+    expect(single.result.current.map((i) => i.label)).not.toContain(
+      'Collapse to subgraph',
+    );
+
+    store.setNodes(
+      useTabStore.getState().getActiveTab().nodes.map((n) => ({
+        ...n, selected: true,
+      })),
+    );
+    const many = renderHook(() => useNodeContextMenuItems('a', callbacks));
+    expect(many.result.current.map((i) => i.label)).toContain(
+      'Collapse to subgraph',
+    );
+  });
+
+  it('offers Enter and Expand only on an instance node', () => {
+    const store = useTabStore.getState();
+    store.setNodes([makePlainNode('a'), makePlainNode('blk', 'subgraph:sg')]);
+
+    const plain = renderHook(() => useNodeContextMenuItems('a', callbacks));
+    expect(plain.result.current.map((i) => i.label)).not.toContain(
+      'Enter subgraph',
+    );
+
+    const instance = renderHook(() => useNodeContextMenuItems('blk', callbacks));
+    const labels = instance.result.current.map((i) => i.label);
+    expect(labels).toContain('Enter subgraph');
+    expect(labels).toContain('Expand subgraph here');
+    // Still a normal node otherwise.
+    expect(labels).toContain('Delete');
+  });
+
+  it('Collapse reports a refusal as a toast instead of failing silently', () => {
+    const store = useTabStore.getState();
+    // a -> b -> c with only a and c selected: b is in the way.
+    store.setNodes([
+      { ...makePlainNode('a'), selected: true },
+      makePlainNode('b'),
+      { ...makePlainNode('c'), selected: true },
+    ]);
+    store.setEdges([
+      { id: 'e1', source: 'a', target: 'b' },
+      { id: 'e2', source: 'b', target: 'c' },
+    ]);
+    const { result } = renderHook(() => useNodeContextMenuItems('a', callbacks));
+    const collapse = result.current.find(
+      (i) => i.label === 'Collapse to subgraph',
+    )!;
+    collapse.action();
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('b');
+    expect(useTabStore.getState().getActiveTab().subgraphs).toEqual([]);
   });
 });
