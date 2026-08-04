@@ -57,8 +57,15 @@
  *    put a gratuitous hop on every aligned wire whose sibling merely happens to be
  *    nearby. It needs the two target cards to touch or overlap: give the far
  *    target any clearance and it crosses the skip threshold and detours.
- * 3. Trigger edges (`TriggerEdge`), which are drawn as plain cubics in their own
- *    colour and dash. Two cubics to distinct targets share only their endpoint.
+ *
+ * Both remain possible on a real graph. Neither is a corner the tests pretend is
+ * closed - `SmartDataEdge.overlap.test.tsx` asserts that each still happens, so a
+ * reader cannot mistake the guarantee for a universal one.
+ *
+ * Every kind of line on the canvas is covered, trigger edges included: they are
+ * ordinary members of the edge array, their diamond is a Right handle and
+ * `__trigger` is a Left one, so `TriggerEdge` shares `resolveEdgePath` and this
+ * map and keeps only its own stroke.
  */
 
 /** The only edge fields lane assignment needs. */

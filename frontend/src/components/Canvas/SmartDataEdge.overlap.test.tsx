@@ -13,17 +13,19 @@
  * can avoid that. What the lanes buy is that the stub is a small constant instead
  * of half the length of the wire.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
-import { Position, type EdgeProps } from '@xyflow/react';
+import { Position, getBezierPath, type EdgeProps } from '@xyflow/react';
 import { renderWithFlow } from '../../test/utils';
 import { useUIStore } from '../../store/uiStore';
 import { worstSharedRun } from '../../test/pathOverlap';
 import { computeEdgeLanes, laneDistance, type LaneEdgeInput } from '../../utils/edgeLanes';
+import { resolveEdgePath, SmartDataEdge } from './SmartDataEdge';
+import { TriggerEdge } from './TriggerEdge';
+import { EdgeLaneProvider } from './EdgeLaneContext';
 
 /** xyflow's smoothstep handle gap; every route leaves straight for this far. */
 const SMOOTHSTEP_GAP = 20;
-import { resolveEdgePath, SmartDataEdge } from './SmartDataEdge';
-import { EdgeLaneProvider } from './EdgeLaneContext';
 
 interface Wire extends LaneEdgeInput {
   sourceX: number;
@@ -245,6 +247,188 @@ describe('known gap: two wires on the same axis line', () => {
       { id: 'q', source: 'A', target: 'C', sourceHandle: 'out', targetHandle: 'in', sourceX: 0, sourceY: 0, targetX: 640, targetY: 0 },
     ];
     expect(worst(wires, { circuit: true })).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('trigger edges, on the real ResNet-18 / CIFAR-10 example', () => {
+  /**
+   * Trigger edges are lines too, and this is not a hypothetical shape: the
+   * flagship example has one Start node with four trigger edges leaving it, so a
+   * fan-out is the first thing a visitor sees. Endpoints are taken from the real
+   * graph on disk; only the handle offsets are modelled, read off the CSS -
+   * `StartNode .handle` is a Right handle at the default top:50%, and BaseNode's
+   * `.triggerHandle` is pinned to `top: 0; left: -6px`, the card's top-left
+   * corner. jsdom has no layout, so a mounted canvas would report every handle at
+   * the origin and measure nothing.
+   */
+  const GRAPH_PATH = '../examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json';
+  const START_W = 80;
+  const START_H = 34;
+  const TRIGGER_HANDLE_DX = -6;
+
+  interface RawEdge {
+    id: string;
+    source: string;
+    target: string;
+    sourceHandle?: string;
+    targetHandle?: string;
+    type?: string;
+  }
+
+  function loadTriggerWires(): { all: RawEdge[]; wires: Wire[] } {
+    let raw: string;
+    try {
+      raw = readFileSync(GRAPH_PATH, 'utf8');
+    } catch {
+      throw new Error(
+        `${GRAPH_PATH} is missing. If the example moved, repoint this test rather than deleting it - it is the only overlap number taken from a graph users actually open.`,
+      );
+    }
+    const graph = JSON.parse(raw) as {
+      nodes: Array<{ id: string; position: { x: number; y: number } }>;
+      edges: RawEdge[];
+    };
+    const at = new Map(graph.nodes.map((n) => [n.id, n.position]));
+    const triggers = graph.edges.filter((e) => e.type === 'trigger' || e.sourceHandle === 'trigger');
+    const wires = triggers.map((e) => {
+      const s = at.get(e.source)!;
+      const t = at.get(e.target)!;
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle,
+        sourceX: s.x + START_W,
+        sourceY: s.y + START_H / 2,
+        targetX: t.x + TRIGGER_HANDLE_DX,
+        targetY: t.y,
+      };
+    });
+    return { all: graph.edges, wires };
+  }
+
+  it('still has the four-way trigger fan-out this test exists for', () => {
+    const { all, wires } = loadTriggerWires();
+    expect(wires).toHaveLength(4);
+    expect(new Set(wires.map((w) => w.source)).size).toBe(1);
+    const lanes = computeEdgeLanes(all as LaneEdgeInput[]);
+    const slots = wires.map((w) => lanes.get(w.id)!.outSlot);
+    expect(new Set(slots).size).toBe(4);
+  });
+
+  for (const [style, circuit] of STYLES) {
+    it(`${style}: the four trigger wires share only the stub`, () => {
+      const { all, wires } = loadTriggerWires();
+      const lanes = computeEdgeLanes(all as LaneEdgeInput[]);
+      const paths = wires.map((w) =>
+        resolveEdgePath({
+          sourceX: w.sourceX,
+          sourceY: w.sourceY,
+          targetX: w.targetX,
+          targetY: w.targetY,
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+          circuit,
+          lane: lanes.get(w.id),
+        }),
+      );
+      expect(worstSharedRun(paths).length).toBeLessThanOrEqual(fanOutStubLimit(4));
+    });
+  }
+
+  it('beats the plain cubic the component used to draw', () => {
+    // The old TriggerEdge ignored both the edge style and its siblings. On this
+    // graph the wires to ev-totensor and loss ran together for 96px.
+    const { all, wires } = loadTriggerWires();
+    const before = wires.map(
+      (w) =>
+        getBezierPath({
+          sourceX: w.sourceX,
+          sourceY: w.sourceY,
+          sourcePosition: Position.Right,
+          targetX: w.targetX,
+          targetY: w.targetY,
+          targetPosition: Position.Left,
+        })[0],
+    );
+    const lanes = computeEdgeLanes(all as LaneEdgeInput[]);
+    const after = wires.map((w) =>
+      resolveEdgePath({
+        sourceX: w.sourceX,
+        sourceY: w.sourceY,
+        targetX: w.targetX,
+        targetY: w.targetY,
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        circuit: true,
+        lane: lanes.get(w.id),
+      }),
+    );
+    expect(worstSharedRun(before).length).toBeGreaterThan(90);
+    expect(worstSharedRun(after).length).toBeLessThan(worstSharedRun(before).length);
+  });
+
+  it('separates the rendered TriggerEdge component, and does not without the provider', () => {
+    useUIStore.setState({ edgeStyle: 'circuit' });
+    const { all, wires } = loadTriggerWires();
+
+    const render = (withProvider: boolean) => {
+      const edges = wires.map((w) => (
+        <TriggerEdge
+          key={w.id}
+          {...({
+            id: w.id,
+            source: w.source,
+            target: w.target,
+            sourceX: w.sourceX,
+            sourceY: w.sourceY,
+            targetX: w.targetX,
+            targetY: w.targetY,
+            sourcePosition: Position.Right,
+            targetPosition: Position.Left,
+          } as EdgeProps)}
+        />
+      ));
+      const tree = withProvider ? (
+        <EdgeLaneProvider edges={all as LaneEdgeInput[]}>{edges}</EdgeLaneProvider>
+      ) : (
+        edges
+      );
+      const { container } = renderWithFlow(<svg>{tree}</svg>);
+      return Array.from(container.querySelectorAll('path.react-flow__edge-path')).map(
+        (p) => p.getAttribute('d') ?? '',
+      );
+    };
+
+    const laned = render(true);
+    expect(laned).toHaveLength(4);
+    expect(worstSharedRun(laned).length).toBeLessThanOrEqual(fanOutStubLimit(4));
+    expect(worstSharedRun(render(false)).length).toBeGreaterThan(fanOutStubLimit(4));
+  });
+
+  it('keeps the trigger edge green and dashed', () => {
+    // The routing is shared with data edges; the stroke deliberately is not.
+    const { container } = renderWithFlow(
+      <svg>
+        <TriggerEdge
+          {...({
+            id: 't1',
+            source: 'a',
+            target: 'b',
+            sourceX: 0,
+            sourceY: 0,
+            targetX: 300,
+            targetY: 240,
+            sourcePosition: Position.Right,
+            targetPosition: Position.Left,
+          } as EdgeProps)}
+        />
+      </svg>,
+    );
+    const style = container.querySelector('path.react-flow__edge-path')?.getAttribute('style') ?? '';
+    expect(style).toContain('stroke: #22c55e');
+    expect(style).toContain('stroke-dasharray: 6 4');
   });
 });
 
