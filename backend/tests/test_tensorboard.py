@@ -136,6 +136,75 @@ def test_writing_after_close_is_a_no_op(tmp_path):
     assert [step for step, _ in _read(tmp_path)["loss"]] == [1]
 
 
+def test_a_finite_value_too_large_for_float32_is_clamped_not_fatal(tmp_path):
+    """core#136 review, m-8.
+
+    ``simple_value`` is a 32-bit float, so ``struct.pack("<f", 1e39)``
+    raises ``OverflowError`` -- and 1e39 is finite, so the NaN/inf filter
+    lets it through. The encode used to happen in the CALLER, as an argument
+    to ``_write``, i.e. outside the guard the class docstring promises: the
+    exception escaped ``record_metric`` and killed a six-hour run, with the
+    writer left open.
+    """
+    writer = EventFileWriter(tmp_path)
+    writer.add_scalar("loss", 1e39, 1)
+    writer.add_scalar("loss", -1e39, 2)
+    writer.add_scalar("loss", 0.5, 3)
+    writer.close()
+
+    assert writer.closed is True
+    points = _read(tmp_path)["loss"]
+    assert [step for step, _ in points] == [1, 2, 3]
+    values = [value for _, value in points]
+    assert values[0] == pytest.approx(3.4028235e38)
+    assert values[1] == pytest.approx(-3.4028235e38)
+    assert values[2] == pytest.approx(0.5)
+
+
+def test_a_tag_that_cannot_be_encoded_disables_the_writer_quietly(tmp_path):
+    """The other half of m-8: the failure is CONTAINED, not propagated.
+
+    A lone surrogate cannot be UTF-8 encoded. There is nothing sensible to
+    write, but instrumentation must not be the thing that ends the run.
+    """
+    writer = EventFileWriter(tmp_path)
+    writer.add_scalar("loss", 1.0, 1)
+    writer.add_scalar("\ud800", 2.0, 2)  # no exception
+    assert writer.closed is True
+    assert _read(tmp_path)["loss"] == [(1, pytest.approx(1.0))]
+
+
+def test_del_on_a_half_built_writer_does_not_raise(tmp_path):
+    """core#136 review, n-22.
+
+    ``__init__`` can fail before the ``open()`` -- a read-only parent, a
+    path too long. ``open_run_writer`` turns that into ``None`` correctly,
+    but the doomed object's ``__del__`` then printed an ``AttributeError``
+    to stderr because ``_file`` had never been assigned.
+    """
+    half_built = EventFileWriter.__new__(EventFileWriter)
+    half_built.close()  # what __del__ calls; must not raise
+    assert half_built.closed is True
+    half_built.__del__()
+
+
+def test_two_writers_in_one_directory_do_not_truncate_each_other(tmp_path):
+    """core#136 review, n-23.
+
+    Timestamp + host + pid is not unique. Without a random suffix the second
+    ``open(..., "wb")`` picked the same name and silently truncated the
+    first writer's file, losing a whole series with no error.
+    """
+    first = EventFileWriter(tmp_path)
+    second = EventFileWriter(tmp_path)
+    assert first.path != second.path
+    first.add_scalar("A", 1.0, 1)
+    second.add_scalar("B", 2.0, 1)
+    first.close()
+    second.close()
+    assert set(_read(tmp_path)) == {"A", "B"}
+
+
 def test_a_writer_that_is_never_closed_still_flushes(tmp_path):
     """The exception path: a node that raises never reaches its close."""
     writer = EventFileWriter(tmp_path)
@@ -189,6 +258,18 @@ def test_close_and_register_queues_the_directory_not_the_file(
 
 def test_close_and_register_tolerates_no_writer():
     assert close_and_register(None, ExecutionContext()) is None
+
+
+def test_close_and_register_never_raises(tmp_path, monkeypatch):
+    """It runs in a ``finally``, so raising would MASK the real failure."""
+    context = _recording_context(tmp_path, monkeypatch)
+    writer = open_run_writer(context)
+    assert writer is not None
+    monkeypatch.setattr(
+        context, "log_artifact",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("outbox is gone")))
+    assert close_and_register(writer, context) is None
+    assert writer.closed is True
 
 
 # ── through TrainingLoop ─────────────────────────────────────────────────
@@ -283,6 +364,109 @@ def test_two_training_nodes_of_one_run_get_separate_logdirs(
             != second["metrics"]["tensorboard_logdir"])
     assert Path(first["metrics"]["tensorboard_logdir"]).parent == \
         Path(second["metrics"]["tensorboard_logdir"]).parent
+
+
+def test_a_run_that_raises_still_registers_what_it_wrote(
+        tmp_path, monkeypatch):
+    """core#136 review, M-2.
+
+    ``close_and_register`` used to sit on the straight-line success path, so
+    a model that raised mid-training (an OOM, a bug in a custom module, a
+    corrupt image inside the DataLoader) left an event directory with real,
+    readable curves and NO artifact row -- unreachable from the Runs panel,
+    and invisible to a retention sweep that only knows about rows. That is
+    the exact litter ``open_run_writer``'s "no row, no file" rule exists to
+    prevent, and the crash is when a partial loss curve matters most.
+    """
+    context = _recording_context(tmp_path, monkeypatch)
+
+    class _Boom(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inner = nn.Linear(4, 2)
+            self.calls = 0
+
+        def forward(self, x):
+            self.calls += 1
+            if self.calls > 2:
+                raise RuntimeError("simulated CUDA OOM / user bug")
+            return self.inner(x)
+
+    torch.manual_seed(0)
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(
+            torch.randn(8, 4), torch.randint(0, 2, (8,))), batch_size=4)
+    model = _Boom()
+    with pytest.raises(RuntimeError, match="simulated CUDA OOM"):
+        TrainingLoopNode().execute(
+            {"model": model, "dataloader": loader,
+             "optimizer": torch.optim.SGD(model.parameters(), lr=0.01),
+             "loss_fn": nn.CrossEntropyLoss()},
+            {"epochs": 3, "device": "cpu", "tensorboard": True},
+            context=context,
+        )
+
+    items, _dropped = context.outbox.drain()
+    artifacts = [item for item in items if isinstance(item, ArtifactSignal)
+                 and item.kind == ARTIFACT_KIND]
+    assert len(artifacts) == 1, "the partial curve has no row pointing at it"
+
+    logdir = Path(artifacts[0].path)
+    assert logdir.is_dir()
+    # The row must point at data that is actually there: epoch 1 completed
+    # before the third forward pass raised.
+    assert _read(logdir)["train_loss"][0][0] == 1
+
+
+def test_a_run_that_dies_before_epoch_one_still_registers_its_directory(
+        tmp_path, monkeypatch):
+    """Even a header-only directory gets a row rather than becoming litter."""
+    context = _recording_context(tmp_path, monkeypatch)
+
+    class _ImmediateBoom(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inner = nn.Linear(4, 2)
+
+        def forward(self, x):
+            raise RuntimeError("dies on the first batch")
+
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(
+            torch.randn(4, 4), torch.randint(0, 2, (4,))), batch_size=4)
+    model = _ImmediateBoom()
+    with pytest.raises(RuntimeError, match="dies on the first batch"):
+        TrainingLoopNode().execute(
+            {"model": model, "dataloader": loader,
+             "optimizer": torch.optim.SGD(model.parameters(), lr=0.01),
+             "loss_fn": nn.CrossEntropyLoss()},
+            {"epochs": 1, "device": "cpu", "tensorboard": True},
+            context=context,
+        )
+
+    items, _dropped = context.outbox.drain()
+    artifacts = [item for item in items if isinstance(item, ArtifactSignal)
+                 and item.kind == ARTIFACT_KIND]
+    assert [Path(item.path).is_dir() for item in artifacts] == [True]
+
+
+def test_the_logdir_row_is_queued_after_the_interrupt_checkpoint(
+        tmp_path, monkeypatch):
+    """core#136 review, m-16.
+
+    ``close_and_register``'s docstring says it is queued LAST by every
+    caller, because the outbox drops the OLDEST item. It used to run BEFORE
+    ``save_interrupt_checkpoint``, which queues its own artifact; moving it
+    into ``execute``'s ``finally`` makes the claim true rather than merely
+    documented.
+    """
+    context = _recording_context(tmp_path, monkeypatch)
+    context.cancel()
+    _tiny_training({"tensorboard": True}, context)
+
+    items, _dropped = context.outbox.drain()
+    kinds = [item.kind for item in items if isinstance(item, ArtifactSignal)]
+    assert kinds[-1] == ARTIFACT_KIND, kinds
 
 
 def test_the_param_is_advanced_and_off_by_default():

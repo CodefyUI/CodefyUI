@@ -1,7 +1,11 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
-from .transforms._base import compose, seeded_for_node
+from .transforms._base import (
+    compose,
+    seeded_for_node,
+    select_split_transform,
+)
 
 #: Datasets whose constructor takes ``split="train"|"test"|...`` instead of
 #: ``train=True|False``. torchvision is not consistent about this and the
@@ -40,8 +44,9 @@ class DatasetNode(BaseNode):
                 name="train_transform",
                 data_type=DataType.TRANSFORM,
                 description=(
-                    "Pipeline for the training split. Ignored unless split "
-                    "is 'train' -- this is where augmentation belongs."
+                    "Pipeline for the training split -- this is where "
+                    "augmentation belongs. Ignored when split is 'test', "
+                    "with a warning in the log."
                 ),
                 optional=True,
             ),
@@ -113,13 +118,9 @@ class DatasetNode(BaseNode):
 
         is_train = split == "train"
 
-        # A training split takes train_transform, falling back to
-        # eval_transform. The reverse fallback is deliberately absent: a
-        # test split must never pick up the augmentation chain, or every
-        # evaluation would measure a different, randomly distorted test set.
-        wired = inputs.get("eval_transform")
-        if is_train and inputs.get("train_transform") is not None:
-            wired = inputs["train_transform"]
+        # One rule, shared with ImageFolderDataset, which also warns when a
+        # wired train_transform is about to be dropped for a test split.
+        wired = select_split_transform(inputs, split, node_name="Dataset")
 
         transform = wired if wired is not None else compose([
             transforms.ToTensor(),

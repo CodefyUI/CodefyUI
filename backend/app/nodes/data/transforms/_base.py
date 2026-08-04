@@ -72,20 +72,42 @@ CHAIN_OUTPUT_DESC = "The chain so far, with this step appended"
 #:
 #: Matched by CLASS NAME rather than by identity because torchvision moved
 #: these between ``transforms`` and ``transforms.v2`` and both spellings are
-#: in use. A random transform this set does not know about is not a
-#: correctness problem: it falls back to the global RNG, which the engine
-#: seeds per node, so a seeded single-process run still reproduces. It only
-#: loses the isolation.
+#: in use.
+#:
+#: A random transform this set does not know about is a REAL defect, not
+#: merely a missed optimisation. Unrecognised means unwrapped, and unwrapped
+#: means the transform draws from the process-global RNG. At
+#: ``num_workers=0`` that still reproduces (the engine seeds the global RNGs
+#: per node) and only the isolation is lost. At ``num_workers > 0`` it is
+#: worse: ``seeding.make_worker_init_fn`` reseeds each worker to a FIXED
+#: value, torch re-runs ``worker_init_fn`` for every iterator, and workers
+#: are recreated per epoch unless ``persistent_workers`` is on -- so epoch 2
+#: replays epoch 1 byte for byte and augmentation is silently OFF after the
+#: first epoch. That is precisely the bug the module docstring above says
+#: :class:`SeededAugmentation` exists to prevent, so a name missing from
+#: this set re-opens it. Measured: a seeded ``num_workers=2`` run with an
+#: unrecognised random pipeline produced identical epochs 1/2/3.
+#:
+#: Erring towards over-recognition is therefore the right bias: a
+#: deterministic pipeline wrapped by mistake costs ~6 microseconds a sample
+#: and nothing else, while a random one missed costs the experiment. Hence
+#: also the ``get_params`` backstop in :func:`pipeline_is_random`.
 RANDOM_TRANSFORM_NAMES = frozenset({
+    "AugMix",
     "AutoAugment",
     "ColorJitter",
+    "CutMix",
     "ElasticTransform",
     "GaussianBlur",
+    "GaussianNoise",
+    "JPEG",
+    "MixUp",
     "RandAugment",
     "RandomAdjustSharpness",
     "RandomAffine",
     "RandomApply",
     "RandomAutocontrast",
+    "RandomChannelPermutation",
     "RandomChoice",
     "RandomCrop",
     "RandomEqualize",
@@ -93,13 +115,19 @@ RANDOM_TRANSFORM_NAMES = frozenset({
     "RandomGrayscale",
     "RandomHorizontalFlip",
     "RandomInvert",
+    "RandomIoUCrop",
     "RandomOrder",
     "RandomPerspective",
+    "RandomPhotometricDistort",
     "RandomPosterize",
+    "RandomResize",
     "RandomResizedCrop",
     "RandomRotation",
+    "RandomShortestSize",
     "RandomSolarize",
     "RandomVerticalFlip",
+    "RandomZoomOut",
+    "ScaleJitter",
     "TrivialAugmentWide",
 })
 
@@ -137,15 +165,35 @@ def pipeline_is_random(pipeline: Any) -> bool:
     Recurses into ``Compose`` because a merged chain is one level deep at
     most, and into the wrapper below so re-checking an already-wrapped
     pipeline answers the same question.
+
+    **The node's own name is checked BEFORE recursing into its children**,
+    and the order is load-bearing rather than stylistic. ``RandomApply``,
+    ``RandomChoice`` and ``RandomOrder`` are random containers: they each
+    carry a ``.transforms`` list, so testing the container branch first
+    would classify them purely by their children and answer False for
+    ``RandomApply([Grayscale()], p=0.5)`` -- a pipeline whose entire
+    randomness lives in the container. Their entries in
+    ``RANDOM_TRANSFORM_NAMES`` were dead code until this order was fixed.
+
+    ``get_params`` is a backstop for randomness this file has never heard
+    of. It is torchvision's own idiom -- a random transform draws its
+    parameters in a ``get_params`` staticmethod and a deterministic one has
+    nothing to draw -- so a custom or plugin transform written in that
+    idiom is recognised without being listed here. It catches 8 of
+    torchvision's own v1 randoms and none of its deterministic transforms,
+    and a false positive would only cost the ~6 microseconds of a wrapper
+    nothing needs.
     """
     if pipeline is None:
         return False
     if isinstance(pipeline, SeededAugmentation):
         return True
+    if type(pipeline).__name__ in RANDOM_TRANSFORM_NAMES:
+        return True
     steps = getattr(pipeline, "transforms", None)
     if isinstance(steps, (list, tuple)):
         return any(pipeline_is_random(step) for step in steps)
-    return type(pipeline).__name__ in RANDOM_TRANSFORM_NAMES
+    return callable(getattr(type(pipeline), "get_params", None))
 
 
 class SeededAugmentation:
@@ -246,6 +294,52 @@ def seed_pipeline(
     return SeededAugmentation(pipeline, seed)
 
 
+#: ``split`` values on which a ``train_transform`` is honoured.
+#:
+#: ``(none)`` is ``ImageFolderDataset``'s "the class folders sit directly
+#: under path" option, i.e. a layout with NO split level. It is in here
+#: because there is then no split to disambiguate: the only signal about
+#: which pipeline the user wants is which port they wired, so ignoring the
+#: one they wired would be ignoring the only thing they said.
+AUGMENTABLE_SPLITS = frozenset({"train", "(none)"})
+
+
+def select_split_transform(
+    inputs: dict[str, Any],
+    split: str,
+    *,
+    node_name: str = "dataset",
+) -> Any:
+    """Pick the pipeline for *split* from a node's two transform inputs.
+
+    ``train`` (and ``(none)``, see :data:`AUGMENTABLE_SPLITS`) takes
+    ``train_transform`` and falls back to ``eval_transform``. The reverse
+    fallback is deliberately absent: an evaluation split must never pick up
+    the augmentation chain, or every evaluation would measure a different,
+    randomly distorted test set.
+
+    A ``train_transform`` that is dropped for that reason is WARNED about
+    rather than dropped quietly. From the canvas the two cases look
+    identical -- a wire into a port named ``train_transform``, a run that
+    completes, a plausible loss curve -- and the conclusion drawn from the
+    silent one ("augmentation did not help") is drawn from a run that never
+    augmented.
+    """
+    train = inputs.get("train_transform")
+    evaluation = inputs.get("eval_transform")
+    if split in AUGMENTABLE_SPLITS:
+        return train if train is not None else evaluation
+    if train is not None:
+        logger.warning(
+            "%s: split=%r is not a training split, so the chain wired into "
+            "train_transform was NOT applied%s. Augmentation belongs on the "
+            "training split only; wire eval_transform to transform this one.",
+            node_name, split,
+            "" if evaluation is not None else " and eval_transform is unwired",
+        )
+    return evaluation
+
+
 def seeded_for_node(pipeline: Any, context: Any) -> Any:
     """:func:`seed_pipeline` labelled with the executing node's id.
 
@@ -270,10 +364,25 @@ def attach_transform(
     (``transform`` is a public, writable attribute on all of them). A node
     that builds the dataset itself should pass :func:`seeded_for_node` to
     the constructor instead.
+
+    Assigning to a dataset that never READS ``transform`` succeeds and does
+    nothing -- ``TensorDataset``, ``SyntheticShapes`` and
+    ``SyntheticSegmentation`` all behave that way. There is no way to ask a
+    dataset whether it honours the attribute, but every dataset that does
+    honour it sets one in ``__init__`` (to ``None`` when unwired), so its
+    ABSENCE is a reliable negative and worth a warning. A silently ignored
+    resize is an annoyance; a silently ignored augmentation chain
+    invalidates the experiment, which is why this is not left quiet.
     """
     if pipeline is None:
         return dataset
     node_id = label or getattr(context, "current_node_id", "") or "transform"
+    if not hasattr(dataset, "transform"):
+        logger.warning(
+            "%s has no 'transform' attribute, so the pipeline installed on "
+            "it will not be applied to any sample -- this dataset builds its "
+            "own tensors. Any augmentation wired here has no effect.",
+            type(dataset).__name__)
     dataset.transform = seed_pipeline(pipeline, context, node_id)
     return dataset
 

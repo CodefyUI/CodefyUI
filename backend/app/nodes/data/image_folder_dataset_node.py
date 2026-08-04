@@ -21,7 +21,11 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
-from .transforms._base import compose, seeded_for_node
+from .transforms._base import (
+    compose,
+    seeded_for_node,
+    select_split_transform,
+)
 
 #: Names people actually use for the evaluation folder. Only consulted to
 #: make the "did you mean" hint on a missing split useful.
@@ -41,10 +45,15 @@ def resolve_dataset_root(path: str) -> Path:
     ``KaggleDataset``'s cache already do exactly that, and CodefyUI runs as
     the user, on the user's machine. Contrast ``resolve_checkpoint_path``,
     which is confined to the data root because it WRITES.
+
+    ``~`` is expanded first. Without that it is not special at all, so
+    ``~/datasets/x`` resolved to a literal ``<data root>/~/datasets/x`` --
+    a directory that does not exist, reported as a missing path with no hint
+    that the tilde was the problem.
     """
     from ...config import settings
 
-    candidate = Path(path)
+    candidate = Path(path).expanduser()
     if not candidate.is_absolute():
         candidate = settings.MODELS_DIR.parent / candidate
     return candidate.resolve()
@@ -70,8 +79,9 @@ class ImageFolderDatasetNode(BaseNode):
                 name="train_transform",
                 data_type=DataType.TRANSFORM,
                 description=(
-                    "Pipeline for the training split. Ignored unless split "
-                    "is 'train' -- this is where augmentation belongs."
+                    "Pipeline for the training split, and the one to use "
+                    "when split is '(none)'. This is where augmentation "
+                    "belongs. Ignored on val/test, with a warning."
                 ),
                 optional=True,
             ),
@@ -79,8 +89,8 @@ class ImageFolderDatasetNode(BaseNode):
                 name="eval_transform",
                 data_type=DataType.TRANSFORM,
                 description=(
-                    "Pipeline for any other split, and the fallback for the "
-                    "training split when train_transform is unwired."
+                    "Pipeline for val/test, and the fallback whenever "
+                    "train_transform is unwired."
                 ),
                 optional=True,
             ),
@@ -123,7 +133,9 @@ class ImageFolderDatasetNode(BaseNode):
                 description=(
                     "Sub-directory of path to load. Pick '(none)' when the "
                     "class folders sit directly under path with no split "
-                    "level."
+                    "level; there is then no split to tell the two "
+                    "transform ports apart, so whichever is wired is used "
+                    "and train_transform wins if both are."
                 ),
                 options=["train", "val", "test", "(none)"],
             ),
@@ -162,10 +174,8 @@ class ImageFolderDatasetNode(BaseNode):
                 f"images sit directly in this folder, they need to be moved "
                 f"into a folder named after their class.")
 
-        is_train = split == "train"
-        wired = inputs.get("eval_transform")
-        if is_train and inputs.get("train_transform") is not None:
-            wired = inputs["train_transform"]
+        wired = select_split_transform(
+            inputs, split, node_name="ImageFolderDataset")
 
         transform = wired if wired is not None else compose([
             transforms.ToTensor(),

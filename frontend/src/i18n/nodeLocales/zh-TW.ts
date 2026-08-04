@@ -291,7 +291,7 @@ const zhTW: NodeTranslations = {
     description: '從「一個類別一個資料夾」的結構載入自己的影像。標籤由資料夾名稱依字母順序決定。',
     params: {
       path: '放置各個分割的資料夾。相對路徑會相對於同時放著 models/ 與 images/ 的資料目錄。',
-      split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」。',
+      split: '要載入的子資料夾。如果類別資料夾直接放在 path 底下、沒有分割這一層，選「(none)」；這時沒有分割可以區分兩個 transform 埠，所以接了哪一個就用哪一個，兩個都接時以 train_transform 為準。',
     },
   },
   SyntheticDataset: {

@@ -155,6 +155,98 @@ def test_train_transform_wins_when_both_are_wired(tree: Path):
     assert dataset[0][0].shape == (3, 4, 4)
 
 
+def test_the_none_split_honours_train_transform(tree: Path):
+    """core#136 review, M-3.
+
+    ``(none)`` is what the node's own help text and the augmentation guide
+    tell you to pick for a flat ``<path>/<class>/<images>`` layout -- which
+    is the layout a small custom dataset actually has. The old rule
+    (``is_train = split == "train"``) therefore threw away the whole
+    ``train_transform`` chain for exactly the users who wired it, with no
+    error, no warning, and a plausible loss curve.
+    """
+    resize = ResizeTransformNode().execute({}, {"size": 4})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": resize}, {})["transform"]
+    dataset = _run({"path": str(tree / "train"), "split": "(none)"},
+                   {"train_transform": chain})["dataset"]
+    assert dataset[0][0].shape == (3, 4, 4)
+
+
+def test_the_none_split_still_prefers_train_transform_over_eval(tree: Path):
+    """Both wired and no split to tell them apart: train_transform wins."""
+    train = ToTensorTransformNode().execute(
+        {"transform": ResizeTransformNode().execute(
+            {}, {"size": 4})["transform"]}, {})["transform"]
+    evaluation = ToTensorTransformNode().execute(
+        {"transform": ResizeTransformNode().execute(
+            {}, {"size": 6})["transform"]}, {})["transform"]
+    dataset = _run({"path": str(tree / "train"), "split": "(none)"},
+                   {"train_transform": train,
+                    "eval_transform": evaluation})["dataset"]
+    assert dataset[0][0].shape == (3, 4, 4)
+
+
+def test_the_none_split_still_falls_back_to_eval_transform(tree: Path):
+    evaluation = ToTensorTransformNode().execute(
+        {"transform": ResizeTransformNode().execute(
+            {}, {"size": 6})["transform"]}, {})["transform"]
+    dataset = _run({"path": str(tree / "train"), "split": "(none)"},
+                   {"eval_transform": evaluation})["dataset"]
+    assert dataset[0][0].shape == (3, 6, 6)
+
+
+def test_an_augmenting_chain_survives_the_none_split(tmp_path: Path):
+    """The behavioural half of M-3, not just the shape.
+
+    A flip chain wired to ``train_transform`` at ``(none)`` used to produce
+    zero flips over the whole dataset because the chain was never installed.
+
+    Builds its own LEFT-RIGHT ASYMMETRIC image rather than using the shared
+    fixture: the fixture's images are a single flat colour, so a horizontal
+    flip is a no-op on them and this assertion would hold with or without
+    the fix.
+    """
+    flat = tmp_path / "flat" / "cat"
+    flat.mkdir(parents=True)
+    pixels = torch.zeros(4, 4, 3, dtype=torch.uint8)
+    pixels[:, 0, :] = 255  # left column white, right column black
+    Image.fromarray(pixels.numpy(), mode="RGB").save(flat / "0.png")
+
+    chain = RandomHorizontalFlipNode().execute({}, {"p": 1.0})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": chain}, {})["transform"]
+    plain = ToTensorTransformNode().execute({}, {})["transform"]
+
+    upright = _run({"path": str(tmp_path / "flat"), "split": "(none)"},
+                   {"eval_transform": plain})["dataset"][0][0]
+    assert not torch.equal(upright, torch.flip(upright, dims=[2])), \
+        "the fixture image must be asymmetric or this test pins nothing"
+
+    flipped = _run({"path": str(tmp_path / "flat"), "split": "(none)"},
+                   {"train_transform": chain})["dataset"][0][0]
+    assert torch.equal(flipped, torch.flip(upright, dims=[2]))
+
+
+def test_a_dropped_train_transform_is_warned_about(tree: Path, caplog):
+    """Silence is what made M-3 cost a whole experiment; a test split warns."""
+    chain = ToTensorTransformNode().execute({}, {})["transform"]
+    with caplog.at_level("WARNING"):
+        _run({"path": str(tree), "split": "val"}, {"train_transform": chain})
+    assert any("train_transform" in record.getMessage()
+               and "ImageFolderDataset" in record.getMessage()
+               for record in caplog.records), caplog.text
+
+
+def test_an_honoured_train_transform_warns_about_nothing(tree: Path, caplog):
+    chain = ToTensorTransformNode().execute({}, {})["transform"]
+    with caplog.at_level("WARNING"):
+        _run({"path": str(tree), "split": "train"}, {"train_transform": chain})
+        _run({"path": str(tree / "train"), "split": "(none)"},
+             {"train_transform": chain})
+    assert caplog.records == []
+
+
 def test_a_random_chain_is_seeded_like_every_other_dataset(tree: Path):
     chain = RandomHorizontalFlipNode().execute({}, {"p": 0.5})["transform"]
     chain = ToTensorTransformNode().execute(
@@ -178,6 +270,18 @@ def test_a_relative_path_resolves_against_the_data_root(monkeypatch, tmp_path):
 
 def test_an_absolute_path_is_used_as_given(tree: Path):
     assert resolve_dataset_root(str(tree)) == tree.resolve()
+
+
+def test_a_tilde_expands_to_the_home_directory(monkeypatch, tmp_path):
+    """Otherwise ``~`` is not special and lands under the data root verbatim."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    resolved = resolve_dataset_root("~/datasets/pets")
+    assert resolved == (tmp_path / "home" / "datasets" / "pets").resolve()
+    assert "~" not in str(resolved)
 
 
 # ── the failure messages ─────────────────────────────────────────────────

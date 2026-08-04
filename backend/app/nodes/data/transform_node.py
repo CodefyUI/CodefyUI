@@ -9,8 +9,14 @@ Two ways in, and the wired one always wins:
 
 ``Dataset`` and ``ImageFolderDataset`` take their own ``train_transform`` /
 ``eval_transform`` inputs, so this node is for the datasets that do not --
-``HuggingFaceDataset``, ``KaggleDataset``, ``CSVReader`` and anything a
-custom node produces.
+``HuggingFaceDataset``, ``KaggleDataset`` and anything a custom node
+produces with a ``DATASET`` output.
+
+Installing a pipeline is one attribute assignment, and a dataset that never
+reads ``.transform`` will accept it and ignore it. ``attach_transform``
+warns when the target had no ``transform`` attribute at all, which is the
+only signal available from here; ``SyntheticShapes`` and
+``SyntheticSegmentation`` are the two built-ins that behave that way.
 """
 
 from typing import Any

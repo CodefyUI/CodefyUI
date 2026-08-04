@@ -33,6 +33,7 @@ from app.core.execution_context import ExecutionContext
 from app.nodes.data.transforms._base import (
     SeededAugmentation,
     attach_transform,
+    pipeline_is_random,
     seed_pipeline,
 )
 from app.nodes.data.transforms.random_crop_node import RandomCropNode
@@ -124,6 +125,116 @@ def test_a_deterministic_pipeline_is_never_wrapped():
     assert seed_pipeline(pipeline, _context(1234), "tf1") is pipeline
 
 
+# ── what counts as random (core#136 review, M-1) ─────────────────────────
+#
+# ``pipeline_is_random`` decides whether the wrapper is installed at all, so
+# a transform it fails to recognise is not a missed optimisation: at
+# ``num_workers > 0`` the unwrapped pipeline is re-seeded to the same value
+# at the start of every epoch, and epoch 2 replays epoch 1 byte for byte.
+# Augmentation is then silently OFF after the first epoch.
+
+
+@pytest.mark.parametrize("container", ["RandomApply", "RandomChoice",
+                                       "RandomOrder"])
+def test_a_random_container_is_random_even_when_its_children_are_not(
+        container):
+    """The container IS the randomness; its children need not be.
+
+    These three each carry a ``.transforms`` list, so a check that recursed
+    into children BEFORE testing the container's own name answered False for
+    every one of them -- and their entries in ``RANDOM_TRANSFORM_NAMES``
+    were dead code.
+    """
+    from torchvision import transforms as T
+
+    children = [T.Grayscale()]
+    built = (T.RandomApply(children, p=0.5) if container == "RandomApply"
+             else getattr(T, container)([T.Grayscale(), T.ToTensor()]))
+    assert pipeline_is_random(built) is True
+
+
+def test_a_chain_whose_only_randomness_is_a_container_gets_wrapped():
+    """The consequence of the above, at the level the user experiences it."""
+    from torchvision import transforms as T
+
+    pipeline = T.Compose([
+        T.RandomApply([T.Grayscale(num_output_channels=3)], p=0.5),
+        T.ToTensor(),
+    ])
+    assert isinstance(
+        seed_pipeline(pipeline, _context(1234), "tf1"), SeededAugmentation)
+
+
+@pytest.mark.parametrize("name", [
+    "AugMix", "CutMix", "GaussianNoise", "JPEG", "MixUp",
+    "RandomChannelPermutation", "RandomIoUCrop", "RandomPhotometricDistort",
+    "RandomResize", "RandomShortestSize", "RandomZoomOut", "ScaleJitter",
+])
+def test_the_v2_only_random_transforms_are_recognised(name):
+    """torchvision.transforms.v2 randoms with no v1 spelling.
+
+    Reachable from any plugin or custom node with a TRANSFORM output, which
+    ``Transform``'s own docstring advertises as the supported route.
+    """
+    from app.nodes.data.transforms._base import RANDOM_TRANSFORM_NAMES
+
+    assert name in RANDOM_TRANSFORM_NAMES
+
+
+def test_every_torchvision_random_transform_is_listed():
+    """A guard against the set drifting behind torchvision.
+
+    Name-only, so nothing is instantiated. If a torchvision upgrade adds a
+    ``Random*`` transform this fails loudly, which is the whole point: the
+    cost of noticing late is a run whose augmentation froze after epoch 1.
+    """
+    from torchvision import transforms as T
+    from torchvision.transforms import v2
+
+    from app.nodes.data.transforms._base import RANDOM_TRANSFORM_NAMES
+
+    found = {
+        name
+        for module in (T, v2)
+        for name in dir(module)
+        if name.startswith("Random") and isinstance(getattr(module, name), type)
+    }
+    assert found - RANDOM_TRANSFORM_NAMES == set()
+
+
+def test_a_custom_transform_in_torchvisions_own_idiom_is_recognised():
+    """The ``get_params`` backstop, for randomness nobody listed here.
+
+    torchvision's random transforms draw their parameters in a
+    ``get_params`` staticmethod and its deterministic ones have nothing to
+    draw, so a plugin written in that idiom is picked up without being
+    named.
+    """
+    class PluginJitter:
+        @staticmethod
+        def get_params():  # pragma: no cover - never called
+            return 0
+
+        def __call__(self, sample):  # pragma: no cover - never called
+            return sample
+
+    class PluginResize:
+        def __call__(self, sample):  # pragma: no cover - never called
+            return sample
+
+    assert pipeline_is_random(PluginJitter()) is True
+    assert pipeline_is_random(PluginResize()) is False
+
+
+def test_the_backstop_does_not_fire_on_torchvisions_deterministic_steps():
+    """A false positive only costs 6 microseconds, but there are none."""
+    from torchvision import transforms as T
+
+    for step in (T.ToTensor(), T.PILToTensor(), T.Normalize((0.5,), (0.5,)),
+                 T.Resize(8), T.CenterCrop(8), T.Grayscale(), T.Pad(2)):
+        assert pipeline_is_random(step) is False, type(step).__name__
+
+
 def test_no_context_leaves_the_pipeline_alone():
     pipeline = _augmenting_chain()
     assert seed_pipeline(pipeline, None, "tf1") is pipeline
@@ -134,6 +245,30 @@ def test_attach_transform_installs_it_on_the_dataset():
     returned = attach_transform(dataset, _augmenting_chain(), _context(7))
     assert returned is dataset
     assert isinstance(dataset.transform, SeededAugmentation)
+
+
+def test_attach_transform_warns_on_a_dataset_that_ignores_it(caplog):
+    """core#136 review, m-15.
+
+    ``dataset.transform = ...`` succeeds on anything. A ``TensorDataset``
+    (and SyntheticShapes / SyntheticSegmentation) builds its own tensors and
+    never reads the attribute, so the whole chain becomes a no-op. Every
+    dataset that DOES honour it sets one in ``__init__``, so the absence is
+    a reliable negative.
+    """
+    from torch.utils.data import TensorDataset
+
+    dataset = TensorDataset(torch.zeros(2, 3), torch.zeros(2))
+    with caplog.at_level("WARNING"):
+        attach_transform(dataset, _augmenting_chain(), _context(7))
+    assert any("no 'transform' attribute" in record.getMessage()
+               for record in caplog.records), caplog.text
+
+
+def test_attach_transform_is_quiet_on_a_dataset_that_honours_it(caplog):
+    with caplog.at_level("WARNING"):
+        attach_transform(_ImageDataset(), _augmenting_chain(), _context(7))
+    assert caplog.records == []
 
 
 def test_transform_node_wraps_a_wired_chain():

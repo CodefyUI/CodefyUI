@@ -24,11 +24,29 @@ can be honest about:
   the test could pass because the baseline failed to train at all, which
   would say nothing about augmentation.
 
-**How big the margin is.** Measured over the three seeds below, the
-un-augmented model lands at 0.50-0.70 on the mirrored, shifted test split
-(chance is 0.50) while the augmented one lands at 1.00 -- a margin of +0.30
-to +0.50. The assertion asks for +0.15 averaged, which is well inside that
-and is deliberately not fitted to the observation.
+**How big the margin is.** Re-measured 2026-08-04 through the same
+``_arm()`` protocol the tests run, on CPython 3.11.15 with torch
+2.11.0+cu128 and torchvision 0.26.0+cu128, over the three seeds below:
+
+    seed   baseline test acc   augmented   margin
+    0      0.797 (51/64)       1.000       +0.203
+    1      0.562 (36/64)       1.000       +0.438
+    2      0.438 (28/64)       1.000       +0.562
+
+So the un-augmented model spreads 0.44-0.80 around chance (0.50) on the
+mirrored, shifted split while the augmented one is perfect on all three;
+the mean margin is +0.401. The assertion asks for +0.15 averaged, which is
+well inside that and is deliberately not fitted to the observation.
+
+**Reading a failure against that table.** The test split is 64 samples, so
+accuracy is quantised in steps of 1/64 = 0.0156 and every figure above is
+exact, not rounded -- the run is deterministic and reproduces digit for
+digit on the interpreter named. That makes the headroom countable instead
+of a matter of impression: seed 0 is the tightest arm at 51/64, and the
+near-chance guard below trips at 58/64, seven samples away. A reading a
+step or two off the table is a platform difference (another torch build
+reassociates float accumulation and can flip a borderline sample); a
+baseline near 1.00, or an augmented arm that is not, is a real regression.
 """
 
 from __future__ import annotations
@@ -209,4 +227,15 @@ def test_the_baseline_is_genuinely_near_chance_on_the_shifted_split():
     torch.manual_seed(0)
     initial_state = copy.deepcopy(_model().state_dict())
     plain_test, _ = _arm(False, 0, initial_state)
-    assert plain_test < 0.85
+    # 0.90, not the 0.85 this started at. Seed 0 is the luckiest of the
+    # three arms in the module docstring's table (51/64 = 0.797) and 64
+    # samples quantise accuracy in 1/64 steps, so 0.85 fired at 55/64 --
+    # four flipped samples from the measured value, which is noise on a
+    # different torch build rather than a signal about the fixture. 0.90
+    # fires at 58/64 and buys seven. It is still a real guard: at 0.90 the
+    # un-augmented model would be doing the held-out task almost as well
+    # as the augmented one, and the comparison would have stopped meaning
+    # anything.
+    assert plain_test < 0.90, (
+        f"baseline reached {plain_test:.3f} ({plain_test * 64:.0f}/64) on "
+        f"the shifted split; the fixture no longer holds it out")

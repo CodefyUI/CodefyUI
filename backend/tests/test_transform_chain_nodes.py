@@ -146,6 +146,20 @@ def test_resize_honours_the_interpolation_choice():
     assert not torch.equal(nearest, bicubic)
 
 
+def test_resize_bicubic_matches_torchvision():
+    """'nearest' differs from 'bicubic' is not 'bicubic' is BICUBIC.
+
+    The node picks the mode out of a lookup table, and a lookup can point
+    at the wrong row while still pointing somewhere: swap BICUBIC for BOX
+    and the test above still sees two different images. Only a reference
+    built with ``InterpolationMode.BICUBIC`` pins the row itself, and
+    'nearest' is already pinned one test up.
+    """
+    _assert_parity(
+        ResizeTransformNode, {"size": 16, "interpolation": "bicubic"},
+        T.Resize((16, 16), interpolation=T.InterpolationMode.BICUBIC))
+
+
 def test_resize_produces_a_square_not_a_shortest_side():
     """The bare-int form of Resize would leave a 64x32 image 128x64."""
     tall = Image.new("RGB", (64, 32))
@@ -175,13 +189,49 @@ def test_random_horizontal_flip_matches_torchvision():
 
 
 def test_random_horizontal_flip_p_one_is_a_real_flip():
-    """p is wired to the probability, not swallowed."""
+    """p reaches the probability at all, rather than being swallowed.
+
+    Both calls go through ``_seeded``. Unseeded they read whatever RNG
+    state the previous test left, and while p=1.0 and p=0.0 are decided
+    for any state, a node that had dropped p would flip on half of them --
+    so the failure this test exists to report would arrive or not
+    depending on test order.
+    """
     image = _image()
-    flipped = _build(RandomHorizontalFlipNode, {"p": 1.0})(image)
-    never = _build(RandomHorizontalFlipNode, {"p": 0.0})(image)
-    assert torch.equal(T.ToTensor()(flipped),
-                       torch.flip(T.ToTensor()(image), dims=[2]))
-    assert torch.equal(T.ToTensor()(never), T.ToTensor()(image))
+    original = T.ToTensor()(image)
+    flipped = _seeded(_build(RandomHorizontalFlipNode, {"p": 1.0}), image)
+    never = _seeded(_build(RandomHorizontalFlipNode, {"p": 0.0}), image)
+    assert torch.equal(flipped, torch.flip(original, dims=[2]))
+    assert torch.equal(never, original)
+
+
+def test_random_horizontal_flip_honours_a_mid_range_p():
+    """The two extremes cannot separate p from torchvision's 0.5 default.
+
+    torchvision flips when a single draw lands under p, so from one fixed
+    RNG state the decision is a step and the step sits at the value of
+    that draw. Asking either side of it brackets p: whatever constant a
+    node might have been hardcoded with is either above the draw, and
+    flips the low case when it should not, or at or below it, and leaves
+    the high case unflipped when it should not. 0.5 is such a constant.
+
+    The draw is read rather than written down so this stays a statement
+    about the node and not about the exact float torch's generator emits.
+    """
+    image = _image()
+    original = T.ToTensor()(image)
+    torch.manual_seed(PARITY_SEED)
+    draw = float(torch.rand(1))
+    assert 0.0 < draw < 1.0
+    low, high = draw / 2, (1.0 + draw) / 2
+
+    assert torch.equal(
+        _seeded(_build(RandomHorizontalFlipNode, {"p": low}), image),
+        original), f"p={low:.4f} flipped on a draw of {draw:.4f}"
+    assert torch.equal(
+        _seeded(_build(RandomHorizontalFlipNode, {"p": high}), image),
+        torch.flip(original, dims=[2])), (
+        f"p={high:.4f} did not flip on a draw of {draw:.4f}")
 
 
 def test_random_rotation_matches_torchvision():
@@ -193,6 +243,19 @@ def test_random_rotation_expand_matches_torchvision():
     _assert_parity(RandomRotationNode,
                    {"degrees": 30.0, "expand": True, "fill": 0.0},
                    T.RandomRotation(30.0, expand=True, fill=0.0))
+
+
+def test_random_rotation_honours_a_non_default_fill():
+    """A fill of 0.0 is torchvision's own default, so it proves nothing.
+
+    Both rotation tests above pass ``fill=0.0``, which is exactly what
+    ``T.RandomRotation`` uses when the keyword never arrives -- a node
+    that dropped the parameter matches them both. 128.0 is mid grey, and
+    at this seed the rotation is nearly 11 degrees, which empties enough
+    corner for the two references to disagree on a few hundred values.
+    """
+    _assert_parity(RandomRotationNode, {"degrees": 15.0, "fill": 128.0},
+                   T.RandomRotation(15.0, expand=False, fill=128.0))
 
 
 def test_random_rotation_range_is_symmetric_around_zero():
@@ -236,6 +299,21 @@ def test_rand_augment_matches_torchvision():
     _assert_parity(
         RandAugmentNode, {"num_ops": 2, "magnitude": 9},
         T.RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=31))
+
+
+def test_rand_augment_honours_a_non_default_bin_count():
+    """31 bins is torchvision's default, so the test above cannot see it.
+
+    ``num_magnitude_bins`` rescales what every magnitude means, and the
+    node's own docstring says so -- at 15 bins, magnitude 9 is well past
+    half strength instead of under a third of it. A node that accepted the
+    parameter and then left it at 31 would produce a visibly weaker
+    augmentation while every other test stayed green.
+    """
+    _assert_parity(
+        RandAugmentNode,
+        {"num_ops": 2, "magnitude": 9, "num_magnitude_bins": 15},
+        T.RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=15))
 
 
 def test_rand_augment_num_ops_zero_is_the_identity():
@@ -305,6 +383,24 @@ def test_imagenet_preset_carries_the_published_statistics():
     """
     assert PRESETS["ImageNet"] == (
         (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+
+def test_the_cifar_presets_carry_the_published_statistics():
+    """The same guard as ImageNet's, for the two rows that lacked one.
+
+    ``test_normalize_presets_match_torchvision`` reads PRESETS and hands
+    the very same tuple to ``T.Normalize``, so it agrees with whatever is
+    in the table -- a transposed digit included. So does the CIFAR-10
+    chain in ``test_augmentation_generalization``, and so does the recipe
+    in docs/usage/data-augmentation.md, which quotes these six numbers to
+    the reader as the ones to reproduce a CIFAR baseline with. Nothing was
+    checking them. A wrong std shifts the input distribution of every
+    graph that picks the preset without changing a single shape.
+    """
+    assert PRESETS["CIFAR-10"] == (
+        (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
+    assert PRESETS["CIFAR-100"] == (
+        (0.5071, 0.4865, 0.4409), (0.2673, 0.2564, 0.2762))
 
 
 # ── chaining and order ───────────────────────────────────────────────────

@@ -55,8 +55,10 @@ import os
 import socket
 import struct
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,11 @@ FILE_VERSION = "brain.Event:2"
 #: in a live TensorBoard within a few seconds, and a run that dies without
 #: closing the writer should lose at most this much.
 FLUSH_INTERVAL_S = 5.0
+
+#: Largest finite value ``simple_value``'s 32-bit float can hold. A finite
+#: float64 above it is clamped here rather than handed to ``struct.pack``,
+#: which would raise ``OverflowError``.
+FLOAT32_MAX = 3.4028234663852886e38
 
 #: Castagnoli polynomial, bit-reversed. The one TFRecord uses; NOT the
 #: CRC-32 in ``zlib``, which is a different polynomial and would make every
@@ -170,13 +177,21 @@ def event_filename(now: float | None = None) -> str:
     name, so the prefix and the position of the timestamp are load-bearing;
     the rest is provenance. The host part is sanitised because it ends up in
     a filename and a Windows machine name is not guaranteed to be safe there.
+
+    The trailing counter is a random suffix rather than the ``0`` torch's own
+    ``SummaryWriter`` starts from, and it is there for the same reason torch
+    randomises it: timestamp + host + pid is NOT unique. Two writers opening
+    the same directory in the same second from the same process would
+    otherwise pick the same name and the second ``open(..., "wb")`` would
+    truncate the first one's file, losing a whole series with no error.
     """
     stamp = int(time.time() if now is None else now)
     host = "".join(
         c if (c.isalnum() or c in "-_") else "-"
         for c in socket.gethostname()
     ) or "localhost"
-    return f"events.out.tfevents.{stamp}.{host}.{os.getpid()}.0"
+    unique = uuid4().hex[:8]
+    return f"events.out.tfevents.{stamp}.{host}.{os.getpid()}.{unique}"
 
 
 class EventFileWriter:
@@ -191,25 +206,44 @@ class EventFileWriter:
     once, and the caller keeps training.
     """
 
+    #: Class-level default so :meth:`__del__` is safe on a half-built
+    #: object. ``__init__`` can raise before the ``open()`` -- a read-only
+    #: parent, a path too long, a full disk -- and ``open_run_writer``
+    #: correctly turns that into ``None``; without this attribute the
+    #: doomed instance then printed ``Exception ignored in: <function
+    #: EventFileWriter.__del__>`` with an ``AttributeError`` to stderr.
+    _file: BinaryIO | None = None
+
     def __init__(self, logdir: Path | str) -> None:
         self.logdir = Path(logdir)
         self.logdir.mkdir(parents=True, exist_ok=True)
         self.path = self.logdir / event_filename()
-        self._file: BinaryIO | None = open(self.path, "wb")
         self._last_flush = time.monotonic()
-        self._write(_event(wall_time=time.time(),
-                           file_version=FILE_VERSION))
+        self._file = open(self.path, "wb")
+        self._write(lambda: _event(wall_time=time.time(),
+                                   file_version=FILE_VERSION))
 
     @property
     def closed(self) -> bool:
         return self._file is None
 
-    def _write(self, payload: bytes) -> None:
+    def _write(self, build: Callable[[], bytes]) -> None:
+        """Encode and append one event. Never raises.
+
+        *build* is a CALLABLE rather than the finished bytes, and that is
+        the whole point: encoding happens inside the guard. Passing
+        ``_event(...)`` as an argument evaluated it in the caller, where an
+        un-encodable value (a float outside float32's range, a tag holding
+        a lone surrogate) raised straight out of ``record_metric``, out of
+        ``TrainingLoop.execute`` and killed the run -- with the writer left
+        open, so the class docstring's "a write that fails disables the
+        writer and the caller keeps training" was true only for I/O errors.
+        """
         handle = self._file
         if handle is None:
             return
         try:
-            handle.write(_record(payload))
+            handle.write(_record(build()))
             now = time.monotonic()
             if now - self._last_flush >= FLUSH_INTERVAL_S:
                 handle.flush()
@@ -234,6 +268,14 @@ class EventFileWriter:
         the honest picture of a diverged loss -- but it also poisons the
         y-axis auto-scaling for every other series in the same chart, and
         the run's own metric store already keeps the NaN.
+
+        A value that IS finite but outside float32's range is CLAMPED to the
+        rail rather than dropped. ``simple_value`` is a 32-bit float, so
+        ``struct.pack("<f", 1e39)`` raises ``OverflowError`` -- reachable
+        from a float64 model, and the NaN filter above does not catch it
+        because 1e39 is perfectly finite. Clamping keeps the point on the
+        chart, at the largest magnitude the format can say, instead of
+        either losing it or writing an ``inf`` that ruins the axis.
         """
         try:
             numeric = float(value)
@@ -242,8 +284,13 @@ class EventFileWriter:
             return
         if numeric != numeric or numeric in (float("inf"), float("-inf")):
             return
-        self._write(_event(
-            wall_time=time.time() if wall_time is None else wall_time,
+        if numeric > FLOAT32_MAX:
+            numeric = FLOAT32_MAX
+        elif numeric < -FLOAT32_MAX:
+            numeric = -FLOAT32_MAX
+        stamp = time.time() if wall_time is None else wall_time
+        self._write(lambda: _event(
+            wall_time=stamp,
             step=index,
             summary=_scalar_summary(str(tag), numeric),
         ))
@@ -339,15 +386,27 @@ def close_and_register(writer: EventFileWriter | None, context: Any) -> str | No
     Queued LAST by every caller, per ``ArtifactSignal``'s tail-safety
     obligation: the outbox drops the OLDEST item, so an artifact row queued
     before a burst of per-batch progress frames is the one that disappears.
+
+    Called from a ``finally``, so it runs on the exception path as well --
+    which is what keeps "no row, no file" true for a run that dies
+    mid-training, and is why it must be TOTAL. An exception raised in here
+    would propagate out of that ``finally`` and REPLACE whatever actually
+    killed the run with an error about logging.
     """
     if writer is None:
         return None
-    logdir = str(writer.logdir)
-    events = writer.path.name
-    writer.close()
-    log_artifact = getattr(context, "log_artifact", None)
-    if callable(log_artifact):
-        log_artifact(ARTIFACT_KIND, logdir, {"events": events})
-    logger.info("TensorBoard events written to %s (open with "
-                "`tensorboard --logdir %s`)", logdir, logdir)
-    return logdir
+    try:
+        logdir = str(writer.logdir)
+        events = writer.path.name
+        writer.close()
+        log_artifact = getattr(context, "log_artifact", None)
+        if callable(log_artifact):
+            log_artifact(ARTIFACT_KIND, logdir, {"events": events})
+        logger.info("TensorBoard events written to %s (open with "
+                    "`tensorboard --logdir %s`)", logdir, logdir)
+        return logdir
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning(
+            "TensorBoard events could not be registered on the run; the "
+            "directory is on disk but nothing references it.", exc_info=True)
+        return None

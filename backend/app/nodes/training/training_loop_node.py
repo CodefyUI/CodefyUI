@@ -540,6 +540,55 @@ class TrainingLoopNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        """Own the TensorBoard writer's lifetime; train in ``_run_training``.
+
+        The split exists for one reason: ``close_and_register`` must run on
+        the exception path too. "No row, no file" (``core.checkpoints``, and
+        ``open_run_writer``'s own docstring) means a directory nothing
+        references is litter no retention sweep can find -- and a run that
+        raises mid-training is *exactly* when the partial loss curve matters
+        most. Registering it here means a crashed run's curves are listed as
+        an artifact and reachable from the Runs panel, instead of sitting on
+        disk with nothing pointing at them.
+
+        Queueing it in a ``finally`` also makes it genuinely LAST, after
+        ``save_interrupt_checkpoint``, which is what
+        ``close_and_register``'s tail-safety docstring always claimed and
+        did not previously get: the outbox drops the OLDEST item, so an
+        artifact row queued before a burst of per-batch progress frames is
+        the one that disappears.
+        """
+        from ...core.tensorboard import close_and_register, open_run_writer
+
+        # #136: the same series, in a second place. Opened BEFORE any
+        # training so the "no row, no file" check happens before the
+        # directory is created, not after a full run has filled it.
+        tb_writer = (open_run_writer(context)
+                     if bool(params.get("tensorboard", False)) else None)
+        try:
+            result = self._run_training(
+                inputs, params, progress_callback,
+                context=context, tb_writer=tb_writer,
+            )
+        finally:
+            # Total by contract (see close_and_register): raising in here
+            # would REPLACE whatever killed the run with an error about
+            # logging, which is the one thing instrumentation must never do.
+            tb_logdir = close_and_register(tb_writer, context)
+
+        if tb_logdir is not None and isinstance(result.get("metrics"), dict):
+            result["metrics"]["tensorboard_logdir"] = tb_logdir
+        return result
+
+    def _run_training(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        progress_callback: Any | None = None,
+        *,
+        context: Any = None,
+        tb_writer: Any = None,
+    ) -> dict[str, Any]:
         import torch
 
         from ...core.amp import AmpPolicy
@@ -553,7 +602,6 @@ class TrainingLoopNode(BaseNode):
             stop_checker,
         )
         from ...core.seeding import apply_determinism
-        from ...core.tensorboard import close_and_register, open_run_writer
 
         model = inputs["model"]
         dataloader = inputs["dataloader"]
@@ -591,12 +639,6 @@ class TrainingLoopNode(BaseNode):
         if bool(params.get("deterministic", False)) or getattr(
                 context, "deterministic", False):
             apply_determinism(True)
-
-        # #136: the same series, in a second place. Opened BEFORE any
-        # training so the "no row, no file" check happens before the
-        # directory is created, not after a full run has filled it.
-        tb_writer = (open_run_writer(context)
-                     if bool(params.get("tensorboard", False)) else None)
 
         def record_metric(name: str, value: Any, step: int) -> None:
             """One point, to the run's metric store and to TensorBoard.
@@ -1033,14 +1075,6 @@ class TrainingLoopNode(BaseNode):
         # average is not), so the resumed run re-runs it from batch 0.
         completed_epochs = start_epoch + len(epoch_losses)
 
-        # Closed and registered here rather than in a ``finally``: both of
-        # this function's remaining artifact producers queue at the very
-        # end, with no progress frames between them, which is what
-        # ``ArtifactSignal``'s drop-oldest queue requires. A run that dies
-        # by exception never reaches this line; ``EventFileWriter.__del__``
-        # is what flushes the events it did write.
-        tb_logdir = close_and_register(tb_writer, context)
-
         checkpoint_path: str | None = None
         if stopped_at is not None:
             # The epoch the stop landed IN, 1-based. Only the ``train`` phase
@@ -1087,8 +1121,9 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
-        if tb_logdir is not None:
-            metrics["tensorboard_logdir"] = tb_logdir
+        # ``tensorboard_logdir`` is added by ``execute`` after the writer is
+        # closed and registered, which happens in a ``finally`` outside this
+        # method so a run that raises still gets its artifact row.
         if policy.uses_scaler:
             # Zero is a meaningful reading here ("the loss scale never
             # overflowed"), so it is reported whenever there was a scaler
