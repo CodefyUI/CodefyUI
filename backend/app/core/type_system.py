@@ -12,6 +12,7 @@ _COMPAT: dict[DataType, set[DataType]] = {
     DataType.STRING: {DataType.STRING, DataType.ANY},
     DataType.IMAGE: {DataType.IMAGE, DataType.TENSOR, DataType.ANY},
     DataType.LIST: {DataType.LIST, DataType.ANY},
+    DataType.TRANSFORM: {DataType.TRANSFORM, DataType.ANY},
     DataType.ANY: {dt for dt in DataType if dt is not DataType.TRIGGER},
     DataType.TRIGGER: {DataType.TRIGGER},
 }

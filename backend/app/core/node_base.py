@@ -22,6 +22,12 @@ class DataType(str, Enum):
     LIST = "LIST"
     ANY = "ANY"
     TRIGGER = "TRIGGER"
+    # A callable that maps one sample to one sample (core#136). What the
+    # transform-chain nodes pass to each other and what a dataset node
+    # accepts on its ``train_transform`` / ``eval_transform`` ports. The
+    # value on the wire is always a ``torchvision.transforms.Compose``, so a
+    # port that receives one can assign it straight to ``dataset.transform``.
+    TRANSFORM = "TRANSFORM"
 
 
 class ParamType(str, Enum):

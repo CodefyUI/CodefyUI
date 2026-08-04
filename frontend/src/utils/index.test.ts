@@ -132,6 +132,13 @@ describe('getPortColor', () => {
   it('returns ANY color for unknown types', () => {
     expect(getPortColor('UNKNOWN_TYPE')).toBe(DATA_TYPE_COLORS['ANY']);
   });
+
+  it('gives TRANSFORM a colour of its own', () => {
+    // Without an entry it would silently fall back to ANY grey, and every
+    // transform-chain edge on the canvas would look like an untyped one.
+    expect(getPortColor('TRANSFORM')).toBe(DATA_TYPE_COLORS['TRANSFORM']);
+    expect(getPortColor('TRANSFORM')).not.toBe(DATA_TYPE_COLORS['ANY']);
+  });
 });
 
 describe('isValidConnection', () => {
@@ -166,6 +173,15 @@ describe('isValidConnection', () => {
 
   it('allows DATASET → DATALOADER via the compatibility map', () => {
     expect(isValidConnection('DATASET', 'DATALOADER')).toBe(true);
+  });
+
+  it('allows TRANSFORM to TRANSFORM and to ANY, and nothing else', () => {
+    expect(isValidConnection('TRANSFORM', 'TRANSFORM')).toBe(true);
+    expect(isValidConnection('TRANSFORM', 'ANY')).toBe(true);
+    expect(isValidConnection('ANY', 'TRANSFORM')).toBe(true);
+    expect(isValidConnection('TRANSFORM', 'DATASET')).toBe(false);
+    expect(isValidConnection('DATASET', 'TRANSFORM')).toBe(false);
+    expect(isValidConnection('TRANSFORM', 'TRIGGER')).toBe(false);
   });
 
   it('returns false for a source type absent from the compatibility map', () => {
@@ -707,5 +723,52 @@ describe('findGraphNameCollision', () => {
   it('does not warn on a case-only re-save of the currently-open graph', () => {
     // Open file stem "My_Graph"; saving "my graph" maps to the same file.
     expect(findGraphNameCollision('my graph', existing, 'My_Graph')).toBeNull();
+  });
+});
+
+describe('resolveDynamicInputs for ComposeTransform', () => {
+  function composeDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
+    return {
+      node_name: 'ComposeTransform',
+      category: 'Data',
+      description: '',
+      inputs: [
+        { name: 'step_1', data_type: 'TRANSFORM', description: '', optional: true },
+        { name: 'step_2', data_type: 'TRANSFORM', description: '', optional: true },
+      ],
+      outputs: [{ name: 'transform', data_type: 'TRANSFORM', description: '', optional: false }],
+      params: [],
+      ...overrides,
+    };
+  }
+
+  it('expands steps into that many optional TRANSFORM ports', () => {
+    const ports = resolveDynamicInputs(composeDef(), { steps: 4 });
+    expect(ports.map((p) => p.name)).toEqual(['step_1', 'step_2', 'step_3', 'step_4']);
+    expect(ports.every((p) => p.data_type === 'TRANSFORM' && p.optional)).toBe(true);
+  });
+
+  it('parses a string steps param', () => {
+    expect(resolveDynamicInputs(composeDef(), { steps: '5' })).toHaveLength(5);
+  });
+
+  it('clamps to the backend range of 2..8', () => {
+    // Mirrors compose_transform_node._step_count; a frontend that allowed 1
+    // or 9 would draw handles the backend has no port for.
+    expect(resolveDynamicInputs(composeDef(), { steps: 1 })).toHaveLength(2);
+    expect(resolveDynamicInputs(composeDef(), { steps: 0 })).toHaveLength(2);
+    expect(resolveDynamicInputs(composeDef(), { steps: 99 })).toHaveLength(8);
+    expect(resolveDynamicInputs(composeDef(), { steps: 'abc' })).toHaveLength(2);
+    expect(resolveDynamicInputs(composeDef(), undefined)).toHaveLength(2);
+  });
+
+  it('strips a plugin prefix before matching the node name', () => {
+    const ports = resolveDynamicInputs(composeDef({ node_name: 'pack:ComposeTransform' }), { steps: 3 });
+    expect(ports).toHaveLength(3);
+  });
+
+  it('leaves every other node definition untouched by reference', () => {
+    const def = composeDef({ node_name: 'Transform' });
+    expect(resolveDynamicInputs(def, { steps: 5 })).toBe(def.inputs);
   });
 });

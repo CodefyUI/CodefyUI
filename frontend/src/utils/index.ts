@@ -125,6 +125,9 @@ export const DATA_TYPE_COLORS: Record<string, string> = {
   STRING: '#8BC34A',
   IMAGE: '#FF5722',
   LIST: '#CDDC39',
+  // Sits next to DATASET's orange on purpose: a transform chain is what
+  // feeds a dataset, and the two are read together.
+  TRANSFORM: '#FFC107',
   ANY: '#9E9E9E',
 };
 
@@ -165,6 +168,10 @@ const SPLIT_MAX_CHUNKS = 32;
 
 /** Mirrors `python_script_node.MAX_PORTS`. */
 export const SCRIPT_MAX_PORTS = 8;
+
+/** Mirrors `compose_transform_node.MIN_STEPS` / `MAX_STEPS`. */
+export const COMPOSE_MIN_STEPS = 2;
+export const COMPOSE_MAX_STEPS = 8;
 
 function bareName(qualifiedName: string): string {
   const idx = qualifiedName.lastIndexOf(':');
@@ -247,15 +254,30 @@ export function resolveDynamicOutputs(
  * Resolve a node's *live* input ports. The mirror of
  * `resolveDynamicOutputs`, for the backend's `define_inputs_dynamic`.
  *
- * Only PythonScript varies its inputs today; everything else returns
- * `definition.inputs` verbatim (same reference — see above).
+ * PythonScript and ComposeTransform vary their inputs; everything else
+ * returns `definition.inputs` verbatim (same reference — see above).
  */
 export function resolveDynamicInputs(
   definition: import('../types').NodeDefinition | undefined,
   params: Record<string, unknown> | undefined,
 ): import('../types').PortDefinition[] {
   if (!definition) return [];
-  if (bareName(definition.node_name) === 'PythonScript') {
+  const bare = bareName(definition.node_name);
+  if (bare === 'ComposeTransform') {
+    // `clampCount`'s floor is 1; ComposeTransform's is 2, because composing
+    // one chain is what a plain edge already does.
+    const count = Math.max(
+      COMPOSE_MIN_STEPS,
+      clampCount(params?.steps, COMPOSE_MIN_STEPS, COMPOSE_MAX_STEPS),
+    );
+    return Array.from({ length: count }, (_, i) => ({
+      name: `step_${i + 1}`,
+      data_type: 'TRANSFORM',
+      description: `Chain to run at position ${i + 1}`,
+      optional: true,
+    }));
+  }
+  if (bare === 'PythonScript') {
     const count = clampCount(params?.input_ports, 1, SCRIPT_MAX_PORTS);
     const types = resolvePortTypes(params?.input_types, count, 'TENSOR');
     return Array.from({ length: count }, (_, i) => ({
@@ -478,6 +500,7 @@ export function isValidConnection(sourceType: string, targetType: string): boole
     SCALAR: ['SCALAR', 'ANY'],
     STRING: ['STRING', 'ANY'],
     IMAGE: ['IMAGE', 'TENSOR', 'ANY'],
+    TRANSFORM: ['TRANSFORM', 'ANY'],
   };
 
   const compatible = compatibilityMap[sourceType.toUpperCase()];
