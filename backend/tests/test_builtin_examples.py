@@ -12,6 +12,14 @@ manually (and the underlying nodes have their own unit tests).
 
 Parametrised by glob so adding a new example directory is enough — no test
 code changes required.
+
+One example gets more than the structural check: the ResNet-18/CIFAR-10
+baseline (core#138) is the project's accuracy claim, and the part of it most
+able to rot silently — the 70-node layer graph inside ``SequentialModel`` —
+is an opaque JSON string that ``validate_graph`` cannot see into. The
+short-epoch test at the bottom of this file executes that graph for real,
+against a generated image folder instead of the 170 MB download. See
+``test_resnet18_cifar10_baseline_short_epoch``.
 """
 
 from __future__ import annotations
@@ -19,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from pathlib import Path
 
 import pytest
@@ -91,3 +100,239 @@ def test_builtin_graph_executes(graph_path: Path):
         asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
     finally:
         os.chdir(prev_cwd)
+
+
+# ── ResNet-18 / CIFAR-10 baseline: short-epoch execution (core#138) ─────────
+
+_RESNET18_EXAMPLE = (
+    _EXAMPLES_ROOT / "Usage_Example" / "ResNet18-CIFAR10-Baseline" / "graph.json"
+)
+
+#: Classes and images-per-class in the generated stand-in dataset. Two classes
+#: is the minimum ImageFolder accepts; the model still has its real 10-way head,
+#: so labels 0/1 simply never exercise the other eight logits.
+_FIXTURE_CLASSES = ("class_a", "class_b")
+_FIXTURE_PER_CLASS = 4
+
+
+def _write_image_folder(root: Path) -> None:
+    """Create ``root/{train,val}/<class>/*.png`` of 32x32 RGB noise.
+
+    Deliberately not CIFAR-10: CI must not download 170 MB, and this test is
+    about the graph wiring and the layer spec, not about accuracy. Images are
+    32x32 so ``RandomCrop(32, padding=4)`` in the example's real augmentation
+    chain is exercised at its true size.
+    """
+    from PIL import Image
+
+    rng = random.Random(0)  # local instance: never touches the global RNG
+    for split in ("train", "val"):
+        for label, cls in enumerate(_FIXTURE_CLASSES):
+            d = root / split / cls
+            d.mkdir(parents=True, exist_ok=True)
+            for i in range(_FIXTURE_PER_CLASS):
+                # Bias each class's colour so the task is at least learnable.
+                base = 40 if label == 0 else 200
+                px = bytes(
+                    max(0, min(255, base + rng.randint(-30, 30)))
+                    for _ in range(32 * 32 * 3)
+                )
+                Image.frombytes("RGB", (32, 32), px).save(d / f"{i}.png")
+
+
+#: The recipe the published 95.48% was measured with.
+#:
+#: Asserted against the shipped graph *before* :func:`_shrink_for_ci` rewrites
+#: it. Execution alone cannot guard these: the shrink replaces both dataset
+#: nodes wholesale and overrides the loop/scheduler params, so a graph whose
+#: eval split had been repointed at ``train``, or whose optimizer recipe had
+#: been replaced outright, would still execute happily. The number on the docs
+#: page is only meaningful if the file that ships is the file that produced it.
+_SHIPPED_RECIPE: dict[str, dict] = {
+    "ds-train": {"name": "CIFAR10", "split": "train"},
+    "ds-test": {"name": "CIFAR10", "split": "test"},
+    "aug-crop": {"size": 32, "padding": 4},
+    "aug-flip": {"p": 0.5},
+    "aug-norm": {"preset": "CIFAR-10"},
+    "ev-norm": {"preset": "CIFAR-10"},
+    "dl-train": {"batch_size": 128, "shuffle": True},
+    "dl-val": {"batch_size": 512, "shuffle": False},
+    "opt": {
+        "type": "SGD", "lr": 0.1, "momentum": 0.9,
+        "weight_decay": 5e-4, "nesterov": True,
+    },
+    "loss": {"type": "CrossEntropyLoss", "label_smoothing": 0.0},
+    "sched": {"type": "CosineAnnealingLR", "T_max": 200},
+    "train": {"epochs": 200, "precision": "bf16", "early_stopping_patience": 0},
+    "eval": {"batch_size": 512},
+}
+
+
+def _data_source(edges: list[dict], target: str, handle: str) -> str:
+    """Id of the node feeding ``target.handle`` over a data edge."""
+    for e in edges:
+        if (
+            e.get("type", "data") == "data"
+            and e["target"] == target
+            and e.get("sourceHandle") is not None
+            and e.get("targetHandle") == handle
+        ):
+            return e["source"]
+    raise AssertionError(f"no data edge feeds {target}.{handle}")
+
+
+def _assert_shipped_recipe(nodes: list[dict], edges: list[dict]) -> None:
+    """The shipped graph still is the graph the published number came from.
+
+    Two kinds of check, and the second is the one that matters most:
+
+    * every hyperparameter the README and the docs page quote is still the
+      value in the file;
+    * evaluation still happens on the *held-out* split. The whole milestone
+      rests on that one property, and it is exactly the property that is
+      invisible to an execution smoke against a synthetic image folder.
+    """
+    by_id = {n["id"]: n for n in nodes}
+
+    for node_id, expected in _SHIPPED_RECIPE.items():
+        assert node_id in by_id, f"{node_id} is missing from the shipped graph"
+        actual = by_id[node_id]["data"]["params"]
+        for key, want in expected.items():
+            assert actual.get(key) == want, (
+                f"{node_id}.{key} is {actual.get(key)!r}, but the published "
+                f"result was measured with {want!r}"
+            )
+
+    # Cosine annealing is stepped once per epoch and must reach zero exactly at
+    # the end of training; a mismatch is silent accuracy loss (issue #205).
+    assert (
+        by_id["sched"]["data"]["params"]["T_max"]
+        == by_id["train"]["data"]["params"]["epochs"]
+    ), "LRScheduler.T_max must equal TrainingLoop.epochs"
+
+    # No leakage: the evaluated dataset is the test split, the trained one is
+    # the train split, and they are different nodes.
+    eval_ds = _data_source(edges, "eval", "dataset")
+    train_ds = _data_source(edges, "dl-train", "dataset")
+    assert by_id[eval_ds]["data"]["params"]["split"] == "test", (
+        f"EvaluateModel reads {eval_ds}, whose split is "
+        f"{by_id[eval_ds]['data']['params']['split']!r} — the accuracy claim "
+        f"requires the held-out split"
+    )
+    assert by_id[train_ds]["data"]["params"]["split"] == "train", train_ds
+    assert eval_ds != train_ds, "training and evaluation share one Dataset node"
+
+    # The random augmentation chain reaches a train_transform port and nothing
+    # else — a test split must never be augmented.
+    aug_targets = {
+        e.get("targetHandle")
+        for e in edges
+        if e.get("type", "data") == "data" and e["source"] == "aug-norm"
+    }
+    assert aug_targets == {"train_transform"}, (
+        f"the augmentation chain feeds {aug_targets}, not just train_transform"
+    )
+
+
+def _shrink_for_ci(nodes: list[dict], data_root: Path) -> None:
+    """Rewrite the shipped graph in place into a 2-step CPU run.
+
+    Only params and the two dataset node types change — every edge, the
+    augmentation chain, the optimizer/scheduler/loss wiring and the whole
+    ``SequentialModel`` layer spec are executed exactly as shipped.
+    ``ImageFolderDataset`` is a drop-in for ``Dataset`` here because it
+    declares the same ``train_transform``/``eval_transform`` inputs and the
+    same ``dataset`` output.
+
+    Both dataset nodes are replaced *wholesale*, params included, so nothing
+    this function touches can be asserted afterwards — call
+    :func:`_assert_shipped_recipe` first.
+    """
+    by_id = {n["id"]: n for n in nodes}
+
+    for node_id, split in (("ds-train", "train"), ("ds-test", "val")):
+        node = by_id[node_id]
+        node["type"] = "ImageFolderDataset"
+        node["data"]["params"] = {"path": str(data_root), "split": split}
+
+    for node_id in ("dl-train", "dl-val"):
+        by_id[node_id]["data"]["params"].update(
+            batch_size=4, num_workers=0, persistent_workers=False, pin_memory=False
+        )
+
+    by_id["train"]["data"]["params"].update(
+        epochs=1, max_steps=2, precision="fp32", device="cpu", tensorboard=False
+    )
+    by_id["sched"]["data"]["params"]["T_max"] = 1
+    by_id["eval"]["data"]["params"].update(batch_size=4, device="cpu")
+    by_id["ckpt"]["data"]["params"].update(path="smoke.pt", epoch=1)
+
+
+def test_resnet18_cifar10_baseline_recipe_intact():
+    """The shipped graph is still the graph the published 95.48% came from.
+
+    Reads the file unmodified — no shrinking, no execution — so it sees the
+    real dataset splits and the real hyperparameters.
+    """
+    payload = json.loads(_RESNET18_EXAMPLE.read_text(encoding="utf-8"))
+    _assert_shipped_recipe(payload["nodes"], payload["edges"])
+
+
+def test_resnet18_cifar10_baseline_short_epoch(tmp_path, monkeypatch):
+    """Execute the shipped baseline graph for two optimizer steps.
+
+    Guards the parts ``validate_graph`` is blind to: that the 70-node ResNet-18
+    layer JSON still builds (11,173,962 parameters, the CIFAR variant's count),
+    that the transform chain still composes, and that model/optimizer/scheduler/
+    loss/checkpoint/evaluate still agree on port names.
+    """
+    from app.config import settings
+
+    payload = json.loads(_RESNET18_EXAMPLE.read_text(encoding="utf-8"))
+    nodes, edges = payload["nodes"], payload["edges"]
+
+    # Before anything is rewritten: the recipe and the eval split are only
+    # observable on the pristine file.
+    _assert_shipped_recipe(nodes, edges)
+
+    data_root = tmp_path / "images"
+    _write_image_folder(data_root)
+
+    # CheckpointSaver refuses to write outside the data root, so move the data
+    # root rather than the path — keeps the test out of the user's real
+    # backend/data/models (cf. #151).
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+
+    _shrink_for_ci(nodes, data_root)
+    assert not validate_graph(nodes, edges), "shrunk graph must still validate"
+
+    results = asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
+
+    # The layer spec really built the CIFAR ResNet-18, not something smaller.
+    model = results["model"]["model"]
+    assert sum(p.numel() for p in model.parameters()) == 11_173_962
+
+    # Training actually stepped and produced a finite loss.
+    losses = results["train"]["losses"]
+    assert len(losses) == 1, f"expected one epoch of loss, got {losses}"
+    assert losses[0] == losses[0], "training loss is NaN"
+
+    metrics = results["train"]["metrics"]
+    assert metrics["total_steps"] == 2, metrics
+    assert metrics["stopped_at_max_steps"] is True, metrics
+
+    # The two transform chains really are what they claim to be: the training
+    # one randomises, the evaluation one does not. Asserted on the composed
+    # pipelines rather than on node types, so a chain rewired to send an
+    # augmentation down the eval side is caught by what it does.
+    from app.nodes.data.transforms._base import pipeline_is_random
+
+    assert pipeline_is_random(results["aug-norm"]["transform"]) is True
+    assert pipeline_is_random(results["ev-norm"]["transform"]) is False
+
+    # Evaluation ran end to end over the held-out split.
+    assert results["eval"]["total"] == len(_FIXTURE_CLASSES) * _FIXTURE_PER_CLASS
+    assert 0.0 <= results["eval"]["accuracy"] <= 1.0
+
+    # The checkpoint landed where CheckpointSaver said it would.
+    assert (tmp_path / "models" / "smoke.pt").is_file()

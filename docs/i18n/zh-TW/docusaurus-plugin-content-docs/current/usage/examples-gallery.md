@@ -11,7 +11,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例圖。你�
 | 類別 | 範例 |
 |----------|----------|
 | **模型架構** | ResNet、ConvNeXt、EfficientNet、UNet、ViT、SwinTransformer、BERT、GPT、LLaMA、DiT、LSTM TimeSeries、BiGRU SpeechRecognition、Seq2Seq Attention、DQN Atari、PPO Robotics |
-| **使用範例** | CNN-MNIST 訓練、CNN-MNIST 推論、GPT-Mini 訓練、ResNet-CIFAR10 訓練 |
+| **使用範例** | CNN-MNIST 訓練、CNN-MNIST 推論、GPT-Mini 訓練、ResNet-CIFAR10 訓練、**ResNet-18 / CIFAR-10 baseline**（實測 95.48%，見[重現標準結果](./reproducing-baselines)）|
 | **LLM** | Word Embedding Analogy（用離線的 `demo-16d` backend 計算 `king − man + woman ≈ queen`）|
 
 這個 repository 在磁碟上也依主題把範例分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `Others/`。

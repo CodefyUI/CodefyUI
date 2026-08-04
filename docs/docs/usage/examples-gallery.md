@@ -13,7 +13,7 @@ The gallery is organized into ordered sections:
 | Section | Contents |
 |---------|----------|
 | **Quick Start** | The three pinned starters: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
-| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), and the remaining trainers (GPT-Mini, ResNet-CIFAR10). |
+| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
 | **Plugin Examples** | Examples shipped by installed [plugins](/advanced/plugins) (and any unrecognized categories). Only shown when present. |
 | **Model Architectures** | 15 classic architecture walkthroughs, always listed last: ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics. |
 
