@@ -116,6 +116,13 @@ which wrote an interrupt checkpoint automatically, and a resumed graph with a
 learning rate matched the theoretical cosine from `base_lrs` 0.1 to within 1e-12,
 so the schedule was continuous across the stop rather than restarted.
 
+The checkpoint's metadata records `{epoch: 8, batch: 272}` — the Stop landed
+about 70% of the way through epoch 9 (391 batches at 128). Those partial-epoch
+weight updates are kept, but the epoch is not counted, so the resumed run
+re-ran epoch 9 from batch 0. The schedule is continuous across a mid-epoch stop;
+the data pass is not. That is why the resumed run is a faithful continuation but
+not a bitwise match for an uninterrupted 20-epoch run.
+
 The wiring order matters, though not for the reason it might look like — see the
 note in the docs page. `Optimizer` feeds `LRScheduler` feeds
 `CheckpointLoader.lr_scheduler`. That last input is optional, and leaving it
