@@ -89,6 +89,7 @@ async def validate(graph: GraphData):
     errors = validate_graph(
         nodes, edges,
         preset_fallback=build_preset_fallback([p.model_dump() for p in graph.presets]),
+        subgraphs=[s.model_dump() for s in graph.subgraphs],
     )
     return GraphValidationResponse(valid=len(errors) == 0, errors=errors)
 
@@ -213,12 +214,19 @@ async def export_graph(graph: GraphExportRequest):
     scrub_preset_definition_secrets(presets)
     preset_fallback = build_preset_fallback(presets)
     scrub_graph_secrets(nodes, preset_fallback=preset_fallback)
+    # Subgraph internals are ordinary nodes with ordinary params, so they get
+    # the same secret scrub the top level gets -- an exported file must never
+    # carry a key just because the node holding it sits inside a block.
+    subgraphs = [s.model_dump() for s in graph.subgraphs]
+    for definition in subgraphs:
+        scrub_graph_secrets(definition.get("nodes", []))
 
     try:
         prepare_executable_graph(
             nodes,
             edges,
             preset_fallback=preset_fallback,
+            subgraphs=subgraphs,
         )
     except GraphValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -229,6 +237,7 @@ async def export_graph(graph: GraphExportRequest):
             edges,
             name=graph.name,
             presets=presets,
+            subgraphs=subgraphs,
             # core#136: the canvas seed travels with the export, so an
             # exported augmenting graph reproduces the crops the canvas
             # produced instead of drawing fresh entropy every invocation.

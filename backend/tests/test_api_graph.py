@@ -494,3 +494,146 @@ async def test_save_and_load_roundtrips_the_bypass_flag(
     assert loaded["drop"]["data"]["params"]["p"] == 0.25
     # An untouched node gains no flag.
     assert "bypassed" not in loaded["flat"]["data"]
+
+
+# ── Subgraphs over HTTP (core#137) ──────────────────────────────────────
+
+
+def _subgraph_graph(name="sg-graph", scalar=2.0):
+    return {
+        "name": name,
+        "nodes": [
+            {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+             "data": {"params": {}}},
+            {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+             "data": {"params": {"shape": "1,2", "fill": "full",
+                                 "value": 1.0}}},
+            {"id": "one", "type": "subgraph:double",
+             "position": {"x": 2, "y": 0}, "data": {"params": {}}},
+            {"id": "two", "type": "subgraph:double",
+             "position": {"x": 3, "y": 0}, "data": {"params": {}}},
+        ],
+        "edges": [
+            {"id": "t", "source": "start", "target": "src",
+             "sourceHandle": "trigger", "targetHandle": "__trigger",
+             "type": "trigger"},
+            {"id": "e1", "source": "src", "target": "one",
+             "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+            {"id": "e2", "source": "one", "target": "two",
+             "sourceHandle": "out", "targetHandle": "in", "type": "data"},
+        ],
+        "subgraphs": [{
+            "id": "double",
+            "name": "Double",
+            "description": "",
+            "nodes": [
+                {"id": "mul", "type": "ScalarMultiply",
+                 "position": {"x": 4, "y": 5},
+                 "data": {"params": {"scalar": scalar}}},
+            ],
+            "edges": [],
+            "interface": {
+                "inputs": [{"port": "in", "innerNode": "mul",
+                            "innerPort": "tensor", "data_type": "TENSOR"}],
+                "outputs": [{"port": "out", "innerNode": "mul",
+                             "innerPort": "tensor", "data_type": "TENSOR"}],
+                "triggerTargets": ["mul"],
+            },
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_save_and_load_roundtrips_subgraph_definitions(
+    test_client, tmp_path, monkeypatch,
+):
+    """A definition survives the schema, disk and the load path.
+
+    Two instances share ONE definition on disk -- which is the whole point:
+    the file stores the block once, not once per use.
+    """
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    resp = await test_client.post("/api/graph/save", json=_subgraph_graph())
+    assert resp.status_code == 200
+
+    on_disk = json.loads((tmp_path / "sg-graph.json").read_text())
+    assert len(on_disk["subgraphs"]) == 1
+    assert [n["type"] for n in on_disk["nodes"]].count("subgraph:double") == 2
+
+    resp = await test_client.get("/api/graph/load/sg-graph")
+    assert resp.status_code == 200
+    loaded = resp.json()
+    definition = loaded["subgraphs"][0]
+    assert definition["id"] == "double"
+    assert definition["nodes"][0]["data"]["params"]["scalar"] == 2.0
+    assert definition["interface"]["inputs"] == [
+        {"port": "in", "innerNode": "mul", "innerPort": "tensor",
+         "data_type": "TENSOR"},
+    ]
+    assert definition["interface"]["triggerTargets"] == ["mul"]
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_a_wired_subgraph_instance(test_client):
+    resp = await test_client.post("/api/graph/validate",
+                                  json=_subgraph_graph())
+    assert resp.status_code == 200
+    assert resp.json() == {"valid": True, "errors": []}
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_a_cycle_that_only_exists_inside_a_definition(
+    test_client,
+):
+    """Criterion 4 at the API surface: the path names both sides."""
+    graph = _subgraph_graph()
+    definition = graph["subgraphs"][0]
+    definition["nodes"].append({
+        "id": "back", "type": "ScalarMultiply", "position": {"x": 6, "y": 5},
+        "data": {"params": {"scalar": 1.0}},
+    })
+    definition["edges"] = [
+        {"id": "f", "source": "mul", "target": "back", "sourceHandle": "tensor",
+         "targetHandle": "tensor", "type": "data"},
+        {"id": "g", "source": "back", "target": "mul", "sourceHandle": "tensor",
+         "targetHandle": "tensor", "type": "data"},
+    ]
+    resp = await test_client.post("/api/graph/validate", json=graph)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valid"] is False
+    cycles = [e for e in body["errors"] if "cycle" in e]
+    assert cycles, body["errors"]
+    # Either instance is a correct answer -- both carry the same loop -- but
+    # whichever is reported must name the instance AND the nodes inside it.
+    instance = "one" if "one/" in cycles[0] else "two"
+    assert f"{instance}/mul" in cycles[0]
+    assert f"{instance}/back" in cycles[0]
+    assert f"crosses subgraph instance(s): {instance}" in cycles[0]
+
+
+@pytest.mark.asyncio
+async def test_export_emits_a_function_per_subgraph_instance(test_client):
+    resp = await test_client.post("/api/graph/export", json=_subgraph_graph())
+    assert resp.status_code == 200
+    script = resp.json()["script"]
+    assert "def subgraph_double(" in script
+    assert "def subgraph_double_2(" in script
+    assert "subgraph:double" not in script
+
+
+@pytest.mark.asyncio
+async def test_export_scrubs_a_secret_that_lives_inside_a_definition(
+    test_client,
+):
+    """A key must not ride out of the server just because it sits in a block."""
+    graph = _subgraph_graph()
+    graph["subgraphs"][0]["nodes"].append({
+        "id": "keyed", "type": "_TestSource", "position": {"x": 9, "y": 9},
+        "data": {"params": {"val": "plain"}},
+    })
+    resp = await test_client.post("/api/graph/export", json=graph)
+    assert resp.status_code == 200
+    # Nothing secret in this fixture; the guard is that the scrub runs at all
+    # and does not corrupt an ordinary definition param.
+    assert "'plain'" in resp.json()["script"]

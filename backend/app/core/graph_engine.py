@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import functools
 import inspect
 import logging
@@ -158,6 +159,274 @@ def expand_presets(
         expanded_edges = new_edges
 
     return expanded_nodes, expanded_edges, internal_to_preset
+
+
+# ── Subgraphs (core#137) ─────────────────────────────────────────────────
+#
+# A subgraph is a reusable block of graph that lives in the graph file's own
+# ``subgraphs`` list. The canvas shows one ``subgraph:<id>`` INSTANCE node per
+# use; every instance of the same id shares one definition, which is the whole
+# reuse win over a preset that was flattened once at drop time.
+#
+# Nothing below this point in the engine knows subgraphs exist. Expansion runs
+# as a pre-pass in ``prepare_executable_graph`` and hands back the same
+# ``internal node -> container node`` map preset expansion produces, so
+# reachability retention, status roll-up and the exporter's grouping treat a
+# subgraph instance exactly as they already treat a preset node.
+
+SUBGRAPH_TYPE_PREFIX = "subgraph:"
+
+#: Flattened inner ids are ``<instance id>/<inner id>``. The separator is not
+#: a legal character in a Python identifier, and every place that turns a node
+#: id into one already sanitizes (``codegen._slug``, ``checkpoints._safe_part``),
+#: so it cannot collide with a hand-written id the way ``__`` could.
+SUBGRAPH_SEPARATOR = "/"
+
+#: Same budget preset nesting gets. A definition that (transitively) contains
+#: itself is rejected BEFORE this by :func:`check_subgraph_recursion`, with a
+#: message naming the loop; the budget is the backstop for pathological depth.
+MAX_SUBGRAPH_DEPTH = 10
+
+
+def subgraph_id_of(node_type: Any) -> str | None:
+    """``"subgraph:blk"`` -> ``"blk"``; anything else -> ``None``."""
+    text = str(node_type or "")
+    if text.startswith(SUBGRAPH_TYPE_PREFIX):
+        return text[len(SUBGRAPH_TYPE_PREFIX):]
+    return None
+
+
+def build_subgraph_index(subgraphs: Any) -> dict:
+    """Map subgraph id -> SubgraphDefinition for a graph's own ``subgraphs``.
+
+    Mirrors :func:`build_preset_fallback`: accepts model objects or plain
+    dicts (``json.loads`` output) and skips malformed entries rather than
+    letting one bad definition break a run. A definition that is REFERENCED
+    but missing is caught later, by name, in :func:`expand_subgraphs`.
+    """
+    from ..schemas.models import SubgraphDefinition
+
+    out: dict[str, Any] = {}
+    for raw in subgraphs or []:
+        try:
+            model = (
+                raw
+                if isinstance(raw, SubgraphDefinition)
+                else SubgraphDefinition(**raw)
+            )
+        except Exception:
+            continue
+        if model.id:
+            out[model.id] = model
+    return out
+
+
+def check_subgraph_recursion(index: dict) -> None:
+    """Raise if any definition (transitively) instantiates itself.
+
+    A recursive definition would expand forever. Exhausting
+    :data:`MAX_SUBGRAPH_DEPTH` would also stop it, but with a message that
+    names nothing; this one names the loop, which is the only way a user can
+    find the edit that caused it.
+    """
+    state: dict[str, int] = {}  # 0 = on stack, 1 = cleared
+    path: list[str] = []
+
+    def visit(sid: str) -> None:
+        if state.get(sid) == 1:
+            return
+        if state.get(sid) == 0:
+            loop = path[path.index(sid):] + [sid]
+            raise GraphValidationError(
+                "Subgraph recursion: "
+                + " -> ".join(loop)
+                + " (a subgraph cannot contain itself)"
+            )
+        state[sid] = 0
+        path.append(sid)
+        for node in index[sid].nodes:
+            child = subgraph_id_of(node.type)
+            if child is not None and child in index:
+                visit(child)
+        path.pop()
+        state[sid] = 1
+
+    for sid in list(index):
+        visit(sid)
+
+
+def _inner_roots(definition: Any) -> list[str]:
+    """Inner nodes nothing else inside the definition feeds.
+
+    Used only as the fallback for an instance whose interface declares no
+    ``triggerTargets`` -- see :func:`expand_subgraphs`.
+    """
+    fed: set[str] = {
+        edge.target
+        for edge in definition.edges
+        if edge.target
+    }
+    return [node.id for node in definition.nodes if node.id not in fed]
+
+
+def expand_subgraphs(
+    nodes: list[dict],
+    edges: list[dict],
+    index: dict,
+) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Inline one level of ``subgraph:<id>`` instance nodes.
+
+    Returns ``(nodes, edges, internal_to_instance)`` -- the same triple shape
+    :func:`expand_presets` returns, so callers can merge the two maps.
+
+    Boundary rules
+    --------------
+    * A DATA edge into the instance is retargeted at the inner node/port the
+      interface's matching input names; a data edge out of it is re-sourced
+      from the matching output. An edge naming a port the interface does not
+      declare is an error, not a silently dropped edge -- dropping it is how
+      a preset run turns into a confusing "missing required input" further
+      downstream.
+    * A TRIGGER edge into the instance is REPLICATED to every inner node in
+      ``interface.triggerTargets``. Collapse records exactly the inner nodes
+      that had a trigger edge before it ran, so the expanded graph has the
+      same entry points -- which is what makes collapse/expand produce the
+      same run. When the interface declares none (a hand-written definition,
+      or an instance the user wired Start into after collapsing), the trigger
+      fans out to the inner ROOTS instead, which is the only reading of
+      "start this block" that reaches every one of its sources.
+    * Params ride along verbatim from the definition. v1 has no per-instance
+      overrides, so two instances of one subgraph are byte-identical blocks.
+    """
+    expanded_nodes: list[dict] = []
+    expanded_edges: list[dict] = list(edges)
+    internal_to_instance: dict[str, str] = {}
+
+    for node in nodes:
+        sid = subgraph_id_of(node.get("type", ""))
+        if sid is None:
+            expanded_nodes.append(node)
+            continue
+
+        instance_id = node["id"]
+        definition = index.get(sid)
+        if definition is None:
+            raise GraphValidationError(
+                f"Unknown subgraph: {sid} (node {instance_id})"
+            )
+
+        prefix = f"{instance_id}{SUBGRAPH_SEPARATOR}"
+        inner_ids = {inner.id for inner in definition.nodes}
+
+        input_map: dict[str, tuple[str, str]] = {}
+        for port in definition.interface.inputs:
+            input_map[port.port] = (f"{prefix}{port.innerNode}", port.innerPort)
+        output_map: dict[str, tuple[str, str]] = {}
+        for port in definition.interface.outputs:
+            output_map[port.port] = (f"{prefix}{port.innerNode}", port.innerPort)
+
+        trigger_targets = [
+            target for target in definition.interface.triggerTargets
+        ]
+        unknown_targets = [t for t in trigger_targets if t not in inner_ids]
+        if unknown_targets:
+            raise GraphValidationError(
+                f"Subgraph '{sid}' declares trigger target(s) that are not in "
+                f"it: {', '.join(sorted(unknown_targets))} (node {instance_id})"
+            )
+        if not trigger_targets:
+            trigger_targets = _inner_roots(definition)
+
+        for inner in definition.nodes:
+            expanded_nodes.append({
+                "id": f"{prefix}{inner.id}",
+                "type": inner.type,
+                # Inner positions are the definition's own layout. Nothing in
+                # execution reads them; keeping them truthful means an
+                # expanded graph dumped for debugging still looks like the
+                # block the user drew.
+                "position": dict(inner.position),
+                "data": copy.deepcopy(inner.data),
+            })
+            internal_to_instance[f"{prefix}{inner.id}"] = instance_id
+
+        for inner_edge in definition.edges:
+            expanded_edges.append({
+                "id": f"{prefix}{inner_edge.id}",
+                "source": f"{prefix}{inner_edge.source}",
+                "target": f"{prefix}{inner_edge.target}",
+                "sourceHandle": inner_edge.sourceHandle,
+                "targetHandle": inner_edge.targetHandle,
+                "type": inner_edge.type,
+            })
+
+        new_edges: list[dict] = []
+        for edge in expanded_edges:
+            is_trigger = edge.get("type", "data") == "trigger"
+            touches_target = edge.get("target") == instance_id
+            touches_source = edge.get("source") == instance_id
+            if not touches_target and not touches_source:
+                new_edges.append(edge)
+                continue
+
+            if is_trigger and touches_target:
+                for position, inner_id in enumerate(trigger_targets):
+                    fanned = dict(edge)
+                    fanned["id"] = f"{edge.get('id', 'trigger')}#{position}"
+                    fanned["target"] = f"{prefix}{inner_id}"
+                    new_edges.append(fanned)
+                continue
+
+            new_edge = dict(edge)
+            if touches_target:
+                handle = edge.get("targetHandle", "")
+                if handle not in input_map:
+                    raise GraphValidationError(
+                        f"Edge targets input port '{handle}' which subgraph "
+                        f"'{sid}' does not expose (node {instance_id})"
+                    )
+                new_edge["target"], new_edge["targetHandle"] = input_map[handle]
+            if touches_source:
+                handle = edge.get("sourceHandle", "")
+                if handle not in output_map:
+                    raise GraphValidationError(
+                        f"Edge sources output port '{handle}' which subgraph "
+                        f"'{sid}' does not expose (node {instance_id})"
+                    )
+                new_edge["source"], new_edge["sourceHandle"] = output_map[handle]
+            new_edges.append(new_edge)
+        expanded_edges = new_edges
+
+    return expanded_nodes, expanded_edges, internal_to_instance
+
+
+def expand_subgraphs_deep(
+    nodes: list[dict],
+    edges: list[dict],
+    index: dict,
+) -> tuple[list[dict], list[dict], dict[str, str]]:
+    """Expand nested subgraph instances until none are left.
+
+    Recursion is refused up front by name; the depth budget is only reached
+    by a definition chain genuinely more than :data:`MAX_SUBGRAPH_DEPTH` deep.
+    """
+    if not any(subgraph_id_of(n.get("type", "")) for n in nodes):
+        # Nothing to expand. Deliberately checked BEFORE the recursion scan so
+        # a graph that carries stale definitions it no longer instantiates
+        # still runs -- an unreferenced definition cannot affect a run.
+        return nodes, edges, {}
+    check_subgraph_recursion(index)
+    internal_to_instance: dict[str, str] = {}
+    for _ in range(MAX_SUBGRAPH_DEPTH):
+        if not any(subgraph_id_of(n.get("type", "")) for n in nodes):
+            return nodes, edges, internal_to_instance
+        nodes, edges, mapping = expand_subgraphs(nodes, edges, index)
+        internal_to_instance.update(mapping)
+    if any(subgraph_id_of(n.get("type", "")) for n in nodes):
+        raise GraphValidationError(
+            f"Subgraph nesting exceeds the maximum depth of {MAX_SUBGRAPH_DEPTH}"
+        )
+    return nodes, edges, internal_to_instance
 
 
 # ── Bypass / mute (core#128) ─────────────────────────────────────────────
@@ -449,6 +718,7 @@ def validate_graph(
     nodes: list[dict],
     edges: list[dict],
     preset_fallback: dict | None = None,
+    subgraphs: Any = None,
 ) -> list[str]:
     """Validate a graph definition. Returns list of errors (empty = valid).
 
@@ -456,13 +726,34 @@ def validate_graph(
     server's registry does not know) validate as present -- see
     ``build_preset_fallback``.
 
+    ``subgraphs`` (core#137) is the graph's own definition list. When it is
+    given, subgraph instances are INLINED before anything else is checked, so
+    validation sees the graph that would actually run: port types across the
+    boundary, required inputs inside the definition, and -- the reason this
+    matters most -- a cycle that only exists once the boundary is crossed.
+    Treating an instance as opaque the way a preset node is treated would let
+    a definition-internal loop reach the executor, where it surfaces as a
+    stall rather than an error naming the nodes involved.
+
     Bypassed nodes (core#128) are resolved away first, so every check below
     runs against the graph that would actually execute: a node whose only
     upstream is bypassed is checked against what the bypass forwards, not
     against the node the user muted.
     """
+    errors: list[str] = []
+    if any(subgraph_id_of(n.get("type", "")) for n in nodes):
+        try:
+            nodes, edges, _ = expand_subgraphs_deep(
+                nodes, edges, build_subgraph_index(subgraphs)
+            )
+        except GraphValidationError as exc:
+            # Report and keep going against the UNEXPANDED graph: the file's
+            # standing rule is to show every problem at once, and an instance
+            # whose definition is missing still has checkable neighbours.
+            errors.append(str(exc))
+
     resolution = resolve_bypass(nodes, edges)
-    errors: list[str] = list(resolution.errors)
+    errors.extend(resolution.errors)
     nodes, edges = resolution.nodes, resolution.edges
     node_map = {n["id"]: n for n in nodes}
 
@@ -471,16 +762,26 @@ def validate_graph(
 
     # 1. Node type existence check
     valid_node_ids: set[str] = set()
-    preset_node_ids: set[str] = set()
+    # Nodes whose ports are NOT declared by a node class: preset nodes, and
+    # subgraph instances that expansion refused. Port-level checks skip them.
+    opaque_node_ids: set[str] = set()
     for node in nodes:
         node_type: str = node.get("type", "")
+        # A subgraph instance only survives to here when expansion refused it
+        # (unknown id, recursion, bad boundary port). That refusal is already
+        # in `errors` by name; treat the instance as opaque so the user does
+        # not also get "Unknown node type: subgraph:<id>" for the same fault.
+        if subgraph_id_of(node_type) is not None:
+            opaque_node_ids.add(node["id"])
+            valid_node_ids.add(node["id"])
+            continue
         # Preset nodes are expanded at execution time; validate they exist in preset registry
         if node_type.startswith("preset:"):
             preset_name = node_type[len("preset:"):]
             if not (preset_registry.get(preset_name) or (preset_fallback or {}).get(preset_name)):
                 errors.append(f"Unknown preset: {preset_name} (node {node['id']})")
             else:
-                preset_node_ids.add(node["id"])
+                opaque_node_ids.add(node["id"])
                 valid_node_ids.add(node["id"])
             continue
         node_cls = registry.get(node_type)
@@ -489,13 +790,13 @@ def validate_graph(
         else:
             valid_node_ids.add(node["id"])
 
-    # 2. Required input connection check (skip preset nodes — they define ports dynamically)
+    # 2. Required input connection check (skip opaque nodes — dynamic ports)
     connected_inputs = {
         (edge["target"], edge.get("targetHandle", ""))
         for edge in edges
     }
     for node in nodes:
-        if node["id"] not in valid_node_ids or node["id"] in preset_node_ids:
+        if node["id"] not in valid_node_ids or node["id"] in opaque_node_ids:
             continue
         node_cls = registry.get(node["type"])
         node_params = node.get("data", {}).get("params", {}) if isinstance(node.get("data"), dict) else {}
@@ -513,9 +814,9 @@ def validate_graph(
                     )
                 )
 
-    # 3. Parameter range validation (skip preset nodes)
+    # 3. Parameter range validation (skip opaque nodes)
     for node in nodes:
-        if node["id"] not in valid_node_ids or node["id"] in preset_node_ids:
+        if node["id"] not in valid_node_ids or node["id"] in opaque_node_ids:
             continue
         node_cls = registry.get(node["type"])
         param_values = node.get("data", {}).get("params", {})
@@ -547,8 +848,8 @@ def validate_graph(
             errors.append(f"Edge references missing node: {edge}")
             continue
 
-        # Skip edge validation when either end is a preset node (ports are dynamic)
-        if src["id"] in preset_node_ids or tgt["id"] in preset_node_ids:
+        # Skip edge validation when either end is opaque (ports are dynamic)
+        if src["id"] in opaque_node_ids or tgt["id"] in opaque_node_ids:
             continue
 
         src_cls = registry.get(src["type"])
@@ -602,38 +903,89 @@ def validate_graph(
         and e["target"] in executable_node_ids
         and e.get("type", "data") == "data"
     ]
-    if _has_cycle(executable_nodes, executable_edges):
-        errors.append("Graph contains a cycle")
+    cycle = find_cycle(executable_nodes, executable_edges)
+    if cycle is not None:
+        errors.append(describe_cycle(cycle))
 
     return errors
 
 
-def _has_cycle(nodes: list[dict], edges: list[dict]) -> bool:
-    in_degree: dict[str, int] = {n["id"]: 0 for n in nodes}
-    adj: dict[str, list[str]] = defaultdict(list)
+def find_cycle(nodes: list[dict], edges: list[dict]) -> list[str] | None:
+    """Return one cycle as a closed path of node ids, or ``None``.
 
+    ``["a", "b", "a"]`` reads left to right as the edges that close the loop.
+    Trigger edges are markers, not dependencies, so they are excluded exactly
+    as they are from :func:`topological_sort`; an edge whose endpoint is not
+    in *nodes* is skipped, because edge validation already reports it and a
+    KeyError here would replace a clean 4xx with a 500.
+    """
+    known = {n["id"] for n in nodes}
+    adj: dict[str, list[str]] = defaultdict(list)
     for edge in edges:
         if edge.get("type", "data") == "trigger":
-            continue  # markers, not dependencies
-        if edge["source"] not in in_degree or edge["target"] not in in_degree:
-            # Edge validation already reports missing endpoints. Keep cycle
-            # detection total so a malformed edge produces a clean 4xx error
-            # instead of a secondary KeyError.
+            continue
+        if edge["source"] not in known or edge["target"] not in known:
             continue
         adj[edge["source"]].append(edge["target"])
-        in_degree[edge["target"]] += 1
 
-    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
-    visited = 0
-    while queue:
-        node = queue.popleft()
-        visited += 1
-        for neighbor in adj[node]:
-            in_degree[neighbor] -= 1
-            if in_degree[neighbor] == 0:
-                queue.append(neighbor)
+    WHITE, GREY, BLACK = 0, 1, 2
+    color: dict[str, int] = {nid: WHITE for nid in known}
+    path: list[str] = []
 
-    return visited != len(nodes)
+    # Iterative DFS: a deeply chained graph must not blow the Python stack on
+    # what is only a validation pass.
+    for root in (n["id"] for n in nodes):
+        if color[root] != WHITE:
+            continue
+        stack: list[tuple[str, int]] = [(root, 0)]
+        color[root] = GREY
+        path.append(root)
+        while stack:
+            node, index = stack[-1]
+            neighbors = adj[node]
+            if index >= len(neighbors):
+                stack.pop()
+                color[node] = BLACK
+                path.pop()
+                continue
+            stack[-1] = (node, index + 1)
+            nxt = neighbors[index]
+            if color[nxt] == GREY:
+                return path[path.index(nxt):] + [nxt]
+            if color[nxt] == WHITE:
+                color[nxt] = GREY
+                path.append(nxt)
+                stack.append((nxt, 0))
+    return None
+
+
+def describe_cycle(cycle: list[str]) -> str:
+    """One error line for a cycle, naming both sides of any boundary crossed.
+
+    Flattened subgraph ids read ``<instance>/<inner>``, so the path itself
+    already names the instance node AND the node inside it. The trailing
+    clause states which instances are involved, because the loop the user has
+    to break may be entirely inside a definition -- invisible on the canvas,
+    where the instance is one opaque box.
+    """
+    rendered = " -> ".join(cycle)
+    instances: list[str] = []
+    for node_id in cycle:
+        if SUBGRAPH_SEPARATOR in node_id:
+            instance = node_id.split(SUBGRAPH_SEPARATOR)[0]
+            if instance not in instances:
+                instances.append(instance)
+    if not instances:
+        return f"Graph contains a cycle: {rendered}"
+    return (
+        f"Graph contains a cycle: {rendered} (crosses subgraph instance(s): "
+        + ", ".join(instances)
+        + ")"
+    )
+
+
+def _has_cycle(nodes: list[dict], edges: list[dict]) -> bool:
+    return find_cycle(nodes, edges) is not None
 
 
 def find_entry_points(
@@ -783,18 +1135,25 @@ def prepare_executable_graph(
     edges: list[dict],
     *,
     preset_fallback: dict | None = None,
+    subgraphs: Any = None,
 ) -> tuple[list[dict], list[dict], dict[str, str]]:
-    """Expand presets, resolve bypass, prune drafts, and validate.
+    """Expand subgraphs and presets, resolve bypass, prune drafts, validate.
 
     This is the structural preflight used immediately before execution. It is
     also safe for callers such as Python export that need the exact same preset
     grouping and draft-pruning semantics without actually running any nodes.
+
+    The returned map is ``internal node id -> CONTAINER node id`` and covers
+    both preset internals and subgraph internals. Everything downstream --
+    reachability retention, the status roll-up in :func:`execute_graph`, the
+    exporter's grouping -- reads only that map, which is why subgraphs needed
+    no change to any of them.
     """
 
-    # Presets expand into a sub-graph whose ports come from the preset
-    # definition rather than a node class, so the pass-through rule has nothing
-    # to match on. Refuse before expansion, where the preset node still exists
-    # to be named.
+    # A preset or a subgraph instance expands into a sub-graph whose ports come
+    # from a definition rather than a node class, so the bypass pass-through
+    # rule has nothing to match on. Refuse before expansion, while the node
+    # still exists to be named.
     bypassed_presets = [
         node["id"]
         for node in nodes
@@ -805,8 +1164,27 @@ def prepare_executable_graph(
             "Bypass is not supported on preset node(s): "
             + ", ".join(sorted(bypassed_presets))
         )
+    bypassed_subgraphs = [
+        node["id"]
+        for node in nodes
+        if _is_bypassed(node) and subgraph_id_of(node.get("type", "")) is not None
+    ]
+    if bypassed_subgraphs:
+        raise GraphValidationError(
+            "Bypass is not supported on subgraph instance(s): "
+            + ", ".join(sorted(bypassed_subgraphs))
+        )
 
     internal_to_preset: dict[str, str] = {}
+    # Subgraphs first: a definition may contain preset nodes, so expanding it
+    # feeds the preset loop below. The reverse cannot happen -- a preset's
+    # internal nodes come from the preset registry, which has no way to name a
+    # graph-local subgraph id.
+    nodes, edges, subgraph_map = expand_subgraphs_deep(
+        nodes, edges, build_subgraph_index(subgraphs)
+    )
+    internal_to_preset.update(subgraph_map)
+
     expanded_nodes, expanded_edges = nodes, edges
     for _ in range(10):
         if not any(
@@ -897,6 +1275,7 @@ async def execute_graph(
     record_outputs: bool = False,
     preset_fallback: dict | None = None,
     on_signal: Callable[[Any], Any] | None = None,
+    subgraphs: Any = None,
 ) -> dict[str, Any]:
     """Execute the graph with parallel levels, cancellation, error recovery, and caching.
 
@@ -917,6 +1296,9 @@ async def execute_graph(
             ``output_store`` for later retrieval via the REST endpoint.
         preset_fallback: Graph-embedded preset definitions (ID6), consulted
             when the server's preset registry lacks a referenced preset.
+        subgraphs: Graph-local subgraph definitions (core#137). Every
+            ``subgraph:<id>`` instance node is inlined before anything runs,
+            and its internals roll up to the instance in every status event.
         on_signal: Callback for everything a node reports that is NOT a node
             status — ``MetricSignal`` (``context.log_metric``),
             ``ArtifactSignal`` (``context.log_artifact``) and
@@ -945,6 +1327,7 @@ async def execute_graph(
         nodes,
         edges,
         preset_fallback=preset_fallback,
+        subgraphs=subgraphs,
     )
 
     levels = topological_levels(expanded_nodes, expanded_edges)

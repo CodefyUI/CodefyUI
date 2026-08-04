@@ -335,6 +335,10 @@ class _ExecutionSocket:
             # Graph-embedded presets (#84): portable graphs carry their own
             # presets[]; consulted when the local registry lacks one.
             "presets": data.get("presets", []),
+            # Subgraph definitions (core#137) travel with the graph the same
+            # way -- they are local to it, so there is no registry to fall
+            # back on and the canvas must always send them.
+            "subgraphs": data.get("subgraphs", []),
         }
         options = {
             "lane": LANE_INTERACTIVE,

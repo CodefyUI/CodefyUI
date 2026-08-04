@@ -2027,3 +2027,154 @@ async def test_exported_transform_chain_matches_the_engine(tmp_path: Path):
     # stdout, not stderr: the runner only redirects Print to stderr when the
     # graph has a GraphOutput node reserving stdout for its JSON.
     assert in_process in completed.stdout
+
+
+# ── Subgraph export (core#137) ───────────────────────────────────────────
+
+
+def _subgraph_export_graph() -> tuple[list[dict], list[dict], list[dict]]:
+    """Two instances of one subgraph, chained, feeding a Print.
+
+    Two instances on purpose: it is the case where a per-DEFINITION function
+    would be wrong (each instance has its own node ids and its own results
+    slots) and where a shared mutable structure would show up as one instance
+    overwriting the other's outputs.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "one", "type": "subgraph:double", "position": {"x": 2, "y": 0},
+         "data": {"params": {}}},
+        {"id": "two", "type": "subgraph:double", "position": {"x": 3, "y": 0},
+         "data": {"params": {}}},
+        {"id": "out", "type": "Print", "position": {"x": 4, "y": 0},
+         "data": {"params": {"label": "TOTAL"}}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e1", "source": "src", "target": "one",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+        {"id": "e2", "source": "one", "target": "two",
+         "sourceHandle": "out", "targetHandle": "in", "type": "data"},
+        {"id": "e3", "source": "two", "target": "out",
+         "sourceHandle": "out", "targetHandle": "value", "type": "data"},
+    ]
+    subgraphs = [{
+        "id": "double",
+        "name": "Double",
+        "nodes": [
+            {"id": "mul", "type": "ScalarMultiply",
+             "position": {"x": 0, "y": 0},
+             "data": {"params": {"scalar": 2.0}}},
+            {"id": "avg", "type": "Mean", "position": {"x": 1, "y": 0},
+             "data": {"params": {"dim": "-1", "keepdim": True}}},
+        ],
+        "edges": [
+            {"id": "i", "source": "mul", "target": "avg",
+             "sourceHandle": "tensor", "targetHandle": "tensor",
+             "type": "data"},
+        ],
+        "interface": {
+            "inputs": [
+                {"port": "in", "innerNode": "mul", "innerPort": "tensor"},
+            ],
+            "outputs": [
+                {"port": "out", "innerNode": "avg", "innerPort": "tensor"},
+            ],
+            "triggerTargets": ["mul"],
+        },
+    }]
+    return nodes, edges, subgraphs
+
+
+def test_export_emits_one_function_per_subgraph_instance():
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    _compile_check(script)
+
+    module = ast.parse(script)
+    names = [
+        stmt.name for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef)
+        and stmt.name.startswith("subgraph_")
+    ]
+    assert len(names) == 2, names
+    assert all(name.startswith("subgraph_double") for name in names), names
+
+    # The instance node type never reaches the script -- it was expanded.
+    assert "'subgraph:double'" not in script
+    # ... and each expanded node says where it came from.
+    assert "# from subgraph 'double' (node 'one')" in script
+    assert "# from subgraph 'double' (node 'two')" in script
+
+
+def test_a_subgraph_function_holds_its_members_and_the_flow_calls_it_once():
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    module = ast.parse(script)
+    bodies = {
+        stmt.name: ast.unparse(stmt)
+        for stmt in module.body
+        if isinstance(stmt, ast.FunctionDef)
+    }
+    subgraph_names = sorted(n for n in bodies if n.startswith("subgraph_"))
+    flow_body = bodies["flow_1"]
+
+    for name in subgraph_names:
+        # Called exactly once from the flow.
+        assert flow_body.count(f"{name}(ctx, results, provided)") == 1
+
+    # Members are inside the subgraph function, not the flow.
+    first = bodies[subgraph_names[0]]
+    assert "results['one/mul']" in first
+    assert "results['one/avg']" in first
+    assert "results['one/mul']" not in flow_body
+    # The flow reads the block's output through results, since the local for
+    # an inner node does not exist in the flow's scope.
+    assert "results['two/avg']" in flow_body
+
+
+def test_exported_subgraph_script_actually_runs(tmp_path):
+    """The generated program must RUN, not merely compile."""
+    from app.core.codegen import generate_python
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    script = generate_python(
+        nodes, edges, name="SubgraphDemo", subgraphs=subgraphs
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    # 1.0 -> x2 -> mean -> x2 -> mean == 4.0, printed by the Print node.
+    assert "TOTAL" in completed.stdout, completed.stdout
+    assert "4." in completed.stdout, completed.stdout
+
+
+async def test_exported_subgraph_script_agrees_with_the_engine(tmp_path):
+    """Same graph, two runners, same number."""
+    import re as _re
+
+    from app.core.codegen import generate_python
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges, subgraphs = _subgraph_export_graph()
+    engine = await execute_graph(nodes, edges, subgraphs=subgraphs)
+    engine_value = float(engine["two/avg"]["tensor"].reshape(-1)[0])
+
+    script = generate_python(nodes, edges, subgraphs=subgraphs)
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    numbers = _re.findall(r"-?\d+\.\d*", completed.stdout)
+    assert numbers, completed.stdout
+    assert float(numbers[-1]) == pytest.approx(engine_value)

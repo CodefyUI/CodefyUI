@@ -230,6 +230,7 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
     validation_errors = validate_graph(
         nodes, edges,
         preset_fallback=build_preset_fallback(graph_data.get("presets", [])),
+        subgraphs=graph_data.get("subgraphs", []),
     )
     if validation_errors:
         raise _manage_error(409, "invalid_graph", "graph failed validation",
@@ -699,6 +700,7 @@ async def invoke_app(
         http_status, envelope, node_timings = await execute_contract_run(
             slug, nodes, edges, exec_req, run_id, output_store=None,
             preset_fallback=build_preset_fallback(snapshot.get("presets", [])),
+            subgraphs=snapshot.get("subgraphs", []),
         )
     finally:
         # On an execution timeout the lock releases here while the

@@ -35,6 +35,7 @@ from .api_contract import (
     derive_contract,
 )
 from .graph_engine import (
+    SUBGRAPH_TYPE_PREFIX,
     BypassLink,
     build_preset_fallback,
     prepare_executable_graph,
@@ -666,6 +667,7 @@ def generate_python(
     *,
     seed: int | None = None,
     deterministic: bool = False,
+    subgraphs: list[dict] | None = None,
 ) -> str:
     """Return a runnable Python program for the graph *nodes* / *edges*.
 
@@ -674,6 +676,11 @@ def generate_python(
     the executable graph the canvas would run.  Raises
     :class:`app.core.graph_engine.GraphValidationError` for graphs the
     engine would refuse to run.
+
+    *subgraphs* are the graph's own subgraph definitions (core#137). Each
+    INSTANCE becomes one ``subgraph_<name>`` function holding its inner node
+    calls, so the exported file keeps the block structure the canvas shows
+    instead of dissolving it into a flat run of node calls.
 
     *seed* and *deterministic* are the canvas's reproducibility settings,
     baked in as the defaults for the generated ``--seed`` /
@@ -688,6 +695,7 @@ def generate_python(
         nodes,
         edges,
         preset_fallback=preset_fallback,
+        subgraphs=subgraphs,
     )
     # Preset expansion can pull params straight from server-side registry
     # definitions, which the export route's payload scrub never saw.  Scrub
@@ -713,6 +721,7 @@ def generate_python(
         )
 
     flows = _split_flows(exec_nodes, exec_edges, order)
+    raw_by_id = {node.get("id"): node for node in nodes}
 
     func_names = {
         node_id: (
@@ -723,10 +732,54 @@ def generate_python(
     }
     flow_names = {f"flow_{index}" for index in range(1, len(flows) + 1)}
 
+    # ── Subgraph grouping (core#137) ─────────────────────────────────────
+    #
+    # `internal_to_preset` maps every expanded inner node to its container.
+    # Walking it to the OUTERMOST container and asking the RAW graph what that
+    # container was separates subgraph instances from presets: a preset stays
+    # flat (its origin is a comment), an instance becomes a function, because
+    # the canvas shows it as one box the user can open and edit.
+    def _outermost_container(node_id: str) -> str | None:
+        root = internal_to_preset.get(node_id)
+        if root is None:
+            return None
+        while root in internal_to_preset:
+            root = internal_to_preset[root]
+        return root
+
+    subgraph_of: dict[str, str] = {}
+    subgraph_members: dict[str, list[str]] = {}
+    for node_id in order:
+        root = _outermost_container(node_id)
+        if root is None:
+            continue
+        raw_type = str((raw_by_id.get(root) or {}).get("type", ""))
+        if not raw_type.startswith(SUBGRAPH_TYPE_PREFIX):
+            continue
+        subgraph_of[node_id] = root
+        subgraph_members.setdefault(root, []).append(node_id)
+
+    used_subgraph_names: set[str] = set()
+    subgraph_func_names: dict[str, str] = {}
+    for instance_id in subgraph_members:
+        raw_type = str((raw_by_id.get(instance_id) or {}).get("type", ""))
+        label = raw_type[len(SUBGRAPH_TYPE_PREFIX):] or instance_id
+        subgraph_func_names[instance_id] = _identifier(
+            f"subgraph_{label}",
+            used=used_subgraph_names,
+            avoid=frozenset(
+                _RESERVED_LOCALS | set(func_names.values()) | flow_names
+            ),
+            fallback="subgraph",
+        )
+
     # Result locals: derived from node IDs, never shadowing anything a flow
     # body references (helpers, node functions, flow functions).
     local_avoid = frozenset(
-        _RESERVED_LOCALS | set(func_names.values()) | flow_names
+        _RESERVED_LOCALS
+        | set(func_names.values())
+        | flow_names
+        | set(subgraph_func_names.values())
     )
     used_locals: set[str] = set()
     local_names = {
@@ -752,8 +805,6 @@ def generate_python(
             )
             for handle in wired_by_target.get(node_id, {})
         }
-
-    raw_by_id = {node.get("id"): node for node in nodes}
 
     # ── Bypassed nodes (core#128) ────────────────────────────────────────
     #
@@ -845,16 +896,16 @@ def generate_python(
             bypass_comments.setdefault(anchor, []).extend(_bypass_lines(node_id))
 
     def _preset_origin(node_id: str) -> str | None:
-        preset_id = internal_to_preset.get(node_id)
-        if preset_id is None:
+        root = _outermost_container(node_id)
+        if root is None:
             return None
-        root = preset_id
-        while root in internal_to_preset:  # nested presets resolve upward
-            root = internal_to_preset[root]
         raw_type = (raw_by_id.get(root) or {}).get("type", "")
         if raw_type.startswith("preset:"):
             preset_name = raw_type[len("preset:"):]
             return f"# from preset {ascii(preset_name)} (node {ascii(root)})"
+        if raw_type.startswith(SUBGRAPH_TYPE_PREFIX):
+            sid = raw_type[len(SUBGRAPH_TYPE_PREFIX):]
+            return f"# from subgraph {ascii(sid)} (node {ascii(root)})"
         return f"# from preset node {ascii(root)}"
 
     def _emit_node_function(node_id: str) -> str:
@@ -908,39 +959,92 @@ def generate_python(
             summary = summary[:69] + "..."
         return summary
 
+    def _source_expr(source: str, *, inside_subgraph: bool) -> str:
+        """How a consumer names another node's outputs.
+
+        A flow body keeps the readable local (``dataset``); a subgraph body,
+        and anything reading ACROSS a boundary, goes through ``results`` --
+        members of a subgraph live in a different function scope, so their
+        locals are simply not in scope where the flow needs them.
+        """
+        if inside_subgraph or source in subgraph_of:
+            return f"results[{_literal(source)}]"
+        return local_names[source]
+
+    def _member_statement(member: str, *, inside_subgraph: bool) -> list[str]:
+        """The call that runs one node, indented four spaces."""
+        lines: list[str] = []
+        for comment in bypass_comments.get(member, ()):
+            lines.append(f"    {comment}")
+        node = node_by_id[member]
+        kwargs: list[str] = []
+        if node.get("type") == GRAPH_INPUT_TYPE:
+            kwargs.append(f"value=provided.get({_literal(member)}, _ABSENT)")
+        pnames = input_params[member]
+        for handle, sources in wired_by_target.get(member, {}).items():
+            ports = [
+                f"_port("
+                f"{_source_expr(source, inside_subgraph=inside_subgraph)}, "
+                f"{_literal(source_handle)})"
+                for source, source_handle in sources
+            ]
+            if len(ports) == 1:
+                value_expr = ports[0]
+            else:
+                # Reverse edge order: in the engine the last edge whose
+                # source port produced a value wins.
+                value_expr = f"_pick({', '.join(reversed(ports))})"
+            kwargs.append(f"{pnames[handle]}={value_expr}")
+        target = f"results[{_literal(member)}]"
+        if not inside_subgraph:
+            target = f"{local_names[member]} = {target}"
+        assign = f"    {target} = "
+        if not kwargs:
+            lines.append(f"{assign}{func_names[member]}(ctx)")
+        else:
+            lines.append(f"{assign}{func_names[member]}(")
+            lines.append("        ctx,")
+            lines.extend(f"        {kwarg}," for kwarg in kwargs)
+            lines.append("    )")
+        return lines
+
+    def _emit_subgraph(instance_id: str) -> str:
+        raw_type = str((raw_by_id.get(instance_id) or {}).get("type", ""))
+        sid = raw_type[len(SUBGRAPH_TYPE_PREFIX):] or instance_id
+        members = subgraph_members[instance_id]
+        lines = [
+            f"def {subgraph_func_names[instance_id]}"
+            "(ctx, results, provided):"
+        ]
+        lines.append(
+            f"    {ascii(f'subgraph {sid!r} - instance {instance_id!r}.')}"
+        )
+        lines.append(f"    # {_comment_text(_flow_summary(members))}")
+        for member in members:
+            lines.extend(_member_statement(member, inside_subgraph=True))
+        return "\n".join(lines) + "\n"
+
     def _emit_flow(index: int, member_ids: list[str]) -> str:
         lines = [f"def flow_{index}(ctx, results, provided):"]
         lines.append(f"    {ascii(_flow_summary(member_ids))}")
+        # A subgraph instance is emitted ONCE, at the position of its first
+        # member in topological order. Every member is schedulable there:
+        # collapse refuses a selection some outside node sits in the middle
+        # of, so no node between two members can both depend on the block and
+        # be depended on by it.
+        emitted_subgraphs: set[str] = set()
         for member in member_ids:
-            for comment in bypass_comments.get(member, ()):
-                lines.append(f"    {comment}")
-            node = node_by_id[member]
-            kwargs: list[str] = []
-            if node.get("type") == GRAPH_INPUT_TYPE:
-                kwargs.append(
-                    f"value=provided.get({_literal(member)}, _ABSENT)"
+            instance_id = subgraph_of.get(member)
+            if instance_id is not None:
+                if instance_id in emitted_subgraphs:
+                    continue
+                emitted_subgraphs.add(instance_id)
+                lines.append(
+                    f"    {subgraph_func_names[instance_id]}"
+                    "(ctx, results, provided)"
                 )
-            pnames = input_params[member]
-            for handle, sources in wired_by_target.get(member, {}).items():
-                ports = [
-                    f"_port({local_names[source]}, {_literal(source_handle)})"
-                    for source, source_handle in sources
-                ]
-                if len(ports) == 1:
-                    value_expr = ports[0]
-                else:
-                    # Reverse edge order: in the engine the last edge whose
-                    # source port produced a value wins.
-                    value_expr = f"_pick({', '.join(reversed(ports))})"
-                kwargs.append(f"{pnames[handle]}={value_expr}")
-            assign = f"    {local_names[member]} = results[{_literal(member)}] = "
-            if not kwargs:
-                lines.append(f"{assign}{func_names[member]}(ctx)")
-            else:
-                lines.append(f"{assign}{func_names[member]}(")
-                lines.append("        ctx,")
-                lines.extend(f"        {kwarg}," for kwarg in kwargs)
-                lines.append("    )")
+                continue
+            lines.extend(_member_statement(member, inside_subgraph=False))
         return "\n".join(lines) + "\n"
 
     # ── Baked data ───────────────────────────────────────────────────────
@@ -997,6 +1101,14 @@ def generate_python(
             _emit_node_function(member) for member in member_ids
         )
     sections.append("\n\n".join(node_sections))
+
+    if subgraph_members:
+        banner = "# " + "=" * 26 + " Subgraph functions " + "=" * 26
+        subgraph_sections: list[str] = [banner + "\n"]
+        subgraph_sections.extend(
+            _emit_subgraph(instance_id) for instance_id in subgraph_members
+        )
+        sections.append("\n\n".join(subgraph_sections))
 
     banner = "# " + "=" * 28 + " Flow functions " + "=" * 28
     flow_sections: list[str] = [banner + "\n"]

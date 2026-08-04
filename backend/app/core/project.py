@@ -2,9 +2,9 @@
 
 In project mode a saved graph is stored as a PAIR:
   graphs/<name>.graph.json   logic  {format_version, name, description,
-                                      nodes[], edges[], presets[]}
+                                      nodes[], edges[], presets[], subgraphs[]}
   layout/<name>.layout.json  layout {format_version, positions{}, notes{},
-                                      segmentGroups[]}
+                                      segmentGroups[], subgraphPositions{}}
 
 Non-project mode never calls this module (byte-for-byte single-file legacy).
 """
@@ -61,6 +61,37 @@ def split_graph(payload: dict) -> tuple[dict, dict]:
                 notes[nid] = note_layout
         logic_nodes.append({"id": nid, "type": node.get("type"), "data": data})
 
+    # Subgraph definitions are LOGIC -- they are the block's wiring, and a
+    # reviewer needs to see an edit to them. The positions of the nodes INSIDE
+    # a definition are canvas geometry like any other, so they follow the same
+    # rule the top level follows: dragging inside a sub-canvas must dirty only
+    # the layout file (core#137, spec 6.2's rule applied one level down).
+    logic_subgraphs: list[dict] = []
+    subgraph_positions: dict[str, dict] = {}
+    for definition in payload.get("subgraphs", []):
+        if not isinstance(definition, dict):
+            continue
+        sid = definition.get("id")
+        inner_positions: dict[str, dict] = {}
+        inner_nodes: list[dict] = []
+        for node in definition.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            nid = node.get("id")
+            pos = node.get("position")
+            if isinstance(pos, dict) and "x" in pos and "y" in pos:
+                inner_positions[nid] = _int_xy(pos)
+            inner_nodes.append({
+                "id": nid,
+                "type": node.get("type"),
+                "data": node.get("data") if isinstance(node.get("data"), dict) else {},
+            })
+        stripped = dict(definition)
+        stripped["nodes"] = inner_nodes
+        logic_subgraphs.append(stripped)
+        if sid is not None and inner_positions:
+            subgraph_positions[sid] = inner_positions
+
     logic = {
         "format_version": FORMAT_VERSION,
         "name": payload.get("name", "Untitled"),
@@ -68,12 +99,14 @@ def split_graph(payload: dict) -> tuple[dict, dict]:
         "nodes": logic_nodes,
         "edges": payload.get("edges", []),
         "presets": payload.get("presets", []),
+        "subgraphs": logic_subgraphs,
     }
     layout = {
         "format_version": FORMAT_VERSION,
         "positions": positions,
         "notes": notes,
         "segmentGroups": payload.get("segmentGroups", []),
+        "subgraphPositions": subgraph_positions,
     }
     return logic, layout
 
@@ -116,6 +149,34 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
                     data.setdefault(k, v)
         merged_nodes.append(out)
 
+    # Put sub-canvas positions back on the definitions' nodes. A missing entry
+    # deliberately does NOT flag layout_missing: the frontend lays a sub-canvas
+    # out on first entry, and flagging here would send the whole top-level
+    # graph through auto-layout because one block had never been opened.
+    subgraph_positions = (
+        layout.get("subgraphPositions", {}) if has_layout else {}
+    )
+    merged_subgraphs: list[dict] = []
+    for definition in logic.get("subgraphs", []):
+        if not isinstance(definition, dict):
+            continue
+        inner_positions = subgraph_positions.get(definition.get("id"), {})
+        inner_positions = inner_positions if isinstance(inner_positions, dict) else {}
+        inner_nodes: list[dict] = []
+        for node in definition.get("nodes", []):
+            if not isinstance(node, dict):
+                continue
+            out_node = dict(node)
+            pos = inner_positions.get(node.get("id"))
+            if pos is None and isinstance(node.get("position"), dict):
+                pos = node["position"]
+            if isinstance(pos, dict) and "x" in pos and "y" in pos:
+                out_node["position"] = {"x": pos["x"], "y": pos["y"]}
+            inner_nodes.append(out_node)
+        merged_definition = dict(definition)
+        merged_definition["nodes"] = inner_nodes
+        merged_subgraphs.append(merged_definition)
+
     merged = {
         "format_version": logic.get("format_version", FORMAT_VERSION),
         "name": logic.get("name", "Untitled"),
@@ -123,6 +184,7 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
         "nodes": merged_nodes,
         "edges": logic.get("edges", []),
         "presets": logic.get("presets", []),
+        "subgraphs": merged_subgraphs,
         "segmentGroups": layout.get("segmentGroups", []) if has_layout else [],
         "layout_missing": any_missing,
     }
