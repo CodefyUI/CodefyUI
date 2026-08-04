@@ -2178,6 +2178,42 @@ describe('persistence (module reload)', () => {
     }
   });
 
+  it('saveTabs strips SECRET values inside subgraph definitions too (core#137)', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import('./tabStore');
+      const { useNodeDefStore } = await import('./nodeDefStore');
+      const llmDef = {
+        node_name: 'LLMChat', category: 'LLM', description: '', inputs: [], outputs: [],
+        params: [{ name: 'openai_api_key', param_type: 'secret', default: '', description: '', options: [], min_value: null, max_value: null }],
+      };
+      // A node serialized INTO a definition keeps only its `type` string, so
+      // the strip resolves the type through the registry rather than through
+      // an attached `data.definition` the way the top-level strip does.
+      useNodeDefStore.setState({ definitions: [llmDef] } as never);
+      mod.useTabStore.getState().setNodes([
+        { id: 'blk', type: 'subgraphNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'subgraph:d1', params: {} } },
+      ] as any);
+      mod.useTabStore.getState().setSubgraphs([
+        {
+          id: 'd1', name: 'Block', description: '',
+          nodes: [{ id: 'inner', type: 'LLMChat', position: { x: 0, y: 0 }, data: { params: { openai_api_key: 'sk-in-block-storage', model: 'gpt-5.2' } } }],
+          edges: [],
+          interface: { inputs: [], outputs: [], triggerTargets: [] },
+        },
+      ] as any);
+      vi.advanceTimersByTime(300);
+      const raw = localStorage.getItem(STORAGE_KEY)!;
+      expect(raw).toBeTruthy();
+      expect(raw).not.toContain('sk-in-block-storage');
+      const persisted = JSON.parse(raw).tabs[0].subgraphs[0];
+      expect(persisted.nodes[0].data.params.openai_api_key).toBe('');
+      expect(persisted.nodes[0].data.params.model).toBe('gpt-5.2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('saveTabs collapses a burst of changes into a single trailing save', async () => {
     vi.useFakeTimers();
     try {

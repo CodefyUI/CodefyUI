@@ -435,9 +435,15 @@ export function Toolbar() {
       ),
     );
     if (instanceIds.length > 0) {
-      const names = instanceIds.map(
-        (id) => subgraphs.find((d) => d.id === id)?.name || id,
-      );
+      // `.trim()` before the fallback, and the id itself defaulted: a
+      // whitespace-only name is truthy, so `|| id` alone rendered
+      // "collapsed blocks ( )", and an instance whose type is a bare
+      // `subgraph:` yields an EMPTY id, which rendered "collapsed blocks ()".
+      // Both are messages that name nothing while looking like they do.
+      const names = instanceIds.map((id) => {
+        const name = subgraphs.find((d) => d.id === id)?.name?.trim();
+        return name || id || t('subgraph.unnamed');
+      });
       addToast(
         t('toolbar.export.subgraphRefused', { names: names.join(', ') }),
         'error',

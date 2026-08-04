@@ -90,15 +90,30 @@ Graph contains a cycle: blk1/relu -> blk1/conv -> blk1/relu
 `匯出 → Python` 會為**每個子圖實例產生一個函式**：
 
 ```python
+# ========================== Subgraph functions ==========================
+
+
 def subgraph_myblock(ctx, results, provided):
-    """subgraph 'myblock' - instance 'blk1'."""
-    results['blk1/conv'] = n03_conv2d(ctx, x=_port(results['dataset'], 'images'))
-    ...
+    "subgraph 'myblock' - instance 'blk1'."
+    # ScalarMultiply -> Print
+    results['blk1/mul'] = n03_scalarmultiply(
+        ctx,
+        tensor=_port(results['src'], 'tensor'),
+    )
+    results['blk1/p'] = n04_print(
+        ctx,
+        value=_port(results['blk1/mul'], 'tensor'),
+    )
+
+
+# ============================ Flow functions ============================
+
 
 def flow_1(ctx, results, provided):
-    dataset = results['dataset'] = n02_dataset(ctx)
+    'Start -> TensorCreate -> ScalarMultiply -> Print'
+    start = results['start'] = n01_start(ctx)
+    src = results['src'] = n02_tensorcreate(ctx)
     subgraph_myblock(ctx, results, provided)
-    ...
 ```
 
 方塊的結構會被保留到匯出的檔案裡，而不是被打散成一長串節點呼叫。每個產生的節點函式也會附上一行註解，說明它來自哪個子圖。
@@ -111,3 +126,4 @@ def flow_1(ctx, results, provided):
 - 子圖只屬於單一張圖，目前還沒有共用的子圖庫。
 - 放在子圖裡的 `GraphInput` / `GraphOutput` 節點不會被算進這張圖對外公開的 API 合約（把圖當成函式呼叫時用的那組輸入輸出）——請把它們留在最外層。
 - 略過（bypass）不適用於實例節點，原因和預設模組一樣：略過是在節點類別宣告的連接埠之間傳遞值，而邊界連接埠沒有這樣的宣告。
+- `匯出 → 匯出為子圖`（做出來的是**預設模組**，不是方塊——這兩個功能在中文和英文裡剛好都共用「子圖」這個詞）會拒絕含有收合方塊的畫布，並且把它們的名字列出來。預設模組在伺服器端只存節點和連線，沒有地方可以放子圖定義；用這種畫布做出來的預設模組會帶著一個 `subgraph:<id>` 節點，而它的定義永遠跟不過去——任何人拿去用都是壞的，而且是永久性的，因為預設模組活得比它出身的那張圖還久。請先把方塊展開（在方塊上按右鍵 → 展開）再匯出。

@@ -789,6 +789,18 @@ def generate_python(
     # members are then emitted inline, in their true topological positions;
     # the block loses its function, never its identity, because
     # `_preset_origin` still stamps each member with the subgraph it is from.
+    #
+    # ONE PROPERTY OF THIS TEST WORTH KNOWING BEFORE YOU CHANGE
+    # `topological_sort`: condition 1 is evaluated against the specific order
+    # that function RETURNS, not against an intrinsic property of the graph.
+    # That is correct -- the same order drives emission, so the test asks
+    # exactly the question emission will face -- but it means whether a given
+    # block gets its own function is a function of Kahn's tie-break.  Change
+    # the queue discipline and blocks move silently between the grouped and
+    # the inlined path.  The script stays CORRECT either way (that is what
+    # both conditions guarantee); only the SHAPE of the exported file moves,
+    # so a diff-the-generated-output test would notice and a behaviour test
+    # would not.
     data_sources: dict[str, set[str]] = {}
     for edge in exec_edges:
         # Trigger edges carry no value and are ignored by `topological_sort`,

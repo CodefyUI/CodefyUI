@@ -14,6 +14,7 @@ import pytest
 
 from app.core.graph_engine import (
     GraphValidationError,
+    build_preset_fallback,
     build_subgraph_index,
     describe_cycle,
     execute_graph,
@@ -1308,3 +1309,170 @@ def test_a_cycle_inside_a_nested_definition_names_both_boundaries():
     assert "crosses subgraph instance(s): blk, blk/nest" in cycle_errors[0], (
         cycle_errors[0]
     )
+
+
+# ── Round-2 review findings ─────────────────────────────────────────────
+
+
+def test_two_instances_sharing_an_id_are_refused():
+    """The guard claimed inner ids and outer ids, never the INSTANCE id.
+
+    Two instances wearing one id whose definitions have disjoint inner ids
+    therefore slipped straight through: the run exited clean with the second
+    block's boundary edges consumed by the first, so it contributed nothing
+    and nothing said so. A silently wrong answer is strictly worse than the
+    phantom cycle the collision guard was written for.
+    """
+    first = {
+        "id": "first", "name": "first", "edges": [],
+        "nodes": [{"id": "m", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": "m", "innerPort": "tensor"}],
+            "outputs": [{"port": "out", "innerNode": "m",
+                         "innerPort": "tensor"}],
+            "triggerTargets": ["m"],
+        },
+    }
+    second = {
+        "id": "second", "name": "second", "edges": [],
+        "nodes": [{"id": "n", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": "n", "innerPort": "tensor"}],
+            "outputs": [{"port": "out", "innerNode": "n",
+                         "innerPort": "tensor"}],
+            "triggerTargets": ["n"],
+        },
+    }
+    nodes = [
+        {"id": "p", "type": "subgraph:first", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "p", "type": "subgraph:second", "position": {"x": 1, "y": 0},
+         "data": {}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(nodes, [], build_subgraph_index([first, second]))
+    message = str(excinfo.value)
+    assert "'p'" in message
+    # A plain duplicate, not a flattening collision -- no boundary involved.
+    assert "after subgraph expansion" not in message, message
+
+
+def test_an_instance_id_colliding_with_a_plain_node_is_refused():
+    nodes = [
+        {"id": "p", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "p", "type": "subgraph:pass", "position": {"x": 1, "y": 0},
+         "data": {}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(
+            nodes, [], build_subgraph_index([_passthrough_subgraph()])
+        )
+    assert "'p'" in str(excinfo.value)
+
+
+def test_a_duplicate_id_is_refused_even_with_no_subgraph_in_the_graph():
+    """The claim guard lived inside expansion, which returns early when the
+    graph has no instances -- so the identical duplicate was reported with a
+    block present and accepted without one."""
+    nodes = [
+        {"id": "dup", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "dup", "type": "ScalarMultiply", "position": {"x": 1, "y": 0},
+         "data": {"params": {}}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs_deep(nodes, [], {})
+    assert "'dup'" in str(excinfo.value)
+
+
+def test_validate_reports_a_duplicate_id_with_no_subgraph_present():
+    """Validate and the run have to agree about it, and say it once."""
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "dup", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "dup", "type": "TensorCreate", "position": {"x": 2, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "dup",
+              "sourceHandle": "trigger", "targetHandle": "__trigger",
+              "type": "trigger"}]
+    errors = validate_graph(nodes, edges)
+    duplicates = [e for e in errors if "Duplicate node id" in e]
+    assert len(duplicates) == 1, errors
+    assert "'dup'" in duplicates[0]
+
+
+def test_a_duplicate_id_is_reported_exactly_once_with_a_subgraph_present():
+    """The same fault must not be listed twice just because the graph also
+    happens to contain a block."""
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "dup", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "dup", "type": "TensorCreate", "position": {"x": 2, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "blk", "type": "subgraph:pass", "position": {"x": 3, "y": 0},
+         "data": {}},
+    ]
+    errors = validate_graph(
+        nodes, [], subgraphs=[_passthrough_subgraph()],
+    )
+    duplicates = [e for e in errors if "Duplicate node id" in e]
+    assert len(duplicates) == 1, errors
+
+
+def _subgraph_holding_preset() -> dict:
+    """A portable preset whose internal nodes name a graph-local subgraph."""
+    return {
+        "preset_name": "HoldsBlock",
+        "category": "Test",
+        "description": "",
+        "tags": [],
+        "nodes": [
+            {"id": "si", "type": "subgraph:leaf", "params": {}},
+        ],
+        "edges": [],
+        "exposed_inputs": [],
+        "exposed_outputs": [],
+        "exposed_params": [],
+    }
+
+
+def test_a_preset_naming_a_subgraph_is_refused_by_validate_and_by_the_run():
+    """A preset's internals were assumed to be unable to name a subgraph.
+
+    They can: `build_preset_fallback` reads the graph's OWN client-supplied
+    `presets[]`. Subgraphs are expanded before presets and never re-expanded,
+    so the instance the preset carries reached the executor unexpanded --
+    validate said clean, the run died `Unknown subgraph: leaf` for a
+    definition sitting right there in the graph. Both surfaces must refuse,
+    and by name.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "pnode", "type": "preset:HoldsBlock",
+         "position": {"x": 1, "y": 0}, "data": {"params": {}}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "pnode",
+              "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"}]
+    leaf = _passthrough_subgraph("leaf")
+    fallback = build_preset_fallback([_subgraph_holding_preset()])
+
+    errors = validate_graph(
+        nodes, edges, preset_fallback=fallback, subgraphs=[leaf],
+    )
+    named = [e for e in errors if "HoldsBlock" in e]
+    assert named, errors
+
+    with pytest.raises(GraphValidationError) as excinfo:
+        prepare_executable_graph(
+            nodes, edges, preset_fallback=fallback, subgraphs=[leaf],
+        )
+    assert "HoldsBlock" in str(excinfo.value)

@@ -132,15 +132,30 @@ So rewiring a block shows up in a review, and dragging inside one does not.
 `Export → Python` emits **one function per subgraph instance**:
 
 ```python
+# ========================== Subgraph functions ==========================
+
+
 def subgraph_myblock(ctx, results, provided):
-    """subgraph 'myblock' - instance 'blk1'."""
-    results['blk1/conv'] = n03_conv2d(ctx, x=_port(results['dataset'], 'images'))
-    ...
+    "subgraph 'myblock' - instance 'blk1'."
+    # ScalarMultiply -> Print
+    results['blk1/mul'] = n03_scalarmultiply(
+        ctx,
+        tensor=_port(results['src'], 'tensor'),
+    )
+    results['blk1/p'] = n04_print(
+        ctx,
+        value=_port(results['blk1/mul'], 'tensor'),
+    )
+
+
+# ============================ Flow functions ============================
+
 
 def flow_1(ctx, results, provided):
-    dataset = results['dataset'] = n02_dataset(ctx)
+    'Start -> TensorCreate -> ScalarMultiply -> Print'
+    start = results['start'] = n01_start(ctx)
+    src = results['src'] = n02_tensorcreate(ctx)
     subgraph_myblock(ctx, results, provided)
-    ...
 ```
 
 The block structure survives into the exported file instead of dissolving into
@@ -166,3 +181,11 @@ function.
 - Bypass does not apply to an instance node, for the same reason it does not
   apply to a preset: bypass forwards a value between ports a node class
   declares, and a boundary port has no such declaration.
+- `Export → Export as Subgraph` (which creates a **preset**, not a block —
+  the two features share a word) refuses a canvas that contains collapsed
+  blocks, and names them. A preset is stored server-side as nodes and edges
+  and has no slot for a definition, so a preset built from such a canvas
+  would hold a `subgraph:<id>` node whose definition can never accompany it
+  — broken for everyone who drops it, and broken permanently, because the
+  preset outlives the graph it came from. Expand the blocks first (right
+  click → Expand), then export.

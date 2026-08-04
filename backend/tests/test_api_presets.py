@@ -127,3 +127,53 @@ async def test_exposed_param_keeps_visibility_and_tier(
     lr = by_name["lr"]["param_def"]
     assert lr["advanced"] is False
     assert lr["visible_when"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_canvas_containing_a_subgraph_instance(
+    test_client, _isolated_presets,
+):
+    """core#137: a preset cannot carry a graph-local subgraph reference.
+
+    The stored preset is nodes + edges and nothing else -- there is no slot
+    for a definition -- so a preset built from a canvas holding an instance
+    would ship a `subgraph:<id>` node whose definition can never accompany
+    it. It does not even work in the source graph: expansion runs subgraphs
+    before presets and never revisits, so the instance reaches the executor
+    unexpanded.
+
+    Refused, not stripped: stripping would silently hand back a preset
+    missing an arbitrary piece of what the user asked to package.
+    """
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Blocky",
+        "nodes": [
+            {"id": "opt", "type": "Optimizer",
+             "data": {"params": {"type": "Adam", "lr": 0.01}}},
+            {"id": "blk", "type": "subgraph:inner", "data": {"params": {}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "blk" in detail
+    assert "expand" in detail.lower()
+    # Nothing was written.
+    assert list(_isolated_presets.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_create_still_accepts_a_canvas_with_no_instances(
+    test_client, _isolated_presets,
+):
+    """The guard must not fire on an ordinary graph -- including one whose
+    node type merely CONTAINS the word."""
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Plain",
+        "nodes": [
+            {"id": "opt", "type": "Optimizer",
+             "data": {"params": {"type": "Adam", "lr": 0.01}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text

@@ -20,6 +20,7 @@ import {
   collapseSelection,
   definitionFromCanvas,
   expandInstance,
+  instanceDefinition,
   pruneStaleBoundaryEdges,
   reachableSubgraphIds,
   refreshInstances,
@@ -351,10 +352,14 @@ interface TabStoreState {
   getSerializedGraph: () => {
     nodes: any[];
     edges: any[];
-    presets?: import('../types').PresetDefinition[];
-    segmentGroups?: SegmentGroup[];
-    // Not optional: the serializer always answers with a list, so callers do
-    // not each have to re-establish that (core#137 review round 1).
+    // None of these are optional: the serializer always answers with a list,
+    // so callers do not each have to re-establish that (core#137 review
+    // round 1 for `subgraphs`; round 2 for the other two, which were the
+    // same latent trap one field over -- `presets` in particular became
+    // load-bearing once a preset could live inside a block, and an
+    // `| undefined` on it is how a caller ends up quietly skipping it).
+    presets: import('../types').PresetDefinition[];
+    segmentGroups: SegmentGroup[];
     subgraphs: SubgraphDefinition[];
   };
   /**
@@ -401,8 +406,17 @@ interface TabStoreState {
    * Merge a template's nodes/edges into the active tab (core#128).
    * Paste-style: fresh ids, placed clear of what is already on the canvas,
    * one undo step for the whole insertion.
+   *
+   * `subgraphs` (core#137) are the template's own definitions. Definition
+   * ids are NOT remapped the way node ids are -- an id is what an instance
+   * node names -- so a collision is resolved the way paste resolves it: the
+   * definition already in this tab wins.
    */
-  insertGraph: (nodes: Node<NodeData>[], edges: Edge[]) => void;
+  insertGraph: (
+    nodes: Node<NodeData>[],
+    edges: Edge[],
+    subgraphs?: SubgraphDefinition[],
+  ) => void;
 
   // note actions
   addNote: (kind: 'text' | 'image', position: { x: number; y: number }) => void;
@@ -474,6 +488,55 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/**
+ * Land a block of foreign nodes plus the definitions they name (core#137).
+ *
+ * Shared by paste and template insert, which are the same operation with
+ * different sources -- and which had already drifted apart once, so one
+ * implementation is the point.
+ *
+ * Node ids are remapped by the caller; DEFINITION ids are not, because an id
+ * is what an instance node names. So a collision has to be resolved rather
+ * than avoided, and the local definition wins: it is the one this tab's
+ * other instances are sharing, and replacing it would edit them from a
+ * clipboard. That decision then has a consequence the incoming nodes must
+ * follow -- an instance cloned with the FOREIGN definition would keep the
+ * foreign label and rendered ports while resolving to the local block, so
+ * the canvas paints handles the block does not have. Re-render every
+ * incoming instance from the definition that actually won.
+ */
+function mergeIncomingSubgraphs(
+  existing: SubgraphDefinition[],
+  incoming: SubgraphDefinition[],
+  incomingNodes: Node<NodeData>[],
+): { subgraphs: SubgraphDefinition[]; nodes: Node<NodeData>[] } {
+  const subgraphs = incoming.length
+    ? [
+        ...existing,
+        ...incoming.filter((d) => !existing.some((e) => e.id === d.id)),
+      ]
+    : existing;
+  const byId = new Map(subgraphs.map((d) => [d.id, d]));
+  const nodes = incomingNodes.map((n) => {
+    const sid = subgraphIdOf(n.data?.type);
+    if (sid === null) return n;
+    const definition = byId.get(sid);
+    // A reference to a definition nobody carries is left exactly as it is:
+    // it is already broken, and rewriting it would only hide that.
+    if (!definition) return n;
+    return {
+      ...n,
+      data: {
+        ...n.data,
+        label: definition.name || definition.id,
+        definition: instanceDefinition(definition),
+        subgraphId: definition.id,
+      },
+    };
+  });
+  return { subgraphs, nodes };
 }
 
 /**
@@ -719,6 +782,64 @@ function stripSecretInternalParams(
   return cleaned ?? internalParams;
 }
 
+// Blank every SECRET-typed value inside SUBGRAPH DEFINITIONS (core#137).
+//
+// A node that lives inside a collapsed block is an ordinary node holding an
+// ordinary API key; nothing about being in a block makes it less of a secret.
+// Two things make this a separate function rather than a reuse of the node
+// strip above:
+//
+//  - a definition's entries are the SERIALIZED shape (`type` at the top
+//    level, no attached `data.definition`), so the param schema has to be
+//    resolved through the node registry the way `resolveSerializedNodes`
+//    does, and a preset among them through the preset registry;
+//  - `subgraphs` is a FLAT list — a block inside a block is a
+//    `subgraph:<id>` REFERENCE into this same list — so one pass over the
+//    list reaches every node at every depth, with no recursion to get wrong.
+//
+// Returns the SAME array (and the same definition objects) when there is
+// nothing to strip, so the persistence record cache stays a pointer compare.
+function stripSubgraphSecrets(
+  subgraphs: SubgraphDefinition[],
+): SubgraphDefinition[] {
+  if (!subgraphs.length) return subgraphs;
+  const { definitions, presets } = useNodeDefStore.getState();
+  const defByName = new Map(definitions.map((d) => [d.node_name, d]));
+  const presetByName = new Map(presets.map((p) => [p.preset_name, p]));
+  let listChanged = false;
+  const next = subgraphs.map((definition) => {
+    let changed = false;
+    const nodes = definition.nodes.map((raw: any) => {
+      const type: string = raw?.type ?? '';
+      const data = raw?.data;
+      if (!data) return raw;
+      const params = stripSecretParams(data.params, defByName.get(type));
+      const internalParams = type.startsWith('preset:')
+        ? stripSecretInternalParams(
+            data.internalParams,
+            presetByName.get(type.slice('preset:'.length)),
+          )
+        : data.internalParams;
+      if (params === data.params && internalParams === data.internalParams) {
+        return raw;
+      }
+      changed = true;
+      return {
+        ...raw,
+        data: {
+          ...data,
+          ...(params !== undefined ? { params } : {}),
+          ...(internalParams !== undefined ? { internalParams } : {}),
+        },
+      };
+    });
+    if (!changed) return definition;
+    listChanged = true;
+    return { ...definition, nodes };
+  });
+  return listChanged ? next : subgraphs;
+}
+
 // Return a copy of `nodes` with every SECRET-typed value blanked in both
 // `data.params` (via the node definition) and, for preset nodes,
 // `data.internalParams` (via the preset's exposed_params). Nodes with no
@@ -846,14 +967,19 @@ function buildPersistedTab(input: TabState): PersistedTab {
     // stays byte-identical to before this task.
     ...(t.readOnly ? { readOnly: true } : {}),
     // Never persist SECRET param values (typed API keys): they must not
-    // survive a page refresh — the field is "Session only".
+    // survive a page refresh — the field is "Session only". Applied to
+    // BOTH places this record carries nodes; stripping only the top level
+    // means the promise above holds or not depending on whether the user
+    // happened to collapse the node holding the key into a block.
     nodes: stripNodeSecretsForPersist(t.nodes),
     edges: t.edges,
     segmentGroups: t.segmentGroups,
     // Optional-chained like the flush above: a tab object built before this
     // field existed (a test double, an older persisted record) must still
     // persist rather than throw on the autosave path.
-    ...(t.subgraphs?.length ? { subgraphs: t.subgraphs } : {}),
+    ...(t.subgraphs?.length
+      ? { subgraphs: stripSubgraphSecrets(t.subgraphs) }
+      : {}),
     // Only while the run might still be in flight, so a finished run's
     // id never survives a reload: the Inspector's captured outputs live
     // in a process-lifetime store, and pointing it at a run whose
@@ -1472,6 +1598,28 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }),
 
   clear: () => {
+    // Flush the sub-canvas editing stack BEFORE snapshotting, exactly as
+    // `getSerializedGraph` and `buildPersistedTab` do. Without it the
+    // snapshot captured whatever block the user happened to be standing
+    // inside, and the outer graph -- which lived nowhere else -- was gone
+    // for good: one undo after File > Clear replaced the user's graph with
+    // the block's insides. `File > Clear` is in a menu with no
+    // `subgraphStack` gating, so "the user is inside a block" is not a
+    // state this action can assume away.
+    const active = get().getActiveTab();
+    const flushed = flushSubgraphEditing(active);
+    // Identity: `flushSubgraphEditing` returns its argument untouched when
+    // there is no stack, so this is a no-op from the top level.
+    if (flushed !== active) {
+      set({
+        tabs: updateTab(get().tabs, get().activeTabId, () => ({
+          nodes: flushed.nodes,
+          edges: flushed.edges,
+          subgraphs: flushed.subgraphs,
+          subgraphStack: [],
+        })),
+      });
+    }
     get().pushUndoSnapshot();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
@@ -1515,6 +1663,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     // and serialization -- which every Run goes through -- is the last place
     // that should throw over a missing optional.
     const liveSubgraphIds = reachableSubgraphIds(tab.nodes, tab.subgraphs ?? []);
+    const subgraphs = stripSubgraphSecrets(
+      (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id)),
+    );
     const presets: import('../types').PresetDefinition[] = [];
     const seenPresets = new Set<string>();
 
@@ -1560,6 +1711,32 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       };
     });
 
+    // A preset node collapsed INTO a block is still a preset node: the
+    // definition keeps it as `preset:<name>` + `internalParams`, and without
+    // its portable definition travelling in `presets[]` the export 400s with
+    // `Unknown preset` and the save writes a file nothing can run. The
+    // canvas walk above cannot see it -- the node is not on the canvas any
+    // more -- and a definition entry carries only the type STRING, so the
+    // definition is resolved through the registry the way
+    // `resolveSerializedNodes` resolves it when the file is reopened.
+    const knownPresets = new Map(
+      useNodeDefStore.getState().presets.map((p) => [p.preset_name, p]),
+    );
+    for (const definition of subgraphs) {
+      for (const raw of definition.nodes as { type?: unknown }[]) {
+        const type = typeof raw?.type === 'string' ? raw.type : '';
+        if (!type.startsWith('preset:')) continue;
+        const name = type.slice('preset:'.length);
+        if (seenPresets.has(name)) continue;
+        const portable = knownPresets.get(name);
+        // An unknown name is left out rather than invented: it is already
+        // broken, and the backend names it (`Unknown preset: <name>`).
+        if (!portable) continue;
+        seenPresets.add(name);
+        presets.push(portable);
+      }
+    }
+
     return {
       nodes,
       edges: tab.edges.map((e) => {
@@ -1589,13 +1766,19 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       // Transitive, because a definition can hold an instance of another:
       // a block reachable only from INSIDE a reachable block is still live.
       //
-      // Always an ARRAY, never undefined. `normalizeTab` gives every real tab
-      // a `subgraphs` list, so the coalesce only covers hand-built tab doubles
-      // in tests -- and a public serializer that answers `undefined` because
-      // some test object was malformed pushes an `| undefined` into the types
-      // of every caller, which is exactly how `Toolbar.handleExportSubgraph`
-      // ended up dereferencing a possibly-undefined list.
-      subgraphs: (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id)),
+      // Always an ARRAY, never undefined. `createTabState` and
+      // `tabFromPersisted` -- the only two places a tab object is built --
+      // give every real tab a `subgraphs` list, so the coalesce only covers
+      // hand-built tab doubles in tests. A public serializer that answers
+      // `undefined` because some test object was malformed pushes an
+      // `| undefined` into the types of every caller, which is exactly how
+      // `Toolbar.handleExportSubgraph` ended up dereferencing a
+      // possibly-undefined list.
+      //
+      // SECRET params inside a definition are blanked by the same rule the
+      // top-level nodes above follow: a key does not stop being a key
+      // because the node holding it was collapsed into a block.
+      subgraphs,
     };
   },
 
@@ -1628,6 +1811,19 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // `updateNodeParams` are not guarded either). It is not a security
   // boundary, and nothing here should be mistaken for one.
 
+  // CONTRACT, because this is a trap otherwise: call this only AFTER
+  // `setNodes`/`setEdges` have installed the graph these definitions belong
+  // to. It drops `subgraphStack` without putting a canvas back, so calling
+  // it while the user is inside a block leaves the block's INSIDES on screen
+  // as if they were the whole graph. All three callers (`Toolbar`'s load and
+  // import, `openExample`) set nodes and edges first, so no path reaches
+  // that today.
+  //
+  // Deliberately does NOT flush the stack itself, which would look like the
+  // safer choice and is not: `flushSubgraphEditing` writes whatever is on
+  // the canvas back into the definition being edited, and by the time this
+  // runs the canvas is already the NEW graph -- it would overwrite the
+  // incoming definition with the incoming top level.
   setSubgraphs: (subgraphs) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
@@ -1682,6 +1878,13 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
             swallowed.has(t.activeSegment.tailNodeId))
             ? null
             : t.activeSegment,
+        // The last thing on `deleteNode`'s cleanup list: a detail modal
+        // showing a node that just moved inside a block has nothing left to
+        // render on this canvas.
+        nodeDetailNodeId:
+          t.nodeDetailNodeId && swallowed.has(t.nodeDetailNodeId)
+            ? null
+            : t.nodeDetailNodeId,
         // A collapsed block is one node again, so everything it contained
         // stops being a candidate for partial re-execution under its old id.
         dirtyNodeIds: new Set([result.instanceId]),
@@ -1703,13 +1906,36 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       (raw) => resolveSerializedNodes(raw, defs, presets, tab.subgraphs),
     );
     if (!result.ok) return false;
+    // The INSTANCE node is the one that disappears here -- the exact mirror
+    // of collapse, where the members disappear. Everything `deleteNode`
+    // cleans up when a node vanishes has to be cleaned up on both sides of
+    // that mirror, or expanding a block leaves a Teaching Inspector segment
+    // that can never resolve a path (and `segmentGroups` is persisted, so
+    // the broken segment is written to disk) plus a note bound to an id
+    // nothing wears any more.
+    const nodes = result.nodes.map((n) =>
+      n.type === 'noteNode' && n.data.boundToNodeId === nodeId
+        ? { ...n, data: { ...n.data, boundToNodeId: null, boundOffset: null } }
+        : n,
+    );
     get().pushUndoSnapshot();
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, () => ({
-        nodes: result.nodes,
+      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
+        nodes,
         edges: result.edges,
         subgraphs: result.subgraphs,
         selectedNodeId: null,
+        segmentGroups: t.segmentGroups.filter(
+          (s) => s.headNodeId !== nodeId && s.tailNodeId !== nodeId,
+        ),
+        activeSegment:
+          t.activeSegment &&
+          (t.activeSegment.headNodeId === nodeId ||
+            t.activeSegment.tailNodeId === nodeId)
+            ? null
+            : t.activeSegment,
+        nodeDetailNodeId:
+          t.nodeDetailNodeId === nodeId ? null : t.nodeDetailNodeId,
         dirtyNodeIds: new Set(result.restoredIds),
       })),
     });
@@ -1967,7 +2193,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   // ── Template insertion (core#128) ──
 
-  insertGraph: (incomingNodes, incomingEdges) => {
+  insertGraph: (incomingNodes, incomingEdges, incomingSubgraphs = []) => {
     if (incomingNodes.length === 0) return;
     const tab = get().getActiveTab();
     get().pushUndoSnapshot();
@@ -2015,10 +2241,21 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     // "insert, then drag/lay-out the new block" work as one gesture — the
     // same thing paste does.
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
-        nodes: [...t.nodes.map((n) => ({ ...n, selected: false })), ...newNodes],
-        edges: [...t.edges, ...newEdges],
-      })),
+      tabs: updateTab(get().tabs, get().activeTabId, (t) => {
+        const merged = mergeIncomingSubgraphs(
+          t.subgraphs,
+          incomingSubgraphs,
+          newNodes,
+        );
+        return {
+          nodes: [
+            ...t.nodes.map((n) => ({ ...n, selected: false })),
+            ...merged.nodes,
+          ],
+          edges: [...t.edges, ...newEdges],
+          subgraphs: merged.subgraphs,
+        };
+      }),
     });
 
     // The block is placed below the existing graph, which on a canvas the
@@ -2325,22 +2562,21 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }));
 
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
-        nodes: [
-          ...tab.nodes.map((n) => ({ ...n, selected: false })),
-          ...newNodes,
-        ],
-        edges: [...tab.edges, ...newEdges],
-        // Definitions the target tab is missing come across with the paste.
-        // One this tab ALREADY has wins: it is the one its other instances
-        // are sharing, and replacing it would edit them from a clipboard.
-        subgraphs: [
-          ...tab.subgraphs,
-          ...(clipboard.subgraphs ?? []).filter(
-            (d) => !tab.subgraphs.some((existing) => existing.id === d.id),
-          ),
-        ],
-      })),
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => {
+        const merged = mergeIncomingSubgraphs(
+          tab.subgraphs,
+          clipboard.subgraphs ?? [],
+          newNodes,
+        );
+        return {
+          nodes: [
+            ...tab.nodes.map((n) => ({ ...n, selected: false })),
+            ...merged.nodes,
+          ],
+          edges: [...tab.edges, ...newEdges],
+          subgraphs: merged.subgraphs,
+        };
+      }),
     });
   },
 

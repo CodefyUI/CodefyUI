@@ -1,4 +1,4 @@
-import { useI18n, type TranslationKey } from '../../i18n';
+import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { isBypassable } from '../../utils';
@@ -24,6 +24,11 @@ interface NodeContextMenuProps {
   items: MenuItem[];
   onClose: () => void;
 }
+
+/** How many convexity blockers the refusal toast names before "and N more". */
+const MAX_NAMED_BLOCKERS = 8;
+/** Longest node label the refusal toast will quote, before an ellipsis. */
+const MAX_BLOCKER_LABEL = 40;
 
 const NOTE_COLORS = [
   { label: 'Yellow', value: '#3d3d1a' },
@@ -104,17 +109,39 @@ export function useNodeContextMenuItems(
    */
   const reportRefusal = (failure: CollapseFailure) => {
     if (failure.reason !== 'not-convex') {
-      addToast(t(`subgraph.collapse.${failure.reason}` as TranslationKey), 'error');
+      // No cast. The template literal resolves to the exact union of
+      // `subgraph.collapse.<reason>` keys, so adding a `CollapseFailure`
+      // reason without adding its key is a compile error -- which is the
+      // whole value of the interpolation. `as TranslationKey` here disarmed
+      // that check, and would also have hidden the removal of the early
+      // return above (`not-convex` has no bare key: it takes a `{nodes}`
+      // placeholder and is formatted below).
+      addToast(t(`subgraph.collapse.${failure.reason}`), 'error');
       return;
     }
     const nodes = useTabStore.getState().getActiveTab().nodes;
     const labelById = new Map(nodes.map((n) => [n.id, n.data?.label]));
+    // Bounded on both axes. An `error` toast never auto-dismisses
+    // (toastStore) and its body does not scroll (Toast.module.css sets no
+    // max-height), so an unbounded join is a permanent wall of text over the
+    // canvas: fifty blockers, or one node whose label came from an import,
+    // and the message is thousands of characters long. Naming a handful is
+    // enough to be recognisable -- every blocker is added to the selection
+    // below regardless, which is how the user actually acts on this.
+    const named = failure.blockers.slice(0, MAX_NAMED_BLOCKERS).map((id) => {
+      // Falls back to the id: a node with no label at all is still better
+      // named by something than by nothing.
+      const label = String(labelById.get(id) || id);
+      return label.length > MAX_BLOCKER_LABEL
+        ? `${label.slice(0, MAX_BLOCKER_LABEL - 1)}…`
+        : label;
+    });
+    const overflow = failure.blockers.length - named.length;
+    if (overflow > 0) {
+      named.push(t('subgraph.collapse.andMore', { count: overflow }));
+    }
     addToast(
-      t('subgraph.collapse.notConvex', {
-        // Falls back to the id: a node with no label at all is still better
-        // named by something than by nothing.
-        nodes: failure.blockers.map((id) => labelById.get(id) || id).join(', '),
-      }),
+      t('subgraph.collapse.notConvex', { nodes: named.join(', ') }),
       'error',
     );
     // Put the blockers IN the selection, so acting on the message is one

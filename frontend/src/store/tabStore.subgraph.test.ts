@@ -737,3 +737,203 @@ describe('enterSubgraph lays out a definition that has no positions', () => {
     }
   });
 });
+
+// ── Round-2 review findings ─────────────────────────────────────────────
+
+function presetDefinition(name = 'KeyedChat') {
+  return {
+    preset_name: name,
+    category: 'c',
+    description: '',
+    tags: [],
+    nodes: [{ id: 'inner', type: 'LLMChat', params: {} }],
+    edges: [],
+    exposed_inputs: [],
+    exposed_outputs: [],
+    exposed_params: [],
+  };
+}
+
+function presetNode(id: string, x = 0, y = 0, name = 'KeyedChat'): Node<NodeData> {
+  return {
+    id,
+    type: 'presetNode',
+    position: { x, y },
+    data: {
+      label: name,
+      type: `preset:${name}`,
+      params: {},
+      definition: def(name),
+      isPreset: true,
+      presetDefinition: presetDefinition(name) as never,
+      internalParams: { inner: { model: 'gpt-5.2' } },
+      executionStatus: 'idle',
+    },
+  };
+}
+
+describe('getSerializedGraph carries what a definition depends on', () => {
+  it('keeps the portable preset definition of a preset node collapsed into a block', () => {
+    // A collapsed preset serializes as `preset:<name>` + internalParams
+    // inside the definition, but `presets[]` was collected from the CANVAS
+    // only -- so the file kept the block and dropped the thing that makes
+    // the preset inside it resolvable. Export 400s; save writes an
+    // unrunnable file.
+    //
+    // The preset is in the node-def registry, which is where every path that
+    // puts a preset node on a canvas leaves it: installed presets come from
+    // `/api/presets`, and a graph/example/import that ships one merges it in
+    // before resolving its nodes.
+    useNodeDefStore.setState({ presets: [presetDefinition()] } as never);
+    store().setNodes([
+      { ...node('start', 'Start', 0, 0), type: 'start' },
+      node('a', 'A', 100, 0),
+      presetNode('p', 200, 0),
+    ]);
+    store().setEdges([dataEdge('e1', 'a', 'p')]);
+    expect(store().getSerializedGraph().presets.map((p) => p.preset_name))
+      .toEqual(['KeyedChat']);
+
+    select('a', 'p');
+    const result = store().collapseSelectionToSubgraph('Block');
+    expect(result.ok).toBe(true);
+
+    const serialized = store().getSerializedGraph();
+    // The definition really did swallow the preset node.
+    expect(
+      serialized.subgraphs[0].nodes.map((n: any) => n.type),
+    ).toContain('preset:KeyedChat');
+    expect(serialized.presets.map((p) => p.preset_name)).toEqual(['KeyedChat']);
+  });
+
+  it('blanks SECRET params inside a definition', () => {
+    const secretDef: NodeDefinition = {
+      ...def('LLMChat'),
+      params: [
+        {
+          name: 'api_key', param_type: 'secret', default: '', description: '',
+          options: [], min_value: null, max_value: null,
+        },
+      ],
+    };
+    useNodeDefStore.setState({ definitions: [def('A'), secretDef] } as never);
+    const keyed = node('k', 'LLMChat', 100, 0);
+    store().setNodes([
+      node('a', 'A', 0, 0),
+      { ...keyed, data: { ...keyed.data, definition: secretDef, params: { api_key: 'sk-LEAK' } } },
+    ]);
+    store().setEdges([dataEdge('e1', 'a', 'k')]);
+    select('a', 'k');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+
+    const serialized = store().getSerializedGraph();
+    expect(JSON.stringify(serialized)).not.toContain('sk-LEAK');
+    const inner = serialized.subgraphs[0].nodes.find((n: any) => n.id === 'k');
+    expect(inner.data.params.api_key).toBe('');
+  });
+});
+
+describe('clear() while inside a sub-canvas', () => {
+  it('snapshots the WHOLE graph, so undo restores the outer canvas', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const outerIds = tab().nodes.map((n) => n.id).sort();
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    store().enterSubgraph(instanceId);
+    expect(tab().nodes.map((n) => n.id).sort()).toEqual(['b', 'c']);
+
+    store().clear();
+    store().undo();
+
+    // Not ['b','c'] -- the block's insides are not the user's graph.
+    expect(tab().nodes.map((n) => n.id).sort()).toEqual(outerIds);
+    expect(tab().subgraphs).toHaveLength(1);
+    expect(tab().subgraphStack).toHaveLength(0);
+  });
+});
+
+describe('expandSubgraphInstance cleans up after the instance it removes', () => {
+  it('drops segments, note bindings and an open detail modal that named it', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    // A segment through the instance, a note bound to it, and its detail modal.
+    store().setSegmentGroups([
+      { id: 's1', headNodeId: 'a', tailNodeId: instanceId } as never,
+    ]);
+    store().setActiveSegment({ headNodeId: 'a', tailNodeId: instanceId } as never);
+    store().setNodes([
+      ...tab().nodes,
+      {
+        id: 'note', type: 'noteNode', position: { x: 0, y: 0 },
+        data: { label: 'Note', type: 'note', params: {}, boundToNodeId: instanceId, boundOffset: { x: 1, y: 1 } },
+      } as never,
+    ]);
+    store().openNodeDetail(instanceId);
+
+    expect(store().expandSubgraphInstance(instanceId)).toBe(true);
+
+    expect(tab().nodes.some((n) => n.id === instanceId)).toBe(false);
+    expect(tab().segmentGroups).toEqual([]);
+    expect(tab().activeSegment).toBeNull();
+    expect(tab().nodes.find((n) => n.id === 'note')!.data.boundToNodeId).toBeNull();
+    expect(tab().nodeDetailNodeId).toBeNull();
+  });
+});
+
+describe('collapseSelectionToSubgraph closes a detail modal it swallowed', () => {
+  it('clears nodeDetailNodeId when the node moved into the block', () => {
+    seedChain();
+    store().openNodeDetail('b');
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(tab().nodes.some((n) => n.id === 'b')).toBe(false);
+    expect(tab().nodeDetailNodeId).toBeNull();
+  });
+});
+
+describe('pasteNodes on a definition-id collision', () => {
+  it('re-renders the pasted instance from the LOCAL definition', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const definitionId = subgraphIdOf(
+      tab().nodes.find((n) => n.id === instanceId)!.data.type,
+    )!;
+    select(instanceId);
+    store().copySelectedNodes();
+
+    // The local definition now exposes a DIFFERENT port from the clipboard's.
+    store().setSubgraphs(
+      tab().subgraphs.map((d) =>
+        d.id === definitionId
+          ? {
+              ...d,
+              interface: {
+                ...d.interface,
+                inputs: [{ port: 'local_in', innerNode: 'b', innerPort: 'in', data_type: 'TENSOR' }],
+              },
+            }
+          : d,
+      ),
+    );
+    store().pasteNodes();
+
+    // Paste selects exactly what it added, so `selected` identifies the new
+    // instance. The pre-existing one is deliberately NOT re-rendered here:
+    // refreshing live instances is `refreshInstances`' job on sub-canvas
+    // exit, and this test is about the node paste itself just created.
+    const all = tab().nodes.filter(
+      (n) => subgraphIdOf(n.data.type) === definitionId,
+    );
+    expect(all).toHaveLength(2);
+    const pasted = all.filter((n) => n.selected);
+    expect(pasted).toHaveLength(1);
+    expect(pasted[0].data.definition!.inputs.map((p) => p.name)).toEqual([
+      'local_in',
+    ]);
+  });
+});

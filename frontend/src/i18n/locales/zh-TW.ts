@@ -201,6 +201,7 @@ const zhTW: Record<TranslationKey, string> = {
   'subgraph.badge': '子圖',
   'subgraph.nodeCount': '{count} 個節點',
   'subgraph.missing': '找不到定義',
+  'subgraph.unnamed': '未命名的區塊',
   'subgraph.breadcrumb.root': '主圖',
   'subgraph.breadcrumb.back': '返回',
   'subgraph.breadcrumb.jump': '回到這一層',
@@ -215,6 +216,7 @@ const zhTW: Record<TranslationKey, string> = {
   'subgraph.collapse.namePrompt': '幫這個子圖取個名字',
   'subgraph.collapse.notConvex':
     '這些節點夾在你選取的節點之間，收合後這個方塊會繞回自己：{nodes}。請一併選取它們。',
+  'subgraph.collapse.andMore': '以及另外 {count} 個',
   'subgraph.detail.interface': '子圖介面',
   'subgraph.detail.inputs': '輸入',
   'subgraph.detail.outputs': '輸出',

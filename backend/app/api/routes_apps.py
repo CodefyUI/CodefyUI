@@ -184,12 +184,29 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         )
     nodes = graph_data.get("nodes", [])
     edges = graph_data.get("edges", [])
+    subgraphs = graph_data.get("subgraphs", [])
+    # ID6 fallback: a preset defined ONLY in this graph's own embedded
+    # presets[] (never registered server-side) must resolve here exactly as
+    # it does at POST /api/graph/validate (routes_graph.py) -- otherwise a
+    # graph that is CI-green under `cdui project validate` could 409 here.
+    # Hoisted above the secret gate because that gate needs it too.
+    from ..core.graph_engine import build_preset_fallback
+    preset_fallback = build_preset_fallback(graph_data.get("presets", []))
 
     # Publish-specific security gate (NOT part of /run parity): a graph file
     # hand-edited to bake in a SECRET-typed param value never becomes an
     # immutable, API-exposed snapshot. The editor and POST /api/graph/save
     # both blank secrets, so this only fires on a file dropped in by hand.
-    secret_violations = find_secret_violations(nodes)
+    #
+    # Scoped to every place the file can carry a node: top-level `nodes` AND
+    # `subgraphs[].nodes` (core#137). `preset_fallback` so a preset defined
+    # only in this file's own `presets[]` still resolves its secret slots --
+    # without it a graph-embedded preset's internalParams are invisible here.
+    secret_violations = find_secret_violations(
+        nodes,
+        subgraphs=subgraphs,
+        preset_fallback=preset_fallback,
+    )
     if secret_violations:
         first = secret_violations[0]
         raise _manage_error(
@@ -222,15 +239,10 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
                             "GraphOutput node(s) are not reachable from any "
                             "entry point",
                             details=wiring.unreachable)
-    # ID6 fallback: a preset defined ONLY in this graph's own embedded
-    # presets[] (never registered server-side) must resolve here exactly as
-    # it does at POST /api/graph/validate (routes_graph.py) -- otherwise a
-    # graph that is CI-green under `cdui project validate` could 409 here.
-    from ..core.graph_engine import build_preset_fallback
     validation_errors = validate_graph(
         nodes, edges,
-        preset_fallback=build_preset_fallback(graph_data.get("presets", [])),
-        subgraphs=graph_data.get("subgraphs", []),
+        preset_fallback=preset_fallback,
+        subgraphs=subgraphs,
     )
     if validation_errors:
         raise _manage_error(409, "invalid_graph", "graph failed validation",

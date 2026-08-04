@@ -205,6 +205,10 @@ const en = {
   'subgraph.badge': 'Subgraph',
   'subgraph.nodeCount': '{count} nodes',
   'subgraph.missing': 'definition missing',
+  // Last-resort name for a block with neither a name nor an id -- an
+  // instance whose type is a bare `subgraph:`, which only a hand-edited or
+  // plugin-produced file can produce. Naming it "()" would be worse.
+  'subgraph.unnamed': 'an unnamed block',
   'subgraph.breadcrumb.root': 'Main',
   'subgraph.breadcrumb.back': 'Back',
   'subgraph.breadcrumb.jump': 'Go back to this level',
@@ -221,6 +225,12 @@ const en = {
   'subgraph.collapse.namePrompt': 'Name this subgraph',
   'subgraph.collapse.notConvex':
     'These nodes sit between the ones you selected, so the block would feed back into itself: {nodes}. Add them to the selection.',
+  // Overflow tail for the list above. Error toasts never auto-dismiss and the
+  // list is not scrollable, so a graph with fifty blockers (or one node with
+  // a very long label) would otherwise paint a wall of text over the canvas
+  // with no way to get rid of it. The blockers are all added to the selection
+  // anyway, so the message only has to name enough of them to be recognisable.
+  'subgraph.collapse.andMore': 'and {count} more',
   'subgraph.detail.interface': 'Subgraph interface',
   'subgraph.detail.inputs': 'Inputs',
   'subgraph.detail.outputs': 'Outputs',

@@ -4,7 +4,7 @@ import { useNodeDefStore } from '../store/nodeDefStore';
 import { useTabStore } from '../store/tabStore';
 import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
-import type { NodeData } from '../types';
+import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 
 /** A fetched example, resolved into live canvas nodes and edges. */
@@ -13,6 +13,17 @@ interface ResolvedExample {
   edges: Edge[];
   /** The example's own name, trimmed; null when it ships without one. */
   name: string | null;
+  /**
+   * Subgraph definitions the example ships (core#137).
+   *
+   * An example file has exactly the shape `Export -> JSON` produces, so it
+   * can carry collapsed blocks. Read them or the instance nodes land with
+   * nothing inside: the card renders "definition missing" and any run fails
+   * `Unknown subgraph`.
+   */
+  subgraphs: SubgraphDefinition[];
+  /** Teaching Inspector segment overlays the example ships; often empty. */
+  segmentGroups: SegmentGroup[];
 }
 
 /**
@@ -38,7 +49,19 @@ async function fetchResolvedExample(path: string): Promise<ResolvedExample> {
     }
   }
 
-  const nodes = resolveSerializedNodes(data.nodes ?? [], store.definitions, mergedPresets);
+  // Passed into the resolver, not just carried alongside it: an instance
+  // node's rendered ports and label come from its definition's interface,
+  // so resolving without them draws an empty box for a block that is right
+  // there in the file.
+  const subgraphs: SubgraphDefinition[] = Array.isArray(data.subgraphs)
+    ? data.subgraphs
+    : [];
+  const nodes = resolveSerializedNodes(
+    data.nodes ?? [],
+    store.definitions,
+    mergedPresets,
+    subgraphs,
+  );
   const edges = resolveSerializedEdges(data.edges ?? [], nodes);
   if (importedPresets.length > 0) {
     useNodeDefStore.setState({ presets: mergedPresets });
@@ -46,7 +69,10 @@ async function fetchResolvedExample(path: string): Promise<ResolvedExample> {
 
   const name =
     typeof data.name === 'string' && data.name.trim() ? data.name.trim() : null;
-  return { nodes, edges, name };
+  const segmentGroups: SegmentGroup[] = Array.isArray(data.segmentGroups)
+    ? data.segmentGroups
+    : [];
+  return { nodes, edges, name, subgraphs, segmentGroups };
 }
 
 /** Replace the active tab's graph with a resolved example. */
@@ -54,6 +80,16 @@ function applyToActiveTab(example: ResolvedExample): void {
   const tabs = useTabStore.getState();
   tabs.setNodes(example.nodes);
   tabs.setEdges(example.edges);
+  // After the nodes: `setSubgraphs` clears the editing stack and nothing
+  // else, so the canvas has to be in place first.
+  tabs.setSubgraphs(example.subgraphs);
+  // Unconditionally, even for an example that ships none. This REPLACES the
+  // tab's graph, so a segment left over from the graph that was there names
+  // head/tail ids nothing wears any more -- and `segmentGroups` is persisted
+  // through save, so the broken segment would be written to disk. Both
+  // Toolbar readers (`handleLoadGraph`, `handleImportFile`) already do this;
+  // this is the third door onto the same state.
+  tabs.setSegmentGroups(example.segmentGroups);
   // Mirror the example name onto the active tab so saves, exports, and the
   // script header all use a meaningful name out of the box.
   if (example.name) {
@@ -119,7 +155,11 @@ export async function insertExample(path: string): Promise<boolean> {
   try {
     const example = await fetchResolvedExample(path);
     if (example.nodes.length === 0) return false;
-    useTabStore.getState().insertGraph(example.nodes, example.edges);
+    useTabStore.getState().insertGraph(
+      example.nodes,
+      example.edges,
+      example.subgraphs,
+    );
     return true;
   } catch {
     return reportLoadFailure();

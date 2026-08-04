@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..config import settings
 from ..core.node_base import ParamType
+from ..core.graph_engine import subgraph_id_of
 from ..core.node_registry import registry as node_registry
 from ..core.preset_registry import preset_registry
 from ..core.secret_params import scrub_graph_secrets
@@ -36,6 +37,29 @@ async def create_preset(request: CreatePresetRequest):
 
     if preset_registry.get(request.name):
         raise HTTPException(status_code=409, detail=f"Preset '{request.name}' already exists")
+
+    # core#137: a preset is portable and a subgraph id is local to one graph,
+    # so a `subgraph:<id>` node baked into a preset is a reference that can
+    # never resolve anywhere else -- and does not resolve here either, since
+    # expansion runs subgraphs before presets and never revisits. The editor
+    # refuses this client-side; this is the same rule at the route, for a
+    # hand-rolled request. `graph_engine.preset_subgraph_errors` catches the
+    # ones that arrive inside a graph file's own `presets[]`.
+    instance_ids = [
+        node.get("id", "")
+        for node in request.nodes
+        if subgraph_id_of(node.get("type", "")) is not None
+    ]
+    if instance_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Preset '{request.name}' cannot contain subgraph "
+                f"instance(s): {', '.join(sorted(instance_ids))}. A subgraph "
+                "definition is local to one graph, so it cannot travel with "
+                "a preset -- expand the block first."
+            ),
+        )
 
     # I3: never persist a SECRET param value into a preset definition file.
     # Blank secrets in the incoming graph (both data.params and any

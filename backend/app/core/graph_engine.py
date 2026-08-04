@@ -224,7 +224,9 @@ class MalformedSubgraph:
 
     id: str
     #: Whitespace-collapsed and length-capped, because it is quoted into an
-    #: error line that :func:`validate_graph` joins with "; ".
+    #: error line that :func:`prepare_executable_graph` joins with "; " before
+    #: raising. (:func:`validate_graph` returns its errors as an unjoined
+    #: ``list[str]``; the join is on the raise path, not the report path.)
     error: str
 
 
@@ -268,6 +270,108 @@ def build_subgraph_index(subgraphs: Any) -> dict:
         if model.id:
             out[model.id] = model
     return out
+
+
+def duplicate_node_id_errors(nodes: list[dict]) -> list[str]:
+    """One line per id the graph carries more than once, in first-seen order.
+
+    Wording matches :func:`expand_subgraphs`' same-origin refusal exactly,
+    because it IS the same fault: nothing about a boundary is involved, and a
+    message mentioning expansion would send the user to the wrong place.
+
+    Lives outside expansion because expansion is not always reached --
+    :func:`expand_subgraphs_deep` returns early for a graph with no instances
+    -- and "the graph is only checked for duplicate ids when it happens to
+    contain a block" is not a rule anyone could have predicted.
+    """
+    seen: set[str] = set()
+    reported: set[str] = set()
+    errors: list[str] = []
+    for node in nodes:
+        node_id = node.get("id", "")
+        if node_id in seen and node_id not in reported:
+            reported.add(node_id)
+            errors.append(
+                f"Duplicate node id: the node '{node_id}' appears more "
+                "than once"
+            )
+        seen.add(node_id)
+    return errors
+
+
+def preset_subgraph_errors(
+    nodes: list[dict],
+    preset_fallback: dict | None = None,
+) -> list[str]:
+    """One line per preset node whose definition names a subgraph instance.
+
+    A preset is PORTABLE -- it outlives the graph it was made from and can be
+    dropped into any other -- while a subgraph id is graph-LOCAL, resolved
+    only against the file's own ``subgraphs`` list. A preset carrying a
+    ``subgraph:<id>`` node is therefore a reference that is meaningless
+    everywhere except in the one graph it came from, and even there it does
+    not work: expansion runs subgraphs BEFORE presets and never revisits, so
+    the instance the preset unpacks reaches the executor unexpanded. Before
+    this check, validate answered ``{"valid": true}`` and the run died with
+    ``Unknown subgraph: leaf`` for a definition sitting right there in the
+    file -- both of the disagreements this feature set out to remove, at
+    once.
+
+    Refused rather than supported: making the expansion loop alternate would
+    "work" in the source graph and then break the moment the preset was used
+    anywhere else, which is a worse failure than this one. ``/api/presets/
+    create`` refuses to build such a preset in the first place; this catches
+    the ones that arrive in a file's own ``presets[]``.
+
+    Reported (not raised) so it can join validate's other findings, and
+    computed BEFORE expansion so the message can name the preset node the
+    user can actually see.
+    """
+    from .preset_registry import preset_registry
+
+    errors: list[str] = []
+    for node in nodes:
+        node_type = str(node.get("type", ""))
+        if not node_type.startswith("preset:"):
+            continue
+        preset_name = node_type[len("preset:"):]
+        candidates = [
+            candidate
+            for candidate in (
+                preset_registry.get(preset_name),
+                (preset_fallback or {}).get(preset_name),
+            )
+            if candidate is not None
+        ]
+        offenders: set[str] = set()
+        for preset in candidates:
+            internal_nodes = (
+                preset.get("nodes", [])
+                if isinstance(preset, dict)
+                else preset.nodes
+            )
+            for internal in internal_nodes:
+                internal_type = (
+                    internal.get("type", "")
+                    if isinstance(internal, dict)
+                    else internal.type
+                )
+                if subgraph_id_of(internal_type) is not None:
+                    internal_id = (
+                        internal.get("id", "")
+                        if isinstance(internal, dict)
+                        else internal.id
+                    )
+                    offenders.add(str(internal_id))
+        if offenders:
+            errors.append(
+                f"Preset '{preset_name}' contains subgraph instance(s) "
+                f"{', '.join(sorted(offenders))} (node {node.get('id', '')}). "
+                "A preset is portable and a subgraph id is local to one "
+                "graph, so the reference cannot travel with it -- expand the "
+                "block before creating the preset."
+            )
+    return errors
 
 
 def check_subgraph_recursion(
@@ -405,6 +509,15 @@ def expand_subgraphs(
             continue
 
         instance_id = node["id"]
+        # Claimed like any other id even though the instance node itself does
+        # NOT survive expansion. Skipping it let two instances share one id
+        # whenever their definitions had disjoint inner ids: nothing collided,
+        # the run exited clean, and the second block's boundary edges -- which
+        # address the id, not the node -- were consumed by the first, so it
+        # contributed nothing and nothing said so. The docstring's "every id
+        # the flattened graph ends up with is claimed exactly once" was true
+        # only because the instance id was consumed rather than kept.
+        claim(instance_id, f"the node '{instance_id}'")
         if not sid:
             # ``subgraph:`` with nothing after it. ``subgraph_id_of`` answers
             # "" -- a real answer, not None -- so the node IS an instance, of
@@ -530,14 +643,19 @@ def expand_subgraphs_deep(
     :func:`validate_graph` still treats it as a valid opaque container, so the
     graph validates clean and dies at run time.
     """
+    # Before the early return below, so a duplicate id is refused for every
+    # graph rather than only for one that happens to contain a block.
+    duplicates = duplicate_node_id_errors(nodes)
+    if duplicates:
+        raise GraphValidationError("; ".join(duplicates))
     instance_ids = [
         sid
         for sid in (subgraph_id_of(n.get("type", "")) for n in nodes)
         if sid is not None
     ]
     if not instance_ids:
-        # Nothing to expand, so nothing to check: a graph carrying definitions
-        # it no longer instantiates still runs.
+        # Nothing to EXPAND, so nothing further to check: a graph carrying
+        # definitions it no longer instantiates still runs.
         return nodes, edges, {}
     # Scoped to what this graph actually uses. Scanning the whole index would
     # let one stale self-recursive definition -- unreachable from every
@@ -954,6 +1072,13 @@ def validate_graph(
     # nodes are excluded: they are still here when `resolve_bypass` runs
     # below, and it names them itself.
     errors.extend(container_bypass_errors(nodes, include_presets=False))
+    # Checked here, not only inside expansion: expansion is skipped entirely
+    # for a graph with no instances, and validate must not answer "clean" for
+    # a graph the run refuses.
+    errors.extend(duplicate_node_id_errors(nodes))
+    # A preset cannot carry a graph-local subgraph reference. Reported before
+    # expansion, while the preset node is still standing to be named.
+    errors.extend(preset_subgraph_errors(nodes, preset_fallback))
     if any(subgraph_id_of(n.get("type", "")) is not None for n in nodes):
         try:
             nodes, edges, _ = expand_subgraphs_deep(
@@ -963,7 +1088,13 @@ def validate_graph(
             # Report and keep going against the UNEXPANDED graph: the file's
             # standing rule is to show every problem at once, and an instance
             # whose definition is missing still has checkable neighbours.
-            errors.append(str(exc))
+            #
+            # Skipped when the sentence is already in `errors`: expansion
+            # re-raises the duplicate-id refusal verbatim, and one fault has
+            # to produce one line.
+            message = str(exc)
+            if message not in errors:
+                errors.append(message)
 
     resolution = resolve_bypass(nodes, edges)
     errors.extend(resolution.errors)
@@ -1387,11 +1518,22 @@ def prepare_executable_graph(
     if container_bypass:
         raise GraphValidationError("; ".join(container_bypass))
 
+    # A preset that names a subgraph is refused here, before either expansion
+    # runs. The order below is one-way -- subgraphs, then presets, never back
+    # -- so a `subgraph:` node arriving out of a preset would reach the
+    # executor unexpanded. `validate_graph` reports the same thing, from the
+    # same function, so the two surfaces cannot drift.
+    preset_subgraphs = preset_subgraph_errors(nodes, preset_fallback)
+    if preset_subgraphs:
+        raise GraphValidationError("; ".join(preset_subgraphs))
+
     internal_to_preset: dict[str, str] = {}
     # Subgraphs first: a definition may contain preset nodes, so expanding it
-    # feeds the preset loop below. The reverse cannot happen -- a preset's
-    # internal nodes come from the preset registry, which has no way to name a
-    # graph-local subgraph id.
+    # feeds the preset loop below. The reverse is REFUSED rather than
+    # supported (see `preset_subgraph_errors` just above) -- a preset's
+    # internals can name a graph-local subgraph id, because
+    # `build_preset_fallback` reads the graph's own client-supplied
+    # `presets[]` and `/api/presets/create` used to copy node types verbatim.
     nodes, edges, subgraph_map = expand_subgraphs_deep(
         nodes, edges, build_subgraph_index(subgraphs)
     )

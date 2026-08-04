@@ -701,8 +701,12 @@ export function pruneStaleBoundaryEdges(
   const byDefinition = new Map(subgraphs.map((s) => [s.id, s]));
   const instances = new Map<string, SubgraphDefinition>();
   for (const node of nodes) {
+    // `!== null`, not truthiness: `subgraphIdOf('subgraph:')` answers `''`
+    // -- an instance of nothing, a real answer -- and a truthiness test
+    // silently reclassifies it as "not an instance". Same rule every
+    // `subgraph_id_of` call site on the backend follows.
     const sid = subgraphIdOf(node.data?.type);
-    const definition = sid ? byDefinition.get(sid) : undefined;
+    const definition = sid !== null ? byDefinition.get(sid) : undefined;
     if (definition) instances.set(node.id, definition);
   }
   if (!instances.size) return edges;

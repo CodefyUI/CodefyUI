@@ -1,5 +1,6 @@
 """Tests for the graph API endpoints."""
 
+import copy
 import json
 
 import pytest
@@ -637,3 +638,165 @@ async def test_export_scrubs_a_secret_that_lives_inside_a_definition(
     # Nothing secret in this fixture; the guard is that the scrub runs at all
     # and does not corrupt an ordinary definition param.
     assert "'plain'" in resp.json()["script"]
+
+
+@pytest.mark.asyncio
+async def test_save_scrubs_a_secret_nested_two_definitions_deep(
+    test_client, tmp_path, monkeypatch,
+):
+    """A typed API key inside a block must never reach `graphs/*.json`.
+
+    `subgraphs` is a FLAT list -- a block inside a block is a reference, not
+    containment -- so scrubbing every entry covers arbitrary nesting. The
+    assertion is on the RAW FILE TEXT rather than on a parsed slot: the only
+    thing that matters here is that the string never lands on disk, wherever
+    in the document it might have travelled.
+    """
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "sg-secret",
+        "nodes": [
+            {"id": "top", "type": "LLMChat", "position": {"x": 0, "y": 0},
+             "data": {"params": {"openai_api_key": "sk-TOP-secret"}}},
+            {"id": "blk", "type": "subgraph:outer",
+             "position": {"x": 1, "y": 0}, "data": {"params": {}}},
+        ],
+        "edges": [],
+        "subgraphs": [
+            {
+                "id": "outer", "name": "Outer", "description": "",
+                "nodes": [
+                    {"id": "mid", "type": "LLMChat",
+                     "position": {"x": 0, "y": 0},
+                     "data": {"params": {"openai_api_key": "sk-MID-secret"}}},
+                    {"id": "nest", "type": "subgraph:inner",
+                     "position": {"x": 1, "y": 0}, "data": {"params": {}}},
+                ],
+                "edges": [],
+                "interface": {"inputs": [], "outputs": [],
+                              "triggerTargets": []},
+            },
+            {
+                "id": "inner", "name": "Inner", "description": "",
+                "nodes": [
+                    {"id": "deep", "type": "LLMChat",
+                     "position": {"x": 0, "y": 0},
+                     "data": {"params": {
+                         "openai_api_key": "sk-DEEP-secret",
+                         "anthropic_api_key": "sk-ant-DEEP-secret",
+                     }}},
+                ],
+                "edges": [],
+                "interface": {"inputs": [], "outputs": [],
+                              "triggerTargets": []},
+            },
+        ],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200, resp.text
+
+    raw = (tmp_path / "sg-secret.json").read_text()
+    assert "sk-TOP-secret" not in raw
+    assert "sk-MID-secret" not in raw
+    assert "sk-DEEP-secret" not in raw
+    assert "sk-ant-DEEP-secret" not in raw
+    # The scrub blanks the slot rather than dropping the definition.
+    saved = json.loads(raw)
+    by_id = {d["id"]: d for d in saved["subgraphs"]}
+    assert by_id["inner"]["nodes"][0]["data"]["params"][
+        "openai_api_key"] == ""
+
+
+@pytest.mark.asyncio
+async def test_save_scrubs_a_portable_preset_secret_inside_a_definition(
+    test_client, tmp_path, monkeypatch,
+):
+    """The definition scrub needs the graph's own preset fallback.
+
+    A `preset:` node inside a block carries per-inner-node overrides in
+    `data.internalParams`, and resolving which of those slots are SECRET
+    needs the preset definition -- which for a graph-embedded preset exists
+    only in the graph's own `presets[]`.
+    """
+    monkeypatch.setattr("app.config.settings.GRAPHS_DIR", tmp_path)
+    graph = {
+        "name": "sg-preset-secret",
+        "nodes": [
+            {"id": "blk", "type": "subgraph:outer",
+             "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+        ],
+        "edges": [],
+        "presets": [{
+            "preset_name": "PortableChat",
+            "category": "Portable",
+            "description": "",
+            "tags": [],
+            "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+            "edges": [],
+            "exposed_inputs": [],
+            "exposed_outputs": [],
+            "exposed_params": [],
+        }],
+        "subgraphs": [{
+            "id": "outer", "name": "Outer", "description": "",
+            "nodes": [
+                {"id": "p", "type": "preset:PortableChat",
+                 "position": {"x": 0, "y": 0},
+                 "data": {"internalParams": {
+                     "chat": {"openai_api_key": "sk-INBLOCK-preset"},
+                 }}},
+            ],
+            "edges": [],
+            "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+        }],
+    }
+    resp = await test_client.post("/api/graph/save", json=graph)
+    assert resp.status_code == 200, resp.text
+    assert "sk-INBLOCK-preset" not in (tmp_path / "sg-preset-secret.json").read_text()
+
+
+@pytest.mark.asyncio
+async def test_export_scrubs_a_portable_preset_secret_inside_a_definition(
+    test_client, monkeypatch,
+):
+    """Same gap on the export route: its definition scrub dropped the
+    fallback the top-level call passes.
+
+    Asserted on the payload the route HANDS ON, not on the emitted script:
+    `generate_python` scrubs the expanded nodes a second time, so a script
+    assertion passes whether or not this route did its job. Capturing the
+    `subgraphs=` argument pins the route's own behaviour.
+    """
+    captured: dict = {}
+    import app.core.codegen as codegen_module
+    real_generate = codegen_module.generate_python
+
+    def _capture(nodes, edges, **kwargs):
+        captured["subgraphs"] = copy.deepcopy(kwargs.get("subgraphs"))
+        return real_generate(nodes, edges, **kwargs)
+
+    monkeypatch.setattr(codegen_module, "generate_python", _capture)
+
+    graph = _subgraph_graph()
+    graph["presets"] = [{
+        "preset_name": "PortableChat",
+        "category": "Portable",
+        "description": "",
+        "tags": [],
+        "nodes": [{"id": "chat", "type": "LLMChat", "params": {}}],
+        "edges": [],
+        "exposed_inputs": [],
+        "exposed_outputs": [],
+        "exposed_params": [],
+    }]
+    graph["subgraphs"][0]["nodes"].append({
+        "id": "p", "type": "preset:PortableChat",
+        "position": {"x": 9, "y": 9},
+        "data": {"internalParams": {
+            "chat": {"openai_api_key": "sk-EXPORT-INBLOCK"},
+        }},
+    })
+    resp = await test_client.post("/api/graph/export", json=graph)
+    assert resp.status_code == 200, resp.text
+    assert "sk-EXPORT-INBLOCK" not in json.dumps(captured["subgraphs"])
+    assert "sk-EXPORT-INBLOCK" not in resp.json()["script"]
