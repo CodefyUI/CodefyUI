@@ -86,6 +86,21 @@ function toCanvasEdges(raw: any[]): Edge[] {
 
 const store = () => useTabStore.getState();
 
+/**
+ * Compare nodes/edges by CONTENT, not by the order they happen to come out in.
+ *
+ * Node and edge order carries no meaning to either side -- the engine keys
+ * everything by id -- so pinning it would fail the contract for a harmless
+ * reordering inside `collapseSelection`. Definition LISTS are deliberately NOT
+ * sorted anywhere below: `subgraphs` order is the one ordering that is a real
+ * behavioural fact -- `sameSubgraphs` compares the two lists INDEX BY INDEX, so
+ * a reordering is a change as far as the store is concerned, and it is what
+ * decides whether leaving a sub-canvas records an undo entry. That comparison
+ * stays order-sensitive on purpose.
+ */
+const sortById = (rows: any[]) =>
+  [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
 beforeEach(() => {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
   store().addTab('contract');
@@ -131,12 +146,63 @@ describe('subgraph collapse contract', () => {
       writeFileSync(FIXTURE, `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
     }
 
-    const sortById = (rows: any[]) =>
-      [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
-
     expect(sortById(serialized.nodes)).toEqual(sortById(fixture.collapsed.nodes));
     expect(sortById(serialized.edges)).toEqual(sortById(fixture.collapsed.edges));
     expect(serialized.subgraphs).toEqual(fixture.collapsed.subgraphs);
+
+    // This selection must keep CROSSING A TRIGGER BOUNDARY.
+    //
+    // The trigger fan-out is the most intricate rewrite in the feature -- one
+    // side mints a `-sg` edge to the instance at collapse, the other replicates
+    // it to every declared inner target with a `#n` suffix at expansion -- and
+    // it is the one part the cross-layer artifact nearly failed to cover: the
+    // selection used to be `[m1, m2, sum]`, none of which Start triggers, so
+    // `triggerTargets` came out `[]` and the whole rewrite was exercised only
+    // by each side's own unit tests. Two suites that never meet agree with each
+    // other and with nothing else, which is precisely the arrangement this
+    // shared file exists to replace.
+    //
+    // Asserted on `serialized`, not on the fixture, so it fires even on a
+    // regeneration run -- narrowing `selection` back to a trigger-free set and
+    // rewriting the file would otherwise pass silently, both halves agreeing on
+    // a graph that no longer covers anything.
+    const definition = serialized.subgraphs[0];
+    expect(definition.interface.triggerTargets.length).toBeGreaterThan(0);
+    expect(fixture.selection).toEqual(
+      expect.arrayContaining(definition.interface.triggerTargets),
+    );
+    expect(
+      serialized.edges.filter(
+        (e: any) =>
+          e.type === 'trigger' &&
+          e.target === fixture.instanceId &&
+          e.targetHandle === '__trigger',
+      ),
+    ).toHaveLength(1);
+
+    // ...and it must keep exercising BOUNDARY PORT NAME DEDUPLICATION.
+    //
+    // `m1` and `m2` both leave the block on a handle called `tensor`, so the
+    // second one has to be renamed -- two ports of one name would be a block
+    // whose second output is unaddressable. That rename is not a cosmetic
+    // detail: `port` is the only name the outer edge carries, and expansion
+    // looks it up in the interface to decide which INNER node the edge really
+    // comes from. Getting it wrong swaps which multiply feeds which side of
+    // the Add.
+    //
+    // It belongs here rather than in a unit test because the two sides have to
+    // agree on the generated name. Execution equivalence cannot referee that:
+    // the consumer is an Add, and 10 + 21 == 21 + 10, so a swapped mapping
+    // still computes 31. `test_subgraph_contract.py` pins the routing those
+    // names produce; this pins the names themselves.
+    expect(definition.interface.outputs.map((p: any) => p.port)).toEqual([
+      'tensor',
+      'tensor_2',
+    ]);
+    expect(definition.interface.outputs.map((p: any) => p.innerNode)).toEqual([
+      'm1',
+      'm2',
+    ]);
   });
 
   it('collapses a 60-node demo into four boxes', () => {
@@ -227,8 +293,11 @@ describe('subgraph collapse contract', () => {
     // 60 nodes minus the 52 that moved inside, plus 4 boxes.
     expect(serialized.nodes).toHaveLength(12);
 
+    // Re-read rather than reuse the object the first test parsed: that test
+    // has already written its own half back, and holding a stale parse here
+    // would write the pre-collapse `collapsed` straight back over it.
+    const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'));
     if (process.env.CODEFYUI_WRITE_SUBGRAPH_FIXTURE) {
-      const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'));
       fixture.demo60 = {
         flat: { nodes, edges },
         collapsed: {
@@ -239,5 +308,31 @@ describe('subgraph collapse contract', () => {
       };
       writeFileSync(FIXTURE, `${JSON.stringify(fixture, null, 2)}\n`, 'utf8');
     }
+
+    // The counts above are the ACCEPTANCE CRITERION ("60 nodes become 4
+    // boxes"); what follows is the CONTRACT. Without it this half of the
+    // fixture -- roughly 2,800 of its ~3,000 lines -- is an unchecked
+    // snapshot: the backend keeps executing whatever was written the last
+    // time someone set the env var, and any later change to collapse silently
+    // makes the executed graph something the editor no longer produces. A
+    // reviewer proved the hole by flipping `collapseSelection`'s definition
+    // accumulation to `[definition, ...subgraphs]` -- a real change to the
+    // order blocks are recorded in across sequential collapses -- and both
+    // tests here stayed green.
+    //
+    // The FLAT half is pinned too, even though this test builds it itself.
+    // The loop above is the generator and the stored copy is what the backend
+    // actually runs; nothing else notices if the two drift, and once they do
+    // "the collapsed graph computes what the flat one computes" is a claim
+    // about two different graphs.
+    expect(sortById(nodes)).toEqual(sortById(fixture.demo60.flat.nodes));
+    expect(sortById(edges)).toEqual(sortById(fixture.demo60.flat.edges));
+    expect(sortById(serialized.nodes)).toEqual(
+      sortById(fixture.demo60.collapsed.nodes),
+    );
+    expect(sortById(serialized.edges)).toEqual(
+      sortById(fixture.demo60.collapsed.edges),
+    );
+    expect(serialized.subgraphs).toEqual(fixture.demo60.collapsed.subgraphs);
   });
 });

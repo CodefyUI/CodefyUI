@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from app.core.codegen import generate_python
-from app.core.graph_engine import execute_graph, validate_graph
+from app.core.graph_engine import (
+    build_subgraph_index,
+    execute_graph,
+    expand_subgraphs_deep,
+    validate_graph,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "subgraph_contract.json"
 
@@ -66,9 +71,103 @@ async def test_collapsed_and_flat_graphs_compute_the_same_numbers(contract):
     )
 
     # The collapsed run really did cross a boundary: its inner nodes carry
-    # namespaced ids the flat run does not have, and vice versa.
-    assert "blk/sum" in collapsed_results
-    assert "sum" in flat_results and "sum" not in collapsed_results
+    # namespaced ids the flat run does not have, and vice versa. Named on an
+    # inner node rather than on the count of them, so this stays a statement
+    # about the boundary even if the selection is widened later.
+    assert "blk/m1" in collapsed_results
+    assert "m1" in flat_results and "m1" not in collapsed_results
+    # `sum` is deliberately OUTSIDE the block: it is what consumes both of the
+    # block's outputs, which is what puts two same-named boundary ports on the
+    # interface (see the port-name test below).
+    assert "sum" in collapsed_results and "sum" in flat_results
+
+
+def test_the_trigger_crosses_the_boundary_onto_the_right_inner_node(contract):
+    """The trigger fan-out, checked STRUCTURALLY -- execution cannot see it.
+
+    In the flat graph Start triggers ``a``; ``a`` is inside the block, so
+    collapse rewrote that edge to point at the instance (``t1-sg``) and
+    recorded ``a`` in ``interface.triggerTargets``. Expansion has to put it
+    back on ``blk/a`` and nowhere else.
+
+    This does NOT fall out of the equivalence test above, which is why it is
+    written separately rather than trusted to it. Trigger edges are excluded
+    from in-degree, so they never influence the topological order -- they only
+    pick entry points, and reachability from those entry points is then widened
+    again by the container rule that retains every node inside a block once ANY
+    node in that block is reachable. ``b`` feeds ``blk/m2`` with a plain data
+    edge, so the whole block stays executable no matter where its trigger
+    lands. Measured, not assumed: retargeting this edge at ``blk/sum`` or at
+    ``blk/m2``, and deleting it outright, each still produce avg == 31.0 with
+    all seven nodes run. Every one of those is a broken editor, and only an
+    assertion on the expanded SHAPE catches them.
+    """
+    collapsed = contract["collapsed"]
+    definition = collapsed["subgraphs"][0]
+    # What the editor recorded at collapse. Pinned by id, not merely non-empty:
+    # the fan-out is only correct if it names the node Start actually triggered.
+    assert definition["interface"]["triggerTargets"] == ["a"]
+
+    nodes, edges, _ = expand_subgraphs_deep(
+        collapsed["nodes"],
+        collapsed["edges"],
+        build_subgraph_index(collapsed["subgraphs"]),
+    )
+    instance = contract["instanceId"]
+    # No trigger may still be addressed to the instance: it is gone from the
+    # expanded graph, so an edge naming it is an edge into nothing.
+    assert not [
+        e for e in edges
+        if e.get("type") == "trigger" and instance in (e["source"], e["target"])
+    ]
+    fanned = sorted(
+        e["target"] for e in edges
+        if e.get("type") == "trigger" and e["target"].startswith(f"{instance}/")
+    )
+    assert fanned == ["blk/a"]
+
+    # And the OUTSIDE trigger is untouched: `b` was not in the selection, so
+    # Start still reaches it directly. A rewrite that swallowed every trigger
+    # into the block would otherwise satisfy the assertion above.
+    assert [
+        e["target"] for e in edges
+        if e.get("type") == "trigger" and not e["target"].startswith(f"{instance}/")
+    ] == ["b"]
+
+
+def test_the_two_same_named_outputs_route_to_their_own_inner_nodes(contract):
+    """The renamed boundary port, checked STRUCTURALLY -- for the same reason.
+
+    ``m1`` and ``m2`` both leave the block on a handle called ``tensor``, so
+    collapse renamed the second to ``tensor_2``. Those names are the ONLY thing
+    the outer edges carry; expansion resolves each back to an inner node
+    through ``interface.outputs``. If the two sides ever disagreed about which
+    name belongs to which inner node, the edge into ``sum.tensor_a`` would come
+    from ``m2`` and the one into ``sum.tensor_b`` from ``m1``.
+
+    The equivalence test cannot see that swap. The consumer is an Add, and
+    10 + 21 == 21 + 10, so the run still lands on 31.0 with the wires crossed.
+    """
+    collapsed = contract["collapsed"]
+    ports = collapsed["subgraphs"][0]["interface"]["outputs"]
+    assert [p["port"] for p in ports] == ["tensor", "tensor_2"]
+
+    nodes, edges, _ = expand_subgraphs_deep(
+        collapsed["nodes"],
+        collapsed["edges"],
+        build_subgraph_index(collapsed["subgraphs"]),
+    )
+    into_sum = {
+        e["targetHandle"]: (e["source"], e["sourceHandle"])
+        for e in edges
+        if e["target"] == "sum"
+    }
+    # m1 has scalar 5 and m2 has scalar 7, so this is also the only wiring that
+    # makes the flat graph's tensor_a/tensor_b assignment survive collapse.
+    assert into_sum == {
+        "tensor_a": ("blk/m1", "tensor"),
+        "tensor_b": ("blk/m2", "tensor"),
+    }
 
 
 def test_both_halves_validate_clean(contract):

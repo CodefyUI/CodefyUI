@@ -4,9 +4,9 @@
   "subgraphId": "combine",
   "instanceId": "blk",
   "selection": [
+    "a",
     "m1",
-    "m2",
-    "sum"
+    "m2"
   ],
   "flat": {
     "nodes": [
@@ -173,21 +173,6 @@
         }
       },
       {
-        "id": "a",
-        "type": "TensorCreate",
-        "position": {
-          "x": 120,
-          "y": 0
-        },
-        "data": {
-          "params": {
-            "shape": "2,2",
-            "fill": "full",
-            "value": 2
-          }
-        }
-      },
-      {
         "id": "b",
         "type": "TensorCreate",
         "position": {
@@ -199,6 +184,19 @@
             "shape": "2,2",
             "fill": "full",
             "value": 3
+          }
+        }
+      },
+      {
+        "id": "sum",
+        "type": "Add",
+        "position": {
+          "x": 440,
+          "y": 60
+        },
+        "data": {
+          "params": {
+            "alpha": 1
           }
         }
       },
@@ -220,7 +218,7 @@
         "id": "blk",
         "type": "subgraph:combine",
         "position": {
-          "x": 280,
+          "x": 120,
           "y": 0
         },
         "data": {
@@ -230,14 +228,6 @@
     ],
     "edges": [
       {
-        "id": "t1",
-        "source": "start",
-        "target": "a",
-        "sourceHandle": "trigger",
-        "targetHandle": "__trigger",
-        "type": "trigger"
-      },
-      {
         "id": "t2",
         "source": "start",
         "target": "b",
@@ -246,25 +236,40 @@
         "type": "trigger"
       },
       {
-        "id": "e1",
-        "source": "a",
-        "target": "blk",
-        "sourceHandle": "tensor",
-        "targetHandle": "tensor"
-      },
-      {
         "id": "e2",
         "source": "b",
         "target": "blk",
         "sourceHandle": "tensor",
-        "targetHandle": "tensor_2"
+        "targetHandle": "tensor"
+      },
+      {
+        "id": "e3",
+        "source": "blk",
+        "target": "sum",
+        "sourceHandle": "tensor",
+        "targetHandle": "tensor_a"
+      },
+      {
+        "id": "e4",
+        "source": "blk",
+        "target": "sum",
+        "sourceHandle": "tensor_2",
+        "targetHandle": "tensor_b"
       },
       {
         "id": "e5",
-        "source": "blk",
+        "source": "sum",
         "target": "avg",
         "sourceHandle": "tensor",
         "targetHandle": "tensor"
+      },
+      {
+        "id": "t1-sg",
+        "source": "start",
+        "target": "blk",
+        "sourceHandle": "trigger",
+        "targetHandle": "__trigger",
+        "type": "trigger"
       }
     ],
     "subgraphs": [
@@ -274,10 +279,25 @@
         "description": "",
         "nodes": [
           {
+            "id": "a",
+            "type": "TensorCreate",
+            "position": {
+              "x": 0,
+              "y": 0
+            },
+            "data": {
+              "params": {
+                "shape": "2,2",
+                "fill": "full",
+                "value": 2
+              }
+            }
+          },
+          {
             "id": "m1",
             "type": "ScalarMultiply",
             "position": {
-              "x": 0,
+              "x": 160,
               "y": 0
             },
             "data": {
@@ -290,7 +310,7 @@
             "id": "m2",
             "type": "ScalarMultiply",
             "position": {
-              "x": 0,
+              "x": 160,
               "y": 120
             },
             "data": {
@@ -298,39 +318,27 @@
                 "scalar": 7
               }
             }
-          },
-          {
-            "id": "sum",
-            "type": "Add",
-            "position": {
-              "x": 160,
-              "y": 60
-            },
-            "data": {
-              "params": {
-                "alpha": 1
-              }
-            }
           }
         ],
         "edges": [
           {
-            "id": "e3",
-            "source": "m1",
-            "target": "sum",
+            "id": "e1",
+            "source": "a",
+            "target": "m1",
             "sourceHandle": "tensor",
-            "targetHandle": "tensor_a"
-          },
-          {
-            "id": "e4",
-            "source": "m2",
-            "target": "sum",
-            "sourceHandle": "tensor",
-            "targetHandle": "tensor_b"
+            "targetHandle": "tensor"
           }
         ],
         "interface": {
           "inputs": [
+            {
+              "port": "tensor",
+              "innerNode": "m2",
+              "innerPort": "tensor",
+              "data_type": "TENSOR"
+            }
+          ],
+          "outputs": [
             {
               "port": "tensor",
               "innerNode": "m1",
@@ -344,15 +352,9 @@
               "data_type": "TENSOR"
             }
           ],
-          "outputs": [
-            {
-              "port": "tensor",
-              "innerNode": "sum",
-              "innerPort": "tensor",
-              "data_type": "TENSOR"
-            }
-          ],
-          "triggerTargets": []
+          "triggerTargets": [
+            "a"
+          ]
         }
       }
     ]
