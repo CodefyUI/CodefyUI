@@ -339,6 +339,16 @@
   padding: 4px 12px;
 }
 
+/* Section title on the left, its one action on the right. Baseline-aligned
+   rather than centred so the small-caps title and the button read as one
+   line. */
+.sectionHeaderRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .sectionHeader {
   font-size: 0.6875rem;
   color: #999;

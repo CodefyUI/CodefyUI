@@ -574,6 +574,7 @@ const zhTW: Record<TranslationKey, string> = {
   'runs.reattach.confirm': '切換',
   'runs.reattach.offline': '無法連上執行伺服器。',
   'runs.detail.metrics': '指標',
+  'runs.detail.downloadCsv': '下載 CSV',
   'runs.detail.noMetrics': '尚未記錄任何指標。',
   'runs.detail.log': '事件紀錄',
   'runs.detail.noLog': '尚無事件。',

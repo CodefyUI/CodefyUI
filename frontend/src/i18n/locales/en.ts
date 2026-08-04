@@ -577,6 +577,7 @@ const en = {
   'runs.reattach.confirm': 'Switch',
   'runs.reattach.offline': 'Cannot reach the execution server.',
   'runs.detail.metrics': 'Metrics',
+  'runs.detail.downloadCsv': 'Download CSV',
   'runs.detail.noMetrics': 'No metrics recorded yet.',
   'runs.detail.log': 'Event log',
   'runs.detail.noLog': 'No events yet.',
