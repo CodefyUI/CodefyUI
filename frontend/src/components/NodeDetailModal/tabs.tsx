@@ -8,6 +8,8 @@ import { CapturesTab } from './CapturesTab';
 import { StatsTab } from './StatsTab';
 import { DocsTab } from './DocsTab';
 import { CodeTab, hasCodeParam } from './CodeTab';
+import { SubgraphTab } from './SubgraphTab';
+import { subgraphIdOf } from '../../utils/subgraph';
 
 /**
  * Everything a Node Detail Modal tab is handed. Treat it as an additive
@@ -71,6 +73,15 @@ export const BUILTIN_NODE_DETAIL_TABS: readonly NodeDetailTabSpec[] = [
     order: 5,
     isEnabled: (ctx) => hasCodeParam(ctx.node),
     render: (ctx) => <CodeTab key={ctx.nodeId} ctx={ctx} />,
+  },
+  {
+    // Only on a subgraph instance, and ahead of the capture tabs: what the
+    // block IS matters more than what its boundary carried last run.
+    id: 'subgraph',
+    labelKey: 'nodeDetail.tabs.subgraph',
+    order: 7,
+    isEnabled: (ctx) => subgraphIdOf(ctx.node.data.type) !== null,
+    render: (ctx) => <SubgraphTab key={ctx.nodeId} ctx={ctx} />,
   },
   {
     id: 'inputs',

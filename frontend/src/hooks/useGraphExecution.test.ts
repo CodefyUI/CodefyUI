@@ -864,7 +864,9 @@ describe('useGraphExecution - execute', () => {
 
     // Pre-run REST validation must see the embedded presets, otherwise a
     // portable graph fails "Unknown preset" before the run even starts.
-    expect(validateGraphMock).toHaveBeenCalledWith(serializedNodes, [], presets);
+    expect(validateGraphMock).toHaveBeenCalledWith(
+      serializedNodes, [], presets, undefined,
+    );
     expect(ws.send.mock.calls[0][0].presets).toEqual(presets);
 
     useTabStore.setState({ getSerializedGraph: realSerialize } as any);

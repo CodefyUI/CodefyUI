@@ -448,7 +448,9 @@ export function useGraphExecution() {
     try {
       // Embedded presets ride along so a portable graph whose presets are
       // not in the local registry still validates (#84).
-      const validation = await validateGraph(execNodes, graph.edges, graph.presets);
+      const validation = await validateGraph(
+        execNodes, graph.edges, graph.presets, graph.subgraphs,
+      );
       if (!validation.valid) {
         const { addToast } = useToastStore.getState();
         validation.errors.forEach((err: string) => addToast(err, 'error'));
@@ -493,6 +495,7 @@ export function useGraphExecution() {
       nodes: execNodes,
       edges: graph.edges,
       presets: graph.presets,
+      subgraphs: graph.subgraphs,
       record_outputs: tab.recordOutputs,
       // A1: verbose step-trace mode
       verbose_mode: tab.verboseMode,

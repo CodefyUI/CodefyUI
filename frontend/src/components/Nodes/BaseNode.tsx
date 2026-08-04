@@ -17,6 +17,7 @@ import { downloadModelFile } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
+import { subgraphIdOf } from '../../utils/subgraph';
 import styles from './BaseNode.module.css';
 
 type BaseNodeProps = NodeProps<AppNode> & {
@@ -75,6 +76,7 @@ function CodePreview({ source }: { source: string }) {
 export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const openSubgraphModal = useTabStore((s) => s.openSubgraphModal);
   const openNodeDetail = useTabStore((s) => s.openNodeDetail);
+  const enterSubgraph = useTabStore((s) => s.enterSubgraph);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
   const draggingSourceType = useUIStore((s) => s.draggingSourceType);
   const reconnectingHandle = useUIStore((s) => s.reconnectingHandle);
@@ -96,6 +98,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const { t, tn } = useI18n();
 
   const isSequentialModel = data.type === 'SequentialModel';
+  // core#137: a subgraph instance opens its definition on double-click, the
+  // same way SequentialModel opens its layer editor.
+  const isSubgraph = subgraphIdOf(data.type) !== null;
   const isDraggingTrigger = draggingSourceType === 'TRIGGER';
   // core#128: muted in place. The card stays fully interactive (you have to
   // be able to select it to un-mute it) — only its look says "skipped".
@@ -170,6 +175,10 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (isSequentialModel) return;
+    if (isSubgraph) {
+      enterSubgraph(id);
+      return;
+    }
     openNodeDetail(id);
   };
 

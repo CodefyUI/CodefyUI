@@ -28,6 +28,7 @@ import { CANVAS_MIN_ZOOM, CATEGORY_COLORS } from '../../styles/theme';
 import BaseNode from '../Nodes/BaseNode';
 import PluginNodeBridge from '../Nodes/PluginNodeBridge';
 import PresetNode from '../Nodes/PresetNode';
+import SubgraphInstanceNode from '../Nodes/SubgraphInstanceNode';
 import { StartNode } from '../Nodes/StartNode';
 import NoteNode from '../Nodes/NoteNode';
 import TokenizerVizNode from '../Nodes/TokenizerVizNode';
@@ -52,6 +53,7 @@ import {
   type ContextMenuPosition,
 } from '../ContextMenu/NodeContextMenu';
 import { PaneContextMenu } from './PaneContextMenu';
+import { SubgraphBreadcrumb } from './SubgraphBreadcrumb';
 import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
 import { useTabStore } from '../../store/tabStore';
@@ -76,6 +78,7 @@ const nodeTypes: NodeTypes = {
   baseNode: BaseNode,
   pluginNode: PluginNodeBridge,
   presetNode: PresetNode,
+  subgraphNode: SubgraphInstanceNode,
   start: StartNode,
   noteNode: NoteNode,
   tokenizerNode: TokenizerVizNode,
@@ -656,6 +659,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           style={{ background: '#1e1e1e' }}
         />
       </ReactFlow>
+
+      <SubgraphBreadcrumb />
 
       {contextMenu && (
         <NodeContextMenu

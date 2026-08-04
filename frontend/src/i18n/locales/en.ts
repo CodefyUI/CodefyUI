@@ -193,6 +193,34 @@ const en = {
   'contextMenu.addImageNote': 'Add Image Note',
   'contextMenu.bypass': 'Bypass',
   'contextMenu.unbypass': 'Remove Bypass',
+  'contextMenu.collapseToSubgraph': 'Collapse to subgraph',
+  'contextMenu.enterSubgraph': 'Enter subgraph',
+  'contextMenu.expandSubgraph': 'Expand subgraph here',
+
+  // Subgraphs (core#137)
+  'subgraph.badge': 'Subgraph',
+  'subgraph.nodeCount': '{count} nodes',
+  'subgraph.missing': 'definition missing',
+  'subgraph.breadcrumb.root': 'Main',
+  'subgraph.breadcrumb.back': 'Back',
+  'subgraph.breadcrumb.jump': 'Go back to this level',
+  'subgraph.breadcrumb.exitAll': 'Back to the main graph',
+  'subgraph.rename.hint': 'Click to rename this subgraph',
+  'subgraph.rename.label': 'Subgraph name',
+  'subgraph.collapse.too-few':
+    'Select at least two nodes to collapse them into a subgraph',
+  'subgraph.collapse.contains-start':
+    'A Start node cannot go inside a subgraph - it marks where the whole graph begins',
+  'subgraph.collapse.contains-note':
+    'Notes are annotations, not part of a subgraph - deselect them first',
+  'subgraph.collapse.read-only': 'This graph is open read-only',
+  'subgraph.collapse.notConvex':
+    'These nodes sit between the ones you selected, so the block would feed back into itself: {nodes}. Add them to the selection.',
+  'subgraph.detail.interface': 'Subgraph interface',
+  'subgraph.detail.inputs': 'Inputs',
+  'subgraph.detail.outputs': 'Outputs',
+  'subgraph.detail.enter': 'Enter subgraph',
+  'subgraph.detail.empty': 'This subgraph exposes no ports',
 
   // Notes
   'note.placeholder': 'Click to edit...',
@@ -629,6 +657,7 @@ const en = {
   'nodeDetail.tabs.backward': 'Backward',
   'nodeDetail.tabs.stats': 'Stats',
   'nodeDetail.tabs.docs': 'Docs',
+  'nodeDetail.tabs.subgraph': 'Subgraph',
   'nodeDetail.code.title': 'Script',
   'nodeDetail.code.contract': 'def run(inputs, params) -> dict — inputs holds one key per connected port (in1, in2, ...); return {"out1": value}. A bare value becomes out1.',
   'nodeDetail.code.security': 'A guardrail, not a sandbox. The policy bounds which libraries a script can reach, not what those libraries can do, and the code runs in the CodefyUI process with your permissions. This check is the fast first pass: a script it accepts can still be refused while it runs. Only run scripts you trust.',

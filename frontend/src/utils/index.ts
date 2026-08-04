@@ -1,9 +1,9 @@
 import type { Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../types';
+import { SUBGRAPH_TYPE_PREFIX, instanceDefinition } from './subgraph';
+import { generateId } from './ids';
 
-export function generateId(): string {
-  return crypto.randomUUID();
-}
+export { generateId } from './ids';
 
 /**
  * Client-side replica of the backend's ``_sanitize_name`` (routes_graph.py):
@@ -301,9 +301,11 @@ export function resolveSerializedNodes(
   rawNodes: any[],
   definitions: import('../types').NodeDefinition[],
   presets: import('../types').PresetDefinition[],
+  subgraphs: import('../types').SubgraphDefinition[] = [],
 ): import('@xyflow/react').Node<import('../types').NodeData>[] {
   const defMap = new Map(definitions.map((d) => [d.node_name, d]));
   const presetMap = new Map(presets.map((p) => [p.preset_name, p]));
+  const subgraphMap = new Map(subgraphs.map((sg) => [sg.id, sg]));
 
   return rawNodes.map((raw) => {
     const nodeType: string = raw.type ?? '';
@@ -327,6 +329,36 @@ export function resolveSerializedNodes(
           boundOffset: raw.data?.boundOffset ?? null,
           noteWidth: raw.data?.noteWidth ?? 200,
           noteHeight: raw.data?.noteHeight,
+        },
+      };
+    }
+
+    // Subgraph instance node (core#137). Its ports come from the shared
+    // definition's interface, so an instance whose definition changed shows
+    // the new boundary the moment the graph is re-resolved.
+    if (nodeType.startsWith(SUBGRAPH_TYPE_PREFIX)) {
+      const subgraphId = nodeType.slice(SUBGRAPH_TYPE_PREFIX.length);
+      const definition = subgraphMap.get(subgraphId);
+      return {
+        id: raw.id,
+        type: 'subgraphNode',
+        position,
+        data: {
+          label: definition?.name || subgraphId,
+          type: nodeType,
+          params: {},
+          definition: definition
+            ? instanceDefinition(definition)
+            : {
+                node_name: subgraphId,
+                category: 'Subgraph',
+                description: '',
+                inputs: [],
+                outputs: [],
+                params: [],
+              },
+          subgraphId,
+          executionStatus: 'idle' as const,
         },
       };
     }

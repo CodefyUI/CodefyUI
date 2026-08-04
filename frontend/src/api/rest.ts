@@ -402,11 +402,18 @@ export async function validateScript(code: string): Promise<ScriptValidation> {
   return res.json();
 }
 
-export async function validateGraph(nodes: any[], edges: any[], presets: any[] = []) {
+export async function validateGraph(
+  nodes: any[],
+  edges: any[],
+  presets: any[] = [],
+  subgraphs: any[] = [],
+) {
   const res = await apiFetch(`${BASE_URL}/graph/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ nodes, edges, presets }),
+    // Subgraph definitions are graph-local (core#137): there is no registry
+    // to fall back on, so validation only sees inside a block if we send it.
+    body: JSON.stringify({ nodes, edges, presets, subgraphs }),
   });
   if (!res.ok) throw new Error(`Validation failed: ${res.statusText}`);
   return res.json();

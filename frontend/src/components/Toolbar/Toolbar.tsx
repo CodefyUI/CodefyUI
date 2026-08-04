@@ -207,7 +207,7 @@ function LoadSubMenuPanel({
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
-  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups } = useTabStore();
+  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups, setSubgraphs } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   const { reload, fetchDefinitions } = useNodeDefStore();
@@ -296,7 +296,8 @@ export function Toolbar() {
             mergedPresets.push(p);
           }
         }
-        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
+        const loadedSubgraphs = Array.isArray(graphData.subgraphs) ? graphData.subgraphs : [];
+        const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, loadedSubgraphs);
         const resolvedEdges = resolveSerializedEdges(rawEdges, resolvedNodes);
         // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
         // directly -- NOT via applyLayout, which pushes an undo snapshot and a
@@ -311,6 +312,7 @@ export function Toolbar() {
           setNodes(resolvedNodes);
         }
         setEdges(resolvedEdges);
+        setSubgraphs(loadedSubgraphs);
         setDescription(typeof graphData.description === 'string' ? graphData.description : '');
         setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
         const tooNew = isFormatTooNew(graphData.format_version);
@@ -330,7 +332,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -354,10 +356,12 @@ export function Toolbar() {
               mergedPresets.push(p);
             }
           }
-          const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets);
+          const importedSubgraphs = Array.isArray(data.subgraphs) ? data.subgraphs : [];
+          const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, importedSubgraphs);
           const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
           setNodes(resolvedNodes);
           setEdges(resolvedEdges);
+          setSubgraphs(importedSubgraphs);
           setDescription(typeof data.description === 'string' ? data.description : '');
           setSegmentGroups(Array.isArray(data.segmentGroups) ? data.segmentGroups : []);
           // Same format-version gate as handleLoadGraph (ID8 fast-follow):
@@ -382,17 +386,17 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [setNodes, setEdges, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {
-    const { nodes, edges, presets, segmentGroups } = getSerializedGraph();
+    const { nodes, edges, presets, segmentGroups, subgraphs } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.exportJson.empty'), 'warning');
       return;
     }
     const name = activeTab.name || 'graph';
-    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups };
+    const data = { name, description: activeTab.description ?? '', nodes, edges, presets, segmentGroups, subgraphs };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

@@ -317,6 +317,9 @@ describe('validateGraph', () => {
       nodes: [{ id: 'a' }],
       edges: [{ id: 'e' }],
       presets: [],
+      // core#137: definitions are graph-local, so validation only sees inside
+      // a subgraph if the request carries them.
+      subgraphs: [],
     });
     expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
   });
