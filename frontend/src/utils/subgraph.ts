@@ -34,6 +34,87 @@ export function isSubgraphInstance(node: Node<NodeData> | undefined): boolean {
 }
 
 /**
+ * An untrusted `subgraphs` list, coerced to the shape every consumer assumes.
+ *
+ * A graph file is JSON a user can hand-edit, and the readers that install one
+ * check `Array.isArray` on the LIST and nothing at all on its ENTRIES --
+ * `resolveSerializedNodes` reads only `sg.id`. Everything downstream then
+ * walks a definition unguarded: `reachableSubgraphIds` below iterates
+ * `definition.nodes`, `instanceDefinition` maps `interface.inputs`,
+ * `expandSubgraphInstance` iterates `interface.triggerTargets`, and the
+ * store's secret strip maps `definition.nodes` on every autosave. A file
+ * containing `"subgraphs":[{"id":"x"}]` was enough to make Save and Run
+ * throw `definition.nodes is not iterable` and -- worse, because nothing
+ * tells the user -- to make every autosave from then on throw too, so the
+ * session goes on being edited and stops being written to disk.
+ *
+ * Guarding each of those is four guards to remember and a fifth to forget.
+ * This is the door instead: the store runs it on every path that installs a
+ * definition list it did not build itself, so the rest of the code may
+ * assume the shape.
+ *
+ * Missing fields are FILLED IN rather than the entry dropped, with exactly
+ * the defaults the server declares (`schemas/models.py SubgraphDefinition`:
+ * `id` required, every other field defaulted). `{"id":"x"}` is a graph the
+ * server accepts and runs as an empty block, and an editor that deleted it
+ * on open would be destroying a file it was only asked to display. An entry
+ * with no usable `id` IS dropped -- there is no sensible default for an
+ * identity, and every lookup in this file is by id.
+ *
+ * Returns the SAME array, holding the SAME definition objects, when nothing
+ * needed changing: the persistence record cache compares `subgraphs` by
+ * identity, and a fresh array here would rebuild every tab's record.
+ */
+export function normalizeSubgraphs(raw: unknown): SubgraphDefinition[] {
+  if (!Array.isArray(raw)) return [];
+  let listChanged = false;
+  const out: SubgraphDefinition[] = [];
+  for (const entry of raw) {
+    const source = (entry ?? {}) as Record<string, unknown>;
+    if (typeof entry !== 'object' || typeof source.id !== 'string' || !source.id) {
+      listChanged = true;
+      continue;
+    }
+    const iface = (source.interface ?? {}) as Record<string, unknown>;
+    const inputs = Array.isArray(iface.inputs) ? iface.inputs : [];
+    const outputs = Array.isArray(iface.outputs) ? iface.outputs : [];
+    const triggerTargets = Array.isArray(iface.triggerTargets)
+      ? iface.triggerTargets
+      : [];
+    const name = typeof source.name === 'string' ? source.name : '';
+    const description =
+      typeof source.description === 'string' ? source.description : '';
+    const nodes = Array.isArray(source.nodes) ? source.nodes : [];
+    const edges = Array.isArray(source.edges) ? source.edges : [];
+    if (
+      name === source.name &&
+      description === source.description &&
+      nodes === source.nodes &&
+      edges === source.edges &&
+      inputs === iface.inputs &&
+      outputs === iface.outputs &&
+      triggerTargets === iface.triggerTargets
+    ) {
+      out.push(entry as SubgraphDefinition);
+      continue;
+    }
+    listChanged = true;
+    // Spread first, so a field a later version of the format adds survives
+    // a trip through here instead of being silently dropped by the editor.
+    out.push({
+      ...(source as object),
+      id: source.id,
+      name,
+      description,
+      nodes,
+      edges,
+      interface: { inputs, outputs, triggerTargets },
+    } as SubgraphDefinition);
+  }
+  return listChanged ? out : (raw as SubgraphDefinition[]);
+}
+
+/**
  * Every definition id the canvas can reach, FOLLOWING NESTED REFERENCES.
  *
  * A definition is not only referenced by instance nodes on the canvas: its

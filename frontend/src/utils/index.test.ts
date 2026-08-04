@@ -470,6 +470,23 @@ describe('resolveSerializedNodes', () => {
     expect((node.data as Record<string, unknown>).internalParams).toEqual({});
   });
 
+  it('resolves an instance whose definition the file left half-written', () => {
+    // `{"id":"x"}` is a definition the SERVER accepts and runs as an empty
+    // block (`id` is its only required field), and every reader of a graph
+    // document resolves the nodes BEFORE `setSubgraphs` gets a chance to
+    // coerce anything -- so an import died here, on `interface.inputs`,
+    // before the store was ever involved.
+    const [node] = resolveSerializedNodes(
+      [{ id: 'inst', type: 'subgraph:x' }],
+      defs,
+      presets,
+      [{ id: 'x' }] as never,
+    );
+    expect(node.type).toBe('subgraphNode');
+    const def = (node.data as Record<string, NodeDefinition>).definition;
+    expect(def).toMatchObject({ category: 'Subgraph', inputs: [], outputs: [] });
+  });
+
   it('resolves a Start node using the provided definition', () => {
     const [node] = resolveSerializedNodes([{ id: 's1', type: 'Start' }], defs, presets);
     expect(node.type).toBe('start');

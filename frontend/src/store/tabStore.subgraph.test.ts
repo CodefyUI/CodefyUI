@@ -833,6 +833,56 @@ describe('getSerializedGraph carries what a definition depends on', () => {
   });
 });
 
+describe('a definition entry a graph file carries but nobody validated', () => {
+  it('is coerced at the door instead of wedging save and autosave', () => {
+    // `File > Import` on `{"subgraphs":[{"id":"x"}]}` produces exactly this
+    // call: the readers check `Array.isArray` on the LIST and nothing at all
+    // on its ENTRIES, and `resolveSerializedNodes` reads only `sg.id`, so the
+    // entry arrives intact. The server accepts it too -- `id` is the only
+    // required field on `SubgraphDefinition` -- so the editor must not
+    // delete a block the server would happily run.
+    seedChain();
+    store().setNodes([
+      ...tab().nodes,
+      {
+        id: 'inst',
+        type: 'subgraphNode',
+        position: { x: 500, y: 0 },
+        data: { label: 'x', type: 'subgraph:x', params: {} },
+      } as never,
+    ]);
+
+    store().setSubgraphs([{ id: 'x' }] as never);
+
+    const [installed] = tab().subgraphs;
+    expect(installed.nodes).toEqual([]);
+    expect(installed.edges).toEqual([]);
+    expect(installed.interface).toEqual({
+      inputs: [],
+      outputs: [],
+      triggerTargets: [],
+    });
+
+    // Save and Run walk `definition.nodes` (`reachableSubgraphIds`), and so
+    // does the secret strip on every autosave. Both threw on this input, and
+    // the autosave kept throwing for the rest of the session -- silently, so
+    // the user goes on working in a tab nothing is writing to disk any more.
+    expect(() => store().getSerializedGraph()).not.toThrow();
+  });
+
+  it('drops only an entry with no usable id, since every lookup is by id', () => {
+    seedChain();
+    store().setSubgraphs([
+      null,
+      'nope',
+      { name: 'no id at all' },
+      { id: '' },
+      { id: 'keep' },
+    ] as never);
+    expect(tab().subgraphs.map((d) => d.id)).toEqual(['keep']);
+  });
+});
+
 describe('clear() while inside a sub-canvas', () => {
   it('snapshots the WHOLE graph, so undo restores the outer canvas', () => {
     seedChain();

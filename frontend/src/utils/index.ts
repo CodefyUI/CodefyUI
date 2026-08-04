@@ -1,6 +1,10 @@
 import type { Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../types';
-import { SUBGRAPH_TYPE_PREFIX, instanceDefinition } from './subgraph';
+import {
+  SUBGRAPH_TYPE_PREFIX,
+  instanceDefinition,
+  normalizeSubgraphs,
+} from './subgraph';
 import { generateId } from './ids';
 
 export { generateId } from './ids';
@@ -305,7 +309,15 @@ export function resolveSerializedNodes(
 ): import('@xyflow/react').Node<import('../types').NodeData>[] {
   const defMap = new Map(definitions.map((d) => [d.node_name, d]));
   const presetMap = new Map(presets.map((p) => [p.preset_name, p]));
-  const subgraphMap = new Map(subgraphs.map((sg) => [sg.id, sg]));
+  // Normalized here as well as in `setSubgraphs`, because every reader of a
+  // graph document resolves the nodes BEFORE it installs the definitions --
+  // so this runs first, on the list exactly as it came out of the file. An
+  // instance node whose definition is `{"id":"x"}` reaches
+  // `instanceDefinition` below, which maps `interface.inputs`, and the whole
+  // import dies on a file the server would have run.
+  const subgraphMap = new Map(
+    normalizeSubgraphs(subgraphs).map((sg) => [sg.id, sg]),
+  );
 
   return rawNodes.map((raw) => {
     const nodeType: string = raw.type ?? '';

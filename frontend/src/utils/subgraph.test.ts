@@ -8,6 +8,7 @@ import {
   expandInstance,
   findConvexityBlockers,
   instanceDefinition,
+  normalizeSubgraphs,
   pruneStaleBoundaryEdges,
   refreshInstances,
   checkCollapse,
@@ -554,5 +555,76 @@ describe('checkCollapse', () => {
     expect(checkCollapse(withNote, edges, ['b', 'note'])).toMatchObject({
       reason: 'contains-note',
     });
+  });
+});
+
+describe('normalizeSubgraphs', () => {
+  it('fills a hand-written entry out to the shape every consumer walks', () => {
+    // The server's own contract: `id` required, everything else defaulted
+    // (`schemas/models.py SubgraphDefinition`). A file it accepts must not
+    // be a file the editor throws on.
+    expect(normalizeSubgraphs([{ id: 'x' }])).toEqual([
+      {
+        id: 'x',
+        name: '',
+        description: '',
+        nodes: [],
+        edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+    ]);
+  });
+
+  it('replaces only the fields that are the wrong type', () => {
+    const [fixed] = normalizeSubgraphs([
+      {
+        id: 'x',
+        name: 'Block',
+        description: null,
+        nodes: 'not a list',
+        edges: [{ id: 'e' }],
+        interface: { inputs: [{ port: 'in' }] },
+      },
+    ]);
+    expect(fixed.name).toBe('Block');
+    expect(fixed.description).toBe('');
+    expect(fixed.nodes).toEqual([]);
+    expect(fixed.edges).toEqual([{ id: 'e' }]);
+    expect(fixed.interface.inputs).toEqual([{ port: 'in' }]);
+    expect(fixed.interface.outputs).toEqual([]);
+    expect(fixed.interface.triggerTargets).toEqual([]);
+  });
+
+  it('keeps a field the format has not grown yet', () => {
+    const [fixed] = normalizeSubgraphs([{ id: 'x', someFutureField: 7 }]);
+    expect((fixed as unknown as { someFutureField: number }).someFutureField)
+      .toBe(7);
+  });
+
+  it('drops what has no usable id, and a list that is not one', () => {
+    expect(
+      normalizeSubgraphs([null, undefined, 'x', 3, {}, { id: '' }, { id: 'k' }])
+        .map((d) => d.id),
+    ).toEqual(['k']);
+    expect(normalizeSubgraphs(undefined)).toEqual([]);
+    expect(normalizeSubgraphs({ id: 'x' })).toEqual([]);
+  });
+
+  it('returns the SAME array and objects when nothing needed changing', () => {
+    // Not cosmetic: the persistence record cache compares `subgraphs` by
+    // identity, and a fresh array here would rebuild every tab's record on
+    // every keystroke.
+    const definition: SubgraphDefinition = {
+      id: 'x',
+      name: 'Block',
+      description: '',
+      nodes: [],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    };
+    const list = [definition];
+    const out = normalizeSubgraphs(list);
+    expect(out).toBe(list);
+    expect(out[0]).toBe(definition);
   });
 });

@@ -1075,7 +1075,8 @@ def validate_graph(
     # Checked here, not only inside expansion: expansion is skipped entirely
     # for a graph with no instances, and validate must not answer "clean" for
     # a graph the run refuses.
-    errors.extend(duplicate_node_id_errors(nodes))
+    duplicate_errors = duplicate_node_id_errors(nodes)
+    errors.extend(duplicate_errors)
     # A preset cannot carry a graph-local subgraph reference. Reported before
     # expansion, while the preset node is still standing to be named.
     errors.extend(preset_subgraph_errors(nodes, preset_fallback))
@@ -1090,10 +1091,21 @@ def validate_graph(
             # whose definition is missing still has checkable neighbours.
             #
             # Skipped when the sentence is already in `errors`: expansion
-            # re-raises the duplicate-id refusal verbatim, and one fault has
-            # to produce one line.
+            # re-raises the duplicate-id refusal, and one fault has to produce
+            # one line.
+            #
+            # Two comparisons, not one. Expansion raises the duplicate lines
+            # JOINED with "; " -- one string for the whole set -- while this
+            # function reports them one per entry. With a single duplicate the
+            # join equals that one entry and `not in errors` is enough; with
+            # two or more it equals nothing in the list and the concatenation
+            # is appended as a spurious extra line. Comparing against the join
+            # of the list this function actually produced covers both, and
+            # only that: a duplicate set expansion finds but this function did
+            # not (ids that come into existence during expansion) still gets
+            # reported.
             message = str(exc)
-            if message not in errors:
+            if message not in errors and message != "; ".join(duplicate_errors):
                 errors.append(message)
 
     resolution = resolve_bypass(nodes, edges)

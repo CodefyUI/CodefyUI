@@ -625,18 +625,57 @@ async def test_export_emits_a_function_per_subgraph_instance(test_client):
 
 @pytest.mark.asyncio
 async def test_export_scrubs_a_secret_that_lives_inside_a_definition(
-    test_client,
+    test_client, monkeypatch,
 ):
-    """A key must not ride out of the server just because it sits in a block."""
+    """A key must not ride out of the server just because it sits in a block.
+
+    Asserted on the `subgraphs=` payload the route HANDS ON, not on the
+    emitted script. `generate_python` deep-copies the expanded nodes and
+    re-scrubs them, so a script assertion is green whether or not THIS route
+    scrubbed anything -- which is precisely what the first version of this
+    test asserted, under this same name, while claiming to pin the scrub.
+
+    Green BOTH BEFORE AND AFTER the definition scrub this PR added, and that
+    is deliberate: a regression guard, not a red-green proof. The pre-fix
+    export loop already called `scrub_graph_secrets` on each definition's
+    `nodes`, which handles a plain node's `data.params` correctly; only the
+    PRESET half needed the `preset_fallback`, and
+    `test_export_scrubs_a_portable_preset_secret_inside_a_definition` is the
+    test that goes red without it. What this one pins that nothing else does
+    is the PLAIN-node export case, plus non-corruption of the ordinary
+    params sitting beside the key.
+    """
+    captured: dict = {}
+    import app.core.codegen as codegen_module
+    real_generate = codegen_module.generate_python
+
+    def _capture(nodes, edges, **kwargs):
+        captured["subgraphs"] = copy.deepcopy(kwargs.get("subgraphs"))
+        return real_generate(nodes, edges, **kwargs)
+
+    monkeypatch.setattr(codegen_module, "generate_python", _capture)
+
     graph = _subgraph_graph()
-    graph["subgraphs"][0]["nodes"].append({
-        "id": "keyed", "type": "_TestSource", "position": {"x": 9, "y": 9},
-        "data": {"params": {"val": "plain"}},
-    })
+    graph["subgraphs"][0]["nodes"].extend([
+        {"id": "keyed", "type": "LLMChat", "position": {"x": 9, "y": 9},
+         "data": {"params": {"openai_api_key": "sk-INBLOCK-plain",
+                             "model": "gpt-4o-mini"}}},
+        {"id": "ordinary", "type": "_TestSource",
+         "position": {"x": 9, "y": 20},
+         "data": {"params": {"val": "plain"}}},
+    ])
     resp = await test_client.post("/api/graph/export", json=graph)
-    assert resp.status_code == 200
-    # Nothing secret in this fixture; the guard is that the scrub runs at all
-    # and does not corrupt an ordinary definition param.
+    assert resp.status_code == 200, resp.text
+
+    assert "sk-INBLOCK-plain" not in json.dumps(captured["subgraphs"])
+    inner = {d["id"]: d for d in captured["subgraphs"]}["double"]["nodes"]
+    keyed = next(n for n in inner if n["id"] == "keyed")
+    # Blanked, not dropped: the slot has to survive or a reopened graph loses
+    # the field entirely rather than merely its value.
+    assert keyed["data"]["params"]["openai_api_key"] == ""
+    # ...and the non-secret param beside it, and one on another node, are
+    # untouched -- here and in the script the export actually returns.
+    assert keyed["data"]["params"]["model"] == "gpt-4o-mini"
     assert "'plain'" in resp.json()["script"]
 
 

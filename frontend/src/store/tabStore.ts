@@ -21,6 +21,7 @@ import {
   definitionFromCanvas,
   expandInstance,
   instanceDefinition,
+  normalizeSubgraphs,
   pruneStaleBoundaryEdges,
   reachableSubgraphIds,
   refreshInstances,
@@ -509,9 +510,14 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
  */
 function mergeIncomingSubgraphs(
   existing: SubgraphDefinition[],
-  incoming: SubgraphDefinition[],
+  incomingRaw: SubgraphDefinition[],
   incomingNodes: Node<NodeData>[],
 ): { subgraphs: SubgraphDefinition[]; nodes: Node<NodeData>[] } {
+  // The second door for a list the store did not build: `insertGraph` gets
+  // an example's definitions straight from the fetched file without passing
+  // `setSubgraphs`, and paste reads the system clipboard. `existing` is
+  // already normalized, by whichever door it came through.
+  const incoming = normalizeSubgraphs(incomingRaw);
   const subgraphs = incoming.length
     ? [
         ...existing,
@@ -1122,7 +1128,11 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     nodes: t.nodes ?? [],
     edges: t.edges ?? [],
     segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
-    subgraphs: Array.isArray(t.subgraphs) ? t.subgraphs : [],
+    // localStorage is user-editable and IndexedDB records outlive format
+    // changes, so a restored record gets the same coercion an imported file
+    // gets -- the alternative is a workspace that throws on every autosave
+    // from the moment it is reopened.
+    subgraphs: normalizeSubgraphs(t.subgraphs),
     // Never restored from disk: a reload lands at the top level.
     subgraphStack: [],
     lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
@@ -1827,7 +1837,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   setSubgraphs: (subgraphs) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
-        subgraphs,
+        // Every caller is a document reader handing over a list parsed out
+        // of a file, and none of them validates the entries -- see
+        // `normalizeSubgraphs`. This is the one door they all come through,
+        // so the shape is settled here rather than in the four places that
+        // later walk it.
+        subgraphs: normalizeSubgraphs(subgraphs),
         // A load replaces the graph, so any open sub-canvas was editing a
         // definition that is gone.
         subgraphStack: [],

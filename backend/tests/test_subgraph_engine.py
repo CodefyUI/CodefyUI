@@ -1409,7 +1409,15 @@ def test_validate_reports_a_duplicate_id_with_no_subgraph_present():
 
 def test_a_duplicate_id_is_reported_exactly_once_with_a_subgraph_present():
     """The same fault must not be listed twice just because the graph also
-    happens to contain a block."""
+    happens to contain a block.
+
+    TWO duplicated ids, not one, and that is the whole point of the fixture.
+    Expansion re-raises the WHOLE set joined with "; ", so with a single
+    duplicate the joined string is character-identical to the one line
+    already reported and any `message not in errors` test passes by
+    accident. With two it matches nothing, and a dedupe that only compares
+    against the individual lines appends a third, concatenated line.
+    """
     nodes = [
         {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
          "data": {}},
@@ -1417,14 +1425,20 @@ def test_a_duplicate_id_is_reported_exactly_once_with_a_subgraph_present():
          "data": {"params": {"shape": "2,2"}}},
         {"id": "dup", "type": "TensorCreate", "position": {"x": 2, "y": 0},
          "data": {"params": {"shape": "2,2"}}},
-        {"id": "blk", "type": "subgraph:pass", "position": {"x": 3, "y": 0},
+        {"id": "twice", "type": "TensorCreate", "position": {"x": 3, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "twice", "type": "TensorCreate", "position": {"x": 4, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "blk", "type": "subgraph:pass", "position": {"x": 5, "y": 0},
          "data": {}},
     ]
     errors = validate_graph(
         nodes, [], subgraphs=[_passthrough_subgraph()],
     )
     duplicates = [e for e in errors if "Duplicate node id" in e]
-    assert len(duplicates) == 1, errors
+    assert len(duplicates) == 2, errors
+    assert sum("'dup'" in e for e in duplicates) == 1, errors
+    assert sum("'twice'" in e for e in duplicates) == 1, errors
 
 
 def _subgraph_holding_preset() -> dict:
