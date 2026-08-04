@@ -746,6 +746,11 @@ describe('RunsPanel — detail CSV export', () => {
     await renderPanel([makeRun({ id: 'other', name: 'older-run' }), run]);
     const detail = await openDetail('r1');
 
+    // Spelled out rather than left to the click: this block's `getRunMetrics`
+    // returns a finite reading, so this is the ORDINARY run -- rows on the
+    // server, a chart on screen -- and "enabled there" is the baseline the
+    // diverged and failed-fetch cases below are exceptions to.
+    expect(within(detail).getByTestId('detail-csv')).not.toBeDisabled();
     fireEvent.click(within(detail).getByTestId('detail-csv'));
     await waitFor(() => expect(api.downloadRunMetricsCsv).toHaveBeenCalledWith('r1'));
     expect(api.downloadRunMetricsCsv).toHaveBeenCalledTimes(1);

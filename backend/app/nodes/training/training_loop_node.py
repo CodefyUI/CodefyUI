@@ -563,6 +563,22 @@ class TrainingLoopNode(BaseNode):
         # #136: the same series, in a second place. Opened BEFORE any
         # training so the "no row, no file" check happens before the
         # directory is created, not after a full run has filled it.
+        #
+        # It also sits before this method's input unpacking and parameter
+        # coercion, and that ordering is deliberate -- core#136 re-review,
+        # N-3. The cost is that an ``execute`` which dies while reading its
+        # own inputs now leaves a 40-byte header-only directory AND an
+        # artifact row, where it previously left nothing. The gain is that
+        # every failure AFTER that point -- ``model.to(device)`` running out
+        # of memory, an optimizer that rejects the model's parameters, a
+        # first batch that raises -- leaves a directory that is INDEXED
+        # rather than orphaned. Those failures already created the directory
+        # before this change; what they did not create was the row pointing
+        # at it, so they were litter no retention sweep could find. Trading
+        # "nothing" for "a row" on a narrow window (graph validation already
+        # rejects unconnected required inputs) to convert real orphans into
+        # listed artifacts is the right way round. Please do not "fix" this
+        # by moving the open below the input unpacking.
         tb_writer = (open_run_writer(context)
                      if bool(params.get("tensorboard", False)) else None)
         try:

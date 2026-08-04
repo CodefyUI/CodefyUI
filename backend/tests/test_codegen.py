@@ -1777,7 +1777,8 @@ def test_export_carries_the_transform_params_verbatim(tmp_path: Path):
     assert "'size': 2" in script
 
 
-def test_the_exported_chain_builds_the_pipeline_it_should(tmp_path: Path):
+def test_the_exported_transform_chain_builds_the_pipeline_it_should(
+        tmp_path: Path):
     """core#136 review, M-7. Equality against a hand-written Compose.
 
     The old assertions here checked node ORDER and the presence of two
@@ -1787,6 +1788,12 @@ def test_the_exported_chain_builds_the_pipeline_it_should(tmp_path: Path):
     equivalent ``transforms.Compose``", so the pipeline the exported script
     actually builds is compared against one written out by hand here, step
     by step, with the arguments spelled out.
+
+    The name carries "transform" on purpose (core#136 re-review, N-5). The
+    acceptance criterion's own command is ``pytest tests/test_codegen.py -k
+    transform``, and under the first spelling of this name that filter
+    deselected the one test that catches the mutation -- so the obvious way
+    to check this area reported ``10 passed`` while the file was red.
     """
     from torchvision import transforms as T
 
