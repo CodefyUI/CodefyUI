@@ -1690,3 +1690,118 @@ async def test_advanced_params_survive_a_real_graph_save_and_load(
     for node_id in ("opt", "loss", "loader", "train"):
         expected = next(n for n in nodes if n["id"] == node_id)
         assert restored[node_id]["data"]["params"] == expected["data"]["params"], node_id
+
+
+# ── transform chains (core#136) ──────────────────────────────────────────
+
+
+def _transform_chain_graph(dataset_path: Path) -> tuple[list[dict], list[dict]]:
+    """ImageFolder + a four-step chain + a batch, printed.
+
+    Deliberately DETERMINISTIC (no augmentation): the exported script is
+    compared against the in-process engine byte for byte, and a random crop
+    would make the two runs legitimately differ.
+    """
+    def node(node_id: str, node_type: str, **params) -> dict:
+        return {"id": node_id, "type": node_type,
+                "position": {"x": 0, "y": 0}, "data": {"params": params}}
+
+    def data_edge(source: str, source_handle: str,
+                  target: str, target_handle: str) -> dict:
+        return {"id": f"{source}->{target}", "source": source, "target": target,
+                "sourceHandle": source_handle, "targetHandle": target_handle,
+                "type": "data"}
+
+    nodes = [
+        node("start", "Start"),
+        node("resize", "ResizeTransform", size=2, interpolation="bilinear"),
+        node("tensor", "ToTensorTransform"),
+        node("norm", "NormalizeTransform", preset="Half", mean="0.5", std="0.5"),
+        node("folder", "ImageFolderDataset",
+             path=str(dataset_path), split="(none)"),
+        node("batch", "DatasetBatch", batch_size=2, start_index=0),
+        node("print", "Print", label="chain"),
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "resize",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        data_edge("resize", "transform", "tensor", "transform"),
+        data_edge("tensor", "transform", "norm", "transform"),
+        data_edge("norm", "transform", "folder", "eval_transform"),
+        data_edge("folder", "dataset", "batch", "dataset"),
+        data_edge("batch", "images", "print", "value"),
+    ]
+    return nodes, edges
+
+
+def _image_folder_fixture(tmp_path: Path) -> Path:
+    from PIL import Image
+
+    root = tmp_path / "glyphs"
+    for index, name in enumerate(("cat", "dog")):
+        folder = root / name
+        folder.mkdir(parents=True)
+        Image.new("RGB", (4, 4), (index * 90, 30, 200)).save(folder / "0.png")
+    return root
+
+
+def test_export_emits_the_transform_chain_in_dependency_order(tmp_path: Path):
+    """Each step becomes its own ``_call``, ordered by the edges.
+
+    The chain has no branches, so a codegen that emitted the steps in graph
+    declaration order rather than topological order would still produce
+    valid Python -- and a pipeline in the wrong order.
+    """
+    from app.core.codegen import generate_python
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="transform chain")
+    _compile_check(script)
+
+    emitted = [node_type for _fn, _id, node_type in _node_functions(script)]
+    for step in ("ResizeTransform", "ToTensorTransform", "NormalizeTransform",
+                 "ImageFolderDataset"):
+        assert step in emitted, step
+    assert (emitted.index("ResizeTransform")
+            < emitted.index("ToTensorTransform")
+            < emitted.index("NormalizeTransform")
+            < emitted.index("ImageFolderDataset"))
+
+
+def test_export_carries_the_transform_params_verbatim(tmp_path: Path):
+    from app.core.codegen import generate_python
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    script = generate_python(nodes, edges, name="transform chain")
+    assert "'preset': 'Half'" in script
+    assert "'size': 2" in script
+
+
+@pytest.mark.asyncio
+async def test_exported_transform_chain_matches_the_engine(tmp_path: Path):
+    """The round trip: engine result == exported-script result.
+
+    Nothing is hand-computed. The chain runs once through ``execute_graph``
+    and once through a fresh ``-I`` subprocess driving the generated script,
+    and the tensor ``Print`` saw has to be the same text both times.
+    """
+    from app.core.codegen import generate_python
+    from app.core.execution_context import ExecutionContext
+    from app.core.graph_engine import execute_graph
+
+    nodes, edges = _transform_chain_graph(_image_folder_fixture(tmp_path))
+    outputs = await execute_graph(nodes, edges, context=ExecutionContext())
+    in_process = outputs["print"]["__log__"]
+    assert in_process.startswith("[chain] ")
+    # The chain really ran: 2 images, 3 channels, resized 4x4 -> 2x2.
+    assert "torch.Size" not in in_process  # Print renders values, not shapes
+    assert outputs["batch"]["images"].shape == (2, 3, 2, 2)
+
+    script = generate_python(nodes, edges, name="transform chain")
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    completed = _run_exported_script(script, export_dir, "--device", "cpu")
+    assert completed.returncode == 0, completed.stderr
+    # stdout, not stderr: the runner only redirects Print to stderr when the
+    # graph has a GraphOutput node reserving stdout for its JSON.
+    assert in_process in completed.stdout
