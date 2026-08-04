@@ -1,12 +1,32 @@
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from .transforms._base import compose, seeded_for_node
+
+#: Datasets whose constructor takes ``split="train"|"test"|...`` instead of
+#: ``train=True|False``. torchvision is not consistent about this and the
+#: difference is a TypeError, not a wrong result, so it is enumerated rather
+#: than probed.
+SPLIT_KWARG_DATASETS = frozenset({"SVHN", "STL10"})
+
+DATASET_NAMES = [
+    "MNIST",
+    "FashionMNIST",
+    "CIFAR10",
+    "CIFAR100",
+    "SVHN",
+    "STL10",
+]
 
 
 class DatasetNode(BaseNode):
     NODE_NAME = "Dataset"
     CATEGORY = "Data"
-    DESCRIPTION = "Load a standard dataset (MNIST, CIFAR10, or FashionMNIST)"
+    DESCRIPTION = (
+        "Load a standard vision dataset. Wire a transform chain into "
+        "train_transform / eval_transform to control preprocessing and "
+        "augmentation; without one it applies ToTensor and Normalize(0.5)."
+    )
 
     # Reads (and on first use downloads) the dataset under `data_dir`. The
     # cache key hashes the directory name, not its contents, so a cached
@@ -15,7 +35,27 @@ class DatasetNode(BaseNode):
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
-        return []
+        return [
+            PortDefinition(
+                name="train_transform",
+                data_type=DataType.TRANSFORM,
+                description=(
+                    "Pipeline for the training split. Ignored unless split "
+                    "is 'train' -- this is where augmentation belongs."
+                ),
+                optional=True,
+            ),
+            PortDefinition(
+                name="eval_transform",
+                data_type=DataType.TRANSFORM,
+                description=(
+                    "Pipeline for the test split, and the fallback for the "
+                    "training split when train_transform is unwired. Keep "
+                    "it free of randomness."
+                ),
+                optional=True,
+            ),
+        ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
@@ -31,7 +71,7 @@ class DatasetNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="MNIST",
                 description="Dataset to load",
-                options=["MNIST", "CIFAR10", "FashionMNIST"],
+                options=DATASET_NAMES,
             ),
             ParamDefinition(
                 name="split",
@@ -48,7 +88,14 @@ class DatasetNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        progress_callback: Any | None = None,
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
         from torchvision import datasets, transforms
 
         name = params.get("name", "MNIST")
@@ -66,7 +113,15 @@ class DatasetNode(BaseNode):
 
         is_train = split == "train"
 
-        transform = transforms.Compose([
+        # A training split takes train_transform, falling back to
+        # eval_transform. The reverse fallback is deliberately absent: a
+        # test split must never pick up the augmentation chain, or every
+        # evaluation would measure a different, randomly distorted test set.
+        wired = inputs.get("eval_transform")
+        if is_train and inputs.get("train_transform") is not None:
+            wired = inputs["train_transform"]
+
+        transform = wired if wired is not None else compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5,), (0.5,)),
         ])
@@ -74,18 +129,27 @@ class DatasetNode(BaseNode):
         dataset_map = {
             "MNIST": datasets.MNIST,
             "CIFAR10": datasets.CIFAR10,
+            "CIFAR100": datasets.CIFAR100,
             "FashionMNIST": datasets.FashionMNIST,
+            "SVHN": datasets.SVHN,
+            "STL10": datasets.STL10,
         }
 
         dataset_cls = dataset_map.get(name)
         if dataset_cls is None:
             raise ValueError(f"Unsupported dataset: {name}")
 
-        dataset = dataset_cls(
-            root=data_dir,
-            train=is_train,
-            download=True,
-            transform=transform,
-        )
+        kwargs: dict[str, Any] = {
+            "root": data_dir,
+            "download": True,
+            # Through ``seeded_for_node`` rather than raw: an augmenting
+            # chain gets the reproducibility wrapper here, which is the one
+            # place that decision is made for a dataset this node builds.
+            "transform": seeded_for_node(transform, context),
+        }
+        if name in SPLIT_KWARG_DATASETS:
+            kwargs["split"] = "train" if is_train else "test"
+        else:
+            kwargs["train"] = is_train
 
-        return {"dataset": dataset}
+        return {"dataset": dataset_cls(**kwargs)}

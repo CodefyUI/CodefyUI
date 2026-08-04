@@ -1,0 +1,217 @@
+"""ImageFolderDataset (core#136) over a fixture directory tree.
+
+What is actually worth asserting about a thin wrapper around torchvision's
+``ImageFolder`` is the part torchvision does NOT do: resolving the path,
+picking the split sub-directory, choosing between the two transform inputs,
+and failing with a message that says which of the two directory levels is
+wrong. A "path not found" on a two-level layout is the difference between a
+five-second fix and a puzzled bug report.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import torch
+from PIL import Image
+
+from app.core.execution_context import ExecutionContext
+from app.core.node_base import DataType
+from app.nodes.data.image_folder_dataset_node import (
+    ImageFolderDatasetNode,
+    resolve_dataset_root,
+)
+from app.nodes.data.transforms._base import SeededAugmentation
+from app.nodes.data.transforms.random_horizontal_flip_node import (
+    RandomHorizontalFlipNode,
+)
+from app.nodes.data.transforms.resize_transform_node import ResizeTransformNode
+from app.nodes.data.transforms.to_tensor_transform_node import (
+    ToTensorTransformNode,
+)
+
+
+def _write_images(directory: Path, count: int, size: int = 8) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        Image.new("RGB", (size, size), (index * 20 % 256, 40, 60)).save(
+            directory / f"{index}.png")
+
+
+@pytest.fixture()
+def tree(tmp_path: Path) -> Path:
+    """``<root>/{train,val}/{cat,dog}/*.png`` with different counts per class."""
+    root = tmp_path / "pets"
+    _write_images(root / "train" / "cat", 3)
+    _write_images(root / "train" / "dog", 2)
+    _write_images(root / "val" / "cat", 1)
+    _write_images(root / "val" / "dog", 1)
+    return root
+
+
+def _run(params, inputs=None, context=None):
+    return ImageFolderDatasetNode().execute(
+        inputs or {}, params, context=context)
+
+
+# ── metadata ─────────────────────────────────────────────────────────────
+
+
+def test_node_metadata():
+    assert ImageFolderDatasetNode.NODE_NAME == "ImageFolderDataset"
+    assert ImageFolderDatasetNode.CATEGORY == "Data"
+    # Re-reading a directory whose contents the cache key cannot see.
+    assert ImageFolderDatasetNode.cacheable is False
+    outputs = ImageFolderDatasetNode.define_outputs()
+    assert [p.name for p in outputs] == ["dataset", "classes"]
+    inputs = ImageFolderDatasetNode.define_inputs()
+    assert [p.name for p in inputs] == ["train_transform", "eval_transform"]
+    assert all(p.data_type is DataType.TRANSFORM for p in inputs)
+    assert all(p.optional for p in inputs)
+
+
+# ── classes and splits ───────────────────────────────────────────────────
+
+
+def test_classes_come_from_the_folder_names_in_sorted_order(tree: Path):
+    result = _run({"path": str(tree), "split": "train"})
+    assert result["classes"] == ["cat", "dog"]
+    assert result["dataset"].classes == ["cat", "dog"]
+
+
+def test_each_split_sees_only_its_own_images(tree: Path):
+    train = _run({"path": str(tree), "split": "train"})["dataset"]
+    val = _run({"path": str(tree), "split": "val"})["dataset"]
+    assert len(train) == 5
+    assert len(val) == 2
+
+
+def test_labels_line_up_with_the_classes_list(tree: Path):
+    result = _run({"path": str(tree), "split": "train"})
+    dataset, classes = result["dataset"], result["classes"]
+    labels = sorted(label for _, label in dataset.samples)
+    # 3 cats (label 0) then 2 dogs (label 1), i.e. classes[label] is the
+    # folder the file came from.
+    assert labels == [0, 0, 0, 1, 1]
+    assert classes[0] == "cat" and classes[1] == "dog"
+
+
+def test_none_split_reads_the_classes_directly_under_path(tree: Path):
+    result = _run({"path": str(tree / "train"), "split": "(none)"})
+    assert result["classes"] == ["cat", "dog"]
+    assert len(result["dataset"]) == 5
+
+
+# ── transforms ───────────────────────────────────────────────────────────
+
+
+def test_without_a_wired_transform_it_still_yields_tensors(tree: Path):
+    dataset = _run({"path": str(tree), "split": "train"})["dataset"]
+    sample, label = dataset[0]
+    assert isinstance(sample, torch.Tensor)
+    assert sample.shape == (3, 8, 8)
+    assert label == 0
+
+
+def test_the_train_split_takes_train_transform(tree: Path):
+    resize = ResizeTransformNode().execute({}, {"size": 4})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": resize}, {})["transform"]
+    dataset = _run({"path": str(tree), "split": "train"},
+                   {"train_transform": chain})["dataset"]
+    assert dataset[0][0].shape == (3, 4, 4)
+
+
+def test_a_non_train_split_ignores_train_transform(tree: Path):
+    """Augmenting the evaluation set would make every measurement different."""
+    resize = ResizeTransformNode().execute({}, {"size": 4})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": resize}, {})["transform"]
+    dataset = _run({"path": str(tree), "split": "val"},
+                   {"train_transform": chain})["dataset"]
+    assert dataset[0][0].shape == (3, 8, 8)
+
+
+def test_eval_transform_is_the_fallback_for_the_train_split(tree: Path):
+    resize = ResizeTransformNode().execute({}, {"size": 4})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": resize}, {})["transform"]
+    dataset = _run({"path": str(tree), "split": "train"},
+                   {"eval_transform": chain})["dataset"]
+    assert dataset[0][0].shape == (3, 4, 4)
+
+
+def test_train_transform_wins_when_both_are_wired(tree: Path):
+    train = ToTensorTransformNode().execute(
+        {"transform": ResizeTransformNode().execute(
+            {}, {"size": 4})["transform"]}, {})["transform"]
+    evaluation = ToTensorTransformNode().execute(
+        {"transform": ResizeTransformNode().execute(
+            {}, {"size": 6})["transform"]}, {})["transform"]
+    dataset = _run({"path": str(tree), "split": "train"},
+                   {"train_transform": train,
+                    "eval_transform": evaluation})["dataset"]
+    assert dataset[0][0].shape == (3, 4, 4)
+
+
+def test_a_random_chain_is_seeded_like_every_other_dataset(tree: Path):
+    chain = RandomHorizontalFlipNode().execute({}, {"p": 0.5})["transform"]
+    chain = ToTensorTransformNode().execute(
+        {"transform": chain}, {})["transform"]
+    context = ExecutionContext(seed=99)
+    context.current_node_id = "folder1"
+    dataset = _run({"path": str(tree), "split": "train"},
+                   {"train_transform": chain}, context=context)["dataset"]
+    assert isinstance(dataset.transform, SeededAugmentation)
+
+
+# ── path resolution ──────────────────────────────────────────────────────
+
+
+def test_a_relative_path_resolves_against_the_data_root(monkeypatch, tmp_path):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+    assert resolve_dataset_root("pets") == (tmp_path / "data" / "pets").resolve()
+
+
+def test_an_absolute_path_is_used_as_given(tree: Path):
+    assert resolve_dataset_root(str(tree)) == tree.resolve()
+
+
+# ── the failure messages ─────────────────────────────────────────────────
+
+
+def test_an_empty_path_is_rejected_before_anything_touches_the_disk():
+    with pytest.raises(ValueError, match="needs a path"):
+        _run({"path": "   ", "split": "train"})
+
+
+def test_a_missing_base_directory_names_the_base(tmp_path: Path):
+    with pytest.raises(ValueError, match="is not a directory"):
+        _run({"path": str(tmp_path / "nope"), "split": "train"})
+
+
+def test_a_missing_split_says_which_splits_do_exist(tree: Path):
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(tree), "split": "test"})
+    message = str(excinfo.value)
+    assert "no 'test' sub-directory" in message
+    assert "train" in message and "val" in message
+
+
+def test_class_folders_mistaken_for_splits_get_the_none_hint(tmp_path: Path):
+    root = tmp_path / "flat"
+    _write_images(root / "cat", 1)
+    _write_images(root / "dog", 1)
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(root), "split": "train"})
+    assert "'(none)'" in str(excinfo.value)
+
+
+def test_a_directory_with_no_class_folders_says_so(tmp_path: Path):
+    root = tmp_path / "loose"
+    _write_images(root / "train", 2)  # images, but no class level
+    with pytest.raises(ValueError, match="no sub-directories"):
+        _run({"path": str(root), "split": "train"})

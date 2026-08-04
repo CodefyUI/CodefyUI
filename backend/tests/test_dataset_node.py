@@ -27,6 +27,41 @@ def test_unsupported_name_raises():
 def test_options_listed_in_param():
     params = DatasetNode.define_params()
     name_param = [p for p in params if p.name == "name"][0]
-    assert set(name_param.options) == {"MNIST", "CIFAR10", "FashionMNIST"}
+    assert set(name_param.options) == {
+        "MNIST", "CIFAR10", "CIFAR100", "FashionMNIST", "SVHN", "STL10"}
     split_param = [p for p in params if p.name == "split"][0]
     assert set(split_param.options) == {"train", "test"}
+
+
+def test_every_listed_dataset_exists_in_torchvision():
+    """A typo in the options list is a run failure, not a validation error.
+
+    ``execute`` looks the name up in its own map, so a name that is offered
+    but not mapped -- or mapped to something torchvision does not have --
+    would only surface when someone picks it and waits for a download.
+    """
+    from torchvision import datasets
+
+    from app.nodes.data.dataset_node import DATASET_NAMES
+
+    for name in DATASET_NAMES:
+        assert hasattr(datasets, name), name
+
+
+def test_split_datasets_take_a_split_kwarg():
+    """The two constructors that differ, checked against torchvision itself.
+
+    ``SVHN`` and ``STL10`` take ``split="train"`` where the rest take
+    ``train=True``; passing the wrong one is a TypeError from inside
+    torchvision after the download has already run.
+    """
+    import inspect
+
+    from torchvision import datasets
+
+    from app.nodes.data.dataset_node import DATASET_NAMES, SPLIT_KWARG_DATASETS
+
+    for name in DATASET_NAMES:
+        signature = inspect.signature(getattr(datasets, name).__init__)
+        expected = "split" if name in SPLIT_KWARG_DATASETS else "train"
+        assert expected in signature.parameters, name
