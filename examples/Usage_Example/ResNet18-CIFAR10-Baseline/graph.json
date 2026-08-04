@@ -1,0 +1,475 @@
+{
+  "name": "ResNet-18 / CIFAR-10 baseline",
+  "description": "Research-grade CIFAR-10 baseline built entirely from GUI nodes. ResNet-18 in its CIFAR variant (3x3 stride-1 stem, no maxpool, 4 stages of 2 BasicBlocks, 11,173,962 parameters) is described in the SequentialModel layer editor. Recipe: SGD (Nesterov) lr 0.1, momentum 0.9, weight decay 5e-4, batch 128, cosine annealing over the full schedule, RandomCrop(32, padding=4) + RandomHorizontalFlip + CIFAR-10 channel normalization. Run it with a fixed seed from the Runs panel; see the example README for the measured accuracy.",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -260,
+        "y": 60
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "aug-crop",
+      "type": "RandomCrop",
+      "position": {
+        "x": 40,
+        "y": -240
+      },
+      "data": {
+        "params": {
+          "size": 32,
+          "padding": 4,
+          "padding_mode": "constant"
+        }
+      }
+    },
+    {
+      "id": "aug-flip",
+      "type": "RandomHorizontalFlip",
+      "position": {
+        "x": 300,
+        "y": -240
+      },
+      "data": {
+        "params": {
+          "p": 0.5
+        }
+      }
+    },
+    {
+      "id": "aug-totensor",
+      "type": "ToTensorTransform",
+      "position": {
+        "x": 560,
+        "y": -240
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "aug-norm",
+      "type": "NormalizeTransform",
+      "position": {
+        "x": 820,
+        "y": -240
+      },
+      "data": {
+        "params": {
+          "preset": "CIFAR-10"
+        }
+      }
+    },
+    {
+      "id": "ev-totensor",
+      "type": "ToTensorTransform",
+      "position": {
+        "x": 560,
+        "y": 420
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ev-norm",
+      "type": "NormalizeTransform",
+      "position": {
+        "x": 820,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "preset": "CIFAR-10"
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "Dataset",
+      "position": {
+        "x": 1100,
+        "y": -180
+      },
+      "data": {
+        "params": {
+          "name": "CIFAR10",
+          "split": "train",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "Dataset",
+      "position": {
+        "x": 1100,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "name": "CIFAR10",
+          "split": "test",
+          "data_dir": "./data"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 1380,
+        "y": -180
+      },
+      "data": {
+        "params": {
+          "batch_size": 128,
+          "shuffle": true,
+          "num_workers": 4,
+          "pin_memory": true,
+          "drop_last": false,
+          "persistent_workers": true,
+          "prefetch_factor": 4
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 1380,
+        "y": 180
+      },
+      "data": {
+        "params": {
+          "batch_size": 512,
+          "shuffle": false,
+          "num_workers": 4,
+          "pin_memory": true,
+          "drop_last": false,
+          "persistent_workers": true,
+          "prefetch_factor": 4
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 40,
+        "y": 60
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"stem_conv\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":3,\"out_channels\":64,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"stem_bn\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"stem_relu\",\"type\":\"ReLU\"},{\"id\":\"l1b0_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":64,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l1b0_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"l1b0_r1\",\"type\":\"ReLU\"},{\"id\":\"l1b0_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":64,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l1b0_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"l1b0_add\",\"type\":\"Add\"},{\"id\":\"l1b0_r2\",\"type\":\"ReLU\"},{\"id\":\"l1b1_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":64,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l1b1_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"l1b1_r1\",\"type\":\"ReLU\"},{\"id\":\"l1b1_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":64,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l1b1_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":64}},{\"id\":\"l1b1_add\",\"type\":\"Add\"},{\"id\":\"l1b1_r2\",\"type\":\"ReLU\"},{\"id\":\"l2b0_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":128,\"kernel_size\":3,\"stride\":2,\"padding\":1,\"bias\":false}},{\"id\":\"l2b0_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":128}},{\"id\":\"l2b0_r1\",\"type\":\"ReLU\"},{\"id\":\"l2b0_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":128,\"out_channels\":128,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l2b0_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":128}},{\"id\":\"l2b0_dc\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":64,\"out_channels\":128,\"kernel_size\":1,\"stride\":2,\"padding\":0,\"bias\":false}},{\"id\":\"l2b0_dbn\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":128}},{\"id\":\"l2b0_add\",\"type\":\"Add\"},{\"id\":\"l2b0_r2\",\"type\":\"ReLU\"},{\"id\":\"l2b1_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":128,\"out_channels\":128,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l2b1_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":128}},{\"id\":\"l2b1_r1\",\"type\":\"ReLU\"},{\"id\":\"l2b1_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":128,\"out_channels\":128,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l2b1_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":128}},{\"id\":\"l2b1_add\",\"type\":\"Add\"},{\"id\":\"l2b1_r2\",\"type\":\"ReLU\"},{\"id\":\"l3b0_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":128,\"out_channels\":256,\"kernel_size\":3,\"stride\":2,\"padding\":1,\"bias\":false}},{\"id\":\"l3b0_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":256}},{\"id\":\"l3b0_r1\",\"type\":\"ReLU\"},{\"id\":\"l3b0_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":256,\"out_channels\":256,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l3b0_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":256}},{\"id\":\"l3b0_dc\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":128,\"out_channels\":256,\"kernel_size\":1,\"stride\":2,\"padding\":0,\"bias\":false}},{\"id\":\"l3b0_dbn\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":256}},{\"id\":\"l3b0_add\",\"type\":\"Add\"},{\"id\":\"l3b0_r2\",\"type\":\"ReLU\"},{\"id\":\"l3b1_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":256,\"out_channels\":256,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l3b1_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":256}},{\"id\":\"l3b1_r1\",\"type\":\"ReLU\"},{\"id\":\"l3b1_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":256,\"out_channels\":256,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l3b1_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":256}},{\"id\":\"l3b1_add\",\"type\":\"Add\"},{\"id\":\"l3b1_r2\",\"type\":\"ReLU\"},{\"id\":\"l4b0_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":256,\"out_channels\":512,\"kernel_size\":3,\"stride\":2,\"padding\":1,\"bias\":false}},{\"id\":\"l4b0_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":512}},{\"id\":\"l4b0_r1\",\"type\":\"ReLU\"},{\"id\":\"l4b0_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":512,\"out_channels\":512,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l4b0_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":512}},{\"id\":\"l4b0_dc\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":256,\"out_channels\":512,\"kernel_size\":1,\"stride\":2,\"padding\":0,\"bias\":false}},{\"id\":\"l4b0_dbn\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":512}},{\"id\":\"l4b0_add\",\"type\":\"Add\"},{\"id\":\"l4b0_r2\",\"type\":\"ReLU\"},{\"id\":\"l4b1_c1\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":512,\"out_channels\":512,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l4b1_bn1\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":512}},{\"id\":\"l4b1_r1\",\"type\":\"ReLU\"},{\"id\":\"l4b1_c2\",\"type\":\"Conv2d\",\"params\":{\"in_channels\":512,\"out_channels\":512,\"kernel_size\":3,\"stride\":1,\"padding\":1,\"bias\":false}},{\"id\":\"l4b1_bn2\",\"type\":\"BatchNorm2d\",\"params\":{\"num_features\":512}},{\"id\":\"l4b1_add\",\"type\":\"Add\"},{\"id\":\"l4b1_r2\",\"type\":\"ReLU\"},{\"id\":\"head_pool\",\"type\":\"AdaptiveAvgPool2d\",\"params\":{\"output_size\":1}},{\"id\":\"head_flat\",\"type\":\"Flatten\"},{\"id\":\"head_fc\",\"type\":\"Linear\",\"params\":{\"in_features\":512,\"out_features\":10}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e1\",\"source\":\"in\",\"target\":\"stem_conv\",\"sourceHandle\":\"p_x\"},{\"id\":\"e2\",\"source\":\"stem_conv\",\"target\":\"stem_bn\"},{\"id\":\"e3\",\"source\":\"stem_bn\",\"target\":\"stem_relu\"},{\"id\":\"e4\",\"source\":\"stem_relu\",\"target\":\"l1b0_c1\"},{\"id\":\"e5\",\"source\":\"l1b0_c1\",\"target\":\"l1b0_bn1\"},{\"id\":\"e6\",\"source\":\"l1b0_bn1\",\"target\":\"l1b0_r1\"},{\"id\":\"e7\",\"source\":\"l1b0_r1\",\"target\":\"l1b0_c2\"},{\"id\":\"e8\",\"source\":\"l1b0_c2\",\"target\":\"l1b0_bn2\"},{\"id\":\"e9\",\"source\":\"l1b0_bn2\",\"target\":\"l1b0_add\"},{\"id\":\"e10\",\"source\":\"stem_relu\",\"target\":\"l1b0_add\"},{\"id\":\"e11\",\"source\":\"l1b0_add\",\"target\":\"l1b0_r2\"},{\"id\":\"e12\",\"source\":\"l1b0_r2\",\"target\":\"l1b1_c1\"},{\"id\":\"e13\",\"source\":\"l1b1_c1\",\"target\":\"l1b1_bn1\"},{\"id\":\"e14\",\"source\":\"l1b1_bn1\",\"target\":\"l1b1_r1\"},{\"id\":\"e15\",\"source\":\"l1b1_r1\",\"target\":\"l1b1_c2\"},{\"id\":\"e16\",\"source\":\"l1b1_c2\",\"target\":\"l1b1_bn2\"},{\"id\":\"e17\",\"source\":\"l1b1_bn2\",\"target\":\"l1b1_add\"},{\"id\":\"e18\",\"source\":\"l1b0_r2\",\"target\":\"l1b1_add\"},{\"id\":\"e19\",\"source\":\"l1b1_add\",\"target\":\"l1b1_r2\"},{\"id\":\"e20\",\"source\":\"l1b1_r2\",\"target\":\"l2b0_c1\"},{\"id\":\"e21\",\"source\":\"l2b0_c1\",\"target\":\"l2b0_bn1\"},{\"id\":\"e22\",\"source\":\"l2b0_bn1\",\"target\":\"l2b0_r1\"},{\"id\":\"e23\",\"source\":\"l2b0_r1\",\"target\":\"l2b0_c2\"},{\"id\":\"e24\",\"source\":\"l2b0_c2\",\"target\":\"l2b0_bn2\"},{\"id\":\"e25\",\"source\":\"l1b1_r2\",\"target\":\"l2b0_dc\"},{\"id\":\"e26\",\"source\":\"l2b0_dc\",\"target\":\"l2b0_dbn\"},{\"id\":\"e27\",\"source\":\"l2b0_bn2\",\"target\":\"l2b0_add\"},{\"id\":\"e28\",\"source\":\"l2b0_dbn\",\"target\":\"l2b0_add\"},{\"id\":\"e29\",\"source\":\"l2b0_add\",\"target\":\"l2b0_r2\"},{\"id\":\"e30\",\"source\":\"l2b0_r2\",\"target\":\"l2b1_c1\"},{\"id\":\"e31\",\"source\":\"l2b1_c1\",\"target\":\"l2b1_bn1\"},{\"id\":\"e32\",\"source\":\"l2b1_bn1\",\"target\":\"l2b1_r1\"},{\"id\":\"e33\",\"source\":\"l2b1_r1\",\"target\":\"l2b1_c2\"},{\"id\":\"e34\",\"source\":\"l2b1_c2\",\"target\":\"l2b1_bn2\"},{\"id\":\"e35\",\"source\":\"l2b1_bn2\",\"target\":\"l2b1_add\"},{\"id\":\"e36\",\"source\":\"l2b0_r2\",\"target\":\"l2b1_add\"},{\"id\":\"e37\",\"source\":\"l2b1_add\",\"target\":\"l2b1_r2\"},{\"id\":\"e38\",\"source\":\"l2b1_r2\",\"target\":\"l3b0_c1\"},{\"id\":\"e39\",\"source\":\"l3b0_c1\",\"target\":\"l3b0_bn1\"},{\"id\":\"e40\",\"source\":\"l3b0_bn1\",\"target\":\"l3b0_r1\"},{\"id\":\"e41\",\"source\":\"l3b0_r1\",\"target\":\"l3b0_c2\"},{\"id\":\"e42\",\"source\":\"l3b0_c2\",\"target\":\"l3b0_bn2\"},{\"id\":\"e43\",\"source\":\"l2b1_r2\",\"target\":\"l3b0_dc\"},{\"id\":\"e44\",\"source\":\"l3b0_dc\",\"target\":\"l3b0_dbn\"},{\"id\":\"e45\",\"source\":\"l3b0_bn2\",\"target\":\"l3b0_add\"},{\"id\":\"e46\",\"source\":\"l3b0_dbn\",\"target\":\"l3b0_add\"},{\"id\":\"e47\",\"source\":\"l3b0_add\",\"target\":\"l3b0_r2\"},{\"id\":\"e48\",\"source\":\"l3b0_r2\",\"target\":\"l3b1_c1\"},{\"id\":\"e49\",\"source\":\"l3b1_c1\",\"target\":\"l3b1_bn1\"},{\"id\":\"e50\",\"source\":\"l3b1_bn1\",\"target\":\"l3b1_r1\"},{\"id\":\"e51\",\"source\":\"l3b1_r1\",\"target\":\"l3b1_c2\"},{\"id\":\"e52\",\"source\":\"l3b1_c2\",\"target\":\"l3b1_bn2\"},{\"id\":\"e53\",\"source\":\"l3b1_bn2\",\"target\":\"l3b1_add\"},{\"id\":\"e54\",\"source\":\"l3b0_r2\",\"target\":\"l3b1_add\"},{\"id\":\"e55\",\"source\":\"l3b1_add\",\"target\":\"l3b1_r2\"},{\"id\":\"e56\",\"source\":\"l3b1_r2\",\"target\":\"l4b0_c1\"},{\"id\":\"e57\",\"source\":\"l4b0_c1\",\"target\":\"l4b0_bn1\"},{\"id\":\"e58\",\"source\":\"l4b0_bn1\",\"target\":\"l4b0_r1\"},{\"id\":\"e59\",\"source\":\"l4b0_r1\",\"target\":\"l4b0_c2\"},{\"id\":\"e60\",\"source\":\"l4b0_c2\",\"target\":\"l4b0_bn2\"},{\"id\":\"e61\",\"source\":\"l3b1_r2\",\"target\":\"l4b0_dc\"},{\"id\":\"e62\",\"source\":\"l4b0_dc\",\"target\":\"l4b0_dbn\"},{\"id\":\"e63\",\"source\":\"l4b0_bn2\",\"target\":\"l4b0_add\"},{\"id\":\"e64\",\"source\":\"l4b0_dbn\",\"target\":\"l4b0_add\"},{\"id\":\"e65\",\"source\":\"l4b0_add\",\"target\":\"l4b0_r2\"},{\"id\":\"e66\",\"source\":\"l4b0_r2\",\"target\":\"l4b1_c1\"},{\"id\":\"e67\",\"source\":\"l4b1_c1\",\"target\":\"l4b1_bn1\"},{\"id\":\"e68\",\"source\":\"l4b1_bn1\",\"target\":\"l4b1_r1\"},{\"id\":\"e69\",\"source\":\"l4b1_r1\",\"target\":\"l4b1_c2\"},{\"id\":\"e70\",\"source\":\"l4b1_c2\",\"target\":\"l4b1_bn2\"},{\"id\":\"e71\",\"source\":\"l4b1_bn2\",\"target\":\"l4b1_add\"},{\"id\":\"e72\",\"source\":\"l4b0_r2\",\"target\":\"l4b1_add\"},{\"id\":\"e73\",\"source\":\"l4b1_add\",\"target\":\"l4b1_r2\"},{\"id\":\"e74\",\"source\":\"l4b1_r2\",\"target\":\"head_pool\"},{\"id\":\"e75\",\"source\":\"head_pool\",\"target\":\"head_flat\"},{\"id\":\"e76\",\"source\":\"head_flat\",\"target\":\"head_fc\"},{\"id\":\"e77\",\"source\":\"head_fc\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1100,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.1,
+          "momentum": 0.9,
+          "weight_decay": 0.0005,
+          "nesterov": true,
+          "dampening": 0.0
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 1100,
+        "y": 900
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss",
+          "label_smoothing": 0.0
+        }
+      }
+    },
+    {
+      "id": "sched",
+      "type": "LRScheduler",
+      "position": {
+        "x": 1380,
+        "y": 700
+      },
+      "data": {
+        "params": {
+          "type": "CosineAnnealingLR",
+          "T_max": 200
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1720,
+        "y": 60
+      },
+      "data": {
+        "params": {
+          "epochs": 200,
+          "device": "auto",
+          "precision": "bf16",
+          "accumulate_steps": 1,
+          "grad_clip_norm": 0.0,
+          "early_stopping_patience": 0,
+          "batch_metrics": false,
+          "max_steps": 0,
+          "deterministic": false,
+          "tensorboard": true
+        }
+      }
+    },
+    {
+      "id": "ckpt",
+      "type": "CheckpointSaver",
+      "position": {
+        "x": 2060,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "path": "resnet18-cifar10/resnet18_cifar10.pt",
+          "epoch": 200
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 2060,
+        "y": -120
+      },
+      "data": {
+        "params": {
+          "batch_size": 512,
+          "device": "cuda"
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 2060,
+        "y": 620
+      },
+      "data": {
+        "params": {
+          "title": "ResNet-18 / CIFAR-10 training loss",
+          "plot_type": "line"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-1",
+      "source": "start",
+      "target": "aug-crop",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-2",
+      "source": "start",
+      "target": "ev-totensor",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-3",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-4",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-aug1",
+      "source": "aug-crop",
+      "target": "aug-flip",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e-aug2",
+      "source": "aug-flip",
+      "target": "aug-totensor",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e-aug3",
+      "source": "aug-totensor",
+      "target": "aug-norm",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e-aug4",
+      "source": "aug-norm",
+      "target": "ds-train",
+      "sourceHandle": "transform",
+      "targetHandle": "train_transform"
+    },
+    {
+      "id": "e-ev1",
+      "source": "ev-totensor",
+      "target": "ev-norm",
+      "sourceHandle": "transform",
+      "targetHandle": "transform"
+    },
+    {
+      "id": "e-ev2",
+      "source": "ev-norm",
+      "target": "ds-test",
+      "sourceHandle": "transform",
+      "targetHandle": "eval_transform"
+    },
+    {
+      "id": "e-d1",
+      "source": "ds-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-d2",
+      "source": "ds-test",
+      "target": "dl-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-d3",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e-d4",
+      "source": "dl-val",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e-m1",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-m2",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-o1",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-o2",
+      "source": "opt",
+      "target": "sched",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-l1",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e-s1",
+      "source": "sched",
+      "target": "train",
+      "sourceHandle": "scheduler",
+      "targetHandle": "lr_scheduler"
+    },
+    {
+      "id": "e-c1",
+      "source": "train",
+      "target": "ckpt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-c2",
+      "source": "opt",
+      "target": "ckpt",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-c3",
+      "source": "train",
+      "target": "ckpt",
+      "sourceHandle": "losses",
+      "targetHandle": "losses"
+    },
+    {
+      "id": "e-c4",
+      "source": "sched",
+      "target": "ckpt",
+      "sourceHandle": "scheduler",
+      "targetHandle": "lr_scheduler"
+    },
+    {
+      "id": "e-e1",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-e2",
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-v1",
+      "source": "train",
+      "target": "viz",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ]
+}
