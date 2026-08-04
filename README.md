@@ -136,7 +136,7 @@ Pre-built example workflows organized in `examples/`:
 | Category | Examples |
 |----------|----------|
 | **Model Architecture** | ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics |
-| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training |
+| **Usage Example** | CNN-MNIST Training, CNN-MNIST Inference, GPT-Mini Training, ResNet-CIFAR10 Training, [ResNet-18 / CIFAR-10 Baseline](examples/Usage_Example/ResNet18-CIFAR10-Baseline/) (measured 95.48%, bitwise reproducible) |
 | **LLM** | Word Embedding Analogy (`king − man + woman ≈ queen` with the offline `demo-16d` backend) |
 
 ## Teaching Inspector
