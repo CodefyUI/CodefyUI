@@ -34,6 +34,21 @@ class TransformNode(BaseNode):
         "params below are ignored when it is wired."
     )
 
+    # This node MUTATES its input and returns it, so a cache hit would hand
+    # back the very object a previous run wrote to -- and since core#136 the
+    # pipeline it installs can be SEEDED, while ``ExecutionCache.compute_key``
+    # hashes (type, params, upstream, device) and knows nothing about the run
+    # seed. Two runs at different seeds would then share one wrapper.
+    #
+    # Unreachable today, and that is exactly why it is worth pinning: every
+    # dataset source whose ``transform`` is actually applied (Dataset,
+    # ImageFolderDataset, HuggingFaceDataset, KaggleDataset) is already
+    # ``cacheable = False``, and the engine propagates that downstream. The
+    # first cacheable dataset node to honour ``transform`` would open the
+    # hole silently. Opting out costs nothing -- this node's whole body is
+    # one attribute assignment.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
