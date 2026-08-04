@@ -57,7 +57,7 @@ The node appears in the palette immediately. You can also use the **Custom Node 
 
 ## Data types
 
-Ports use the shared `DataType` enum: `TENSOR`, `MODEL`, `DATASET`, `DATALOADER`, `OPTIMIZER`, `LOSS_FN`, `SCALAR`, `STRING`, `IMAGE`, `LIST`, `ANY`, `TRIGGER`. Matching types make an edge valid; the `TRIGGER` type drives execution order from [`Start`](/usage/first-graph) nodes.
+Ports use the shared `DataType` enum: `TENSOR`, `MODEL`, `DATASET`, `DATALOADER`, `OPTIMIZER`, `LOSS_FN`, `SCALAR`, `STRING`, `IMAGE`, `LIST`, `TRANSFORM`, `ANY`, `TRIGGER`. Matching types make an edge valid; the `TRIGGER` type drives execution order from [`Start`](/usage/first-graph) nodes.
 
 ## Showing an image in the results panel
 

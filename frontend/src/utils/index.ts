@@ -484,25 +484,38 @@ export function buildFlowNode(
   };
 }
 
+/**
+ * Which target types each source type may feed, keyed by SOURCE.
+ *
+ * The relation is deliberately directional: `DATASET -> DATALOADER` is a
+ * legal wiring, the reverse is not. A source with no row here connects to
+ * nothing beyond what `isValidConnection`'s early returns already allow, so
+ * every type the palette can offer needs a row — an omission silently
+ * downgrades a type to "same-type and ANY only" instead of failing loudly.
+ * `SELECTABLE_DATA_TYPES` is the list that has to be covered; the test suite
+ * pins that, since the rows whose only entries are the type itself plus ANY
+ * are invisible to `isValidConnection`'s behaviour.
+ */
+export const DATA_TYPE_COMPATIBILITY: Record<string, string[]> = {
+  TENSOR: ['TENSOR', 'ANY'],
+  MODEL: ['MODEL', 'ANY'],
+  DATASET: ['DATASET', 'DATALOADER', 'ANY'],
+  DATALOADER: ['DATALOADER', 'ANY'],
+  OPTIMIZER: ['OPTIMIZER', 'ANY'],
+  LOSS_FN: ['LOSS_FN', 'ANY'],
+  SCALAR: ['SCALAR', 'ANY'],
+  STRING: ['STRING', 'ANY'],
+  IMAGE: ['IMAGE', 'TENSOR', 'ANY'],
+  LIST: ['LIST', 'ANY'],
+  TRANSFORM: ['TRANSFORM', 'ANY'],
+};
+
 export function isValidConnection(sourceType: string, targetType: string): boolean {
   // Trigger type uses a dedicated __trigger handle, not regular data ports
   if (sourceType === 'TRIGGER' || targetType === 'TRIGGER') return false;
   if (sourceType === 'ANY' || targetType === 'ANY') return true;
   if (sourceType === targetType) return true;
 
-  const compatibilityMap: Record<string, string[]> = {
-    TENSOR: ['TENSOR', 'ANY'],
-    MODEL: ['MODEL', 'ANY'],
-    DATASET: ['DATASET', 'DATALOADER', 'ANY'],
-    DATALOADER: ['DATALOADER', 'ANY'],
-    OPTIMIZER: ['OPTIMIZER', 'ANY'],
-    LOSS_FN: ['LOSS_FN', 'ANY'],
-    SCALAR: ['SCALAR', 'ANY'],
-    STRING: ['STRING', 'ANY'],
-    IMAGE: ['IMAGE', 'TENSOR', 'ANY'],
-    TRANSFORM: ['TRANSFORM', 'ANY'],
-  };
-
-  const compatible = compatibilityMap[sourceType.toUpperCase()];
+  const compatible = DATA_TYPE_COMPATIBILITY[sourceType.toUpperCase()];
   return compatible ? compatible.includes(targetType.toUpperCase()) : false;
 }

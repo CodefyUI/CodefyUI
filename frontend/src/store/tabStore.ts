@@ -386,7 +386,8 @@ const NO_STALE_EDGES: ReadonlySet<string> = new Set<string>();
  * and preset ports — which this knows nothing about — are never touched. For
  * every node whose ports do NOT depend on params the two resolvers hand back
  * the definition's own arrays, so the identity check below settles it in two
- * comparisons; the set work only ever runs for Split and PythonScript.
+ * comparisons; the set work only runs for the handful of nodes the two
+ * resolvers actually expand (Split, PythonScript, ComposeTransform today).
  */
 function staleEdges(
   node: Node<NodeData> | undefined,
@@ -1152,11 +1153,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
             : n
         );
         // A param can change the node's own PORT SET (Split's `chunks`,
-        // PythonScript's `input_ports`/`output_ports`). An edge left hanging
-        // off a handle that no longer renders is invisible on the canvas but
-        // very much alive in the graph JSON, and the backend validator
-        // rejects the whole run for it. Drop those edges here — the one
-        // choke point every param edit from every surface goes through.
+        // PythonScript's `input_ports`/`output_ports`, ComposeTransform's
+        // `steps`). An edge left hanging off a handle that no longer renders
+        // is invisible on the canvas but very much alive in the graph JSON,
+        // and the backend validator rejects the whole run for it. Drop those
+        // edges here — the one choke point every param edit from every
+        // surface goes through.
         const stale = staleEdges(node, nextParams, tab.edges);
         if (stale.size === 0) return { nodes };
         for (const edge of tab.edges) {

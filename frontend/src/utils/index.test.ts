@@ -5,6 +5,8 @@ import {
   isParamVisible,
   isValidConnection,
   DATA_TYPE_COLORS,
+  DATA_TYPE_COMPATIBILITY,
+  SELECTABLE_DATA_TYPES,
   VIZ_NODE_TYPES,
   resolveSerializedNodes,
   resolveSerializedEdges,
@@ -175,7 +177,12 @@ describe('isValidConnection', () => {
     expect(isValidConnection('DATASET', 'DATALOADER')).toBe(true);
   });
 
-  it('allows TRANSFORM to TRANSFORM and to ANY, and nothing else', () => {
+  it('wires TRANSFORM only to itself and ANY, all via the early returns', () => {
+    // Every line here is settled BEFORE the compatibility map is consulted:
+    // same-type, ANY on either side, and the TRIGGER rejection are the three
+    // early returns, and an unrelated pair falls through to a map lookup that
+    // cannot match. So this pins the early returns, not TRANSFORM's row --
+    // the row itself is pinned by the DATA_TYPE_COMPATIBILITY suite below.
     expect(isValidConnection('TRANSFORM', 'TRANSFORM')).toBe(true);
     expect(isValidConnection('TRANSFORM', 'ANY')).toBe(true);
     expect(isValidConnection('ANY', 'TRANSFORM')).toBe(true);
@@ -187,6 +194,39 @@ describe('isValidConnection', () => {
   it('returns false for a source type absent from the compatibility map', () => {
     // SCALAR exists; but an unknown like "FOO" is not a key → `compatible` undefined.
     expect(isValidConnection('FOO', 'BAR')).toBe(false);
+  });
+});
+
+describe('DATA_TYPE_COMPATIBILITY', () => {
+  it('gives TRANSFORM a row of exactly TRANSFORM and ANY', () => {
+    expect(DATA_TYPE_COMPATIBILITY['TRANSFORM']).toEqual(['TRANSFORM', 'ANY']);
+  });
+
+  it('covers every type the palette can select', () => {
+    // A type added to DATA_TYPE_COLORS (which is what the per-port selects
+    // offer) but forgotten here would silently connect to nothing but itself
+    // and ANY. ANY needs no row: it short-circuits before the lookup.
+    const missing = SELECTABLE_DATA_TYPES.filter(
+      (type) => type !== 'ANY' && type !== 'TRIGGER' && !DATA_TYPE_COMPATIBILITY[type],
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it('lets every row reach its own type and ANY', () => {
+    for (const [source, targets] of Object.entries(DATA_TYPE_COMPATIBILITY)) {
+      expect(targets).toContain(source);
+      expect(targets).toContain('ANY');
+    }
+  });
+
+  it('is what isValidConnection reads for a cross-type edge', () => {
+    // DATASET -> DATALOADER is the one entry no early return can produce, so
+    // it is the proof that the hoisted constant is still the live lookup.
+    expect(DATA_TYPE_COMPATIBILITY['DATASET']).toContain('DATALOADER');
+    expect(isValidConnection('DATASET', 'DATALOADER')).toBe(true);
+    // ...and the relation is directional.
+    expect(DATA_TYPE_COMPATIBILITY['DATALOADER']).not.toContain('DATASET');
+    expect(isValidConnection('DATALOADER', 'DATASET')).toBe(false);
   });
 });
 

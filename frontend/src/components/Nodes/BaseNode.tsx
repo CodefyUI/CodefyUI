@@ -87,7 +87,8 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const { getEdges } = useReactFlow();
   const def = data.definition;
   // Live port sets: a param-driven node (Split's `chunks`, PythonScript's
-  // `input_ports`) has a different shape than its palette template.
+  // `input_ports`, ComposeTransform's `steps`) has a different shape than
+  // its palette template.
   const liveInputs = resolveDynamicInputs(def, data.params);
   const liveOutputs = resolveDynamicOutputs(def, data.params);
   const category = def?.category ?? 'Utility';
@@ -273,7 +274,8 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
       {/* Ports area */}
       <div className={styles.portsArea}>
-        {/* Input handles — param-driven nodes (PythonScript) expand here */}
+        {/* Input handles — param-driven nodes (PythonScript,
+            ComposeTransform) expand here */}
         {liveInputs.map((input) => (
           <div
             key={`in-${input.name}`}

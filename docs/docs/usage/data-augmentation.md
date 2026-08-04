@@ -18,7 +18,7 @@ A transform is now a node, and transforms connect to each other. Each one takes 
 RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 ```
 
-The wire between them carries a `TRANSFORM` port, drawn in amber. It only connects to other `TRANSFORM` ports, so a pipeline cannot be wired into a place that expects a dataset.
+The wire between them carries a `TRANSFORM` port, drawn in amber. It only connects to other `TRANSFORM` ports, or to an `ANY` port, so a pipeline cannot be wired into a place that expects a dataset.
 
 That chain produces exactly `transforms.Compose([RandomCrop(...), RandomHorizontalFlip(...), ToTensor(), Normalize(...)])` — the same object you would write by hand, which is also what an exported Python script builds.
 
@@ -67,7 +67,7 @@ A single value broadcasts across every channel, so `Half` is correct for one-cha
 - `train_transform` — used when `split` is `train`. This is where augmentation belongs.
 - `eval_transform` — used for every other split, and as the fallback for the training split when `train_transform` is unwired.
 
-The fallback only runs in that one direction, deliberately. A test split never picks up the augmenting chain, because a randomly distorted test set measures something different every time you look at it.
+The fallback only runs in that one direction, deliberately. A test split never picks up the augmenting chain, because a randomly distorted test set measures something different every time you look at it. **ImageFolderDataset**'s `(none)` split is the one exception, because there is no split there to fall back from; see below.
 
 For the datasets that have no transform inputs — **HuggingFaceDataset**, **KaggleDataset**, or one of your own — wire the chain into the **Transform** node's `transform` input instead. When that input is wired, the node's three parameters are ignored.
 
@@ -104,7 +104,7 @@ my-dataset/
 ```
 
 - `path` — the directory holding the splits. A relative path resolves against the data folder that also holds `models/` and `images/`; an absolute path is used as given.
-- `split` — which sub-directory to load. Choose `(none)` when the class folders sit directly under `path` with no split level.
+- `split` — which sub-directory to load. Choose `(none)` when the class folders sit directly under `path` with no split level. At `(none)` there is no split to tell the two transform inputs apart, so whichever one is wired is the one used, and `train_transform` wins if both are.
 
 Labels come from the folder names sorted alphabetically, so `cat` is 0 and `dog` is 1 on every machine. The node also outputs a `classes` list in label order.
 
@@ -118,7 +118,7 @@ Augmentation is random, so a reproducible run has to reproduce the augmentations
 
 Three details are worth knowing:
 
-- **The stream is isolated.** A chain's randomness depends on the run seed and the identity of the node that attached it, and on nothing else. Changing the model, the dropout rate or the batch size does not change which crops you get.
+- **The stream is isolated.** A chain's randomness depends on the run seed and the identity of the node that attached it, and on nothing else. Changing the model or the dropout rate does not change which crops you get. What the batch size and the worker count still decide, once `num_workers` is above zero, is which sample draws from where in that stream — each worker has its own. So those two settings change what lands on a given image, but re-running the same configuration reproduces it exactly.
 - **It still varies.** Reproducible does not mean frozen: samples differ from each other, and epoch 2 differs from epoch 1. That is the whole point of augmentation, and it holds with `num_workers` set as well as without.
 - **An unseeded run is unchanged.** Without a seed the pipeline keeps torch's own entropy and pays no overhead at all. The extra bookkeeping is only installed when a run asks for a seed *and* the chain actually contains a random step.
 

@@ -252,12 +252,20 @@ function RunDetailView({ chartHeight }: { chartHeight: number }) {
         <div className={styles.sectionHeaderRow}>
           <div className={styles.sectionHeader}>{t('runs.detail.metrics')}</div>
           {/* The same export the run row offers, put where someone reading
-              the chart is actually looking. Disabled with nothing to
-              export, so the button never downloads a header-only file. */}
+              the chart is actually looking — and gated exactly the same
+              way, on that run's in-flight action alone.
+
+              The CHART is deliberately not the test. `runStore` drops every
+              non-finite reading before it becomes a series, while the server
+              still writes a row for it (an empty value cell), so a diverged
+              run has a complete CSV and a blank curve. A `/metrics` request
+              that failed reads the same way. Either would grey this button
+              out while the SAME run's row button downloads the file. */}
           <button
             type="button"
             className={styles.rowBtn}
-            disabled={chart.length === 0 || busy[detail.runId] === true}
+            data-testid="detail-csv"
+            disabled={busy[detail.runId] === true}
             onClick={() => void exportCsv(detail.runId)}
             title={t('runs.action.csvTitle')}
           >

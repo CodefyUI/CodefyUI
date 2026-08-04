@@ -18,7 +18,7 @@ description: 用節點組出前處理流程、對訓練資料做增強、載入�
 RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 ```
 
-它們之間的連線是 `TRANSFORM` 型別的埠，畫成琥珀色。它只能接到其他 `TRANSFORM` 埠，所以流程不可能被誤接到需要資料集的地方。
+它們之間的連線是 `TRANSFORM` 型別的埠，畫成琥珀色。它只能接到其他 `TRANSFORM` 埠，或是接到 `ANY` 埠，所以流程不可能被誤接到需要資料集的地方。
 
 這條鏈產生的正是 `transforms.Compose([RandomCrop(...), RandomHorizontalFlip(...), ToTensor(), Normalize(...)])` — 和你手寫出來的物件一模一樣，匯出的 Python 腳本建出來的也是同一個東西。
 
@@ -67,7 +67,7 @@ RandomCrop -> RandomHorizontalFlip -> ToTensorTransform -> NormalizeTransform
 - `train_transform` — 當 `split` 是 `train` 時使用。資料增強應該放在這裡。
 - `eval_transform` — 其他分割都用它；當 `train_transform` 沒接時，訓練分割也會退回用它。
 
-這個退回機制刻意只有單向。測試分割永遠不會拿到帶增強的鏈，因為一個被隨機扭曲過的測試集，每看一次量到的都是不同的東西。
+這個退回機制刻意只有單向。測試分割永遠不會拿到帶增強的鏈，因為一個被隨機扭曲過的測試集，每看一次量到的都是不同的東西。唯一的例外是 **ImageFolderDataset** 的 `(none)` 分割，因為那裡根本沒有分割可以退回；詳見下方說明。
 
 至於沒有變換輸入的資料集 — **HuggingFaceDataset**、**KaggleDataset**，或你自己寫的 — 請改把鏈接到 **Transform** 節點的 `transform` 輸入。一旦那個輸入接上了，該節點的三個參數就會被忽略。
 
@@ -104,7 +104,7 @@ my-dataset/
 ```
 
 - `path` — 放置各個分割的資料夾。相對路徑會相對於同時放著 `models/` 與 `images/` 的資料目錄；絕對路徑則照用。
-- `split` — 要載入哪個子資料夾。如果類別資料夾直接放在 `path` 底下、沒有分割這一層，就選 `(none)`。
+- `split` — 要載入哪個子資料夾。如果類別資料夾直接放在 `path` 底下、沒有分割這一層，就選 `(none)`。選 `(none)` 時沒有分割可以用來區分那兩個變換輸入，所以哪一個有接上就用哪一個；兩個都接上時，以 `train_transform` 為準。
 
 標籤由資料夾名稱依字母順序決定，所以在任何機器上 `cat` 都是 0、`dog` 都是 1。這個節點另外輸出一個依標籤順序排列的 `classes` 列表。
 
@@ -118,7 +118,7 @@ my-dataset/
 
 有三個細節值得知道：
 
-- **隨機串流是隔離的。** 一條鏈的隨機性只取決於執行種子，以及把它掛上去的那個節點的身分，除此之外別無其他。改動模型、dropout 比例或 batch size，都不會改變你拿到的裁切。
+- **隨機串流是隔離的。** 一條鏈的隨機性只取決於執行種子，以及把它掛上去的那個節點的身分，除此之外別無其他。改動模型或 dropout 比例，都不會改變你拿到的裁切。不過一旦 `num_workers` 大於 0，batch size 和 worker 數量仍然會決定「哪個樣本從串流的哪個位置取值」— 因為每個 worker 各有自己的串流。所以這兩個設定會改變某張影像實際拿到的變換，但只要設定不變，重跑一次就會完全重現同樣的結果。
 - **它仍然會變化。** 可重現不等於凍結：樣本之間彼此不同，第 2 個 epoch 也和第 1 個不同。這正是資料增強的意義所在，而且在有設 `num_workers` 與沒設的情況下都成立。
 - **沒給種子的執行完全不受影響。** 沒有種子時，流程維持使用 PyTorch 自己的亂數來源，完全沒有額外成本。額外的簿記只有在「執行有要求種子」**而且**「鏈裡確實有隨機步驟」時才會裝上。
 
