@@ -242,7 +242,13 @@ def _looks_random(name, cls):
     own_make = getattr(cls, "make_params", None)
     if base_make is not None and own_make is not None and own_make is not base_make:
         return "make_params"
-    apply_base = getattr(v2._transform, "_RandomApplyTransform", None)
+    # Both v2 lookups above and below are ``getattr``-guarded on purpose:
+    # ``make_params`` and ``_RandomApplyTransform`` are torchvision's own
+    # private shape, and a rename should cost this oracle one signal, not
+    # turn the whole guard into an AttributeError. If enough signals go the
+    # companion test below fails with a message that says so.
+    apply_base = getattr(getattr(v2, "_transform", None),
+                         "_RandomApplyTransform", None)
     if apply_base is not None and issubclass(cls, apply_base):
         return "p-gate"
     try:
