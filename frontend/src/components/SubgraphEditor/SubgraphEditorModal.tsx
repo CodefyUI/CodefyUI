@@ -24,6 +24,7 @@ import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import { generateId } from '../../utils';
 import { CANVAS_MIN_ZOOM } from '../../styles/theme';
+import { EdgeLaneProvider } from '../Canvas/EdgeLaneContext';
 import { SmartDataEdge } from '../Canvas/SmartDataEdge';
 import { LayerNode } from './LayerNode';
 import { InputNode } from './InputNode';
@@ -981,45 +982,47 @@ function SubgraphFlowInner({
                 </div>
               </div>
             )}
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={handleNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-              onPaneClick={() => setSelectedNodeId(null)}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onConnect={onConnect}
-              isValidConnection={isValidConnection}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              fitView
-              minZoom={CANVAS_MIN_ZOOM}
-              snapToGrid={snapEnabled}
-              snapGrid={[20, 20]}
-              proOptions={{ hideAttribution: true }}
-              deleteKeyCode="Delete"
-              onNodesDelete={(deleted) => {
-                const ids = new Set(deleted.map((n) => n.id));
-                setNodes((prev) => prev.filter((n) => !ids.has(n.id)));
-                setEdges((prev) => prev.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
-                setSelectedNodeId((prev) => (prev && ids.has(prev) ? null : prev));
-              }}
-              style={{ background: '#111' }}
-              defaultEdgeOptions={{
-                animated: false,
-                style: { stroke: '#555', strokeWidth: 2 },
-              }}
-            >
-              <Background
-                color="#2a2a2a"
-                variant={BackgroundVariant.Dots}
-                gap={20}
-                size={1}
-              />
-              <Controls />
-            </ReactFlow>
+            <EdgeLaneProvider edges={edges}>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={handleNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                onPaneClick={() => setSelectedNodeId(null)}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                onConnect={onConnect}
+                isValidConnection={isValidConnection}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                fitView
+                minZoom={CANVAS_MIN_ZOOM}
+                snapToGrid={snapEnabled}
+                snapGrid={[20, 20]}
+                proOptions={{ hideAttribution: true }}
+                deleteKeyCode="Delete"
+                onNodesDelete={(deleted) => {
+                  const ids = new Set(deleted.map((n) => n.id));
+                  setNodes((prev) => prev.filter((n) => !ids.has(n.id)));
+                  setEdges((prev) => prev.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
+                  setSelectedNodeId((prev) => (prev && ids.has(prev) ? null : prev));
+                }}
+                style={{ background: '#111' }}
+                defaultEdgeOptions={{
+                  animated: false,
+                  style: { stroke: '#555', strokeWidth: 2 },
+                }}
+              >
+                <Background
+                  color="#2a2a2a"
+                  variant={BackgroundVariant.Dots}
+                  gap={20}
+                  size={1}
+                />
+                <Controls />
+              </ReactFlow>
+            </EdgeLaneProvider>
           </div>
 
           {/* Param Editor */}

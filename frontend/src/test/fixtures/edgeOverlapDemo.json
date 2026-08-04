@@ -1,0 +1,54 @@
+{
+  "name": "Edge overlap demo",
+  "description": "Every wiring shape that used to draw two connection lines on top of each other, laid out in five labelled bands. Import it with Toolbar > Import and compare the two edge styles in Settings. Band 1 (y ~ 0) is the reported case: four wires leaving one output. Band 2 (y ~ 620) is two outputs of one node whose targets are stacked at the same x, so both wires used to bend at the same place. Band 3 (y ~ 980) is two wires between the same pair of nodes. Band 4 (y ~ 1240) is three sources in a column arriving at one node. Band 5 (y ~ 1820) is a fan-out whose two far targets are long enough to take the skip detour, which used to collide one time in four on a hash of the edge id. Not meant to be run - it is a routing fixture, which is why it lives under src/test rather than in examples/.",
+  "nodes": [
+    { "id": "start-1", "type": "Start", "position": { "x": -340, "y": 0 }, "data": { "params": {} } },
+
+    { "id": "csv1", "type": "CSVReader", "position": { "x": -60, "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "norm1", "type": "Normalize", "position": { "x": 240, "y": 0 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "fan-a", "type": "Print", "position": { "x": 700, "y": -300 }, "data": { "params": { "label": "fan-out 1 of 4" } } },
+    { "id": "fan-b", "type": "Print", "position": { "x": 730, "y": -120 }, "data": { "params": { "label": "fan-out 2 of 4" } } },
+    { "id": "fan-c", "type": "Print", "position": { "x": 700, "y": 120 }, "data": { "params": { "label": "fan-out 3 of 4" } } },
+    { "id": "fan-d", "type": "Print", "position": { "x": 730, "y": 300 }, "data": { "params": { "label": "fan-out 4 of 4" } } },
+
+    { "id": "csv2", "type": "CSVReader", "position": { "x": -60, "y": 620 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "sel2", "type": "ColumnSelector", "position": { "x": 460, "y": 560 }, "data": { "params": { "indices": "2,3", "names": "" } } },
+    { "id": "norm2", "type": "Normalize", "position": { "x": 460, "y": 760 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+
+    { "id": "csv3", "type": "CSVReader", "position": { "x": -60, "y": 1000 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "sel3", "type": "ColumnSelector", "position": { "x": 460, "y": 1000 }, "data": { "params": { "indices": "2,3", "names": "" } } },
+
+    { "id": "src-a", "type": "Normalize", "position": { "x": -60, "y": 1300 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "src-b", "type": "Normalize", "position": { "x": -60, "y": 1440 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "src-c", "type": "Normalize", "position": { "x": -60, "y": 1580 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "knn4", "type": "KNN", "position": { "x": 600, "y": 1420 }, "data": { "params": { "n_neighbors": 5, "weights": "distance", "metric": "minkowski" } } },
+
+    { "id": "csv5", "type": "CSVReader", "position": { "x": -60, "y": 1900 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },
+    { "id": "mid5", "type": "Normalize", "position": { "x": 420, "y": 1900 }, "data": { "params": { "mode": "zscore", "axis": 0 } } },
+    { "id": "far5-a", "type": "Print", "position": { "x": 1000, "y": 1900 }, "data": { "params": { "label": "skip detour 1 of 2" } } },
+    { "id": "far5-b", "type": "Print", "position": { "x": 1400, "y": 1910 }, "data": { "params": { "label": "skip detour 2 of 2" } } }
+  ],
+  "edges": [
+    { "id": "trig", "source": "start-1", "target": "csv1", "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "b1-csv-norm", "source": "csv1", "target": "norm1", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "b1-fan-a", "source": "norm1", "target": "fan-a", "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "b1-fan-b", "source": "norm1", "target": "fan-b", "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "b1-fan-c", "source": "norm1", "target": "fan-c", "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "b1-fan-d", "source": "norm1", "target": "fan-d", "sourceHandle": "tensor", "targetHandle": "value" },
+
+    { "id": "b2-tensor", "source": "csv2", "target": "sel2", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "b2-labels", "source": "csv2", "target": "norm2", "sourceHandle": "labels", "targetHandle": "tensor" },
+
+    { "id": "b3-tensor", "source": "csv3", "target": "sel3", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "b3-columns", "source": "csv3", "target": "sel3", "sourceHandle": "columns", "targetHandle": "columns" },
+
+    { "id": "b4-a", "source": "src-a", "target": "knn4", "sourceHandle": "tensor", "targetHandle": "x_train" },
+    { "id": "b4-b", "source": "src-b", "target": "knn4", "sourceHandle": "tensor", "targetHandle": "y_train" },
+    { "id": "b4-c", "source": "src-c", "target": "knn4", "sourceHandle": "tensor", "targetHandle": "x_query" },
+
+    { "id": "b5-mid", "source": "csv5", "target": "mid5", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "b5-far-a", "source": "csv5", "target": "far5-a", "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "b5-far-b", "source": "csv5", "target": "far5-b", "sourceHandle": "tensor", "targetHandle": "value" }
+  ]
+}
