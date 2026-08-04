@@ -353,7 +353,9 @@ interface TabStoreState {
     edges: any[];
     presets?: import('../types').PresetDefinition[];
     segmentGroups?: SegmentGroup[];
-    subgraphs?: SubgraphDefinition[];
+    // Not optional: the serializer always answers with a list, so callers do
+    // not each have to re-establish that (core#137 review round 1).
+    subgraphs: SubgraphDefinition[];
   };
   /**
    * Collapse the canvas selection into one subgraph instance (core#137).
@@ -1586,10 +1588,14 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       //
       // Transitive, because a definition can hold an instance of another:
       // a block reachable only from INSIDE a reachable block is still live.
-      // Optional-chained so a tab without the field still serializes to the
-      // exact shape it did before, rather than gaining an empty array on the
-      // wire.
-      subgraphs: tab.subgraphs?.filter((d) => liveSubgraphIds.has(d.id)),
+      //
+      // Always an ARRAY, never undefined. `normalizeTab` gives every real tab
+      // a `subgraphs` list, so the coalesce only covers hand-built tab doubles
+      // in tests -- and a public serializer that answers `undefined` because
+      // some test object was malformed pushes an `| undefined` into the types
+      // of every caller, which is exactly how `Toolbar.handleExportSubgraph`
+      // ended up dereferencing a possibly-undefined list.
+      subgraphs: (tab.subgraphs ?? []).filter((d) => liveSubgraphIds.has(d.id)),
     };
   },
 
