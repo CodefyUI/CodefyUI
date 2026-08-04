@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from pathlib import Path
 
 import pytest
@@ -124,7 +125,7 @@ def _write_image_folder(root: Path) -> None:
     """
     from PIL import Image
 
-    rng = __import__("random").Random(0)
+    rng = random.Random(0)  # local instance: never touches the global RNG
     for split in ("train", "val"):
         for label, cls in enumerate(_FIXTURE_CLASSES):
             d = root / split / cls
