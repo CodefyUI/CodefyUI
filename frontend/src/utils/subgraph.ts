@@ -33,6 +33,91 @@ export function isSubgraphInstance(node: Node<NodeData> | undefined): boolean {
   return !!node && subgraphIdOf(node.data?.type) !== null;
 }
 
+/**
+ * Every definition id the canvas can reach, FOLLOWING NESTED REFERENCES.
+ *
+ * A definition is not only referenced by instance nodes on the canvas: its
+ * own `nodes` can hold instances of other definitions, to any depth. Two
+ * places need that closure and both were getting it wrong before:
+ *
+ *  - copy/paste, which must carry every definition the pasted nodes depend
+ *    on or the target tab lands an instance the server refuses to run;
+ *  - serialization, which must drop the definitions nothing reaches or the
+ *    saved file grows a dead block every time the last instance is deleted.
+ *
+ * The `seen` set is not an optimisation. Collapse cannot build a definition
+ * cycle (a block's members are canvas nodes, which cannot contain the block
+ * being created), but a hand-edited or hostile file can, and this walk runs
+ * on every save -- so it must terminate on one rather than hang the editor.
+ */
+export function reachableSubgraphIds(
+  nodes: Node<NodeData>[],
+  subgraphs: SubgraphDefinition[],
+): Set<string> {
+  const byId = new Map(subgraphs.map((d) => [d.id, d]));
+  const seen = new Set<string>();
+  const stack: string[] = [];
+  for (const node of nodes) {
+    const id = subgraphIdOf(node.data?.type);
+    // A reference to a definition the graph does not carry is left out: it
+    // is already broken, and inventing an id here would only spread it.
+    if (id !== null && byId.has(id) && !seen.has(id)) {
+      seen.add(id);
+      stack.push(id);
+    }
+  }
+  while (stack.length) {
+    const definition = byId.get(stack.pop()!)!;
+    for (const raw of definition.nodes) {
+      // Definition entries are the SERIALIZED shape -- `type` at the top
+      // level -- not the canvas shape's `data.type`.
+      const nested = subgraphIdOf((raw as { type?: unknown }).type);
+      if (nested !== null && byId.has(nested) && !seen.has(nested)) {
+        seen.add(nested);
+        stack.push(nested);
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * JSON with object keys in sorted order, at every depth.
+ *
+ * Used only to answer "did this definition actually change?". A plain
+ * `JSON.stringify` compare would answer "yes" for two identical definitions
+ * whose keys happen to be ordered differently -- which is exactly what
+ * happens to a definition that came back from a file rather than from
+ * `definitionFromCanvas` -- and a false "yes" there costs the user a phantom
+ * undo step for merely looking inside a block.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(',')}}`;
+}
+
+/** True when two definitions describe the same block, key order aside. */
+export function sameDefinition(
+  a: SubgraphDefinition,
+  b: SubgraphDefinition,
+): boolean {
+  return a === b || stableStringify(a) === stableStringify(b);
+}
+
+/** True when two definition LISTS are content-identical, in order. */
+export function sameSubgraphs(
+  a: SubgraphDefinition[],
+  b: SubgraphDefinition[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((definition, index) => sameDefinition(definition, b[index]));
+}
+
 function isTriggerEdge(edge: Edge): boolean {
   return (
     edge.type === 'triggerEdge' ||
@@ -185,20 +270,28 @@ export interface CollapseSuccess {
 
 export type CollapseResult = CollapseFailure | CollapseSuccess;
 
+/** Every reason a collapse can be refused, with nothing built yet. */
+export type CollapseCheck = { ok: true } | CollapseFailure;
+
 /**
- * Replace *selectedIds* with one instance node.
+ * The guard chain `collapseSelection` runs, on its own.
  *
- * The instance lands on the selection's top-left corner and inner positions
- * are stored relative to it, so expanding puts every node back exactly where
- * it was.
+ * Split out so the CALLER can find out that a selection will be refused
+ * before it does anything user-visible -- the context menu asks the user to
+ * name the block, and asking for a name for a block that is about to be
+ * refused is a worse experience than the refusal itself. `collapseSelection`
+ * calls this too, so there is exactly one implementation of the rules and a
+ * caller can never drift out of step with what collapse actually does.
+ *
+ * Deliberately does NOT know about `readOnly`: that lives on the tab, not on
+ * the nodes, so it stays a store-layer concern (see the readOnly note above
+ * the subgraph actions in tabStore).
  */
-export function collapseSelection(
+export function checkCollapse(
   nodes: Node<NodeData>[],
   edges: Edge[],
-  subgraphs: SubgraphDefinition[],
   selectedIds: string[],
-  options: { name?: string; id?: string; instanceId?: string } = {},
-): CollapseResult {
+): CollapseCheck {
   const selected = new Set(selectedIds);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const members = selectedIds
@@ -227,6 +320,31 @@ export function collapseSelection(
   if (blockers.length) {
     return { ok: false, reason: 'not-convex', blockers };
   }
+  return { ok: true };
+}
+
+/**
+ * Replace *selectedIds* with one instance node.
+ *
+ * The instance lands on the selection's top-left corner and inner positions
+ * are stored relative to it, so expanding puts every node back exactly where
+ * it was.
+ */
+export function collapseSelection(
+  nodes: Node<NodeData>[],
+  edges: Edge[],
+  subgraphs: SubgraphDefinition[],
+  selectedIds: string[],
+  options: { name?: string; id?: string; instanceId?: string } = {},
+): CollapseResult {
+  const check = checkCollapse(nodes, edges, selectedIds);
+  if (!check.ok) return check;
+
+  const selected = new Set(selectedIds);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const members = selectedIds
+    .map((id) => byId.get(id))
+    .filter((n): n is Node<NodeData> => n !== undefined);
 
   const definitionId = options.id ?? generateId();
   const instanceId = options.instanceId ?? generateId();
@@ -277,7 +395,13 @@ export function collapseSelection(
     }
     if (targetIn) {
       const handle = edge.targetHandle ?? '';
-      const key = `${edge.target} ${handle}`;
+      // NUL separates the two halves of this composite key. No node id and
+      // no port handle can contain one, so (node, port) can never be split
+      // ambiguously the way a space or a dash would allow. It is written as
+      // the escape `\u0000` and never as a literal byte: a raw NUL makes
+      // ripgrep classify this whole file as binary and skip it, so every
+      // `git grep` / code search over subgraph.ts silently returns nothing.
+      const key = `${edge.target}\u0000${handle}`;
       let port = inputByInner.get(key);
       if (!port) {
         port = {
@@ -296,7 +420,8 @@ export function collapseSelection(
       });
     } else {
       const handle = edge.sourceHandle ?? '';
-      const key = `${edge.source} ${handle}`;
+      // Same NUL-separated composite key as the input side above.
+      const key = `${edge.source}\u0000${handle}`;
       let port = outputByInner.get(key);
       if (!port) {
         port = {
@@ -509,12 +634,18 @@ export function expandInstance(
     ...nodes.filter((n) => n.id !== instanceId),
     ...restored,
   ];
-  // The definition stays as long as ANOTHER instance still uses it; expanding
-  // the last one takes it with it, so a graph never carries a block nobody
-  // can reach from the canvas.
-  const stillUsed = nextNodes.some(
-    (n) => subgraphIdOf(n.data?.type) === definition.id,
-  );
+  // The definition stays as long as anything still reaches it -- another
+  // instance on the canvas, OR an instance inside another definition that is
+  // itself reachable. A direct `nextNodes.some(...)` scan misses the second
+  // case and would delete a nested block out from under its parent.
+  //
+  // This is a tidy-up, not the invariant: "a saved graph never carries a
+  // block nobody can reach" is enforced by `getSerializedGraph`, which prunes
+  // with this same closure. Expansion is only ONE of several ways the last
+  // instance can disappear (Delete key, deleteNode, clear), and pruning at
+  // the serialization boundary covers all of them at once while keeping the
+  // definition in memory -- so undoing the deletion brings the block back.
+  const stillUsed = reachableSubgraphIds(nextNodes, subgraphs).has(definition.id);
 
   return {
     ok: true,

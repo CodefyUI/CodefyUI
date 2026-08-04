@@ -41,6 +41,10 @@ const en = {
   'toolbar.export.prompt': 'Enter a name for this subgraph:',
   'toolbar.export.success': 'Subgraph "{name}" exported successfully! It now appears in the Nodes panel.',
   'toolbar.export.fail': 'Export failed: {error}',
+  // core#137: a preset carries only nodes + edges, so it cannot hold the
+  // definition an instance node points at. Refusing names the blocks so the
+  // user knows exactly which ones to expand first.
+  'toolbar.export.subgraphRefused': 'Cannot export as a subgraph while the canvas contains collapsed blocks ({names}). A preset cannot carry their contents — expand them first, then export.',
   'toolbar.exportPython': 'Export as Python',
   'toolbar.exportPython.title': 'Download a headless Python runner (requires the CodefyUI backend environment)',
   'toolbar.exportPython.empty': 'Canvas has no executable nodes — add a node before exporting.',
@@ -214,6 +218,7 @@ const en = {
   'subgraph.collapse.contains-note':
     'Notes are annotations, not part of a subgraph - deselect them first',
   'subgraph.collapse.read-only': 'This graph is open read-only',
+  'subgraph.collapse.namePrompt': 'Name this subgraph',
   'subgraph.collapse.notConvex':
     'These nodes sit between the ones you selected, so the block would feed back into itself: {nodes}. Add them to the selection.',
   'subgraph.detail.interface': 'Subgraph interface',

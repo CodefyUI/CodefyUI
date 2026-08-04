@@ -10,6 +10,8 @@ import {
   instanceDefinition,
   pruneStaleBoundaryEdges,
   refreshInstances,
+  checkCollapse,
+  reachableSubgraphIds,
   subgraphIdOf,
 } from './subgraph';
 
@@ -459,5 +461,98 @@ describe('instanceDefinition', () => {
     ]);
     // An untyped boundary falls back to ANY so the handle still renders.
     expect(rendered.outputs[0].data_type).toBe('ANY');
+  });
+});
+
+// ── reachableSubgraphIds (review MINOR 9 / MAJOR 6) ─────────────────────
+
+describe('reachableSubgraphIds', () => {
+  function definition(
+    id: string,
+    innerTypes: string[] = [],
+  ): SubgraphDefinition {
+    return {
+      id,
+      name: id,
+      description: '',
+      nodes: innerTypes.map((type, index) => ({
+        id: `${id}-n${index}`,
+        type,
+        position: { x: 0, y: 0 },
+        data: { params: {} },
+      })),
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    };
+  }
+
+  it('follows a nested reference the canvas cannot see directly', () => {
+    // The canvas holds only an instance of `outer`; `inner` is referenced
+    // exclusively from INSIDE outer's definition.
+    const subgraphs = [definition('outer', ['subgraph:inner']), definition('inner')];
+    const canvas = [node('i1', 'subgraph:outer')];
+    expect([...reachableSubgraphIds(canvas, subgraphs)].sort()).toEqual([
+      'inner',
+      'outer',
+    ]);
+  });
+
+  it('reports nothing for a definition no canvas node can reach', () => {
+    const subgraphs = [definition('used'), definition('orphan')];
+    expect([...reachableSubgraphIds([node('i1', 'subgraph:used')], subgraphs)]).toEqual([
+      'used',
+    ]);
+  });
+
+  it('terminates on a definition cycle rather than hanging the editor', () => {
+    // Collapse can never build this, but a hand-edited or malicious file can,
+    // and the walk runs on every serialize.
+    const subgraphs = [
+      definition('a', ['subgraph:b']),
+      definition('b', ['subgraph:a']),
+    ];
+    expect([...reachableSubgraphIds([node('i', 'subgraph:a')], subgraphs)].sort()).toEqual(
+      ['a', 'b'],
+    );
+  });
+
+  it('ignores a reference to a definition the graph does not carry', () => {
+    const subgraphs = [definition('a', ['subgraph:ghost'])];
+    expect([...reachableSubgraphIds([node('i', 'subgraph:a')], subgraphs)]).toEqual(['a']);
+  });
+});
+
+// ── checkCollapse (review NIT 21) ───────────────────────────────────────
+
+describe('checkCollapse', () => {
+  it('is the SAME verdict collapseSelection reaches, without doing the work', () => {
+    const { nodes, edges } = chain();
+    // a and c with b in the way: the convexity refusal.
+    expect(checkCollapse(nodes, edges, ['a', 'c'])).toEqual({
+      ok: false,
+      reason: 'not-convex',
+      blockers: ['b'],
+    });
+    expect(collapseSelection(nodes, edges, [], ['a', 'c'])).toEqual({
+      ok: false,
+      reason: 'not-convex',
+      blockers: ['b'],
+    });
+  });
+
+  it('accepts a selection collapse accepts, and refuses each guard', () => {
+    const { nodes, edges } = chain();
+    expect(checkCollapse(nodes, edges, ['b', 'c'])).toEqual({ ok: true });
+    expect(checkCollapse(nodes, edges, ['b'])).toMatchObject({ reason: 'too-few' });
+    expect(checkCollapse(nodes, edges, ['start', 'a'])).toMatchObject({
+      reason: 'contains-start',
+    });
+    const withNote: Node<NodeData>[] = [
+      ...nodes,
+      { ...node('note', 'note'), type: 'noteNode' },
+    ];
+    expect(checkCollapse(withNote, edges, ['b', 'note'])).toMatchObject({
+      reason: 'contains-note',
+    });
   });
 });

@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, renderHook } from '@testing-library/react';
+import { render, screen, fireEvent, renderHook, act } from '@testing-library/react';
+
+// The name prompt (NIT 21) is an in-app modal driven by a promise; mocking
+// the helper keeps these tests about the MENU's decisions -- refuse or ask,
+// and in that order -- rather than about the dialog component.
+vi.mock('../../utils/dialog', () => ({
+  prompt: vi.fn(async () => 'Subgraph'),
+  confirm: vi.fn(async () => true),
+}));
+
 import {
   NodeContextMenu,
   useNodeContextMenuItems,
@@ -11,6 +20,7 @@ import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 import type { Node } from '@xyflow/react';
 import type { NodeData } from '../../types';
+import { prompt } from '../../utils/dialog';
 
 function resetToSingleTab() {
   useTabStore.setState({
@@ -46,6 +56,9 @@ function makeNoteNode(
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   resetToSingleTab();
+  useToastStore.setState({ toasts: [] });
+  vi.mocked(prompt).mockReset();
+  vi.mocked(prompt).mockResolvedValue('Subgraph');
 });
 
 afterEach(() => {
@@ -496,6 +509,154 @@ describe('subgraph context menu entries', () => {
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0].message).toContain('b');
+    expect(useTabStore.getState().getActiveTab().subgraphs).toEqual([]);
+  });
+});
+
+// ── Review MAJOR 8 / NIT 21: the collapse entry ──────────────────────────
+
+/** A node whose id is a UUID and whose human name lives in `data.label`. */
+function makeNamedNode(id: string, label: string): Node<NodeData> {
+  const base = makePlainNode(id);
+  return { ...base, data: { ...base.data, label } };
+}
+
+/** a -> b -> c with only a and c selected: b is the convexity blocker. */
+function seedNonConvex() {
+  const store = useTabStore.getState();
+  store.setNodes([
+    { ...makeNamedNode('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11', 'Encoder'), selected: true },
+    makeNamedNode('7a1c0de2-55aa-4d7b-8f31-0c2b9e5d1a03', 'Bottleneck'),
+    { ...makeNamedNode('c40b7f18-2e63-4a90-b1d5-9f7a6c3e2b44', 'Decoder'), selected: true },
+  ]);
+  store.setEdges([
+    {
+      id: 'e1',
+      source: '3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11',
+      target: '7a1c0de2-55aa-4d7b-8f31-0c2b9e5d1a03',
+    },
+    {
+      id: 'e2',
+      source: '7a1c0de2-55aa-4d7b-8f31-0c2b9e5d1a03',
+      target: 'c40b7f18-2e63-4a90-b1d5-9f7a6c3e2b44',
+    },
+  ]);
+}
+
+function collapseItem(nodeId: string) {
+  const callbacks = {
+    onDelete: vi.fn(), onRename: vi.fn(),
+    onDuplicate: vi.fn(), onOpenDetails: vi.fn(),
+  };
+  const { result } = renderHook(() => useNodeContextMenuItems(nodeId, callbacks));
+  return result.current.find((i) => i.label === 'Collapse to subgraph')!;
+}
+
+describe('collapse refusal names nodes the user can recognise (MAJOR 8)', () => {
+  it('names the BLOCKER by its label, never by its raw id', async () => {
+    seedNonConvex();
+    const collapse = collapseItem('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11');
+    await act(async () => { await collapse.action(); });
+
+    const message = useToastStore.getState().toasts[0].message;
+    // `buildFlowNode` ids are crypto.randomUUID()s; the human name is in
+    // `data.label`. A UUID in a "add these nodes to the selection" message is
+    // not something a user can act on.
+    expect(message).toContain('Bottleneck');
+    expect(message).not.toContain('7a1c0de2-55aa-4d7b-8f31-0c2b9e5d1a03');
+  });
+
+  it('adds the blockers to the selection so the retry is one click away', async () => {
+    seedNonConvex();
+    const collapse = collapseItem('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11');
+    await act(async () => { await collapse.action(); });
+
+    const selected = useTabStore.getState().getActiveTab()
+      .nodes.filter((n) => n.selected).map((n) => n.data.label).sort();
+    expect(selected).toEqual(['Bottleneck', 'Decoder', 'Encoder']);
+  });
+
+  it('falls back to the id when a node genuinely has no label', async () => {
+    seedNonConvex();
+    const store = useTabStore.getState();
+    store.setNodes(
+      store.getActiveTab().nodes.map((n) =>
+        n.data.label === 'Bottleneck'
+          ? { ...n, data: { ...n.data, label: '' } }
+          : n,
+      ),
+    );
+    const collapse = collapseItem('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11');
+    await act(async () => { await collapse.action(); });
+    expect(useToastStore.getState().toasts[0].message).toContain(
+      '7a1c0de2-55aa-4d7b-8f31-0c2b9e5d1a03',
+    );
+  });
+
+  it('never asks for a name for a selection it is about to refuse', async () => {
+    seedNonConvex();
+    const collapse = collapseItem('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11');
+    await act(async () => { await collapse.action(); });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('collapse asks for a name (NIT 21)', () => {
+  /** Two connected nodes, both selected: a collapse that will be accepted. */
+  function seedCollapsible() {
+    const store = useTabStore.getState();
+    store.setNodes([
+      { ...makeNamedNode('n-1', 'Conv'), selected: true },
+      { ...makeNamedNode('n-2', 'ReLU'), selected: true },
+    ]);
+    store.setEdges([{ id: 'e1', source: 'n-1', target: 'n-2' }]);
+  }
+
+  it('prompts, and the block carries the name the user entered', async () => {
+    seedCollapsible();
+    vi.mocked(prompt).mockResolvedValueOnce('Encoder block');
+    const collapse = collapseItem('n-1');
+    await act(async () => { await collapse.action(); });
+
+    expect(prompt).toHaveBeenCalledTimes(1);
+    // Prefilled with the name the block would otherwise silently get.
+    expect(vi.mocked(prompt).mock.calls[0][0].defaultValue).toBe('Subgraph');
+    const subgraphs = useTabStore.getState().getActiveTab().subgraphs;
+    expect(subgraphs).toHaveLength(1);
+    expect(subgraphs[0].name).toBe('Encoder block');
+  });
+
+  it('cancelling leaves the graph exactly as it was', async () => {
+    seedCollapsible();
+    vi.mocked(prompt).mockResolvedValueOnce(null);
+    const collapse = collapseItem('n-1');
+    await act(async () => { await collapse.action(); });
+
+    const tab = useTabStore.getState().getActiveTab();
+    expect(tab.subgraphs).toEqual([]);
+    expect(tab.nodes.map((n) => n.id)).toEqual(['n-1', 'n-2']);
+  });
+
+  it('an empty name falls back to the default rather than an unnamed block', async () => {
+    seedCollapsible();
+    vi.mocked(prompt).mockResolvedValueOnce('   ');
+    const collapse = collapseItem('n-1');
+    await act(async () => { await collapse.action(); });
+    expect(useTabStore.getState().getActiveTab().subgraphs[0].name).toBe('Subgraph');
+  });
+
+  it('refuses a read-only tab before prompting', async () => {
+    seedCollapsible();
+    useTabStore.setState({
+      tabs: useTabStore.getState().tabs.map((t) => ({ ...t, readOnly: true })),
+    });
+    const collapse = collapseItem('n-1');
+    await act(async () => { await collapse.action(); });
+
+    expect(prompt).not.toHaveBeenCalled();
+    expect(useToastStore.getState().toasts[0].message).toBe(
+      'This graph is open read-only',
+    );
     expect(useTabStore.getState().getActiveTab().subgraphs).toEqual([]);
   });
 });

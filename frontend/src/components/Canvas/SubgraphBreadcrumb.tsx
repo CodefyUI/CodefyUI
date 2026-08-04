@@ -30,6 +30,12 @@ export function SubgraphBreadcrumb() {
     return definition?.name || frame.subgraphId;
   });
   const currentId = stack[stack.length - 1].subgraphId;
+  // Renaming is a MUTATION, so it follows the same readOnly rule the store
+  // applies to `renameSubgraph`: offering the input on a graph whose rename
+  // the store will silently discard is worse than not offering it. Walking
+  // the trail is NAVIGATION and stays available -- the user is here to read
+  // the block, and trapping them inside it would be absurd.
+  const canRename = !tab.readOnly;
 
   const commitRename = () => {
     setEditing(false);
@@ -51,7 +57,12 @@ export function SubgraphBreadcrumb() {
           <span className={styles.separator} aria-hidden="true">
             {'▸'}
           </span>
-          {index === names.length - 1 && editing ? (
+          {index === names.length - 1 && !canRename ? (
+            // Plain text, not a disabled button: the name still has to be
+            // readable, but nothing here is clickable, so nothing should
+            // look or behave as if it were.
+            <span className={`${styles.crumb} ${styles.current}`}>{name}</span>
+          ) : index === names.length - 1 && editing ? (
             <input
               className={styles.input}
               value={draft}

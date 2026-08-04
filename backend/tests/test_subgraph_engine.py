@@ -20,6 +20,7 @@ from app.core.graph_engine import (
     expand_subgraphs,
     expand_subgraphs_deep,
     find_cycle,
+    outermost_container,
     prepare_executable_graph,
     validate_graph,
 )
@@ -745,3 +746,565 @@ async def test_status_events_roll_up_to_the_instance_node():
     assert ("blk", "completed") in seen
     # One running and one completed for the whole block, not three of each.
     assert [s for n, s in seen if n == "blk"].count("completed") == 1
+
+
+# ── Review follow-ups (PR #198) ─────────────────────────────────────────
+#
+# Everything below pins a claim the first cut of this feature MADE but did
+# not honour: that nesting changes nothing for the status roll-up, that the
+# separator cannot collide, that an unreferenced definition is inert, and
+# that validation and execution agree about what is legal.
+
+
+def _nested_definitions() -> list[dict]:
+    """``outer`` holds one instance of ``inner``; ``inner`` is one node.
+
+    Two boundaries deep is the smallest shape that tells a single-level
+    lookup apart from a transitive one: the container map becomes a CHAIN
+    (``blk/nest/mul -> blk/nest -> blk``) whose only link naming a node the
+    canvas actually shows is the last one.
+    """
+    inner = _passthrough_subgraph("inner")
+    outer = {
+        "id": "outer",
+        "name": "outer",
+        "nodes": [
+            {"id": "nest", "type": "subgraph:inner",
+             "position": {"x": 0, "y": 0}, "data": {}},
+        ],
+        "edges": [],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": "nest", "innerPort": "in"}],
+            "outputs": [{"port": "out", "innerNode": "nest",
+                         "innerPort": "out"}],
+            "triggerTargets": ["nest"],
+        },
+    }
+    return [inner, outer]
+
+
+def _nested_instance_graph() -> tuple[list[dict], list[dict], list[dict]]:
+    """start -> src -> [ blk = outer( nest = inner( mul ) ) ]."""
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "blk", "type": "subgraph:outer", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "t2", "source": "start", "target": "blk",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e", "source": "src", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+    ]
+    return nodes, edges, _nested_definitions()
+
+
+def test_outermost_container_walks_the_whole_chain():
+    """The container map is a CHAIN, not a lookup table.
+
+    ``blk`` is the only id in this map that the canvas has ever seen, so it
+    is the only answer a status event may carry -- from any depth.
+    """
+    mapping = {"blk/nest": "blk", "blk/nest/mul": "blk/nest"}
+    assert outermost_container("blk/nest/mul", mapping) == "blk"
+    assert outermost_container("blk/nest", mapping) == "blk"
+    assert outermost_container("start", mapping) is None
+    # An instance whose OWN id contains the separator resolves through the
+    # map, never by splitting the string.
+    assert outermost_container(
+        "we/ird/mul", {"we/ird/mul": "we/ird"}
+    ) == "we/ird"
+
+
+def test_outermost_container_cannot_loop_forever():
+    """A malformed map must not hang the run that reads it."""
+    assert outermost_container("a", {"a": "a"}) == "a"
+    assert outermost_container("a", {"a": "b", "b": "a"}) in {"a", "b"}
+
+
+async def test_nested_instance_status_rolls_up_to_the_outermost_container():
+    """A two-deep instance must report as the box the canvas actually shows.
+
+    ``blk/nest`` is an id no client has ever seen: expansion invented it and
+    expansion consumed it again, so a status keyed to it updates nothing and
+    the box the user is watching sits at ``idle`` for the whole run.
+    """
+    nodes, edges, subgraphs = _nested_instance_graph()
+    seen: list[tuple[str, str]] = []
+
+    async def on_progress(node_id, status, data):
+        seen.append((node_id, status))
+
+    await execute_graph(
+        nodes, edges, on_progress=on_progress, subgraphs=subgraphs
+    )
+    reported = sorted({node_id for node_id, _ in seen})
+    assert not any("/" in node_id for node_id in reported), reported
+    assert ("blk", "running") in seen, seen
+    assert ("blk", "completed") in seen, seen
+    assert [s for n, s in seen if n == "blk"].count("completed") == 1, seen
+
+
+async def test_roll_up_still_works_for_an_instance_whose_id_has_a_separator():
+    """Single level, but the INSTANCE id contains ``/``.
+
+    The resolver walks the container map, never the id string, so an id that
+    happens to look namespaced is not mistaken for one.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "we/ird", "type": "subgraph:pass", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e", "source": "src", "target": "we/ird",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+    ]
+    seen: list[tuple[str, str]] = []
+
+    async def on_progress(node_id, status, data):
+        seen.append((node_id, status))
+
+    await execute_graph(
+        nodes, edges, on_progress=on_progress,
+        subgraphs=[_passthrough_subgraph()],
+    )
+    assert ("we/ird", "running") in seen, seen
+    assert ("we/ird", "completed") in seen, seen
+    assert not any(n == "we/ird/mul" for n, _ in seen), seen
+
+
+def _block_with_an_untriggered_sibling(nested: bool) -> list[dict]:
+    """A block holding a triggered node and a root nothing triggers.
+
+    ``side`` is exactly the shape the retention rule exists for -- the Dataset
+    sitting beside the Loss in a training preset: a root with no incoming
+    edge, pulled into the run only because something else in its block is.
+    """
+    inner = _passthrough_subgraph("inner")
+    if nested:
+        body = [
+            {"id": "nest", "type": "subgraph:inner",
+             "position": {"x": 0, "y": 0}, "data": {}},
+            {"id": "side", "type": "TensorCreate", "position": {"x": 0, "y": 1},
+             "data": {"params": {"shape": "1,2"}}},
+        ]
+        ports = ("nest", "in", "out")
+    else:
+        body = [
+            {"id": "mul", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+             "data": {"params": {"scalar": 2.0}}},
+            {"id": "side", "type": "TensorCreate", "position": {"x": 0, "y": 1},
+             "data": {"params": {"shape": "1,2"}}},
+        ]
+        ports = ("mul", "tensor", "tensor")
+    outer = {
+        "id": "outer", "name": "outer", "nodes": body, "edges": [],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": ports[0],
+                        "innerPort": ports[1]}],
+            "outputs": [{"port": "out", "innerNode": ports[0],
+                         "innerPort": ports[2]}],
+            "triggerTargets": [ports[0]],
+        },
+    }
+    return [inner, outer] if nested else [outer]
+
+
+def _block_instance_graph() -> tuple[list[dict], list[dict]]:
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "1,2", "fill": "full", "value": 1.0}}},
+        {"id": "blk", "type": "subgraph:outer", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "t2", "source": "start", "target": "blk",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e", "source": "src", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+    ]
+    return nodes, edges
+
+
+def test_one_level_block_retains_a_sibling_nothing_triggers():
+    """The control: this is the behaviour nesting has to match."""
+    nodes, edges = _block_instance_graph()
+    exec_nodes, _e, _m = prepare_executable_graph(
+        nodes, edges, subgraphs=_block_with_an_untriggered_sibling(False)
+    )
+    assert "blk/side" in {n["id"] for n in exec_nodes}
+
+
+def test_a_nested_block_retains_its_sibling_the_same_way():
+    """Same block, one boundary deeper -- and it must not change the run.
+
+    Retention groups by container, and the container map is a chain: the only
+    reachable node here is ``blk/nest/mul``, whose IMMEDIATE container is
+    ``blk/nest``. Grouping there retains ``nest``'s own contents and prunes
+    ``blk/side``, which sits directly inside ``blk`` -- so how deeply the user
+    happened to nest a block decides whether its roots survive.
+    """
+    nodes, edges = _block_instance_graph()
+    exec_nodes, _e, _m = prepare_executable_graph(
+        nodes, edges, subgraphs=_block_with_an_untriggered_sibling(True)
+    )
+    assert "blk/side" in {n["id"] for n in exec_nodes}
+
+
+# ── Id collisions across the separator ──────────────────────────────────
+
+
+def test_two_instances_whose_namespaced_ids_collide_are_refused():
+    """``x`` + inner ``a/b`` and ``x/a`` + inner ``b`` both make ``x/a/b``.
+
+    Silently keeping one of the two is the worst outcome available: the run
+    then dies inside ``topological_levels`` naming a cycle that does not
+    exist, because its node count no longer matches the graph's.
+    """
+    wrap = {
+        "id": "wrap", "name": "wrap", "edges": [],
+        "nodes": [{"id": "a/b", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }
+    plain = {
+        "id": "plain", "name": "plain", "edges": [],
+        "nodes": [{"id": "b", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }
+    nodes = [
+        {"id": "x", "type": "subgraph:wrap", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "x/a", "type": "subgraph:plain", "position": {"x": 1, "y": 0},
+         "data": {}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(nodes, [], build_subgraph_index([wrap, plain]))
+    message = str(excinfo.value)
+    assert "x/a/b" in message
+    # BOTH contributors, or the user cannot tell which of the two to rename.
+    assert "'x'" in message and "'x/a'" in message, message
+
+
+def test_an_inner_id_colliding_with_a_top_level_node_is_refused():
+    nodes = [
+        {"id": "blk", "type": "subgraph:pass", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "blk/mul", "type": "ScalarMultiply",
+         "position": {"x": 1, "y": 0}, "data": {"params": {}}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(
+            nodes, [], build_subgraph_index([_passthrough_subgraph()])
+        )
+    message = str(excinfo.value)
+    assert "blk/mul" in message
+    assert "'blk'" in message, message
+
+
+def test_a_graph_that_carries_one_id_twice_is_not_blamed_on_the_boundary():
+    """Claiming every expanded id also catches a plain duplicate.
+
+    It must not be described as a flattening collision -- there is no
+    boundary involved and the user would go looking at the wrong thing.
+    """
+    nodes = [
+        {"id": "dup", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        {"id": "dup", "type": "ScalarMultiply", "position": {"x": 1, "y": 0},
+         "data": {"params": {}}},
+        {"id": "blk", "type": "subgraph:pass", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(
+            nodes, [], build_subgraph_index([_passthrough_subgraph()])
+        )
+    message = str(excinfo.value)
+    assert "'dup'" in message
+    assert "after subgraph expansion" not in message, message
+
+
+def test_validate_reports_an_id_collision_instead_of_a_phantom_cycle():
+    """The route must name the real fault, not the symptom it becomes."""
+    wrap = {
+        "id": "wrap", "name": "wrap", "edges": [],
+        "nodes": [{"id": "a/b", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }
+    plain = {
+        "id": "plain", "name": "plain", "edges": [],
+        "nodes": [{"id": "b", "type": "ScalarMultiply",
+                   "position": {"x": 0, "y": 0}, "data": {"params": {}}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "x", "type": "subgraph:wrap", "position": {"x": 1, "y": 0},
+         "data": {}},
+        {"id": "x/a", "type": "subgraph:plain", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "x",
+              "sourceHandle": "trigger", "targetHandle": "__trigger",
+              "type": "trigger"}]
+    errors = validate_graph(nodes, edges, subgraphs=[wrap, plain])
+    # Not merely "some error mentions x/a/b" -- the collapsed graph produces a
+    # "Missing required input" on that id either way. The collision itself has
+    # to be named, with both instances.
+    assert any(
+        "x/a/b" in e and "'x'" in e and "'x/a'" in e for e in errors
+    ), errors
+    assert not any("cycle" in e for e in errors), errors
+
+
+# ── Unreferenced definitions really are inert ───────────────────────────
+
+
+def test_a_stale_recursive_definition_cannot_break_a_graph_that_has_instances():
+    """The no-instance early return is not the interesting case.
+
+    A graph that uses ONE subgraph and still carries a definition nobody
+    instantiates must run. Scanning every definition in the index for
+    recursion turns dead data into a refused run.
+    """
+    nodes, edges, subgraphs = _collapsed_graph()
+    stale = {"id": "selfy", "name": "selfy", "edges": [],
+             "nodes": [{"id": "me", "type": "subgraph:selfy",
+                        "position": {"x": 0, "y": 0}, "data": {}}],
+             "interface": {"inputs": [], "outputs": [], "triggerTargets": []}}
+    out_nodes, _, mapping = expand_subgraphs_deep(
+        nodes, edges, build_subgraph_index(subgraphs + [stale])
+    )
+    assert {"blk/m1", "blk/m2", "blk/sum"} <= {n["id"] for n in out_nodes}
+    assert mapping == {"blk/m1": "blk", "blk/m2": "blk", "blk/sum": "blk"}
+
+
+def test_a_self_recursive_definition_that_is_used_is_still_refused_by_name():
+    """Scoping the scan must not stop it catching the real thing."""
+    selfy = {"id": "selfy", "name": "selfy", "edges": [],
+             "nodes": [{"id": "me", "type": "subgraph:selfy",
+                        "position": {"x": 0, "y": 0}, "data": {}}],
+             "interface": {"inputs": [], "outputs": [], "triggerTargets": []}}
+    nodes = [{"id": "blk", "type": "subgraph:selfy",
+              "position": {"x": 0, "y": 0}, "data": {}}]
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs_deep(nodes, [], build_subgraph_index([selfy]))
+    assert "selfy -> selfy" in str(excinfo.value)
+
+
+# ── Honest messages for degenerate definitions ──────────────────────────
+
+
+def test_a_subgraph_type_with_an_empty_id_is_reported():
+    """``subgraph:`` is not a legitimate node.
+
+    ``subgraph_id_of`` returns ``""`` for it, which is falsey -- so a
+    truthiness test skips expansion while an ``is not None`` test treats the
+    node as a valid opaque container. The graph then validates clean and
+    fails at run time.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "x", "type": "subgraph:", "position": {"x": 1, "y": 0},
+         "data": {}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "x",
+              "sourceHandle": "trigger", "targetHandle": "__trigger",
+              "type": "trigger"}]
+    errors = validate_graph(nodes, edges, subgraphs=[])
+    assert errors, "an empty subgraph id validated clean"
+    assert any("x" in e for e in errors), errors
+    # "Unknown subgraph:  (node x)" -- a blank where the id should be -- is
+    # not a message anyone can act on.
+    assert not any("Unknown subgraph:  " in e for e in errors), errors
+
+
+def _malformed_definition(sid: str = "d") -> dict:
+    """One inner node whose position is not a point. Fails model validation."""
+    return {
+        "id": sid, "name": sid, "edges": [],
+        "nodes": [{"id": "mul", "type": "ScalarMultiply",
+                   "position": {"x": "nope", "y": 0},
+                   "data": {"params": {}}}],
+        "interface": {"inputs": [], "outputs": [], "triggerTargets": []},
+    }
+
+
+def test_a_referenced_malformed_definition_says_so_instead_of_unknown():
+    """"Unknown subgraph: d" is a lie when ``d`` is right there in the file.
+
+    The user goes looking for a missing definition, finds it, and has no way
+    to learn that the reason it was dropped was one bad field inside it.
+    """
+    nodes = [{"id": "blk", "type": "subgraph:d",
+              "position": {"x": 0, "y": 0}, "data": {}}]
+    index = build_subgraph_index([_malformed_definition()])
+    with pytest.raises(GraphValidationError) as excinfo:
+        expand_subgraphs(nodes, [], index)
+    message = str(excinfo.value)
+    assert "Unknown subgraph" not in message, message
+    assert "blk" in message and "d" in message
+    assert "position" in message, message  # the reason, quoted
+
+
+def test_a_malformed_definition_nobody_uses_still_cannot_break_a_run():
+    """The skip is kept; only the diagnosis changes."""
+    nodes, edges = _flat_graph()
+    out_nodes, _, mapping = expand_subgraphs_deep(
+        nodes, edges, build_subgraph_index([_malformed_definition()])
+    )
+    assert out_nodes is nodes and mapping == {}
+
+
+# ── Validation and execution must agree ─────────────────────────────────
+
+
+def test_validate_reports_bypass_on_a_subgraph_instance():
+    """The route must refuse what the runner refuses.
+
+    Expansion runs before bypass resolution, so by the time bypass is
+    considered the instance node -- and its ``bypassed`` flag -- are gone.
+    The graph validates clean and then the run dies.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "blk", "type": "subgraph:pass", "position": {"x": 1, "y": 0},
+         "data": {"bypassed": True}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "blk",
+              "sourceHandle": "trigger", "targetHandle": "__trigger",
+              "type": "trigger"}]
+    errors = validate_graph(
+        nodes, edges, subgraphs=[_passthrough_subgraph()]
+    )
+    assert any(
+        "Bypass is not supported on subgraph instance(s): blk" in e
+        for e in errors
+    ), errors
+
+
+def test_validate_reports_bypass_on_a_preset_node_exactly_once():
+    """The preset half of this hole never existed -- and must not be opened.
+
+    ``validate_graph`` does NOT expand preset nodes, so a bypassed one is
+    still standing when ``resolve_bypass`` runs and is named there. That is
+    the whole reason ``container_bypass_errors`` takes an
+    ``include_presets`` switch: adding the pre-expansion check unconditionally
+    would report the same fault twice on this path.
+    """
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "p", "type": "preset:whatever", "position": {"x": 1, "y": 0},
+         "data": {"bypassed": True}},
+    ]
+    edges = [{"id": "t", "source": "start", "target": "p",
+              "sourceHandle": "trigger", "targetHandle": "__trigger",
+              "type": "trigger"}]
+    errors = validate_graph(nodes, edges)
+    bypass_errors = [e for e in errors if "Bypass is not supported" in e]
+    assert bypass_errors == ["Bypass is not supported on preset node p"], errors
+
+
+def test_expanded_graph_does_not_re_report_a_container_bypass():
+    """``prepare_executable_graph`` validates AFTER expansion.
+
+    By then no container node is left, so the shared check must contribute
+    nothing rather than repeating itself.
+    """
+    col_nodes, col_edges, subgraphs = _collapsed_graph()
+    _nodes, _edges, _map = prepare_executable_graph(
+        col_nodes, col_edges, subgraphs=subgraphs
+    )
+    assert not any("Bypass is not supported" in e
+                   for e in validate_graph(_nodes, _edges))
+
+
+# ── Cycles below more than one boundary ─────────────────────────────────
+
+
+def test_describe_cycle_names_every_enclosing_instance():
+    text = describe_cycle(["blk/nest/p", "blk/nest/q", "blk/nest/p"])
+    assert "crosses subgraph instance(s): blk, blk/nest" in text, text
+
+
+def test_a_cycle_inside_a_nested_definition_names_both_boundaries():
+    loopy = {
+        "id": "loopy", "name": "loopy",
+        "nodes": [
+            {"id": "p", "type": "ScalarMultiply", "position": {"x": 0, "y": 0},
+             "data": {"params": {}}},
+            {"id": "q", "type": "ScalarMultiply", "position": {"x": 1, "y": 0},
+             "data": {"params": {}}},
+        ],
+        "edges": [
+            {"id": "f", "source": "p", "target": "q", "sourceHandle": "tensor",
+             "targetHandle": "tensor", "type": "data"},
+            {"id": "g", "source": "q", "target": "p", "sourceHandle": "tensor",
+             "targetHandle": "tensor", "type": "data"},
+        ],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": "p", "innerPort": "tensor"}],
+            "outputs": [{"port": "out", "innerNode": "q",
+                         "innerPort": "tensor"}],
+            "triggerTargets": ["p"],
+        },
+    }
+    wrap = {
+        "id": "wrap", "name": "wrap", "edges": [],
+        "nodes": [{"id": "nest", "type": "subgraph:loopy",
+                   "position": {"x": 0, "y": 0}, "data": {}}],
+        "interface": {
+            "inputs": [{"port": "in", "innerNode": "nest", "innerPort": "in"}],
+            "outputs": [{"port": "out", "innerNode": "nest",
+                         "innerPort": "out"}],
+            "triggerTargets": ["nest"],
+        },
+    }
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {}},
+        {"id": "src", "type": "TensorCreate", "position": {"x": 1, "y": 0},
+         "data": {"params": {"shape": "2,2"}}},
+        {"id": "blk", "type": "subgraph:wrap", "position": {"x": 2, "y": 0},
+         "data": {}},
+    ]
+    edges = [
+        {"id": "t", "source": "start", "target": "src",
+         "sourceHandle": "trigger", "targetHandle": "__trigger",
+         "type": "trigger"},
+        {"id": "e", "source": "src", "target": "blk",
+         "sourceHandle": "tensor", "targetHandle": "in", "type": "data"},
+    ]
+    errors = validate_graph(nodes, edges, subgraphs=[loopy, wrap])
+    cycle_errors = [e for e in errors if "cycle" in e]
+    assert len(cycle_errors) == 1, errors
+    assert "crosses subgraph instance(s): blk, blk/nest" in cycle_errors[0], (
+        cycle_errors[0]
+    )

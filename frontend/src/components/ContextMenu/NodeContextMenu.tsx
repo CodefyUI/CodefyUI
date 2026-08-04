@@ -2,7 +2,8 @@ import { useI18n, type TranslationKey } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { isBypassable } from '../../utils';
-import { subgraphIdOf } from '../../utils/subgraph';
+import { prompt } from '../../utils/dialog';
+import { checkCollapse, subgraphIdOf, type CollapseFailure } from '../../utils/subgraph';
 import styles from './NodeContextMenu.module.css';
 
 export interface ContextMenuPosition {
@@ -91,22 +92,78 @@ export function useNodeContextMenuItems(
   const bypassed = node?.data.bypassed === true;
   const isInstance = subgraphIdOf(node?.data?.type) !== null;
 
-  const runCollapse = () => {
-    const result = collapseSelection();
-    if (result.ok) return;
-    // Every refusal names WHY, and the non-convex one names the nodes that
-    // have to join the selection -- an error the user can act on beats a
-    // collapse that silently draws a loop the graph does not have.
-    if (result.reason === 'not-convex') {
-      addToast(
-        t('subgraph.collapse.notConvex', {
-          nodes: result.blockers.join(', '),
-        }),
-        'error',
-      );
+  /**
+   * Say WHY a collapse was refused, in terms the user can act on.
+   *
+   * The non-convex refusal names the nodes that have to join the selection,
+   * and it names them by LABEL: node ids are `crypto.randomUUID()`s, so the
+   * message used to read "...: 3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11", which
+   * is not something anyone can find on a canvas. The whole justification for
+   * refusing (rather than collapsing into a block that draws a loop the graph
+   * does not have) is that the user can fix it -- which needs a name.
+   */
+  const reportRefusal = (failure: CollapseFailure) => {
+    if (failure.reason !== 'not-convex') {
+      addToast(t(`subgraph.collapse.${failure.reason}` as TranslationKey), 'error');
       return;
     }
-    addToast(t(`subgraph.collapse.${result.reason}` as TranslationKey), 'error');
+    const nodes = useTabStore.getState().getActiveTab().nodes;
+    const labelById = new Map(nodes.map((n) => [n.id, n.data?.label]));
+    addToast(
+      t('subgraph.collapse.notConvex', {
+        // Falls back to the id: a node with no label at all is still better
+        // named by something than by nothing.
+        nodes: failure.blockers.map((id) => labelById.get(id) || id).join(', '),
+      }),
+      'error',
+    );
+    // Put the blockers IN the selection, so acting on the message is one
+    // retry rather than a hunt. Selection is not part of an undo snapshot,
+    // so this changes nothing the user has to unwind.
+    const blocking = new Set(failure.blockers);
+    useTabStore.getState().setNodes(
+      nodes.map((n) => (blocking.has(n.id) ? { ...n, selected: true } : n)),
+    );
+  };
+
+  const runCollapse = async () => {
+    const tab = useTabStore.getState().getActiveTab();
+    // Refuse BEFORE asking for a name. `checkCollapse` is the same guard
+    // chain `collapseSelection` runs, so the verdict cannot drift -- and
+    // asking a user to name a block that is about to be refused anyway is a
+    // worse experience than the refusal on its own. readOnly is checked here
+    // rather than inside `checkCollapse` because it lives on the TAB, not on
+    // the nodes the pure helper is given.
+    if (tab.readOnly) {
+      addToast(t('subgraph.collapse.read-only'), 'error');
+      return;
+    }
+    const selectedIds = tab.nodes.filter((n) => n.selected).map((n) => n.id);
+    const check = checkCollapse(tab.nodes, tab.edges, selectedIds);
+    if (!check.ok) {
+      reportRefusal(check);
+      return;
+    }
+
+    // Named at collapse time: the breadcrumb's click-to-rename is only
+    // discoverable once you are already inside the block, so every block
+    // used to be called "Subgraph" until the user stumbled on it.
+    const entered = await prompt({
+      title: t('subgraph.collapse.namePrompt'),
+      // The literal default, NOT a translated one: this becomes the block's
+      // stored name, i.e. graph data that travels to other people and to the
+      // server, so it must not depend on the author's UI language. It is the
+      // same fallback `collapseSelection` applies when no name is given.
+      defaultValue: 'Subgraph',
+      placeholder: t('subgraph.rename.label'),
+    });
+    if (entered === null) return; // cancelled -- the graph is untouched
+
+    // The dialog is awaited, so the graph could have changed underneath us
+    // (another pane, a plugin, an undo). Re-running the real action is the
+    // only way to be sure, and it re-checks everything anyway.
+    const result = collapseSelection(entered.trim() || undefined);
+    if (!result.ok) reportRefusal(result);
   };
 
   return [

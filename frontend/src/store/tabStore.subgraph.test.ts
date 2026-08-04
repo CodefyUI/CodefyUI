@@ -14,7 +14,7 @@ import { useTabStore } from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
 import type { NodeData, NodeDefinition } from '../types';
 import { resolveSerializedEdges, resolveSerializedNodes } from '../utils';
-import { subgraphIdOf } from '../utils/subgraph';
+import { buildInstanceNode, subgraphIdOf } from '../utils/subgraph';
 
 vi.mock('./tabPersistence', () => ({
   readSnapshot: vi.fn(async () => null),
@@ -402,5 +402,338 @@ describe('copy/paste of an instance', () => {
     expect(tab().subgraphs[0].name).toBe('Block');
     const pasted = tab().nodes.find((n) => subgraphIdOf(n.data.type))!;
     expect(subgraphIdOf(pasted.data.type)).toBe(tab().subgraphs[0].id);
+  });
+});
+
+// ── Review MAJOR 3: leaving a block is its OWN undo step ─────────────────
+//
+// Before the fix `exitSubgraph` restored the outer undo stack verbatim while
+// committing the edited definition, so the definition edit landed in the
+// graph with NO undo entry behind it. The next Ctrl+Z therefore reached past
+// the block edit and undid whatever the user had done OUTSIDE it -- while
+// silently taking the block edit with it, because `undo` restores
+// `subgraphs` from the snapshot too.
+
+describe('leaving a sub-canvas is one undoable step', () => {
+  function collapseBC(): string {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    return tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+  }
+
+  const blockScale = () =>
+    tab().subgraphs[0].nodes.find((n: any) => n.id === 'b').data.params.scale;
+  const outerLabel = () => tab().nodes.find((n) => n.id === 'a')!.data.label;
+
+  it('ONE undo reverts the block edit and LEAVES an unrelated outer edit alone', () => {
+    const instanceId = collapseBC();
+    store().renameNode('a', 'OUTER-EDIT'); // an unrelated action at the top level
+    store().enterSubgraph(instanceId);
+    store().updateNodeParams('b', { scale: 77 });
+    store().exitSubgraph();
+
+    expect(blockScale()).toBe(77);
+    expect(outerLabel()).toBe('OUTER-EDIT');
+
+    store().undo();
+
+    expect(blockScale()).toBe(1);
+    expect(outerLabel()).toBe('OUTER-EDIT'); // the rename survives
+
+    // A SECOND undo is what reaches the rename -- one step per action.
+    store().undo();
+    expect(outerLabel()).toBe('a');
+
+    store().redo();
+    store().redo();
+    expect(blockScale()).toBe(77);
+    expect(outerLabel()).toBe('OUTER-EDIT');
+  });
+
+  it('pushes exactly one entry, however many things changed inside', () => {
+    const instanceId = collapseBC();
+    const depth = tab().undoStack.length;
+    store().enterSubgraph(instanceId);
+    store().updateNodeParams('b', { scale: 3 });
+    store().updateNodeParams('c', { scale: 4 });
+    store().deleteNode('c');
+    store().exitSubgraph();
+    expect(tab().undoStack.length).toBe(depth + 1);
+  });
+
+  it('clears redo, so a stale redo cannot resurrect a graph that never was', () => {
+    const instanceId = collapseBC();
+    store().renameNode('a', 'x');
+    store().undo(); // fills the redo stack
+    expect(tab().redoStack.length).toBe(1);
+    store().enterSubgraph(instanceId);
+    store().updateNodeParams('b', { scale: 5 });
+    store().exitSubgraph();
+    expect(tab().redoStack).toEqual([]);
+  });
+
+  // The false positive the fix has to avoid: `definitionFromCanvas` rebuilds
+  // positions and edges from scratch, so a naive "did the object change?"
+  // compare would report a change for merely looking inside a block.
+  it('pushes NOTHING when the user enters and leaves without editing', () => {
+    const instanceId = collapseBC();
+    const depth = tab().undoStack.length;
+    const before = JSON.stringify(tab().subgraphs);
+
+    store().enterSubgraph(instanceId);
+    store().exitSubgraph();
+
+    expect(tab().undoStack.length).toBe(depth);
+    expect(JSON.stringify(tab().subgraphs)).toBe(before);
+  });
+
+  it('exitAllSubgraphs is one step too', () => {
+    const instanceId = collapseBC();
+    store().renameNode('a', 'OUTER-EDIT');
+    store().enterSubgraph(instanceId);
+    store().updateNodeParams('b', { scale: 55 });
+    store().exitAllSubgraphs();
+
+    expect(tab().subgraphStack).toEqual([]);
+    expect(blockScale()).toBe(55);
+
+    store().undo();
+    expect(blockScale()).toBe(1);
+    expect(outerLabel()).toBe('OUTER-EDIT');
+  });
+
+  it('exitAllSubgraphs pushes nothing when nothing was edited', () => {
+    const instanceId = collapseBC();
+    const depth = tab().undoStack.length;
+    store().enterSubgraph(instanceId);
+    store().exitAllSubgraphs();
+    expect(tab().undoStack.length).toBe(depth);
+  });
+});
+
+// ── Review MAJOR 6 / MINOR 9: nested definitions ────────────────────────
+
+/**
+ * Collapse b+c into "Inner", then collapse `a` together with that instance
+ * into "Outer" -- so Outer's DEFINITION holds an instance of Inner and the
+ * canvas holds no direct reference to Inner at all.
+ */
+function collapseNested(): { outerInstanceId: string } {
+  seedChain();
+  select('b', 'c');
+  store().collapseSelectionToSubgraph('Inner');
+  const innerInstance = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+  select('a', innerInstance);
+  store().collapseSelectionToSubgraph('Outer');
+  const outerInstanceId = tab().nodes.find(
+    (n) => subgraphIdOf(n.data.type) && n.data.label === 'Outer',
+  )!.id;
+  return { outerInstanceId };
+}
+
+describe('nested definitions', () => {
+  it('the fixture really does nest one definition inside another', () => {
+    collapseNested();
+    const outer = tab().subgraphs.find((d) => d.name === 'Outer')!;
+    const inner = tab().subgraphs.find((d) => d.name === 'Inner')!;
+    expect(outer.nodes.some((n: any) => n.type === `subgraph:${inner.id}`)).toBe(true);
+    // Nothing on the canvas points at Inner directly.
+    expect(
+      tab().nodes.some((n) => subgraphIdOf(n.data.type) === inner.id),
+    ).toBe(false);
+  });
+
+  it('copy/paste into ANOTHER tab carries the nested definition too', () => {
+    const { outerInstanceId } = collapseNested();
+    select(outerInstanceId);
+    store().copySelectedNodes();
+
+    store().addTab('other');
+    expect(tab().subgraphs).toEqual([]);
+    store().pasteNodes();
+
+    // Without the nested one, the pasted tab holds an Outer definition that
+    // references `subgraph:<inner>` -- a node the canvas draws and the server
+    // refuses to run.
+    expect(tab().subgraphs.map((d) => d.name).sort()).toEqual(['Inner', 'Outer']);
+  });
+
+  it('serializing keeps a definition reachable only from INSIDE another', () => {
+    collapseNested();
+    const graph = store().getSerializedGraph();
+    expect(graph.subgraphs!.map((d: any) => d.name).sort()).toEqual([
+      'Inner', 'Outer',
+    ]);
+  });
+});
+
+describe('orphaned definitions are never serialized', () => {
+  function collapseBC(): string {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    return tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+  }
+
+  it('deleting the only instance with deleteNode leaves no orphan in the save', () => {
+    const instanceId = collapseBC();
+    store().deleteNode(instanceId);
+    expect(store().getSerializedGraph().subgraphs).toEqual([]);
+  });
+
+  it('deleting the only instance with the Delete key leaves no orphan either', () => {
+    // The Delete key never reaches `deleteNode`: React Flow routes it through
+    // onNodesChange, which is the path most users actually take.
+    const instanceId = collapseBC();
+    store().onNodesChange([{ type: 'remove', id: instanceId } as never]);
+    expect(tab().nodes.some((n) => n.id === instanceId)).toBe(false);
+    expect(store().getSerializedGraph().subgraphs).toEqual([]);
+  });
+
+  it('keeps the definition in memory, so undoing the delete brings it back', () => {
+    const instanceId = collapseBC();
+    store().deleteNode(instanceId);
+    expect(tab().subgraphs).toHaveLength(1); // still there, just not saved
+    store().undo();
+    expect(store().getSerializedGraph().subgraphs).toHaveLength(1);
+  });
+});
+
+// ── Review MINOR 14: collapse cleans up what deleteNode cleans up ────────
+
+describe('collapse drops references to the nodes it swallowed', () => {
+  it('drops segments, clears activeSegment and unbinds notes', () => {
+    seedChain();
+    const boundNote: Node<NodeData> = {
+      id: 'note1',
+      type: 'noteNode',
+      position: { x: 210, y: 120 },
+      data: {
+        label: 'Note', type: 'note', params: {},
+        noteKind: 'text', noteContent: 'about b', noteColor: '#3d3d1a',
+        boundToNodeId: 'b', boundOffset: { x: 10, y: 60 },
+      },
+    };
+    const otherNote: Node<NodeData> = {
+      ...boundNote,
+      id: 'note2',
+      data: { ...boundNote.data, boundToNodeId: 'a', boundOffset: { x: 1, y: 2 } },
+    };
+    store().setNodes([...tab().nodes, boundNote, otherNote]);
+    store().setSegmentGroups([
+      { id: 's-inside', headNodeId: 'b', tailNodeId: 'c' },
+      { id: 's-outside', headNodeId: 'a', tailNodeId: 'sink' },
+    ]);
+    store().setActiveSegment({ id: 's-inside', headNodeId: 'b', tailNodeId: 'c' });
+
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+
+    // A segment can never resolve a path once an endpoint moved inside a
+    // block -- exactly the reason deleteNode drops one.
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-outside']);
+    expect(tab().activeSegment).toBeNull();
+    // The note bound to `b` is unbound; the one bound to a surviving node
+    // keeps its binding.
+    expect(tab().nodes.find((n) => n.id === 'note1')!.data.boundToNodeId).toBeNull();
+    expect(tab().nodes.find((n) => n.id === 'note1')!.data.boundOffset).toBeNull();
+    expect(tab().nodes.find((n) => n.id === 'note2')!.data.boundToNodeId).toBe('a');
+  });
+});
+
+// ── Review MINOR 17: readOnly covers mutations, never navigation ─────────
+
+function makeReadOnly() {
+  useTabStore.setState({
+    tabs: useTabStore.getState().tabs.map((t) => ({ ...t, readOnly: true })),
+  });
+}
+
+describe('readOnly on the subgraph actions', () => {
+  function collapseBC(): string {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    return tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+  }
+
+  it('refuses renameSubgraph, the third user-initiated mutation', () => {
+    collapseBC();
+    const sgId = tab().subgraphs[0].id;
+    const depth = tab().undoStack.length;
+    makeReadOnly();
+    store().renameSubgraph(sgId, 'Renamed');
+    expect(tab().subgraphs[0].name).toBe('Block');
+    expect(tab().undoStack.length).toBe(depth);
+  });
+
+  it('still lets the user walk into and out of a block they cannot edit', () => {
+    const instanceId = collapseBC();
+    makeReadOnly();
+    expect(store().enterSubgraph(instanceId)).toBe(true);
+    expect(tab().nodes.map((n) => n.id).sort()).toEqual(['b', 'c']);
+    store().exitSubgraph();
+    expect(tab().subgraphStack).toEqual([]);
+  });
+
+  it('still lets a read-only graph LOAD its definitions', () => {
+    seedChain();
+    makeReadOnly();
+    store().setSubgraphs([
+      {
+        id: 'loaded', name: 'Loaded', description: '', nodes: [], edges: [],
+        interface: { inputs: [], outputs: [], triggerTargets: [] },
+      },
+    ]);
+    expect(tab().subgraphs.map((d) => d.id)).toEqual(['loaded']);
+  });
+});
+
+// ── Review MINOR 13: a layout-less definition is laid out on first entry ─
+
+describe('enterSubgraph lays out a definition that has no positions', () => {
+  const flatDefinition = () => ({
+    id: 'flat', name: 'Flat', description: '',
+    nodes: [
+      { id: 'x', type: 'A', data: { params: { scale: 1 } } },
+      { id: 'y', type: 'B', data: { params: { scale: 1 } } },
+      { id: 'z', type: 'C', data: { params: { scale: 1 } } },
+    ],
+    edges: [
+      { id: 'i1', source: 'x', target: 'y', sourceHandle: 'out', targetHandle: 'in' },
+      { id: 'i2', source: 'y', target: 'z', sourceHandle: 'out', targetHandle: 'in' },
+    ],
+    interface: { inputs: [], outputs: [], triggerTargets: [] },
+  });
+
+  it('does not pile every node at the origin', () => {
+    const definition = flatDefinition();
+    store().setSubgraphs([definition as never]);
+    store().setNodes([
+      buildInstanceNode(definition as never, { x: 0, y: 0 }, 'inst'),
+    ]);
+
+    expect(store().enterSubgraph('inst')).toBe(true);
+    const positions = tab().nodes.map((n) => `${n.position.x},${n.position.y}`);
+    expect(tab().nodes).toHaveLength(3);
+    expect(new Set(positions).size).toBe(3);
+  });
+
+  it('leaves a definition that already has positions exactly where it was', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const stored = tab().subgraphs[0].nodes.map((n: any) => ({
+      id: n.id, x: n.position.x, y: n.position.y,
+    }));
+
+    store().enterSubgraph(instanceId);
+
+    for (const { id, x, y } of stored) {
+      const live = tab().nodes.find((n) => n.id === id)!;
+      expect(live.position).toEqual({ x, y });
+    }
   });
 });

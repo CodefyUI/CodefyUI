@@ -150,9 +150,19 @@ def merge_graph(logic: dict, layout: dict | None) -> tuple[dict, bool]:
         merged_nodes.append(out)
 
     # Put sub-canvas positions back on the definitions' nodes. A missing entry
-    # deliberately does NOT flag layout_missing: the frontend lays a sub-canvas
-    # out on first entry, and flagging here would send the whole top-level
-    # graph through auto-layout because one block had never been opened.
+    # deliberately does NOT flag layout_missing, because flagging here would
+    # send the whole TOP-LEVEL graph through auto-layout just because one block
+    # had never been opened.
+    #
+    # That is only safe because the sub-canvas lays itself out: `enterSubgraph`
+    # (frontend/src/store/tabStore.ts) checks the definition's raw nodes for a
+    # usable position and runs the same auto-layout pass over the block's
+    # contents when any is missing. Before core#137's review that claim was
+    # made here but not implemented anywhere, and `resolveSerializedNodes`
+    # defaults a missing position to the origin -- so an externally authored or
+    # layout-less project opened every block as one pile of nodes at (0, 0).
+    # If that check is ever removed from `enterSubgraph`, this decision has to
+    # be revisited with it.
     subgraph_positions = (
         layout.get("subgraphPositions", {}) if has_layout else {}
     )

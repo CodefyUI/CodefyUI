@@ -14,6 +14,7 @@ import { saveGraph } from '../api/rest';
 import { prompt } from './dialog';
 import { useTabStore } from '../store/tabStore';
 import { useProjectStore } from '../store/projectStore';
+import { buildInstanceNode } from './subgraph';
 
 function freshTab() {
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
@@ -67,6 +68,36 @@ describe('saveActiveGraph', () => {
     (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('');
     await saveActiveGraph();
     expect(saveGraph).not.toHaveBeenCalled();
+  });
+
+  // core#137 review, CRITICAL 1. The payload used to omit `subgraphs`
+  // entirely, so saving a graph with a collapsed block wrote out the
+  // instance node and none of its contents. This is the cheap half of the
+  // guard; `saveActiveGraph.wire.test.ts` is the half that matters, because
+  // it checks the real request body rather than a mocked call argument.
+  //
+  // The instance node is NOT decoration in this fixture: serialization prunes
+  // definitions nothing on the canvas can reach (review finding 9), so a
+  // definition with no instance would be dropped on purpose and this test
+  // would be asserting against a state the app cannot produce.
+  it('forwards subgraph definitions to saveGraph', async () => {
+    (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('with-blocks');
+    const definition = {
+      id: 'blk',
+      name: 'Block',
+      description: '',
+      nodes: [],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    };
+    useTabStore.getState().setSubgraphs([definition]);
+    useTabStore.getState().setNodes([
+      buildInstanceNode(definition, { x: 0, y: 0 }, 'blk-1'),
+    ]);
+    await saveActiveGraph();
+    expect(saveGraph).toHaveBeenCalledWith(
+      expect.objectContaining({ subgraphs: [definition] }),
+    );
   });
 });
 

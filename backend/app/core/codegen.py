@@ -38,6 +38,7 @@ from .graph_engine import (
     SUBGRAPH_TYPE_PREFIX,
     BypassLink,
     build_preset_fallback,
+    outermost_container,
     prepare_executable_graph,
     resolve_bypass,
     topological_sort,
@@ -735,17 +736,13 @@ def generate_python(
     # ── Subgraph grouping (core#137) ─────────────────────────────────────
     #
     # `internal_to_preset` maps every expanded inner node to its container.
-    # Walking it to the OUTERMOST container and asking the RAW graph what that
+    # Walking it to the OUTERMOST container (with `outermost_container`, the
+    # engine's own cycle-guarded walk) and asking the RAW graph what that
     # container was separates subgraph instances from presets: a preset stays
     # flat (its origin is a comment), an instance becomes a function, because
     # the canvas shows it as one box the user can open and edit.
     def _outermost_container(node_id: str) -> str | None:
-        root = internal_to_preset.get(node_id)
-        if root is None:
-            return None
-        while root in internal_to_preset:
-            root = internal_to_preset[root]
-        return root
+        return outermost_container(node_id, internal_to_preset)
 
     subgraph_of: dict[str, str] = {}
     subgraph_members: dict[str, list[str]] = {}
@@ -758,6 +755,98 @@ def generate_python(
             continue
         subgraph_of[node_id] = root
         subgraph_members.setdefault(root, []).append(node_id)
+
+    # ── Is each instance schedulable as ONE call? ────────────────────────
+    #
+    # An instance becomes one function CALLED ONCE, at the position of its
+    # FIRST member in topological order -- so every member runs there, not
+    # where it sits in the order.  Two conditions have to hold for that to
+    # mean the same thing as running the members in place, and BOTH are
+    # checked here rather than assumed:
+    #
+    #   1. Every value the block reads from outside is already assigned at
+    #      that position.  This is the real form of "no outside node sits in
+    #      the middle of the block": an outside node fed BY a member and
+    #      feeding one is necessarily ordered after the first member, so it
+    #      is caught -- but so is an unrelated feeder that Kahn's tie-break
+    #      happened to place late, which a pure convexity test would miss.
+    #   2. The members all live in ONE flow.  `_split_flows` cuts the graph
+    #      into weakly-connected components emitted as separate functions;
+    #      an instance straddling two of them would be CALLED from each, and
+    #      every one of its members would run twice.
+    #
+    # The editor refuses to COLLAPSE a selection an outside node sits in the
+    # middle of, but that refusal is not an invariant codegen may lean on:
+    # two edge drags after a perfectly legal collapse recreate the shape, and
+    # an imported, plugin-produced or hand-edited graph never went through
+    # the editor at all.  The engine runs all of these correctly, so the
+    # exported script must too.
+    #
+    # An instance that fails either condition is dropped from `subgraph_of`
+    # and `subgraph_members`, which is all it takes for every consumer below
+    # (`_source_expr`, `subgraph_func_names`, the "Subgraph functions"
+    # section, `_emit_flow`) to fall back to the ordinary flat path.  Its
+    # members are then emitted inline, in their true topological positions;
+    # the block loses its function, never its identity, because
+    # `_preset_origin` still stamps each member with the subgraph it is from.
+    data_sources: dict[str, set[str]] = {}
+    for edge in exec_edges:
+        # Trigger edges carry no value and are ignored by `topological_sort`,
+        # so they constrain neither the reads nor the order emitted here.
+        if edge.get("type", "data") == "trigger":
+            continue
+        data_sources.setdefault(edge["target"], set()).add(edge["source"])
+
+    flow_of = {
+        node_id: index
+        for index, flow_members in enumerate(flows)
+        for node_id in flow_members
+    }
+
+    def _not_one_call(members: list[str]) -> str | None:
+        """Why this instance cannot be one call -- ``None`` when it can."""
+        spread = {flow_of[member] for member in members}
+        if len(spread) > 1:
+            return (
+                f"its members are split across {len(spread)} flows that run "
+                "one after another"
+            )
+        call_at = min(seq_by_id[member] for member in members)
+        # Walk ANCESTORS, not just direct sources: a value the block reads
+        # only exists once the chain that produces it has run.
+        seen = set(members)  # seeded, so anything reached below is outside
+        queue = deque(members)
+        late: list[str] = []
+        while queue:
+            for source in data_sources.get(queue.popleft(), ()):
+                if source in seen:
+                    continue
+                seen.add(source)
+                queue.append(source)
+                position = seq_by_id.get(source)
+                if position is not None and position > call_at:
+                    late.append(source)
+        if late:
+            blocker = min(late, key=lambda node_id: seq_by_id[node_id])
+            return f"node {blocker!r} runs in the middle of it"
+        return None
+
+    # member id -> instance id, for instances that failed the test above.
+    inline_subgraph_of: dict[str, str] = {}
+    inline_notes: dict[str, str] = {}
+    for instance_id in list(subgraph_members):
+        reason = _not_one_call(subgraph_members[instance_id])
+        if reason is None:
+            continue
+        raw_type = str((raw_by_id.get(instance_id) or {}).get("type", ""))
+        sid = raw_type[len(SUBGRAPH_TYPE_PREFIX):] or instance_id
+        inline_notes[instance_id] = (
+            f"subgraph {ascii(sid)} (node {ascii(instance_id)}) is inlined "
+            f"here instead of called as one function: {reason}."
+        )
+        for member in subgraph_members.pop(instance_id):
+            del subgraph_of[member]
+            inline_subgraph_of[member] = instance_id
 
     used_subgraph_names: set[str] = set()
     subgraph_func_names: dict[str, str] = {}
@@ -1028,11 +1117,13 @@ def generate_python(
         lines = [f"def flow_{index}(ctx, results, provided):"]
         lines.append(f"    {ascii(_flow_summary(member_ids))}")
         # A subgraph instance is emitted ONCE, at the position of its first
-        # member in topological order. Every member is schedulable there:
-        # collapse refuses a selection some outside node sits in the middle
-        # of, so no node between two members can both depend on the block and
-        # be depended on by it.
+        # member in topological order, which runs every member there.  Only
+        # instances CHECKED to be schedulable that way -- all outside values
+        # they read already assigned, all members in this one flow -- reach
+        # `subgraph_of`; the rest arrive with their members ungrouped and
+        # take the ordinary per-node path below, each in its true position.
         emitted_subgraphs: set[str] = set()
+        noted_inline: set[str] = set()
         for member in member_ids:
             instance_id = subgraph_of.get(member)
             if instance_id is not None:
@@ -1044,6 +1135,12 @@ def generate_python(
                     "(ctx, results, provided)"
                 )
                 continue
+            inline_id = inline_subgraph_of.get(member)
+            if inline_id is not None and inline_id not in noted_inline:
+                # Say WHY the block is not one function; a silent flattening
+                # reads like the exporter simply forgot about subgraphs.
+                noted_inline.add(inline_id)
+                lines.append(f"    # {_comment_text(inline_notes[inline_id])}")
             lines.extend(_member_statement(member, inside_subgraph=False))
         return "\n".join(lines) + "\n"
 

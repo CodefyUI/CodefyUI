@@ -148,6 +148,41 @@ describe('exportGraph', () => {
     });
   });
 
+  // core#137 review, MAJOR 2. `exportGraph` had no `subgraphs` parameter at
+  // all, so Export -> Python posted a graph whose `subgraph:<id>` instance
+  // nodes named definitions the request did not carry. The backend has no
+  // registry to look them up in and answered 400 `Unknown subgraph: <id>`,
+  // making every graph with a collapsed block un-exportable from the UI.
+  it('sends subgraph definitions so a collapsed block can be expanded server-side', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    const definition = {
+      id: 'blk',
+      name: 'Block',
+      description: '',
+      nodes: [{ id: 'inner', type: 'Add', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    };
+    const instance = {
+      id: 'one', type: 'subgraph:blk', position: { x: 0, y: 0 }, data: { params: {} },
+    };
+    await exportGraph([instance], [], 'blocks', undefined, undefined, [definition]);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      nodes: [instance],
+      edges: [],
+      name: 'blocks',
+      subgraphs: [definition],
+    });
+  });
+
+  it('omits subgraphs when the graph has no blocks, so the body is unchanged', async () => {
+    const fetchMock = mockFetch(200, { script: '...' });
+    await exportGraph([], [], 'plain', undefined, undefined, []);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ nodes: [], edges: [], name: 'plain' });
+  });
+
   it('throws when the endpoint fails', async () => {
     mockFetch(500, {});
     await expect(exportGraph([], [], 'x')).rejects.toThrow(/Export failed/);

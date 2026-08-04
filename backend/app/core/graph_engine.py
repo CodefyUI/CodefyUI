@@ -9,7 +9,7 @@ import logging
 import traceback
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ..config import settings
 from .backward_pass import (
@@ -172,14 +172,24 @@ def expand_presets(
 # as a pre-pass in ``prepare_executable_graph`` and hands back the same
 # ``internal node -> container node`` map preset expansion produces, so
 # reachability retention, status roll-up and the exporter's grouping treat a
-# subgraph instance exactly as they already treat a preset node.
+# subgraph instance exactly as they already treat a preset node -- with one
+# difference nesting forces: that map is a CHAIN, not a lookup table, so
+# anything asking "which box does this node live in?" has to walk it. See
+# :func:`outermost_container`.
 
 SUBGRAPH_TYPE_PREFIX = "subgraph:"
 
 #: Flattened inner ids are ``<instance id>/<inner id>``. The separator is not
 #: a legal character in a Python identifier, and every place that turns a node
 #: id into one already sanitizes (``codegen._slug``, ``checkpoints._safe_part``),
-#: so it cannot collide with a hand-written id the way ``__`` could.
+#: so a flattened id never reaches generated code or a file name as-is.
+#:
+#: What it does NOT give is an injective flattening. Instance ``x`` holding an
+#: inner node called ``a/b``, and instance ``x/a`` holding an inner node called
+#: ``b``, both produce ``x/a/b``. Editor-made ids are UUIDs and cannot collide
+#: this way, but Import JSON, plugin-created nodes and hand-edited files are
+#: unconstrained -- so :func:`expand_subgraphs` refuses a duplicate expanded id
+#: by name instead of letting one of the two nodes silently disappear.
 SUBGRAPH_SEPARATOR = "/"
 
 #: Same budget preset nesting gets. A definition that (transitively) contains
@@ -196,13 +206,38 @@ def subgraph_id_of(node_type: Any) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class MalformedSubgraph:
+    """A ``subgraphs`` entry that does not parse, remembered by id.
+
+    Dropping the entry is still right for a definition nobody instantiates --
+    that is what keeps stale data in a graph file from breaking a run. But
+    dropping it WITHOUT A TRACE made the next message a lie: an instance that
+    referenced it was told ``Unknown subgraph: d``, sending the user to look
+    for a definition sitting right there in the file. Keeping the id and the
+    reason lets :func:`expand_subgraphs` say what actually happened.
+
+    Deliberately NOT a :class:`SubgraphDefinition` and deliberately without a
+    ``nodes`` attribute: anything that walks the index has to notice it rather
+    than quietly expand an empty block.
+    """
+
+    id: str
+    #: Whitespace-collapsed and length-capped, because it is quoted into an
+    #: error line that :func:`validate_graph` joins with "; ".
+    error: str
+
+
 def build_subgraph_index(subgraphs: Any) -> dict:
-    """Map subgraph id -> SubgraphDefinition for a graph's own ``subgraphs``.
+    """Map subgraph id -> definition for a graph's own ``subgraphs``.
 
     Mirrors :func:`build_preset_fallback`: accepts model objects or plain
-    dicts (``json.loads`` output) and skips malformed entries rather than
-    letting one bad definition break a run. A definition that is REFERENCED
-    but missing is caught later, by name, in :func:`expand_subgraphs`.
+    dicts (``json.loads`` output). An entry that does not parse is NOT
+    expandable, but it is not forgotten either -- it is recorded as a
+    :class:`MalformedSubgraph` so that an unreferenced bad definition still
+    cannot break a run, while a REFERENCED one is reported as broken instead
+    of missing. A definition that is genuinely absent is caught later, by
+    name, in :func:`expand_subgraphs`.
     """
     from ..schemas.models import SubgraphDefinition
 
@@ -214,20 +249,43 @@ def build_subgraph_index(subgraphs: Any) -> dict:
                 if isinstance(raw, SubgraphDefinition)
                 else SubgraphDefinition(**raw)
             )
-        except Exception:
+        except Exception as exc:
+            sid = (
+                raw.get("id")
+                if isinstance(raw, dict)
+                else getattr(raw, "id", None)
+            )
+            # An entry with no usable id cannot be referenced by name either,
+            # so there is nothing a later message could say about it.
+            # A parsable definition wins over a broken one with the same id,
+            # whichever order the two arrive in.
+            if sid and not isinstance(out.get(str(sid)), SubgraphDefinition):
+                reason = " ".join(str(exc).split())
+                if len(reason) > 300:
+                    reason = reason[:300] + " ..."
+                out[str(sid)] = MalformedSubgraph(str(sid), reason)
             continue
         if model.id:
             out[model.id] = model
     return out
 
 
-def check_subgraph_recursion(index: dict) -> None:
+def check_subgraph_recursion(
+    index: dict,
+    roots: Iterable[str] | None = None,
+) -> None:
     """Raise if any definition (transitively) instantiates itself.
 
     A recursive definition would expand forever. Exhausting
     :data:`MAX_SUBGRAPH_DEPTH` would also stop it, but with a message that
     names nothing; this one names the loop, which is the only way a user can
     find the edit that caused it.
+
+    ``roots`` scopes the scan to the definitions a particular graph actually
+    instantiates. Without it EVERY entry in the index is scanned, and one
+    stale self-referential definition -- data the run never touches -- refuses
+    the whole run. Omitting it keeps that whole-index behaviour, which is all
+    a caller holding an index but no graph can ask for.
     """
     state: dict[str, int] = {}  # 0 = on stack, 1 = cleared
     path: list[str] = []
@@ -244,15 +302,22 @@ def check_subgraph_recursion(index: dict) -> None:
             )
         state[sid] = 0
         path.append(sid)
-        for node in index[sid].nodes:
+        # A :class:`MalformedSubgraph` has no ``nodes`` to walk. It cannot
+        # close a loop, and an instance that references it is refused by name
+        # in :func:`expand_subgraphs`, so there is nothing to say here.
+        for node in getattr(index[sid], "nodes", None) or ():
             child = subgraph_id_of(node.type)
             if child is not None and child in index:
                 visit(child)
         path.pop()
         state[sid] = 1
 
-    for sid in list(index):
-        visit(sid)
+    scan = list(index) if roots is None else list(dict.fromkeys(roots))
+    for sid in scan:
+        # A root naming a definition the index does not have is not this
+        # function's problem -- ``expand_subgraphs`` reports it as unknown.
+        if sid in index:
+            visit(sid)
 
 
 def _inner_roots(definition: Any) -> list[str]:
@@ -297,19 +362,64 @@ def expand_subgraphs(
       "start this block" that reaches every one of its sources.
     * Params ride along verbatim from the definition. v1 has no per-instance
       overrides, so two instances of one subgraph are byte-identical blocks.
+
+    Every id the flattened graph ends up with is claimed exactly once. Two
+    ids that flatten to the same string (see :data:`SUBGRAPH_SEPARATOR`) are
+    refused here, naming both contributors, because the alternative is that
+    one of the two nodes disappears and the run dies much later in
+    ``topological_levels`` -- reporting a cycle that does not exist, purely
+    because its node count no longer matches the graph's.
     """
     expanded_nodes: list[dict] = []
     expanded_edges: list[dict] = list(edges)
     internal_to_instance: dict[str, str] = {}
+    #: expanded id -> human description of what produced it.
+    origin_of: dict[str, str] = {}
+
+    def claim(node_id: str, origin: str) -> None:
+        previous = origin_of.get(node_id)
+        if previous == origin:
+            # Not a flattening collision at all -- the graph itself carries the
+            # id twice. Saying "after subgraph expansion" would send the user
+            # looking at a boundary that has nothing to do with it.
+            raise GraphValidationError(
+                f"Duplicate node id: {origin} appears more than once"
+            )
+        if previous is not None:
+            raise GraphValidationError(
+                f"Duplicate node id after subgraph expansion: '{node_id}' is "
+                f"produced by both {previous} and {origin}. Ids are flattened "
+                f"to '<instance>{SUBGRAPH_SEPARATOR}<inner node>', so rename "
+                f"one of them so the two cannot meet."
+            )
+        origin_of[node_id] = origin
 
     for node in nodes:
         sid = subgraph_id_of(node.get("type", ""))
         if sid is None:
+            # ``.get`` because a node dict with no id is a broken graph, not a
+            # crash: a KeyError here would turn a reportable fault into a 500.
+            outer_id = node.get("id", "")
+            claim(outer_id, f"the node '{outer_id}'")
             expanded_nodes.append(node)
             continue
 
         instance_id = node["id"]
+        if not sid:
+            # ``subgraph:`` with nothing after it. ``subgraph_id_of`` answers
+            # "" -- a real answer, not None -- so the node IS an instance, of
+            # nothing. Named on its own terms: "Unknown subgraph:  (node x)",
+            # with a blank where the id should be, is not actionable.
+            raise GraphValidationError(
+                f"Node {instance_id} has type '{SUBGRAPH_TYPE_PREFIX}' but "
+                "names no subgraph"
+            )
         definition = index.get(sid)
+        if isinstance(definition, MalformedSubgraph):
+            raise GraphValidationError(
+                f"Subgraph '{sid}' is in this graph but could not be read, so "
+                f"node {instance_id} cannot be expanded: {definition.error}"
+            )
         if definition is None:
             raise GraphValidationError(
                 f"Unknown subgraph: {sid} (node {instance_id})"
@@ -338,6 +448,10 @@ def expand_subgraphs(
             trigger_targets = _inner_roots(definition)
 
         for inner in definition.nodes:
+            claim(
+                f"{prefix}{inner.id}",
+                f"the node '{inner.id}' inside instance '{instance_id}'",
+            )
             expanded_nodes.append({
                 "id": f"{prefix}{inner.id}",
                 "type": inner.type,
@@ -409,24 +523,70 @@ def expand_subgraphs_deep(
 
     Recursion is refused up front by name; the depth budget is only reached
     by a definition chain genuinely more than :data:`MAX_SUBGRAPH_DEPTH` deep.
+
+    Every "is there anything to expand?" test below asks ``is not None``, not
+    truthiness. ``subgraph_id_of("subgraph:")`` answers ``""`` -- an instance
+    of nothing -- and a truthiness test skips it here while
+    :func:`validate_graph` still treats it as a valid opaque container, so the
+    graph validates clean and dies at run time.
     """
-    if not any(subgraph_id_of(n.get("type", "")) for n in nodes):
-        # Nothing to expand. Deliberately checked BEFORE the recursion scan so
-        # a graph that carries stale definitions it no longer instantiates
-        # still runs -- an unreferenced definition cannot affect a run.
+    instance_ids = [
+        sid
+        for sid in (subgraph_id_of(n.get("type", "")) for n in nodes)
+        if sid is not None
+    ]
+    if not instance_ids:
+        # Nothing to expand, so nothing to check: a graph carrying definitions
+        # it no longer instantiates still runs.
         return nodes, edges, {}
-    check_subgraph_recursion(index)
+    # Scoped to what this graph actually uses. Scanning the whole index would
+    # let one stale self-recursive definition -- unreachable from every
+    # instance here -- refuse a run that never touches it.
+    check_subgraph_recursion(index, roots=instance_ids)
     internal_to_instance: dict[str, str] = {}
     for _ in range(MAX_SUBGRAPH_DEPTH):
-        if not any(subgraph_id_of(n.get("type", "")) for n in nodes):
+        if not any(
+            subgraph_id_of(n.get("type", "")) is not None for n in nodes
+        ):
             return nodes, edges, internal_to_instance
         nodes, edges, mapping = expand_subgraphs(nodes, edges, index)
         internal_to_instance.update(mapping)
-    if any(subgraph_id_of(n.get("type", "")) for n in nodes):
+    if any(subgraph_id_of(n.get("type", "")) is not None for n in nodes):
         raise GraphValidationError(
             f"Subgraph nesting exceeds the maximum depth of {MAX_SUBGRAPH_DEPTH}"
         )
     return nodes, edges, internal_to_instance
+
+
+def outermost_container(node_id: str, mapping: dict[str, str]) -> str | None:
+    """Resolve ``internal node -> container`` transitively. ``None`` if free.
+
+    The map :func:`prepare_executable_graph` returns is a CHAIN as soon as
+    subgraphs nest: an instance ``blk`` holding an instance ``nest`` holding
+    node ``mul`` produces ``{'blk/nest': 'blk', 'blk/nest/mul': 'blk/nest'}``.
+    A single ``mapping.get(node_id)`` therefore answers ``blk/nest`` -- an id
+    that existed only between two expansion passes, that no client can
+    resolve to anything on the canvas -- while ``blk``, the box the user is
+    actually watching, is never named at all.
+
+    Walks the map rather than splitting on :data:`SUBGRAPH_SEPARATOR`, so an
+    instance whose OWN id contains a separator resolves to itself instead of
+    to whatever precedes its first slash.
+
+    A malformed map that points at itself, or in a ring, stops at the first
+    id seen twice. Nothing here is worth hanging a run for.
+    """
+    container = mapping.get(node_id)
+    if container is None:
+        return None
+    seen = {node_id}
+    while container not in seen:
+        seen.add(container)
+        parent = mapping.get(container)
+        if parent is None:
+            break
+        container = parent
+    return container
 
 
 # ── Bypass / mute (core#128) ─────────────────────────────────────────────
@@ -714,6 +874,54 @@ def resolve_bypass(nodes: list[dict], edges: list[dict]) -> BypassResolution:
     return BypassResolution(new_nodes, new_edges, errors, links, dropped)
 
 
+def container_bypass_errors(
+    nodes: list[dict],
+    *,
+    include_presets: bool = True,
+) -> list[str]:
+    """Refuse ``bypassed`` on nodes whose ports come from a definition.
+
+    A preset or a subgraph instance expands into a sub-graph whose ports come
+    from a definition rather than a node class, so the pass-through rule above
+    (first type-compatible input wins) has nothing to match on.
+
+    Every caller runs this BEFORE expansion, because expansion is what removes
+    the node that has to be named: once an instance is inlined there is no
+    ``bypassed`` flag left for :func:`resolve_bypass` to object to. That is how
+    ``POST /api/graph/validate`` came to green-light a graph that
+    :func:`prepare_executable_graph` then refused.
+
+    ``include_presets=False`` is for :func:`validate_graph`, which does NOT
+    expand preset nodes -- they survive into :func:`resolve_bypass`, which
+    names them itself, and saying it twice helps nobody.
+    """
+    errors: list[str] = []
+    if include_presets:
+        bypassed_presets = sorted(
+            node["id"]
+            for node in nodes
+            if _is_bypassed(node)
+            and str(node.get("type", "")).startswith("preset:")
+        )
+        if bypassed_presets:
+            errors.append(
+                "Bypass is not supported on preset node(s): "
+                + ", ".join(bypassed_presets)
+            )
+    bypassed_subgraphs = sorted(
+        node["id"]
+        for node in nodes
+        if _is_bypassed(node)
+        and subgraph_id_of(node.get("type", "")) is not None
+    )
+    if bypassed_subgraphs:
+        errors.append(
+            "Bypass is not supported on subgraph instance(s): "
+            + ", ".join(bypassed_subgraphs)
+        )
+    return errors
+
+
 def validate_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -741,7 +949,12 @@ def validate_graph(
     against the node the user muted.
     """
     errors: list[str] = []
-    if any(subgraph_id_of(n.get("type", "")) for n in nodes):
+    # Before expansion, because expansion is what removes the instance node
+    # AND its ``bypassed`` flag -- see :func:`container_bypass_errors`. Preset
+    # nodes are excluded: they are still here when `resolve_bypass` runs
+    # below, and it names them itself.
+    errors.extend(container_bypass_errors(nodes, include_presets=False))
+    if any(subgraph_id_of(n.get("type", "")) is not None for n in nodes):
         try:
             nodes, edges, _ = expand_subgraphs_deep(
                 nodes, edges, build_subgraph_index(subgraphs)
@@ -967,13 +1180,27 @@ def describe_cycle(cycle: list[str]) -> str:
     clause states which instances are involved, because the loop the user has
     to break may be entirely inside a definition -- invisible on the canvas,
     where the instance is one opaque box.
+
+    EVERY enclosing instance is named, not just the outermost one: an id like
+    ``blk/nest/p`` sits inside ``blk`` (which the canvas shows) and inside
+    ``blk/nest`` (which only the definition of ``blk`` shows), and the user
+    has to open both to reach the edge that closes the loop. Order is
+    outermost-first so the clause reads as a path inward.
+
+    This is the one place that reads structure out of the id STRING rather
+    than out of the container map, because a cycle is reported from a bare
+    list of ids. It is sound for expanded ids -- :func:`expand_subgraphs`
+    refuses a flattening that is ambiguous -- but a hand-written top-level id
+    containing a slash will still be described as if it were namespaced.
     """
     rendered = " -> ".join(cycle)
     instances: list[str] = []
     for node_id in cycle:
-        if SUBGRAPH_SEPARATOR in node_id:
-            instance = node_id.split(SUBGRAPH_SEPARATOR)[0]
-            if instance not in instances:
+        parts = node_id.split(SUBGRAPH_SEPARATOR)
+        for depth in range(1, len(parts)):
+            instance = SUBGRAPH_SEPARATOR.join(parts[:depth])
+            # A leading separator yields an empty prefix, which names nothing.
+            if instance and instance not in instances:
                 instances.append(instance)
     if not instances:
         return f"Graph contains a cycle: {rendered}"
@@ -1143,37 +1370,22 @@ def prepare_executable_graph(
     also safe for callers such as Python export that need the exact same preset
     grouping and draft-pruning semantics without actually running any nodes.
 
-    The returned map is ``internal node id -> CONTAINER node id`` and covers
-    both preset internals and subgraph internals. Everything downstream --
-    reachability retention, the status roll-up in :func:`execute_graph`, the
-    exporter's grouping -- reads only that map, which is why subgraphs needed
-    no change to any of them.
+    The returned map is ``internal node id -> IMMEDIATELY ENCLOSING container
+    node id`` and covers both preset internals and subgraph internals.
+    Downstream readers -- reachability retention below, the status roll-up in
+    :func:`execute_graph`, the exporter's grouping -- all read that one map,
+    but none of them can read it with a single lookup: nesting makes it a
+    CHAIN (``blk/nest/mul -> blk/nest -> blk``) whose intermediate links name
+    ids that no longer exist in the returned node list. Every reader walks it
+    with :func:`outermost_container` -- the retention below, the roll-up, and
+    the exporter.
     """
 
-    # A preset or a subgraph instance expands into a sub-graph whose ports come
-    # from a definition rather than a node class, so the bypass pass-through
-    # rule has nothing to match on. Refuse before expansion, while the node
-    # still exists to be named.
-    bypassed_presets = [
-        node["id"]
-        for node in nodes
-        if _is_bypassed(node) and str(node.get("type", "")).startswith("preset:")
-    ]
-    if bypassed_presets:
-        raise GraphValidationError(
-            "Bypass is not supported on preset node(s): "
-            + ", ".join(sorted(bypassed_presets))
-        )
-    bypassed_subgraphs = [
-        node["id"]
-        for node in nodes
-        if _is_bypassed(node) and subgraph_id_of(node.get("type", "")) is not None
-    ]
-    if bypassed_subgraphs:
-        raise GraphValidationError(
-            "Bypass is not supported on subgraph instance(s): "
-            + ", ".join(sorted(bypassed_subgraphs))
-        )
+    # Refused before expansion, while the container node still exists to be
+    # named -- see :func:`container_bypass_errors`.
+    container_bypass = container_bypass_errors(nodes)
+    if container_bypass:
+        raise GraphValidationError("; ".join(container_bypass))
 
     internal_to_preset: dict[str, str] = {}
     # Subgraphs first: a definition may contain preset nodes, so expanding it
@@ -1228,17 +1440,30 @@ def prepare_executable_graph(
         ):
             executable_ids.add(edge["source"])
 
-    # A preset is one logical unit. If any internal node is reachable, retain
-    # all sibling roots (for example Dataset and Loss in a training preset).
-    presets_to_include = {
-        preset_id
-        for internal_id, preset_id in internal_to_preset.items()
+    # A container is one logical unit. If any internal node is reachable,
+    # retain all sibling roots (for example Dataset and Loss in a training
+    # preset) -- they have no incoming edge, so reachability alone would prune
+    # them out of a block the user did ask to run.
+    #
+    # Grouped by the OUTERMOST container, not the immediately enclosing one.
+    # Under nesting the only reachable node may be `blk/nest/mul`, whose
+    # immediate container is `blk/nest`; grouping there retains `nest`'s own
+    # contents and prunes the roots sitting directly inside `blk`, so how
+    # deeply a user happened to nest a block would decide whether its roots
+    # survive.
+    outermost_of = {
+        internal_id: outermost_container(internal_id, internal_to_preset)
+        for internal_id in internal_to_preset
+    }
+    containers_to_include = {
+        container
+        for internal_id, container in outermost_of.items()
         if internal_id in executable_ids
     }
     executable_ids.update(
         internal_id
-        for internal_id, preset_id in internal_to_preset.items()
-        if preset_id in presets_to_include
+        for internal_id, container in outermost_of.items()
+        if container in containers_to_include
     )
 
     executable_nodes = [
@@ -1353,65 +1578,86 @@ async def execute_graph(
         for n in expanded_nodes:
             force_rerun.add(n["id"])
 
-    # Preset aggregation: emit "running" once at start, "completed" only when all internal nodes finish.
-    # preset_total[preset_id] = number of internal nodes belonging to that preset
-    # preset_done[preset_id] = number of internal nodes that have completed/cached/skipped
-    # preset_started[preset_id] = True once we've emitted "running" for the preset
-    preset_total: dict[str, int] = defaultdict(int)
-    for _internal_id, _preset_id in internal_to_preset.items():
-        preset_total[_preset_id] += 1
-    preset_done: dict[str, int] = defaultdict(int)
-    preset_started: set[str] = set()
+    # Container aggregation: emit "running" once at start, "completed" only when
+    # all internal nodes finish.
+    #
+    # `container_of` is resolved ONCE, transitively, and only over ids that are
+    # actually in the executable node list. Both halves matter:
+    #  - transitively, because `internal_to_preset` is a chain under nesting and
+    #    a single lookup answers `blk/nest` -- an id the canvas never had, so
+    #    the box the user is watching would sit at `idle` for the whole run
+    #    while events go to something unresolvable;
+    #  - over executable nodes only, because those intermediate ids ARE keys in
+    #    the map. Counting them would inflate `container_total` past the number
+    #    of nodes that can ever report, and the `>=` gate below would never
+    #    fire -- no "completed" for the container, ever.
+    container_of: dict[str, str] = {}
+    for _node in expanded_nodes:
+        _container = outermost_container(_node["id"], internal_to_preset)
+        if _container is not None:
+            container_of[_node["id"]] = _container
+    # container_total[cid] = internal nodes belonging to that container
+    # container_done[cid] = internal nodes that have completed/cached/skipped
+    # container_started[cid] = True once "running" has been emitted for it
+    container_total: dict[str, int] = defaultdict(int)
+    for _container in container_of.values():
+        container_total[_container] += 1
+    container_done: dict[str, int] = defaultdict(int)
+    container_started: set[str] = set()
 
     async def _emit_preset_aware(
         node_id: str,
         status: str,
         data: dict[str, Any] | None,
     ) -> None:
-        """Emit status to on_progress, aggregating internal preset nodes.
+        """Emit status to on_progress, aggregating nodes inside a container.
 
-        Internal preset nodes (in internal_to_preset) roll up into a single preset status:
-        - First running/cached → emit preset 'running'
-        - Every completed/cached/skipped increments done count; emit 'completed' only on last
-        - 'error' emits immediately (preset failed)
-        - 'interrupted' likewise: a preset whose training node stopped early
-          did not complete, so it must never roll up to 'completed'
-        - 'progress' passes through as-is with the preset ID (so live charts still work)
-        Non-preset nodes pass through unchanged.
+        A container is a preset node or a subgraph instance -- whatever box
+        the canvas draws in place of the nodes that expansion produced. Its
+        internals (in ``container_of``) roll up into one status:
+        - First running/cached -> emit container 'running'
+        - Every completed/cached/skipped increments done count; emit
+          'completed' only on the last one
+        - 'error' emits immediately (the container failed)
+        - 'interrupted' likewise: a container whose training node stopped
+          early did not complete, so it must never roll up to 'completed'
+        - 'progress' passes through as-is with the container ID (so live
+          charts still work)
+        Nodes that are inside no container pass through unchanged.
         """
         if on_progress is None:
             return
-        preset_id = internal_to_preset.get(node_id)
-        if preset_id is None:
+        container_id = container_of.get(node_id)
+        if container_id is None:
             # Regular node — pass through
             await _maybe_await(on_progress(node_id, status, data))
             return
 
-        # Internal preset node — aggregate
+        # Node inside a container — aggregate
         if status == "progress":
             # Progress events (e.g. training epochs) should be visible live
-            await _maybe_await(on_progress(preset_id, "progress", data))
+            await _maybe_await(on_progress(container_id, "progress", data))
             return
 
         if status in ("error", "interrupted"):
-            # Any internal failure or early stop settles the whole preset
-            await _maybe_await(on_progress(preset_id, status, data))
+            # Any internal failure or early stop settles the whole container
+            await _maybe_await(on_progress(container_id, status, data))
             return
 
         if status == "running":
-            if preset_id not in preset_started:
-                preset_started.add(preset_id)
-                await _maybe_await(on_progress(preset_id, "running", None))
+            if container_id not in container_started:
+                container_started.add(container_id)
+                await _maybe_await(on_progress(container_id, "running", None))
             return
 
         if status in ("completed", "cached", "skipped"):
-            preset_done[preset_id] += 1
+            container_done[container_id] += 1
             # Make sure "running" was emitted at least once
-            if preset_id not in preset_started:
-                preset_started.add(preset_id)
-                await _maybe_await(on_progress(preset_id, "running", None))
-            if preset_done[preset_id] >= preset_total[preset_id]:
-                await _maybe_await(on_progress(preset_id, "completed", None))
+            if container_id not in container_started:
+                container_started.add(container_id)
+                await _maybe_await(on_progress(container_id, "running", None))
+            if container_done[container_id] >= container_total[container_id]:
+                await _maybe_await(on_progress(container_id, "completed", None))
 
     # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
     # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed
@@ -1451,10 +1697,15 @@ async def execute_graph(
     deliver_lock = asyncio.Lock()
 
     def _signal_node_id(node_id: str | None) -> str | None:
-        """Report a preset's id, never its internals — as progress does."""
+        """Report the container's id, never its internals — as progress does.
+
+        Same transitive resolution as `_emit_preset_aware`: a nested node must
+        surface as the box on the canvas, not as the intermediate id that only
+        existed between two expansion passes.
+        """
         if node_id is None:
             return None
-        return internal_to_preset.get(node_id, node_id)
+        return container_of.get(node_id, node_id)
 
     async def _deliver() -> None:
         """Dispatch one drain's worth of signals. Serialised, hence ordered.

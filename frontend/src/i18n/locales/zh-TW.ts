@@ -43,6 +43,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.export.prompt': '請輸入子圖名稱：',
   'toolbar.export.success': '子圖「{name}」匯出成功！已出現在節點面板中。',
   'toolbar.export.fail': '匯出失敗：{error}',
+  'toolbar.export.subgraphRefused': '畫布中有收合的子圖區塊（{names}），無法匯出為子圖。預設模組無法帶著它們的內容，請先展開這些區塊再匯出。',
   'toolbar.exportPython': '匯出為 Python',
   'toolbar.exportPython.title': '下載無伺服器 Python 執行腳本（需要 CodefyUI 後端環境）',
   'toolbar.exportPython.empty': '畫布沒有可執行節點 — 請先新增節點再匯出。',
@@ -211,6 +212,7 @@ const zhTW: Record<TranslationKey, string> = {
     '起始節點不能放進子圖，它標示的是整張圖從哪裡開始',
   'subgraph.collapse.contains-note': '註記只是說明，不屬於子圖，請先取消選取',
   'subgraph.collapse.read-only': '這張圖目前是唯讀開啟的',
+  'subgraph.collapse.namePrompt': '幫這個子圖取個名字',
   'subgraph.collapse.notConvex':
     '這些節點夾在你選取的節點之間，收合後這個方塊會繞回自己：{nodes}。請一併選取它們。',
   'subgraph.detail.interface': '子圖介面',

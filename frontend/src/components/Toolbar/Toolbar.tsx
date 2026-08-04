@@ -7,6 +7,7 @@ import { loadGraph, listGraphs, createPreset, exportGraph } from '../../api/rest
 import { useI18n, SUPPORTED_LOCALES } from '../../i18n';
 import type { TranslationKey } from '../../i18n';
 import { resolveSerializedNodes, resolveSerializedEdges } from '../../utils';
+import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
@@ -407,9 +408,40 @@ export function Toolbar() {
   }, [getSerializedGraph, activeTab.name, activeTab.description, t, addToast]);
 
   const handleExportSubgraph = useCallback(async () => {
-    const { nodes, edges } = getSerializedGraph();
+    const { nodes, edges, subgraphs } = getSerializedGraph();
     if (nodes.length === 0) {
       addToast(t('toolbar.export.empty'), 'warning');
+      return;
+    }
+    // core#137. A preset is stored server-side as {nodes, edges} and nothing
+    // else -- there is no slot for a subgraph definition. Building one from a
+    // canvas that contains an instance node would register a preset holding a
+    // bare `subgraph:<id>` node whose definition can never accompany it:
+    // broken for everyone who ever drops it, and broken permanently, because
+    // the preset outlives the graph it came from.
+    //
+    // Refuse rather than strip the instances. Stripping is the silent option:
+    // the user asked to turn THIS canvas into a reusable block and would get
+    // one quietly missing an arbitrary piece of it (plus every edge that
+    // touched the removed instance), with nothing in the result to say so.
+    // Refusing costs one step the user already knows how to take -- Expand on
+    // the block, from its context menu -- and the retry then yields a preset
+    // that really does contain the whole graph.
+    const instanceIds = Array.from(
+      new Set(
+        nodes
+          .map((n) => subgraphIdOf(n.type))
+          .filter((id): id is string => id !== null),
+      ),
+    );
+    if (instanceIds.length > 0) {
+      const names = instanceIds.map(
+        (id) => subgraphs.find((d) => d.id === id)?.name || id,
+      );
+      addToast(
+        t('toolbar.export.subgraphRefused', { names: names.join(', ') }),
+        'error',
+      );
       return;
     }
     const name = await prompt({
@@ -441,10 +473,20 @@ export function Toolbar() {
     }
     const name = activeTab.name || 'graph';
     try {
-      const result = await exportGraph(nodes, edges, name, serialized.presets, {
-        seed: activeTab.seed,
-        deterministic: activeTab.deterministic,
-      });
+      // core#137 (the trailing argument): an instance node is just
+      // `subgraph:<id>` until the definition it names travels with it, and
+      // definitions are graph-local -- there is no server-side registry to
+      // resolve the id against. Omit them and the backend rejects any graph
+      // containing a collapsed block with `Unknown subgraph: <id>`, i.e. a
+      // flat 400 on Export -> Python for the entire feature.
+      const result = await exportGraph(
+        nodes,
+        edges,
+        name,
+        serialized.presets,
+        { seed: activeTab.seed, deterministic: activeTab.deterministic },
+        serialized.subgraphs,
+      );
       const blob = new Blob([result.script], { type: 'text/x-python' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
