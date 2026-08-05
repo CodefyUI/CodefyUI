@@ -323,8 +323,21 @@ function topoSort(
 }
 
 /**
- * Use dagre to assign positions when loading a graph without saved positions.
- * Uses default dimensions since nodes haven't been rendered yet.
+ * True when a node has no real position of its own: either the field is
+ * absent, or it sits at the exact literal origin (the placeholder every node
+ * falls back to when a spec omits `position` -- see `graphToFlow`'s mapping
+ * below). Shared by the whole-spec gate and `assignPositionsFromTopology` so
+ * the two always agree on which nodes need laying out.
+ */
+function needsPosition(n: GraphSpec['nodes'][number]): boolean {
+  return !n.position || (n.position.x === 0 && n.position.y === 0);
+}
+
+/**
+ * Use dagre to assign positions to the nodes of `spec` that lack one, leaving
+ * any already-positioned node's coordinates untouched. Uses default
+ * dimensions for every node (including already-positioned ones, which still
+ * take part in the topology) since nodes haven't been rendered yet.
  */
 function assignPositionsFromTopology(spec: GraphSpec): void {
   // Only ever called when needsLayout is true, which requires spec.nodes.length > 1.
@@ -372,6 +385,9 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
     skipPredicate: (e) => !isTriggerEdge(e),
   });
   for (const n of spec.nodes) {
+    // Preserve nodes that already have a real position -- only the ones that
+    // triggered needsLayout in the first place get the computed coordinates.
+    if (!needsPosition(n)) continue;
     const p = wrapped.get(n.id);
     // applyValleyPass returns an entry for every input id, so `p` is always
     // defined (the falsy branch is unreachable).
@@ -462,9 +478,11 @@ export function graphToFlow(json: string): { nodes: Node<LayerNodeData>[]; edges
     return emptyGraph();
   }
 
-  // Auto-assign positions when nodes lack them (all at origin or missing)
-  const needsLayout = spec.nodes.length > 1 &&
-    spec.nodes.every((n) => !n.position || (n.position.x === 0 && n.position.y === 0));
+  // Auto-assign positions when ANY node lacks one (at origin or missing).
+  // Per-node, not whole-spec: one already-positioned node must not block
+  // layout for the rest, or they all fall through to the shared `{x:0,y:0}`
+  // default below and land stacked on top of each other.
+  const needsLayout = spec.nodes.length > 1 && spec.nodes.some(needsPosition);
   if (needsLayout) {
     assignPositionsFromTopology(spec);
   }

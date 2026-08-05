@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import type { Node, Edge } from '@xyflow/react';
 import {
@@ -477,8 +478,8 @@ describe('graphToFlow', () => {
     expect(res.nodes[1].position).toEqual({ x: 30, y: 40 });
   });
 
-  it('treats a node at x=0 but y!=0 as already positioned (needsLayout=false)', () => {
-    // Exercises the `n.position.y === 0` half of the origin check short-circuiting.
+  it('treats a node at x=0 but y!=0 as already positioned, and leaves it alone', () => {
+    // Exercises the `n.position.y === 0` half of the per-node origin check.
     const res = graphToFlow(
       JSON.stringify({
         version: 2,
@@ -489,9 +490,65 @@ describe('graphToFlow', () => {
         edges: [{ id: 'e', source: 'a', target: 'b' }],
       }),
     );
-    // a has y!=0 so the `every(... x===0 && y===0)` is false -> no relayout.
+    // a has y!=0 so it already counts as positioned -> untouched.
     expect(res.nodes[0].position).toEqual({ x: 0, y: 5 });
-    expect(res.nodes[1].position).toEqual({ x: 0, y: 0 });
+    // b sits exactly at the origin, which the origin-check treats as "no real
+    // position" (same ambiguity the gate has always had). The gate is now
+    // per-node ("some" node needs layout, not "every" node), so b still gets
+    // laid out even though its sibling a is already positioned -- it must NOT
+    // stay frozen at the literal origin.
+    expect(res.nodes[1].position).not.toEqual({ x: 0, y: 0 });
+  });
+
+  it('lays out unpositioned nodes while preserving an explicitly-positioned sibling (mixed case, #207)', () => {
+    // Regression for the actual bug: give ONE node of a position-less chain a
+    // real position and, under the old whole-spec `every(...)` gate, ALL other
+    // nodes fell through to the `position ?? {x:0,y:0}` default and stacked on
+    // top of each other at the origin -- indistinguishable from data loss. The
+    // fix makes the gate per-node: b/c/d still lack a position and must be laid
+    // out by dagre, while a's explicit coordinates must survive untouched.
+    const res = graphToFlow(
+      JSON.stringify({
+        version: 2,
+        nodes: [
+          { id: 'a', type: 'Conv2d', position: { x: 999, y: 999 } },
+          { id: 'b', type: 'Conv2d' },
+          { id: 'c', type: 'Conv2d' },
+          { id: 'd', type: 'Conv2d' },
+        ],
+        edges: [
+          { id: 'e1', source: 'a', target: 'b' },
+          { id: 'e2', source: 'b', target: 'c' },
+          { id: 'e3', source: 'c', target: 'd' },
+        ],
+      }),
+    );
+    const byId = Object.fromEntries(res.nodes.map((n) => [n.id, n]));
+
+    // The explicitly-positioned node keeps its EXACT coordinates.
+    expect(byId.a.position).toEqual({ x: 999, y: 999 });
+
+    // The unpositioned nodes are laid out by topology, not stacked at the origin.
+    const rest = ['b', 'c', 'd'].map((id) => byId[id].position);
+    for (const p of rest) {
+      expect(p).not.toEqual({ x: 0, y: 0 });
+    }
+    // ...and distinctly from one another (a real dagre layout, not one shared point).
+    const restKeys = rest.map((p) => `${p.x},${p.y}`);
+    expect(new Set(restKeys).size).toBe(rest.length);
+  });
+
+  it('a single unpositioned node is still exempt from layout (length>1 guard unchanged by every->some)', () => {
+    // On record for this task specifically: the every->some change only
+    // matters once there are >= 2 nodes to disagree about. A one-node spec
+    // never reaches `needsPosition` at all -- `spec.nodes.length > 1` short-
+    // circuits `needsLayout` to false regardless -- so it must fall through
+    // to the plain `position ?? {x:0,y:0}` default exactly as before.
+    const res = graphToFlow(
+      JSON.stringify({ version: 2, nodes: [{ id: 'solo', type: 'Conv2d' }], edges: [] }),
+    );
+    expect(res.nodes).toHaveLength(1);
+    expect(res.nodes[0].position).toEqual({ x: 0, y: 0 });
   });
 
   it('auto-layout keeps a short chain in a single column', () => {
@@ -602,6 +659,105 @@ describe('graphToFlow', () => {
     expect(xOf('n4')).toBeGreaterThan(Math.max(xOf('n1'), xOf('n7')) + 60);
     // Outside the skip, head and tail share the base column band.
     expect(Math.abs(xOf('n0') - xOf('n11'))).toBeLessThan(1);
+  });
+});
+
+// ── graphToFlow: real shipped examples (regression, #207 item 1) ───────────
+//
+// DQN-Atari-RL, PPO-Robotics-RL and ResNet18-CIFAR10-Baseline all ship their
+// `layers` param as a fully position-less GraphSpec, relying entirely on the
+// auto-layout path to be pleasant to open. The per-node gate must not change
+// behaviour for this case: when EVERY node lacks a position, layout must run
+// exactly as it did before the fix (a spec where every node has a position,
+// the opposite end of the spectrum, is already covered under `graphToFlow`
+// above by "does NOT auto-layout when nodes already have non-origin
+// positions").
+
+/**
+ * Extract the embedded `layers` GraphSpec JSON from a shipped example's
+ * top-level graph.json, the same way `convertWorkflowToGraphSpec`'s caller
+ * detects a SequentialModel node -- by the shape of its params, not a
+ * hardcoded node id (DQN/PPO use `seq-model`, ResNet18 uses `model`).
+ */
+function loadRealLayersSpec(relativePath: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(relativePath, 'utf8');
+  } catch {
+    throw new Error(
+      `${relativePath} is missing. If the example moved, repoint this test rather than deleting it.`,
+    );
+  }
+  const graph = JSON.parse(raw) as { nodes: Array<{ data?: { params?: Record<string, unknown> } }> };
+  const seqNode = graph.nodes.find((n) => typeof n.data?.params?.layers === 'string');
+  if (!seqNode) {
+    throw new Error(`${relativePath}: no node with a string 'layers' param found`);
+  }
+  return seqNode.data!.params!.layers as string;
+}
+
+describe.each([
+  {
+    name: 'DQN-Atari-RL',
+    path: '../examples/Model_Architecture/DQN-Atari-RL/graph.json',
+    expectedNodeCount: 12,
+    // Pinned by running the fixed code once and reading off its own output
+    // (`convertWorkflowToGraphSpec`-style specs always start with the
+    // synthesized Input node and end with the synthesized Output node, so
+    // "first"/"last" by array index are exactly those two boundary nodes).
+    expectedFirst: { id: 'in', position: { x: 0, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 0, y: 1100 } },
+  },
+  {
+    name: 'PPO-Robotics-RL',
+    path: '../examples/Model_Architecture/PPO-Robotics-RL/graph.json',
+    expectedNodeCount: 7,
+    expectedFirst: { id: 'in', position: { x: 0, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 0, y: 600 } },
+  },
+  {
+    name: 'ResNet18-CIFAR10-Baseline',
+    path: '../examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json',
+    // The largest position-less spec in the repo (#206) -- the file most
+    // likely to trip the whole-spec gate, and why this fix is worth doing now.
+    expectedNodeCount: 70,
+    expectedFirst: { id: 'in', position: { x: 94, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 94, y: 5166 } },
+  },
+])('graphToFlow on the real $name layer spec', ({ path, expectedNodeCount, expectedFirst, expectedLast }) => {
+  it('lays it out exactly as it does today (fully position-less spec, no regression)', () => {
+    const layersJson = loadRealLayersSpec(path);
+    const parsed: GraphSpec = JSON.parse(layersJson);
+
+    // Sanity: confirms these fixtures are actually the position-less specs
+    // the fix targets, so this test would catch it if that ever changed.
+    expect(parsed.nodes.every((n) => !n.position)).toBe(true);
+    expect(parsed.nodes.length).toBe(expectedNodeCount);
+
+    const res = graphToFlow(layersJson);
+
+    // Nothing dropped or duplicated.
+    expect(res.nodes).toHaveLength(parsed.nodes.length);
+    // Every node actually received a finite position.
+    for (const n of res.nodes) {
+      expect(Number.isFinite(n.position.x)).toBe(true);
+      expect(Number.isFinite(n.position.y)).toBe(true);
+    }
+    // Real layout happened: nodes are spread out, not all stacked together
+    // (the exact failure mode of the bug this fixes).
+    const positions = res.nodes.map((n) => `${n.position.x},${n.position.y}`);
+    expect(new Set(positions).size).toBeGreaterThan(1);
+
+    // Pinned, not just well-formed: exact coordinates for the synthesized
+    // Input (first) and Output (last) node, so a future change to
+    // `assignPositionsFromTopology`, `applyValleyPass`, or the layout config
+    // (nodesep/ranksep/thresholds) is actually caught here, not just gross
+    // degeneracy (everything dropped, everything stacked at one point).
+    expect({ id: res.nodes[0].id, position: res.nodes[0].position }).toEqual(expectedFirst);
+    expect({
+      id: res.nodes[res.nodes.length - 1].id,
+      position: res.nodes[res.nodes.length - 1].position,
+    }).toEqual(expectedLast);
   });
 });
 
