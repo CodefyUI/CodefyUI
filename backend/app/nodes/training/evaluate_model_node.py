@@ -59,9 +59,9 @@ class EvaluateModelNode(BaseNode):
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                options=["cpu", "cuda"],
-                description="跑在 cpu 還是 cuda。",
+                default="auto",
+                options=["auto", "cpu", "cuda", "mps"],
+                description="Device to evaluate on ('auto' follows the global device)",
             ),
         ]
 
@@ -76,7 +76,7 @@ class EvaluateModelNode(BaseNode):
         import torch
         from torch.utils.data import DataLoader
 
-        from ...core.device_utils import resolve_device
+        from ...core.device_utils import resolve_node_device
         from ...core.loop_control import (
             EVENT_BATCH,
             ProgressThrottle,
@@ -93,11 +93,17 @@ class EvaluateModelNode(BaseNode):
             raise ValueError("EvaluateModel requires a `dataset` input.")
 
         batch_size = max(1, int(params.get("batch_size", 256)))
-        # Through ``resolve_device`` since #135 rather than an inline
-        # ``device == "cuda"`` equality check: that check let ``cuda:1``
-        # past the availability guard entirely, and an out-of-range index
-        # reached ``.to()`` unvalidated.
-        device = resolve_device(str(params.get("device", "cpu")))
+        # Through ``resolve_node_device`` (#204) rather than the old
+        # ``resolve_device(str(params.get("device", "cpu")))``: that call
+        # never saw the context at all, so a graph submitted with
+        # {"device": "cuda"} trained on the GPU and then silently
+        # evaluated on the CPU the moment this param was left at its
+        # default. ``resolve_node_device``'s "auto" means "follow the
+        # run-level device", the same contract TrainingLoop.device already
+        # has. An explicit override still runs through ``resolve_device``
+        # (#135), so a hand-set ``cuda:1`` stays availability-checked and
+        # REBUILT rather than handed to torch unvalidated.
+        device = resolve_node_device(params.get("device"), context)
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         model = model.to(device)
