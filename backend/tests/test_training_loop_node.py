@@ -482,30 +482,57 @@ class _ScriptedValLoss(nn.CrossEntropyLoss):
 
 def test_monitor_val_accuracy_stops_at_a_different_epoch_than_val_loss():
     """Acceptance: monitor=val_accuracy stops on the accuracy plateau
-    rather than the loss turn.
+    rather than the loss turn. Also the durable guard on early stopping's
+    direction for accuracy (higher-is-better) -- see the note below on
+    why the accuracy trajectory is 0.5 / 0.75 / 0.25, not a tie.
 
     Loss and accuracy are scripted independently (see the two helper
-    classes above) so the two curves deliberately DISAGREE about which
-    epoch is best: loss improves through epoch 2 then turns worse at
-    epoch 3; accuracy ties at epoch 2 (no improvement under a strict
-    threshold) then improves at epoch 3. With early_stopping_patience=1,
-    each monitor stops at ITS OWN plateau, not the other's -- proving
-    monitor genuinely changes which epoch ends the run, not just which
-    number gets logged.
+    classes above) so the two curves DISAGREE about which epoch is best:
+    loss improves through epoch 1->2 then turns worse at epoch 2->3 (a
+    short, 2-entry script is enough since monitor=val_loss's own patience
+    is spent by epoch 2); accuracy improves for two epochs then drops at
+    epoch 3. With early_stopping_patience=1, each monitor stops at ITS
+    OWN, genuinely different point.
+
+    Review note (this trajectory replaces an earlier 0.5/0.5/1.0 one):
+    accuracy's direction (higher is better) is baked into exactly two
+    spots -- best_monitor_value initialised to float("-inf"), and
+    compared with ``>``. A trajectory with a TIE at epoch 2 (0.5, 0.5,
+    ...) cannot catch a bug that flips BOTH of those consistently
+    (equivalent to comparing the same numbers with float("inf") and
+    ``<``) -- a tie is "no improvement" under EITHER direction, so a
+    consistently-inverted rule stops at exactly the same epoch as the
+    correct one and the assertions pass either way. 0.5 -> 0.75 has no
+    such blind spot: 0.75 is an improvement over 0.5 under "higher is
+    better" but NOT under a consistently-inverted "lower is better", so
+    the two rules diverge starting at epoch 2 and land on different
+    (stop epoch, best_epoch) pairs -- verified by hand: correct
+    (higher-is-better) stops at epoch 3 with best_epoch=2; a
+    consistently-inverted rule on these same three numbers stops at
+    epoch 2 with best_epoch=1. Asserting best_epoch, not just where the
+    run stopped, is what makes the guard real -- two runs can stop at
+    the same epoch count while disagreeing about which epoch was best.
     """
     val_targets = torch.tensor([0, 1, 0, 1])
     val_X = torch.randn(4, 4)
-    # 2/4 correct (rows 0, 2); tied between epoch 1 and 2.
+    # 2/4 correct (rows 0, 2).
     acc_50 = torch.tensor([[1., -1.], [1., -1.], [1., -1.], [1., -1.]])
-    # 4/4 correct; only at epoch 3.
-    acc_100 = torch.tensor([[1., -1.], [-1., 1.], [1., -1.], [-1., 1.]])
+    # 3/4 correct (rows 0, 1, 2) -- an improvement over acc_50.
+    acc_75 = torch.tensor([[1., -1.], [-1., 1.], [1., -1.], [1., -1.]])
+    # 1/4 correct (row 2 only) -- a drop from acc_75.
+    acc_25 = torch.tensor([[-1., 1.], [1., -1.], [1., -1.], [1., -1.]])
 
     def _run(monitor):
         torch.manual_seed(0)
         val_loader = torch.utils.data.DataLoader(
             torch.utils.data.TensorDataset(val_X, val_targets), batch_size=4)
-        model = _ScriptedEvalModel([acc_50, acc_50, acc_100])
-        loss_fn = _ScriptedValLoss([2.0, 1.0, 1.5])  # improves, improves, turns
+        model = _ScriptedEvalModel([acc_50, acc_75, acc_25])
+        # Only the first two values are ever read by the val_loss run
+        # (its own patience is spent by epoch 2); the third is padding so
+        # the val_accuracy run -- which reads the SAME loss script every
+        # epoch regardless of which series it monitors -- does not run
+        # off the end of the list at its epoch 3.
+        loss_fn = _ScriptedValLoss([2.0, 3.0, 3.0])  # improves, then worse
         train_loader = _make_loader(_make_dataset(n=2), batch_size=2)
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
         return TrainingLoopNode().execute(
@@ -520,15 +547,17 @@ def test_monitor_val_accuracy_stops_at_a_different_epoch_than_val_loss():
     by_loss = _run("val_loss")
     by_accuracy = _run("val_accuracy")
 
-    # Loss: ep1=2.0 (best, first), ep2=1.0 (improves, new best),
-    # ep3=1.5 (worse -> patience_counter=1 >= patience=1 -> stop after ep3).
-    assert by_loss["metrics"]["total_epochs_run"] == 3
-    assert by_loss["metrics"]["best_epoch"] == 2
+    # Loss: ep1=2.0 (best, first), ep2=3.0 (worse ->
+    # patience_counter=1 >= patience=1 -> stop after ep2).
+    assert by_loss["metrics"]["total_epochs_run"] == 2
+    assert by_loss["metrics"]["best_epoch"] == 1
 
-    # Accuracy: ep1=0.5 (best, first), ep2=0.5 (TIE, not a strict
-    # improvement -> patience_counter=1 >= patience=1 -> stop after ep2).
-    assert by_accuracy["metrics"]["total_epochs_run"] == 2
-    assert by_accuracy["metrics"]["best_epoch"] == 1
+    # Accuracy: ep1=0.5 (best, first), ep2=0.75 (improves, new best),
+    # ep3=0.25 (worse -> patience_counter=1 >= patience=1 -> stop after
+    # ep3). Genuinely different from by_loss above (3 epochs vs 2,
+    # best_epoch 2 vs 1) -- monitor changed which epoch ended the run.
+    assert by_accuracy["metrics"]["total_epochs_run"] == 3
+    assert by_accuracy["metrics"]["best_epoch"] == 2
 
 
 def test_monitor_val_accuracy_falls_back_to_val_loss_with_no_val_dataloader(caplog):
