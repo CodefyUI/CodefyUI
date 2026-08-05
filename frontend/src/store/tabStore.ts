@@ -492,6 +492,27 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
 }
 
 /**
+ * Point React Flow's own per-node `.selected` flag at exactly `id`,
+ * deselecting every other node (#167).
+ *
+ * `selectedNodeId` and `.selected` used to be two independent sources of
+ * truth for "which node is selected". A plain click kept them in sync only
+ * by accident -- React Flow selects the clicked node itself, and the click
+ * handler separately calls `setSelectedNodeId` -- but a programmatic
+ * selection (the detail modal's arrow keys, a right-click) wrote only the
+ * store field. `deleteKeyCode` removes whatever React Flow's `.selected`
+ * says, so the two paths disagreeing meant Delete could remove a different
+ * node than the one on screen. Routing every store-driven selection through
+ * this makes them the same selection by construction.
+ */
+function selectOnlyNode(nodes: Node<NodeData>[], id: string | null): Node<NodeData>[] {
+  return nodes.map((n) => {
+    const selected = n.id === id;
+    return n.selected === selected ? n : { ...n, selected };
+  });
+}
+
+/**
  * Land a block of foreign nodes plus the definitions they name (core#137).
  *
  * Shared by paste and template insert, which are the same operation with
@@ -1353,7 +1374,15 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // points at a node that no longer exists — harmless while it renders
         // nothing, but an undo that restores the node would pop the modal
         // back open on its own.
+        //
+        // `selectedNodeId` gets the same treatment (#167): it is the other
+        // half of the same desync the Delete key exposed, just read instead
+        // of written. Left stale, it would name a node that no longer
+        // exists to every reader of the field (bypass/copy fallbacks,
+        // future callers) even though React Flow itself has no opinion left
+        // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
+        let selectedNodeId = tab.selectedNodeId;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -1366,9 +1395,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           if (nodeDetailNodeId !== null && removedIds.has(nodeDetailNodeId)) {
             nodeDetailNodeId = null;
           }
+          if (selectedNodeId !== null && removedIds.has(selectedNodeId)) {
+            selectedNodeId = null;
+          }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId };
+        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId };
       }),
     });
   },
@@ -1532,7 +1564,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }),
 
   setSelectedNodeId: (id) =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ selectedNodeId: id })) }),
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        selectedNodeId: id,
+        nodes: selectOnlyNode(tab.nodes, id),
+      })),
+    }),
 
   openPresetModal: (id) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ presetModalNodeId: id })) }),
@@ -1560,6 +1597,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodeDetailNodeId: id,
         selectedNodeId: id,
+        nodes: selectOnlyNode(tab.nodes, id),
         nodeDetailTab: target?.tab ?? null,
         nodeDetailPort: target?.port ?? null,
         nodeDetailRequest: tab.nodeDetailRequest + 1,
