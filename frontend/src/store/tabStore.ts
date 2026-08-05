@@ -493,7 +493,9 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
 
 /**
  * Point React Flow's own per-node `.selected` flag at exactly `id`,
- * deselecting every other node (#167).
+ * deselecting every other node (#167) -- UNLESS `id` already names a member
+ * of an existing multi-selection (two or more `.selected` nodes), in which
+ * case the whole selection is left alone.
  *
  * `selectedNodeId` and `.selected` used to be two independent sources of
  * truth for "which node is selected". A plain click kept them in sync only
@@ -502,13 +504,36 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
  * selection (the detail modal's arrow keys, a right-click) wrote only the
  * store field. `deleteKeyCode` removes whatever React Flow's `.selected`
  * says, so the two paths disagreeing meant Delete could remove a different
- * node than the one on screen. Routing every store-driven selection through
- * this makes them the same selection by construction.
+ * node than the one on screen. Routing the two interactive selection paths
+ * (`setSelectedNodeId`, `openNodeDetail`) through this makes them agree with
+ * `.selected` by construction.
+ *
+ * The multi-selection exception exists because `.selected` is not only the
+ * Delete-key target -- it is the app's OWN multi-selection, read by four
+ * bulk operations (`collapseSelectionToSubgraph`, `toggleBypassForSelection`,
+ * selection-scoped auto-layout, `copySelectedNodes`). Without it, right-
+ * clicking a node inside a box-selection (`handleNodeContextMenu` calls
+ * `setSelectedNodeId`, and React Flow does not touch `.selected` on a right-
+ * click) collapsed the selection down to that one node before the context
+ * menu could read it -- which silently removed `NodeContextMenu`'s only
+ * entry point to "Collapse to subgraph" (#198) whenever it was opened via
+ * right-click. A lone selected node, or a target outside the current
+ * selection, still narrows normally -- so the modal's arrow-key target and a
+ * right-clicked non-member are unaffected, which is what fixed #167 in the
+ * first place. Shift+click accumulation is also unaffected: React Flow
+ * applies it to `.selected` via its own `onNodesChange` dispatch before
+ * `onNodeClick` (and therefore `setSelectedNodeId`) ever runs, so by the
+ * time this function sees the array, the new member is already `.selected`
+ * and the multi-selection guard above keeps it that way.
  */
 function selectOnlyNode(nodes: Node<NodeData>[], id: string | null): Node<NodeData>[] {
+  if (id !== null) {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length >= 2 && selected.some((n) => n.id === id)) return nodes;
+  }
   return nodes.map((n) => {
-    const selected = n.id === id;
-    return n.selected === selected ? n : { ...n, selected };
+    const isTarget = n.id === id;
+    return n.selected === isTarget ? n : { ...n, selected: isTarget };
   });
 }
 
