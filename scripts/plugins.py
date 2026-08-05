@@ -382,24 +382,44 @@ def validate_nodes_dir(
 # Directories within an extracted plugin tarball that are *not* reachable
 # through Python's import system, whatever the loader's ``__path__`` covers --
 # safe to skip the AST gate because there is no route from an ``import``
-# statement to a file in here. Everything else (``examples/``, ``tests/``,
-# ``docs/``, ``assets/``, any other top-level helper) gets scanned, because
-# ``plugin_loader.install_plugin_finder`` registers the WHOLE plugin
-# directory as a PEP-420 namespace package's ``__path__`` (not only
-# ``nodes/``), so ``from .. import _helpers`` -- or ``from ..tests import
-# payload`` -- from inside a scanned ``nodes/foo.py`` would otherwise pull in
-# unscanned code at full trust, automatically, at server boot or reload
-# (core#182). ``__pycache__`` never holds a ``*.py`` this walk's own glob
-# would match, and nothing gives ``.git`` a package ``__init__.py`` -- both
-# are genuinely unreachable through `import`, not merely assumed to be, which
-# is the property this set is for. Narrowing the LOADER's ``__path__``
-# instead so these two directories were unreachable rather than merely
-# unscanned was considered and rejected: PEP-420 namespace packages have no
-# native "every subdirectory except these" carve-out, so that route needs a
-# custom import finder/loader -- new import machinery, not an extension of
-# either existing one -- for a difference this scan already erases by
-# scanning first.
-_VALIDATION_SKIP_DIRS = frozenset({"__pycache__", ".git"})
+# statement to a file in here. Everything else -- ``examples/``, ``tests/``,
+# ``docs/``, ``assets/``, ``__pycache__``, any other top-level helper -- gets
+# scanned, because ``plugin_loader.install_plugin_finder`` registers the
+# WHOLE plugin directory as a PEP-420 namespace package's ``__path__`` (not
+# only ``nodes/``), so ``from .. import _helpers`` -- or ``from ..tests
+# import payload`` -- from inside a scanned ``nodes/foo.py`` would otherwise
+# pull in unscanned code at full trust, automatically, at server boot or
+# reload (core#182).
+#
+# ``__pycache__`` is deliberately NOT on this set, despite an earlier version
+# of this comment claiming it was safe to skip because "a real __pycache__
+# never holds a *.py this glob would match." That is true of the directory
+# CPython writes and irrelevant here: the attacker supplies the tarball, so
+# `__pycache__/payload.py` exists because they put it there, and
+# `"__pycache__".isidentifier()` is `True` -- PEP-420 namespace resolution
+# imports it exactly like any other directory name. Verified directly, not
+# merely argued: with a plugin installed through the real loader, both
+# `importlib.import_module("cdui_plugins.<id>.__pycache__.payload")` and a
+# relative `from ..__pycache__ import payload` inside `nodes/` resolve to the
+# planted file, and `validate_plugin_dir` (before this fix) accepted it
+# silently. Reasoning about what a directory name conventionally holds is not
+# the same claim as reasoning about what Python's import system can reach,
+# and only the second one is what this set is for.
+#
+# ``.git`` is the one name that passes that test for real: `.git` is not a
+# valid identifier (`".git".isidentifier()` is `False`, and `.` cannot appear
+# inside one), so no `import` statement -- absolute or relative -- can ever
+# name a package component spelled that way. That is a structural guarantee
+# independent of what is inside the directory, which is the property this
+# set exists to require before trusting a name to be un-scanned.
+#
+# Narrowing the LOADER's ``__path__`` instead, so a skipped directory were
+# unreachable rather than merely unscanned, was considered and rejected:
+# PEP-420 namespace packages have no native "every subdirectory except these"
+# carve-out, so that route needs a custom import finder/loader -- new import
+# machinery, not an extension of either existing one -- for a difference this
+# scan already erases by scanning first.
+_VALIDATION_SKIP_DIRS = frozenset({".git"})
 
 
 def validate_plugin_dir(

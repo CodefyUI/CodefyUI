@@ -194,23 +194,40 @@ def test_validate_plugin_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
 
 # ── core#182: a skipped directory is still importable at runtime ───────────
 
-@pytest.mark.parametrize("skipped_dir", ["tests", "examples", "assets", "docs"])
+@pytest.mark.parametrize(
+    "skipped_dir", ["tests", "examples", "assets", "docs", "__pycache__"]
+)
 def test_validate_plugin_dir_scans_directories_the_loader_can_still_import(
     tmp_path, skipped_dir
 ):
     """``plugin_loader.install_plugin_finder`` registers the WHOLE plugin
     root as a PEP-420 namespace package's ``__path__`` (not just ``nodes/``),
-    so ``cdui_plugins.<id>.tests``, ``.examples``, ``.docs`` and ``.assets``
-    are all importable -- a scanned ``nodes/foo.py`` doing
-    ``from ..tests import payload`` executes whatever is in ``tests/`` at
-    full trust, automatically, at server boot or plugin reload.
+    so ``cdui_plugins.<id>.tests``, ``.examples``, ``.docs``, ``.assets`` --
+    and ``.__pycache__`` -- are all importable -- a scanned ``nodes/foo.py``
+    doing ``from ..tests import payload`` executes whatever is in ``tests/``
+    at full trust, automatically, at server boot or plugin reload.
 
-    ``_VALIDATION_SKIP_DIRS`` used to carve exactly these four names back out
+    ``_VALIDATION_SKIP_DIRS`` used to carve exactly these five names back out
     of the scan that ``validate_plugin_dir``'s own docstring says was widened
     to whole-tree specifically because the loader exposes the whole
     directory -- reopening the same hole the widening had just closed. The
     scan's view of "what is in-tree" has to match the loader's, so nothing
     admits code the AST gate never looked at.
+
+    ``__pycache__`` belongs in this list, not the "genuinely non-importable"
+    one below: it reads as safe only if you reason about what a REAL
+    ``__pycache__`` holds (``.pyc`` files, which never match this walk's own
+    ``*.py`` glob). That reasoning is about the wrong actor -- the directory
+    the interpreter writes is irrelevant here, because the attacker controls
+    every byte of the tarball and can name any directory ``__pycache__`` on
+    purpose. ``__pycache__`` IS a valid Python identifier
+    (``"__pycache__".isidentifier()`` is ``True``), so PEP-420 namespace
+    resolution imports it exactly like any other directory name. Verified
+    directly against the real loader (not merely argued): with a plugin
+    installed via ``install_plugin_finder``, both
+    ``importlib.import_module("cdui_plugins.<id>.__pycache__.payload")`` and
+    a relative ``from ..__pycache__ import payload`` inside ``nodes/``
+    resolve to the file placed there.
     """
     root = tmp_path / "pack"
     (root / "nodes").mkdir(parents=True)
@@ -223,21 +240,32 @@ def test_validate_plugin_dir_scans_directories_the_loader_can_still_import(
         plugin_cli.validate_plugin_dir(root, [])
 
 
-@pytest.mark.parametrize("still_skipped_dir", ["__pycache__", ".git"])
-def test_validate_plugin_dir_still_skips_genuinely_non_importable_dirs(
-    tmp_path, still_skipped_dir
-):
-    """``__pycache__`` and ``.git`` stay off the scan: neither is reachable
-    through Python's import system (a ``.pyc`` cannot match the ``*.py``
-    glob this walks, and nothing gives ``.git`` a package ``__init__.py``),
-    so scanning them buys nothing and ``.git`` in particular can be large.
-    This locks in that the core#182 fix widened the scan to match the
-    loader's reach, not to "scan literally everything on disk"."""
+def test_pycache_is_a_valid_python_identifier_unlike_git():
+    """The property the split between the two tests here rests on, checked
+    structurally rather than assumed: ``__pycache__`` is an ordinary
+    identifier (any ``import`` statement can name it) and ``.git`` is not
+    (the leading ``.`` makes it a syntax error as an import-path component),
+    which is the actual reason one of them has to be scanned and the other
+    provably cannot be reached through Python's import system at all."""
+    assert "__pycache__".isidentifier()
+    assert not ".git".isidentifier()
+
+
+def test_validate_plugin_dir_still_skips_the_one_genuinely_unreachable_dir(tmp_path):
+    """``.git`` is the only name left in ``_VALIDATION_SKIP_DIRS``, and it
+    stays there because it is PROVABLY unreachable through Python's import
+    system, not merely assumed to be: ``.git`` is not a valid identifier (see
+    ``test_pycache_is_a_valid_python_identifier_unlike_git``), so no
+    ``import`` statement -- absolute or relative -- can ever name a package
+    component spelled that way. ``__pycache__`` no longer gets this
+    exemption; see the parametrized test above for why "looks like an
+    implementation-detail directory" was never the same claim as "cannot be
+    imported"."""
     root = tmp_path / "pack"
     (root / "nodes").mkdir(parents=True)
     (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
-    (root / still_skipped_dir).mkdir(parents=True)
-    (root / still_skipped_dir / "payload.py").write_text(
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "payload.py").write_text(
         "import os\nos.system('whoami')\n", encoding="utf-8"
     )
     plugin_cli.validate_plugin_dir(root, [])  # does not raise
