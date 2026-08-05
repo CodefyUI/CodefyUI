@@ -61,10 +61,15 @@ async def test_upload_rejects_numpy_dump_to_an_arbitrary_path(test_client, custo
     assert not (custom_nodes_dir / "bad.py").exists()
 
 
-async def test_upload_still_accepts_ordinary_node_code(test_client, custom_nodes_dir):
-    """Non-regression: the new kwarg must not condemn ordinary plugin code
-    that happens to have a method named the same as a builtin, matching the
-    existing false-positive guard the shared walker already gives calls."""
+async def test_upload_still_accepts_code_with_no_denied_construct(test_client, custom_nodes_dir):
+    """Non-regression: an ordinary node with no denied-attribute-name method
+    at all still uploads fine -- proves ``denied_attributes`` did not turn
+    into a blanket false-positive over every custom node, without claiming
+    to test anything more specific than that. (A docstring claiming this
+    guards "a method sharing a builtin's name" would be describing the test
+    below, not this one -- this payload calls no such method, so it would
+    pass identically whether or not ``denied_attributes`` were wired in at
+    all.)"""
     payload = (
         b"from app.core.node_base import BaseNode\n"
         b"class Ok(BaseNode):\n"
@@ -78,3 +83,40 @@ async def test_upload_still_accepts_ordinary_node_code(test_client, custom_nodes
     )
     assert resp.status_code == 200
     assert (custom_nodes_dir / "ok.py").exists()
+
+
+async def test_upload_rejects_the_plugins_own_method_sharing_a_denied_name(
+    test_client, custom_nodes_dir
+):
+    """core#179 follow-up: ``denied_attributes`` is receiver-independent by
+    design (the same cost ``script_policy.TIER0_DENIED_ATTRS`` already
+    imposes on a script's own ``obj.save()``), so a custom node's OWN
+    ``self.save(...)`` method -- not a call into numpy/torch at all -- is
+    refused here too, and correctly so: unlike the CLI install path
+    (``scripts/plugins.py``, which lifts this at ``--trust-author`` --
+    see ``test_denied_attributes_is_refused_at_tier0_but_liftable_at_tier2``
+    in ``test_plugin_cli.py``), a browser upload has no trust tier at all.
+    Every upload is the zero-declaration case, so this stays refused
+    unconditionally -- there is no "Tier 2" here to lift it at.
+
+    The prior version of this test asserted the opposite outcome with a
+    payload (a bare class, no method call at all) that could not have
+    caught either answer being wrong -- it passed identically whether
+    ``denied_attributes`` was wired in or not. This one actually calls the
+    denied-named method, so it fails if the wiring is ever removed.
+    """
+    payload = (
+        b"from app.core.node_base import BaseNode\n"
+        b"class Ok(BaseNode):\n"
+        b"    NODE_NAME = 'Ok'\n"
+        b"    CATEGORY = 'Test'\n"
+        b"    DESCRIPTION = ''\n"
+        b"    def pwn(self, path):\n"
+        b"        self.save(path)\n"
+    )
+    resp = await test_client.post(
+        "/api/custom-nodes/upload",
+        files={"file": ("ok.py", payload, "text/x-python")},
+    )
+    assert resp.status_code == 400
+    assert not (custom_nodes_dir / "ok.py").exists()
