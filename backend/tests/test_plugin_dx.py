@@ -66,8 +66,6 @@ def _assert_python_compiles(path):
 
 
 def test_new_scaffold_backend_only(tmp_path):
-    from app.core.plugin_validator import validate_python_source
-
     rc = plugin_cli.main(["new", "my-test-plugin", "--dir", str(tmp_path)])
     assert rc == 0
     root = tmp_path / "my-test-plugin"
@@ -93,12 +91,12 @@ def test_new_scaffold_backend_only(tmp_path):
     _assert_python_compiles(root / "tests" / "conftest.py")
     _assert_python_compiles(root / "tests" / "test_example_node.py")
 
-    # The example node passes the AST security gate installs run.
-    validate_python_source(
-        (root / "nodes" / "example_node.py").read_bytes(),
-        "example_node.py",
-        allowed_modules=[],
-    )
+    # The example node passes the AST security gate installs run. Goes
+    # through the real wrapper (not a bare validate_python_source call) so
+    # this stays faithful to what `cdui plugin install` actually does --
+    # including core#179's denied_attributes, which validate_nodes_dir wires
+    # in and a hand-called validate_python_source here would silently drop.
+    plugin_cli.validate_nodes_dir(root / "nodes", allowed_modules=[])
     _no_unrendered_placeholders(root)
 
 

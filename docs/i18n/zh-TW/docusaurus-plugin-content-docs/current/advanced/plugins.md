@@ -110,11 +110,17 @@ $ cdui plugin install alice/metric-logger
 
 `torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及**內建函式** `eval` / `exec` / `compile` / `__import__`——不論是裸呼叫或透過 `builtins` 模組——不論宣告了什麼都一律拒絕。**能力永遠買不到反射能力。**
 
-同樣不論宣告了什麼都一律拒絕的，還有一份固定的屬性名稱清單，攔的是第 0 級函式庫自己的東西。`numpy.zeros(3).dump(path)` 會把資料原封不動 pickle 到任何路徑，內容還大半是攻擊者可控的；`torch.hub.load(...)` 會下載並執行遠端的 `hubconf.py`；`.savetxt`、`.tofile`、`.load_state_dict_from_url`、`.tensorboard` 以及其他十幾個都是同樣的形狀——它們是 Tier-0 import 回傳值上的**方法**，不是它自己的 import，所以能力閘門（只看得懂 `import` 敘述）根本看不到它們。沒有任何能力攔得住這些東西——它們所在的模組本來就屬於第 0 級——所以也沒有能力去攔；它們一律無條件拒絕，和[畫布內腳本政策](/advanced/python-script-node)本來就有的那份清單相同。
-
 攔的是那些內建函式，不是那個字：只是剛好同名的**方法**屬於一般程式碼，在每一級都會通過，所以 `torch.compile(model)` 與 `model.eval()` 對外掛而言是允許的。這是刻意的——拒絕它們一直是個長年的誤判——也正是為什麼規則問的是「這個 `eval` 是誰的」，而不是去比對這個字。
 
 但這不代表能力永遠買不到執行程式的權力。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就繞過了這條規則——而一旦授予 `process-env`，`os.spawnve` / `os.execv` / `os.startfile` 根本不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；之所以在這裡重講一次，是因為這一段先前的版本宣稱了相反的事。
+
+### 預設關閉、第 2 級會解除的屬性名稱
+
+跟上面每一條規則不同——上面那些不論宣告了什麼都一律拒絕，在任何層級都沒有例外——這裡是另一份固定的屬性名稱清單，攔的是第 0 級函式庫自己的東西，在第 0 級與第 1 級被拒絕，到第 2 級則會解除。`numpy.zeros(3).dump(path)` 會把資料原封不動 pickle 到任何路徑，內容還大半是攻擊者可控的；`torch.hub.load(...)` 會下載並執行遠端的 `hubconf.py`；`.savetxt`、`.tofile`、`.load_state_dict_from_url`、`.tensorboard` 以及其他十幾個都是同樣的形狀——它們是 Tier-0 import 回傳值上的**方法**，不是它自己的 import，所以能力閘門（只看得懂 `import` 敘述）根本看不到它們。沒有任何能力解除得了這些東西——它們所在的模組本來就屬於第 0 級，所以任何能力光是點名它都不會多給什麼——和[畫布內腳本政策](/advanced/python-script-node)本來就有的那份清單相同。
+
+這條規則不看接收者是誰，所以是雙向的：外掛**自己的**方法只要剛好同名，一樣會被擋下——你自己類別上的 `self.save(...)`，會被擋得跟 `numpy.array(...).save(...)`一模一樣，這正是腳本政策早就加諸在腳本自己的 `obj.save()` 上的同一種代價。單獨在第 0 級或第 1 級底下，這代表一個類別完全不能定義名叫 `save`、`dump`、`hub`，或清單上其他任何一個名字的方法。
+
+**`--trust-author` 會把整份清單解除。** 一旦外掛以 `--trust-author` 加上 `[security] allowed_modules` 安裝，`.dump` / `.hub` / `.save` 以及清單上其他項目，就又變回普通的屬性名稱——一個已經被信任可以用 `subprocess`、`ctypes` 的外掛，再多攔一個 `arr.dump()` 什麼也保護不到，而且不解除的話，根本不可能寫出一個帶有 `save` 方法的外掛。這跟[每一級都成立的規則](#每一級都成立的規則)裡的每一條都不同——那些不論在哪一級都毫無例外地拒絕：它們攔的是**反射能力**，沒有任何能力或信任層級買得到；而 `.dump` 與 `.hub` 是檔案寫入與遠端程式碼抓取，`--trust-author` 早就用更短的路徑，給了等同或更大的授權。
 
 ### 這不是什麼
 
