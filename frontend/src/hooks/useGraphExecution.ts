@@ -136,9 +136,12 @@ export function useGraphExecution() {
 
         // Suppress running/cached chatter — only surface terminal transitions.
         if (data.status !== 'running' && data.status !== 'cached') {
-          const currentTab = store.tabs.find((t) => t.id === store.activeTabId);
+          // This event's OWN tab (captured above), not whichever tab is on
+          // screen -- a background tab's run must label its log from its
+          // own nodes, never the active tab's (#163).
+          const eventTab = store.tabs.find((t) => t.id === tabId);
           const nodeLabel =
-            currentTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
+            eventTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
             String(data.node_id).slice(0, 8);
 
           store.addTabLog(tabId, {

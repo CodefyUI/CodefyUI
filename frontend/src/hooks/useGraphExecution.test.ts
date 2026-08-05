@@ -305,6 +305,26 @@ describe('useGraphExecution - node_status handler', () => {
     expect(log.message).toBe('Node abcdefgh completed');
   });
 
+  it('labels a background tab log from its own nodes, not the active tab (#163)', () => {
+    // t1 (active, from beforeEach) and t2 (background) each have a node
+    // sharing the id 'n1' but carrying a DIFFERENT label -- a wrong-tab
+    // lookup would silently "succeed" by resolving t1's label instead of
+    // t2's own, rather than failing loudly.
+    const t2 = makeTab('t2', {
+      nodes: [{ id: 'n1', data: { label: 'Background Node' } }],
+      edges: [],
+    });
+    setTabs([tabById('t1'), t2], 't1');
+    renderHook(() => useGraphExecution());
+
+    act(() => {
+      (t2.ws as FakeWs).emit('node_status', { node_id: 'n1', status: 'completed' });
+    });
+
+    const log = tabById('t2').logs.find((l: any) => l.message.includes('completed'));
+    expect(log.message).toBe('Node Background Node completed');
+  });
+
   it('routes structured text / image / tensor_summary outputs (#117)', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
