@@ -26,50 +26,46 @@ def test_nonexistent_dir_raises(tmp_path):
         ImageBatchReaderNode().execute({}, {"directory": str(target_dir)})
 
 
-def test_reads_batch_of_images():
+def test_reads_batch_of_images(monkeypatch, tmp_path):
+    # A fixed name under the real backend/data/ (#151) let two concurrent
+    # pytest runs race to create/write/delete the same directory. Point
+    # MODELS_DIR under tmp_path -- unique per test process -- the same way
+    # test_image_folder_dataset_node.py and test_tensorboard.py already do;
+    # the node itself confines `directory` under MODELS_DIR.parent, so this
+    # also keeps the node's own path-escape check satisfied.
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
     test_dir = settings.MODELS_DIR.parent / "_test_img_batch"
     test_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        for i in range(3):
-            img = Image.new("RGB", (32, 32), (i * 50, 0, 0))
-            img.save(test_dir / f"img_{i}.png")
-        res = ImageBatchReaderNode().execute(
-            {},
-            {"directory": str(test_dir), "pattern": "*.png", "resize": 16, "max_images": 0, "mode": "RGB"},
-        )
-        assert res["images"].shape == (3, 3, 16, 16)
-        assert res["count"] == 3
-    finally:
-        for f in test_dir.glob("*"):
-            f.unlink()
-        test_dir.rmdir()
+    for i in range(3):
+        img = Image.new("RGB", (32, 32), (i * 50, 0, 0))
+        img.save(test_dir / f"img_{i}.png")
+    res = ImageBatchReaderNode().execute(
+        {},
+        {"directory": str(test_dir), "pattern": "*.png", "resize": 16, "max_images": 0, "mode": "RGB"},
+    )
+    assert res["images"].shape == (3, 3, 16, 16)
+    assert res["count"] == 3
 
 
-def test_max_images_limits_count():
+def test_max_images_limits_count(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
     test_dir = settings.MODELS_DIR.parent / "_test_max_images"
     test_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        for i in range(5):
-            Image.new("RGB", (16, 16)).save(test_dir / f"img_{i}.png")
-        res = ImageBatchReaderNode().execute(
-            {},
-            {"directory": str(test_dir), "pattern": "*.png", "resize": 8, "max_images": 2, "mode": "RGB"},
-        )
-        assert res["count"] == 2
-    finally:
-        for f in test_dir.glob("*"):
-            f.unlink()
-        test_dir.rmdir()
+    for i in range(5):
+        Image.new("RGB", (16, 16)).save(test_dir / f"img_{i}.png")
+    res = ImageBatchReaderNode().execute(
+        {},
+        {"directory": str(test_dir), "pattern": "*.png", "resize": 8, "max_images": 2, "mode": "RGB"},
+    )
+    assert res["count"] == 2
 
 
-def test_no_matching_files_raises():
+def test_no_matching_files_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
     test_dir = settings.MODELS_DIR.parent / "_test_no_match"
     test_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        with pytest.raises(ValueError, match="No images"):
-            ImageBatchReaderNode().execute(
-                {},
-                {"directory": str(test_dir), "pattern": "*.png", "resize": 16},
-            )
-    finally:
-        test_dir.rmdir()
+    with pytest.raises(ValueError, match="No images"):
+        ImageBatchReaderNode().execute(
+            {},
+            {"directory": str(test_dir), "pattern": "*.png", "resize": 16},
+        )
