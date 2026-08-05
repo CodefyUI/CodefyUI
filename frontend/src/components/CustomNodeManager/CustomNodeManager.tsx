@@ -49,7 +49,7 @@ export function CustomNodeManager({ onClose }: CustomNodeManagerProps) {
   const handleDelete = useCallback(async (filename: string) => {
     const ok = await confirm({
       title: t('customNodes.delete.confirm', { name: filename }),
-      confirmText: 'Delete',
+      confirmText: t('customNodes.delete'),
       variant: 'danger',
     });
     if (!ok) return;

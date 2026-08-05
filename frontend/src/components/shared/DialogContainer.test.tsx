@@ -3,10 +3,12 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { DialogContainer } from './DialogContainer';
 import { useDialogStore } from '../../store/dialogStore';
 import { confirm, prompt } from '../../utils/dialog';
+import { useI18n } from '../../i18n';
 
 describe('DialogContainer', () => {
   beforeEach(() => {
     useDialogStore.setState({ active: null, resolve: null });
+    useI18n.setState({ locale: 'en' });
   });
 
   afterEach(() => {
@@ -120,5 +122,29 @@ describe('DialogContainer', () => {
     fireEvent.change(input, { target: { value: 'fine' } });
     fireEvent.click(screen.getByText('OK'));
     await expect(p).resolves.toBe('fine');
+  });
+
+  // ── Locale-aware fallback labels (#160) ─────────────────────────────────
+  // cancelText is passed by no production caller at all, and confirmText's
+  // English fallback ('OK' / 'Confirm') was a raw literal -- both used to
+  // reach a zh-TW user unchanged.
+
+  it('shows the zh-TW cancel and confirm labels on a confirm dialog with no override (#160)', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    render(<DialogContainer />);
+    confirm({ title: 'X' });
+    expect(await screen.findByText('取消')).toBeTruthy();
+    expect(await screen.findByText('確認')).toBeTruthy();
+    // Never the raw English fallback for a zh-TW user.
+    expect(screen.queryByText('Cancel')).toBeNull();
+    expect(screen.queryByText('Confirm')).toBeNull();
+  });
+
+  it('shows the zh-TW OK label on a prompt dialog with no override (#160)', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    render(<DialogContainer />);
+    prompt({ title: 'X' });
+    expect(await screen.findByText('確定')).toBeTruthy();
+    expect(screen.queryByText('OK')).toBeNull();
   });
 });

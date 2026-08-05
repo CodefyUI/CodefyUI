@@ -567,6 +567,14 @@ const en = {
   'persistence.storageUnavailable':
     'Browser storage is not working — the tabs shown may be out of date, and new changes may not be saved. Export anything you need before closing this tab.',
 
+  // Shared Confirm/Prompt dialog (#160): generic fallback button labels for
+  // whichever call site does not override cancelText/confirmText. Every
+  // real dialog in the app used to fall through to a hardcoded English
+  // literal here regardless of locale.
+  'dialog.cancel': 'Cancel',
+  'dialog.ok': 'OK',
+  'dialog.confirm': 'Confirm',
+
   // Per-project tab scoping (ID10): header badge + cross-project save refusal.
   'project.badge.title': 'Active project directory',
   'project.save.crossProjectRefused': 'This graph belongs to another project ({origin}) and cannot be saved into the open project.',
