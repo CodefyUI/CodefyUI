@@ -602,7 +602,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   return (
     <div ref={containerRef} className={styles.canvas}>
       {isEmpty && <EmptyCanvasOverlay />}
-      <EdgeLaneProvider edges={activeTab.edges}>
+      <EdgeLaneProvider edges={activeTab.edges} nodes={activeTab.nodes}>
         <ReactFlow
           id={reactFlowId}
           nodes={activeTab.nodes}

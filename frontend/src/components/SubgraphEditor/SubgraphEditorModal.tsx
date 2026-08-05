@@ -982,7 +982,7 @@ function SubgraphFlowInner({
                 </div>
               </div>
             )}
-            <EdgeLaneProvider edges={edges}>
+            <EdgeLaneProvider edges={edges} nodes={nodes}>
               <ReactFlow
                 nodes={nodes}
                 edges={edges}

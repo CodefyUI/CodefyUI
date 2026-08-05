@@ -146,6 +146,7 @@ export function buildCircuitSkipPath(
   arcDir: number,
   laneOffset: number,
   pullOut: number = PULL_OUT,
+  targetPullOut: number = pullOut,
 ): string {
   if (horizontal) {
     const laneY = (sourceY + targetY) / 2 + arcDir * laneOffset;
@@ -154,8 +155,8 @@ export function buildCircuitSkipPath(
         { x: sourceX, y: sourceY },
         { x: sourceX + pullOut, y: sourceY },
         { x: sourceX + pullOut, y: laneY },
-        { x: targetX - pullOut, y: laneY },
-        { x: targetX - pullOut, y: targetY },
+        { x: targetX - targetPullOut, y: laneY },
+        { x: targetX - targetPullOut, y: targetY },
         { x: targetX, y: targetY },
       ],
       CIRCUIT_BORDER_RADIUS,
@@ -167,8 +168,8 @@ export function buildCircuitSkipPath(
       { x: sourceX, y: sourceY },
       { x: sourceX, y: sourceY + pullOut },
       { x: laneX, y: sourceY + pullOut },
-      { x: laneX, y: targetY - pullOut },
-      { x: targetX, y: targetY - pullOut },
+      { x: laneX, y: targetY - targetPullOut },
+      { x: targetX, y: targetY - targetPullOut },
       { x: targetX, y: targetY },
     ],
     CIRCUIT_BORDER_RADIUS,
@@ -309,10 +310,14 @@ export function resolveEdgePath(route: EdgeRoute): string {
   if (isSkip) {
     const arcDir = computeArcDirection(minor);
     const { slot, count } = pickLaneAnchor(lane);
-    // Siblings measure their pull-out from the same port stub as every other
-    // laned route, so one bound covers the whole system; a lone skip keeps the
-    // wider historical pull-out.
-    const stub = count > 1 ? laneDistance(slot, count) : PULL_OUT;
+    // The two ends are laned independently. A skip climbs at sourceX + stub and
+    // descends at targetX - targetStub, and those are two different columns that
+    // two different sets of siblings can collide in - the source group owns one,
+    // the target group the other. Deriving both from the source lane, as an
+    // earlier revision did, left a skip descending straight down an unrelated
+    // edge's riser into the same column. A lone end keeps the historical pull-out.
+    const stub = lane.outCount > 1 ? laneDistance(lane.outSlot, lane.outCount) : PULL_OUT;
+    const targetStub = lane.inCount > 1 ? laneDistance(lane.inSlot, lane.inCount) : PULL_OUT;
     // Slot 0 rides the base corridor and every sibling gets one of its own. The
     // old scheme instead shifted *every* skip by a hash of its id into one of four
     // buckets, so a lone skip sat at a corridor chosen at random and any two skips
@@ -333,6 +338,7 @@ export function resolveEdgePath(route: EdgeRoute): string {
         arcDir,
         laneOffset,
         stub,
+        targetStub,
       );
     }
     // The curved arc has no columns to separate: sibling arcs leave the shared

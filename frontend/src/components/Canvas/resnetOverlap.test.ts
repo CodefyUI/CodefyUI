@@ -28,11 +28,13 @@ import { Position } from '@xyflow/react';
 import { longestSharedRun, type Point } from '../../test/pathOverlap';
 import geometry from '../../test/fixtures/resnet18EdgeGeometry.json';
 import {
+  columnKey,
   computeEdgeLanes,
   laneDistance,
   pickLaneAnchor,
   type EdgeLane,
   type LaneEdgeInput,
+  type LaneNodeGeometry,
 } from '../../utils/edgeLanes';
 import { resolveEdgePath } from './SmartDataEdge';
 
@@ -74,7 +76,21 @@ function loadWires(): Wire[] {
       `${GRAPH_PATH} is missing. If the example moved, repoint this test rather than deleting it - it is the only overlap measurement taken from a graph users actually open.`,
     );
   }
-  const graph = JSON.parse(raw) as { edges: RawEdge[] };
+  const graph = JSON.parse(raw) as {
+    nodes: Array<{ id: string; position: { x: number; y: number } }>;
+    edges: RawEdge[];
+  };
+  NODE_GEOMETRY.clear();
+  // Exactly what EdgeLaneProvider builds on the canvas. Heights are nominal here
+  // because graph.json does not carry them; over-reporting a band only separates
+  // a little more than needed, which is the safe direction.
+  for (const n of graph.nodes) {
+    NODE_GEOMETRY.set(n.id, {
+      column: columnKey(n.position.x),
+      top: n.position.y,
+      bottom: n.position.y + 120,
+    });
+  }
   const at = new Map(
     (geometry.edges as Array<[string, number, number, number, number]>).map((row) => [
       row[0],
@@ -92,8 +108,9 @@ function loadWires(): Wire[] {
   });
 }
 
+const NODE_GEOMETRY = new Map<string, LaneNodeGeometry>();
 const WIRES = loadWires();
-const LANES = computeEdgeLanes(WIRES);
+const LANES = computeEdgeLanes(WIRES, NODE_GEOMETRY);
 
 function pathsFor(circuit: boolean): string[] {
   return WIRES.map((w) =>
@@ -182,22 +199,21 @@ function findViolations(circuit: boolean): { violations: Violation[]; shared: st
 /**
  * The known exceptions, named rather than hidden behind a threshold.
  *
- * All three are the documented residual: two edges with no handle in common whose
- * routes happen to land on the same line. The mechanism is worth stating exactly,
- * because it is not the port stub and no choice of stub size affects it. Lane
- * slots are numbered per source node, each group starting from the same base, so
- * two nodes that sit in the SAME COLUMN hand their k-th edge the same turn
- * distance - and the same turn distance from the same x is the same line.
- * `opt` and `ds-test` are both at x=1264.5 here; `e-d3` and `e-m1` are the mirror
- * case on the arrival side, both ending at x=1715.5.
+ * Empty, and it has to stay that way. It used to hold three: `e-o1`/`e-e2`,
+ * `e-d2`/`e-c2` and `e-d3`/`e-m1`, superimposed for 360, 141 and 208 flow px -
+ * an order of magnitude worse than any port stub, and the exact thing the owner
+ * reported. The cause was that lane slots were numbered per source NODE, so two
+ * nodes sitting in the same column each handed their k-th edge the same turn
+ * distance, and the same distance from the same x is the same line. `opt` and
+ * `ds-test` are both at x=1264.5; `e-d3` and `e-m1` were the mirror case on the
+ * arrival side, both ending at x=1715.5 with a skip taking its descent column
+ * from its source lane instead of its target one.
  *
- * Separating these needs a router that looks at where the nodes actually are and
- * re-runs whenever one moves - deliberately out of scope, see the residuals in
- * the edgeLanes module docs. They are listed here so they stay visible, so that
- * any NEW pair fails this test loudly, and so nobody reads the suite as promising
- * more than it delivers.
+ * Lanes are numbered per COLUMN now and skips lane their two ends independently,
+ * so a pair here means a genuinely new way for two unrelated edges to land on one
+ * line. Anything appearing in this list is a defect, not a tolerance.
  */
-const KNOWN_CROSS_GROUP_COLLISIONS = ['e-d2 / e-c2', 'e-d3 / e-m1', 'e-o1 / e-e2'];
+const KNOWN_CROSS_GROUP_COLLISIONS: string[] = [];
 
 describe.each([
   ['circuit', true],

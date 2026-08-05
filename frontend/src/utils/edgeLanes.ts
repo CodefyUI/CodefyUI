@@ -181,6 +181,21 @@ export function detourOffset(slot: number, count: number): number {
   return slot * detourStep(count);
 }
 
+/**
+ * Width of a column bucket, in flow pixels.
+ *
+ * Two nodes fall in one column when their x rounds the same way, so equal x
+ * always agrees and near-equal x agrees too - which is what we want, since two
+ * risers a couple of pixels apart read as one line just as surely as two at
+ * zero. Bucketing also keeps a drag from re-deciding the grouping every pixel.
+ */
+export const COLUMN_BUCKET = LANE_STEP_MAX;
+
+/** Column a node stands in, from its x. */
+export function columnKey(x: number): string {
+  return String(Math.round(x / COLUMN_BUCKET));
+}
+
 /** Which end of the edge the lane offset is measured from. */
 export type LaneAnchor = 'none' | 'source' | 'target';
 
@@ -217,26 +232,81 @@ function bySortKey(a: { key: string }, b: { key: string }): number {
 
 interface Member {
   id: string;
+  /** Sort key: node, then handle, then edge id. */
   key: string;
+  /** Vertical span this edge's bend can occupy; null when unknown. */
+  lo: number;
+  hi: number;
 }
 
+/**
+ * Number a group so that only edges which can actually collide are kept apart.
+ *
+ * Every member of a column group could in principle need its own lane, but almost
+ * none of them do: two bends on one line only overlap if their vertical spans
+ * overlap too, and in a column of stacked nodes most pairs are nowhere near each
+ * other. Numbering straight through 0, 1, 2, ... would charge the last node in the
+ * column a port stub proportional to every edge ahead of it - 66px on the ResNet
+ * example against 28 before columns existed, which would undo the stub work.
+ *
+ * So this takes the smallest slot no CONFLICTING neighbour already holds. Two
+ * edges conflict when their spans overlap; edges leaving one node always do, since
+ * both spans contain that node, so a fan-out still gets 0, 1, 2 and keeps its
+ * short stub. A node further down the column only gets pushed off slot 0 by an
+ * edge it would really have been drawn on top of.
+ *
+ * Spans are node extents rather than handle positions, which over-reports slightly
+ * and therefore separates slightly more than strictly needed - the safe direction.
+ * With no spans at all it degrades to plain 0, 1, 2 numbering, which is what the
+ * unit tests and any caller without geometry get.
+ */
 function assign(
   groups: Map<string, Member[]>,
   write: (id: string, slot: number, count: number) => void,
 ): void {
   for (const members of groups.values()) {
     if (members.length > 1) members.sort(bySortKey);
-    for (let i = 0; i < members.length; i++) write(members[i].id, i, members.length);
+    const placed: Array<{ slot: number; lo: number; hi: number }> = [];
+    for (const member of members) {
+      const taken = new Set<number>();
+      for (const other of placed) {
+        if (member.lo <= other.hi && other.lo <= member.hi) taken.add(other.slot);
+      }
+      let slot = 0;
+      while (taken.has(slot)) slot += 1;
+      placed.push({ slot, lo: member.lo, hi: member.hi });
+      write(member.id, slot, members.length);
+    }
   }
 }
 
+
 /**
- * Assign every edge a lane in its source-node group and its target-node group.
+ * Assign every edge a lane in its source group and its target group.
  *
- * Pure and deterministic: the result depends only on edge ids, endpoints and
- * handle ids, never on array order, node positions or wall-clock state.
+ * `columnOf` maps a node id to the id of the COLUMN its handles stand in. Pass
+ * it and edges are numbered per column; omit it and they are numbered per node,
+ * which is the same thing on any graph where no two nodes share an x.
+ *
+ * The column is what actually matters. A lane is a distance measured out from
+ * the handle, so two nodes whose handles share an x hand their k-th edge the
+ * same line - and a column of nodes each fanning out is what the auto-layout
+ * produces constantly. Numbering per node leaves those collinear for hundreds of
+ * pixels; numbering per column cannot.
+ *
+ * Deterministic given its inputs: no randomness, no dependence on array order.
  */
-export function computeEdgeLanes(edges: readonly LaneEdgeInput[]): EdgeLaneMap {
+/** Where a node stands: its column, and the vertical band it occupies. */
+export interface LaneNodeGeometry {
+  column: string;
+  top: number;
+  bottom: number;
+}
+
+export function computeEdgeLanes(
+  edges: readonly LaneEdgeInput[],
+  nodeGeometry: ReadonlyMap<string, LaneNodeGeometry> = new Map(),
+): EdgeLaneMap {
   const lanes = new Map<string, EdgeLane>();
   if (edges.length === 0) return lanes;
 
@@ -249,15 +319,41 @@ export function computeEdgeLanes(edges: readonly LaneEdgeInput[]): EdgeLaneMap {
     if (lanes.has(edge.id)) continue;
     lanes.set(edge.id, { outSlot: 0, outCount: 1, inSlot: 0, inCount: 1 });
 
-    const outMembers = outGroups.get(edge.source);
-    const outMember = { id: edge.id, key: `${handleKey(edge.sourceHandle)}\u0000${edge.id}` };
+    // Node before handle before id, so one handle's edges stay contiguous inside
+    // a shared column: widening the group must not push a fan's own port stub any
+    // further out than it already was.
+    const from = nodeGeometry.get(edge.source);
+    const to = nodeGeometry.get(edge.target);
+    const outKey = from ? from.column : edge.source;
+    const outMembers = outGroups.get(outKey);
+    // The band this edge's bend can sweep: both endpoints, since the bend runs
+    // from one to the other. Unknown geometry means "conflicts with everything",
+    // which keeps the fallback numbering dense and safe.
+    const lo = from && to ? Math.min(from.top, to.top) : -Infinity;
+    const hi = from && to ? Math.max(from.bottom, to.bottom) : Infinity;
+    const outMember = {
+      id: edge.id,
+      key: `${edge.source}\u0000${handleKey(edge.sourceHandle)}\u0000${edge.id}`,
+      lo,
+      hi,
+    };
     if (outMembers) outMembers.push(outMember);
-    else outGroups.set(edge.source, [outMember]);
+    else outGroups.set(outKey, [outMember]);
 
-    const inMembers = inGroups.get(edge.target);
-    const inMember = { id: edge.id, key: `${handleKey(edge.targetHandle)}\u0000${edge.id}` };
+    // Target side stays per NODE. Two edges arriving at one node are already
+    // numbered together, and widening this to the column would charge every
+    // arriving handle a longer port stub to fix collisions that the independent
+    // skip pull-outs already handle.
+    const inKey = edge.target;
+    const inMembers = inGroups.get(inKey);
+    const inMember = {
+      id: edge.id,
+      key: `${edge.target}\u0000${handleKey(edge.targetHandle)}\u0000${edge.id}`,
+      lo,
+      hi,
+    };
     if (inMembers) inMembers.push(inMember);
-    else inGroups.set(edge.target, [inMember]);
+    else inGroups.set(inKey, [inMember]);
   }
 
   assign(outGroups, (id, slot, count) => {

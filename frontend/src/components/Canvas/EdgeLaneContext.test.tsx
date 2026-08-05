@@ -102,12 +102,20 @@ describe('EdgeLaneProvider recomputation', () => {
     expect(renders()).toBe(2);
   });
 
-  it('rebuilds the map when an edge is rewired', () => {
+  it('rebuilds the map only when a rewire actually changes a lane', () => {
     const { probe, renders } = setup();
-    const { rerender } = render(
-      <EdgeLaneProvider edges={[wire('e1', 'A', 'B')]}>{probe}</EdgeLaneProvider>,
-    );
-    rerender(<EdgeLaneProvider edges={[wire('e1', 'A', 'C')]}>{probe}</EdgeLaneProvider>);
+    const pair = [wire('e1', 'A', 'B'), wire('e2', 'A', 'C')];
+    const { rerender } = render(<EdgeLaneProvider edges={pair}>{probe}</EdgeLaneProvider>);
+    expect(renders()).toBe(1);
+
+    // Re-pointing e2 at a different target leaves both edges exactly where they
+    // were in their groups, so no route moves and nothing should re-render.
+    rerender(<EdgeLaneProvider edges={[pair[0], wire('e2', 'A', 'D')]}>{probe}</EdgeLaneProvider>);
+    expect(renders()).toBe(1);
+
+    // Moving e2 onto a different source empties A of siblings, so e1 loses its
+    // lane and its route really does change.
+    rerender(<EdgeLaneProvider edges={[pair[0], wire('e2', 'Z', 'D')]}>{probe}</EdgeLaneProvider>);
     expect(renders()).toBe(2);
   });
 });
