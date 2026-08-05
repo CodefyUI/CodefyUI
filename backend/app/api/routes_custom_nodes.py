@@ -12,6 +12,7 @@ from ..core import plugin_loader
 from ..core.plugin_loader import rediscover_all
 from ..core.plugin_validator import PluginValidationError, validate_python_source
 from ..core.preset_registry import preset_registry
+from ..core.script_policy import TIER0_DENIED_ATTRS
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,17 @@ async def upload_custom_node(file: UploadFile):
         raise HTTPException(status_code=413, detail="File too large")
 
     try:
-        validate_python_source(content, file.filename)
+        # core#179 -- a method on a value a Tier-0 import hands back
+        # (``numpy.zeros(3).dump(path)``) is an arbitrary file write with
+        # zero capability declared; the gate is keyed on Import nodes, so it
+        # never sees what an allowed library's return value can do. This is
+        # the untrusted-user upload surface, so it gets the same
+        # `denied_attributes` the CLI install path (`scripts/plugins.py`)
+        # now passes -- see the comment there for why it is this constant
+        # and not the larger `SCRIPT_PROXY_DENIED_ATTRS`.
+        validate_python_source(
+            content, file.filename, denied_attributes=TIER0_DENIED_ATTRS
+        )
     except PluginValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -110,6 +110,8 @@ $ cdui plugin install alice/metric-logger
 
 `torch.load(...)` 仍然必須明確寫出 `weights_only=True`；dunder 存取（`__class__`、`__globals__`、`__subclasses__`……）、frame 走訪（`f_globals`、`gi_frame`……），以及**內建函式** `eval` / `exec` / `compile` / `__import__`——不論是裸呼叫或透過 `builtins` 模組——不論宣告了什麼都一律拒絕。**能力永遠買不到反射能力。**
 
+同樣不論宣告了什麼都一律拒絕的，還有一份固定的屬性名稱清單，攔的是第 0 級函式庫自己的東西。`numpy.zeros(3).dump(path)` 會把資料原封不動 pickle 到任何路徑，內容還大半是攻擊者可控的；`torch.hub.load(...)` 會下載並執行遠端的 `hubconf.py`；`.savetxt`、`.tofile`、`.load_state_dict_from_url`、`.tensorboard` 以及其他十幾個都是同樣的形狀——它們是 Tier-0 import 回傳值上的**方法**，不是它自己的 import，所以能力閘門（只看得懂 `import` 敘述）根本看不到它們。沒有任何能力攔得住這些東西——它們所在的模組本來就屬於第 0 級——所以也沒有能力去攔；它們一律無條件拒絕，和[畫布內腳本政策](/advanced/python-script-node)本來就有的那份清單相同。
+
 攔的是那些內建函式，不是那個字：只是剛好同名的**方法**屬於一般程式碼，在每一級都會通過，所以 `torch.compile(model)` 與 `model.eval()` 對外掛而言是允許的。這是刻意的——拒絕它們一直是個長年的誤判——也正是為什麼規則問的是「這個 `eval` 是誰的」，而不是去比對這個字。
 
 但這不代表能力永遠買不到執行程式的權力。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就繞過了這條規則——而一旦授予 `process-env`，`os.spawnve` / `os.execv` / `os.startfile` 根本不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；之所以在這裡重講一次，是因為這一段先前的版本宣稱了相反的事。

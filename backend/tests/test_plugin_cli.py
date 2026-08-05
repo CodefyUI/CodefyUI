@@ -146,6 +146,52 @@ def test_validate_nodes_dir_rejects_dynamic_getattr(tmp_path):
         plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
 
 
+# ── core#179: a library VALUE's own method escapes import-time gating ──────
+
+def test_validate_nodes_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
+    """``numpy.zeros(3).dump(path)`` pickles straight to any path the file
+    names, with substantially attacker-chosen content
+    (``numpy.frombuffer(payload, dtype=numpy.uint8).dump(p)`` embeds the
+    payload verbatim after a fixed pickle prefix) -- arbitrary file WRITE,
+    zero capability declared.
+
+    ``numpy`` is Tier 0 (``TIER0_PURE_COMPUTE_MODULES``), so ``import numpy``
+    needs no declaration at all, and the import-time capability gate only
+    ever looks at module names on ``Import`` nodes -- it never inspects what
+    a Tier-0-allowed library hands back. ``.dump`` is already closed for
+    in-canvas scripts via ``script_policy.TIER0_DENIED_ATTRS`` passed as
+    ``denied_attributes``; this proves the same mechanism is wired into the
+    installed-plugin surface, not just re-implemented for one leaf.
+    """
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "bad.py").write_text(
+        "import numpy\n"
+        "def pwn(path):\n"
+        "    numpy.zeros(3).dump(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+
+def test_validate_plugin_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
+    """Same escape, the other entry point: ``validate_plugin_dir`` walks the
+    whole extracted tarball (not only ``nodes/``) and has to close the same
+    door -- it is a separate call to ``validate_python_source`` and does not
+    inherit whatever ``validate_nodes_dir`` was told."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "bad.py").write_text(
+        "import numpy\n"
+        "def pwn(path):\n"
+        "    numpy.zeros(3).dump(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
 # ── load_catalog ────────────────────────────────────────────────────────────
 
 def test_load_catalog_returns_three_direction_packs():

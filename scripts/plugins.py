@@ -49,6 +49,7 @@ from app.core.plugin_loader import (
     save_lockfile,
 )
 from app.core.plugin_validator import PluginValidationError, validate_python_source
+from app.core.script_policy import TIER0_DENIED_ATTRS
 from app.core.security_tiers import (
     CAPABILITIES,
     CAPABILITY_SUMMARY,
@@ -362,6 +363,19 @@ def validate_nodes_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
+            # core#179 -- a method on a value a Tier-0 import hands back
+            # (``numpy.zeros(3).dump(path)``) is an arbitrary file write with
+            # zero capability declared: the gate below is keyed on Import
+            # nodes, so it never sees what an allowed library's return value
+            # can do. Already closed for in-canvas scripts via this exact
+            # constant; wiring it in here instead of re-deriving a smaller
+            # list keeps the two surfaces from drifting on what "closed"
+            # means. Deliberately NOT `SCRIPT_PROXY_DENIED_ATTRS`, which also
+            # folds in the module-gateway attrs (``.hub``'s sibling problem,
+            # not this one) and the RCE leaves as attributes -- both closed
+            # for scripts for reasons specific to an allowlisted, unreviewed
+            # surface that do not hold for a file the user chose to install.
+            denied_attributes=TIER0_DENIED_ATTRS,
         )
 
 
@@ -407,6 +421,8 @@ def validate_plugin_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
+            # core#179 -- see the matching comment in validate_nodes_dir.
+            denied_attributes=TIER0_DENIED_ATTRS,
         )
 
 
