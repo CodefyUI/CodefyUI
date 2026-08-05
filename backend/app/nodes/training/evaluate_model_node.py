@@ -194,9 +194,12 @@ class EvaluateModelNode(BaseNode):
             # accuracy.
             result.update(interrupted_result(batch=stopped_at_batch))
         elif context is not None:
-            # Defensively coerced like batch_size above: params arrive
-            # already INT-typed in the normal editor/API path, but a
-            # hand-built graph.json or CLI invocation is not guaranteed to.
-            step = int(params.get("step", 1))
+            # Defensively coerced AND clamped to the param's own min_value
+            # (0) -- like batch_size above, which is coerced and clamped
+            # to ITS min_value (1). Params arrive already int-typed and
+            # in-range in the normal editor/API path, but a hand-built
+            # graph.json or CLI invocation is not guaranteed to respect
+            # either.
+            step = max(0, int(params.get("step", 1)))
             context.log_metric("eval_accuracy", accuracy, step)
         return result

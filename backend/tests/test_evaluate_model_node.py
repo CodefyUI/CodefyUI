@@ -259,3 +259,20 @@ def test_two_evaluate_model_nodes_with_different_steps_do_not_collide():
         {"step": 2}, context=ctx)
     steps = [step for name, _, step in ctx.metrics if name == "eval_accuracy"]
     assert steps == [1, 2]
+
+
+# ── #202 review fix (Minor 5) ────────────────────────────────────────
+
+
+def test_step_is_clamped_to_its_own_declared_min_value_of_0():
+    """The in-code comment claims step is "coerced and clamped ... like
+    batch_size above" (which does max(1, int(...))); step's own
+    ParamDefinition declares min_value=0. A hand-built graph.json
+    bypassing the editor's bounds must not reach a negative step -- the
+    comment's claim must be true, not just fixed prose."""
+    ctx = _RecordingContext()
+    EvaluateModelNode().execute(
+        {"model": _fresh_model(), "dataset": _dataset()},
+        {"step": -5}, context=ctx)
+    steps = [step for name, _, step in ctx.metrics if name == "eval_accuracy"]
+    assert steps == [0]
