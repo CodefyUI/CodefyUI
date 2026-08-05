@@ -324,13 +324,22 @@ describe('tab autosave - IndexedDB is the write target', () => {
     // Simulate the 60s throttle window having fully elapsed before the next
     // autosave retries against the still-broken database -- if the ONLY
     // guard were warnPersistence's throttle, this would toast a second time.
+    //
+    // try/finally, not a bare mockRestore() after the await: if the
+    // assertion inside vi.waitFor never becomes true, waitFor throws and a
+    // bare mockRestore() on the next line would never run, leaving Date.now
+    // mocked for every later test in this file -- a failure that would look
+    // nothing like its real cause.
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
-    store.useTabStore.getState().addTab('Second');
-    await vi.waitFor(() => {
-      const raw = JSON.parse(localStorage.getItem(LEGACY_KEY)!);
-      expect(raw.tabs.some((t: { name: string }) => t.name === 'Second')).toBe(true);
-    });
-    nowSpy.mockRestore();
+    try {
+      store.useTabStore.getState().addTab('Second');
+      await vi.waitFor(() => {
+        const raw = JSON.parse(localStorage.getItem(LEGACY_KEY)!);
+        expect(raw.tabs.some((t: { name: string }) => t.name === 'Second')).toBe(true);
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
 
     expect(toast.useToastStore.getState().toasts).toHaveLength(1);
   });
