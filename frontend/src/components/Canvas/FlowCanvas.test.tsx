@@ -553,6 +553,42 @@ describe('click handlers', () => {
     expect(activeTab().selectedNodeId).toBeNull();
   });
 
+  it('shift+click that removes a node from a 3-member selection leaves the other two selected (#167 follow-up)', () => {
+    // React Flow applies a shift-click's own selection effect to `.selected`
+    // via its own onNodesChange dispatch BEFORE onNodeClick fires (verified
+    // against the installed @xyflow/react source) -- so a shift-click that
+    // REMOVES `a` from an {a,b,c} selection has already left `b` and `c`
+    // selected and `a` not by the time onNodeClick runs. This starts from
+    // that already-updated state and asserts onNodeClick does not fight it.
+    setTab({
+      nodes: [
+        node('a', { selected: false }),
+        node('b', { selected: true }),
+        node('c', { selected: true }),
+      ],
+    });
+    renderCanvas();
+    act(() => captured.rf.onNodeClick({} as any, { id: 'a' }));
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'b')!.selected).toBe(true);
+    expect(activeTab().nodes.find((n) => n.id === 'c')!.selected).toBe(true);
+  });
+
+  it('shift+click that adds a node to a selection leaves the group selected (#167 follow-up)', () => {
+    // Companion case: React Flow has already added `c` to the {a,b}
+    // selection before onNodeClick fires.
+    setTab({
+      nodes: [
+        node('a', { selected: true }),
+        node('b', { selected: true }),
+        node('c', { selected: true }),
+      ],
+    });
+    renderCanvas();
+    act(() => captured.rf.onNodeClick({} as any, { id: 'c' }));
+    expect(activeTab().nodes.every((n) => n.selected)).toBe(true);
+  });
+
   it('opens a data tooltip on edge click when a summary exists', () => {
     setTab({
       nodes: [node('a', { data: { label: 'A', type: 'Linear', params: {}, definition: makeDef() } }), node('b')],
@@ -686,6 +722,51 @@ describe('context menus', () => {
     // Node menu shows Rename/Duplicate/Delete (localized).
     expect(screen.getByText(useI18n.getState().t('contextMenu.rename'))).toBeTruthy();
     expect(screen.getByText(useI18n.getState().t('contextMenu.delete'))).toBeTruthy();
+    // Only one node is selected -- "Collapse to subgraph" needs 2+ (#167).
+    expect(screen.queryByText(useI18n.getState().t('contextMenu.collapseToSubgraph'))).toBeNull();
+  });
+
+  it('right-clicking a node inside a multi-selection keeps the selection, so Collapse to subgraph still renders (#167)', () => {
+    // Simulates a box-select of a+b (both `.selected`, as React Flow's own
+    // drag-select would leave them) followed by a right-click on a MEMBER of
+    // that selection (a) -- the universal editor convention is that this
+    // keeps the whole selection, not collapses it to just the clicked node.
+    setTab({
+      nodes: [
+        node('a', { selected: true }),
+        node('b', { selected: true }),
+        node('c', { selected: false }),
+      ],
+    });
+    renderCanvas();
+    act(() =>
+      captured.rf.onNodeContextMenu({ preventDefault: vi.fn(), clientX: 1, clientY: 1 } as any, { id: 'a' }),
+    );
+    expect(activeTab().selectedNodeId).toBe('a');
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(true);
+    expect(activeTab().nodes.find((n) => n.id === 'b')!.selected).toBe(true);
+    expect(activeTab().nodes.find((n) => n.id === 'c')!.selected).toBe(false);
+    // selectedCount stayed >= 2, so the collapse entry point survives.
+    expect(screen.getByText(useI18n.getState().t('contextMenu.collapseToSubgraph'))).toBeTruthy();
+  });
+
+  it('right-clicking a node OUTSIDE an existing selection still narrows to just that node (#167)', () => {
+    // The original reported bug: a is selected from an earlier click, b is
+    // right-clicked. b is not part of any multi-selection, so the rewrite
+    // must still run -- this is what makes Delete-after-dismiss correct.
+    setTab({
+      nodes: [
+        node('a', { selected: true }),
+        node('b', { selected: false }),
+      ],
+    });
+    renderCanvas();
+    act(() =>
+      captured.rf.onNodeContextMenu({ preventDefault: vi.fn(), clientX: 1, clientY: 1 } as any, { id: 'b' }),
+    );
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'b')!.selected).toBe(true);
+    expect(screen.queryByText(useI18n.getState().t('contextMenu.collapseToSubgraph'))).toBeNull();
   });
 
   it('renders the note menu variant for note nodes', () => {

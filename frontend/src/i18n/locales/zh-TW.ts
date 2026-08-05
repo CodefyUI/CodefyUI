@@ -551,6 +551,13 @@ const zhTW: Record<TranslationKey, string> = {
   'persistence.quotaError': '無法儲存分頁 — 瀏覽器儲存空間已滿。',
   'persistence.storageUnavailable':
     '瀏覽器儲存空間無法運作 — 畫面上的分頁可能不是最新的，新的變更也可能不會被儲存。關閉這個分頁前，請先把需要的東西匯出。',
+  'persistence.downgraded':
+    '瀏覽器儲存空間已降級為容量較小的備援方案 — 較大的圖可能會無法儲存。',
+
+  // Shared Confirm/Prompt dialog (#160): generic fallback button labels
+  'dialog.cancel': '取消',
+  'dialog.ok': '確定',
+  'dialog.confirm': '確認',
 
   // 專案範圍的分頁持久化（ID10）：標題徽章 + 跨專案儲存拒絕
   'project.badge.title': '目前的專案目錄',

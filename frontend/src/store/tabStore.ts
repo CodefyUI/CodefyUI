@@ -340,6 +340,7 @@ interface TabStoreState {
   updateNodeParams: (nodeId: string, params: Record<string, any>) => void;
   updatePresetInternalParam: (nodeId: string, internalNodeId: string, paramName: string, value: any) => void;
   setSelectedNodeId: (id: string | null) => void;
+  selectNodeExclusively: (id: string | null) => void;
   openPresetModal: (id: string) => void;
   closePresetModal: () => void;
   openSubgraphModal: (id: string) => void;
@@ -489,6 +490,44 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/**
+ * Point React Flow's own per-node `.selected` flag at exactly `id`,
+ * deselecting every other node -- UNLESS `id` already names a member of an
+ * existing multi-selection (two or more `.selected` nodes), in which case
+ * the whole selection is left alone (#167).
+ *
+ * Used by the two PROGRAMMATIC selection paths, the ones React Flow itself
+ * has no opinion about: `selectNodeExclusively` (a right-click, the
+ * ResultsPanel's "click to highlight", or any other store-driven "make this
+ * the selection") and `openNodeDetail` (the detail modal's arrow keys). That
+ * makes `selectedNodeId` and `.selected` agree by construction on those two
+ * paths. Deliberately NOT used by `setSelectedNodeId` (the plain-click
+ * path) -- see its own comment for why running this on a click would be
+ * actively wrong, not just redundant.
+ *
+ * The multi-selection exception exists because `.selected` is not only the
+ * Delete-key target -- it is the app's OWN multi-selection, read by four
+ * bulk operations (`collapseSelectionToSubgraph`, `toggleBypassForSelection`,
+ * selection-scoped auto-layout, `copySelectedNodes`). Without it, right-
+ * clicking a node inside a box-selection collapsed the selection down to
+ * that one node before the context menu could read it -- which silently
+ * removed `NodeContextMenu`'s only entry point to "Collapse to subgraph"
+ * (#198) whenever it was opened via right-click. A lone selected node, or a
+ * target outside the current selection, still narrows normally -- so the
+ * modal's arrow-key target and a right-clicked non-member are unaffected,
+ * which is what fixed #167 in the first place.
+ */
+function selectOnlyNode(nodes: Node<NodeData>[], id: string | null): Node<NodeData>[] {
+  if (id !== null) {
+    const selected = nodes.filter((n) => n.selected);
+    if (selected.length >= 2 && selected.some((n) => n.id === id)) return nodes;
+  }
+  return nodes.map((n) => {
+    const isTarget = n.id === id;
+    return n.selected === isTarget ? n : { ...n, selected: isTarget };
+  });
 }
 
 /**
@@ -1098,6 +1137,19 @@ function saveTabsToLocalStorage(records: PersistedTab[], activeTabId: string) {
 // durability bookkeeping in `tabPersistence` assumes it sees them in order.
 let _idbWriteChain: Promise<void> = Promise.resolve();
 
+// #164 follow-up: `saveTabs` retries IndexedDB on EVERY autosave, so a
+// persistently broken database re-enters the catch below indefinitely --
+// unlike `persistence.quotaError`, which only fires when the fallback write
+// ALSO fails, and so is rare. `warnPersistence`'s own throttle is 60s, and
+// error toasts never auto-dismiss, so the throttle alone would leave one new
+// undismissed toast piling up every minute for the rest of the session. The
+// downgrade is a one-time state transition, not a recurring event, so this
+// latches it to one toast for the session regardless of how long the
+// database stays broken -- deliberately never reset, even if a later save
+// happens to succeed (a flaky database earns one warning, not a fresh one
+// every time it flickers).
+let _downgradeWarned = false;
+
 function saveTabs(tabs: TabState[], activeTabId: string) {
   const records = persistedTabsFor(tabs);
   if (!idbAvailable()) {
@@ -1113,6 +1165,19 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
       // storage). Autosave is a promise to the user, so fall back to the
       // tier that may still work rather than dropping the save.
       saveTabsToLocalStorage(records, activeTabId);
+      // The fallback above is silent by design (it has its own quotaError
+      // notice for when IT fails), but the DOWNGRADE itself must not be
+      // (#164): the user just quietly lost the generous IndexedDB ceiling
+      // for the 5MB localStorage one, with nothing said about it until a
+      // future save fails for real. A distinct key from quotaError /
+      // storageUnavailable, so a read failure and a write failure never
+      // suppress each other's warning. Latched (see `_downgradeWarned`)
+      // rather than left to warnPersistence's 60s throttle alone, or a
+      // database that stays broken would re-toast every minute forever.
+      if (!_downgradeWarned) {
+        _downgradeWarned = true;
+        warnPersistence('persistence.downgraded');
+      }
     });
 }
 
@@ -1353,7 +1418,15 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // points at a node that no longer exists — harmless while it renders
         // nothing, but an undo that restores the node would pop the modal
         // back open on its own.
+        //
+        // `selectedNodeId` gets the same treatment (#167): it is the other
+        // half of the same desync the Delete key exposed, just read instead
+        // of written. Left stale, it would name a node that no longer
+        // exists to every reader of the field (bypass/copy fallbacks,
+        // future callers) even though React Flow itself has no opinion left
+        // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
+        let selectedNodeId = tab.selectedNodeId;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -1366,9 +1439,12 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           if (nodeDetailNodeId !== null && removedIds.has(nodeDetailNodeId)) {
             nodeDetailNodeId = null;
           }
+          if (selectedNodeId !== null && removedIds.has(selectedNodeId)) {
+            selectedNodeId = null;
+          }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId };
+        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId };
       }),
     });
   },
@@ -1531,8 +1607,44 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       })),
     }),
 
+  // The plain-click path (FlowCanvas#handleNodeClick) ONLY. Deliberately
+  // does NOT sync `.selected` -- contrast `selectNodeExclusively` below.
+  //
+  // React Flow already applies every click's FULL selection effect to
+  // `.selected`, via its own `onNodesChange` dispatch, before `onNodeClick`
+  // (and therefore this action) ever runs -- verified against the installed
+  // `@xyflow/react` source for all three cases: a plain click (replaces the
+  // selection), a shift+click that ADDS to one, and a shift+click that
+  // REMOVES a member from one.
+  //
+  // Re-deriving `.selected` from just `id` here would fight that -- and for
+  // a shift+click REMOVAL specifically, it would get it backwards rather
+  // than merely redundant: the node the user just removed is, by the time
+  // this runs, the one node in the array that is NOT `.selected`, which is
+  // indistinguishable from "a stale click landed on a node outside the
+  // current selection" (the exact shape `selectNodeExclusively` exists to
+  // correct for a right-click). `selectOnlyNode` cannot tell those two
+  // apart from the nodes array alone, so it would re-select the node the
+  // user just removed and deselect the rest -- the opposite of the click
+  // (#167 follow-up). Staying raw for every click side-steps the ambiguity
+  // entirely: a click's own selection effect is never touched twice.
   setSelectedNodeId: (id) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ selectedNodeId: id })) }),
+
+  // Right-click, the ResultsPanel's "click to highlight", the pane-click
+  // clear, and anything else that is NOT a plain click and so gets no help
+  // from React Flow's own selection handling (#167). Goes through
+  // `selectOnlyNode` so `.selected` agrees with `selectedNodeId` by
+  // construction -- see that helper's comment for the multi-selection
+  // exception, and `setSelectedNodeId` above for why the click path is a
+  // separate action rather than sharing this one.
+  selectNodeExclusively: (id) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        selectedNodeId: id,
+        nodes: selectOnlyNode(tab.nodes, id),
+      })),
+    }),
 
   openPresetModal: (id) =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ presetModalNodeId: id })) }),
@@ -1560,6 +1672,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodeDetailNodeId: id,
         selectedNodeId: id,
+        nodes: selectOnlyNode(tab.nodes, id),
         nodeDetailTab: target?.tab ?? null,
         nodeDetailPort: target?.port ?? null,
         nodeDetailRequest: tab.nodeDetailRequest + 1,

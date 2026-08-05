@@ -695,6 +695,66 @@ describe('selection and modals', () => {
     expect(activeTab().selectedNodeId).toBeNull();
   });
 
+  it('setSelectedNodeId does not touch .selected -- React Flow already has, for every click (#167 follow-up)', () => {
+    // The plain-click path (FlowCanvas#handleNodeClick). By the time this
+    // runs, React Flow has already applied the click's own selection effect
+    // to `.selected` via its own dispatch -- re-deriving it here would fight
+    // that (and, for a shift+click removal specifically, get it backwards;
+    // see the "shift+click that removes..." test below).
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('n1');
+    expect(activeTab().selectedNodeId).toBe('n1');
+    // .selected is exactly as it was before this call -- untouched.
+    expect(activeTab().nodes.find((n) => n.id === 'n1')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'n2')!.selected).toBe(true);
+  });
+
+  it('shift+click that removes a node from a selection does not re-select it (#167 follow-up)', () => {
+    // The regression this branch introduced and this test guards against:
+    // {a, c} selected, user shift+clicks a to remove it. React Flow's own
+    // dispatch (verified against the installed @xyflow/react source)
+    // synchronously sets a.selected=false BEFORE onNodeClick -- and
+    // therefore setSelectedNodeId -- ever runs. At that point `a` looks
+    // identical (from the nodes array alone) to a stale click landing
+    // outside the current selection, which is exactly the shape
+    // selectNodeExclusively exists to correct for a right-click. Using that
+    // syncing action here would re-select `a` and deselect `c` -- the
+    // opposite of what the user just did.
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'c', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'C', type: 'C', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('a');
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'c')!.selected).toBe(true);
+  });
+
+  it('selectNodeExclusively selects the target node in React Flow, deselecting the rest (#167)', () => {
+    // Mirrors the context-menu path (FlowCanvas#handleNodeContextMenu): n1
+    // carries a stale `.selected` from an earlier plain click, then n2 is
+    // right-clicked. `selectedNodeId` and `.selected` must agree afterwards
+    // or React Flow's Delete key removes the wrong node.
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().selectNodeExclusively('n2');
+    const nodes = activeTab().nodes;
+    expect(nodes.find((n) => n.id === 'n1')!.selected).toBe(false);
+    expect(nodes.find((n) => n.id === 'n2')!.selected).toBe(true);
+  });
+
+  it('selectNodeExclusively(null) deselects every node', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
+    ] as any);
+    store().selectNodeExclusively(null);
+    expect(activeTab().nodes[0].selected).toBe(false);
+  });
+
   it('open/close preset modal', () => {
     store().openPresetModal('p1');
     expect(activeTab().presetModalNodeId).toBe('p1');
@@ -1231,6 +1291,61 @@ describe('onNodesChange', () => {
     expect(activeTab().nodeDetailNodeId).toBeNull();
     expect(activeTab().nodeDetailTab).toBeNull();
     expect(activeTab().nodeDetailPort).toBeNull();
+  });
+
+  // ── selection desync between the store and React Flow (#167) ─────────────
+
+  it('openNodeDetail also selects the target node in React Flow, deselecting the rest (#167)', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    // Mirrors NodeDetailModal's arrow-key `goTo`, which calls openNodeDetail
+    // with no target while walking from n1 to n2.
+    store().openNodeDetail('n2');
+    const nodes = activeTab().nodes;
+    expect(nodes.find((n) => n.id === 'n1')!.selected).toBe(false);
+    expect(nodes.find((n) => n.id === 'n2')!.selected).toBe(true);
+  });
+
+  it('lets a Delete-key removal target the node the modal is showing, not a stale click (#167)', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    // Arrow-navigate the open detail modal from n1 to n2.
+    store().openNodeDetail('n2');
+    // React Flow's `deleteKeyCode` removes whatever node(s) it currently
+    // considers `.selected` -- simulate exactly that straight into the
+    // reducer, the same way the real Delete key does.
+    const toRemove = activeTab().nodes.filter((n) => n.selected).map((n) => n.id);
+    store().onNodesChange(toRemove.map((id) => ({ id, type: 'remove' as const })));
+    const remainingIds = activeTab().nodes.map((n) => n.id);
+    expect(remainingIds).not.toContain('n2');
+    expect(remainingIds).toContain('n1');
+  });
+
+  it('clears selectedNodeId when the selected node is removed here', () => {
+    // React Flow's Delete key never calls `deleteNode` -- it emits a `remove`
+    // change straight into this reducer -- so `selectedNodeId` has to be
+    // cleared here too, the same way `nodeDetailNodeId` already is above, or
+    // it is left naming a node that no longer exists.
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('n1');
+    store().onNodesChange([{ id: 'n1', type: 'remove' }]);
+    expect(activeTab().selectedNodeId).toBeNull();
+  });
+
+  it('leaves selectedNodeId alone when a different node is removed', () => {
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('n1');
+    store().onNodesChange([{ id: 'n2', type: 'remove' }]);
+    expect(activeTab().selectedNodeId).toBe('n1');
   });
 
   it('recalculates a bound note offset when the note itself is dragged', () => {

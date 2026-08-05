@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogStore } from '../../store/dialogStore';
+import { useI18n } from '../../i18n';
 import styles from './DialogContainer.module.css';
 
 /**
@@ -20,6 +21,7 @@ import styles from './DialogContainer.module.css';
 export function DialogContainer() {
   const active = useDialogStore((s) => s.active);
   const close = useDialogStore((s) => s.close);
+  const { t } = useI18n();
 
   const [inputValue, setInputValue] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -61,9 +63,9 @@ export function DialogContainer() {
   if (!active) return null;
 
   const variant = active.kind === 'confirm' ? active.variant ?? 'info' : 'info';
-  const cancelText = active.cancelText ?? 'Cancel';
+  const cancelText = active.cancelText ?? t('dialog.cancel');
   const confirmText =
-    active.confirmText ?? (active.kind === 'prompt' ? 'OK' : 'Confirm');
+    active.confirmText ?? (active.kind === 'prompt' ? t('dialog.ok') : t('dialog.confirm'));
 
   function handleConfirm() {
     // Unreachable: the component returns null above when !active, so this

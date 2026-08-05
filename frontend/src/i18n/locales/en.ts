@@ -566,6 +566,19 @@ const en = {
   'persistence.quotaError': 'Could not save tabs — browser storage is full.',
   'persistence.storageUnavailable':
     'Browser storage is not working — the tabs shown may be out of date, and new changes may not be saved. Export anything you need before closing this tab.',
+  // #164: the write-side counterpart to storageUnavailable above. A save
+  // still succeeded here (on the smaller fallback tier), so this is a
+  // warning about reduced headroom going forward, not a data-loss notice.
+  'persistence.downgraded':
+    'Browser storage dropped to a smaller fallback — large graphs may stop saving.',
+
+  // Shared Confirm/Prompt dialog (#160): generic fallback button labels for
+  // whichever call site does not override cancelText/confirmText. Every
+  // real dialog in the app used to fall through to a hardcoded English
+  // literal here regardless of locale.
+  'dialog.cancel': 'Cancel',
+  'dialog.ok': 'OK',
+  'dialog.confirm': 'Confirm',
 
   // Per-project tab scoping (ID10): header badge + cross-project save refusal.
   'project.badge.title': 'Active project directory',

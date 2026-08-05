@@ -25,13 +25,15 @@ async function loadStore(): Promise<{
   store: TabStoreModule;
   idb: typeof import('../utils/idb');
   persistence: typeof import('./tabPersistence');
+  toast: typeof import('./toastStore');
 }> {
   vi.resetModules();
   const idb = await import('../utils/idb');
   const persistence = await import('./tabPersistence');
+  const toast = await import('./toastStore');
   const store = await import('./tabStore');
   await store.whenTabsHydrated();
-  return { store, idb, persistence };
+  return { store, idb, persistence, toast };
 }
 
 function legacyBlob(tabs: Array<Record<string, unknown>>, activeTabId: string) {
@@ -265,8 +267,8 @@ describe('tab autosave - IndexedDB is the write target', () => {
     expect(JSON.stringify(snapshot)).not.toContain('sk-must-not-persist');
   });
 
-  it('falls back to localStorage when the IndexedDB write fails', async () => {
-    const { store, idb } = await loadStore();
+  it('falls back to localStorage and toasts once when the IndexedDB write fails (#164)', async () => {
+    const { store, idb, toast } = await loadStore();
     const setItem = vi.spyOn(Storage.prototype, 'setItem');
     // Keep `idbAvailable()` true (so the IndexedDB branch is taken) while
     // every actual open fails -- a database revoked mid-session.
@@ -285,7 +287,61 @@ describe('tab autosave - IndexedDB is the write target', () => {
     });
     const raw = localStorage.getItem(LEGACY_KEY)!;
     expect(JSON.parse(raw).tabs.some((t: { name: string }) => t.name === 'Fallback')).toBe(true);
+    // The downgrade from IndexedDB to localStorage must not be silent: it
+    // drops the storage ceiling from generous to the 5MB localStorage cap
+    // with no notice otherwise (#164).
+    const toasts = toast.useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+    expect(toasts[0].message.length).toBeGreaterThan(0);
     setItem.mockRestore();
+  });
+
+  it('warns at most once per session for the downgrade, even once the 60s throttle window has passed (#164)', async () => {
+    // saveTabs retries IndexedDB on EVERY autosave, so a persistently broken
+    // database re-enters the downgrade catch indefinitely -- unlike
+    // quotaError (which only fires when the fallback write ALSO fails).
+    // warnPersistence's own throttle is 60s, and error toasts never
+    // auto-dismiss, so relying on the throttle alone would leave one new
+    // undismissed toast piling up every minute for the rest of the session.
+    // The downgrade is a one-time state transition, so it must latch at
+    // exactly one toast for the whole session, not just per 60s window.
+    const { store, idb, toast } = await loadStore();
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        const request: Record<string, unknown> = { error: new Error('gone') };
+        queueMicrotask(() => (request.onerror as (() => void) | undefined)?.());
+        return request;
+      },
+    });
+    idb._resetIdbForTests();
+
+    store.useTabStore.getState().addTab('First');
+    await vi.waitFor(() => {
+      expect(toast.useToastStore.getState().toasts).toHaveLength(1);
+    });
+
+    // Simulate the 60s throttle window having fully elapsed before the next
+    // autosave retries against the still-broken database -- if the ONLY
+    // guard were warnPersistence's throttle, this would toast a second time.
+    //
+    // try/finally, not a bare mockRestore() after the await: if the
+    // assertion inside vi.waitFor never becomes true, waitFor throws and a
+    // bare mockRestore() on the next line would never run, leaving Date.now
+    // mocked for every later test in this file -- a failure that would look
+    // nothing like its real cause.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    try {
+      store.useTabStore.getState().addTab('Second');
+      await vi.waitFor(() => {
+        const raw = JSON.parse(localStorage.getItem(LEGACY_KEY)!);
+        expect(raw.tabs.some((t: { name: string }) => t.name === 'Second')).toBe(true);
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(toast.useToastStore.getState().toasts).toHaveLength(1);
   });
 });
 

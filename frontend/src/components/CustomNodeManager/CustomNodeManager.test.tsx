@@ -125,6 +125,19 @@ describe('CustomNodeManager', () => {
     expect(useNodeDefStore.getState().reload).toHaveBeenCalled();
   });
 
+  it('passes a translated confirmText for the delete confirmation, not a raw literal (#160)', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'a.py' })]);
+    render(<CustomNodeManager onClose={vi.fn()} />);
+    // The row's own delete button is already translated -- find it by its
+    // zh-TW text, the same string the confirm dialog's button should use.
+    fireEvent.click(await screen.findByText('刪除'));
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    expect(useDialogStore.getState().active?.confirmText).toBe('刪除');
+  });
+
   it('deleting a node does nothing when the confirmation is cancelled', async () => {
     mockedRest.listCustomNodes.mockResolvedValue([customNode({ filename: 'a.py' })]);
     render(<CustomNodeManager onClose={vi.fn()} />);
