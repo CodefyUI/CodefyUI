@@ -11,6 +11,13 @@ class ModelSaverNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Save model weights (state_dict) to a .pt/.pth/.safetensors file"
 
+    # The write to disk IS this node's output. A cache hit returns the
+    # recorded {"path": ..., "model": ...} without calling execute() again,
+    # which is correct for a pure node and wrong here: if the user deleted
+    # the file (or it never ran with Rec off), a cache hit would hand back a
+    # path that no longer points at anything (#143).
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
