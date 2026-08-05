@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from ..config import settings
 from ..core.port_stats import PortStatsCache, compute_port_stats
 from ..core.run_output_store import RunOutputStore
+from ..core.run_store import json_safe
 
 router = APIRouter(prefix="/api/execution/outputs", tags=["execution-outputs"])
 
@@ -407,4 +408,8 @@ async def get_output(
     payload["run_id"] = run_id
     payload["node_id"] = node_id
     payload["port"] = port
-    return payload
+    # A diverged tensor's raw values/min/max/mean can be NaN/Inf. Starlette
+    # renders with allow_nan=False, so one leaked value 500s the whole
+    # response -- same hazard as #129, same fix: the run_store.json_safe
+    # convention established there (see the /stats route above).
+    return json_safe(payload)

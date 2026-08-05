@@ -226,6 +226,29 @@ async def test_string_output(test_client):
     assert body["value"] == "hello"
 
 
+@pytest.mark.asyncio
+async def test_get_output_survives_a_nan_tensor(test_client):
+    """The raw value route must not 500 on a diverged tensor (#170).
+
+    Starlette renders with ``allow_nan=False``, so a leaked NaN/Inf is a
+    bare CPython token that is not valid JSON -- one leaked value 500s the
+    whole response. The sibling ``/stats`` route already goes through
+    ``run_store.json_safe``; this route must follow the same convention.
+    """
+    store = app.state.run_output_store
+    t = torch.tensor([float("nan"), float("inf"), 1.0, 2.0])
+    await store.put("r1", "n1", "out", t)
+
+    resp = await test_client.get("/api/execution/outputs/r1/n1/out")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["values"] == [None, None, 1.0, 2.0]
+    assert body["min"] is None
+    assert body["max"] is None
+    assert body["mean"] is None
+    assert "NaN" not in resp.text
+
+
 # ── /stats (#129) ────────────────────────────────────────────────────────────
 
 
