@@ -296,6 +296,199 @@ TIER0_PATH_HELPERS: tuple[str, ...] = (
     "sep",
 )
 
+#: Names in ``sys.builtin_module_names`` that are deliberately NOT on
+#: :func:`app.core.plugin_validator.dangerous_modules`, each with a reason.
+#:
+#: core#183 happened because ``nt`` / ``posix`` were never enumerated
+#: anywhere, in either direction: not blocked, not capability-mapped, not
+#: declared safe. Nobody removed them from a list -- they were simply never
+#: added, and nothing ever asked "is EVERY compiled-in module accounted
+#: for" to notice. core#177's standing check asks exactly that: every name
+#: in ``sys.builtin_module_names`` must be either on the blocklist or listed
+#: HERE. An entry in this dict is not automatically a safety verdict -- most
+#: of the entries below ARE closed, verified decisions, but the ones tagged
+#: with an issue number are known-dangerous and simply not yet triaged.
+#: Either way, being here is a commitment that the module is ACCOUNTED FOR,
+#: in source and in CI output, rather than silently passing a green suite
+#: the way ``nt``/``posix`` did.
+#:
+#: Three shapes below, not one:
+#:
+#: 1. **Closed: the wrapper is already unrestricted, so the accelerator
+#:    grants nothing new.** ``_io`` (behind plain ``open()``, which
+#:    ``filesystem``'s own docstring explains was deliberately left
+#:    ungated) and ``_sre`` (behind ``re``, already in
+#:    :data:`TIER0_PURE_COMPUTE_MODULES` with zero declaration).
+#: 2. **Closed: pure computation, verified by import and inspection, not
+#:    assumed.** Every remaining stdlib C accelerator below: data
+#:    structures, numeric/hashing/encoding transforms, introspection that
+#:    grants no NEW capability beyond what is already open. Each was
+#:    imported and its public surface read before being listed here --
+#:    see core#177's own review for the specific check that caught
+#:    ``__pycache__`` being asserted safe on the strength of an argument
+#:    that was never actually tried.
+#: 3. **Deferred: real, verified capability, needs the maintainer's
+#:    per-name judgment call, tracked rather than resolved here.**
+#:    ``_signal``, and eleven more raw C-implementation modules sitting
+#:    directly behind an already-blocklisted or capability-gated wrapper --
+#:    :data:`app.core.script_proxy._BLOCKED_IMPLEMENTATION_ROOTS` (the
+#:    runtime boundary for in-canvas scripts) already recognises every one
+#:    of them as dangerous; that recognition was simply never ported to the
+#:    install-time blocklist (core#215). ``winreg`` (full Windows registry
+#:    read/write/delete -- a real persistence and data-exfiltration
+#:    primitive) and ``_xxsubinterpreters`` (``run_string(id, script,
+#:    shared)`` executes an arbitrary string in a sub-interpreter -- an
+#:    ``exec()``-equivalent primitive under a name ``_DANGEROUS_NAMES``
+#:    never looks for) are a different shape again -- not a hidden
+#:    implementation behind something already blocked, but a whole surface
+#:    nobody had considered -- tracked separately (core#216).
+ACCEPTED_UNGATED_MODULES: dict[str, str] = {
+    # ── shape 1: the wrapper is already unrestricted or already Tier 0 ──
+    "_io": (
+        "io / open() are unrestricted for installed files by design; "
+        "gating the C accelerator under it grants nothing io doesn't "
+        "already"
+    ),
+    "_sre": (
+        "the regex engine behind re, already in TIER0_PURE_COMPUTE_MODULES "
+        "with zero declaration; gating the accelerator grants nothing re "
+        "doesn't already"
+    ),
+    # ── shape 2: pure computation / data structures, no I/O of any kind ──
+    "_abc": "ABC machinery (isinstance/issubclass bookkeeping); no I/O",
+    "_ast": "AST node types for the ast module; a data structure, not a compiler",
+    "_bisect": "binary search over an in-memory sequence; no I/O",
+    "_collections": "deque/OrderedDict/etc. C implementations; no I/O",
+    "_contextvars": "context-local variable storage; no I/O",
+    "_functools": "reduce/partial/lru_cache C implementations; no I/O",
+    "_heapq": "heap-queue algorithm over an in-memory list; no I/O",
+    "_operator": "operator.add/itemgetter/etc. C implementations; no I/O",
+    "_random": "Mersenne Twister PRNG; reads no external entropy source directly",
+    "_stat": "S_IS*/S_IF* bit-interpretation constants; does not itself call stat()",
+    "_statistics": "mean/variance/etc. over in-memory data; no I/O",
+    "_string": "str.format() helper C implementation; no I/O",
+    "_struct": "binary pack/unpack over in-memory bytes; no I/O",
+    "_symtable": "compiler symbol-table introspection (the `symtable` module); "
+                 "reads a code object already in hand, does not execute one",
+    "_tokenize": "C tokenizer backend for the `tokenize` module; text in, tokens out",
+    "_typing": "typing module's runtime support (Generic, TypeVar, ...); no I/O",
+    "_warnings": "warnings.warn() plumbing; writes to stderr the same as print()",
+    "_weakref": "weak reference machinery; no I/O",
+    "array": "fixed-type in-memory array; no I/O",
+    "audioop": "raw audio sample transforms over in-memory bytes; no I/O "
+               "(deprecated upstream, kept ungated for the same reason)",
+    "binascii": "hex/base64/etc. transforms over in-memory bytes; no I/O",
+    "builtins": "the builtins module itself; its dangerous NAMES (eval, exec, "
+                "open, ...) are refused elsewhere by this walker whatever "
+                "module they are reached through",
+    "cmath": "complex-number math; no I/O",
+    "errno": "errno constant definitions; no I/O",
+    "gc": "garbage-collector controls (enable/disable/collect); can affect "
+          "process performance, not file/network/process/environment access",
+    "itertools": "already in TIER0_PURE_COMPUTE_MODULES with zero declaration",
+    "math": "already in TIER0_PURE_COMPUTE_MODULES with zero declaration",
+    "time": "clock reads and sleep; not a secret, same category as datetime.now()",
+    "xxsubtype": "CPython's own C-extension example/test module; no I/O",
+    "zlib": "compress/decompress over in-memory bytes; no I/O",
+    # hashing: pure, deterministic transforms of in-memory bytes
+    "_blake2": "BLAKE2 hash; pure transform of in-memory bytes",
+    "_md5": "MD5 hash; pure transform of in-memory bytes",
+    "_sha1": "SHA-1 hash; pure transform of in-memory bytes",
+    "_sha256": "SHA-256 hash; pure transform of in-memory bytes",
+    "_sha3": "SHA-3 hash; pure transform of in-memory bytes",
+    "_sha512": "SHA-512 hash; pure transform of in-memory bytes",
+    "_sha2": "SHA-2 family hash (some CPython versions merge _sha256/_sha512 "
+             "into this one name); pure transform of in-memory bytes",
+    # XML parsing: pure transform of an already-held string/bytes, and
+    # verified (not assumed) that the default parser does not resolve
+    # external entities -- `ET.fromstring()` against a DOCTYPE with a
+    # `SYSTEM "file://..."` entity raised `ParseError: undefined entity`
+    # rather than disclosing the file, checked directly against a real
+    # interpreter rather than relied on from memory.
+    "_elementtree": "C accelerator for xml.etree.ElementTree; default parser "
+                     "verified NOT to resolve external entities (no XXE)",
+    "pyexpat": "the same expat parser xml.etree.ElementTree is built on; "
+               "same verified no-XXE behaviour under the default parser",
+    # text/data encoding: pure transforms, not file or network access
+    "_codecs": "codec registry lookup; the transform itself, not a file read",
+    "_codecs_cn": "CJK codec tables; pure transform",
+    "_codecs_hk": "CJK codec tables; pure transform",
+    "_codecs_iso2022": "CJK codec tables; pure transform",
+    "_codecs_jp": "CJK codec tables; pure transform",
+    "_codecs_kr": "CJK codec tables; pure transform",
+    "_codecs_tw": "CJK codec tables; pure transform",
+    "_multibytecodec": "CJK multibyte codec engine; pure transform",
+    "_csv": "CSV parse/format over an already-held string or file object; "
+            "does not itself open a path",
+    "_json": "JSON parse/format over an already-held string; no I/O",
+    "_datetime": "C-accelerated datetime; reads the system clock only, not "
+                 "itself blocklisted, not a secret-bearing environment read",
+    "_locale": "locale NAME lookup/formatting; not process environment or a secret",
+    # introspection / debugging: grant no capability beyond what is already open
+    "_lsprof": "cProfile's C backend; timing/call-count introspection, no "
+               "file/network/process access of its own",
+    "_opcode": "bytecode opcode metadata (stack_effect etc.) used by dis/"
+               "compiler internals; does not assemble or execute a code object",
+    "_tracemalloc": "memory-allocation tracing for debugging; introspection only",
+    "faulthandler": "crash-traceback dumping; needs an already-open file object "
+                     "to write anywhere, which requires open() (already "
+                     "unrestricted) -- grants no new capability",
+    "mmap": "memory-maps an existing fd (already reachable via unrestricted "
+            "open()) or an anonymous in-memory buffer; grants no new "
+            "capability beyond what open() already does",
+    "fcntl": "POSIX: operates on an already-open fd (locking, flags); does "
+             "not itself open a path -- same reasoning as mmap",
+    "select": "POSIX/cross-platform: waits on already-open fds/sockets for "
+              "readiness; does not itself create a new fd or socket",
+    "unicodedata": "Unicode character database lookups (category, "
+                   "normalization); pure data lookup, no I/O",
+    "_types": "types module runtime support (GenericAlias etc.); no I/O",
+    "_sysconfig": "build-time configuration variables (compiler flags, "
+                  "install paths); comparable disclosure to abspath() "
+                  "revealing where CodefyUI is installed, already accepted "
+                  "as low-severity in the os.path exception's own docs",
+    "_suggestions": "typo-suggestion machinery behind error messages "
+                    "('did you mean ...'); pure introspection, no I/O",
+    # ── shape 3: real capability, verified, deferred to the maintainer ──
+    "pwd": "POSIX: reads the password database (usernames, UIDs, home "
+           "directories, login shells) for every account on the machine "
+           "-- core#216",
+    "grp": "POSIX: reads the group database (group names, GIDs, membership) "
+           "-- core#216",
+    "syslog": "POSIX: writes to the system log, outside normal file I/O and "
+              "not covered by any existing capability -- core#216",
+    "_signal": "raw process-control primitives (raise_signal, set_wakeup_fd, "
+               "signal handler registration) behind signal, itself already "
+               "Tier-2-only -- core#215",
+    "_thread": "raw os-thread spawn behind threading (Tier-2-only today) -- core#215",
+    "_socket": 'raw socket behind socket (gated by "network" today) -- core#215',
+    "_ssl": "raw TLS behind ssl (not on the blocklist at all today) -- core#215",
+    "_ctypes": "raw native-call bridge behind ctypes (Tier-2-only today) -- core#215",
+    "_pickle": "raw deserialize-executes-code behind pickle (Tier-2-only today) -- core#215",
+    "_winapi": (
+        "Windows: raw CreateProcess and friends, ungated by name today -- core#215"
+    ),
+    "msvcrt": "Windows C runtime bindings, console/file-locking primitives -- core#215",
+    "_posixsubprocess": (
+        "the fork_exec primitive behind subprocess (Tier-2-only today) -- core#215"
+    ),
+    "_multiprocessing": (
+        "raw multiprocessing C helpers behind multiprocessing "
+        "(Tier-2-only today) -- core#215"
+    ),
+    "_imp": "raw import machinery, lower-level than importlib (Tier-2-only today) -- core#215",
+    "_frozen_importlib": "CPython's own bootstrap import machinery -- core#215",
+    "_frozen_importlib_external": "same as _frozen_importlib -- core#215",
+    "winreg": "Windows: full registry read/write/delete -- persistence and "
+              "data-exfiltration primitive, no existing capability covers "
+              "it -- core#216",
+    "_xxsubinterpreters": (
+        "run_string(id, script, shared) executes an arbitrary string in a "
+        "sub-interpreter -- an exec()-equivalent primitive under a name "
+        "_DANGEROUS_NAMES never looks for -- core#216"
+    ),
+}
+
 
 def capability_for_module(root: str) -> str | None:
     """Which capability unlocks *root*, or ``None`` if none does.

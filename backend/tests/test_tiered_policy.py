@@ -343,6 +343,97 @@ def test_the_platform_native_os_backing_module_is_always_on_the_blocklist():
     )
 
 
+def test_every_builtin_module_is_classified_as_blocked_or_accepted():
+    """core#177's actual ask, not the narrower one above: a CLASSIFICATION,
+    not one name.
+
+    core#183 happened because ``nt`` / ``posix`` were never enumerated
+    anywhere, in either direction -- nobody removed them from a list, they
+    were simply never added, and the suite stayed green through it because
+    nothing ever asked "is EVERY name accounted for". That question only has
+    teeth on a BLOCKLIST, where the default is grant: an unclassified name
+    is reachable with zero declaration until someone notices by hand, which
+    is exactly what happened. It does not have the same teeth on an
+    ALLOWLIST, where the default is deny -- see
+    ``test_the_purity_guard_can_see_impurity_in_both_path_implementations``'s
+    own docstring for why a "does every name fall into a pre-approved
+    bucket" assertion over ``TIER0_PATH_HELPERS`` was rejected as pointless
+    there. ``dangerous_modules()`` is the other shape, which is why this
+    test exists and that one deliberately doesn't.
+
+    Every name CPython actually compiled into this interpreter
+    (``sys.builtin_module_names``) must be either on ``dangerous_modules()``
+    or in ``tiers.ACCEPTED_UNGATED_MODULES``, with a reason recorded there.
+    Landing in the accepted set is not a safety verdict by itself -- most of
+    its entries are known-dangerous and simply not yet triaged (core#215) --
+    it is a commitment that the gap is TRACKED, in source and in CI output,
+    rather than silently passing. A future CPython that compiles in a new
+    extension module nobody has classified yet fails this test by name,
+    which is the mechanical catch #183 needed and the narrower test above,
+    on its own, does not provide: CI (``backend-test.yml``) runs
+    ``ubuntu-latest`` only, so ``os.name`` there is always ``'posix'`` --
+    deleting ``"nt"`` from the blocklist alone stays green in CI and would
+    only be caught by someone running the suite on Windows. This test
+    catches that same deletion on ANY platform, because it asks about every
+    compiled-in name at once, not the one platform happens to select.
+    """
+    import sys
+
+    blocked = dangerous_modules()
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    unclassified = sorted(
+        name for name in sys.builtin_module_names
+        if name not in blocked and name not in accepted
+    )
+    assert unclassified == [], (
+        "these builtin modules are neither on the blocklist nor recorded in "
+        f"ACCEPTED_UNGATED_MODULES: {unclassified}. Classify each: add it to "
+        "_DANGEROUS_MODULES (and, if it should be capability-unlockable, a "
+        "CAPABILITY_MODULES group), or -- only if it is genuinely inert, the "
+        "way _io is next to open() -- add it to ACCEPTED_UNGATED_MODULES "
+        "with a one-line reason"
+    )
+
+
+def test_the_enumeration_is_not_vacuous():
+    """Non-vacuity for the classification test above: prove it actually
+    reacts to a name losing its classification, rather than trivially
+    passing because the blocklist happens to be complete right now.
+
+    Uses THIS platform's own native os-backing module (``os.name`` -- 'nt'
+    on Windows, 'posix' everywhere CI runs) as the probe, the same technique
+    ``test_the_platform_native_os_backing_module_is_always_on_the_blocklist``
+    uses: it is guaranteed to be a real entry in ``sys.builtin_module_names``
+    on whatever platform runs this, unlike hardcoding ``"nt"`` specifically,
+    which is not even present in ``sys.builtin_module_names`` outside
+    Windows -- so a probe that hardcoded it would prove nothing when run in
+    this repo's Linux-only CI. Evaluates the classification logic against
+    ``dangerous_modules() - {native}`` directly (no monkeypatching, no
+    subprocess, no second interpreter needed): a pure function of local data
+    that runs identically wherever the suite runs.
+    """
+    import os
+    import sys
+
+    native = os.name
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    assert native not in accepted, (
+        f"test assumption broken: {native!r} is in ACCEPTED_UNGATED_MODULES, "
+        f"so removing it from the blocklist would not surface as unclassified "
+        f"and this probe would not prove anything"
+    )
+    blocked_without_native = dangerous_modules() - {native}
+    unclassified = [
+        name for name in sys.builtin_module_names
+        if name not in blocked_without_native and name not in accepted
+    ]
+    assert native in unclassified, (
+        f"removing {native!r} from the blocklist should have surfaced it as "
+        f"unclassified; it did not, so the enumeration above would not "
+        f"catch this platform's own os-backing module being dropped"
+    )
+
+
 # ── the message is the feature ─────────────────────────────────────────────
 
 def test_an_undeclared_capability_module_names_the_capability_and_the_key():
