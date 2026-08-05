@@ -729,6 +729,7 @@ class TrainingLoopNode(BaseNode):
 
         epoch_losses: list[float] = []
         val_epoch_losses: list[float] = []
+        val_epoch_accuracies: list[float] = []
         lr_history: list[float] = []
 
         # Early stopping state
@@ -923,10 +924,13 @@ class TrainingLoopNode(BaseNode):
 
             # ── Validation phase ──
             avg_val_loss = None
+            avg_val_accuracy = None
             if val_dataloader is not None:
                 model.eval()
                 val_running_loss = 0.0
                 val_batch_count = 0
+                val_correct = 0
+                val_total = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -958,6 +962,22 @@ class TrainingLoopNode(BaseNode):
                                 loss = loss_fn(outputs)
                         val_running_loss += loss.item()
                         val_batch_count += 1
+
+                        # Accuracy from this SAME forward pass -- no second
+                        # model call. Same argmax-vs-label comparison as
+                        # EvaluateModel (evaluate_model_node.py:163-165),
+                        # deliberately at whatever precision ``outputs`` was
+                        # already produced at (the policy above) rather than
+                        # forced to fp32: the val_loss next to it is not
+                        # fp32-forced either, and the two must stay
+                        # comparable (see the ``precision`` param
+                        # description for the consequence -- a lower-
+                        # precision logit can flip an argmax on a near-tie).
+                        if targets is not None:
+                            pred = outputs.argmax(dim=1)
+                            val_correct += int((pred == targets).sum().item())
+                            val_total += int(targets.numel())
+
                         throttle.emit({
                             "event": EVENT_BATCH,
                             "epoch": epoch + 1,
@@ -976,6 +996,9 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = val_running_loss / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
+                if val_total > 0:
+                    avg_val_accuracy = val_correct / val_total
+                    val_epoch_accuracies.append(avg_val_accuracy)
 
             # ── LR Scheduler step ──
             if lr_scheduler is not None:
@@ -1024,6 +1047,8 @@ class TrainingLoopNode(BaseNode):
             record_metric("train_loss", avg_train_loss, epoch + 1)
             if avg_val_loss is not None:
                 record_metric("val_loss", avg_val_loss, epoch + 1)
+            if avg_val_accuracy is not None:
+                record_metric("val_accuracy", avg_val_accuracy, epoch + 1)
             record_metric("lr", current_lr, epoch + 1)
             if patience > 0:
                 record_metric("patience_counter", patience_counter,
@@ -1042,6 +1067,8 @@ class TrainingLoopNode(BaseNode):
                 if avg_val_loss is not None:
                     progress_data["val_loss"] = round(avg_val_loss, 6)
                     progress_data["val_losses"] = [round(l, 6) for l in val_epoch_losses]
+                if avg_val_accuracy is not None:
+                    progress_data["val_accuracy"] = round(avg_val_accuracy, 6)
                 if patience > 0:
                     progress_data["patience_counter"] = patience_counter
                     progress_data["best_epoch"] = best_epoch
@@ -1115,6 +1142,7 @@ class TrainingLoopNode(BaseNode):
         metrics = {
             "final_train_loss": epoch_losses[-1] if epoch_losses else 0.0,
             "final_val_loss": val_epoch_losses[-1] if val_epoch_losses else None,
+            "final_val_accuracy": val_epoch_accuracies[-1] if val_epoch_accuracies else None,
             "best_epoch": best_epoch if patience > 0 else completed_epochs,
             "total_epochs_run": len(epoch_losses),
             "start_epoch": start_epoch,

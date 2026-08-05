@@ -228,3 +228,65 @@ def test_defaults_leave_the_loop_unchanged():
     assert result["losses"].shape == (3,)
     assert result["metrics"]["total_steps"] == 12
     assert result["metrics"]["stopped_at_max_steps"] is False
+
+
+# ── val_accuracy per epoch (#202, 1a) ───────────────────────────────────
+#
+# Gated exactly like val_loss: present only when a val_dataloader is
+# wired. The classification-only gate (1b) is proven separately, below.
+
+
+def _classification_scenario(n_train=8, n_val=4, in_features=4, out_classes=2):
+    torch.manual_seed(0)
+    model = nn.Linear(in_features, out_classes)
+    train_loader = _make_loader(
+        _make_dataset(n=n_train, in_features=in_features, out_classes=out_classes),
+        batch_size=2,
+    )
+    val_loader = _make_loader(
+        _make_dataset(n=n_val, in_features=in_features, out_classes=out_classes),
+        batch_size=n_val,
+    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+    return model, train_loader, val_loader, optimizer
+
+
+def test_classification_run_with_val_dataloader_records_val_accuracy_per_epoch():
+    """Acceptance: a classifier run with a val_dataloader plots
+    val_accuracy against epoch -- one point per epoch, in [0, 1]."""
+    model, train_loader, val_loader, optimizer = _classification_scenario()
+    ctx = _RecordingContext()
+    TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": train_loader,
+            "optimizer": optimizer,
+            "loss_fn": nn.CrossEntropyLoss(),
+            "val_dataloader": val_loader,
+        },
+        {"epochs": 3, "device": "cpu"},
+        context=ctx,
+    )
+    acc_points = [(step, value) for name, value, step in ctx.metrics
+                  if name == "val_accuracy"]
+    assert [step for step, _ in acc_points] == [1, 2, 3]
+    assert all(0.0 <= value <= 1.0 for _, value in acc_points)
+
+
+def test_no_val_dataloader_records_no_val_accuracy_and_does_not_crash():
+    """Acceptance: a run with no val_dataloader emits no accuracy series
+    and does not crash."""
+    model = nn.Linear(4, 2)
+    ctx = _RecordingContext()
+    result = TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": _make_loader(_make_dataset()),
+            "optimizer": torch.optim.SGD(model.parameters(), lr=0.01),
+            "loss_fn": nn.CrossEntropyLoss(),
+        },
+        {"epochs": 2, "device": "cpu"},
+        context=ctx,
+    )
+    assert result["metrics"]["total_epochs_run"] == 2
+    assert not [m for m in ctx.metrics if m[0] == "val_accuracy"]
