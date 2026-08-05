@@ -15,6 +15,15 @@ def _make_dataset(n=8, in_features=4, out_classes=2):
     return torch.utils.data.TensorDataset(X, y)
 
 
+def _make_regression_dataset(n=8, in_features=4, out_features=1):
+    """Tiny regression dataset: float targets shaped like the model's
+    output, so MSELoss compares like-shaped tensors rather than silently
+    broadcasting a [B] target against a [B, out_features] prediction."""
+    X = torch.randn(n, in_features)
+    y = torch.randn(n, out_features)
+    return torch.utils.data.TensorDataset(X, y)
+
+
 def _make_loader(dataset, batch_size=4):
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size)
 
@@ -290,3 +299,85 @@ def test_no_val_dataloader_records_no_val_accuracy_and_does_not_crash():
     )
     assert result["metrics"]["total_epochs_run"] == 2
     assert not [m for m in ctx.metrics if m[0] == "val_accuracy"]
+
+
+# ── classification-only gate (#202, 1b) ─────────────────────────────────
+#
+# Getting this wrong in the permissive direction (emitting an "accuracy"
+# for a regression run) is worse than not shipping the feature: it is a
+# meaningless number presented with authority.
+
+
+def test_regression_loss_with_val_dataloader_records_no_val_accuracy():
+    """Acceptance: a regression run emits no accuracy series at all --
+    even though its val_dataloader means the validation loop (and
+    val_loss) still runs normally."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 1)
+    train_loader = _make_loader(_make_regression_dataset(n=8))
+    val_loader = _make_loader(_make_regression_dataset(n=4), batch_size=4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    ctx = _RecordingContext()
+    TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": train_loader,
+            "optimizer": optimizer,
+            "loss_fn": nn.MSELoss(),
+            "val_dataloader": val_loader,
+        },
+        {"epochs": 2, "device": "cpu"},
+        context=ctx,
+    )
+    names = {name for name, _, _ in ctx.metrics}
+    assert "val_loss" in names
+    assert "val_accuracy" not in names
+
+
+def test_bce_loss_with_val_dataloader_records_no_val_accuracy():
+    """BCEWithLogitsLoss is binary/multi-label, not argmax-shaped over
+    dim=1 the way CrossEntropyLoss/NLLLoss are -- also excluded."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 3)
+    train_loader = _make_loader(_make_regression_dataset(n=8, out_features=3))
+    val_loader = _make_loader(_make_regression_dataset(n=4, out_features=3), batch_size=4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    ctx = _RecordingContext()
+    TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": train_loader,
+            "optimizer": optimizer,
+            "loss_fn": nn.BCEWithLogitsLoss(),
+            "val_dataloader": val_loader,
+        },
+        {"epochs": 1, "device": "cpu"},
+        context=ctx,
+    )
+    names = {name for name, _, _ in ctx.metrics}
+    assert "val_accuracy" not in names
+
+
+def test_nll_loss_with_val_dataloader_records_val_accuracy():
+    """NLLLoss is the other classification loss the gate must admit --
+    log-probabilities against integer class indices, same argmax(dim=1)
+    shape as CrossEntropyLoss."""
+    torch.manual_seed(0)
+    model = nn.Sequential(nn.Linear(4, 2), nn.LogSoftmax(dim=1))
+    train_loader = _make_loader(_make_dataset(n=8))
+    val_loader = _make_loader(_make_dataset(n=4), batch_size=4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    ctx = _RecordingContext()
+    TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": train_loader,
+            "optimizer": optimizer,
+            "loss_fn": nn.NLLLoss(),
+            "val_dataloader": val_loader,
+        },
+        {"epochs": 1, "device": "cpu"},
+        context=ctx,
+    )
+    names = {name for name, _, _ in ctx.metrics}
+    assert "val_accuracy" in names

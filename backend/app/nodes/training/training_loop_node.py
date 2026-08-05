@@ -365,6 +365,14 @@ class TrainingLoopNode(BaseNode):
     to INFER from the epoch progress payload was called ``loss``; it is
     ``train_loss`` now, which is the same number under a name that lines up
     with ``val_loss``.
+
+    **val_accuracy (#202).** Recorded alongside ``val_loss``, under the same
+    gate (a validation loader must be wired) plus one more: ``loss_fn`` must
+    be a classification loss (``nn.CrossEntropyLoss`` or ``nn.NLLLoss`` --
+    the only two in this repo's loss map whose targets are integer class
+    indices against ``[B, C]`` logits, which is the shape ``argmax(dim=1)``
+    assumes). A regression or BCE run therefore never gets a val_accuracy
+    series.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -606,6 +614,7 @@ class TrainingLoopNode(BaseNode):
         tb_writer: Any = None,
     ) -> dict[str, Any]:
         import torch
+        import torch.nn as nn
 
         from ...core.amp import AmpPolicy
         from ...core.device_utils import resolve_node_device, to_device
@@ -623,6 +632,17 @@ class TrainingLoopNode(BaseNode):
         dataloader = inputs["dataloader"]
         optimizer = inputs["optimizer"]
         loss_fn = inputs["loss_fn"]
+        # CrossEntropyLoss / NLLLoss are the only two losses in this repo's
+        # map (loss_node.py's LOSS_TYPES) whose targets are integer class
+        # indices against [B, C] logits -- the shape argmax(dim=1) assumes.
+        # Every other loss (BCE*, the regression losses) is not
+        # argmax-shaped, so val_accuracy is only ever computed, recorded,
+        # or monitored by early stopping when this holds. Getting this
+        # wrong in the permissive direction -- e.g. admitting
+        # BCEWithLogitsLoss -- either crashes on a shape mismatch or
+        # silently broadcasts into a meaningless number, which is worse
+        # than not shipping the feature at all.
+        is_classification_loss = isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
         start_epoch = _coerce_start_epoch(inputs.get("start_epoch"))
@@ -973,7 +993,15 @@ class TrainingLoopNode(BaseNode):
                         # comparable (see the ``precision`` param
                         # description for the consequence -- a lower-
                         # precision logit can flip an argmax on a near-tie).
-                        if targets is not None:
+                        #
+                        # Classification-only: see is_classification_loss
+                        # above. A regression/BCE loss's outputs are not
+                        # [B, C] class logits, so argmax(dim=1) over them is
+                        # not "the predicted class" -- it is a shape that
+                        # happens to run (or, for a [B, 1] regression head,
+                        # a broadcasted comparison that happens NOT to
+                        # crash) and a number with no meaning either way.
+                        if is_classification_loss and targets is not None:
                             pred = outputs.argmax(dim=1)
                             val_correct += int((pred == targets).sum().item())
                             val_total += int(targets.numel())
@@ -996,7 +1024,7 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = val_running_loss / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
-                if val_total > 0:
+                if is_classification_loss and val_total > 0:
                     avg_val_accuracy = val_correct / val_total
                     val_epoch_accuracies.append(avg_val_accuracy)
 
