@@ -85,6 +85,20 @@ class EvaluateModelNode(BaseNode):
                 options=list(PRECISIONS),
                 advanced=True,
             ),
+            ParamDefinition(
+                name="step",
+                param_type=ParamType.INT,
+                default=1,
+                min_value=0,
+                description=(
+                    "Step value the eval_accuracy metric is logged under. "
+                    "Several EvaluateModel nodes in one graph (e.g. a "
+                    "before/after fine-tuning comparison) need different "
+                    "steps or they overwrite each other's point on the "
+                    "chart."
+                ),
+                advanced=True,
+            ),
         ]
 
     def execute(
@@ -180,5 +194,9 @@ class EvaluateModelNode(BaseNode):
             # accuracy.
             result.update(interrupted_result(batch=stopped_at_batch))
         elif context is not None:
-            context.log_metric("eval_accuracy", accuracy, 1)
+            # Defensively coerced like batch_size above: params arrive
+            # already INT-typed in the normal editor/API path, but a
+            # hand-built graph.json or CLI invocation is not guaranteed to.
+            step = int(params.get("step", 1))
+            context.log_metric("eval_accuracy", accuracy, step)
         return result
