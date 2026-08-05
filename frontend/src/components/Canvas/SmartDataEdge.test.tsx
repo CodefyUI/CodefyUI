@@ -106,20 +106,17 @@ describe('SmartDataEdge (curve mode)', () => {
     expect(d).toMatch(/^M 0,0 C -?\d+(?:\.\d+)?,50 /);
   });
 
-  it('varies the skip arc by edge id hash (jitter buckets)', () => {
-    // Two ids that hash to different jitter buckets produce different control offsets.
-    const a = renderEdge({ id: 'jitter-a', sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 }).d;
+  it('gives two sibling-less skips the same arc regardless of their ids', () => {
+    // The arc used to be nudged by a hash of the id, so identical wiring drew
+    // differently. It is geometry-only now; separation comes from lanes instead.
+    const a = renderEdge({ id: 'arc-a', sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 }).d;
     const b = renderEdge({ id: 'completely-different-id-xyz', sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 }).d;
-    // Both are skip arcs; the exact control points differ because of the hash jitter.
     expect(a).toContain('C');
-    expect(b).toContain('C');
-    // At least confirm both rendered a valid path.
-    expect(a.length).toBeGreaterThan(0);
-    expect(b.length).toBeGreaterThan(0);
+    expect(b).toBe(a);
   });
 
-  it('handles empty id in hashString (loop does not execute)', () => {
-    // id '' -> hashString returns 0 -> jitter 0; still a skip arc.
+  it('renders an edge with an empty id', () => {
+    // An id that is not in the lane map falls back to SOLO_LANE rather than throwing.
     const { d } = renderEdge({ id: '', sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 });
     expect(d).toContain('C');
   });
@@ -162,13 +159,13 @@ describe('SmartDataEdge (circuit mode)', () => {
   });
 
   it('routes a horizontal skip through an orthogonal detour lane above the row', () => {
-    // 'skip-h' hashes to jitter bucket 2 -> laneOffset = 100 + min(500*0.15, 120) + 2*24 = 223.
-    // arcDir -1 (flat minor) -> laneY = (0+0)/2 - 223 = -223.
+    // No siblings, so slot 0: laneOffset = 100 + min(500*0.15, 120) = 175 and
+    // arcDir -1 (flat minor) puts the corridor at laneY = (0+0)/2 - 175 = -175.
     const { d } = renderEdge({ id: 'skip-h', sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 });
     expect(d.startsWith('M 0,0')).toBe(true);
     expect(d).not.toContain('C');
     expect(d).toContain('Q');
-    expect(d).toContain('-223');
+    expect(d).toContain('-175');
   });
 
   it('routes a vertical skip through an orthogonal detour lane beside the column', () => {
@@ -196,14 +193,18 @@ describe('SmartDataEdge (circuit mode)', () => {
     expect(d).not.toContain('C');
   });
 
-  it('is deterministic per edge id and separates lanes for different ids', () => {
+  it('routes purely from geometry, not from the edge id', () => {
+    // The id used to feed a hash that nudged the detour, which meant the same
+    // wiring drawn twice could land on different corridors and two different
+    // wires could land on the same one. Lanes replaced it: an edge with no
+    // siblings routes by geometry alone, and the id no longer moves anything.
+    // Sibling separation is asserted in SmartDataEdge.overlap.test.ts.
     const geometry = { sourceX: 0, sourceY: 0, targetX: 500, targetY: 0 };
     const first = renderEdge({ id: 'lane-0', ...geometry }).d;
     const again = renderEdge({ id: 'lane-0', ...geometry }).d;
     const other = renderEdge({ id: 'lane-1', ...geometry }).d;
     expect(first).toBe(again);
-    // 'lane-0' (bucket 1) and 'lane-1' (bucket 0) hash to different jitter buckets.
-    expect(other).not.toBe(first);
+    expect(other).toBe(first);
   });
 
   it('keeps a plain straight trace below the skip threshold', () => {

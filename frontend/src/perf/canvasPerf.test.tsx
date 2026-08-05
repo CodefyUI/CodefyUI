@@ -49,6 +49,7 @@ const DRAG_FRAMES = FULL ? 120 : 20;
 const EXEC_FRAMES = FULL ? 100 : 20;
 const UNDO_PUSHES = FULL ? 60 : 20;
 const SAVE_TICKS = FULL ? 20 : 5;
+const LANE_BUILDS = FULL ? 200 : 20;
 /** Tabs a pre-#125 App would have had mounted at once. */
 const TAB_FANOUT = 5;
 /** Generous, because the full profile mounts five 300-node canvases. */
@@ -372,6 +373,43 @@ describe('canvas perf harness', () => {
         expect(rebuilds).toBeLessThanOrEqual(EXEC_FRAMES);
       }
       if (HARD_ASSERT) expect(summary.p95).toBeLessThan(FRAME_BUDGET_MS);
+    },
+    SCENARIO_TIMEOUT_MS,
+  );
+
+  it(
+    'assigns edge lanes for the whole graph',
+    async () => {
+      // Lanes are what keep two wires from being drawn on top of each other. The
+      // map is rebuilt only when the wiring changes - never on a drag frame, which
+      // is why no drag scenario above pays for it - so what matters here is that
+      // the rebuild itself is cheap and scales with the edge count rather than
+      // with its square. The signature row is the guard that decides whether a
+      // rebuild is needed at all, so it runs on every edges-array change and has
+      // to be cheaper still.
+      //
+      // Imported by specifier so this harness still runs against a checkout from
+      // before lanes existed, the way its other build-dependent parts do.
+      const specifier = '../utils/edgeLanes';
+      let lanes: typeof import('../utils/edgeLanes');
+      try {
+        lanes = await import(/* @vite-ignore */ specifier);
+      } catch {
+        return;
+      }
+      const edges = graph.edges;
+      const build = measure(`edge lanes, rebuild for ${EDGE_COUNT} edges`, LANE_BUILDS, () => {
+        lanes.computeEdgeLanes(edges);
+      });
+      const sign = measure(`edge lanes, signature for ${EDGE_COUNT} edges`, LANE_BUILDS, () => {
+        lanes.edgeLaneSignature(edges);
+      });
+      expect(lanes.computeEdgeLanes(edges).size).toBe(edges.length);
+      expect(build.samples).toBe(LANE_BUILDS);
+      expect(sign.samples).toBe(LANE_BUILDS);
+      // A drag never touches the edge array, so a rebuild costs nothing per frame;
+      // even so, one whole rebuild must stay far inside a single frame.
+      if (HARD_ASSERT) expect(build.p95).toBeLessThan(FRAME_BUDGET_MS / 4);
     },
     SCENARIO_TIMEOUT_MS,
   );

@@ -41,6 +41,7 @@ import AttentionMaskVizNode from '../Nodes/AttentionMaskVizNode';
 import EduCrossAttentionVizNode from '../Nodes/EduCrossAttentionVizNode';
 import EduKNNVizNode from '../Nodes/EduKNNVizNode';
 import { CustomConnectionLine } from './CustomConnectionLine';
+import { EdgeLaneProvider } from './EdgeLaneContext';
 import { SmartDataEdge } from './SmartDataEdge';
 import { TriggerEdge } from './TriggerEdge';
 import { EmptyCanvasOverlay } from './EmptyCanvasOverlay';
@@ -601,64 +602,66 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   return (
     <div ref={containerRef} className={styles.canvas}>
       {isEmpty && <EmptyCanvasOverlay />}
-      <ReactFlow
-        id={reactFlowId}
-        nodes={activeTab.nodes}
-        edges={activeTab.edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={handleConnect}
-        onConnectStart={onConnectStart}
-        onConnectEnd={onConnectEnd}
-        onReconnectStart={onReconnectStart}
-        onReconnect={onReconnect}
-        onReconnectEnd={onReconnectEnd}
-        isValidConnection={handleIsValidConnection}
-        connectionLineComponent={CustomConnectionLine}
-        onNodeClick={handleNodeClick}
-        onEdgeClick={handleEdgeClick}
-        onNodeContextMenu={handleNodeContextMenu}
-        onPaneContextMenu={handlePaneContextMenu}
-        onPaneClick={handlePaneClick}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-        onMoveStart={() => setCanvasPanning(true)}
-        onMoveEnd={() => setCanvasPanning(false)}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        fitView
-        minZoom={CANVAS_MIN_ZOOM}
-        proOptions={proOptions}
-        deleteKeyCode="Delete"
-        multiSelectionKeyCode="Shift"
-        style={{ background: '#0a0a0a' }}
-        defaultEdgeOptions={{
-          animated: false,
-          style: { stroke: '#555', strokeWidth: 2 },
-        }}
-        connectionLineStyle={{ stroke: '#888', strokeWidth: 2 }}
-        zoomOnDoubleClick={false}
-        snapToGrid={gridSnapEnabled}
-        snapGrid={[24, 24]}
-      >
-        <Background
-          color="#2a2a2a"
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1.5}
-        />
-        <SegmentBubble />
-        <NoteBindingLines />
-        <Controls />
-        <MiniMap
-          pannable
-          zoomable
-          position="bottom-right"
-          nodeColor={minimapNodeColor}
-          maskColor="rgba(0,0,0,0.7)"
-          style={{ background: '#1e1e1e' }}
-        />
-      </ReactFlow>
+      <EdgeLaneProvider edges={activeTab.edges} nodes={activeTab.nodes}>
+        <ReactFlow
+          id={reactFlowId}
+          nodes={activeTab.nodes}
+          edges={activeTab.edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={handleConnect}
+          onConnectStart={onConnectStart}
+          onConnectEnd={onConnectEnd}
+          onReconnectStart={onReconnectStart}
+          onReconnect={onReconnect}
+          onReconnectEnd={onReconnectEnd}
+          isValidConnection={handleIsValidConnection}
+          connectionLineComponent={CustomConnectionLine}
+          onNodeClick={handleNodeClick}
+          onEdgeClick={handleEdgeClick}
+          onNodeContextMenu={handleNodeContextMenu}
+          onPaneContextMenu={handlePaneContextMenu}
+          onPaneClick={handlePaneClick}
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          onMoveStart={() => setCanvasPanning(true)}
+          onMoveEnd={() => setCanvasPanning(false)}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          fitView
+          minZoom={CANVAS_MIN_ZOOM}
+          proOptions={proOptions}
+          deleteKeyCode="Delete"
+          multiSelectionKeyCode="Shift"
+          style={{ background: '#0a0a0a' }}
+          defaultEdgeOptions={{
+            animated: false,
+            style: { stroke: '#555', strokeWidth: 2 },
+          }}
+          connectionLineStyle={{ stroke: '#888', strokeWidth: 2 }}
+          zoomOnDoubleClick={false}
+          snapToGrid={gridSnapEnabled}
+          snapGrid={[24, 24]}
+        >
+          <Background
+            color="#2a2a2a"
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1.5}
+          />
+          <SegmentBubble />
+          <NoteBindingLines />
+          <Controls />
+          <MiniMap
+            pannable
+            zoomable
+            position="bottom-right"
+            nodeColor={minimapNodeColor}
+            maskColor="rgba(0,0,0,0.7)"
+            style={{ background: '#1e1e1e' }}
+          />
+        </ReactFlow>
+      </EdgeLaneProvider>
 
       <SubgraphBreadcrumb />
 
