@@ -577,29 +577,36 @@ async def test_an_interactive_run_starts_alongside_a_full_gpu_queue(
     4/4 green on rerun.
     """
     release_first = probe.hold("train-0")
-    training = [await _submit(service, f"train-{i}", device="cuda:0",
-                              seconds=0.4) for i in range(5)]
-    # train-0 is provably occupying the slot, not merely assumed to be
-    # (admission itself is synchronous -- see RunService._pump -- so this
-    # is a sanity check that the hold is wired up, not a race).
-    await probe.wait_entered("train-0")
-    assert len(service.queue_snapshot()["cuda:0"]) == 4
+    try:
+        training = [await _submit(service, f"train-{i}", device="cuda:0",
+                                  seconds=0.4) for i in range(5)]
+        # train-0 is provably occupying the slot, not merely assumed to be
+        # (admission itself is synchronous -- see RunService._pump -- so
+        # this is a sanity check that the hold is wired up, not a race).
+        await probe.wait_entered("train-0")
+        assert len(service.queue_snapshot()["cuda:0"]) == 4
 
-    demo = await _submit(service, "demo", device="cuda:0", seconds=0.05,
-                         lane=LANE_INTERACTIVE,
-                         session=InteractiveSession())
-    assert demo.status == STATUS_RUNNING
-    assert service.is_active(demo.run_id)
-    assert service.queue_position(demo.run_id) is None
+        demo = await _submit(service, "demo", device="cuda:0", seconds=0.05,
+                             lane=LANE_INTERACTIVE,
+                             session=InteractiveSession())
+        assert demo.status == STATUS_RUNNING
+        assert service.is_active(demo.run_id)
+        assert service.queue_position(demo.run_id) is None
 
-    record = await _await_terminal(store, demo.run_id, timeout=5)
-    assert record.status == STATUS_SUCCEEDED
-    assert record.options["lane"] == LANE_INTERACTIVE
-    # It really did overtake: four training runs are still waiting --
-    # guaranteed (train-0 is still parked on its gate), not timed.
-    assert len(service.queue_snapshot()["cuda:0"]) == 4
+        record = await _await_terminal(store, demo.run_id, timeout=5)
+        assert record.status == STATUS_SUCCEEDED
+        assert record.options["lane"] == LANE_INTERACTIVE
+        # It really did overtake: four training runs are still waiting --
+        # guaranteed (train-0 is still parked on its gate), not timed.
+        assert len(service.queue_snapshot()["cuda:0"]) == 4
+    finally:
+        # However this exits -- an assertion above failing, or the happy
+        # path -- train-0 must be released. Left parked, it would sit out
+        # its 10s safety-net timeout before the worker thread raises,
+        # adding a slow, confusing second failure right next to whatever
+        # assertion actually failed (review follow-up).
+        release_first.set()
 
-    release_first.set()
     for result in training:
         await _await_terminal(store, result.run_id)
 
