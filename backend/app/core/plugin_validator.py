@@ -101,6 +101,22 @@ _DANGEROUS_MODULES = frozenset({
     # never on the list -- and it is the same door the ``os.path`` import
     # exception has to keep shut.
     "ntpath", "posixpath", "genericpath",
+    # core#183 -- ``nt`` (Windows) / ``posix`` (POSIX) are the raw C modules
+    # ``os`` itself is built on. CPython's own ``Lib/os.py`` does
+    # ``from nt import *`` (or ``from posix import *``), which is where
+    # every ``os.remove``, ``os.environ`` and ``os.system`` originates, then
+    # ``del``s the name -- so ``os.nt`` / ``os.posix`` never exist as an
+    # attribute, and the only way back to the module is ``import nt`` /
+    # ``import posix`` directly. Neither name was on this set, in
+    # ``CAPABILITY_MODULES["process-env"]``, or in
+    # ``TIER0_PURE_COMPUTE_MODULES`` -- never enumerated anywhere, in either
+    # direction. ``import nt`` reached a real, writable ``nt.environ`` and a
+    # real ``nt.remove(path)`` with zero capability declared; only
+    # ``nt.system`` / ``nt.popen`` tripped anything, and only because
+    # ``_DANGEROUS_ATTR_LEAVES`` below is receiver-independent and has no
+    # idea what module it is looking at. Gated by ``process-env``, same as
+    # ``os`` -- they ARE ``os``, under the name it briefly imports them by.
+    "nt", "posix",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver

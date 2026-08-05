@@ -54,7 +54,7 @@ A plugin pack is Python that runs in the CodefyUI process. Before a third-party 
 |------------|---------|--------------------------|
 | `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host — **and write what it downloads to disk**, because `urllib.request.urlretrieve(url, dest)` is one call. |
 | `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can use the file **libraries**. This is not a write boundary: plain `open(p, "w")` is a builtin and needs no declaration at all (see [What this is not](#what-this-is-not)). |
-| `process-env` | `os`, `ntpath`, `posixpath`, `genericpath` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
+| `process-env` | `os`, `ntpath`, `posixpath`, `genericpath`, `nt`, `posix` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
 
 Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only: **no capability hands over a module whose purpose is running code or reaching the interpreter.** Note the precise claim — `process-env` grants `os`, and `os` starts processes. What you do not get from any capability is a module built for executing code.
 
@@ -70,6 +70,7 @@ from os.path import genericpath      # needs "process-env" — a module
 from os import path                  # needs "process-env" — binds ntpath
 import os / import os.path           # needs "process-env"
 import ntpath / posixpath            # needs "process-env"
+import nt / posix                    # needs "process-env" — the raw module os.py builds itself from
 ```
 
 The Tier-0 list is exactly: `join`, `basename`, `dirname`, `split`, `splitext`, `splitdrive`, `normpath`, `normcase`, `isabs`, `commonpath`, `commonprefix`, and the `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` constants.
@@ -77,6 +78,7 @@ The Tier-0 list is exactly: `join`, `basename`, `dirname`, `split`, `splitext`, 
 The refused lines are not pedantry — `os.path` is a real module and most of its surface is not string manipulation:
 
 - `os.path` **is** `ntpath` / `posixpath`, and those modules `import os` and `import sys` at module level, leaving both bound as ordinary attributes — so `path.os.remove(p)` deletes a file and `path.sys.modules['subprocess'].run([...])` runs a command.
+- `os` itself **is** `nt` (Windows) or `posix` (POSIX) — CPython's own `os.py` does `from nt import *` / `from posix import *`, which is where `os.remove`, `os.environ` and `os.system` come from. Importing the raw module by name reaches the identical surface with nothing in between.
 - `expandvars("%WANDB_API_KEY%")` returns the value of the environment variable — the exact thing `process-env` exists to gate — and `expanduser("~")` returns your home directory.
 - `exists`, `isfile`, `isdir`, `getsize`, `getmtime` and friends call `stat()` on any path you name; `abspath`, `realpath` and `relpath` resolve against the working directory and so disclose where CodefyUI is installed.
 

@@ -175,7 +175,16 @@ CAPABILITY_MODULES: dict[str, tuple[str, ...]] = {
     # slice would mean a blocklist over ~300 functions, and a promise resting
     # on an incomplete blocklist is the failure mode core#131 spent six rounds
     # unlearning.
-    "process-env": ("os", "ntpath", "posixpath", "genericpath"),
+    #
+    # core#183 -- ``nt`` / ``posix`` join the group for the same reason
+    # ``ntpath`` / ``posixpath`` already had: not a different surface, only a
+    # different name for the same one. ``os`` is built directly on top of
+    # whichever of the two the platform provides (CPython's own ``os.py``
+    # does ``from nt import *`` / ``from posix import *``), so importing the
+    # raw module by name reaches ``.environ`` / ``.remove`` / ``.system`` --
+    # everything this capability already grants through ``os`` -- and until
+    # this line did so with no declaration at all.
+    "process-env": ("os", "ntpath", "posixpath", "genericpath", "nt", "posix"),
 }
 
 #: One line per capability, shown in the install prompt and quoted verbatim in

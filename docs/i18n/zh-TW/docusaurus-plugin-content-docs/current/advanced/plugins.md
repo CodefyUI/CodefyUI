@@ -54,7 +54,7 @@ cdui plugin uninstall deep
 |------------|---------|--------------------------|
 | `network` | `requests`、`urllib`、`http`、`socket` | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
 | `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`、`glob`、`fileinput` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
-| `process-env` | `os`、`ntpath`、`posixpath`、`genericpath` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
+| `process-env` | `os`、`ntpath`、`posixpath`、`genericpath`、`nt`、`posix` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
 
 除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能走第 2 級：**沒有任何能力會交出一個「本身就是用來執行程式碼、或伸手進入直譯器」的模組。** 請注意這句話的精確之處——`process-env` 授予 `os`，而 `os` 會啟動行程。任何能力都不會給你的，是一個為執行程式碼而生的模組。
 
@@ -70,6 +70,7 @@ from os.path import genericpath      # 需要 "process-env"——那是模組
 from os import path                  # 需要 "process-env"——綁定的是 ntpath
 import os / import os.path           # 需要 "process-env"
 import ntpath / posixpath            # 需要 "process-env"
+import nt / posix                    # 需要 "process-env"——os.py 賴以建構自身的原始模組
 ```
 
 第 0 級的清單就是：`join`、`basename`、`dirname`、`split`、`splitext`、`splitdrive`、`normpath`、`normcase`、`isabs`、`commonpath`、`commonprefix`，以及 `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` 這些常數。
@@ -77,6 +78,7 @@ import ntpath / posixpath            # 需要 "process-env"
 被拒絕的那幾行不是吹毛求疵——`os.path` 是一個真正的模組，而它的表面大部分都不是字串處理：
 
 - `os.path` **就是** `ntpath` / `posixpath`，這兩個模組在模組層級執行 `import os` 與 `import sys`，並把兩者都留成一般屬性——所以 `path.os.remove(p)` 會刪掉檔案，`path.sys.modules['subprocess'].run([...])` 會執行指令。
+- `os` 本身**就是** `nt`（Windows）或 `posix`（POSIX）——CPython 自己的 `os.py` 執行 `from nt import *` / `from posix import *`，`os.remove`、`os.environ`、`os.system` 都是從這裡來的。直接以名稱 import 這個原始模組，中間沒有任何攔截，會拿到一模一樣的介面。
 - `expandvars("%WANDB_API_KEY%")` 會回傳該環境變數的值——正是 `process-env` 存在要攔的東西——而 `expanduser("~")` 會回傳你的家目錄。
 - `exists`、`isfile`、`isdir`、`getsize`、`getmtime` 這一類會對你指定的任何路徑呼叫 `stat()`；`abspath`、`realpath`、`relpath` 則會依工作目錄解析，因而洩漏 CodefyUI 安裝在哪裡。
 

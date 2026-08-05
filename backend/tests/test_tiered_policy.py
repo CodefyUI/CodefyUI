@@ -210,6 +210,12 @@ _MATRIX: list[tuple[str, str | None]] = [
     ("sqlite3", "filesystem"),
     ("codecs", "filesystem"),
     ("os", "process-env"),
+    # core#183 -- the raw C modules `os` is built on (CPython's own `os.py`
+    # does `from nt import *` / `from posix import *`, then `del`s the name).
+    # Reaching them by their own name is reaching `os` itself: same grant,
+    # same tier.
+    ("nt", "process-env"),
+    ("posix", "process-env"),
     ("subprocess", None),
     ("ctypes", None),
     ("importlib", None),
@@ -256,6 +262,42 @@ def test_tier2_accepts_everything_it_was_told_to(module, capability):
 def test_tier0_accepts_the_pure_compute_list_with_zero_declarations(module):
     _tier0(f"import {module}\n")
     _tier0(f"from {module} import *\n")
+
+
+# ── core#183: `nt` / `posix` are `os`, not a different surface ─────────────
+
+def test_import_nt_or_posix_reaches_the_real_environ_and_remove_at_tier0():
+    """The exact escape core#183 reported, reproduced directly rather than
+    only through the matrix above.
+
+    ``nt`` / ``posix`` are the raw C modules CPython's own ``Lib/os.py``
+    builds ``os`` from (``from nt import *`` on Windows, ``from posix
+    import *`` elsewhere) -- every ``os.remove``, ``os.environ`` and
+    ``os.system`` originates there. Neither name was ever on the blocklist
+    in either direction: not on ``_DANGEROUS_MODULES``, not in
+    ``CAPABILITY_MODULES["process-env"]``, not in
+    ``TIER0_PURE_COMPUTE_MODULES``. Before the fix, ``import nt`` at Tier 0
+    (nothing declared) was accepted outright, and only ``nt.system`` /
+    ``nt.popen`` tripped anything -- the receiver-independent RCE-leaf list,
+    which has no idea what module it is looking at. A real, writable
+    ``nt.environ`` and a real ``nt.remove(path)`` passed clean.
+    """
+    for module in ("nt", "posix"):
+        _refusal(f"import {module}\n")
+        _refusal(f"import {module}\n{module}.environ\n")
+        _refusal(f"import {module}\n{module}.remove('C:/tmp/x')\n")
+        # already caught before the fix -- confirms the leaf rule still
+        # fires independently of the module-level one added for this issue.
+        _refusal(f"import {module}\n{module}.system('x')\n")
+
+
+def test_nt_and_posix_are_gated_by_process_env_not_a_new_capability():
+    """Same door as ``os``, not a new one: no capability vocabulary change,
+    just closing the two names that reached the same module by a side door."""
+    _tier1("import nt\nnt.environ\n", "process-env")
+    _tier1("import posix\nposix.environ\n", "process-env")
+    message = _refusal("import nt\n", capabilities=["network", "filesystem"])
+    assert "process-env" in message
 
 
 # ── the message is the feature ─────────────────────────────────────────────
