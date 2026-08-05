@@ -300,6 +300,49 @@ def test_nt_and_posix_are_gated_by_process_env_not_a_new_capability():
     assert "process-env" in message
 
 
+def test_the_platform_native_os_backing_module_is_always_on_the_blocklist():
+    """core#177 -- a standing check for the SHAPE of core#183, not just its
+    two names, so a future regression here fails a test instead of waiting
+    for someone to run the validator by hand again.
+
+    core#183 happened because ``nt`` / ``posix`` were never enumerated
+    anywhere, in either direction -- nobody had to remove them from a list;
+    they simply were never added. A test that re-asserts ``"nt" in
+    dangerous_modules()`` guards against the first kind of regression
+    (someone deletes the line) but not the second (the same shape recurring
+    under a name nobody typed into a test file), and it only ever checks the
+    name, never the platform that made it true.
+
+    So this asks the INTERPRETER instead, the same "ask, don't hardcode" move
+    :func:`app.core.plugin_validator._compute_os_path_module_leaves` makes for
+    ``os.path``: CPython's own ``Lib/os.py`` sets ``os.name`` to exactly the
+    raw module it built its implementation from (``'nt'`` on Windows,
+    ``'posix'`` everywhere else CI runs) and then discards the module
+    reference (``from nt import *`` ... ``del nt``) -- so ``os.name`` is the
+    interpreter's own answer to "which raw module must never be missing from
+    the blocklist", not an assumption this test bakes in. Run on CI's Linux
+    box this exercises ``posix``; on a Windows dev machine, ``nt``; on any
+    future platform Python grows, whatever ``os.name`` says there. A
+    regression that drops one of the two names from the blocklist while
+    leaving the other still fails this test on whichever platform runs it.
+    """
+    import os
+    import sys
+
+    native = os.name
+    assert native in sys.builtin_module_names, (
+        f"expected the interpreter to report {native!r} as a builtin module -- "
+        f"if this fails, os.name no longer names a real builtin module and the "
+        f"assumption this test relies on needs revisiting, not the assertion"
+    )
+    assert native in dangerous_modules(), (
+        f"'{native}' is the raw module os.py builds os.remove / os.system / "
+        f"os.environ from (Lib/os.py: `from {native} import *`); it must stay "
+        f"on the blocklist or importing it directly reaches everything "
+        f"'process-env' gates with zero capability declared (core#183)"
+    )
+
+
 # ── the message is the feature ─────────────────────────────────────────────
 
 def test_an_undeclared_capability_module_names_the_capability_and_the_key():
