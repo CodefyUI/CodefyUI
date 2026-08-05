@@ -618,3 +618,63 @@ def test_monitor_key_absent_from_metrics_when_early_stopping_is_off():
     metrics should not claim a value was monitored when none was."""
     result = _train({"epochs": 2, "monitor": "val_accuracy"})
     assert "monitor" not in result["metrics"]
+
+
+# ── #202 review fixes ────────────────────────────────────────────────
+
+
+def test_precision_param_documents_the_val_accuracy_consequence():
+    """Important 1: the in-loop validation-accuracy comment says "see the
+    precision param description for the consequence -- a lower-precision
+    logit can flip an argmax on a near-tie". That text must actually
+    exist in this node's precision description (the brief required it,
+    the way EvaluateModel.precision's description already states it) or
+    the comment points at nothing."""
+    p = next(p for p in TrainingLoopNode.define_params() if p.name == "precision")
+    assert "argmax" in p.description
+    assert "val_accuracy" in p.description
+
+
+def test_monitor_val_accuracy_with_an_empty_val_dataloader_warns_and_reports_stopped_early_honestly(caplog):
+    """Minor 3: the run-level gates pass (classification loss, a
+    val_dataloader IS wired) but the loader itself yields zero batches,
+    so avg_val_accuracy is None every epoch. Two things must not happen
+    silently: patience being spent on a comparison that never ran, and
+    metrics["stopped_early"] claiming False when the loop plainly broke
+    early (patience=2, epochs=5 requested, only 2 ever run)."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 2)
+    train_loader = _make_loader(_make_dataset(n=4), batch_size=2)
+    empty_val_loader = _make_loader(_make_dataset(n=0), batch_size=4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        result = TrainingLoopNode().execute(
+            {
+                "model": model, "dataloader": train_loader, "optimizer": optimizer,
+                "loss_fn": nn.CrossEntropyLoss(), "val_dataloader": empty_val_loader,
+            },
+            {"epochs": 5, "device": "cpu", "early_stopping_patience": 2,
+             "monitor": "val_accuracy"},
+        )
+
+    assert result["metrics"]["total_epochs_run"] == 2
+    assert result["metrics"]["stopped_early"] is True
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("val_accuracy" in m and "epoch" in m.lower() for m in messages), messages
+
+
+def test_monitor_with_an_unrecognised_value_falls_back_to_val_loss_with_a_warning(caplog):
+    """Minor 4: a hand-built graph.json with a typo'd or out-of-vocabulary
+    monitor value (e.g. "accuracy" instead of "val_accuracy") must not be
+    silently swallowed as val_loss with no signal -- loud, like the other
+    two fallback reasons."""
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        result = _train({
+            "epochs": 2, "early_stopping_patience": 1, "monitor": "accuracy",
+        })
+
+    assert result["metrics"]["monitor"] == "val_loss"
+    assert result["metrics"]["monitor_requested"] == "accuracy"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("accuracy" in m and "recognised" in m for m in messages), messages

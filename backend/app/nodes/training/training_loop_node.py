@@ -489,7 +489,11 @@ class TrainingLoopNode(BaseNode):
                 description=(
                     "Mixed precision. bf16 roughly halves activation memory "
                     "on Ampere and newer with no other change; fp16 does the "
-                    "same on older cards and adds a loss scaler. A device "
+                    "same on older cards and adds a loss scaler. val_accuracy "
+                    "floats at this same precision rather than being forced "
+                    "to fp32, so it stays comparable with val_loss -- but a "
+                    "lower-precision logit can flip an argmax on a near-tie "
+                    "and shift the reported accuracy slightly. A device "
                     "that cannot honour the choice falls back to fp32 and "
                     "says so."
                 ),
@@ -786,27 +790,51 @@ class TrainingLoopNode(BaseNode):
         # further back to avg_train_loss via the pre-existing rule just
         # below when there is no val_dataloader at all. Resolved once, here
         # -- not per epoch -- so the warning (if any) is logged once.
+        #
+        # A THIRD reason joins the two above: `monitor` itself might not be
+        # one of the two values the param declares at all. The editor never
+        # sends anything else, but a hand-built graph.json or CLI
+        # invocation is not guaranteed to -- and a typo ("accuracy" instead
+        # of "val_accuracy") must not silently monitor loss with no signal,
+        # the same way the other two reasons are not silent.
         monitor_is_accuracy = monitor == "val_accuracy"
         monitor_fallback_reason: str | None = None
-        if patience > 0 and monitor_is_accuracy and val_dataloader is None:
-            monitor_fallback_reason = "no val_dataloader is wired"
-        elif patience > 0 and monitor_is_accuracy and not is_classification_loss:
-            monitor_fallback_reason = (
-                "loss_fn is not a classification loss (CrossEntropyLoss "
-                "or NLLLoss)"
-            )
+        if patience > 0:
+            if monitor not in ("val_loss", "val_accuracy"):
+                monitor_fallback_reason = (
+                    f"{monitor!r} is not a recognised monitor value "
+                    "(expected 'val_loss' or 'val_accuracy')"
+                )
+            elif monitor_is_accuracy and val_dataloader is None:
+                monitor_fallback_reason = "no val_dataloader is wired"
+            elif monitor_is_accuracy and not is_classification_loss:
+                monitor_fallback_reason = (
+                    "loss_fn is not a classification loss (CrossEntropyLoss "
+                    "or NLLLoss)"
+                )
         if monitor_fallback_reason is not None:
             logger.warning(
-                "monitor=val_accuracy was requested for early stopping, "
-                "but %s, so there is no val_accuracy series to watch. "
+                "monitor=%r was requested for early stopping, but %s. "
                 "Falling back to monitor=val_loss.",
-                monitor_fallback_reason,
+                monitor, monitor_fallback_reason,
             )
             monitor_is_accuracy = False
         best_monitor_value = float("-inf") if monitor_is_accuracy else float("inf")
         best_epoch = 0
         best_state_dict = None
         patience_counter = 0
+        # Set True the epoch early stopping actually breaks the loop on.
+        # NOT derived from best_state_dict/patience_counter at exit time
+        # (which is what metrics["stopped_early"] used to do): the
+        # monitor=val_accuracy degenerate path below can leave
+        # best_state_dict at None on every epoch (nothing ever counts as
+        # an improvement when there is nothing to compare), which made
+        # that derivation silently say False for a run that plainly did
+        # stop early.
+        early_stopping_triggered = False
+        # Logged once, the first epoch it happens, not every epoch of a
+        # persistently-empty val_dataloader.
+        monitor_value_missing_warned = False
 
         # Where a stop landed: the 0-based index of the batch that never ran,
         # and which loop it was in. None until someone presses Stop.
@@ -1099,8 +1127,18 @@ class TrainingLoopNode(BaseNode):
                 # monitor_value can only be None here if monitor_is_accuracy
                 # but this SPECIFIC epoch produced no accuracy points (e.g.
                 # an empty val_dataloader) despite the run-level gates
-                # passing -- treated as "no improvement" rather than
-                # crashing on a None comparison.
+                # passing. Loud, like the two run-level fallbacks above:
+                # silently spending patience on a comparison that never
+                # happened would be the same mistake in a smaller dose.
+                if (monitor_is_accuracy and monitor_value is None
+                        and not monitor_value_missing_warned):
+                    logger.warning(
+                        "monitor=val_accuracy but epoch %d produced no "
+                        "val_accuracy points (e.g. an empty val_dataloader); "
+                        "treating it as no improvement for early stopping.",
+                        epoch + 1,
+                    )
+                    monitor_value_missing_warned = True
                 improved = monitor_value is not None and (
                     monitor_value > best_monitor_value if monitor_is_accuracy
                     else monitor_value < best_monitor_value
@@ -1115,6 +1153,7 @@ class TrainingLoopNode(BaseNode):
 
                 if patience_counter >= patience:
                     stopped_early = True
+                    early_stopping_triggered = True
 
             logger.info(
                 "Epoch %d/%d - Train Loss: %.4f%s%s",
@@ -1237,7 +1276,15 @@ class TrainingLoopNode(BaseNode):
             "total_epochs_run": len(epoch_losses),
             "start_epoch": start_epoch,
             "last_epoch": completed_epochs,
-            "stopped_early": best_state_dict is not None and patience_counter >= patience,
+            # #202 review: was `best_state_dict is not None and
+            # patience_counter >= patience`, an indirect proxy that
+            # silently read False whenever best_state_dict never got set
+            # -- which the monitor=val_accuracy degenerate path (an empty
+            # val_dataloader; see early_stopping_triggered's own comment)
+            # made newly possible even though the loop DID exit early.
+            # early_stopping_triggered is set at the exact point the break
+            # actually happens, so it cannot drift from what the loop did.
+            "stopped_early": early_stopping_triggered,
             "lr_history": lr_history,
             "interrupted": stopped_at is not None,
             # How much training actually happened, and whether the budget is
