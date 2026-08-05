@@ -32,6 +32,13 @@ class KaggleDatasetNode(BaseNode):
     # Hits the network, the kagglehub cache on disk, and KAGGLE_* credentials
     # in the environment. None of that is visible to the cache key, so a hit
     # would pin the graph to whatever the first run happened to download.
+    #
+    # #144 restored caching to the other file-reading nodes #116 disabled by
+    # folding a content fingerprint (size/mtime/hash) into the cache key --
+    # deliberately NOT applied here. A fingerprint of the local kagglehub
+    # cache directory could not tell "the remote dataset was updated
+    # upstream" or "KAGGLE_KEY changed" from "nothing changed"; it would
+    # only add cost without closing the actual staleness gap.
     cacheable = False
 
     @classmethod

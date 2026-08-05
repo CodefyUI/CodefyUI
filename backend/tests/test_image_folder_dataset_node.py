@@ -61,8 +61,9 @@ def _run(params, inputs=None, context=None):
 def test_node_metadata():
     assert ImageFolderDatasetNode.NODE_NAME == "ImageFolderDataset"
     assert ImageFolderDatasetNode.CATEGORY == "Data"
-    # Re-reading a directory whose contents the cache key cannot see.
-    assert ImageFolderDatasetNode.cacheable is False
+    # #144: cacheable again -- cache_fingerprint() folds a directory content
+    # fingerprint into the cache key instead. See test_cache_content_fingerprint.py.
+    assert ImageFolderDatasetNode.cacheable is True
     outputs = ImageFolderDatasetNode.define_outputs()
     assert [p.name for p in outputs] == ["dataset", "classes"]
     inputs = ImageFolderDatasetNode.define_inputs()

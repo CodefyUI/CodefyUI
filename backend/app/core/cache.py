@@ -79,6 +79,7 @@ class ExecutionCache:
         params: dict[str, Any],
         upstream_keys: list[str],
         device: str = "cpu",
+        fingerprint: Any = None,
     ) -> str:
         """Compute a deterministic SHA-256 cache key.
 
@@ -88,6 +89,19 @@ class ExecutionCache:
         device, so ``cuda:0`` and ``cuda:1`` are different keys -- which is
         the point on a multi-GPU box, where serving one card's tensors to a
         run on the other is a device-mismatch crash rather than a slow path.
+
+        ``fingerprint`` is ``node_cls.cache_fingerprint(params)`` (#144,
+        #145): ``None`` for the overwhelming majority of nodes, whose
+        params already describe their output completely. A node that reads
+        external state a path param only NAMES (a file's bytes, a
+        directory's contents) returns a cheap descriptor of that state here
+        so a change on disk changes the key even though the path string did
+        not. Two calls that both omit it (or both pass ``None``) still
+        agree, which is the only compatibility guarantee that matters here:
+        ``ExecutionCache`` is in-memory and per-connection (see the module
+        docstring), never persisted, so the hash VALUE shifting once this
+        field joined the payload -- for every node, not just the ones that
+        use it -- has no stale-cache-on-disk to migrate.
         """
         payload = json.dumps(
             {
@@ -95,6 +109,7 @@ class ExecutionCache:
                 "params": params,
                 "upstream": sorted(upstream_keys),
                 "device": device,
+                "fingerprint": fingerprint,
             },
             sort_keys=True,
             default=str,

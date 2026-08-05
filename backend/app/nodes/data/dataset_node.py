@@ -32,10 +32,36 @@ class DatasetNode(BaseNode):
         "augmentation; without one it applies ToTensor and Normalize(0.5)."
     )
 
-    # Reads (and on first use downloads) the dataset under `data_dir`. The
-    # cache key hashes the directory name, not its contents, so a cached
-    # dataset would survive the files there changing.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds an aggregate
+    # fingerprint (file count, total size, latest mtime) of `data_dir`'s
+    # contents into the cache key, so files changing under it busts the
+    # cache instead of the key surviving unchanged because only the
+    # directory name is hashed. This is the headline case #144 names: a
+    # CIFAR10/MNIST-rooted graph no longer re-parses the dataset every run.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_data_dir(data_dir: str) -> str:
+        from pathlib import Path
+
+        from ...config import settings
+
+        if settings.PROJECT_DIR is not None and not Path(data_dir).is_absolute():
+            # torchvision downloads land in the project, not the install CWD
+            # (spec 7.2). kagglehub / HF caches stay machine-global.
+            return str(settings.PROJECT_DIR / "assets" / "data")
+        return data_dir
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import directory_fingerprint
+
+        data_dir = str(params.get("data_dir", "./data") or "./data")
+        try:
+            resolved = cls._resolve_data_dir(data_dir)
+        except Exception:
+            return None
+        return directory_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -105,16 +131,7 @@ class DatasetNode(BaseNode):
 
         name = params.get("name", "MNIST")
         split = params.get("split", "train")
-        data_dir = params.get("data_dir", "./data")
-
-        from pathlib import Path
-
-        from ...config import settings
-
-        if settings.PROJECT_DIR is not None and not Path(data_dir).is_absolute():
-            # torchvision downloads land in the project, not the install CWD
-            # (spec 7.2). kagglehub / HF caches stay machine-global.
-            data_dir = str(settings.PROJECT_DIR / "assets" / "data")
+        data_dir = self._resolve_data_dir(params.get("data_dir", "./data"))
 
         is_train = split == "train"
 

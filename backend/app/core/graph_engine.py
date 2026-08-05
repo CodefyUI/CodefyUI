@@ -1997,9 +1997,15 @@ async def execute_graph(
                 node_cache_keys[src_id]
                 for src_id, _, _ in incoming.get(node_id, [])
             ]
+            # #144/#145: a node whose output depends on external state a
+            # path param only NAMES (not contains) folds a cheap descriptor
+            # of that state in here, so a change on disk changes the key.
+            # None for every node that does not override the hook.
+            fingerprint = node_cls.cache_fingerprint(params)
             cache_key = cache.compute_key(
                 node_type, params, upstream_keys,
                 device=context.device if context is not None else "cpu",
+                fingerprint=fingerprint,
             )
             node_cache_keys[node_id] = cache_key
             if node_id not in force_rerun:

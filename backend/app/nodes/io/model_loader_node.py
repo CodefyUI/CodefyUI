@@ -11,10 +11,37 @@ class ModelLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load model weights from a .pt/.pth file into a model, or load a full saved model"
 
-    # The cache key hashes `path`, never the weights behind it. Re-training
-    # and re-saving to the same path between runs is the normal workflow, so
-    # a cache hit here would silently load the previous epoch's weights.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds the resolved
+    # weights file's (size, mtime, and for small files a content hash) into
+    # the cache key. Re-training and re-saving to the same path between runs
+    # is the normal workflow; the fingerprint changes with the resave, so
+    # the cache correctly misses instead of silently serving the previous
+    # epoch's weights.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_path(path: str) -> "Path":
+        from pathlib import Path
+
+        from ...config import settings
+
+        p = Path(path)
+        if not p.is_absolute():
+            p = settings.MODELS_DIR / p
+        return p.resolve()
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import path_fingerprint
+
+        path = str(params.get("path", "") or "")
+        if not path:
+            return None
+        try:
+            resolved = cls._resolve_path(path)
+        except Exception:
+            return None
+        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -66,7 +93,6 @@ class ModelLoaderNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
         import torch
-        from pathlib import Path
 
         from ...config import settings
 
@@ -81,10 +107,7 @@ class ModelLoaderNode(BaseNode):
         # and let to_device downcast them on the way to the device.
         load_device = "cpu" if is_mps_device(device) else device
 
-        p = Path(path)
-        if not p.is_absolute():
-            p = settings.MODELS_DIR / p
-        p = p.resolve()
+        p = self._resolve_path(path)
 
         # Restrict reads to project data directory
         data_root = settings.MODELS_DIR.parent.resolve()

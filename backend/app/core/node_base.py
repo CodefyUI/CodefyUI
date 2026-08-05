@@ -162,6 +162,28 @@ class BaseNode(ABC):
     cacheable: ClassVar[bool] = True
 
     @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        """Extra state to fold into the cache key, beyond params and
+        upstream keys (#144, #145).
+
+        Returns ``None`` by default -- most nodes are fully described by
+        their params. A node whose output depends on external state that
+        params name but do not CONTAIN -- almost always a file or directory
+        path -- overrides this to return something that changes when that
+        state does, typically ``core.cache_fingerprint.path_fingerprint``
+        (or the ``paths_``/``directory_`` variant) applied to the path(s)
+        the params resolve to.
+
+        The engine folds the return value into
+        ``ExecutionCache.compute_key`` verbatim, so it only needs to be
+        JSON-serialisable (a dict/tuple/scalar is fine). This is
+        independent of ``cacheable``: returning a non-None fingerprint
+        does not make an otherwise non-cacheable node cacheable, and a
+        cacheable node with no external state simply returns None here.
+        """
+        return None
+
+    @classmethod
     @abstractmethod
     def define_inputs(cls) -> list[PortDefinition]:
         ...
