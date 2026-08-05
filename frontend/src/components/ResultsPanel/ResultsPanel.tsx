@@ -77,7 +77,10 @@ export function ResultsPanel() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
 
-  const setSelectedNodeId = useTabStore((s) => s.setSelectedNodeId);
+  // "Click to highlight" is a programmatic selection (this panel is not the
+  // canvas, so React Flow's own click handling never runs for it) -- needs
+  // the `.selected`-syncing action, not the plain-click one (#167 follow-up).
+  const selectNodeExclusively = useTabStore((s) => s.selectNodeExclusively);
 
   // The badge counts RUNNING/QUEUED runs, app-wide — the one fact a user who
   // has never opened the tab needs from it. `activeCount` is seeded by the
@@ -391,7 +394,7 @@ export function ResultsPanel() {
                         title={t('results.clickToHighlight')}
                         onClick={(e) => {
                           e.stopPropagation();
-                          setSelectedNodeId(entry.nodeId!);
+                          selectNodeExclusively(entry.nodeId!);
                         }}
                       >
                         {String(entry.nodeId).slice(0, 8)}

@@ -114,6 +114,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const onEdgesChange = useTabStore((s) => s.onEdgesChange);
   const storeOnConnect = useTabStore((s) => s.onConnect);
   const setSelectedNodeId = useTabStore((s) => s.setSelectedNodeId);
+  const selectNodeExclusively = useTabStore((s) => s.selectNodeExclusively);
   const deleteNode = useTabStore((s) => s.deleteNode);
   const duplicateNode = useTabStore((s) => s.duplicateNode);
   const renameNode = useTabStore((s) => s.renameNode);
@@ -541,12 +542,12 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   }, []);
 
   const handlePaneClick = useCallback(() => {
-    setSelectedNodeId(null);
+    selectNodeExclusively(null);
     setContextMenu(null);
     setPaneMenu(null);
     setEdgeTooltip(null);
     // quickSearch is closed by QuickNodeSearch's own outside-click handler
-  }, [setSelectedNodeId]);
+  }, [selectNodeExclusively]);
 
   const handlePaneContextMenu = useCallback(
     (event: MouseEvent | React.MouseEvent) => {
@@ -560,10 +561,10 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const handleNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: { id: string }) => {
       event.preventDefault();
-      setSelectedNodeId(node.id);
+      selectNodeExclusively(node.id);
       setContextMenu({ nodeId: node.id, x: event.clientX, y: event.clientY });
     },
-    [setSelectedNodeId]
+    [selectNodeExclusively]
   );
 
   const handleRename = useCallback(

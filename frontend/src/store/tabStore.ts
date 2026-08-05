@@ -340,6 +340,7 @@ interface TabStoreState {
   updateNodeParams: (nodeId: string, params: Record<string, any>) => void;
   updatePresetInternalParam: (nodeId: string, internalNodeId: string, paramName: string, value: any) => void;
   setSelectedNodeId: (id: string | null) => void;
+  selectNodeExclusively: (id: string | null) => void;
   openPresetModal: (id: string) => void;
   closePresetModal: () => void;
   openSubgraphModal: (id: string) => void;
@@ -493,38 +494,30 @@ function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => 
 
 /**
  * Point React Flow's own per-node `.selected` flag at exactly `id`,
- * deselecting every other node (#167) -- UNLESS `id` already names a member
- * of an existing multi-selection (two or more `.selected` nodes), in which
- * case the whole selection is left alone.
+ * deselecting every other node -- UNLESS `id` already names a member of an
+ * existing multi-selection (two or more `.selected` nodes), in which case
+ * the whole selection is left alone (#167).
  *
- * `selectedNodeId` and `.selected` used to be two independent sources of
- * truth for "which node is selected". A plain click kept them in sync only
- * by accident -- React Flow selects the clicked node itself, and the click
- * handler separately calls `setSelectedNodeId` -- but a programmatic
- * selection (the detail modal's arrow keys, a right-click) wrote only the
- * store field. `deleteKeyCode` removes whatever React Flow's `.selected`
- * says, so the two paths disagreeing meant Delete could remove a different
- * node than the one on screen. Routing the two interactive selection paths
- * (`setSelectedNodeId`, `openNodeDetail`) through this makes them agree with
- * `.selected` by construction.
+ * Used by the two PROGRAMMATIC selection paths, the ones React Flow itself
+ * has no opinion about: `selectNodeExclusively` (a right-click, the
+ * ResultsPanel's "click to highlight", or any other store-driven "make this
+ * the selection") and `openNodeDetail` (the detail modal's arrow keys). That
+ * makes `selectedNodeId` and `.selected` agree by construction on those two
+ * paths. Deliberately NOT used by `setSelectedNodeId` (the plain-click
+ * path) -- see its own comment for why running this on a click would be
+ * actively wrong, not just redundant.
  *
  * The multi-selection exception exists because `.selected` is not only the
  * Delete-key target -- it is the app's OWN multi-selection, read by four
  * bulk operations (`collapseSelectionToSubgraph`, `toggleBypassForSelection`,
  * selection-scoped auto-layout, `copySelectedNodes`). Without it, right-
- * clicking a node inside a box-selection (`handleNodeContextMenu` calls
- * `setSelectedNodeId`, and React Flow does not touch `.selected` on a right-
- * click) collapsed the selection down to that one node before the context
- * menu could read it -- which silently removed `NodeContextMenu`'s only
- * entry point to "Collapse to subgraph" (#198) whenever it was opened via
- * right-click. A lone selected node, or a target outside the current
- * selection, still narrows normally -- so the modal's arrow-key target and a
- * right-clicked non-member are unaffected, which is what fixed #167 in the
- * first place. Shift+click accumulation is also unaffected: React Flow
- * applies it to `.selected` via its own `onNodesChange` dispatch before
- * `onNodeClick` (and therefore `setSelectedNodeId`) ever runs, so by the
- * time this function sees the array, the new member is already `.selected`
- * and the multi-selection guard above keeps it that way.
+ * clicking a node inside a box-selection collapsed the selection down to
+ * that one node before the context menu could read it -- which silently
+ * removed `NodeContextMenu`'s only entry point to "Collapse to subgraph"
+ * (#198) whenever it was opened via right-click. A lone selected node, or a
+ * target outside the current selection, still narrows normally -- so the
+ * modal's arrow-key target and a right-clicked non-member are unaffected,
+ * which is what fixed #167 in the first place.
  */
 function selectOnlyNode(nodes: Node<NodeData>[], id: string | null): Node<NodeData>[] {
   if (id !== null) {
@@ -1614,7 +1607,38 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       })),
     }),
 
+  // The plain-click path (FlowCanvas#handleNodeClick) ONLY. Deliberately
+  // does NOT sync `.selected` -- contrast `selectNodeExclusively` below.
+  //
+  // React Flow already applies every click's FULL selection effect to
+  // `.selected`, via its own `onNodesChange` dispatch, before `onNodeClick`
+  // (and therefore this action) ever runs -- verified against the installed
+  // `@xyflow/react` source for all three cases: a plain click (replaces the
+  // selection), a shift+click that ADDS to one, and a shift+click that
+  // REMOVES a member from one.
+  //
+  // Re-deriving `.selected` from just `id` here would fight that -- and for
+  // a shift+click REMOVAL specifically, it would get it backwards rather
+  // than merely redundant: the node the user just removed is, by the time
+  // this runs, the one node in the array that is NOT `.selected`, which is
+  // indistinguishable from "a stale click landed on a node outside the
+  // current selection" (the exact shape `selectNodeExclusively` exists to
+  // correct for a right-click). `selectOnlyNode` cannot tell those two
+  // apart from the nodes array alone, so it would re-select the node the
+  // user just removed and deselect the rest -- the opposite of the click
+  // (#167 follow-up). Staying raw for every click side-steps the ambiguity
+  // entirely: a click's own selection effect is never touched twice.
   setSelectedNodeId: (id) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ selectedNodeId: id })) }),
+
+  // Right-click, the ResultsPanel's "click to highlight", the pane-click
+  // clear, and anything else that is NOT a plain click and so gets no help
+  // from React Flow's own selection handling (#167). Goes through
+  // `selectOnlyNode` so `.selected` agrees with `selectedNodeId` by
+  // construction -- see that helper's comment for the multi-selection
+  // exception, and `setSelectedNodeId` above for why the click path is a
+  // separate action rather than sharing this one.
+  selectNodeExclusively: (id) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         selectedNodeId: id,

@@ -117,6 +117,23 @@ describe('ResultsPanel — log tab basics', () => {
     expect(screen.queryByText('bad shape')).not.toBeInTheDocument();
   });
 
+  it('clicking the node id badge selects that node exclusively (#167 follow-up)', () => {
+    // This panel is not the canvas -- React Flow's own click handling never
+    // runs for it -- so the badge needs the `.selected`-syncing action
+    // (selectNodeExclusively), not the plain-click one.
+    useTabStore.getState().setNodes([
+      { id: 'abcdef1234567890', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'N', type: 'N', params: {} } },
+      { id: 'other', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'O', type: 'O', params: {} } },
+    ] as any);
+    seedLogs([makeLog({ message: 'info msg', type: 'info', nodeId: 'abcdef1234567890' })]);
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText('abcdef12'));
+    const tab = useTabStore.getState().tabs.find((tt) => tt.id === useTabStore.getState().activeTabId)!;
+    expect(tab.selectedNodeId).toBe('abcdef1234567890');
+    expect(tab.nodes.find((n) => n.id === 'abcdef1234567890')!.selected).toBe(true);
+    expect(tab.nodes.find((n) => n.id === 'other')!.selected).toBe(false);
+  });
+
   // #125: one ResultsPanel now serves every canvas tab (only the active tab's
   // surface is mounted, and it is not remounted on a switch), so local state
   // that indexes INTO the active tab's data has to be reset by hand.

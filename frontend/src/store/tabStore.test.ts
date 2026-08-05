@@ -695,7 +695,44 @@ describe('selection and modals', () => {
     expect(activeTab().selectedNodeId).toBeNull();
   });
 
-  it('setSelectedNodeId also selects the target node in React Flow, deselecting the rest (#167)', () => {
+  it('setSelectedNodeId does not touch .selected -- React Flow already has, for every click (#167 follow-up)', () => {
+    // The plain-click path (FlowCanvas#handleNodeClick). By the time this
+    // runs, React Flow has already applied the click's own selection effect
+    // to `.selected` via its own dispatch -- re-deriving it here would fight
+    // that (and, for a shift+click removal specifically, get it backwards;
+    // see the "shift+click that removes..." test below).
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'B', type: 'B', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('n1');
+    expect(activeTab().selectedNodeId).toBe('n1');
+    // .selected is exactly as it was before this call -- untouched.
+    expect(activeTab().nodes.find((n) => n.id === 'n1')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'n2')!.selected).toBe(true);
+  });
+
+  it('shift+click that removes a node from a selection does not re-select it (#167 follow-up)', () => {
+    // The regression this branch introduced and this test guards against:
+    // {a, c} selected, user shift+clicks a to remove it. React Flow's own
+    // dispatch (verified against the installed @xyflow/react source)
+    // synchronously sets a.selected=false BEFORE onNodeClick -- and
+    // therefore setSelectedNodeId -- ever runs. At that point `a` looks
+    // identical (from the nodes array alone) to a stale click landing
+    // outside the current selection, which is exactly the shape
+    // selectNodeExclusively exists to correct for a right-click. Using that
+    // syncing action here would re-select `a` and deselect `c` -- the
+    // opposite of what the user just did.
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'A', type: 'A', params: {} } },
+      { id: 'c', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'C', type: 'C', params: {} } },
+    ] as any);
+    store().setSelectedNodeId('a');
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'c')!.selected).toBe(true);
+  });
+
+  it('selectNodeExclusively selects the target node in React Flow, deselecting the rest (#167)', () => {
     // Mirrors the context-menu path (FlowCanvas#handleNodeContextMenu): n1
     // carries a stale `.selected` from an earlier plain click, then n2 is
     // right-clicked. `selectedNodeId` and `.selected` must agree afterwards
@@ -704,17 +741,17 @@ describe('selection and modals', () => {
       { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
       { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, selected: false, data: { label: 'B', type: 'B', params: {} } },
     ] as any);
-    store().setSelectedNodeId('n2');
+    store().selectNodeExclusively('n2');
     const nodes = activeTab().nodes;
     expect(nodes.find((n) => n.id === 'n1')!.selected).toBe(false);
     expect(nodes.find((n) => n.id === 'n2')!.selected).toBe(true);
   });
 
-  it('setSelectedNodeId(null) deselects every node', () => {
+  it('selectNodeExclusively(null) deselects every node', () => {
     store().setNodes([
       { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, selected: true, data: { label: 'A', type: 'A', params: {} } },
     ] as any);
-    store().setSelectedNodeId(null);
+    store().selectNodeExclusively(null);
     expect(activeTab().nodes[0].selected).toBe(false);
   });
 

@@ -553,6 +553,42 @@ describe('click handlers', () => {
     expect(activeTab().selectedNodeId).toBeNull();
   });
 
+  it('shift+click that removes a node from a 3-member selection leaves the other two selected (#167 follow-up)', () => {
+    // React Flow applies a shift-click's own selection effect to `.selected`
+    // via its own onNodesChange dispatch BEFORE onNodeClick fires (verified
+    // against the installed @xyflow/react source) -- so a shift-click that
+    // REMOVES `a` from an {a,b,c} selection has already left `b` and `c`
+    // selected and `a` not by the time onNodeClick runs. This starts from
+    // that already-updated state and asserts onNodeClick does not fight it.
+    setTab({
+      nodes: [
+        node('a', { selected: false }),
+        node('b', { selected: true }),
+        node('c', { selected: true }),
+      ],
+    });
+    renderCanvas();
+    act(() => captured.rf.onNodeClick({} as any, { id: 'a' }));
+    expect(activeTab().nodes.find((n) => n.id === 'a')!.selected).toBe(false);
+    expect(activeTab().nodes.find((n) => n.id === 'b')!.selected).toBe(true);
+    expect(activeTab().nodes.find((n) => n.id === 'c')!.selected).toBe(true);
+  });
+
+  it('shift+click that adds a node to a selection leaves the group selected (#167 follow-up)', () => {
+    // Companion case: React Flow has already added `c` to the {a,b}
+    // selection before onNodeClick fires.
+    setTab({
+      nodes: [
+        node('a', { selected: true }),
+        node('b', { selected: true }),
+        node('c', { selected: true }),
+      ],
+    });
+    renderCanvas();
+    act(() => captured.rf.onNodeClick({} as any, { id: 'c' }));
+    expect(activeTab().nodes.every((n) => n.selected)).toBe(true);
+  });
+
   it('opens a data tooltip on edge click when a summary exists', () => {
     setTab({
       nodes: [node('a', { data: { label: 'A', type: 'Linear', params: {}, definition: makeDef() } }), node('b')],
