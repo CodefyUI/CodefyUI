@@ -232,7 +232,13 @@ def resolve_device(requested: str | None) -> str:
                 "mps instead.", index,
             )
             return "mps"
-        return device
+        # REBUILT, not echoed (#194) -- matches the branch just above.
+        # ``\d`` in DEVICE_SYNTAX is Unicode-aware, so "mps:00" and
+        # "mps:<Arabic-Indic zero>" both parse to index 0 without being
+        # spelled "0"; echoing ``device`` here handed torch the untouched
+        # original string, which rejected the non-canonical spellings with
+        # a RuntimeError naming neither the graph nor the parameter.
+        return "mps"
     # Unknown value (e.g. "auto" sent as a global device) — never hand an
     # invalid string to torch; degrade to CPU.
     logger.warning("Unknown device %r, falling back to CPU", device)

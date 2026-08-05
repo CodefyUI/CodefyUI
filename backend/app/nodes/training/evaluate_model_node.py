@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...core.amp import PRECISIONS
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -26,24 +27,27 @@ class EvaluateModelNode(BaseNode):
     NODE_NAME = "EvaluateModel"
     CATEGORY = "Training"
     DESCRIPTION = (
-        "算訓練好的分類模型在一個 dataset 上的準確率。吃 model + dataset，內部建 "
-        "DataLoader 跑完整個資料集、對每筆取 argmax 跟標籤比，輸出 accuracy / correct / total。"
-        "補上通用訓練流缺的「評估」那一塊（對應 I2-4 看 MNIST 測試準確率）。"
+        "Measures a trained classification model's accuracy on a dataset. "
+        "Takes model + dataset, builds a DataLoader internally to run the "
+        "whole dataset, takes each example's argmax and compares it to the "
+        "label, and outputs accuracy / correct / total. Fills the "
+        "'evaluation' gap in the generic training flow (maps to curriculum "
+        "I2-4: checking validation accuracy after training an MNIST MLP)."
     )
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="model", data_type=DataType.MODEL, description="訓練好的分類模型（吃 batch、吐 [B, C] logits）。"),
-            PortDefinition(name="dataset", data_type=DataType.DATASET, description="要評估的資料集（如 Dataset 節點的 MNIST test）。"),
+            PortDefinition(name="model", data_type=DataType.MODEL, description="Trained classification model to evaluate (takes a batch, outputs [B, C] logits)"),
+            PortDefinition(name="dataset", data_type=DataType.DATASET, description="Dataset to evaluate on (e.g. a Dataset node's MNIST test set)"),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="accuracy", data_type=DataType.SCALAR, description="準確率，落在 [0, 1]。"),
-            PortDefinition(name="correct", data_type=DataType.SCALAR, description="分對的筆數。"),
-            PortDefinition(name="total", data_type=DataType.SCALAR, description="總筆數。"),
+            PortDefinition(name="accuracy", data_type=DataType.SCALAR, description="Accuracy, in [0, 1]"),
+            PortDefinition(name="correct", data_type=DataType.SCALAR, description="Number of correctly classified examples"),
+            PortDefinition(name="total", data_type=DataType.SCALAR, description="Total number of examples"),
         ]
 
     @classmethod
@@ -54,14 +58,32 @@ class EvaluateModelNode(BaseNode):
                 param_type=ParamType.INT,
                 default=256,
                 min_value=1,
-                description="評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。",
+                description="Batch size for evaluation (does not affect the result, only speed/memory)",
             ),
             ParamDefinition(
                 name="device",
                 param_type=ParamType.SELECT,
-                default="cpu",
-                options=["cpu", "cuda"],
-                description="跑在 cpu 還是 cuda。",
+                default="auto",
+                options=["auto", "cpu", "cuda", "mps"],
+                description="Device to evaluate on ('auto' follows the global device)",
+            ),
+            ParamDefinition(
+                name="precision",
+                param_type=ParamType.SELECT,
+                default="fp32",
+                description=(
+                    "Mixed precision for the forward pass. bf16 roughly "
+                    "halves activation memory on Ampere and newer with no "
+                    "other change; fp16 does the same on older cards. "
+                    "Parameters stay fp32 either way, but the reduced-"
+                    "precision forward pass can still shift the reported "
+                    "accuracy slightly (a lower-precision logit can flip "
+                    "an argmax on a near-tie), so fp32 is the number to "
+                    "report. A device that cannot honour the choice falls "
+                    "back to fp32 and says so."
+                ),
+                options=list(PRECISIONS),
+                advanced=True,
             ),
         ]
 
@@ -76,7 +98,8 @@ class EvaluateModelNode(BaseNode):
         import torch
         from torch.utils.data import DataLoader
 
-        from ...core.device_utils import resolve_device
+        from ...core.amp import AmpPolicy
+        from ...core.device_utils import resolve_node_device
         from ...core.loop_control import (
             EVENT_BATCH,
             ProgressThrottle,
@@ -93,11 +116,25 @@ class EvaluateModelNode(BaseNode):
             raise ValueError("EvaluateModel requires a `dataset` input.")
 
         batch_size = max(1, int(params.get("batch_size", 256)))
-        # Through ``resolve_device`` since #135 rather than an inline
-        # ``device == "cuda"`` equality check: that check let ``cuda:1``
-        # past the availability guard entirely, and an out-of-range index
-        # reached ``.to()`` unvalidated.
-        device = resolve_device(str(params.get("device", "cpu")))
+        # Through ``resolve_node_device`` (#204) rather than the old
+        # ``resolve_device(str(params.get("device", "cpu")))``: that call
+        # never saw the context at all, so a graph submitted with
+        # {"device": "cuda"} trained on the GPU and then silently
+        # evaluated on the CPU the moment this param was left at its
+        # default. ``resolve_node_device``'s "auto" means "follow the
+        # run-level device", the same contract TrainingLoop.device already
+        # has. An explicit override still runs through ``resolve_device``
+        # (#135), so a hand-set ``cuda:1`` stays availability-checked and
+        # REBUILT rather than handed to torch unvalidated.
+        device = resolve_node_device(params.get("device"), context)
+        # Same recipe as TrainingLoop.precision (#193 item 1). Parameters
+        # stay fp32 regardless -- there is no gradient here for a lower
+        # precision to make numerically UNSTABLE the way it can mid-
+        # training -- but the forward pass itself runs in the requested
+        # precision, so a lower-precision logit can still flip an argmax
+        # on a near-tie and shift the reported accuracy. fp32 (the
+        # default) is the number to report.
+        policy = AmpPolicy.for_device(params.get("precision"), device)
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         model = model.to(device)
@@ -121,7 +158,8 @@ class EvaluateModelNode(BaseNode):
                 x, y = batch[0], batch[1]
                 x = x.to(device)
                 y = torch.as_tensor(y).to(device)
-                logits = model(x)
+                with policy.autocast():
+                    logits = model(x)
                 pred = logits.argmax(dim=1)
                 correct += int((pred == y).sum().item())
                 total += int(y.numel())

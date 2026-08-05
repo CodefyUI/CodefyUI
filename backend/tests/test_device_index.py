@@ -99,7 +99,7 @@ def test_a_negative_index_is_rejected(four_cards):
     "cuda: 0",      # a space -- int(" 0") is 0, so only a SYNTAX check sees it
     "cuda : 0",     # ... and the same mistake one character earlier
     "cuda:+1",      # a sign
-    "cuda:٠",       # a non-ASCII digit; int() accepts it, torch does not
+    "cuda:\u0660",       # a non-ASCII digit; int() accepts it, torch does not
 ])
 def test_a_malformed_index_never_reaches_torch(four_cards, bad):
     """Every one of these used to be returned VERBATIM.
@@ -164,8 +164,32 @@ def test_an_index_on_a_machine_with_no_cuda_still_lands_on_the_cpu(no_cuda):
 
 def test_mps_has_no_index_vocabulary_beyond_zero(monkeypatch):
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
-    assert resolve_device("mps:0") == "mps:0"
+    # "mps" and "mps:0" name the same hardware, so both canonicalise to
+    # the bare form -- REBUILT, not echoed (#194; see the dedicated test
+    # below for why the echo was reachable and unsafe).
+    assert resolve_device("mps:0") == "mps"
     assert resolve_device("mps:1") == "mps"
+
+
+def test_mps_index_zero_is_rebuilt_rather_than_echoed(monkeypatch):
+    """#194: the mps branch used to ``return device`` verbatim whenever the
+    index was exactly 0, instead of rebuilding like every other branch
+    does (see test_the_resolved_string_is_rebuilt_rather_than_echoed for
+    the cuda side, closed by #135).
+
+    ``DEVICE_SYNTAX``'s ``\\d`` is Unicode-aware and ``int()`` parses
+    Unicode decimal digits too, so ``mps:\u0660`` (Arabic-Indic digit
+    zero) and ``mps:00`` both satisfy "index == 0" without being spelled
+    "0" -- and the old code handed the untouched original string to
+    torch, which rejected it with a RuntimeError naming neither the
+    graph nor the parameter it came from.
+    """
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+    assert resolve_device("mps:00") == "mps"
+    assert resolve_device("mps:\u0660") == "mps"
+    # The real proof, same style as the cuda malformed-index test: torch
+    # accepts what came back.
+    assert torch.device(resolve_device("mps:00")).type == "mps"
 
 
 def test_nonsense_still_degrades_to_the_cpu(four_cards):

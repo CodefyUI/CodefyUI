@@ -175,10 +175,32 @@ class NodeStateStore:
             )
         if on_evict is not None:
             if by_bytes:
-                on_evict(by_bytes, "bytes")
+                self._call_on_evict(on_evict, by_bytes, "bytes")
             if by_count:
-                on_evict(by_count, "count")
+                self._call_on_evict(on_evict, by_count, "count")
         return module
+
+    @staticmethod
+    def _call_on_evict(
+        on_evict: Callable[[list[tuple[str, str, str]], str], None],
+        keys: list[tuple[str, str, str]],
+        reason: str,
+    ) -> None:
+        """Call *on_evict*, guarded -- never lets it raise into the caller.
+
+        Called outside ``self._lock`` (see :meth:`get_or_create`), same as
+        ``on_evict`` itself. ``_report_eviction`` (the only caller today)
+        already guards its own body, but the store must not assume every
+        ``on_evict`` does: a hostile or buggy callback must not corrupt the
+        module this call just built and stored, nor fail the node that
+        happened to trigger the evict. The two reasons are reported
+        independently so one callback raising does not also swallow the
+        other's notice.
+        """
+        try:
+            on_evict(keys, reason)
+        except Exception:  # noqa: BLE001 - an eviction notice must not fail the caller
+            logger.debug("on_evict callback raised", exc_info=True)
 
     # ── internals (caller holds ``self._lock``) ─────────────────────
 

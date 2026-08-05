@@ -483,6 +483,14 @@ const zhTW: NodeTranslations = {
       tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
     },
   },
+  EvaluateModel: {
+    description: '算訓練好的分類模型在一個 dataset 上的準確率。吃 model + dataset，內部建 DataLoader 跑完整個資料集、對每筆取 argmax 跟標籤比，輸出 accuracy / correct / total。補上通用訓練流缺的「評估」那一塊（對應 I2-4 看 MNIST 測試準確率）。',
+    params: {
+      batch_size: '評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。',
+      device: '評估裝置',
+      precision: '前向傳播用的混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的。不論選哪一種，參數都維持 fp32；但降精度的前向傳播仍可能讓量出來的準確率有些微變動（精度較低的 logit 在接近平手時可能讓 argmax 換邊），所以要回報的準確率應該用 fp32 這個數字。裝置做不到的話會自動退回 fp32 並記錄下來。',
+    },
+  },
   BackwardOnce: {
     description: '標記張量為 autograd 反向傳播的目標，供 Backward 檢視器使用。僅在工具列啟用 Backward 模式時執行。反向傳播目標：$\\mathcal{L} = \\sum(\\text{input})$（合成純量）。',
   },
