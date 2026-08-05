@@ -372,7 +372,10 @@ class TrainingLoopNode(BaseNode):
     the only two in this repo's loss map whose targets are integer class
     indices against ``[B, C]`` logits, which is the shape ``argmax(dim=1)``
     assumes). A regression or BCE run therefore never gets a val_accuracy
-    series.
+    series. ``monitor`` (default ``val_loss``) can point early stopping at
+    it instead; requesting ``val_accuracy`` without either gate above
+    holding falls back to ``val_loss`` with a warning rather than
+    comparing against a value that was never computed.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -444,8 +447,23 @@ class TrainingLoopNode(BaseNode):
                 name="early_stopping_patience",
                 param_type=ParamType.INT,
                 default=0,
-                description="Stop if val loss doesn't improve for N epochs (0 = disabled)",
+                description="Stop if the monitored metric doesn't improve for N epochs (0 = disabled)",
                 min_value=0,
+            ),
+            ParamDefinition(
+                name="monitor",
+                param_type=ParamType.SELECT,
+                default="val_loss",
+                description=(
+                    "Metric early stopping watches. val_loss: lower is "
+                    "better (the default). val_accuracy: higher is "
+                    "better -- only recorded for a classification loss "
+                    "(CrossEntropyLoss/NLLLoss) with a val_dataloader "
+                    "wired; falls back to val_loss with a warning when "
+                    "neither holds, rather than watching a value that "
+                    "was never computed."
+                ),
+                options=["val_loss", "val_accuracy"],
             ),
             ParamDefinition(
                 name="grad_clip_norm",
@@ -650,6 +668,7 @@ class TrainingLoopNode(BaseNode):
         epochs = params.get("epochs", 5)
         device = resolve_node_device(params.get("device"), context)
         patience = params.get("early_stopping_patience", 0)
+        monitor = params.get("monitor", "val_loss")
         grad_clip = params.get("grad_clip_norm", 0.0)
         batch_metrics = bool(params.get("batch_metrics", False))
         max_steps = int(params.get("max_steps", 0) or 0)
@@ -752,8 +771,39 @@ class TrainingLoopNode(BaseNode):
         val_epoch_accuracies: list[float] = []
         lr_history: list[float] = []
 
-        # Early stopping state
-        best_val_loss = float("inf")
+        # Early stopping state.
+        #
+        # `monitor` picks which scalar is watched: val_loss (lower is
+        # better, the default -- unchanged from before this param existed)
+        # or val_accuracy (higher is better). val_accuracy only exists when
+        # BOTH gates above hold (a val_dataloader is wired AND loss_fn is
+        # classification -- see is_classification_loss); asking to monitor
+        # it without either means there is no series to watch. This
+        # codebase's convention for an unusable request is to degrade with
+        # a loud warning rather than fail the run (precision falling back
+        # to fp32, a scheduler replay that cannot proceed, ...), so the
+        # same rule applies here: fall back to val_loss, which itself falls
+        # further back to avg_train_loss via the pre-existing rule just
+        # below when there is no val_dataloader at all. Resolved once, here
+        # -- not per epoch -- so the warning (if any) is logged once.
+        monitor_is_accuracy = monitor == "val_accuracy"
+        monitor_fallback_reason: str | None = None
+        if patience > 0 and monitor_is_accuracy and val_dataloader is None:
+            monitor_fallback_reason = "no val_dataloader is wired"
+        elif patience > 0 and monitor_is_accuracy and not is_classification_loss:
+            monitor_fallback_reason = (
+                "loss_fn is not a classification loss (CrossEntropyLoss "
+                "or NLLLoss)"
+            )
+        if monitor_fallback_reason is not None:
+            logger.warning(
+                "monitor=val_accuracy was requested for early stopping, "
+                "but %s, so there is no val_accuracy series to watch. "
+                "Falling back to monitor=val_loss.",
+                monitor_fallback_reason,
+            )
+            monitor_is_accuracy = False
+        best_monitor_value = float("-inf") if monitor_is_accuracy else float("inf")
         best_epoch = 0
         best_state_dict = None
         patience_counter = 0
@@ -1042,9 +1092,21 @@ class TrainingLoopNode(BaseNode):
             # ── Early stopping check ──
             stopped_early = False
             if patience > 0:
-                monitor_loss = avg_val_loss if avg_val_loss is not None else avg_train_loss
-                if monitor_loss < best_val_loss:
-                    best_val_loss = monitor_loss
+                if monitor_is_accuracy:
+                    monitor_value = avg_val_accuracy
+                else:
+                    monitor_value = avg_val_loss if avg_val_loss is not None else avg_train_loss
+                # monitor_value can only be None here if monitor_is_accuracy
+                # but this SPECIFIC epoch produced no accuracy points (e.g.
+                # an empty val_dataloader) despite the run-level gates
+                # passing -- treated as "no improvement" rather than
+                # crashing on a None comparison.
+                improved = monitor_value is not None and (
+                    monitor_value > best_monitor_value if monitor_is_accuracy
+                    else monitor_value < best_monitor_value
+                )
+                if improved:
+                    best_monitor_value = monitor_value
                     best_epoch = epoch + 1
                     best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
                     patience_counter = 0
@@ -1193,6 +1255,13 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
+        if patience > 0:
+            # Only meaningful when early stopping actually ran -- with
+            # patience=0, monitor is not consulted at all, so reporting it
+            # would imply a comparison that never happened.
+            metrics["monitor"] = "val_accuracy" if monitor_is_accuracy else "val_loss"
+            if monitor_fallback_reason is not None:
+                metrics["monitor_requested"] = monitor
         # ``tensorboard_logdir`` is added by ``execute`` after the writer is
         # closed and registered, which happens in a ``finally`` outside this
         # method so a run that raises still gets its artifact row.

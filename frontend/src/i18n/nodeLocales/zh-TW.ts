@@ -472,7 +472,8 @@ const zhTW: NodeTranslations = {
     params: {
       epochs: '訓練 epoch 數量',
       device: '訓練裝置',
-      early_stopping_patience: '驗證損失未改善 N 個 epoch 後停止（0 = 停用）',
+      early_stopping_patience: '監控的指標未改善 N 個 epoch 後停止（0 = 停用）',
+      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
       grad_clip_norm: '最大梯度範數裁剪（0 = 停用）',
       batch_metrics: '同時把每一批的損失記錄成 train_loss_batch 這條序列（預設關閉：每批一列資料量相當可觀）',
       precision: '混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的，會額外搭配 loss scaler。裝置做不到的話會自動退回 fp32 並記錄下來。',

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn as nn
 
@@ -381,3 +383,209 @@ def test_nll_loss_with_val_dataloader_records_val_accuracy():
     )
     names = {name for name, _, _ in ctx.metrics}
     assert "val_accuracy" in names
+
+
+# ── monitor: early stopping can watch val_accuracy (#202, 1c) ──────────
+
+
+def test_monitor_param_defaults_to_val_loss_with_both_options():
+    """default val_loss to preserve current behaviour."""
+    p = next(p for p in TrainingLoopNode.define_params() if p.name == "monitor")
+    assert p.default == "val_loss"
+    assert p.options == ["val_loss", "val_accuracy"]
+
+
+def test_monitor_omitted_behaves_exactly_like_val_loss():
+    """Regression guard for "default val_loss to preserve current
+    behaviour": leaving the new param unset must produce bit-identical
+    results to spelling it out."""
+    def _run(with_monitor_key):
+        torch.manual_seed(0)
+        model = nn.Linear(4, 2)
+        loader = _make_loader(_make_dataset(n=8), batch_size=2)
+        val_loader = _make_loader(_make_dataset(n=4), batch_size=4)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+        params = {"epochs": 6, "device": "cpu", "early_stopping_patience": 2}
+        if with_monitor_key:
+            params["monitor"] = "val_loss"
+        return TrainingLoopNode().execute(
+            {
+                "model": model, "dataloader": loader, "optimizer": optimizer,
+                "loss_fn": nn.CrossEntropyLoss(), "val_dataloader": val_loader,
+            },
+            params,
+        )
+
+    omitted = _run(False)
+    explicit = _run(True)
+    assert omitted["metrics"]["total_epochs_run"] == explicit["metrics"]["total_epochs_run"]
+    assert omitted["metrics"]["best_epoch"] == explicit["metrics"]["best_epoch"]
+    assert torch.equal(omitted["losses"], explicit["losses"])
+
+
+class _ScriptedEvalModel(nn.Module):
+    """A model whose EVAL-mode forward pass returns pre-scripted logits --
+    one script entry consumed per validation call -- so a test can pin an
+    exact, independently-controlled accuracy trajectory across epochs.
+    TRAIN-mode forward passes are a real, differentiable Linear op (so the
+    training phase runs and backward() has something to do) and never
+    touch the script. Keyed off ``self.training``, which model.train() /
+    model.eval() genuinely toggle for a model (unlike for a loss module --
+    see _ScriptedValLoss below)."""
+
+    def __init__(self, eval_logits: list[torch.Tensor], in_features=4, out_classes=2):
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_classes)
+        self._eval_logits = eval_logits
+        self._eval_index = 0
+
+    def forward(self, x):
+        if self.training:
+            return self.linear(x)
+        logits = self._eval_logits[self._eval_index]
+        self._eval_index += 1
+        return logits
+
+
+class _ScriptedValLoss(nn.CrossEntropyLoss):
+    """A CrossEntropyLoss whose VALUE is scripted per validation call,
+    decoupled from the actual logits/targets, so a test can pin an exact
+    loss trajectory independent of the accuracy trajectory (itself driven
+    by _ScriptedEvalModel's real, independently-chosen logits).
+    isinstance(this, nn.CrossEntropyLoss) is True, so the 1b classification
+    gate still admits it.
+
+    ``loss_fn.train()``/``.eval()`` are never called by TrainingLoop --
+    only ``model.train()``/``.eval()`` are -- so ``self.training`` cannot
+    be used to tell a train call from a val call here. Instead this counts
+    calls: with exactly one train batch and one val batch per epoch (the
+    scenario below), calls alternate train, val, train, val, ... starting
+    with train, so val calls are the odd-indexed ones.
+    """
+
+    def __init__(self, eval_losses: list[float]):
+        super().__init__()
+        self._eval_losses = eval_losses
+        self._call = 0
+        self._eval_index = 0
+
+    def forward(self, outputs, targets):
+        real = super().forward(outputs, targets)
+        is_val_call = self._call % 2 == 1
+        self._call += 1
+        if is_val_call:
+            value = self._eval_losses[self._eval_index]
+            self._eval_index += 1
+            return real * 0 + value
+        return real
+
+
+def test_monitor_val_accuracy_stops_at_a_different_epoch_than_val_loss():
+    """Acceptance: monitor=val_accuracy stops on the accuracy plateau
+    rather than the loss turn.
+
+    Loss and accuracy are scripted independently (see the two helper
+    classes above) so the two curves deliberately DISAGREE about which
+    epoch is best: loss improves through epoch 2 then turns worse at
+    epoch 3; accuracy ties at epoch 2 (no improvement under a strict
+    threshold) then improves at epoch 3. With early_stopping_patience=1,
+    each monitor stops at ITS OWN plateau, not the other's -- proving
+    monitor genuinely changes which epoch ends the run, not just which
+    number gets logged.
+    """
+    val_targets = torch.tensor([0, 1, 0, 1])
+    val_X = torch.randn(4, 4)
+    # 2/4 correct (rows 0, 2); tied between epoch 1 and 2.
+    acc_50 = torch.tensor([[1., -1.], [1., -1.], [1., -1.], [1., -1.]])
+    # 4/4 correct; only at epoch 3.
+    acc_100 = torch.tensor([[1., -1.], [-1., 1.], [1., -1.], [-1., 1.]])
+
+    def _run(monitor):
+        torch.manual_seed(0)
+        val_loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(val_X, val_targets), batch_size=4)
+        model = _ScriptedEvalModel([acc_50, acc_50, acc_100])
+        loss_fn = _ScriptedValLoss([2.0, 1.0, 1.5])  # improves, improves, turns
+        train_loader = _make_loader(_make_dataset(n=2), batch_size=2)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        return TrainingLoopNode().execute(
+            {
+                "model": model, "dataloader": train_loader, "optimizer": optimizer,
+                "loss_fn": loss_fn, "val_dataloader": val_loader,
+            },
+            {"epochs": 5, "device": "cpu", "early_stopping_patience": 1,
+             "monitor": monitor},
+        )
+
+    by_loss = _run("val_loss")
+    by_accuracy = _run("val_accuracy")
+
+    # Loss: ep1=2.0 (best, first), ep2=1.0 (improves, new best),
+    # ep3=1.5 (worse -> patience_counter=1 >= patience=1 -> stop after ep3).
+    assert by_loss["metrics"]["total_epochs_run"] == 3
+    assert by_loss["metrics"]["best_epoch"] == 2
+
+    # Accuracy: ep1=0.5 (best, first), ep2=0.5 (TIE, not a strict
+    # improvement -> patience_counter=1 >= patience=1 -> stop after ep2).
+    assert by_accuracy["metrics"]["total_epochs_run"] == 2
+    assert by_accuracy["metrics"]["best_epoch"] == 1
+
+
+def test_monitor_val_accuracy_falls_back_to_val_loss_with_no_val_dataloader(caplog):
+    """Degenerate case 1: no val_dataloader means there is no val_accuracy
+    series (1a's gate) to monitor. Falls back to val_loss -- which, with
+    no val_dataloader either, is itself the pre-existing avg_train_loss
+    fallback -- so the run completes normally rather than crashing or
+    silently comparing against a value that was never computed."""
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        result = _train({
+            "epochs": 3, "early_stopping_patience": 5, "monitor": "val_accuracy",
+        })
+
+    assert result["metrics"]["total_epochs_run"] == 3
+    assert result["metrics"]["monitor"] == "val_loss"
+    assert result["metrics"]["monitor_requested"] == "val_accuracy"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("val_accuracy" in m and "val_dataloader" in m for m in messages), messages
+
+
+def test_monitor_val_accuracy_falls_back_to_val_loss_for_a_regression_loss(caplog):
+    """Degenerate case 2: a regression loss never produces val_accuracy
+    (1b's gate), so monitor=val_accuracy falls back to val_loss here too,
+    even though a val_dataloader IS wired."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 1)
+    train_loader = _make_loader(_make_regression_dataset(n=8))
+    val_loader = _make_loader(_make_regression_dataset(n=4), batch_size=4)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+    with caplog.at_level(logging.WARNING, logger="app.nodes.training.training_loop_node"):
+        res = TrainingLoopNode().execute(
+            {
+                "model": model, "dataloader": train_loader, "optimizer": optimizer,
+                "loss_fn": nn.MSELoss(), "val_dataloader": val_loader,
+            },
+            {"epochs": 3, "device": "cpu", "early_stopping_patience": 5,
+             "monitor": "val_accuracy"},
+        )
+
+    assert res["metrics"]["total_epochs_run"] == 3
+    assert res["metrics"]["monitor"] == "val_loss"
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("classification" in m.lower() for m in messages), messages
+
+
+def test_monitor_val_loss_reports_no_requested_key_when_not_falling_back():
+    """metrics["monitor_requested"] only appears when a fallback actually
+    happened -- an ordinary val_loss run has nothing to report a
+    discrepancy about."""
+    result = _train({"epochs": 2, "early_stopping_patience": 1})
+    assert result["metrics"]["monitor"] == "val_loss"
+    assert "monitor_requested" not in result["metrics"]
+
+
+def test_monitor_key_absent_from_metrics_when_early_stopping_is_off():
+    """monitor is meaningless when patience=0 (early stopping disabled);
+    metrics should not claim a value was monitored when none was."""
+    result = _train({"epochs": 2, "monitor": "val_accuracy"})
+    assert "monitor" not in result["metrics"]
