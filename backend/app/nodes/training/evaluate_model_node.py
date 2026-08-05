@@ -38,16 +38,16 @@ class EvaluateModelNode(BaseNode):
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="model", data_type=DataType.MODEL, description="訓練好的分類模型（吃 batch、吐 [B, C] logits）。"),
-            PortDefinition(name="dataset", data_type=DataType.DATASET, description="要評估的資料集（如 Dataset 節點的 MNIST test）。"),
+            PortDefinition(name="model", data_type=DataType.MODEL, description="Trained classification model to evaluate (takes a batch, outputs [B, C] logits)"),
+            PortDefinition(name="dataset", data_type=DataType.DATASET, description="Dataset to evaluate on (e.g. a Dataset node's MNIST test set)"),
         ]
 
     @classmethod
     def define_outputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="accuracy", data_type=DataType.SCALAR, description="準確率，落在 [0, 1]。"),
-            PortDefinition(name="correct", data_type=DataType.SCALAR, description="分對的筆數。"),
-            PortDefinition(name="total", data_type=DataType.SCALAR, description="總筆數。"),
+            PortDefinition(name="accuracy", data_type=DataType.SCALAR, description="Accuracy, in [0, 1]"),
+            PortDefinition(name="correct", data_type=DataType.SCALAR, description="Number of correctly classified examples"),
+            PortDefinition(name="total", data_type=DataType.SCALAR, description="Total number of examples"),
         ]
 
     @classmethod
@@ -75,10 +75,12 @@ class EvaluateModelNode(BaseNode):
                     "Mixed precision for the forward pass. bf16 roughly "
                     "halves activation memory on Ampere and newer with no "
                     "other change; fp16 does the same on older cards. "
-                    "Parameters stay fp32 either way, so this only affects "
-                    "memory/speed, never the measured accuracy. A device "
-                    "that cannot honour the choice falls back to fp32 and "
-                    "says so."
+                    "Parameters stay fp32 either way, but the reduced-"
+                    "precision forward pass can still shift the reported "
+                    "accuracy slightly (a lower-precision logit can flip "
+                    "an argmax on a near-tie), so fp32 is the number to "
+                    "report. A device that cannot honour the choice falls "
+                    "back to fp32 and says so."
                 ),
                 options=list(PRECISIONS),
                 advanced=True,
@@ -125,10 +127,13 @@ class EvaluateModelNode(BaseNode):
         # (#135), so a hand-set ``cuda:1`` stays availability-checked and
         # REBUILT rather than handed to torch unvalidated.
         device = resolve_node_device(params.get("device"), context)
-        # Same recipe as TrainingLoop.precision (#193 item 1): parameters
-        # stay fp32 regardless, so lowering this only trades memory/speed,
-        # never the measured accuracy -- and there is no gradient here for
-        # a lower precision to make numerically unstable in the first place.
+        # Same recipe as TrainingLoop.precision (#193 item 1). Parameters
+        # stay fp32 regardless -- there is no gradient here for a lower
+        # precision to make numerically UNSTABLE the way it can mid-
+        # training -- but the forward pass itself runs in the requested
+        # precision, so a lower-precision logit can still flip an argmax
+        # on a near-tie and shift the reported accuracy. fp32 (the
+        # default) is the number to report.
         policy = AmpPolicy.for_device(params.get("precision"), device)
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)

@@ -102,6 +102,60 @@ def test_left_at_its_default_it_follows_a_real_cuda_run_end_to_end():
     assert next(model.parameters()).device.type == "cuda"
 
 
+def test_left_at_its_default_it_reaches_the_model_without_real_hardware(monkeypatch):
+    """The test above is skipif'd away on CPU-only CI, and its two
+    unconditional neighbours (explicit-override, no-context) pass against
+    the pre-#204 code too -- they are regression pins, not proof of the
+    fix. On CI the only thing pinning "left at its default follows the
+    run device" is the spy test, which only proves resolve_node_device
+    was CALLED with the right arguments, not that whatever it RETURNS
+    actually reaches next(model.parameters()).device. This closes that
+    gap without a GPU.
+
+    A real run's context.device is already resolve_device-d by the time a
+    node sees it (resolve_node_device's own docstring). Monkeypatching
+    resolve_device to map "cuda" -> torch's "meta" device -- real, always
+    available, needs no driver -- simulates exactly that, so the eventual
+    model.to(device) call below is genuine rather than mocked. Every OTHER
+    input passes through unchanged: the mock must not swallow the
+    difference between the two code paths under test, only stand in for
+    real cuda hardware. (A `lambda requested: "meta"` unconditionally,
+    tried first, made this test pass against the pre-#204 code too --
+    "cpu", the OLD hardcoded default, hit the same mock and also came
+    back "meta". That is exactly the "test that would pass against
+    unmodified code" trap; caught by actually running it against the
+    pre-fix source before trusting it.)
+
+    The node param is left empty ({}), i.e. at its "auto" default, so
+    this exercises the SAME auto -> context.device path as the CUDA test
+    above; resolve_node_device's "auto" branch is a direct, unvalidated
+    passthrough of context.device (see resolve_node_device's docstring),
+    so it never calls resolve_device itself -- the monkeypatch here is
+    standing in for the run-submission step that populates context.device
+    in production, not for anything this node calls directly.
+
+    Meta tensors carry no data, so real evaluation (which reads back a
+    scalar via .item()) would raise; this test is about the device MOVE
+    (model = model.to(device)), which happens before the batch loop, so
+    the context is pre-cancelled -- the same idiom test_cancellation.py
+    uses -- and returns cleanly without ever touching tensor data.
+    """
+    from app.core import device_utils
+
+    real_resolve_device = device_utils.resolve_device
+    monkeypatch.setattr(
+        device_utils, "resolve_device",
+        lambda requested: "meta" if requested == "cuda" else real_resolve_device(requested),
+    )
+    context = ExecutionContext(device=device_utils.resolve_device("cuda"))
+    context.cancel()
+
+    model = _fresh_model()
+    EvaluateModelNode().execute(
+        {"model": model, "dataset": _dataset()}, {}, context=context)
+    assert next(model.parameters()).device.type == "meta"
+
+
 def test_an_explicit_device_still_overrides_the_run_device():
     """"auto" is the only value that defers to the context; an explicit
     "cpu" wins even when the run itself asked for something else."""
@@ -140,10 +194,14 @@ def test_precision_fp32_default_leaves_the_forward_pass_dtype_unchanged():
 
 
 def test_precision_bf16_runs_the_forward_pass_in_bf16_but_keeps_params_fp32():
-    """No correctness trap (per the review): autocast only changes the
-    dtype the forward pass computes IN, never the stored parameters -- and
-    this node already runs under torch.no_grad(), so there is no gradient
-    for a lower precision to make numerically unstable."""
+    """Parameters stay fp32 regardless of precision -- there is no
+    gradient here for a lower precision to make numerically UNSTABLE the
+    way it can mid-training. That is NOT the same as accuracy-free: the
+    forward pass itself runs in bf16, so a lower-precision logit can still
+    flip an argmax on a near-tie and shift the reported number. fp32 (the
+    default) is the accuracy to report; this test only pins that
+    parameters are untouched, not that the two precisions agree on
+    accuracy."""
     probe = _DtypeProbe()
     EvaluateModelNode().execute(
         {"model": probe, "dataset": _dataset()},

@@ -178,15 +178,15 @@ def test_mps_index_zero_is_rebuilt_rather_than_echoed(monkeypatch):
     the cuda side, closed by #135).
 
     ``DEVICE_SYNTAX``'s ``\\d`` is Unicode-aware and ``int()`` parses
-    Unicode decimal digits too, so ``mps:٠`` (Arabic-Indic digit zero) and
-    ``mps:00`` both satisfy "index == 0" without being spelled "0" --
-    and the old code handed the untouched original string to torch,
-    which rejected it with a RuntimeError naming neither the graph nor
-    the parameter it came from.
+    Unicode decimal digits too, so ``mps:\u0660`` (Arabic-Indic digit
+    zero) and ``mps:00`` both satisfy "index == 0" without being spelled
+    "0" -- and the old code handed the untouched original string to
+    torch, which rejected it with a RuntimeError naming neither the
+    graph nor the parameter it came from.
     """
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
     assert resolve_device("mps:00") == "mps"
-    assert resolve_device("mps:٠") == "mps"  # Arabic-Indic digit zero
+    assert resolve_device("mps:\u0660") == "mps"
     # The real proof, same style as the cuda malformed-index test: torch
     # accepts what came back.
     assert torch.device(resolve_device("mps:00")).type == "mps"
