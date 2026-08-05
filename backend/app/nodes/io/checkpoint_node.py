@@ -188,6 +188,30 @@ class CheckpointLoaderNode(BaseNode):
                 if isinstance(v, torch.Tensor):
                     state[k] = to_device(v, device)
 
+        # Honest base_lrs (#149). Restored explicitly and unconditionally --
+        # not only when a scheduler is wired into THIS node -- because the
+        # optimizer this returns may feed a scheduler built downstream in
+        # the graph instead. Optimizer.load_state_dict's own dict-merge
+        # (verified against the installed torch: `update_group` replaces
+        # each live param group with the SAVED group's dict wholesale)
+        # already carries `initial_lr` through by accident whenever the
+        # checkpoint's own optimizer_state_dict happens to have it; this
+        # makes that guarantee explicit instead of inherited, so it also
+        # holds for a checkpoint whose optimizer never had a scheduler
+        # attached at save time. See the "Honest base_lrs" section of
+        # core.checkpoints for the full reasoning. Done BEFORE the scheduler
+        # section below on purpose -- "before any scheduler is constructed".
+        initial_lrs = checkpoint.get("initial_lrs")
+        if initial_lrs is not None:
+            if len(initial_lrs) != len(optimizer.param_groups):
+                logger.warning(
+                    "Checkpoint %s holds %d initial_lr value(s) but the "
+                    "optimizer has %d param group(s); restoring only the "
+                    "overlap.", p, len(initial_lrs), len(optimizer.param_groups),
+                )
+            for param_group, initial_lr in zip(optimizer.param_groups, initial_lrs):
+                param_group["initial_lr"] = initial_lr
+
         # LR schedule (#118). Restored AFTER the optimizer on purpose: the
         # optimizer state dict carries the learning rate that was live when the
         # checkpoint was taken, and ``LRScheduler.load_state_dict`` does not

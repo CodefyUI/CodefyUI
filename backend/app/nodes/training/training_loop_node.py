@@ -335,6 +335,27 @@ class TrainingLoopNode(BaseNode):
     ``val_losses`` one entry shorter than ``losses``, because that epoch's
     training finished and its validation did not.
 
+    **Periodic checkpointing (#203).** ``should_stop()`` and the interrupt
+    checkpoint above cover every way a RUN can end early -- a Stop click, a
+    cancelled browser tab, the submitting process exiting. None of them
+    cover the SERVER PROCESS dying outright (SIGKILL, an OOM kill, power
+    loss, a restart): that path never reaches the interrupt checkpoint,
+    because it only runs on the way OUT of a node that has already decided
+    to return. ``checkpoint_every`` (epochs, ``0`` = disabled, matching
+    ``early_stopping_patience``'s own convention and every other opt-in knob
+    on this node) closes that gap: every Nth COMPLETE epoch, on a run that
+    is training normally, an ordinary checkpoint is written under
+    ``MODELS_DIR/periodic/`` and registered exactly like the interrupt
+    checkpoint (an ``exec_run_artifacts`` row of kind ``checkpoint``, same
+    ``can_record_artifacts()`` gating, same atomic write). Resuming from one
+    needs no new concepts -- the same ``CheckpointLoader.epoch ->
+    start_epoch`` wiring. Retention (``RunStore.prune``) is what bounds the
+    file count once a run's row ages out of the keep-last-N window; it
+    cannot reach a still-active run, so a very frequent ``checkpoint_every``
+    on a very long run legitimately accumulates one file per event until
+    then -- see ``core.checkpoints``' "No row, no file" section for the
+    full reasoning.
+
     **Fitting a bigger run on one card (#135).** Two independent levers,
     both off by default:
 
@@ -437,6 +458,19 @@ class TrainingLoopNode(BaseNode):
                 param_type=ParamType.INT,
                 default=0,
                 description="Stop if val loss doesn't improve for N epochs (0 = disabled)",
+                min_value=0,
+            ),
+            ParamDefinition(
+                name="checkpoint_every",
+                param_type=ParamType.INT,
+                default=0,
+                description=(
+                    "Save a checkpoint every N completed epochs, so a "
+                    "server crash loses at most N epochs instead of the "
+                    "whole run. Independent of CheckpointSaver and resumes "
+                    "the same way: wire CheckpointLoader.epoch to "
+                    "start_epoch (0 = disabled)"
+                ),
                 min_value=0,
             ),
             ParamDefinition(
@@ -615,6 +649,7 @@ class TrainingLoopNode(BaseNode):
             interrupted_result,
             loader_length,
             save_interrupt_checkpoint,
+            save_periodic_checkpoint,
             stop_checker,
         )
         from ...core.seeding import apply_determinism
@@ -630,6 +665,7 @@ class TrainingLoopNode(BaseNode):
         epochs = params.get("epochs", 5)
         device = resolve_node_device(params.get("device"), context)
         patience = params.get("early_stopping_patience", 0)
+        checkpoint_every = int(params.get("checkpoint_every", 0) or 0)
         grad_clip = params.get("grad_clip_norm", 0.0)
         batch_metrics = bool(params.get("batch_metrics", False))
         max_steps = int(params.get("max_steps", 0) or 0)
@@ -1052,6 +1088,27 @@ class TrainingLoopNode(BaseNode):
                     # run's payload is byte-for-byte what it was before #118.
                     progress_data["start_epoch"] = start_epoch
                 progress_callback(progress_data)
+
+            # #203: a periodic checkpoint, taken on a HEALTHY run so the
+            # server process itself -- the one failure nothing else in this
+            # stack survives -- is no longer a single point of failure for
+            # hours of completed epochs. Keyed off the ABSOLUTE epoch
+            # number, so a resumed run keeps hitting the same multiples it
+            # would have hit uninterrupted, exactly like every other
+            # epoch-indexed decision in this loop. Placed AFTER the epoch is
+            # fully banked (loss, LR, early-stopping bookkeeping, progress)
+            # so the checkpoint's own `epoch`/`losses` line up with what was
+            # just reported, and BEFORE the early-stopping/step-budget/
+            # should_stop exits below so the run's very last epoch is
+            # covered too when it happens to land on a multiple.
+            if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
+                save_periodic_checkpoint(
+                    context, model, optimizer,
+                    epoch=epoch + 1,
+                    losses=torch.tensor(epoch_losses, dtype=torch.float32),
+                    lr_scheduler=lr_scheduler,
+                    scaler_state=policy.state_dict(),
+                )
 
             if stopped_early:
                 logger.info("Early stopping triggered at epoch %d (best epoch: %d)", epoch + 1, best_epoch)

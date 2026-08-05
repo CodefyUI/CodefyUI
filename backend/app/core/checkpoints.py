@@ -25,11 +25,32 @@ key                          contents
 ``epoch``                    int, the epoch the checkpoint was taken at
 ``model_state_dict``         ``model.state_dict()``
 ``optimizer_state_dict``     ``optimizer.state_dict()``
+``initial_lrs``              list[float], one per param group (#149)
 ``losses``                   optional tensor of per-epoch training losses
 ``scheduler_state_dict``     optional ``lr_scheduler.state_dict()`` (#118)
 ``scheduler_class``          optional class name guarding the restore (#118)
 ``scaler_state_dict``        optional ``GradScaler.state_dict()`` (#135)
 ===========================  ============================================
+
+**Honest base_lrs (#149).** ``LRScheduler.__init__`` stamps
+``group.setdefault("initial_lr", group["lr"])`` onto each optimizer param
+group at CONSTRUCTION time, and ``Optimizer.load_state_dict`` happens to
+carry that key through a round trip -- verified against the installed torch
+2.11.0+cu128: ``update_group`` replaces each LIVE param group with the
+SAVED group's dict wholesale (only ``params``/``param_names`` are patched in
+from the live side), so a saved dict that already has ``initial_lr`` keeps
+it, accidentally, with no code anywhere naming the guarantee. That accident
+stops applying the moment a checkpoint's own ``optimizer_state_dict`` does
+NOT carry the key -- which happens whenever the optimizer being saved never
+had ANY scheduler constructed over it -- and a scheduler built fresh on the
+resumed optimizer then stamps ``initial_lr`` from whatever the CURRENT
+(possibly already-decayed) ``lr`` is, silently treating it as the run's
+starting point. ``initial_lrs`` makes the guarantee explicit instead of
+inherited: captured here at save time, restored onto
+``optimizer.param_groups[i]["initial_lr"]`` by ``CheckpointLoaderNode``
+before anything downstream can construct a scheduler, so a fresh schedule
+always starts from the honest original regardless of what the accidental
+mechanism would or would not have preserved.
 
 ``scaler_state_dict`` is present only for an fp16 run, and holds five plain
 scalars (``scale``, ``growth_factor``, ``backoff_factor``,
@@ -50,26 +71,39 @@ file. An interrupt checkpoint is an ordinary checkpoint that happens to have
 been written by the engine, so ``CheckpointLoader`` needs no special case
 and a user can resume from it exactly as from a hand-placed one. Where it
 came from is recorded on the ``exec_run_artifacts`` row instead, which is
-the layer that owns run history.
+the layer that owns run history. The periodic path (#203, below) makes the
+identical choice for the identical reason.
 
-No row, no file (#122)
-----------------------
+No row, no file (#122, #203)
+----------------------------
 That last sentence is a constraint, not a description. The artifact ROW is
-the only index of an interrupt checkpoint: nothing scans
-``MODELS_DIR/interrupted/``, no retention pass sweeps it, and the filename
-is readable but not enumerable by any consumer. So a run with nowhere to
-put the row must not write the file either -- it would be an orphan that
-grows a model-sized hole in the user's disk on every timeout, forever.
+the only index of an interrupt or periodic checkpoint: nothing scans
+``MODELS_DIR/interrupted/`` or ``MODELS_DIR/periodic/`` directly, and the
+filename is readable but not enumerable by any consumer. So a run with
+nowhere to put the row must not write the file either -- it would be an
+orphan that grows a model-sized hole in the user's disk on every timeout,
+forever.
 
 The runs that have nowhere: the REST contract runner
 (``routes_graph_run.execute_contract_run``, which passes no ``on_signal``
 and cancels its context on timeout), the exported Python script, and any
-bare ``execute_graph``. ``loop_control.save_interrupt_checkpoint`` asks
-``context.can_record_artifacts()`` and declines. The alternative -- write
-the file and log the path -- was rejected: a path in a log line that the
-user has to find and clean up by hand is not a feature, and the interactive
-and queued lanes (which DO record rows) are where interruption actually
-happens.
+bare ``execute_graph``. ``loop_control.save_interrupt_checkpoint`` and
+``save_periodic_checkpoint`` both ask ``context.can_record_artifacts()``
+and decline. The alternative -- write the file and log the path -- was
+rejected: a path in a log line that the user has to find and clean up by
+hand is not a feature, and the interactive and queued lanes (which DO
+record rows) are where interruption and long training both actually
+happen.
+
+Retention (#156) is the other half of the invariant: the row is only a
+reliable index for as long as SOMETHING deletes the file when the row goes.
+``RunStore.prune`` does, for ``checkpoint``-kind artifacts, via
+:func:`unlink_checkpoint` -- see that function and ``RunStore.prune``'s own
+docstring for why the delete has to happen inside the same transaction as
+the row read. Retention only ever reaches a run once it is terminal AND has
+aged out of the keep-last-N window, so it does not, and structurally cannot,
+bound how many periodic checkpoints a single STILL-RUNNING job accumulates
+-- see ``TrainingLoopNode``'s ``checkpoint_every`` docs for that trade-off.
 
 Durability
 ----------
@@ -104,6 +138,15 @@ logger = logging.getLogger(__name__)
 
 #: Sub-directory of ``MODELS_DIR`` for checkpoints nobody asked for by name.
 INTERRUPT_DIRNAME = "interrupted"
+
+#: Sub-directory of ``MODELS_DIR`` for checkpoints a HEALTHY run writes on
+#: its own schedule (``TrainingLoop.checkpoint_every``, #203) rather than
+#: because anything went wrong. Kept apart from ``INTERRUPT_DIRNAME``: a
+#: file under "interrupted" for a run that is training normally would
+#: mislead anyone browsing MODELS_DIR by hand, even though both directories
+#: follow the identical no-row-no-file discipline and the identical
+#: path-safety rules.
+PERIODIC_DIRNAME = "periodic"
 
 #: Cap on each path component built from a run/node id. Long enough to stay
 #: recognisable, short enough that a deep MODELS_DIR plus two components
@@ -158,6 +201,21 @@ def interrupt_checkpoint_path(
     return settings.MODELS_DIR / INTERRUPT_DIRNAME / name
 
 
+def periodic_checkpoint_path(run_id: str, node_id: str, *, epoch: int) -> Path:
+    """Where a periodic (#203) checkpoint for *epoch* goes.
+
+    Named like :func:`interrupt_checkpoint_path` minus the batch component:
+    a periodic checkpoint is only ever taken at a clean epoch boundary (see
+    ``loop_control.save_periodic_checkpoint``), so there is no mid-epoch
+    position to record. One file per checkpoint event rather than one
+    overwritten file per run -- retention (``RunStore.prune``,
+    :func:`unlink_checkpoint`) is what bounds the count once a run's row
+    ages out, not this function.
+    """
+    name = f"{_safe_part(run_id)}-{_safe_part(node_id)}-e{int(epoch)}.pt"
+    return settings.MODELS_DIR / PERIODIC_DIRNAME / name
+
+
 def build_checkpoint(
     model: Any,
     optimizer: Any,
@@ -180,6 +238,17 @@ def build_checkpoint(
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        # #149: captured explicitly, mirroring LRScheduler.__init__'s own
+        # ``setdefault("initial_lr", lr)`` -- see the "Honest base_lrs"
+        # section above for why this must not be left to
+        # Optimizer.load_state_dict's accidental dict-merge behaviour.
+        # Unconditional (unlike the optional keys below): every optimizer
+        # has param_groups, so there is always something honest to record,
+        # even when it just equals the current lr because nothing has
+        # decayed it yet.
+        "initial_lrs": [
+            g.get("initial_lr", g["lr"]) for g in optimizer.param_groups
+        ],
     }
     if losses is not None:
         checkpoint["losses"] = losses
@@ -273,3 +342,42 @@ def write_checkpoint(
         target, epoch, checkpoint.get("scheduler_class", "none"),
     )
     return target
+
+
+def unlink_checkpoint(path: str | Path) -> bool:
+    """Best-effort delete of a checkpoint file whose only row is gone (#156).
+
+    Called from retention (``RunStore.prune``), which runs unattended --
+    after every run finishes and at every server startup -- and must never
+    fail a whole prune over one file. A locked handle, a path some earlier
+    prune already removed (the SELECT-then-DELETE inside one transaction
+    that ``RunStore.prune`` uses makes that the only realistic case, but a
+    hand-deleted file is just as possible) or a permissions error are all
+    logged and swallowed. Never raises.
+
+    Only removes a path that resolves inside the project data directory --
+    the same rule :func:`resolve_checkpoint_path` enforces on write. An
+    artifact's ``kind`` is an open vocabulary (see ``run_store``'s
+    ``ARTIFACT_KIND_*`` comment), so a row mislabelled ``checkpoint`` by
+    something outside this module's own writers must not turn an automatic
+    sweep into a delete of an arbitrary file.
+
+    Returns True when a file was actually removed.
+    """
+    try:
+        resolved = resolve_checkpoint_path(path)
+    except ValueError:
+        logger.warning(
+            "retention: not deleting artifact path %r -- it resolves "
+            "outside the project data directory", str(path),
+        )
+        return False
+    try:
+        resolved.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("retention: could not delete checkpoint file %s",
+                       resolved, exc_info=True)
+        return False
+    return True
