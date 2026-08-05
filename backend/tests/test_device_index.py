@@ -99,7 +99,7 @@ def test_a_negative_index_is_rejected(four_cards):
     "cuda: 0",      # a space -- int(" 0") is 0, so only a SYNTAX check sees it
     "cuda : 0",     # ... and the same mistake one character earlier
     "cuda:+1",      # a sign
-    "cuda:٠",       # a non-ASCII digit; int() accepts it, torch does not
+    "cuda:\u0660",       # a non-ASCII digit; int() accepts it, torch does not
 ])
 def test_a_malformed_index_never_reaches_torch(four_cards, bad):
     """Every one of these used to be returned VERBATIM.
