@@ -19,8 +19,16 @@ def test_empty_directory_raises():
         ImageBatchReaderNode().execute({}, {"directory": ""})
 
 
-def test_nonexistent_dir_raises(tmp_path):
-    # Use a directory under data root for the path validation to pass
+def test_nonexistent_dir_raises(monkeypatch, tmp_path):
+    # Isolated under tmp_path the same way as the writer tests below
+    # (review follow-up on #151): this one creates nothing, so it cannot
+    # actually clobber a concurrent run, but pointing it at the real
+    # backend/data/ instead read as half-applied isolation next to the
+    # three that are. MODELS_DIR still has to be patched (not just
+    # tmp_path used directly) for the same reason as the others: the
+    # node's own path-escape check only accepts a directory under
+    # MODELS_DIR.parent.
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
     target_dir = settings.MODELS_DIR.parent / "_missing_dir_for_test"
     with pytest.raises(FileNotFoundError):
         ImageBatchReaderNode().execute({}, {"directory": str(target_dir)})
