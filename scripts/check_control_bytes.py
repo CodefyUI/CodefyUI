@@ -16,6 +16,16 @@ count, and -- the sharpest one -- ripgrep and `git grep` both classify a file
 containing these bytes as binary and skip it, reporting "no match" rather
 than "not searched". See issue #209 for the full incident list.
 
+Known blind spot: a file that is not valid UTF-8 is skipped entirely (see
+``_scan``), including one that is genuine text but encoded as something
+else -- UTF-16, for instance, which is what plain `>` redirection produces
+by default in Windows PowerShell, and whose FF FE byte-order mark alone is
+invalid UTF-8. UTF-16 also encodes every ASCII character with a NUL
+companion byte, so a file that entered the tree that way would carry NULs
+throughout and never be scanned. No incident on record has been UTF-16; this
+is a real gap given the target audience, not a theoretical one, so it is
+written down here rather than silently relied on not mattering.
+
 Usage (from anywhere; resolves the repo root from this file's own path):
 
     python scripts/check_control_bytes.py
@@ -51,15 +61,27 @@ _FLAGGED_C0 = frozenset(b for b in range(0x20) if b not in _ALLOWED_C0)
 
 # Vendored binary content that is not source and must not be scanned, even
 # though it is tracked. Ordinary binary assets (PNG, ico, the .gz dumps)
-# already fail the UTF-8-validity check below and need no listing here.
-# This one directory is the sole exception found while validating this
-# script against the real tree: `backend/data/MNIST/raw/*-labels-idx1-ubyte`
-# is the *uncompressed* IDX label dump, one byte per label (0-9) plus a
-# small header -- every byte in it happens to be < 0x80, which makes it
-# accidentally valid UTF-8 and would otherwise register ~9000 false hits.
-_EXCLUDED_PREFIXES = (
-    "backend/data/MNIST/",
-)
+# already fail the UTF-8-validity check below and need no listing here. The
+# uncompressed MNIST IDX dumps under backend/data/MNIST/raw/ are the sole
+# exception found while validating this script against the real tree:
+# every byte in the *-labels-idx1-ubyte files is a label 0-9 or part of a
+# small header, all < 0x80, which makes them accidentally valid UTF-8 and
+# would otherwise register ~9000 false hits each. (The *-images-idx3-ubyte
+# files already fail the UTF-8 check on their own -- listed here anyway,
+# for the same "this whole vendored dump is not source" reason, not
+# because they need the exemption.)
+#
+# Matched on directory AND the IDX-specific "-ubyte" suffix together, not
+# on the directory alone: a directory-only match would silently exempt any
+# OTHER file added later under the same path (a README, say), which is
+# exactly the kind of exemption that is meant not to be able to grow by
+# accident.
+_VENDORED_BINARY_DIR = "backend/data/MNIST/"
+_VENDORED_BINARY_SUFFIX = "-ubyte"
+
+
+def _is_vendored_binary_dump(rel: str) -> bool:
+    return rel.startswith(_VENDORED_BINARY_DIR) and rel.endswith(_VENDORED_BINARY_SUFFIX)
 
 
 def _tracked_files() -> list[Path]:
@@ -73,7 +95,7 @@ def _tracked_files() -> list[Path]:
     rels = [raw.decode("utf-8") for raw in result.stdout.split(b"\x00") if raw]
     return [
         _REPO_ROOT / rel for rel in rels
-        if not rel.startswith(_EXCLUDED_PREFIXES)
+        if not _is_vendored_binary_dump(rel)
     ]
 
 
