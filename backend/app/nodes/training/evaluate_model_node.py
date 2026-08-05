@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...core.amp import PRECISIONS
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -26,9 +27,12 @@ class EvaluateModelNode(BaseNode):
     NODE_NAME = "EvaluateModel"
     CATEGORY = "Training"
     DESCRIPTION = (
-        "算訓練好的分類模型在一個 dataset 上的準確率。吃 model + dataset，內部建 "
-        "DataLoader 跑完整個資料集、對每筆取 argmax 跟標籤比，輸出 accuracy / correct / total。"
-        "補上通用訓練流缺的「評估」那一塊（對應 I2-4 看 MNIST 測試準確率）。"
+        "Measures a trained classification model's accuracy on a dataset. "
+        "Takes model + dataset, builds a DataLoader internally to run the "
+        "whole dataset, takes each example's argmax and compares it to the "
+        "label, and outputs accuracy / correct / total. Fills the "
+        "'evaluation' gap in the generic training flow (maps to curriculum "
+        "I2-4: checking validation accuracy after training an MNIST MLP)."
     )
 
     @classmethod
@@ -54,7 +58,7 @@ class EvaluateModelNode(BaseNode):
                 param_type=ParamType.INT,
                 default=256,
                 min_value=1,
-                description="評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。",
+                description="Batch size for evaluation (does not affect the result, only speed/memory)",
             ),
             ParamDefinition(
                 name="device",
@@ -62,6 +66,22 @@ class EvaluateModelNode(BaseNode):
                 default="auto",
                 options=["auto", "cpu", "cuda", "mps"],
                 description="Device to evaluate on ('auto' follows the global device)",
+            ),
+            ParamDefinition(
+                name="precision",
+                param_type=ParamType.SELECT,
+                default="fp32",
+                description=(
+                    "Mixed precision for the forward pass. bf16 roughly "
+                    "halves activation memory on Ampere and newer with no "
+                    "other change; fp16 does the same on older cards. "
+                    "Parameters stay fp32 either way, so this only affects "
+                    "memory/speed, never the measured accuracy. A device "
+                    "that cannot honour the choice falls back to fp32 and "
+                    "says so."
+                ),
+                options=list(PRECISIONS),
+                advanced=True,
             ),
         ]
 
@@ -76,6 +96,7 @@ class EvaluateModelNode(BaseNode):
         import torch
         from torch.utils.data import DataLoader
 
+        from ...core.amp import AmpPolicy
         from ...core.device_utils import resolve_node_device
         from ...core.loop_control import (
             EVENT_BATCH,
@@ -104,6 +125,11 @@ class EvaluateModelNode(BaseNode):
         # (#135), so a hand-set ``cuda:1`` stays availability-checked and
         # REBUILT rather than handed to torch unvalidated.
         device = resolve_node_device(params.get("device"), context)
+        # Same recipe as TrainingLoop.precision (#193 item 1): parameters
+        # stay fp32 regardless, so lowering this only trades memory/speed,
+        # never the measured accuracy -- and there is no gradient here for
+        # a lower precision to make numerically unstable in the first place.
+        policy = AmpPolicy.for_device(params.get("precision"), device)
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         model = model.to(device)
@@ -127,7 +153,8 @@ class EvaluateModelNode(BaseNode):
                 x, y = batch[0], batch[1]
                 x = x.to(device)
                 y = torch.as_tensor(y).to(device)
-                logits = model(x)
+                with policy.autocast():
+                    logits = model(x)
                 pred = logits.argmax(dim=1)
                 correct += int((pred == y).sum().item())
                 total += int(y.numel())

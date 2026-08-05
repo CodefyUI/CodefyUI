@@ -1,4 +1,4 @@
-"""EvaluateModelNode: device resolution (#204).
+"""EvaluateModelNode: device resolution (#204) and precision (#193 item 1).
 
 Companion to test_device_utils.py / test_device_index.py, which already
 exhaustively cover resolve_node_device / resolve_device themselves. This
@@ -15,6 +15,7 @@ import torch.nn as nn
 from torch.utils.data import TensorDataset
 
 from app.core import device_utils
+from app.core.amp import PRECISIONS
 from app.core.execution_context import ExecutionContext
 from app.nodes.training.evaluate_model_node import EvaluateModelNode
 
@@ -27,6 +28,22 @@ def _dataset(n: int = 16, features: int = 4, classes: int = 3) -> TensorDataset:
 
 def _fresh_model(features: int = 4, classes: int = 3) -> nn.Module:
     return nn.Linear(features, classes)
+
+
+class _DtypeProbe(nn.Module):
+    """A tiny model that records the dtype its forward pass actually ran
+    in, so a test can prove autocast was (or wasn't) applied without
+    inspecting torch internals."""
+
+    def __init__(self, in_features: int = 4, out_features: int = 3):
+        super().__init__()
+        self.linear = nn.Linear(in_features, out_features)
+        self.seen_dtype: torch.dtype | None = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.linear(x)
+        self.seen_dtype = out.dtype
+        return out
 
 
 # ── 1a (#204): device follows the run, not a hardcoded default ─────────
@@ -103,3 +120,33 @@ def test_with_no_context_it_defaults_to_cpu_like_the_cli_runner():
     model = _fresh_model()
     EvaluateModelNode().execute({"model": model, "dataset": _dataset()}, {})
     assert next(model.parameters()).device.type == "cpu"
+
+
+# ── 1b (#193 item 1): precision, mirroring TrainingLoop.precision ──────
+
+
+def test_precision_param_matches_training_loops_vocabulary_and_default():
+    p = next(p for p in EvaluateModelNode.define_params() if p.name == "precision")
+    assert p.default == "fp32"
+    assert p.options == list(PRECISIONS)
+    assert p.advanced is True
+
+
+def test_precision_fp32_default_leaves_the_forward_pass_dtype_unchanged():
+    probe = _DtypeProbe()
+    EvaluateModelNode().execute(
+        {"model": probe, "dataset": _dataset()}, {"device": "cpu"})
+    assert probe.seen_dtype == torch.float32
+
+
+def test_precision_bf16_runs_the_forward_pass_in_bf16_but_keeps_params_fp32():
+    """No correctness trap (per the review): autocast only changes the
+    dtype the forward pass computes IN, never the stored parameters -- and
+    this node already runs under torch.no_grad(), so there is no gradient
+    for a lower precision to make numerically unstable."""
+    probe = _DtypeProbe()
+    EvaluateModelNode().execute(
+        {"model": probe, "dataset": _dataset()},
+        {"device": "cpu", "precision": "bf16"})
+    assert probe.seen_dtype == torch.bfloat16
+    assert probe.linear.weight.dtype == torch.float32
