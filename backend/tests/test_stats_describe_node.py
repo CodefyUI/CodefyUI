@@ -10,6 +10,7 @@ would pass no matter how wrong both were.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -44,7 +45,11 @@ def _as_frame(result) -> pd.DataFrame:
 
 @pytest.fixture(scope="module")
 def iris() -> pd.DataFrame:
-    return pd.read_csv("data/samples/iris.csv")[IRIS_COLUMNS]
+    # Resolved relative to this file, not the pytest cwd (#185) -- a bare
+    # "data/samples/iris.csv" only worked when pytest ran from backend/.
+    return pd.read_csv(
+        Path(__file__).resolve().parents[1] / "data/samples/iris.csv"
+    )[IRIS_COLUMNS]
 
 
 def test_node_metadata():
