@@ -538,6 +538,19 @@ describe('graphToFlow', () => {
     expect(new Set(restKeys).size).toBe(rest.length);
   });
 
+  it('a single unpositioned node is still exempt from layout (length>1 guard unchanged by every->some)', () => {
+    // On record for this task specifically: the every->some change only
+    // matters once there are >= 2 nodes to disagree about. A one-node spec
+    // never reaches `needsPosition` at all -- `spec.nodes.length > 1` short-
+    // circuits `needsLayout` to false regardless -- so it must fall through
+    // to the plain `position ?? {x:0,y:0}` default exactly as before.
+    const res = graphToFlow(
+      JSON.stringify({ version: 2, nodes: [{ id: 'solo', type: 'Conv2d' }], edges: [] }),
+    );
+    expect(res.nodes).toHaveLength(1);
+    expect(res.nodes[0].position).toEqual({ x: 0, y: 0 });
+  });
+
   it('auto-layout keeps a short chain in a single column', () => {
     // 5-node chain with no skips: the valley pass is a no-op, so dagre's
     // single-column TB layout comes through untouched.
@@ -684,16 +697,34 @@ function loadRealLayersSpec(relativePath: string): string {
 }
 
 describe.each([
-  { name: 'DQN-Atari-RL', path: '../examples/Model_Architecture/DQN-Atari-RL/graph.json' },
-  { name: 'PPO-Robotics-RL', path: '../examples/Model_Architecture/PPO-Robotics-RL/graph.json' },
+  {
+    name: 'DQN-Atari-RL',
+    path: '../examples/Model_Architecture/DQN-Atari-RL/graph.json',
+    expectedNodeCount: 12,
+    // Pinned by running the fixed code once and reading off its own output
+    // (`convertWorkflowToGraphSpec`-style specs always start with the
+    // synthesized Input node and end with the synthesized Output node, so
+    // "first"/"last" by array index are exactly those two boundary nodes).
+    expectedFirst: { id: 'in', position: { x: 0, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 0, y: 1100 } },
+  },
+  {
+    name: 'PPO-Robotics-RL',
+    path: '../examples/Model_Architecture/PPO-Robotics-RL/graph.json',
+    expectedNodeCount: 7,
+    expectedFirst: { id: 'in', position: { x: 0, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 0, y: 600 } },
+  },
   {
     name: 'ResNet18-CIFAR10-Baseline',
     path: '../examples/Usage_Example/ResNet18-CIFAR10-Baseline/graph.json',
     // The largest position-less spec in the repo (#206) -- the file most
     // likely to trip the whole-spec gate, and why this fix is worth doing now.
     expectedNodeCount: 70,
+    expectedFirst: { id: 'in', position: { x: 94, y: 0 } },
+    expectedLast: { id: 'out', position: { x: 94, y: 5166 } },
   },
-])('graphToFlow on the real $name layer spec', ({ path, expectedNodeCount }) => {
+])('graphToFlow on the real $name layer spec', ({ path, expectedNodeCount, expectedFirst, expectedLast }) => {
   it('lays it out exactly as it does today (fully position-less spec, no regression)', () => {
     const layersJson = loadRealLayersSpec(path);
     const parsed: GraphSpec = JSON.parse(layersJson);
@@ -701,9 +732,7 @@ describe.each([
     // Sanity: confirms these fixtures are actually the position-less specs
     // the fix targets, so this test would catch it if that ever changed.
     expect(parsed.nodes.every((n) => !n.position)).toBe(true);
-    if (expectedNodeCount !== undefined) {
-      expect(parsed.nodes.length).toBe(expectedNodeCount);
-    }
+    expect(parsed.nodes.length).toBe(expectedNodeCount);
 
     const res = graphToFlow(layersJson);
 
@@ -718,6 +747,17 @@ describe.each([
     // (the exact failure mode of the bug this fixes).
     const positions = res.nodes.map((n) => `${n.position.x},${n.position.y}`);
     expect(new Set(positions).size).toBeGreaterThan(1);
+
+    // Pinned, not just well-formed: exact coordinates for the synthesized
+    // Input (first) and Output (last) node, so a future change to
+    // `assignPositionsFromTopology`, `applyValleyPass`, or the layout config
+    // (nodesep/ranksep/thresholds) is actually caught here, not just gross
+    // degeneracy (everything dropped, everything stacked at one point).
+    expect({ id: res.nodes[0].id, position: res.nodes[0].position }).toEqual(expectedFirst);
+    expect({
+      id: res.nodes[res.nodes.length - 1].id,
+      position: res.nodes[res.nodes.length - 1].position,
+    }).toEqual(expectedLast);
   });
 });
 
