@@ -192,6 +192,76 @@ def test_validate_plugin_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
         plugin_cli.validate_plugin_dir(root, [])
 
 
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("own method: self.save(path)",
+         "class X:\n    def pwn(self, path):\n        self.save(path)\n"),
+        ("own method: self.dump(x)",
+         "class X:\n    def pwn(self, x):\n        self.dump(x)\n"),
+        ("keras-ish: model.save(p)",
+         "def pwn(model, p):\n    model.save(p)\n"),
+        ("torch.distributed.init_process_group",
+         "import torch\ndef pwn():\n    torch.distributed.init_process_group('gloo')\n"),
+        ("torch.hub.download_url_to_file",
+         "import torch\ndef pwn():\n    torch.hub.download_url_to_file('x', 'y')\n"),
+        ("torch.onnx.export",
+         "import torch\ndef pwn(model, x, p):\n    torch.onnx.export(model, x, p)\n"),
+    ],
+)
+def test_denied_attributes_is_refused_at_tier0_but_liftable_at_tier2(
+    tmp_path, label, source
+):
+    """core#179 follow-up: closing these at Tier 0/1 is right (a plugin that
+    declared nothing, or only a capability, gets no new file-write / remote-
+    fetch-and-execute surface for free) -- refusing them at Tier 2 is
+    incoherent. ``--trust-author`` already hands over ``subprocess``,
+    ``ctypes`` and ``importlib``; a plugin trusted with those but refused
+    ``arr.dump()`` or its OWN ``self.save()`` method makes no sense, and
+    before this fix there was no way to write a plugin with a method named
+    ``save`` at all -- the only fix available to the author was patching
+    CodefyUI itself.
+
+    The dunder/RCE precedent does not transfer here: those rules refuse
+    REFLECTION, which no capability ever buys (core#133's own docs are
+    explicit about this). ``.dump`` / ``.hub`` / ``.save`` are not
+    reflection -- they are file writes and remote code fetches,
+    ``--trust-author`` has already granted an equivalent or greater version
+    of that by a shorter route (``subprocess`` can write files and fetch
+    code far more directly than ``numpy.save`` can), so refusing the
+    narrower path while granting the wider one protects nothing.
+    """
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "n.py").write_text(source, encoding="utf-8")
+
+    # Tier 0/1: nothing declared beyond (at most) a capability -- refused.
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+    # Tier 2: --trust-author (modelled here as a non-empty allowed_modules,
+    # exactly the condition validate_nodes_dir/validate_plugin_dir's callers
+    # gate on -- see _install_github, which never calls either function with
+    # a non-empty `allowed` unless args.trust_author was already true)
+    # accepts it.
+    plugin_cli.validate_nodes_dir(nodes, allowed_modules=["torch"])
+
+
+def test_denied_attributes_lift_also_applies_to_validate_plugin_dir(tmp_path):
+    """Same Tier-2 lift, the other entry point -- a separate call to
+    ``validate_python_source`` that must not drift from what
+    ``validate_nodes_dir`` does."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "n.py").write_text(
+        "class X:\n    def pwn(self, path):\n        self.save(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+    plugin_cli.validate_plugin_dir(root, ["torch"])
+
+
 # ── core#182: a skipped directory is still importable at runtime ───────────
 
 @pytest.mark.parametrize(

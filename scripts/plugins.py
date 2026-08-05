@@ -347,6 +347,43 @@ def _validate_security_table(security: Any) -> None:
         )
 
 
+def _denied_attributes_for(allowed_modules: list[str]) -> frozenset[str]:
+    """core#179's ``denied_attributes`` set, lifted at Tier 2.
+
+    A method on a value a Tier-0 import hands back (``numpy.zeros(3).dump(
+    path)``) is an arbitrary file write with zero capability declared: the
+    blocklist gate is keyed on Import nodes, so it never sees what an
+    allowed library's return value can do. Already closed for in-canvas
+    scripts via ``TIER0_DENIED_ATTRS`` passed as ``denied_attributes``; this
+    is the same constant, not a re-derived smaller list, so the two surfaces
+    cannot drift on what "closed" means. Deliberately NOT
+    ``SCRIPT_PROXY_DENIED_ATTRS``, which also folds in the module-gateway
+    attrs (``.hub``'s sibling problem, not this one) and the RCE leaves as
+    attributes -- both closed for scripts for reasons specific to an
+    allowlisted, unreviewed surface that do not hold for a file the user
+    chose to install.
+
+    Lifted entirely at Tier 2 (``allowed_modules`` non-empty, which only
+    happens once ``--trust-author`` has already been accepted -- see
+    ``_install_github``, which refuses to call either caller of this
+    function with a non-empty ``allowed`` otherwise). Closing these at Tier
+    0/1 is right: a plugin that declared nothing, or only a capability, gets
+    no new file-write / remote-fetch-and-execute surface for free, and
+    before core#179 a plugin could not even define a method named ``save``
+    without failing installation outright. Refusing them at Tier 2 is
+    incoherent, and the dunder/RCE-leaf precedent (never lifted by any
+    tier -- see the walker's own denied-attrs handling) does not transfer:
+    those rules refuse REFLECTION, which core#133's own docs say no
+    capability ever buys. ``.dump`` / ``.hub`` / ``.save`` are not
+    reflection -- they are file writes and remote code fetches, and
+    ``--trust-author`` has already granted an equivalent or greater version
+    of both by a shorter route (bare ``subprocess`` reaches further than
+    ``numpy.save`` ever could), so refusing the narrower path while granting
+    the wider one protects nothing.
+    """
+    return frozenset() if allowed_modules else TIER0_DENIED_ATTRS
+
+
 def validate_nodes_dir(
     nodes_dir: Path,
     allowed_modules: list[str],
@@ -363,19 +400,7 @@ def validate_nodes_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
-            # core#179 -- a method on a value a Tier-0 import hands back
-            # (``numpy.zeros(3).dump(path)``) is an arbitrary file write with
-            # zero capability declared: the gate below is keyed on Import
-            # nodes, so it never sees what an allowed library's return value
-            # can do. Already closed for in-canvas scripts via this exact
-            # constant; wiring it in here instead of re-deriving a smaller
-            # list keeps the two surfaces from drifting on what "closed"
-            # means. Deliberately NOT `SCRIPT_PROXY_DENIED_ATTRS`, which also
-            # folds in the module-gateway attrs (``.hub``'s sibling problem,
-            # not this one) and the RCE leaves as attributes -- both closed
-            # for scripts for reasons specific to an allowlisted, unreviewed
-            # surface that do not hold for a file the user chose to install.
-            denied_attributes=TIER0_DENIED_ATTRS,
+            denied_attributes=_denied_attributes_for(allowed_modules),
         )
 
 
@@ -431,17 +456,26 @@ def validate_plugin_dir(
 
     The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
     bypass via top-level helpers. This visits every ``.py`` file in the tree
-    except the ones under :data:`_VALIDATION_SKIP_DIRS` -- ``__pycache__``
-    and ``.git``, neither reachable through Python's import system. Nothing
-    else is skipped: ``examples/``, ``tests/``, ``docs/`` and ``assets/`` all
-    get scanned too (core#182), because the plugin loader registers the
-    WHOLE directory as a namespace package's ``__path__``, so a scanned
-    ``nodes/foo.py`` can ``from ..tests import payload`` into any of them.
+    except the ones under :data:`_VALIDATION_SKIP_DIRS` -- ``.git`` alone,
+    the one name provably unreachable through Python's import system (not a
+    valid identifier, so no ``import`` can ever name it). Nothing else is
+    skipped: ``examples/``, ``tests/``, ``docs/``, ``assets/`` and
+    ``__pycache__`` all get scanned too (core#182), because the plugin
+    loader registers the WHOLE directory as a namespace package's
+    ``__path__``, so a scanned ``nodes/foo.py`` can ``from ..tests import
+    payload`` -- or ``from ..__pycache__ import payload`` -- into any of
+    them.
 
     *capabilities* are the ones the user confirmed at install time. They are
     passed to every file rather than per-file, because a capability is a
     property of the INSTALL, not of a source file: a plugin granted
     ``network`` may reach it from wherever it likes inside its own tree.
+
+    *allowed_modules* also lifts the ``denied_attributes`` closed by
+    core#179 -- see :func:`_denied_attributes_for` -- because a non-empty
+    list here only happens once ``--trust-author`` has already been
+    accepted, and refusing ``arr.dump()`` to a plugin trusted with
+    ``subprocess`` protects nothing.
     """
     if not plugin_root.exists():
         return
@@ -458,8 +492,7 @@ def validate_plugin_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
-            # core#179 -- see the matching comment in validate_nodes_dir.
-            denied_attributes=TIER0_DENIED_ATTRS,
+            denied_attributes=_denied_attributes_for(allowed_modules),
         )
 
 
