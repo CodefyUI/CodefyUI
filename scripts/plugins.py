@@ -379,15 +379,27 @@ def validate_nodes_dir(
         )
 
 
-# Directories within an extracted plugin tarball that are *not* imported as
-# Python at runtime — safe to skip the AST gate. Everything else (top-level
-# helpers, sub-packages other than ``nodes/``) gets scanned because the
-# plugin loader exposes the entire plugin dir as a namespace package, so
-# ``from .. import _helpers`` from inside ``nodes/foo.py`` would otherwise
-# pull in unscanned code.
-_VALIDATION_SKIP_DIRS = frozenset({
-    "examples", "assets", "tests", "__pycache__", ".git", "docs",
-})
+# Directories within an extracted plugin tarball that are *not* reachable
+# through Python's import system, whatever the loader's ``__path__`` covers --
+# safe to skip the AST gate because there is no route from an ``import``
+# statement to a file in here. Everything else (``examples/``, ``tests/``,
+# ``docs/``, ``assets/``, any other top-level helper) gets scanned, because
+# ``plugin_loader.install_plugin_finder`` registers the WHOLE plugin
+# directory as a PEP-420 namespace package's ``__path__`` (not only
+# ``nodes/``), so ``from .. import _helpers`` -- or ``from ..tests import
+# payload`` -- from inside a scanned ``nodes/foo.py`` would otherwise pull in
+# unscanned code at full trust, automatically, at server boot or reload
+# (core#182). ``__pycache__`` never holds a ``*.py`` this walk's own glob
+# would match, and nothing gives ``.git`` a package ``__init__.py`` -- both
+# are genuinely unreachable through `import`, not merely assumed to be, which
+# is the property this set is for. Narrowing the LOADER's ``__path__``
+# instead so these two directories were unreachable rather than merely
+# unscanned was considered and rejected: PEP-420 namespace packages have no
+# native "every subdirectory except these" carve-out, so that route needs a
+# custom import finder/loader -- new import machinery, not an extension of
+# either existing one -- for a difference this scan already erases by
+# scanning first.
+_VALIDATION_SKIP_DIRS = frozenset({"__pycache__", ".git"})
 
 
 def validate_plugin_dir(
@@ -398,8 +410,13 @@ def validate_plugin_dir(
     """Walk the entire plugin directory and validate every Python source file.
 
     The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
-    bypass via top-level helpers. This visits all ``.py`` files except those
-    in test / docs / asset directories that aren't part of the import graph.
+    bypass via top-level helpers. This visits every ``.py`` file in the tree
+    except the ones under :data:`_VALIDATION_SKIP_DIRS` -- ``__pycache__``
+    and ``.git``, neither reachable through Python's import system. Nothing
+    else is skipped: ``examples/``, ``tests/``, ``docs/`` and ``assets/`` all
+    get scanned too (core#182), because the plugin loader registers the
+    WHOLE directory as a namespace package's ``__path__``, so a scanned
+    ``nodes/foo.py`` can ``from ..tests import payload`` into any of them.
 
     *capabilities* are the ones the user confirmed at install time. They are
     passed to every file rather than per-file, because a capability is a

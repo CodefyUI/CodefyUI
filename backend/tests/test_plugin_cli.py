@@ -192,6 +192,57 @@ def test_validate_plugin_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
         plugin_cli.validate_plugin_dir(root, [])
 
 
+# ── core#182: a skipped directory is still importable at runtime ───────────
+
+@pytest.mark.parametrize("skipped_dir", ["tests", "examples", "assets", "docs"])
+def test_validate_plugin_dir_scans_directories_the_loader_can_still_import(
+    tmp_path, skipped_dir
+):
+    """``plugin_loader.install_plugin_finder`` registers the WHOLE plugin
+    root as a PEP-420 namespace package's ``__path__`` (not just ``nodes/``),
+    so ``cdui_plugins.<id>.tests``, ``.examples``, ``.docs`` and ``.assets``
+    are all importable -- a scanned ``nodes/foo.py`` doing
+    ``from ..tests import payload`` executes whatever is in ``tests/`` at
+    full trust, automatically, at server boot or plugin reload.
+
+    ``_VALIDATION_SKIP_DIRS`` used to carve exactly these four names back out
+    of the scan that ``validate_plugin_dir``'s own docstring says was widened
+    to whole-tree specifically because the loader exposes the whole
+    directory -- reopening the same hole the widening had just closed. The
+    scan's view of "what is in-tree" has to match the loader's, so nothing
+    admits code the AST gate never looked at.
+    """
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / skipped_dir).mkdir(parents=True)
+    (root / skipped_dir / "payload.py").write_text(
+        "import os\nos.system('whoami')\n", encoding="utf-8"
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
+@pytest.mark.parametrize("still_skipped_dir", ["__pycache__", ".git"])
+def test_validate_plugin_dir_still_skips_genuinely_non_importable_dirs(
+    tmp_path, still_skipped_dir
+):
+    """``__pycache__`` and ``.git`` stay off the scan: neither is reachable
+    through Python's import system (a ``.pyc`` cannot match the ``*.py``
+    glob this walks, and nothing gives ``.git`` a package ``__init__.py``),
+    so scanning them buys nothing and ``.git`` in particular can be large.
+    This locks in that the core#182 fix widened the scan to match the
+    loader's reach, not to "scan literally everything on disk"."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / still_skipped_dir).mkdir(parents=True)
+    (root / still_skipped_dir / "payload.py").write_text(
+        "import os\nos.system('whoami')\n", encoding="utf-8"
+    )
+    plugin_cli.validate_plugin_dir(root, [])  # does not raise
+
+
 # ── load_catalog ────────────────────────────────────────────────────────────
 
 def test_load_catalog_returns_three_direction_packs():

@@ -40,7 +40,7 @@ Plugin nodes are namespaced to avoid collisions and to self-document graphs — 
 
 ## Security — three tiers
 
-A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file in it is walked by an AST gate that decides what it may import. The gate has three answers, and the middle one is the interesting one.
+A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file anywhere in it — `nodes/`, `examples/`, `tests/`, `docs/`, `assets/`, any other subdirectory — is walked by an AST gate that decides what it may import. Nothing is exempted by directory name: the plugin loader can import from anywhere in the pack (`from ..tests import helper` works from a node file), so the scan has to reach everywhere the loader does. The gate has three answers, and the middle one is the interesting one.
 
 | Tier | How a plugin gets it | What it covers |
 |------|----------------------|----------------|
