@@ -34,23 +34,31 @@
  *
  * What this guarantees
  * --------------------
- * Two edges that share an endpoint node get different routing coordinates, so the
- * only stretch they can still have in common is the stub between the handle and
- * the first of them to turn. That stub is unavoidable: orthogonal traces leaving
- * one point in one direction must run together until one of them turns, and
- * turning at the same distance would put them on the same corridor instead. The
- * stub is bounded by `laneDistance(count - 2, count)` and measured in
- * `SmartDataEdge.overlap.test.tsx` - 44px for a three-way fan-out that used to
- * share 224px, 170px for a twenty-wire bus that used to share 986px.
+ * Two edges that share a handle coincide ONLY inside the port stub of that
+ * handle - never anywhere else, and never for longer than
+ * `laneDistance(min slot, count)`. That stub is not a tolerance chosen for
+ * convenience, it is a floor: orthogonal routes leaving a common point in a common
+ * direction each occupy some prefix [0, L] of the departure line, so two of them
+ * always share min(L_i, L_j), and the L values must differ by at least a lane
+ * pitch or the turns land on top of each other instead. Sorted, L_(k) >=
+ * LANE_BASE + k * step, so the worst pair in a fan of n shares exactly
+ * LANE_BASE + (n - 2) * step and no routing can do better. That is 12px for a
+ * pair, 20px for three, 28px for four - measured on the real ResNet-18 example in
+ * `resnetOverlap.test.ts`, where those same pairs used to share 30, 44 and 62px.
  *
  * What it does not
  * ----------------
- * 1. Edges between two entirely unrelated pairs of nodes. Nothing here can see
- *    that their routes happen to land on the same line, because that depends on
- *    where the nodes sit and this pass deliberately never looks. Catching it needs
- *    a global orthogonal router that re-runs whenever a node moves; the common
- *    instance - a wire that skips over an intervening node in the same row - is
- *    already routed around by the detour in `SmartDataEdge`.
+ * 1. Edges between two pairs of nodes with no handle in common, whose routes
+ *    happen to land on the same line. The concrete mechanism is worth naming
+ *    because it is systematic rather than freak: slots are numbered per source
+ *    node and every group starts from the same base, so two nodes sitting in the
+ *    SAME COLUMN hand their k-th edge the same turn distance - and the same turn
+ *    distance from the same x is the same line. Three pairs of the ResNet-18
+ *    example are exactly this, the worst sharing 372px, and they are named in
+ *    `resnetOverlap.test.ts` so a new one fails the suite. Separating them needs a
+ *    router that reads where the nodes actually are and re-runs whenever one
+ *    moves; the common instance - a wire skipping over an intervening node in the
+ *    same row - is already routed around by the detour in `SmartDataEdge`.
  * 2. Two edges whose *whole route* is one axis line: both endpoints identical, or
  *    both targets at exactly the source handle's height. No choice of turning
  *    distance separates those - only lifting one off the row would, and that would
@@ -58,9 +66,10 @@
  *    nearby. It needs the two target cards to touch or overlap: give the far
  *    target any clearance and it crosses the skip threshold and detours.
  *
- * Both remain possible on a real graph. Neither is a corner the tests pretend is
- * closed - `SmartDataEdge.overlap.test.tsx` asserts that each still happens, so a
- * reader cannot mistake the guarantee for a universal one.
+ * Both remain possible on a real graph, and both are visible rather than hidden:
+ * `SmartDataEdge.overlap.test.tsx` asserts that each still happens, and
+ * `resnetOverlap.test.ts` names every instance on the flagship example. A reader
+ * cannot mistake the guarantee for a universal one.
  *
  * Every kind of line on the canvas is covered, trigger edges included: they are
  * ordinary members of the edge array, their diamond is a Right handle and
@@ -103,16 +112,28 @@ export type EdgeLaneMap = ReadonlyMap<string, EdgeLane>;
 export const EMPTY_LANE_MAP: EdgeLaneMap = new Map<string, EdgeLane>();
 
 /**
- * Distance from the anchor handle to the *first* lane. Must exceed xyflow's
- * smoothstep gap (20px) so a laned bend never lands inside the handle stub.
+ * Distance from the anchor handle to the *first* lane.
+ *
+ * This is the port stub - the one stretch two wires leaving a shared handle are
+ * allowed to have in common - so it is deliberately as short as it can be while
+ * still clearing the handle graphic (about 12px across) and leaving room for a
+ * readable corner. `SmartDataEdge` builds laned routes itself rather than through
+ * `getSmoothStepPath` precisely so this is not forced up to 28 by xyflow's fixed
+ * 20px handle gap.
  */
-export const LANE_BASE = 28;
-/** Spacing between adjacent lanes for small groups. */
-export const LANE_STEP_MAX = 18;
-/** Floor on lane spacing: below this two traces stop reading as two at low zoom. */
-export const LANE_STEP_MIN = 8;
+export const LANE_BASE = 12;
+/**
+ * Spacing between adjacent lanes for small groups.
+ *
+ * Stroke width is 2 *flow* units, so it scales with zoom exactly as this does:
+ * the gap-to-stroke ratio is zoom-invariant, and 8 units is four stroke widths -
+ * unambiguously two traces at any zoom the canvas is usable at.
+ */
+export const LANE_STEP_MAX = 8;
+/** Floor on lane spacing: three stroke widths, still clearly two traces. */
+export const LANE_STEP_MIN = 6;
 /** Ladder width budget; keeps a 20-edge bus from spreading across the canvas. */
-export const LANE_SPREAD_MAX = 140;
+export const LANE_SPREAD_MAX = 120;
 
 /** Extra offset between adjacent detour corridors for skip routes. */
 export const DETOUR_STEP_MAX = 26;

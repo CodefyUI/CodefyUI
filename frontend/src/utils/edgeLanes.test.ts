@@ -167,11 +167,24 @@ describe('lane geometry', () => {
     }
   });
 
-  it('clears xyflow smoothstep 20px handle gap at slot 0', () => {
-    // A bend inside the gap would be swallowed by the stub and change nothing.
-    expect(LANE_BASE).toBeGreaterThan(20);
+  it('keeps the port stub short enough to be a stub', () => {
+    // LANE_BASE is the whole allowance two wires leaving one handle get, so it is
+    // the number that decides whether they read as one wire. It only has to clear
+    // the handle graphic (about 12px across) and leave room for a corner; it used
+    // to be forced up to 28 by xyflow's fixed 20px gap, which is why laned routes
+    // are drawn directly now. If this ever climbs back above ~16 the fan-out is
+    // sharing a lane again, not a stub.
+    expect(LANE_BASE).toBeLessThanOrEqual(16);
+    expect(LANE_BASE).toBeGreaterThanOrEqual(10);
     expect(laneDistance(0, 5)).toBe(LANE_BASE);
     expect(detourOffset(0, 5)).toBe(0);
+  });
+
+  it('keeps the worst pair in a four-way fan inside half of what it was', () => {
+    // The owner measured 59px on the real ResNet graph with the old constants.
+    // laneDistance(n - 2, n) is the worst any pair of a fan of n can share.
+    expect(laneDistance(2, 4)).toBeLessThanOrEqual(30);
+    expect(laneDistance(0, 2)).toBeLessThanOrEqual(16);
   });
 });
 

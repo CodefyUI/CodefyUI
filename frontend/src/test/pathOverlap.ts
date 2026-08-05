@@ -145,27 +145,50 @@ export interface SharedRunOptions {
   step?: number;
 }
 
+export interface SharedRun {
+  /** Length of the shared stretch in flow pixels; 0 when the paths never coincide. */
+  length: number;
+  /** Every sampled point of the shared stretch, so a test can say where it is. */
+  points: Point[];
+}
+
 /**
- * Longest contiguous stretch of `a` that runs within `tolerance` of `b`, in
- * pixels. Direction-agnostic on purpose: a wire drawn right-to-left on top of one
- * drawn left-to-right still looks like a single wire.
+ * Longest contiguous stretch of `a` that runs within `tolerance` of `b`.
+ *
+ * Direction-agnostic on purpose: a wire drawn right-to-left on top of one drawn
+ * left-to-right still looks like a single wire. The points are returned as well
+ * as the length, because "how long do they coincide" and "where do they coincide"
+ * are different questions and the second is what separates an unavoidable stub at
+ * a shared port from a shared lane out in open canvas.
  */
-export function sharedRunLength(a: string, b: string, options: SharedRunOptions = {}): number {
+export function longestSharedRun(
+  a: string,
+  b: string,
+  options: SharedRunOptions = {},
+): SharedRun {
   const tolerance = options.tolerance ?? 1.5;
   const step = options.step ?? 2;
   const samples = resample(flattenPath(a), step);
   const other = flattenPath(b);
-  let longest = 0;
-  let run = 0;
+  let best: Point[] = [];
+  let run: Point[] = [];
   for (const p of samples) {
     if (distanceToPolyline(p, other) <= tolerance) {
-      run += step;
-      if (run > longest) longest = run;
+      run.push(p);
+      if (run.length > best.length) best = run.slice();
     } else {
-      run = 0;
+      run = [];
     }
   }
-  return longest;
+  return { length: best.length * step, points: best };
+}
+
+/**
+ * Longest contiguous stretch of `a` that runs within `tolerance` of `b`, in
+ * pixels.
+ */
+export function sharedRunLength(a: string, b: string, options: SharedRunOptions = {}): number {
+  return longestSharedRun(a, b, options).length;
 }
 
 /**

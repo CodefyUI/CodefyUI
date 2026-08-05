@@ -225,14 +225,9 @@ export function resolveLaneCenters(route: EdgeRoute): LaneCenters {
   const major = horizontal ? dx : dy;
   const minor = horizontal ? dy : dx;
 
-  if (major * dir > LANE_FORWARD_MIN) {
-    const distance = laneDistance(slot, count);
-    const rung =
-      anchor === 'source'
-        ? (horizontal ? route.sourceX : route.sourceY) + dir * distance
-        : (horizontal ? route.targetX : route.targetY) - dir * distance;
-    return horizontal ? { centerX: rung } : { centerY: rung };
-  }
+  // Forward routes are drawn by `buildLanedRoute` and never reach this function,
+  // which is why the short port stub it uses is not limited by xyflow's gap.
+  if (major * dir > LANE_FORWARD_MIN) return {};
 
   const crossDir = Math.sign(minor) || -1;
   const distance = laneDistance(slot, count);
@@ -241,6 +236,52 @@ export function resolveLaneCenters(route: EdgeRoute): LaneCenters {
       ? (horizontal ? route.sourceY : route.sourceX) + crossDir * distance
       : (horizontal ? route.targetY : route.targetX) - crossDir * distance;
   return horizontal ? { centerY: corridor } : { centerX: corridor };
+}
+
+/**
+ * Draw a laned forward route directly, instead of asking `getSmoothStepPath` to
+ * do it.
+ *
+ * The reason is the port stub. xyflow always leaves a handle straight for a fixed
+ * 20px before it will bend, so routing laned edges through it forces the first
+ * lane out past 28px and every wire in a fan to share at least that much. Drawing
+ * the three-segment route here puts the first bend at `LANE_BASE` instead, which
+ * is what makes the shared stub a stub.
+ *
+ * Returns null when the lane does not apply - no siblings, a backward route, or a
+ * short curve-style hop whose bezier already pulls apart on its own.
+ */
+export function buildLanedRoute(route: EdgeRoute, isRowTransition: boolean): string | null {
+  const lane = route.lane ?? SOLO_LANE;
+  const { anchor, slot, count } = pickLaneAnchor(lane);
+  if (anchor === 'none') return null;
+  if (!route.circuit && !isRowTransition) return null;
+
+  const horizontal = isHorizontalPosition(route.sourcePosition);
+  const dir = majorDirection(route.sourcePosition);
+  const major = horizontal ? route.targetX - route.sourceX : route.targetY - route.sourceY;
+  if (major * dir <= LANE_FORWARD_MIN) return null;
+
+  const distance = laneDistance(slot, count);
+  const turn =
+    anchor === 'source'
+      ? (horizontal ? route.sourceX : route.sourceY) + dir * distance
+      : (horizontal ? route.targetX : route.targetY) - dir * distance;
+  const radius = route.circuit ? CIRCUIT_BORDER_RADIUS : SMOOTH_STEP_BORDER_RADIUS;
+  const points = horizontal
+    ? [
+        { x: route.sourceX, y: route.sourceY },
+        { x: turn, y: route.sourceY },
+        { x: turn, y: route.targetY },
+        { x: route.targetX, y: route.targetY },
+      ]
+    : [
+        { x: route.sourceX, y: route.sourceY },
+        { x: route.sourceX, y: turn },
+        { x: route.targetX, y: turn },
+        { x: route.targetX, y: route.targetY },
+      ];
+  return buildRoundedOrthogonalPath(points, radius);
 }
 
 /**
@@ -268,6 +309,10 @@ export function resolveEdgePath(route: EdgeRoute): string {
   if (isSkip) {
     const arcDir = computeArcDirection(minor);
     const { slot, count } = pickLaneAnchor(lane);
+    // Siblings measure their pull-out from the same port stub as every other
+    // laned route, so one bound covers the whole system; a lone skip keeps the
+    // wider historical pull-out.
+    const stub = count > 1 ? laneDistance(slot, count) : PULL_OUT;
     // Slot 0 rides the base corridor and every sibling gets one of its own. The
     // old scheme instead shifted *every* skip by a hash of its id into one of four
     // buckets, so a lone skip sat at a corridor chosen at random and any two skips
@@ -276,7 +321,7 @@ export function resolveEdgePath(route: EdgeRoute): string {
     const spread = detourOffset(slot, count);
     const laneOffset = computeArcOffset(major) + spread;
     if (circuit) {
-      // Widening the pull-out as well moves each climb onto its own column;
+      // The pull-out is the climb column, so it has to differ per sibling too:
       // without it two skips leaving one node climb along the same line even
       // though their corridors differ.
       return buildCircuitSkipPath(
@@ -287,7 +332,7 @@ export function resolveEdgePath(route: EdgeRoute): string {
         horizontal,
         arcDir,
         laneOffset,
-        PULL_OUT + spread,
+        stub,
       );
     }
     // The curved arc has no columns to separate: sibling arcs leave the shared
@@ -306,6 +351,9 @@ export function resolveEdgePath(route: EdgeRoute): string {
       arcPullOut,
     );
   }
+
+  const laned = buildLanedRoute(route, isRowTransition);
+  if (laned) return laned;
 
   if (isRowTransition || circuit) {
     const [smoothStepPath] = getSmoothStepPath({
