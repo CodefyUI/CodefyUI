@@ -521,6 +521,18 @@ async def test_invokes_on_different_slugs_interleave(
     The SAME two requests are timed serial-then-concurrent back to back, so
     whatever this runner's current speed is affects both measurements
     alike -- only the ratio between them has to hold.
+
+    Both slugs are warmed with one untimed invoke each before either
+    measurement starts (review follow-up). The FIRST-ever invoke of a
+    freshly published app pays a one-time setup cost that later invokes on
+    the same slug don't; without the warm-up, `serial` (always the FIRST
+    hit on both slugs) is measured cold while `interleaved` (always the
+    SECOND) is measured warm, which inflates `serial` well past its
+    steady-state floor. That slack is enough for a fully-serialized
+    regression to slip under `serial * margin` even though it should fail
+    -- confirmed by simulating the regression directly (collapsing both
+    slugs onto one lock, the same class of bug Decision I's per-slug lock
+    exists to prevent): the unwarmed version of this test passed anyway.
     """
     await _publish(test_client, "para-one",
                    _chain_graph("slow-a", "_SlowPass", {"seconds": 0.7}))
@@ -538,6 +550,10 @@ async def test_invokes_on_different_slugs_interleave(
             "/api/apps/para-two/invoke",
             json={"inputs": {"x": "b"}}, headers=key_headers)
 
+    warm1 = await _invoke_one()
+    warm2 = await _invoke_two()
+    assert warm1.status_code == 200 and warm2.status_code == 200
+
     t0 = time.monotonic()
     baseline1 = await _invoke_one()
     baseline2 = await _invoke_two()
@@ -549,10 +565,12 @@ async def test_invokes_on_different_slugs_interleave(
     interleaved = time.monotonic() - t0
     assert r1.status_code == 200 and r2.status_code == 200
 
-    # True parallelism lands near serial/2; 0.75 leaves generous headroom
-    # for scheduling noise while still failing hard if the two slugs
-    # silently queued on each other (interleaved ~= serial).
-    assert interleaved < serial * 0.75, (
+    # True parallelism lands near serial/2; full serialization lands near
+    # serial/1 (ratio ~1.0). 0.85 sits well clear of both -- more headroom
+    # on the "pass" side than the bare 0.75 the review flagged as tight
+    # once the cold/warm asymmetry above is gone -- while still failing
+    # hard on a genuinely serialized run.
+    assert interleaved < serial * 0.85, (
         f"interleaved={interleaved:.3f}s not well under "
         f"serial={serial:.3f}s -- different slugs may be queuing on "
         f"each other"
