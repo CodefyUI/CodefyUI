@@ -296,6 +296,44 @@ describe('tab autosave - IndexedDB is the write target', () => {
     expect(toasts[0].message.length).toBeGreaterThan(0);
     setItem.mockRestore();
   });
+
+  it('warns at most once per session for the downgrade, even once the 60s throttle window has passed (#164)', async () => {
+    // saveTabs retries IndexedDB on EVERY autosave, so a persistently broken
+    // database re-enters the downgrade catch indefinitely -- unlike
+    // quotaError (which only fires when the fallback write ALSO fails).
+    // warnPersistence's own throttle is 60s, and error toasts never
+    // auto-dismiss, so relying on the throttle alone would leave one new
+    // undismissed toast piling up every minute for the rest of the session.
+    // The downgrade is a one-time state transition, so it must latch at
+    // exactly one toast for the whole session, not just per 60s window.
+    const { store, idb, toast } = await loadStore();
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        const request: Record<string, unknown> = { error: new Error('gone') };
+        queueMicrotask(() => (request.onerror as (() => void) | undefined)?.());
+        return request;
+      },
+    });
+    idb._resetIdbForTests();
+
+    store.useTabStore.getState().addTab('First');
+    await vi.waitFor(() => {
+      expect(toast.useToastStore.getState().toasts).toHaveLength(1);
+    });
+
+    // Simulate the 60s throttle window having fully elapsed before the next
+    // autosave retries against the still-broken database -- if the ONLY
+    // guard were warnPersistence's throttle, this would toast a second time.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    store.useTabStore.getState().addTab('Second');
+    await vi.waitFor(() => {
+      const raw = JSON.parse(localStorage.getItem(LEGACY_KEY)!);
+      expect(raw.tabs.some((t: { name: string }) => t.name === 'Second')).toBe(true);
+    });
+    nowSpy.mockRestore();
+
+    expect(toast.useToastStore.getState().toasts).toHaveLength(1);
+  });
 });
 
 describe('tab autosave - hydration failure is surfaced', () => {

@@ -1144,6 +1144,19 @@ function saveTabsToLocalStorage(records: PersistedTab[], activeTabId: string) {
 // durability bookkeeping in `tabPersistence` assumes it sees them in order.
 let _idbWriteChain: Promise<void> = Promise.resolve();
 
+// #164 follow-up: `saveTabs` retries IndexedDB on EVERY autosave, so a
+// persistently broken database re-enters the catch below indefinitely --
+// unlike `persistence.quotaError`, which only fires when the fallback write
+// ALSO fails, and so is rare. `warnPersistence`'s own throttle is 60s, and
+// error toasts never auto-dismiss, so the throttle alone would leave one new
+// undismissed toast piling up every minute for the rest of the session. The
+// downgrade is a one-time state transition, not a recurring event, so this
+// latches it to one toast for the session regardless of how long the
+// database stays broken -- deliberately never reset, even if a later save
+// happens to succeed (a flaky database earns one warning, not a fresh one
+// every time it flickers).
+let _downgradeWarned = false;
+
 function saveTabs(tabs: TabState[], activeTabId: string) {
   const records = persistedTabsFor(tabs);
   if (!idbAvailable()) {
@@ -1165,8 +1178,13 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
       // for the 5MB localStorage one, with nothing said about it until a
       // future save fails for real. A distinct key from quotaError /
       // storageUnavailable, so a read failure and a write failure never
-      // suppress each other's warning.
-      warnPersistence('persistence.downgraded');
+      // suppress each other's warning. Latched (see `_downgradeWarned`)
+      // rather than left to warnPersistence's 60s throttle alone, or a
+      // database that stays broken would re-toast every minute forever.
+      if (!_downgradeWarned) {
+        _downgradeWarned = true;
+        warnPersistence('persistence.downgraded');
+      }
     });
 }
 
