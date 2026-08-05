@@ -155,6 +155,15 @@ def _report_eviction(
             f"to stay inside the node state store's {limit}: {shown}. "
             f"Those nodes will start from a fresh initialisation on the "
             f"next run.",
+            # The VICTIM, not context.current_node_id (log_warning's
+            # default): current_node_id names whichever node's build
+            # TRIGGERED the eviction, which is not the node that lost its
+            # weights -- and the store is shared across graphs, so the
+            # trigger can even be a different tab's node entirely. Only
+            # one id fits in this field; when several were evicted at
+            # once, the first is the one this warning points at (the rest
+            # are still named in the detail text above).
+            node_id=keys[0][1],
         )
     except Exception:  # noqa: BLE001 - a notice must not fail the node
         logger.debug("could not report a node state eviction", exc_info=True)

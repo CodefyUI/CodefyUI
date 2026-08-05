@@ -342,12 +342,14 @@ def test_a_structural_reset_is_not_reported_as_a_budget_eviction():
     assert seen == []
 
 
-def test_the_eviction_warning_reaches_the_run_event_stream():
+def test_the_eviction_warning_reaches_the_outbox_as_a_run_warning():
     """The half that outlives the server console.
 
     ``run_warning`` is the same event the dropped-signal notice uses. It
     lands in the durable run log and the Runs panel reads it back; the
-    canvas does not render it. This test pins the outbox, not the stream.
+    canvas does not render it. This test pins the outbox, not the stream
+    (renamed from ...reaches_the_run_event_stream, which claimed more than
+    it checked -- #194 review item 4).
     """
     from app.core.execution_context import ExecutionContext, WarningSignal
     from app.core.stateful_module import StatefulModuleMixin
@@ -374,6 +376,42 @@ def test_the_eviction_warning_reaches_the_run_event_stream():
     assert "CODEFYUI_NODE_STATE_STORE_MAX_MB" in warnings[0].detail
 
 
+def test_the_eviction_warning_names_the_victim_not_the_trigger():
+    """#194 review item 1: node_id used to default to
+    context.current_node_id -- the node whose build TRIGGERED the
+    eviction -- rather than the node whose weights were actually
+    discarded. Cross-graph the two can even belong to different tabs, so
+    pointing a user at the trigger's id points them at the wrong node
+    entirely (and, cross-graph, a node id that is not even in their
+    graph). Report the victim.
+    """
+    from app.core.execution_context import ExecutionContext, WarningSignal
+    from app.core.stateful_module import StatefulModuleMixin
+
+    class _Layer(StatefulModuleMixin):
+        def build_module(self, params):
+            return _linear_of(1)
+
+    context = ExecutionContext()
+    context.node_state_store = NodeStateStore(
+        max_modules=100, max_bytes=THREE_ENTRY_BUDGET)
+    context.graph_id = "g"
+
+    layer = _Layer()
+    for node_id in ("a", "b", "c", "d"):
+        context.current_node_id = node_id
+        layer.get_or_build_module(context, {"width": 1})
+
+    signals, _ = context.outbox.drain()
+    warnings = [s for s in signals if isinstance(s, WarningSignal)]
+    assert len(warnings) == 1
+    # "d" was executing (context.current_node_id) when the store went over
+    # budget and triggered the eviction; "a" is the node whose weights
+    # were actually discarded (test_discarding_trained_weights_is_reported
+    # _to_the_caller above already pins that "a" is what on_evict receives).
+    assert warnings[0].node_id == "a"
+
+
 def test_the_eviction_notice_cannot_fail_the_node_that_triggered_it():
     from app.core.stateful_module import _report_eviction
 
@@ -383,6 +421,26 @@ def test_the_eviction_notice_cannot_fail_the_node_that_triggered_it():
 
     _report_eviction(_Hostile(), [("g", "n", "h")], "bytes")  # must not raise
     _report_eviction(_Hostile(), [], "bytes")
+
+
+def test_a_raising_on_evict_callback_does_not_take_the_store_down():
+    """#194 review item 3: NodeStateStore.get_or_create did not guard the
+    on_evict call itself -- only _report_eviction (the one caller today)
+    guarded its own body. A hostile or buggy on_evict must not corrupt the
+    module this call just built and stored, nor fail the node that
+    happened to trigger the evict.
+    """
+    store = NodeStateStore(max_modules=100, max_bytes=THREE_ENTRY_BUDGET)
+    for node in ("a", "b", "c"):
+        store.get_or_create("g", node, "h", lambda: _linear_of(1))
+
+    def hostile(keys, reason):
+        raise RuntimeError("on_evict exploded")
+
+    module = store.get_or_create("g", "d", "h", lambda: _linear_of(1),
+                                  on_evict=hostile)  # must not raise
+    assert module is not None
+    assert store.keys_for_node("g", "d") != []
 
 
 def test_the_module_count_limit_still_applies():
