@@ -1134,6 +1134,14 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
       // storage). Autosave is a promise to the user, so fall back to the
       // tier that may still work rather than dropping the save.
       saveTabsToLocalStorage(records, activeTabId);
+      // The fallback above is silent by design (it has its own quotaError
+      // notice for when IT fails), but the DOWNGRADE itself must not be
+      // (#164): the user just quietly lost the generous IndexedDB ceiling
+      // for the 5MB localStorage one, with nothing said about it until a
+      // future save fails for real. A distinct key from quotaError /
+      // storageUnavailable, so a read failure and a write failure never
+      // suppress each other's warning.
+      warnPersistence('persistence.downgraded');
     });
 }
 
