@@ -472,10 +472,11 @@ const zhTW: NodeTranslations = {
     params: {
       epochs: '訓練 epoch 數量',
       device: '訓練裝置',
-      early_stopping_patience: '驗證損失未改善 N 個 epoch 後停止（0 = 停用）',
+      early_stopping_patience: '監控的指標未改善 N 個 epoch 後停止（0 = 停用）',
+      monitor: '早停監控的指標。val_loss：越低越好（預設）。val_accuracy：越高越好，僅在使用分類損失函數（CrossEntropyLoss/NLLLoss）且有接上 val_dataloader 時才會記錄；兩者缺一就會退回 val_loss 並記錄警告，而不是去監控一個從未被算出來的數值。',
       grad_clip_norm: '最大梯度範數裁剪（0 = 停用）',
       batch_metrics: '同時把每一批的損失記錄成 train_loss_batch 這條序列（預設關閉：每批一列資料量相當可觀）',
-      precision: '混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的，會額外搭配 loss scaler。裝置做不到的話會自動退回 fp32 並記錄下來。',
+      precision: '混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的，會額外搭配 loss scaler。val_accuracy 會用跟這個相同的精度計算（不會強制轉成 fp32），才能跟 val_loss 維持可比較性——但精度較低的 logit 在接近平手時可能讓 argmax 換邊，讓量出來的準確率有些微變動。裝置做不到的話會自動退回 fp32 並記錄下來。',
       accumulate_steps: '累積這麼多批之後才做一次優化器更新，同時把每一批的損失除以同一個數字。batch_size 8 搭配 4，梯度會等同於 batch_size 32，但記憶體裡同時只放 8 筆（1 = 關閉）。',
       max_steps: '總共跑滿這麼多次優化器更新後就停止，不論 epochs 設定為何。算的是優化器更新次數而不是批次數，所以不管 accumulate_steps 設多少意思都一樣（0 = 不限制）',
       log_interval: '開啟批次指標時，每 N 批記錄一次。長時間執行時調高可以讓圖表稀疏一點。',
@@ -489,6 +490,7 @@ const zhTW: NodeTranslations = {
       batch_size: '評估時每批跑幾筆（不影響結果，只影響速度/記憶體）。',
       device: '評估裝置',
       precision: '前向傳播用的混合精度。bf16 在 Ampere 以後的顯卡上可以把 activation 記憶體用量大約減半，其他都不用改；fp16 則是給更舊的顯卡用的。不論選哪一種，參數都維持 fp32；但降精度的前向傳播仍可能讓量出來的準確率有些微變動（精度較低的 logit 在接近平手時可能讓 argmax 換邊），所以要回報的準確率應該用 fp32 這個數字。裝置做不到的話會自動退回 fp32 並記錄下來。',
+      step: 'eval_accuracy 這個指標記錄時使用的 step 值。同一張圖裡有多個 EvaluateModel 節點時（例如微調前後的比較），需要各自設定不同的 step，否則會在圖表上互相覆蓋。',
     },
   },
   BackwardOnce: {

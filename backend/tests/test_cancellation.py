@@ -769,6 +769,9 @@ def test_batch_metrics_are_opt_in():
 
 
 def test_validation_loss_is_logged_when_present():
+    """#202: val_accuracy joins val_loss in this list -- this scenario is a
+    classifier (CrossEntropyLoss) with a val_dataloader wired, exactly
+    val_accuracy's gate, so it is expected here too."""
     ctx = ExecutionContext()
     model = _fresh_model()
     TrainingLoopNode().execute(
@@ -781,8 +784,8 @@ def test_validation_loss_is_logged_when_present():
     )
     points = ctx.outbox.drain()[0]
     assert [(p.name, p.step) for p in points] == [
-        ("train_loss", 1), ("val_loss", 1), ("lr", 1),
-        ("train_loss", 2), ("val_loss", 2), ("lr", 2),
+        ("train_loss", 1), ("val_loss", 1), ("val_accuracy", 1), ("lr", 1),
+        ("train_loss", 2), ("val_loss", 2), ("val_accuracy", 2), ("lr", 2),
     ]
 
 
@@ -794,7 +797,10 @@ def test_every_previously_inferred_series_is_still_logged():
     any more. Everything ``scalar_metrics`` used to take from that payload —
     ``lr`` and, under early stopping, ``patience_counter`` and
     ``best_epoch`` — therefore has to be logged by hand. ``loss`` is the one
-    deliberate change: it is ``train_loss`` now.
+    deliberate change: it is ``train_loss`` now. #202 adds a second:
+    ``val_accuracy`` is now in the epoch payload too (this scenario is a
+    classifier with a val_dataloader, its gate), and is likewise logged
+    explicitly.
     """
     model = _fresh_model()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
@@ -820,8 +826,8 @@ def test_every_previously_inferred_series_is_still_logged():
         for payload in payloads if payload.get("event") == "epoch"
         for point in scalar_metrics(payload, node_id=None, step=1)
     }
-    assert inferable == {"loss", "val_loss", "lr", "patience_counter",
-                         "best_epoch"}
+    assert inferable == {"loss", "val_loss", "val_accuracy", "lr",
+                         "patience_counter", "best_epoch"}
     assert logged == (inferable - {"loss"}) | {"train_loss"}
 
 
