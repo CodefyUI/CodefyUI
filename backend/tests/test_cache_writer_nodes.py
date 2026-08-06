@@ -133,5 +133,19 @@ async def test_deleting_the_output_between_runs_recreates_it(tmp_path: Path) -> 
         assert target.exists(), (
             "the output file the user deleted was not recreated on rerun"
         )
+        # Without this, the test would pass just as well in a world where
+        # caching was globally broken (every node always re-executes) --
+        # ImageWriter is cacheable=False by this fix regardless, so its own
+        # "completed" status alone cannot tell "the fix engaged" apart from
+        # "nothing was ever cached at all". src is pure/cacheable with
+        # unchanged params and no upstream, so it MUST be served from cache
+        # on this second run if caching is actually discriminating between
+        # the two, which is the property #143 depends on.
+        assert statuses["src"] == "cached", (
+            "the pure upstream must still hit the cache on the second run -- "
+            "otherwise this test cannot distinguish '#143 fixed' from "
+            "'caching stopped working entirely' "
+            f"(status was {statuses['src']!r})"
+        )
     finally:
         target.unlink(missing_ok=True)
