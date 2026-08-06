@@ -164,6 +164,75 @@ def test_directory_fingerprint_unchanged_tree_is_stable(tmp_path):
     assert directory_fingerprint(tmp_path) == directory_fingerprint(tmp_path)
 
 
+# ── Blindness to renames/moves (code review finding) ────────────────────
+#
+# count/total_size/latest_mtime are aggregate sums: a rename or an
+# intra-tree move changes none of the three (mtime is a CONTENT/metadata
+# timestamp, not touched by a plain rename), so the pre-fix fingerprint
+# was identical before and after -- exactly the staleness #144 exists to
+# prevent, reintroduced one level up. These three reproduce the reviewer's
+# verified repros directly.
+
+
+def test_directory_fingerprint_detects_a_move_between_sibling_dirs(tmp_path):
+    """Moving a file from one subdirectory to another (e.g. a mislabelled
+    ImageFolder sample moved from train/cat/ to train/dog/) must change
+    the fingerprint even though count, total_size and latest_mtime do not.
+    """
+    (tmp_path / "cat").mkdir()
+    (tmp_path / "dog").mkdir()
+    f = tmp_path / "cat" / "1.png"
+    f.write_bytes(b"same bytes")
+
+    fp1 = directory_fingerprint(tmp_path)
+
+    moved = tmp_path / "dog" / "1.png"
+    f.rename(moved)
+    fp2 = directory_fingerprint(tmp_path)
+
+    assert fp1 != fp2, "moving a file between sibling directories must change the fingerprint"
+
+
+def test_directory_fingerprint_detects_a_rename_in_place(tmp_path):
+    """Renaming a file within the same directory, same bytes, must change
+    the fingerprint -- a plain rename does not touch mtime or size."""
+    f = tmp_path / "old_name.png"
+    f.write_bytes(b"same bytes")
+    fp1 = directory_fingerprint(tmp_path)
+
+    renamed = tmp_path / "new_name.png"
+    f.rename(renamed)
+    fp2 = directory_fingerprint(tmp_path)
+
+    assert fp1 != fp2, "renaming a file in place must change the fingerprint"
+
+
+def test_paths_fingerprint_detects_a_reorder_from_a_rename(tmp_path):
+    """ImageBatchReader stacks images in the sorted-glob order it reads
+    them in. A rename that changes sort position reorders the stacked
+    output tensor even though the SET of files (and their total size /
+    latest mtime) is unchanged -- the fingerprint must still change.
+    """
+    a = tmp_path / "a.png"
+    z = tmp_path / "z.png"
+    a.write_bytes(b"AAAA")
+    z.write_bytes(b"ZZZZ")  # same size as a, deliberately
+
+    def _selected():
+        return sorted(tmp_path.glob("*.png"))
+
+    fp1 = paths_fingerprint(_selected())  # read order: [a.png, z.png]
+
+    # Rename z.png -> a2.png: still sorts after a.png by name, but if we
+    # instead rename a.png itself out of first position, the read ORDER
+    # changes while the file set's aggregate stats do not.
+    renamed = tmp_path / "0_a.png"  # sorts BEFORE the original a.png
+    z.rename(renamed)
+    fp2 = paths_fingerprint(_selected())  # read order: [0_a.png, a.png]
+
+    assert fp1 != fp2, "a rename that reorders the glob-sorted read must change the fingerprint"
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # 2. ExecutionCache.compute_key's fingerprint parameter
 # ─────────────────────────────────────────────────────────────────────────

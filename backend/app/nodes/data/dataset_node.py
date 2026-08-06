@@ -54,6 +54,20 @@ class DatasetNode(BaseNode):
 
     @classmethod
     def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        # Known tradeoff, not a bug: in project mode every relative
+        # `data_dir` collapses to the same `PROJECT_DIR/assets/data` (see
+        # `_resolve_data_dir` above), so this walks that WHOLE shared tree
+        # rather than just the files this particular dataset/split owns --
+        # writing to an unrelated dataset stored alongside this one busts
+        # this node's cache too, and a large shared tree pays a full
+        # recursive stat on every run regardless of whether THIS dataset
+        # changed. Safe (over-invalidation costs a re-read, never serves a
+        # stale one) but works against #144's own performance goal in
+        # project mode specifically. Scoping the walk to just this
+        # dataset's own files would need replicating each torchvision
+        # dataset class's own on-disk layout (MNIST's `MNIST/raw/`,
+        # CIFAR10's `cifar-10-batches-py/`, ...), which is a real follow-up
+        # but out of scope for the fingerprint mechanism itself.
         from ...core.cache_fingerprint import directory_fingerprint
 
         data_dir = str(params.get("data_dir", "./data") or "./data")
