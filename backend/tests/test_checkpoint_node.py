@@ -167,7 +167,10 @@ def test_scheduler_state_roundtrip(sched_type):
 
 
 def test_checkpoint_omits_scheduler_key_when_none_wired():
-    """The key is additive: an unwired scheduler leaves the payload as it was."""
+    """The scheduler keys are additive: an unwired scheduler leaves the rest
+    of the payload as it was. ``initial_lrs`` (#149) is NOT one of the
+    optional keys -- every optimizer has param_groups, so there is always
+    something honest to record there, unconditionally."""
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     target = "_ckpt_no_sched.pt"
     try:
@@ -177,7 +180,8 @@ def test_checkpoint_omits_scheduler_key_when_none_wired():
             {"path": target, "epoch": 1},
         )
         raw = torch.load(settings.MODELS_DIR / target, map_location="cpu", weights_only=True)
-        assert set(raw) == {"epoch", "model_state_dict", "optimizer_state_dict"}
+        assert set(raw) == {"epoch", "model_state_dict", "optimizer_state_dict",
+                            "initial_lrs"}
     finally:
         (settings.MODELS_DIR / target).unlink(missing_ok=True)
 

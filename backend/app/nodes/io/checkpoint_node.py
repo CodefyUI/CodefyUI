@@ -212,6 +212,35 @@ class CheckpointLoaderNode(BaseNode):
                 if isinstance(v, torch.Tensor):
                     state[k] = to_device(v, device)
 
+        # Honest base_lrs (#149) -- a DEFENSIVE invariant, not a fix for a
+        # reachable divergence: `initial_lrs` is derived, at save time, from
+        # the same live optimizer.param_groups that optimizer_state_dict
+        # also serialises, so for any checkpoint this codebase can actually
+        # produce the two never disagree, and restoring this key is
+        # provably a no-op against today's torch (verified against the
+        # installed 2.11.0+cu128: `update_group` replaces each live param
+        # group with the SAVED group's dict wholesale, which already
+        # carries `initial_lr` through whenever the checkpoint has it).
+        # What this DOES buy: CodefyUI's own contract no longer depends on
+        # optimizer.state_dict()/load_state_dict() choosing to carry that
+        # key through -- it is read from param_groups directly and
+        # restored explicitly, so a future torch (or a plugin's custom
+        # Optimizer) that stops doing so surfaces as a visible difference
+        # here rather than a silent LR corruption. See the "Honest
+        # base_lrs" section of core.checkpoints for the full reasoning.
+        # Done BEFORE the scheduler section below on purpose -- "before any
+        # scheduler is constructed".
+        initial_lrs = checkpoint.get("initial_lrs")
+        if initial_lrs is not None:
+            if len(initial_lrs) != len(optimizer.param_groups):
+                logger.warning(
+                    "Checkpoint %s holds %d initial_lr value(s) but the "
+                    "optimizer has %d param group(s); restoring only the "
+                    "overlap.", p, len(initial_lrs), len(optimizer.param_groups),
+                )
+            for param_group, initial_lr in zip(optimizer.param_groups, initial_lrs):
+                param_group["initial_lr"] = initial_lr
+
         # LR schedule (#118). Restored AFTER the optimizer on purpose: the
         # optimizer state dict carries the learning rate that was live when the
         # checkpoint was taken, and ``LRScheduler.load_state_dict`` does not

@@ -20,6 +20,7 @@ import sqlite3
 
 import pytest
 
+from app.config import settings
 from app.core.db import Database
 from app.core.migrations import MIGRATION_001, MIGRATION_002, MIGRATIONS
 from app.core.run_store import (
@@ -1075,6 +1076,130 @@ async def test_prune_never_deletes_queued_or_running_runs(store):
 async def test_prune_rejects_a_negative_keep_last(store):
     with pytest.raises(ValueError, match="keep_last"):
         await store.prune(keep_last=-1)
+
+
+# ── 6b. retention unlinks checkpoint files (#156) ────────────────────────
+#
+# RunStore.prune deletes artifact ROWS via ON DELETE CASCADE but, before
+# this fix, never unlinked the .pt file the row pointed to -- so today's
+# row-based retention silently creates an orphan checkpoint file every time
+# it runs. #203's checkpoint_every makes that multiply (one file per
+# periodic checkpoint event), so the fix has to cover the sweep, not just
+# the new writer.
+
+
+async def test_prune_keeps_the_checkpoint_file_of_an_interrupted_run(
+    store, db, tmp_path, monkeypatch,
+):
+    """A run left ``interrupted`` -- including by ``recover_interrupted()``
+    retiring an abandoned ``running`` row on server startup, immediately
+    before this same prune pass -- keeps its checkpoint file even once its
+    row is gone. Startup orders recovery before retention specifically so
+    an abandoned row becomes prunable "in the very next call" (main.py);
+    without this exemption, a server that died mid-run could destroy the
+    very checkpoint #203 exists to let it resume, on its own restart, at
+    keep_last=0 (config.py's "inverted zero" -- a real, documented
+    configuration, not a hypothetical one)."""
+    models = tmp_path / "models"
+    models.mkdir()
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    run = await _make_run(store)
+    checkpoint_file = models / "crash_recovery.pt"
+    checkpoint_file.write_bytes(b"the run's only path back")
+    await store.add_artifact(run.id, "checkpoint", str(checkpoint_file))
+    await store.mark_finished(run.id, "interrupted")
+
+    assert await store.prune(keep_last=0) == 1
+    assert await store.get_run(run.id) is None, "the row still goes"
+    assert checkpoint_file.exists(), (
+        "an interrupted run's checkpoint file must survive its own row "
+        "being pruned -- it is the recovery point the feature exists for"
+    )
+
+
+async def test_prune_deletes_the_checkpoint_files_of_pruned_runs(
+    store, db, tmp_path, monkeypatch,
+):
+    models = tmp_path / "models"
+    models.mkdir()
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    old_run = await _make_run(store)
+    old_file = models / "old.pt"
+    old_file.write_bytes(b"old checkpoint")
+    await store.add_artifact(old_run.id, "checkpoint", str(old_file))
+    await store.mark_finished(old_run.id, "succeeded")
+
+    kept_run = await _make_run(store)
+    kept_file = models / "kept.pt"
+    kept_file.write_bytes(b"kept checkpoint")
+    await store.add_artifact(kept_run.id, "checkpoint", str(kept_file))
+    await store.mark_finished(kept_run.id, "succeeded")
+
+    assert await store.prune(keep_last=1) == 1
+    assert not old_file.exists(), "the pruned run's checkpoint file leaked"
+    assert kept_file.exists(), "the KEPT run's checkpoint file must survive"
+
+
+async def test_prune_tolerates_a_checkpoint_file_already_gone(
+    store, db, tmp_path, monkeypatch,
+):
+    """A file removed by hand (or an earlier, interrupted prune) must not
+    turn a successful prune into a failed one."""
+    models = tmp_path / "models"
+    models.mkdir()
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    run = await _make_run(store)
+    missing = models / "already_gone.pt"
+    await store.add_artifact(run.id, "checkpoint", str(missing))
+    await store.mark_finished(run.id, "succeeded")
+    assert not missing.exists()
+
+    assert await store.prune(keep_last=0) == 1  # must not raise
+
+
+async def test_prune_does_not_touch_a_non_checkpoint_artifact_file(
+    store, db, tmp_path, monkeypatch,
+):
+    """Scoped to kind='checkpoint' -- an export/image/etc. artifact of a
+    pruned run keeps its file. Only the checkpoint lifecycle is owned here;
+    see the report for why widening this was left out of scope."""
+    models = tmp_path / "models"
+    models.mkdir()
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    run = await _make_run(store)
+    exported = models / "export.py"
+    exported.write_text("# exported script")
+    await store.add_artifact(run.id, "export", str(exported))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert exported.exists(), "only checkpoint-kind artifacts are cleaned up"
+
+
+async def test_prune_refuses_to_delete_a_checkpoint_path_outside_the_data_dir(
+    store, db, tmp_path, monkeypatch,
+):
+    """Defense in depth: the SAME path-safety rule ``write_checkpoint``
+    enforces on write also guards the delete, so a row whose path was not
+    produced by this module's own writers cannot become an arbitrary file
+    deletion."""
+    models = tmp_path / "data" / "models"
+    models.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    outside = tmp_path / "outside.pt"
+    outside.write_bytes(b"not a checkpoint this store owns")
+
+    run = await _make_run(store)
+    await store.add_artifact(run.id, "checkpoint", str(outside))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert outside.exists(), "a path outside the data directory must survive"
 
 
 async def test_publish_retention_does_not_touch_exec_runs(store, db):

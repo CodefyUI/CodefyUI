@@ -15,6 +15,15 @@ kept in one place so ``TrainingLoop``, ``DiffusionTrainingLoop``,
     Write the partial training state where ``CheckpointLoader`` can find it
     and register it on the run.
 
+``save_periodic_checkpoint``
+    The same write-and-register, for a HEALTHY run checkpointing on its own
+    schedule (#203) rather than because it is stopping. The one thing the
+    interrupt path does not cover: a server process dying outright (SIGKILL,
+    an OOM kill, a restart) never reaches the interrupt path either, because
+    that only runs on the way out of a node that decided to return. NOT
+    power loss -- neither path fsyncs, so that is a separate, unfixed gap;
+    see ``core.checkpoints``'s "Durability" section.
+
 ``interrupted_result``
     Build the ``__interrupted__`` marker the engine turns into an
     ``interrupted`` node status.
@@ -275,5 +284,135 @@ def save_interrupt_checkpoint(
     logger.info(
         "Interrupt checkpoint for node %s written to %s (epoch=%d, batch=%d)",
         resolved_node_id, target, epoch, batch,
+    )
+    return str(target)
+
+
+def save_periodic_checkpoint(
+    context: Any,
+    model: Any,
+    optimizer: Any,
+    *,
+    epoch: int,
+    losses: Any = None,
+    lr_scheduler: Any = None,
+    scaler_state: Any = None,
+    node_id: str | None = None,
+) -> str | None:
+    """Persist a HEALTHY run's progress on its own schedule (#203). Never raises.
+
+    Everything else in this stack survives a browser disconnect, a tab
+    close, the submitting process exiting, or a cooperative Stop click (see
+    :func:`save_interrupt_checkpoint`). The one thing none of that covers is
+    the SERVER PROCESS itself: a SIGKILL, an OOM kill or a server restart
+    never reach the interrupt path either, because that only runs on the
+    way OUT of a node that has already decided to return partial results.
+    ``TrainingLoop.checkpoint_every`` is what closes that gap -- called
+    after every Nth completed epoch, so at most N epochs are ever
+    unrecoverable for any of those three.
+
+    **Not power loss.** ``write_checkpoint`` deliberately skips fsync (see
+    ``core.checkpoints``'s "Durability" section), so ``os.replace`` can make
+    a new filename visible before its content is durably on disk. A process
+    death survives because the OS -- and its page cache -- keeps running;
+    power loss does not. This function does not change that trade-off, only
+    who benefits from it.
+
+    Same gating, same failure posture and the same ``epoch``/``batch``
+    conventions as :func:`save_interrupt_checkpoint` -- see that function's
+    docstring for the full reasoning, all of which applies here unchanged.
+    The differences are narrow: the file goes under
+    ``MODELS_DIR/periodic/`` rather than ``MODELS_DIR/interrupted/`` (see
+    ``core.checkpoints``' ``PERIODIC_DIRNAME`` for why the two stay apart),
+    there is no ``batch`` to record because a periodic checkpoint is only
+    ever taken at a clean epoch boundary, and the artifact ``meta`` says
+    ``"reason": "periodic"`` rather than ``"interrupted"`` -- the run did
+    not stop, and a checkpoint list that claimed otherwise would be actively
+    misleading.
+
+    **Two distinct ways a file can outlive its row, both recoverable by
+    hand and neither blocking.** First, the ALWAYS-PRESENT one: the file is
+    durable the moment ``write_checkpoint`` returns, but the row exists
+    only once the outbox delivers this call's ``ArtifactSignal`` AND
+    ``RunStore.add_artifact`` commits -- a gap of milliseconds, but on
+    EVERY periodic checkpoint, not only under load. A process death in that
+    window leaves a file with no row, same as any other signal race in this
+    engine. Second, **not queued last**: unlike the interrupt path, this
+    fires mid-loop -- by definition, since "periodic" means more epochs
+    (and their own progress/metric signals) follow. ``ArtifactSignal``'s
+    tail-safety obligation ("queue an ArtifactSignal LAST... a future
+    producer that wants to log an artifact mid-loop has to solve this
+    first") is therefore not fully discharged here: under SUSTAINED
+    backpressure on the outbox's consumer, a burst of later signals could
+    in principle evict this one before it is delivered. The outbox wakes
+    its pump on every ``put`` rather than polling, so this second case
+    needs the consumer itself to be stalled for a long stretch while
+    training keeps producing signals -- not a routine condition -- unlike
+    the first, which is a plain race present on every call. Both are
+    accepted here rather than solved, which would mean restructuring
+    ``EventOutbox`` well beyond what this feature needs.
+    """
+    if context is None:
+        return None
+
+    resolved_node_id = node_id or getattr(context, "current_node_id", "") or "node"
+    run_id = getattr(context, "execution_id", "") or "run"
+
+    can_record = getattr(context, "can_record_artifacts", None)
+    if not (callable(can_record) and can_record()):
+        logger.info(
+            "Node %s reached a periodic checkpoint, but this run records no "
+            "artifacts, so it was skipped -- the file would have had no row "
+            "referencing it and nothing would ever clean it up.",
+            resolved_node_id,
+        )
+        return None
+
+    from .checkpoints import periodic_checkpoint_path, write_checkpoint
+
+    # Timed and sized so the cost is VISIBLE rather than merely accepted:
+    # this write runs synchronously on the training thread, once every
+    # checkpoint_every epochs, for as long as the run is active -- disk I/O
+    # and, on a CUDA run, a device-to-host copy of the whole model and
+    # optimizer state. Neither number changes what this function does; both
+    # exist so a slow MODELS_DIR or a surprising per-run total shows up in
+    # the log instead of only as "training feels slower than it used to".
+    started = time.monotonic()
+    try:
+        target = periodic_checkpoint_path(run_id, resolved_node_id, epoch=epoch)
+        write_checkpoint(
+            target, model, optimizer, epoch=epoch, losses=losses,
+            lr_scheduler=lr_scheduler, scaler_state=scaler_state,
+            resolve=False,
+        )
+    except Exception:  # noqa: BLE001 - a checkpoint must not take the run down
+        logger.warning(
+            "could not write the periodic checkpoint for node %s of run %s "
+            "at epoch %d; training continues",
+            resolved_node_id, run_id, epoch, exc_info=True,
+        )
+        return None
+    elapsed = time.monotonic() - started
+
+    log_artifact = getattr(context, "log_artifact", None)
+    if callable(log_artifact):
+        log_artifact(
+            "checkpoint",
+            str(target),
+            {"reason": "periodic", "epoch": int(epoch)},
+            resolved_node_id,
+        )
+
+    try:
+        size_mb = target.stat().st_size / (1024 * 1024)
+        size_note = f"{size_mb:.1f} MB"
+    except OSError:  # noqa: BLE001 - the checkpoint is already written; a
+        # stat() failure here must not turn a successful write into a
+        # reported failure, only a log line missing one number.
+        size_note = "size unknown"
+    logger.info(
+        "Periodic checkpoint for node %s written to %s in %.2fs (%s, "
+        "epoch=%d)",
+        resolved_node_id, target, elapsed, size_note, epoch,
     )
     return str(target)
