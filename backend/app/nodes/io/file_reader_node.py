@@ -11,9 +11,39 @@ class FileReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read a text or CSV file and output its contents as a string or as a tensor (for numeric CSV)"
 
-    # The cache key hashes `path`, never the bytes behind it, so a cached
-    # result would survive the user editing the file between runs.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds the resolved
+    # file's (size, mtime, and for small files a content hash) into the
+    # cache key, so an edited file busts the cache instead of the key
+    # surviving unchanged because only the `path` string is hashed.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_path(path: str) -> "Path":
+        from pathlib import Path
+
+        from ...config import settings
+
+        p = Path(path)
+        if not p.is_absolute():
+            if settings.PROJECT_DIR is not None:
+                # Project mode: relative paths live under assets/data (spec 7.2).
+                p = settings.PROJECT_DIR / "assets" / "data" / p
+            else:
+                p = settings.GRAPHS_DIR / p
+        return p.resolve()
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import path_fingerprint
+
+        path = str(params.get("path", "") or "")
+        if not path:
+            return None
+        try:
+            resolved = cls._resolve_path(path)
+        except Exception:
+            return None
+        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -57,8 +87,6 @@ class FileReaderNode(BaseNode):
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-        from pathlib import Path
-
         import torch
 
         path = params.get("path", "")
@@ -71,14 +99,7 @@ class FileReaderNode(BaseNode):
         if not path:
             raise ValueError("File path is required")
 
-        p = Path(path)
-        if not p.is_absolute():
-            if settings.PROJECT_DIR is not None:
-                # Project mode: relative paths live under assets/data (spec 7.2).
-                p = settings.PROJECT_DIR / "assets" / "data" / p
-            else:
-                p = settings.GRAPHS_DIR / p
-        p = p.resolve()
+        p = self._resolve_path(path)
 
         # Restrict file reading to project data directories
         allowed_roots = [

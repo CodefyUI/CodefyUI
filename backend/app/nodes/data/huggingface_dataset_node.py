@@ -21,6 +21,13 @@ class HuggingFaceDatasetNode(BaseNode):
     # Hits the network and the on-disk HuggingFace cache. Neither the remote
     # revision nor the cached files are visible to the cache key, so a hit
     # would pin the graph to whatever the first run happened to fetch.
+    #
+    # #144 restored caching to the other file-reading nodes #116 disabled by
+    # folding a content fingerprint (size/mtime/hash) into the cache key --
+    # deliberately NOT applied here. A fingerprint of the local HF cache
+    # directory could not tell "the remote dataset was updated upstream"
+    # from "nothing changed"; it would only add cost without closing the
+    # actual staleness gap.
     cacheable = False
 
     @classmethod

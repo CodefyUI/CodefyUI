@@ -67,10 +67,33 @@ class ImageFolderDatasetNode(BaseNode):
         "the folder names, sorted alphabetically."
     )
 
-    # Reads a directory whose contents the cache key cannot see, exactly
-    # like Dataset and KaggleDataset. A hit would pin the graph to whatever
-    # was on disk the first time it ran.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds an aggregate
+    # fingerprint (file count, total size, latest mtime) of the resolved
+    # split directory's contents into the cache key, so files changing
+    # under it busts the cache instead of the key surviving unchanged
+    # because only `path`/`split` are hashed.
+    cacheable = True
+
+    @classmethod
+    def _resolve_root(cls, params: dict[str, Any]) -> Path | None:
+        raw_path = str(params.get("path", "") or "").strip()
+        if not raw_path:
+            return None
+        split = str(params.get("split", "train") or "train")
+        base = resolve_dataset_root(raw_path)
+        return base if split == "(none)" else base / split
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import directory_fingerprint
+
+        try:
+            root = cls._resolve_root(params)
+        except Exception:
+            return None
+        if root is None:
+            return None
+        return directory_fingerprint(root)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

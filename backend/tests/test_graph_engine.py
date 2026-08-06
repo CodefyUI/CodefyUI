@@ -11,6 +11,7 @@ from app.core.graph_engine import (
     topological_sort,
     validate_graph,
 )
+from app.core.node_base import BaseNode, DataType, PortDefinition
 
 
 def test_topological_sort_linear():
@@ -197,25 +198,36 @@ def test_validate_graph_required_input_satisfied_by_edge():
 from app.core.graph_engine import find_entry_points, reachable_from_entry_points
 
 
-def test_execute_graph_untriggered_producer_fails_validation():
-    """Every path must start from a Start node. A pure producer (no inputs,
-    no trigger) that feeds a required input is NOT auto-included — it gets
-    pruned, and validate_graph then flags the missing required input.
+def test_execute_graph_untriggered_producer_is_rescued_and_runs():
+    """core#201: every path must start from a Start node, but a pure
+    producer (no inputs, no trigger) that feeds a data edge into a
+    reachable node is a data dependency of that node, not a draft the user
+    forgot to wire up -- it is retained and runs, same as the sibling-root
+    rescue already does for a preset's own Dataset/Loss.
 
-    To run such a producer the user must wire a Start node into it (see
-    test_execute_graph_triggered_producer_runs below).
+    This graph happens to wire the producer into a REQUIRED port (Conv2d's
+    'kernel'), but requiredness is not what the rescue checks -- it does
+    not inspect the target port at all, so an optional port gets the same
+    treatment. See test_untriggered_root_feeding_an_optional_port_* below
+    for that case pinned explicitly (Dataset.train_transform, the issue's
+    own "head of a transform chain" example, is itself optional).
+
+    Before #201 this raised GraphValidationError (validate_graph on the
+    FULL graph called it valid; execute_graph pruned 'kernel' away and then
+    failed its own re-validation on the very node it had just dropped, the
+    exact divergence #201 is about). Explicitly triggering the producer
+    (test_execute_graph_triggered_producer_runs below) still works too --
+    the rescue is additive, not a replacement for that wiring style.
     """
     nodes = [
         _start_node(),
         # Reachable via trigger from Start.
         {"id": "trig_src", "type": "TensorInput",
          "data": {"params": {"shape": "1,1,5,5", "value_mode": "zeros"}}},
-        # Pure producer — no inputs, no trigger → not reachable from Start →
-        # pruned from the executable subgraph.
+        # Pure producer — no inputs, no trigger of its own — but its output
+        # feeds a required input on 'conv', which IS reachable.
         {"id": "kernel", "type": "Conv2dKernel",
          "data": {"params": {"preset": "EdgeDetection3x3"}}},
-        # Downstream node with TWO required inputs, one fed by the
-        # trigger chain and one by the (pruned) pure producer.
         {"id": "conv", "type": "Conv2dExplicit",
          "data": {"params": {"stride": 1, "padding": 1}}},
         {"id": "sink", "type": "Print",
@@ -231,13 +243,20 @@ def test_execute_graph_untriggered_producer_fails_validation():
          "sourceHandle": "tensor", "targetHandle": "value"},
     ]
 
-    with pytest.raises(GraphValidationError, match="kernel"):
-        asyncio.run(execute_graph(nodes, edges))
+    results = asyncio.run(execute_graph(nodes, edges))
+    assert "kernel" in results, "the untriggered producer must be rescued and executed"
+    assert "conv" in results
+    assert "sink" in results
 
 
 def test_execute_graph_triggered_producer_runs():
     """A producer wired to a Start node (via its own trigger edge) IS an
-    entry point and runs — feeding its output downstream as expected."""
+    entry point and runs — feeding its output downstream as expected.
+
+    Still true after #201: explicit wiring (the ResNet18-baseline
+    workaround) is a superset of, not replaced by, the automatic rescue
+    above.
+    """
     nodes = [
         _start_node(),
         {"id": "trig_src", "type": "TensorInput",
@@ -350,6 +369,205 @@ def test_reachable_handles_disconnected_components():
         {"id": "e2", "source": "x", "target": "y", "type": "data"},
     ]
     assert reachable_from_entry_points(["a"], edges) == {"a", "b"}
+
+
+# ── Top-level sibling-root rescue (core#201) ────────────────────────────
+#
+# reachable_from_entry_points walks forward from entry points through data
+# edges -- exactly right for "what does the triggered part of the graph
+# feed", and exactly wrong for "what does the triggered part of the graph
+# need": a root with no incoming edge of its own (Dataset, Loss, the head
+# of a transform chain) is never the FROM side of that walk, so it was
+# pruned even though something reachable has a required input wired to it.
+# validate_graph, run on the FULL edge set, never sees the gap; the pruned
+# re-validation inside prepare_executable_graph does, and used to refuse a
+# graph the editor had just called valid.
+#
+# test_subgraph_engine.py already covers this exact shape for a preset or
+# subgraph container ("if any internal node is reachable, retain all
+# sibling roots"). These tests are the same rule with no container at all
+# -- a plain node graph, which is what the preset rescue never covered.
+
+
+def test_untriggered_root_feeding_a_reachable_node_is_retained():
+    """#201's own repro, verbatim: Start triggers DataLoader directly;
+    Dataset feeds it but has no trigger of its own.
+    """
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("ds", "Dataset", name="MNIST", split="test", data_dir="./data"),
+        _node("dl", "DataLoader", batch_size=4),
+    ]
+    edges = [
+        _trigger("t1", "start", "dl"),
+        _data_edge("d1", "ds", "dataset", "dl", "dataset"),
+    ]
+
+    # The editor-side check was never the buggy half -- confirmed here for
+    # contrast with the pruned check below, which used to disagree with it.
+    assert validate_graph(nodes, edges) == []
+
+    exec_nodes, exec_edges, _ = prepare_executable_graph(nodes, edges)
+    ids = {n["id"] for n in exec_nodes}
+    assert ids == {"start", "ds", "dl"}, ids
+    assert any(e["id"] == "d1" for e in exec_edges), (
+        "the data edge providing DataLoader's required input must survive pruning"
+    )
+
+
+def test_untriggered_root_two_hops_back_is_also_retained():
+    """The transform-chain shape from the issue: TWO untriggered nodes in a
+    row feed the triggered target, not just its immediate neighbour. A
+    rescue that only retains the immediate predecessor (a single-hop
+    "roots only" reading) would keep 'mid' -- whose output the triggered
+    node directly receives -- but not 'head', which only feeds 'mid', and
+    the missing-required-input failure would just move one hop back.
+    """
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("head", "TensorCreate", shape="2,2", fill="ones"),
+        _node("mid", "ScalarMultiply", scalar=2.0),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("t1", "start", "out"),
+        _data_edge("d1", "head", "tensor", "mid", "tensor"),
+        _data_edge("d2", "mid", "tensor", "out", "value"),
+    ]
+
+    exec_nodes, exec_edges, _ = prepare_executable_graph(nodes, edges)
+    ids = {n["id"] for n in exec_nodes}
+    assert ids == {"start", "head", "mid", "out"}, ids
+    assert {e["id"] for e in exec_edges} == {"t1", "d1", "d2"}
+
+
+@pytest.mark.asyncio
+async def test_untriggered_root_actually_executes_and_its_data_flows():
+    """Same shape as the structural test above, executed for real: the
+    rescued root must actually run and hand its consumer real data, not
+    just survive the structural prune untouched.
+    """
+    nodes = [
+        _start_node(),
+        _node("root", "TensorCreate", shape="2,2", fill="ones"),
+        _node("out", "Print", label="tail"),
+    ]
+    edges = [
+        _trigger("t1", "start", "out"),  # triggers 'out', not 'root'
+        _data_edge("d1", "root", "tensor", "out", "value"),
+    ]
+    results = await execute_graph(nodes, edges)
+    assert "root" in results, "the untriggered root must actually execute"
+    assert results["out"]["value"] is results["root"]["tensor"]
+
+
+def test_untriggered_root_feeding_an_optional_port_is_structurally_retained():
+    """core#201's actual rule (pinned by code review): the rescue does not
+    check whether the target port is required. `Dataset.train_transform`
+    is OPTIONAL -- exactly the port the issue's own "head of a transform
+    chain" example feeds -- so an untriggered root wired to it must be
+    retained on the same terms as one wired to a required port.
+
+    This is deliberately broad, not a bug: restricting the rescue to
+    required ports would fail the issue's own motivating graph, since
+    Dataset's transform ports are optional by design (no transform wired
+    means "use the default ToTensor+Normalize").
+    """
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("aug", "ToTensorTransform"),
+        _node("ds", "Dataset", name="MNIST", split="train", data_dir="./data"),
+    ]
+    edges = [
+        _trigger("t1", "start", "ds"),
+        _data_edge("d1", "aug", "transform", "ds", "train_transform"),
+    ]
+
+    exec_nodes, exec_edges, _ = prepare_executable_graph(nodes, edges)
+    ids = {n["id"] for n in exec_nodes}
+    assert ids == {"start", "aug", "ds"}, ids
+    assert any(e["id"] == "d1" for e in exec_edges), (
+        "the data edge into the OPTIONAL train_transform port must survive pruning"
+    )
+
+
+class _OptionalPortSinkNode(BaseNode):
+    """Reveals whether an OPTIONAL input actually arrived, to distinguish
+    "retained but its data silently dropped" from "retained and wired"."""
+
+    NODE_NAME = "_OptionalPortSink201"
+    CATEGORY = "Test"
+    DESCRIPTION = "Echoes an optional input, or a sentinel if unwired"
+
+    @classmethod
+    def define_inputs(cls):
+        return [PortDefinition(name="maybe", data_type=DataType.ANY, optional=True)]
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params):
+        return {"value": inputs.get("maybe", "UNSET")}
+
+
+@pytest.fixture(autouse=True)
+def _register_optional_port_sink():
+    from app.core.node_registry import registry
+
+    registry._nodes["_OptionalPortSink201"] = _OptionalPortSinkNode
+    yield
+    registry._nodes.pop("_OptionalPortSink201", None)
+
+
+@pytest.mark.asyncio
+async def test_untriggered_root_feeding_an_optional_port_is_retained_and_delivered():
+    """Same rule, executed for real: the rescued root's output must
+    actually reach the optional port, not just survive the structural
+    prune while its data quietly never arrives.
+    """
+    nodes = [
+        _start_node(),
+        _node("root", "TensorCreate", shape="2,2", fill="ones"),
+        _node("sink", "_OptionalPortSink201"),
+    ]
+    edges = [
+        _trigger("t1", "start", "sink"),
+        _data_edge("d1", "root", "tensor", "sink", "maybe"),
+    ]
+    results = await execute_graph(nodes, edges)
+    assert "root" in results, (
+        "the untriggered root must be rescued even though it only feeds an optional port"
+    )
+    assert results["sink"]["value"] is results["root"]["tensor"], (
+        "the rescued root's output must actually reach the optional port"
+    )
+
+
+def test_disconnected_draft_component_is_still_pruned():
+    """The rescue must stay a RETENTION rule, not a blanket "run everything"
+    -- a node with no path (forward OR backward) to any entry point is a
+    draft the user has not wired up yet, and must stay excluded exactly as
+    it did before this fix (test_execute_graph_skips_draft_components).
+    """
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("live", "TensorCreate", shape="2,2", fill="ones"),
+        _node("draft", "TensorCreate", shape="3,3", fill="zeros"),
+    ]
+    edges = [_trigger("t1", "start", "live")]
+
+    exec_nodes, _e, _m = prepare_executable_graph(nodes, edges)
+    ids = {n["id"] for n in exec_nodes}
+    assert ids == {"start", "live"}, ids
 
 
 def _make_node(nid, ntype="Dataset", is_entry=False):
@@ -868,3 +1086,19 @@ def test_an_ordinary_missing_input_carries_no_bypass_attribution():
     errors = validate_graph(nodes, edges)
     assert any("Missing required input 'value' on node out" in e for e in errors)
     assert not any("is bypassed" in e for e in errors), errors
+
+
+def test_an_ordinary_missing_input_says_what_to_connect():
+    """core#201 part 3: a plain unwired port should say what fixes it, not
+    just name the port. (The bypass-cause case above already names ITS
+    fix; this is the same idea for the plain case, which used to fall
+    through to no guidance at all.)
+    """
+    nodes = [_start_node(), _node("out", "Print", label="tail")]
+    edges = [_trigger("et", "start", "out")]
+    errors = validate_graph(nodes, edges)
+    assert any(
+        "Missing required input 'value' on node out" in e
+        and "connect an output to this port" in e
+        for e in errors
+    ), errors

@@ -20,6 +20,13 @@ class CheckpointSaverNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Save a full training checkpoint (model + optimizer + LR schedule + epoch + loss) for resuming training later"
 
+    # The write to disk IS this node's output. A cache hit returns the
+    # recorded {"path": ..., "model": ...} without calling execute() again,
+    # which is correct for a pure node and wrong here: if the user deleted
+    # the checkpoint (or it never ran with Rec off), a cache hit would hand
+    # back a path that no longer points at anything (#143).
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
@@ -89,10 +96,27 @@ class CheckpointLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load a training checkpoint to resume training (restores model + optimizer + LR schedule + epoch)"
 
-    # The cache key hashes `path`, never the checkpoint behind it. Saving a
-    # newer checkpoint to the same path between runs is the whole point of
-    # resumable training, so a cache hit would restore a stale epoch.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds the resolved
+    # checkpoint file's (size, mtime, and for small files a content hash)
+    # into the cache key. Saving a newer checkpoint to the same path
+    # between runs is the whole point of resumable training; the
+    # fingerprint changes with the resave, so the cache correctly misses
+    # instead of restoring a stale epoch.
+    cacheable = True
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import path_fingerprint
+        from ...core.checkpoints import resolve_checkpoint_path
+
+        path = str(params.get("path", "") or "")
+        if not path:
+            return None
+        try:
+            resolved = resolve_checkpoint_path(path)
+        except Exception:
+            return None
+        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

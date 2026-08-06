@@ -47,10 +47,46 @@ class CSVReaderNode(BaseNode):
         "string labels for downstream classifier nodes."
     )
 
-    # The cache key hashes `path`, never the bytes behind it, so a cached
-    # result would survive the user editing the CSV between runs. Always
-    # re-read from disk.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds the resolved
+    # file's (size, mtime, and for small files a content hash) into the
+    # cache key, so an edited CSV busts the cache instead of the key
+    # surviving unchanged because only the `path` string is hashed.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_path(path_str: str) -> Path:
+        """Same resolution ``execute()`` uses -- may raise ValueError for a
+        path that escapes the project directory, exactly as execute() does.
+        """
+        from ...config import settings
+
+        path = Path(path_str)
+        if settings.PROJECT_DIR is not None and not path.is_absolute():
+            # The bundled sample is special-cased to the install (cwd stays
+            # backend/ even in project mode) so demos keep working (spec 7.2).
+            if path_str.replace("\\", "/") == "data/samples/iris.csv":
+                return path.resolve()
+            proj = settings.PROJECT_DIR.resolve()
+            resolved = (proj / path).resolve()
+            if not resolved.is_relative_to(proj):
+                raise ValueError(
+                    f"CSVReader: path {path_str!r} escapes the project directory"
+                )
+            return resolved
+        return path
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import path_fingerprint
+
+        path_str = str(params.get("path", "") or "").strip()
+        if not path_str:
+            return None
+        try:
+            resolved = cls._resolve_path(path_str)
+        except Exception:
+            return None
+        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -122,25 +158,10 @@ class CSVReaderNode(BaseNode):
     ) -> dict[str, Any]:
         import pandas as pd
 
-        from ...config import settings
-
         path_str = str(params.get("path", "")).strip()
         if not path_str:
             raise ValueError("CSVReader requires a non-empty `path` param.")
-        path = Path(path_str)
-        if settings.PROJECT_DIR is not None and not path.is_absolute():
-            # The bundled sample is special-cased to the install (cwd stays
-            # backend/ even in project mode) so demos keep working (spec 7.2).
-            if path_str.replace("\\", "/") == "data/samples/iris.csv":
-                path = path.resolve()
-            else:
-                proj = settings.PROJECT_DIR.resolve()
-                resolved = (proj / path).resolve()
-                if not resolved.is_relative_to(proj):
-                    raise ValueError(
-                        f"CSVReader: path {path_str!r} escapes the project directory"
-                    )
-                path = resolved
+        path = self._resolve_path(path_str)
         if not path.exists():
             raise FileNotFoundError(f"CSVReader: file not found at {path}")
 

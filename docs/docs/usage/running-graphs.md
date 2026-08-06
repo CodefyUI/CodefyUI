@@ -14,6 +14,14 @@ When you click **Run**, the frontend sends the graph to the backend over a WebSo
 - Each node reports status as it goes: `running` → `completed` (or `error`), with a small **output summary** embedded inline for quick viewing.
 - The **Execution Log** tab shows this per-node progress and any `Print` node output.
 
+## A node without a trigger can still run
+
+Removing a node's trigger edge does not, by itself, take it out of the run. If a **data** edge still connects its output into something that does run — whether that's a required input or an optional one makes no difference — the node runs too, with or without a trigger of its own. A `Dataset` or the first node of a transform chain typically has no trigger at all and is expected to run this way; the same rule applies to anything else you have wired in.
+
+The practical effect: **disconnecting the trigger edge alone no longer parks a branch.** If you want a node to stay wired for later but not run right now, disconnect its **data** edge(s) instead — that is what actually removes it from the run. **Bypass** (right-click a node, or `Ctrl`/`Cmd`+`B`) is a one-click alternative for a node partway through a chain, skipping it while passing its input straight through to whatever it fed — but it only works when the node has an input of the same type as its output to forward, so it is refused on a source node with no inputs at all (`CSVReader`, `ImageReader`, `Dataset`, and the rest of the file-reading nodes). For one of those, disconnecting the edge is the only way to park it.
+
+One consequence worth knowing: a reader node (`CSVReader`, `ImageReader`, and the like) left wired to an input — even an optional one — but never triggered now executes where it used to be silently skipped. If the file it points at has since been deleted or moved, a graph that previously ran without error can start failing with `FileNotFoundError` on that node.
+
 ## Training loops and loss charts
 
 The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel plots a **live loss chart** as epochs complete, so you can watch convergence in real time.
@@ -24,25 +32,23 @@ CodefyUI tracks which nodes are **dirty**. When you change a node's parameters o
 
 Deterministic nodes are cached automatically; non-deterministic ones (training loops, random ops, or any node with `cacheable = False`) always re-run.
 
+### Content-aware caching for file-reading nodes
+
+A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to `params` alone — a `path` parameter records *where* to read, never *what* is there. A node that reads external state therefore also folds a content fingerprint into its key: the resolved file's size and modification time, plus (for files up to 8 MB) a content hash, so a same-size edit landing inside one filesystem timestamp tick still changes the key. `CSVReader`, `FileReader`, `ImageReader`, `ImageBatchReader`, `ModelLoader`, `CheckpointLoader`, `Dataset` and `ImageFolderDataset` all do this — editing the file (or, for `Dataset`/`ImageFolderDataset`, anything under the directory) and clicking **Run** again gives you the new content; leaving it untouched gets you the cached result instead of a re-read.
+
+`GraphInput` with `type=image` uses the same mechanism on a **canvas** run: the API path already has the caller's value in `params`, but a canvas run instead loads the `default` path from disk, and the fingerprint is what makes editing that image between canvas runs pick up the new pixels.
+
 ### What is never cached
 
-A cache entry is keyed by a hash of the node's type, its parameters, its upstream nodes' cache keys, and the run device. Anything a node reads from *outside* the graph is invisible to that key — the key records a file **path**, never the bytes at that path. Nodes that reach for external state therefore opt out of caching entirely and re-execute on every run:
+Some nodes still opt out of caching entirely with `cacheable = False`, for two different reasons:
 
-| Node | External state it reads |
-| --- | --- |
-| `CSVReader`, `FileReader` | A file on disk |
-| `ImageReader`, `ImageBatchReader` | An image file, or every image in a directory |
-| `Dataset`, `HuggingFaceDataset`, `KaggleDataset` | Downloaded dataset files (plus the network, and `KAGGLE_*` credentials for Kaggle) |
-| `ModelLoader`, `CheckpointLoader` | A `.pt` / `.pth` weights or checkpoint file |
-| `LLMChat` | A remote model API |
+**External state a fingerprint can't describe.** `HuggingFaceDataset` and `KaggleDataset` hit the network and, for Kaggle, `KAGGLE_*` environment credentials — a fingerprint of the local cache directory cannot tell "the remote revision changed" or "the credentials changed" from "nothing changed", so both re-execute on every run. `LLMChat` reaches a remote model API for the same reason.
 
-One known exception: `GraphInput` with `type=image` stays cacheable. API callers send the image with the request, so it lands in the node's parameters and the key stays complete — but a **canvas** run instead loads the `default` path from disk, and only the path is in the key. Editing that image between canvas runs can therefore serve a stale tensor; a follow-up issue tracks closing the gap.
+**The node's purpose is a side effect.** `ImageWriter`, `ModelSaver`, and `CheckpointSaver` exist to write a file; a cache hit would return the recorded `{"path": ...}` without touching disk, which is wrong when the node's whole point is the write (deleting the output and re-running must recreate it). These re-execute every run regardless of what feeds them.
 
-So editing a CSV on disk and clicking **Run** again gives you the new rows: the reader never replays the tensor it built last time. The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
+The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
 
-Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from the old file.
-
-The trade-off is deliberate — a graph that starts from a file reader re-reads that file on every run. Correctness first: the alternative (hashing file size and modification time into the key) is a possible future optimization, not something you can rely on today.
+Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.
 
 ## Reproducible runs (seed)
 

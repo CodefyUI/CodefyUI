@@ -11,10 +11,55 @@ class ImageBatchReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read all images from a directory and stack them into a batch tensor (N, C, H, W)"
 
-    # The cache key hashes `directory` and `pattern`, never the directory
-    # listing, so a cached batch would survive images being added, removed,
-    # or edited between runs.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds an aggregate
+    # fingerprint (count, total size, latest mtime) of exactly the files
+    # `directory`+`pattern`(+`max_images`) select into the cache key, so
+    # images being added, removed, or edited busts the cache instead of the
+    # key surviving unchanged because only the directory/pattern strings
+    # are hashed.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_directory(directory: str) -> "Path":
+        from pathlib import Path
+
+        from ...config import settings
+
+        d = Path(directory)
+        if not d.is_absolute():
+            d = settings.MODELS_DIR.parent / d
+        return d.resolve()
+
+    @classmethod
+    def _selected_paths(cls, params: dict[str, Any]) -> list["Path"] | None:
+        """The exact file list execute() would glob and read, or None if
+        params do not name a readable directory."""
+        directory = str(params.get("directory", "") or "")
+        if not directory:
+            return None
+        try:
+            d = cls._resolve_directory(directory)
+            pattern = str(params.get("pattern", "*.png") or "*.png")
+            paths = sorted(d.glob(pattern))
+        except Exception:
+            return None
+        max_images = params.get("max_images", 0) or 0
+        try:
+            max_images = int(max_images)
+        except (TypeError, ValueError):
+            max_images = 0
+        if max_images > 0:
+            paths = paths[:max_images]
+        return paths
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import paths_fingerprint
+
+        paths = cls._selected_paths(params)
+        if paths is None:
+            return None
+        return paths_fingerprint(paths)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -66,8 +111,6 @@ class ImageBatchReaderNode(BaseNode):
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-        from pathlib import Path
-
         import torch
         from PIL import Image
         from torchvision import transforms
@@ -83,10 +126,7 @@ class ImageBatchReaderNode(BaseNode):
         if not directory:
             raise ValueError("Directory path is required")
 
-        d = Path(directory)
-        if not d.is_absolute():
-            d = settings.MODELS_DIR.parent / d
-        d = d.resolve()
+        d = self._resolve_directory(directory)
 
         # Restrict reads to project data directories
         allowed_roots = [

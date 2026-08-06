@@ -8,9 +8,38 @@ class ImageReaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Read an image file from disk and output as a tensor (C, H, W) with values in [0, 1]"
 
-    # The cache key hashes `path`, never the pixels behind it, so a cached
-    # tensor would survive the user replacing the image between runs.
-    cacheable = False
+    # #144: cacheable again -- cache_fingerprint() below folds the resolved
+    # file's (size, mtime, and for small files a content hash) into the
+    # cache key, so a replaced image busts the cache instead of the key
+    # surviving unchanged because only the `path` string is hashed.
+    cacheable = True
+
+    @staticmethod
+    def _resolve_path(path: str) -> "Path":
+        from pathlib import Path
+
+        from ...config import settings
+
+        p = Path(path)
+        if not p.is_absolute():
+            # Relative paths resolve against IMAGES_DIR so filenames picked
+            # from the uploaded-files dropdown work without the user typing
+            # a full path.
+            p = settings.IMAGES_DIR / p
+        return p
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        from ...core.cache_fingerprint import path_fingerprint
+
+        path = str(params.get("path", "") or "")
+        if not path:
+            return None
+        try:
+            resolved = cls._resolve_path(path)
+        except Exception:
+            return None
+        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -49,12 +78,8 @@ class ImageReaderNode(BaseNode):
         ]
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-        from pathlib import Path
-
         from PIL import Image, ImageFile
         from torchvision import transforms
-
-        from ...config import settings
 
         ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -65,11 +90,7 @@ class ImageReaderNode(BaseNode):
         if not path:
             raise ValueError("Image path is required")
 
-        # Relative paths resolve against IMAGES_DIR so filenames picked from
-        # the uploaded-files dropdown work without the user typing a full path.
-        p = Path(path)
-        if not p.is_absolute():
-            p = settings.IMAGES_DIR / p
+        p = self._resolve_path(path)
 
         if not p.exists():
             raise FileNotFoundError(f"Image not found: {path}")

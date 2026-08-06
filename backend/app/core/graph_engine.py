@@ -1160,13 +1160,23 @@ def validate_graph(
             if not inp.optional and (node["id"], inp.name) not in connected_inputs:
                 # A port left unconnected BY A BYPASS reads as the user's own
                 # wiring mistake unless the message says otherwise (core#128).
+                #
+                # The plain case (no bypass cause) gets a short "what to do"
+                # too (core#201 part 3): with the sibling-root/data-ancestor
+                # rescue in prepare_executable_graph, this message can no
+                # longer mean "the edge exists but its source was pruned for
+                # lack of a trigger" -- that shape is retained and runs
+                # before validation ever sees it. What is left, here or in
+                # the editor's own live check, is always a port with no
+                # edge at all, so "connect an output" is the complete fix,
+                # not a guess among several.
                 cause = resolution.dropped.get((node["id"], inp.name))
                 errors.append(
                     f"Missing required input '{inp.name}' on node {node['id']} ({node['type']})"
                     + (
                         f" (input dropped because '{cause}' is bypassed)"
                         if cause
-                        else ""
+                        else " -- connect an output to this port"
                     )
                 )
 
@@ -1594,31 +1604,71 @@ def prepare_executable_graph(
         ):
             executable_ids.add(edge["source"])
 
-    # A container is one logical unit. If any internal node is reachable,
-    # retain all sibling roots (for example Dataset and Loss in a training
-    # preset) -- they have no incoming edge, so reachability alone would prune
-    # them out of a block the user did ask to run.
+    # `outermost_of` depends only on `internal_to_preset`, which the loop
+    # below never modifies -- computed once rather than on every iteration.
     #
-    # Grouped by the OUTERMOST container, not the immediately enclosing one.
-    # Under nesting the only reachable node may be `blk/nest/mul`, whose
-    # immediate container is `blk/nest`; grouping there retains `nest`'s own
-    # contents and prunes the roots sitting directly inside `blk`, so how
-    # deeply a user happened to nest a block would decide whether its roots
-    # survive.
+    # Grouped by the OUTERMOST container, not the immediately enclosing
+    # one. Under nesting the only reachable node may be `blk/nest/mul`,
+    # whose immediate container is `blk/nest`; grouping there retains
+    # `nest`'s own contents and prunes the roots sitting directly inside
+    # `blk`, so how deeply a user happened to nest a block would decide
+    # whether its roots survive.
     outermost_of = {
         internal_id: outermost_container(internal_id, internal_to_preset)
         for internal_id in internal_to_preset
     }
-    containers_to_include = {
-        container
-        for internal_id, container in outermost_of.items()
-        if internal_id in executable_ids
-    }
-    executable_ids.update(
-        internal_id
-        for internal_id, container in outermost_of.items()
-        if container in containers_to_include
-    )
+
+    # Two rescue passes, iterated to a fixpoint (#201). Forward reachability
+    # only ever walks from a node already known executable to what it
+    # FEEDS -- a root with no INCOMING edge of its own (Dataset, Loss, the
+    # head of a transform chain) is never the source side of that walk, so
+    # it gets pruned even though something reachable has a port -- required
+    # OR optional, this does not check which -- wired to its output. Both
+    # passes below retain such a root once something it feeds survives;
+    # iterating them together (rather than picking a fixed order) handles a
+    # root that is itself inside a preset, or a preset sibling that itself
+    # depends on an outside root, without having to prove one pass always
+    # finishes what the other would still need to do.
+    while True:
+        before = len(executable_ids)
+
+        # A container is one logical unit. If any internal node is
+        # reachable, retain all sibling roots (for example Dataset and Loss
+        # in a training preset) -- they have no incoming edge, so
+        # reachability alone would prune them out of a block the user did
+        # ask to run.
+        containers_to_include = {
+            container
+            for internal_id, container in outermost_of.items()
+            if internal_id in executable_ids
+        }
+        executable_ids.update(
+            internal_id
+            for internal_id, container in outermost_of.items()
+            if container in containers_to_include
+        )
+
+        # A training graph built from plain nodes -- no preset, no
+        # subgraph -- has the identical shape: `Dataset`, `Loss`, and the
+        # head of each transform chain have no incoming edge at all and are
+        # not part of any container, so the rescue above never sees them.
+        # Retain every node that feeds a DATA edge into something already
+        # executable -- the same "one logical unit" reasoning as the
+        # container rescue above, applied to an ordinary wired connection
+        # instead of a preset boundary. A root pulled in this way runs
+        # unconditionally, with no trigger of its own, exactly like a
+        # rescued preset sibling already does today (topological
+        # scheduling only orders by DATA edges; trigger edges are markers,
+        # not a precondition to run -- see topological_sort/_levels).
+        for edge in expanded_edges:
+            if (
+                edge.get("type", "data") == "data"
+                and edge["target"] in executable_ids
+            ):
+                executable_ids.add(edge["source"])
+
+        if len(executable_ids) == before:
+            break
 
     executable_nodes = [
         node for node in expanded_nodes if node["id"] in executable_ids
@@ -1997,9 +2047,15 @@ async def execute_graph(
                 node_cache_keys[src_id]
                 for src_id, _, _ in incoming.get(node_id, [])
             ]
+            # #144/#145: a node whose output depends on external state a
+            # path param only NAMES (not contains) folds a cheap descriptor
+            # of that state in here, so a change on disk changes the key.
+            # None for every node that does not override the hook.
+            fingerprint = node_cls.cache_fingerprint(params)
             cache_key = cache.compute_key(
                 node_type, params, upstream_keys,
                 device=context.device if context is not None else "cpu",
+                fingerprint=fingerprint,
             )
             node_cache_keys[node_id] = cache_key
             if node_id not in force_rerun:

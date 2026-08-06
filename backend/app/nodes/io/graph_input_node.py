@@ -27,32 +27,47 @@ from ...core.node_base import (
 )
 
 
-def _load_canvas_image(path_value: Any) -> Any:
-    """Load the canvas-only ``default`` image path the way ImageReader does.
+def _resolve_canvas_image_path(path_value: Any) -> Any:
+    """Resolve the canvas-only ``default`` image path, without checking it
+    exists. Returns ``None`` for an empty/unset value.
 
-    Only reached on canvas runs — the API path always injects ``value``
-    (a base64 string) and never touches ``default``. Relative paths
-    resolve against IMAGES_DIR so filenames picked from the uploaded-files
-    dropdown work without the user typing a full path.
+    Shared by :func:`_load_canvas_image` (which then loads it) and
+    ``GraphInputNode.cache_fingerprint`` (which only needs to stat it), so
+    the two can never resolve the same params to two different files
+    (#145). Relative paths resolve against IMAGES_DIR so filenames picked
+    from the uploaded-files dropdown work without the user typing a full
+    path.
     """
     from pathlib import Path
-
-    from PIL import Image
-    from torchvision import transforms
 
     from ...config import settings
 
     path_str = str(path_value or "")
     if not path_str:
+        return None
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = settings.IMAGES_DIR / p
+    return p
+
+
+def _load_canvas_image(path_value: Any) -> Any:
+    """Load the canvas-only ``default`` image path the way ImageReader does.
+
+    Only reached on canvas runs — the API path always injects ``value``
+    (a base64 string) and never touches ``default``.
+    """
+    from PIL import Image
+    from torchvision import transforms
+
+    p = _resolve_canvas_image_path(path_value)
+    if p is None:
         raise ValueError(
             "GraphInput(type=image): set 'default' to a server-local image path "
             "for canvas runs (API callers send base64 instead)"
         )
-    p = Path(path_str)
-    if not p.is_absolute():
-        p = settings.IMAGES_DIR / p
     if not p.exists():
-        raise FileNotFoundError(f"GraphInput default image not found: {path_str}")
+        raise FileNotFoundError(f"GraphInput default image not found: {path_value}")
     img = Image.open(p).convert("RGB")
     return transforms.ToTensor()(img)
 
@@ -68,7 +83,27 @@ class GraphInputNode(BaseNode):
 
     # Params include the injected value, so cache keys stay correct on
     # canvas runs (BaseNode default, restated here because it is load-bearing).
+    #
+    # The one gap: type=image on a CANVAS run. There `default` is a PATH to
+    # the pixels, not the pixels themselves, so params alone leave the key
+    # incomplete -- cache_fingerprint() below closes exactly that gap (#145)
+    # without weakening `cacheable` itself, which would deoptimise every
+    # published-app (API) run that never has this problem in the first
+    # place.
     cacheable = True
+
+    @classmethod
+    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
+        if "value" in params:
+            return None  # API path: the value is already in params.
+        if str(params.get("type", "string")) != "image":
+            return None  # `default` IS the value for every other type.
+        from ...core.cache_fingerprint import path_fingerprint
+
+        p = _resolve_canvas_image_path(params.get("default", ""))
+        if p is None:
+            return None
+        return path_fingerprint(p)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
