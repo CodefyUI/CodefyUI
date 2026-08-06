@@ -1,6 +1,6 @@
 # {{plugin_name}}
 
-A [CodefyUI](https://github.com/treeleaves30760/CodefyUI) plugin, scaffolded with `cdui plugin new`.
+A [CodefyUI](https://github.com/CodefyUI/CodefyUI) plugin, scaffolded with `cdui plugin new`.
 
 ## Develop
 

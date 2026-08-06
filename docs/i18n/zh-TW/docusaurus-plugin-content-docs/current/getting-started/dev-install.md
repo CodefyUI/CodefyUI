@@ -15,7 +15,7 @@ description: 用於開發或貢獻 CodefyUI 的手動 uv + pnpm 設定，支援�
 ## 1. Clone 專案
 
 ```bash
-git clone https://github.com/treeleaves30760/CodefyUI.git
+git clone https://github.com/CodefyUI/CodefyUI.git
 cd CodefyUI
 ```
 

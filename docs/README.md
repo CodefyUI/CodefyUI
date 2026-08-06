@@ -32,4 +32,4 @@ touches `docs/`. Set the Pages source to **GitHub Actions** in repo Settings →
 
 The site is served at **https://docs.codefyui.com/** — `url: 'https://docs.codefyui.com'`, `baseUrl: '/'`, with a one-line `static/CNAME`. The subdomain's DNS (a `CNAME` record) points at GitHub Pages.
 
-To revert to the GitHub Pages project URL, set `url` to `https://treeleaves30760.github.io` and `baseUrl` to `'/CodefyUI/'`, and remove `static/CNAME`.
+To revert to the GitHub Pages project URL, set `url` to `https://codefyui.github.io` and `baseUrl` to `'/CodefyUI/'`, and remove `static/CNAME`.

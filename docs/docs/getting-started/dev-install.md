@@ -15,7 +15,7 @@ If you only want to *run* CodefyUI, use the [one-line installer](./installation)
 ## 1. Clone the repository
 
 ```bash
-git clone https://github.com/treeleaves30760/CodefyUI.git
+git clone https://github.com/CodefyUI/CodefyUI.git
 cd CodefyUI
 ```
 

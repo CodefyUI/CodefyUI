@@ -152,11 +152,11 @@ cdui plugin new my-plugin --ui     # also a React frontend wired to the SDK
 
 It generates a manifest, an example node, a test (with the `cdui_plugins.<id>` namespace shim so `pytest` works locally), and — with `--ui` — a Vite + React `ui/` whose `src/sdk/` is the typed plugin SDK. The plugin lands in `./my-plugin/`; link it with `cdui plugin dev` (below) and start editing.
 
-For a richer reference, fork the **[Official Plugin Template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate.
+For a richer reference, fork the **[Official Plugin Template](https://github.com/CodefyUI/CodefyUI-Plugin-Official)** — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. Its README walks through every field and the AST security gate.
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
+cdui plugin install CodefyUI/CodefyUI-Plugin-Official
 
 # After forking
 cdui plugin install your-username/your-fork

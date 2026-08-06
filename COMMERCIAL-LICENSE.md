@@ -14,4 +14,4 @@ If you need proprietary, closed-source, SaaS, OEM, enterprise, or other terms
 that are not compatible with AGPL-3.0, contact the maintainers for a separate
 commercial license.
 
-Commercial licensing contact: https://github.com/treeleaves30760/CodefyUI/issues
+Commercial licensing contact: https://github.com/CodefyUI/CodefyUI/issues

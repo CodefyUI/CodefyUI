@@ -1,6 +1,6 @@
 # CodefyUI 一鍵安裝腳本 (Windows / PowerShell)
 # 用法：
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 #
 # 環境變數：
 #   $env:CODEFYUI_DIR           自訂安裝路徑（預設 $HOME\CodefyUI）
@@ -9,8 +9,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'https://github.com/treeleaves30760/CodefyUI.git'
-$ReleaseRepo = 'treeleaves30760/CodefyUI'
+$Repo = 'https://github.com/CodefyUI/CodefyUI.git'
+$ReleaseRepo = 'CodefyUI/CodefyUI'
 $ReleaseAsset = 'frontend-dist.tar.gz'
 $InstallDir = if ($env:CODEFYUI_DIR) { $env:CODEFYUI_DIR } else { Join-Path $HOME 'CodefyUI' }
 $ReleaseTag = if ($env:CODEFYUI_RELEASE_TAG) { $env:CODEFYUI_RELEASE_TAG } else { 'latest' }

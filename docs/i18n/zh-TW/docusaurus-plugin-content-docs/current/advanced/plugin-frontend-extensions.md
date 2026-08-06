@@ -247,7 +247,7 @@ api.nodes.registerRenderer('my_plugin:MyNode', {
 });
 ```
 
-[外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝它，讓你能以 React 元件撰寫內容區。
+[外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)的 SDK 會用 `createRoot` 包裝它，讓你能以 React 元件撰寫內容區。
 
 ### `api.events` — 即時執行事件
 

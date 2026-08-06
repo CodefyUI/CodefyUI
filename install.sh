@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CodefyUI 一鍵安裝腳本
-# 用法：curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.sh | bash
+# 用法：curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | bash
 #
 # 環境變數：
 #   CODEFYUI_DIR          自訂安裝路徑（預設 $HOME/CodefyUI）
@@ -12,8 +12,8 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
 
-REPO="https://github.com/treeleaves30760/CodefyUI.git"
-RELEASE_REPO="treeleaves30760/CodefyUI"
+REPO="https://github.com/CodefyUI/CodefyUI.git"
+RELEASE_REPO="CodefyUI/CodefyUI"
 RELEASE_ASSET="frontend-dist.tar.gz"
 INSTALL_DIR="${CODEFYUI_DIR:-$HOME/CodefyUI}"
 RELEASE_TAG="${CODEFYUI_RELEASE_TAG:-latest}"

@@ -15,12 +15,12 @@ const config: Config = {
 
   // Production URL: served at the root of the custom subdomain (see static/CNAME).
   // (To revert to the GitHub Pages project URL, set url to
-  //  'https://treeleaves30760.github.io' + baseUrl '/CodefyUI/' and drop static/CNAME.)
+  //  'https://codefyui.github.io' + baseUrl '/CodefyUI/' and drop static/CNAME.)
   url: 'https://docs.codefyui.com',
   baseUrl: '/',
 
   // GitHub Pages deployment config.
-  organizationName: 'treeleaves30760',
+  organizationName: 'CodefyUI',
   projectName: 'CodefyUI',
   trailingSlash: false,
 
@@ -48,7 +48,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/', // docs served at the site root
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/treeleaves30760/CodefyUI/tree/main/docs/',
+          editUrl: 'https://github.com/CodefyUI/CodefyUI/tree/main/docs/',
           editLocalizedFiles: true,
         },
         blog: false,
@@ -96,7 +96,7 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://github.com/treeleaves30760/CodefyUI',
+          href: 'https://github.com/CodefyUI/CodefyUI',
           label: 'GitHub',
           position: 'right',
         },
@@ -117,11 +117,11 @@ const config: Config = {
         {
           title: 'Project',
           items: [
-            {label: 'GitHub', href: 'https://github.com/treeleaves30760/CodefyUI'},
-            {label: 'Issues', href: 'https://github.com/treeleaves30760/CodefyUI/issues'},
+            {label: 'GitHub', href: 'https://github.com/CodefyUI/CodefyUI'},
+            {label: 'Issues', href: 'https://github.com/CodefyUI/CodefyUI/issues'},
             {
               label: 'Plugin Template',
-              href: 'https://github.com/treeleaves30760/CodefyUI-Plugin-Official',
+              href: 'https://github.com/CodefyUI/CodefyUI-Plugin-Official',
             },
           ],
         },
@@ -130,11 +130,11 @@ const config: Config = {
           items: [
             {
               label: 'AGPL-3.0',
-              href: 'https://github.com/treeleaves30760/CodefyUI/blob/main/LICENSE',
+              href: 'https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE',
             },
             {
               label: 'Commercial',
-              href: 'https://github.com/treeleaves30760/CodefyUI/blob/main/COMMERCIAL-LICENSE.md',
+              href: 'https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md',
             },
           ],
         },

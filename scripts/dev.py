@@ -245,7 +245,7 @@ def _apply_dev_env() -> None:
     DEV_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     (DEV_USER_DATA_DIR / "plugins").mkdir(parents=True, exist_ok=True)
 
-RELEASE_REPO = "treeleaves30760/CodefyUI"
+RELEASE_REPO = "CodefyUI/CodefyUI"
 RELEASE_ASSET = "frontend-dist.tar.gz"
 
 
@@ -326,21 +326,72 @@ def _require_venv_tool(tool_name: str) -> str:
     sys.exit(1)
 
 
+def _uv_install_timeout() -> int:
+    """Seconds to allow for the uv bootstrap download. 0 disables the limit."""
+    raw = os.environ.get("CODEFYUI_UV_INSTALL_TIMEOUT", "").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 180
+
+
 def _ensure_uv() -> None:
     if shutil.which("uv"):
         return
-    print("=== uv 未安裝，正在自動安裝 ===")
-    if sys.platform == "win32":
-        subprocess.run(
-            ["powershell", "-c", "irm https://astral.sh/uv/install.ps1 | iex"],
-            check=True,
+    # This runs before EVERY command, so an unbounded download here wedges
+    # `cdui status`, `cdui stop`, everything. School and lab networks commonly
+    # drop packets rather than refusing them, which is indistinguishable from
+    # a slow link until something imposes a deadline.
+    timeout = _uv_install_timeout()
+    limit = t(f"（最多等待 {timeout} 秒）", f" (waiting up to {timeout}s)") if timeout else ""
+    print(t(
+        f"=== uv 未安裝，正在從 https://astral.sh 自動安裝{limit} ===",
+        f"=== uv is not installed; downloading it from https://astral.sh{limit} ===",
+    ))
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["powershell", "-c", "irm https://astral.sh/uv/install.ps1 | iex"],
+                check=True,
+                timeout=timeout or None,
+            )
+        else:
+            # curl's own deadlines matter as well as the outer one: without
+            # them a black-holed connection sits in connect() and the process
+            # is only ever torn down from outside.
+            connect = min(30, timeout) if timeout else 30
+            max_time = f" --max-time {timeout}" if timeout else ""
+            subprocess.run(
+                f"curl -LsSf --connect-timeout {connect}{max_time}"
+                " https://astral.sh/uv/install.sh | sh",
+                shell=True,
+                check=True,
+                timeout=timeout or None,
+            )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as exc:
+        timed_out = isinstance(exc, subprocess.TimeoutExpired)
+        why = t(
+            f"逾時（超過 {timeout} 秒）" if timed_out else "失敗",
+            f"timed out after {timeout}s" if timed_out else "failed",
         )
-    else:
-        subprocess.run(
-            "curl -LsSf https://astral.sh/uv/install.sh | sh",
-            shell=True,
-            check=True,
-        )
+        print(t(
+            f"\n錯誤：自動安裝 uv {why}。\n"
+            f"  CodefyUI 需要 uv 才能執行任何指令。若這台機器連不到網際網路\n"
+            f"  （教室或實驗室網路常見），請改用下列任一方式：\n"
+            f"    1. 自行安裝 uv 後重試：https://docs.astral.sh/uv/getting-started/installation/\n"
+            f"    2. 從別處下載 uv，放進 PATH 之後再執行同一個指令\n"
+            f"    3. 網路很慢但可用時，加大逾時：CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+            f"\nError: installing uv {why}.\n"
+            f"  CodefyUI needs uv before it can run any command. If this machine\n"
+            f"  cannot reach the internet (common on school and lab networks),\n"
+            f"  use one of these instead:\n"
+            f"    1. Install uv yourself, then retry:\n"
+            f"       https://docs.astral.sh/uv/getting-started/installation/\n"
+            f"    2. Copy a uv binary onto this machine, put it on PATH, rerun the command\n"
+            f"    3. On a slow but working link, raise the limit:\n"
+            f"       CODEFYUI_UV_INSTALL_TIMEOUT=600\n",
+        ), file=sys.stderr)
+        sys.exit(1)
     # 安裝後重新啟動自身，讓新 PATH 生效
     _reexec(sys.executable, sys.argv)
 

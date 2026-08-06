@@ -151,7 +151,7 @@ function SinglePanel({
   // 9px monospace ≈ 6.5px. Column labels rotate -45°, so their vertical
   // projection is ``charW × len × sin(45°)`` plus padding for the font
   // ascender (otherwise the leading characters get clipped against the
-  // SVG top edge — see https://github.com/treeleaves30760/CodefyUI/...).
+  // SVG top edge — see https://github.com/CodefyUI/CodefyUI/...).
   const charW = 6.5;
   const showLabels = n <= 16;
   const maxColLen = showLabels && colLabels

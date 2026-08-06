@@ -34,7 +34,7 @@ from ._demo_vectors import DEMO_VECTORS, DIM as DEMO_DIM
 
 # Future GloVe asset specs (not published yet — first attempt raises a friendly
 # error pointing users at the offline ``demo-16d`` backend).
-_GLOVE_PLACEHOLDER_URL = "https://github.com/treeleaves30760/CodefyUI/releases/download/llm-assets-v0/{name}"
+_GLOVE_PLACEHOLDER_URL = "https://github.com/CodefyUI/CodefyUI/releases/download/llm-assets-v0/{name}"
 
 
 @lru_cache(maxsize=8)
