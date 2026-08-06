@@ -10,14 +10,14 @@
     },
     "foundations": {
       "name": "Foundations — 資料表示與經典 ML",
-      "description": "Data-representation and classical-ML teaching nodes for hands-on modules I1–I2: Edu-ColumnStats, Edu-SlidingWindow, Edu-TokenEmbedding, Edu-VectorSimilarity, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-SVM, Edu-DecisionTree, Edu-FFN. Each step is recorded in verbose mode.",
+      "description": "Data-representation and classical-ML teaching nodes for hands-on modules I1–I2: Edu-ColumnStats, Edu-TokenEmbedding, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-FFN. Each step is recorded in verbose mode.",
       "kind": "builtin",
       "path": "plugins/foundations",
       "chapters": ["C1", "C2"]
     },
     "deep": {
       "name": "Deep Models — 視覺與序列",
-      "description": "Vision and sequence teaching nodes for hands-on modules I3–I4: Edu-Conv2d, Edu-MaxPool2d, Edu-ResBlock, Edu-Resample, Edu-DenoiseStep, Edu-CrossAttention, Edu-Patchify, Edu-RNNCell, Edu-LSTMCell, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-LayerNorm. Stepped out so each tensor transform is visible.",
+      "description": "Vision and sequence teaching nodes for hands-on modules I3–I4: Edu-ResBlock, Edu-Patchify, Edu-CrossAttention, Edu-SelfAttention, Edu-MultiHeadAttention. Stepped out so each tensor transform is visible.",
       "kind": "builtin",
       "path": "plugins/deep",
       "chapters": ["C3", "C4", "C6"]
@@ -31,7 +31,7 @@
     },
     "rl": {
       "name": "Reinforcement Learning — 強化學習",
-      "description": "Reinforcement-learning teaching nodes for hands-on module I5: Edu-PolicyGradient, Edu-PPOClip, Edu-GRPO, Edu-PreferenceLoss. Each RL update is exposed as softmax → gather → baseline → ratio → clip → loss.",
+      "description": "Reinforcement-learning teaching nodes for hands-on module I5: Edu-PolicyGradient. The RL update is exposed as softmax → gather → baseline → loss.",
       "kind": "builtin",
       "path": "plugins/rl",
       "chapters": ["C5"]
