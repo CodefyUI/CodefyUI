@@ -204,12 +204,22 @@ describe('EmptyCanvasOverlay', () => {
     render(<EmptyCanvasOverlay />);
     const card = (await screen.findByText('Hover Me')).closest('button') as HTMLButtonElement;
 
+    // Hover styling now writes the CSS custom property directly instead of
+    // a resolved literal (was '#D4A017' / '#3a3a3a'). jsdom does not
+    // evaluate var() references on `.style`, so the raw token string is
+    // what's reported here — and there's nothing to import instead: only
+    // the semantic data palettes are mirrored into theme.ts as TS
+    // constants (see theme.ts's file comment), not chrome tokens like
+    // --status-preset / --border-base.
     fireEvent.mouseEnter(card);
-    expect(card.style.borderColor).toBe('rgb(212, 160, 23)'); // #D4A017
-    expect(card.style.boxShadow).toBe('0 4px 16px rgba(212,160,23,0.15)');
+    expect(card.style.borderColor).toBe('var(--status-preset)');
+    // rgba(224,169,43,0.15) is --status-preset's own rgb() (#e0a92b) — no
+    // glow token is paired with it, so this stays a hand-tuned literal at
+    // the hue (see the component's own comment).
+    expect(card.style.boxShadow).toBe('0 4px 16px rgba(224, 169, 43, 0.15)');
 
     fireEvent.mouseLeave(card);
-    expect(card.style.borderColor).toBe('rgb(58, 58, 58)'); // #3a3a3a
+    expect(card.style.borderColor).toBe('var(--border-base)');
     expect(card.style.boxShadow).toBe('none');
   });
 

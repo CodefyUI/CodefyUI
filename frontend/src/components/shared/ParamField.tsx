@@ -118,11 +118,11 @@ function FileField({
           onChange={(e) => onChange(param.name, e.target.value)}
           className={`${styles.input} ${styles.select} ${styles.modelFileSelect}`}
         >
-          <option value="" style={{ background: '#222' }}>
+          <option value="" style={{ background: 'var(--surface-input)' }}>
             {t('paramField.selectFile')}
           </option>
           {files.map((f) => (
-            <option key={f} value={f} style={{ background: '#222' }}>
+            <option key={f} value={f} style={{ background: 'var(--surface-input)' }}>
               {f}
             </option>
           ))}
@@ -231,7 +231,7 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
           className={`${styles.input} ${styles.select}`}
         >
           {param.options.map((opt) => (
-            <option key={opt} value={opt} style={{ background: '#222' }}>
+            <option key={opt} value={opt} style={{ background: 'var(--surface-input)' }}>
               {opt}
             </option>
           ))}

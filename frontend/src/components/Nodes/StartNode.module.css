@@ -1,18 +1,25 @@
 .startNode {
-  background: linear-gradient(135deg, #16a34a, #22c55e);
-  border-radius: 20px;
-  padding: 8px 16px;
+  /* var(--flow-trigger-deep)/var(--flow-trigger) is the app's recurring "trigger / control-flow" green —
+     see BaseNode.module.css's .triggerHandleActive comment; no token covers
+     it yet (see migration report). */
+  background: linear-gradient(135deg, var(--flow-trigger-deep), var(--flow-trigger));
+  /* >= half the node's own height, so this is already a full pill shape;
+     the pill radius token produces the identical result and stays correct
+     if the padding/font-size ever change. */
+  border-radius: var(--radius-pill);
+  padding: var(--sp-3) var(--sp-5);
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: #ffffff;
-  font-weight: 600;
-  font-size: 13px;
+  gap: var(--sp-3);
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
   min-width: 80px;
   position: relative;
-  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18), 0 4px 12px rgba(0, 0, 0, 0.4);
-  outline: 2px solid #22c55e;
-  outline-offset: 3px;
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18), var(--shadow);
+  outline: 2px solid var(--flow-trigger);
+  outline-offset: var(--sp-2);
 }
 
 .icon {
@@ -22,10 +29,10 @@
 }
 
 .handle {
-  background: #22c55e !important;
+  background: var(--flow-trigger) !important;
   width: 12px !important;
   height: 12px !important;
-  border: 2px solid #ffffff !important;
+  border: 2px solid var(--text-primary) !important;
   border-radius: 0 !important;
   transform: rotate(45deg) !important;
 }
@@ -34,6 +41,8 @@
    (edge reconnect drag in progress). Declared after .handle so its
    border-color wins the cascade. */
 .handleDetaching {
-  border-color: #F44336 !important;
-  box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3), 0 0 10px 2px rgba(244, 67, 54, 0.45);
+  border-color: var(--status-error) !important;
+  /* rgb(255,107,99) is --status-error's own rgb() — see BaseNode's
+     .portDetaching for why this stays a hand-tuned literal. */
+  box-shadow: 0 0 0 3px rgba(255, 107, 99, 0.3), 0 0 10px 2px rgba(255, 107, 99, 0.45);
 }

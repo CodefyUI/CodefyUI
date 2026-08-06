@@ -12,6 +12,9 @@ import {
   EXAMPLE_CATEGORY_COLORS,
   EXAMPLE_CATEGORY_FALLBACK,
   NODE_HEADER_TINT,
+  FLOW_COLORS,
+  PRESET_GOLD,
+  SURFACE_RAISED,
   mixColor,
 } from './theme';
 
@@ -86,6 +89,24 @@ describe('tokens.css / theme.ts agreement', () => {
 
   it('node header tint matches the CSS variable', () => {
     expect(String(NODE_HEADER_TINT)).toBe(cssVar('--node-header-tint'));
+  });
+
+  it.each([
+    ['trigger', '--flow-trigger'],
+    ['triggerDeep', '--flow-trigger-deep'],
+  ])('flow colour %s matches %s', (name, token) => {
+    expect(FLOW_COLORS[name as keyof typeof FLOW_COLORS]).toBe(cssVar(token));
+  });
+
+  it('preset gold matches its CSS variable', () => {
+    expect(PRESET_GOLD).toBe(cssVar('--preset-gold'));
+  });
+
+  it('raised surface matches its CSS variable', () => {
+    // Three components each kept their own copy of this literal before it was
+    // exported; the mix maths behind every node header and badge fill depends
+    // on it agreeing with the CSS.
+    expect(SURFACE_RAISED).toBe(cssVar('--surface-raised'));
   });
 
   it('has no orphaned category variable on either side', () => {

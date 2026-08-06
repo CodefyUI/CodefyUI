@@ -1,8 +1,8 @@
 /* ResultsPanel.module.css */
 
 .panel {
-  background: #111;
-  border-top: 1px solid #2a2a2a;
+  background: var(--surface-panel);
+  border-top: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -22,7 +22,7 @@
 
 .resizeHandle:hover,
 .resizeHandle:active {
-  background: rgba(77, 144, 254, 0.4);
+  background: var(--accent-glow);
 }
 
 /* Header bar */
@@ -30,10 +30,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
-  border-bottom: 1px solid #1e1e1e;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  height: 32px;
+  height: var(--h-control);
 }
 
 .headerLeft {
@@ -45,99 +45,99 @@
 .headerRight {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 /* ── Inner panel tabs ── */
 .panelTabBtn {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #777;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 7px 10px;
+  padding: var(--sp-3) var(--sp-4);
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 5px;
-  transition: color 0.15s, border-color 0.15s;
+  gap: var(--sp-2);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .panelTabBtn:hover:not(.panelTabDisabled) {
-  color: #bbb;
+  color: var(--text-secondary);
 }
 
 .panelTabActive {
-  color: #ddd;
-  border-bottom-color: #4d90fe;
+  color: var(--text-secondary);
+  border-bottom-color: var(--accent-deep);
 }
 
 .panelTabDisabled {
-  color: #444;
+  color: var(--text-disabled);
   cursor: not-allowed;
 }
 
 .countBadge {
-  font-size: 0.625rem;
-  background: #222;
-  border: 1px solid #3a3a3a;
-  border-radius: 10px;
-  padding: 0 5px;
-  color: #888;
-  font-weight: 400;
+  font-size: var(--fs-2xs);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
+  font-weight: var(--fw-normal);
 }
 
 .countBadgeTraining {
-  background: rgba(255, 193, 7, 0.12);
-  border-color: rgba(255, 193, 7, 0.35);
-  color: #FFC107;
+  background: var(--warning-wash);
+  border-color: var(--status-warning);
+  color: var(--status-warning);
 }
 
 /* Runs tab: the same count, teal while at least one run is still going. */
 .countBadgeActive {
-  background: rgba(6, 182, 212, 0.12);
-  border-color: rgba(6, 182, 212, 0.4);
-  color: #06b6d4;
+  background: var(--accent-wash);
+  border-color: var(--accent-deep);
+  color: var(--accent-deep);
 }
 
 .clearBtn {
-  font-size: 0.75rem;
-  padding: 2px 8px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
   background: transparent;
-  border: 1px solid #3a3a3a;
-  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
 }
 
 .collapseBtn {
-  font-size: 0.9375rem;
-  width: 24px;
-  height: 24px;
+  font-size: var(--fs-lg);
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
-  border: 1px solid #3a3a3a;
-  border-radius: 3px;
-  color: #999;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
   cursor: pointer;
-  line-height: 1;
+  line-height: var(--lh-tight);
 }
 
 .collapseBtn:hover {
-  background: #222;
-  color: #eee;
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .clearBtnEnabled {
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .clearBtnDisabled {
-  color: #444;
+  color: var(--text-disabled);
   cursor: not-allowed;
 }
 
@@ -145,7 +145,7 @@
 .logArea {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: var(--sp-2) 0;
   font-family: monospace;
 }
 
@@ -155,16 +155,16 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #555;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 
 /* Log entry base (dynamic bg + border-left applied inline) */
 .logEntry {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 2px 12px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   margin-bottom: 1px;
 }
 
@@ -172,64 +172,68 @@
   cursor: pointer;
 }
 
+/* Translucent white rather than a surface token: the entry's own background
+   is the dynamic per-type tint (info/error/success) applied inline, and a
+   flat surface-hover here would blot that tint out on hover instead of just
+   lightening it. */
 .logEntryClickable:hover {
   background: rgba(255, 255, 255, 0.03);
 }
 
 .expandedDetail {
-  padding: 4px 0 4px 80px;
-  font-size: 0.75rem;
-  color: #ccc;
+  padding: var(--sp-2) 0 var(--sp-2) 80px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .expandIcon {
-  margin-right: 4px;
-  font-size: 0.6875rem;
-  color: #666;
+  margin-right: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 
 .timestamp {
-  font-size: 0.75rem;
-  color: #666;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
   flex-shrink: 0;
-  line-height: 1.6;
+  line-height: var(--lh-normal);
 }
 
 .nodeIdBadge {
-  font-size: 0.6875rem;
-  color: #888;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-radius: 2px;
-  padding: 0 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
   flex-shrink: 0;
-  line-height: 1.8;
+  line-height: var(--lh-tight);
 }
 
 /* Log image output */
 .logImage {
   max-width: 100%;
   max-height: 160px;
-  border-radius: 4px;
-  border: 1px solid #333;
-  margin-top: 2px;
-  margin-bottom: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-base);
+  margin-top: var(--sp-1);
+  margin-bottom: var(--sp-1);
 }
 
 /* Chart output entry (#130). The card brings its own frame, so this only has
    to keep it from stretching the log row. */
 .logChart {
-  margin-top: 2px;
-  margin-bottom: 2px;
+  margin-top: var(--sp-1);
+  margin-bottom: var(--sp-1);
   max-width: 100%;
 }
 
 /* Log message text */
 .logMessage {
-  font-size: 0.8125rem;
-  line-height: 1.6;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
   word-break: break-word;
 }
 
@@ -251,8 +255,8 @@
 .trainingChartCol {
   flex: 1;
   min-width: 160px;
-  padding: 8px 14px;
-  border-right: 1px solid #2a2a2a;
+  padding: var(--sp-3) var(--sp-4);
+  border-right: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
 }
@@ -263,12 +267,12 @@
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  transition: background 0.15s;
+  transition: background var(--transition-fast);
 }
 
 .columnDivider:hover,
 .columnDividerActive {
-  background: rgba(77, 144, 254, 0.4);
+  background: var(--accent-glow);
 }
 
 /* Right column — config + epochs */
@@ -286,22 +290,22 @@
   flex-shrink: 0;
   cursor: ns-resize;
   background: transparent;
-  transition: background 0.15s;
-  border-top: 1px solid #2a2a2a;
+  transition: background var(--transition-fast);
+  border-top: 1px solid var(--border-base);
 }
 
 .rowDivider:hover,
 .rowDivider:active {
-  background: rgba(77, 144, 254, 0.4);
+  background: var(--accent-glow);
 }
 
 .sectionHeader {
-  font-size: 0.75rem;
-  color: #999;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 6px 0 4px;
+  padding: var(--sp-3) 0 var(--sp-2);
 }
 
 /* Chart */
@@ -321,54 +325,54 @@
 .chartLegend {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  padding-bottom: 4px;
+  gap: var(--sp-2) var(--sp-4);
+  padding-bottom: var(--sp-2);
 }
 
 .chartLegendItem {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 0.6875rem;
-  color: #aaa;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   font-family: monospace;
 }
 
 .chartLegendSwatch {
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
 /* Config grid */
 .configSection {
-  padding: 8px 12px;
+  padding: var(--sp-3) var(--sp-4);
   overflow-y: auto;
 }
 
 .configGrid {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
 }
 
 .configRow {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  padding: 2px 0;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
 }
 
 .configKey {
-  font-size: 0.75rem;
-  color: #888;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 .configVal {
-  font-size: 0.75rem;
-  color: #ccc;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
   font-family: monospace;
   text-align: right;
   overflow: hidden;
@@ -379,41 +383,41 @@
 
 /* Epoch table */
 .epochSection {
-  padding: 8px 12px;
+  padding: var(--sp-3) var(--sp-4);
   flex: 1;
   overflow-y: auto;
 }
 
 .epochTable {
-  font-size: 0.75rem;
+  font-size: var(--fs-sm);
 }
 
 .epochRow {
   display: grid;
   grid-template-columns: 32px 1fr 1fr 48px;
-  gap: 6px;
-  padding: 3px 0;
-  color: #bbb;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  color: var(--text-secondary);
 }
 
 .epochRowHeader {
-  color: #888;
-  font-weight: 600;
-  border-bottom: 1px solid #2a2a2a;
-  padding-bottom: 4px;
-  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
+  border-bottom: 1px solid var(--border-base);
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
 }
 
 .deltaDown {
-  color: #66BB6A;
+  color: var(--status-success);
 }
 
 .deltaUp {
-  color: #EF5350;
+  color: var(--status-error);
 }
 
 .epochTime {
-  color: #777;
+  color: var(--text-muted);
   text-align: right;
 }
 
@@ -424,44 +428,44 @@
 .edgeTooltip {
   position: fixed;
   z-index: 1000;
-  background: #1a1a1a;
-  border: 1px solid #555;
-  border-radius: 6px;
-  padding: 10px 14px;
-  font-size: 0.8125rem;
-  color: #ddd;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: var(--sp-4);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
   min-width: 200px;
   max-width: 320px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-lg);
 }
 
 .edgeTooltipTitle {
-  font-weight: 600;
-  color: #aaa;
-  font-size: 0.75rem;
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  margin-bottom: 6px;
-  border-bottom: 1px solid #3a3a3a;
-  padding-bottom: 4px;
+  margin-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-base);
+  padding-bottom: var(--sp-2);
 }
 
 .edgeTooltipRow {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 2px 0;
+  gap: var(--sp-4);
+  padding: var(--sp-2) 0;
 }
 
 .edgeTooltipLabel {
-  color: #999;
-  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 
 .edgeTooltipValue {
-  color: #ddd;
+  color: var(--text-secondary);
   font-family: monospace;
-  font-size: 0.75rem;
+  font-size: var(--fs-sm);
   text-align: right;
 }
 
@@ -470,20 +474,20 @@
 .edgeTooltipLink {
   display: block;
   width: 100%;
-  margin-top: 8px;
-  padding: 4px 0 0;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) 0 0;
   border: none;
-  border-top: 1px solid #3a3a3a;
+  border-top: 1px solid var(--border-base);
   background: none;
-  color: #67e8f9;
-  font-size: 0.75rem;
+  color: var(--accent);
+  font-size: var(--fs-sm);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
 }
 
 .edgeTooltipLink:hover {
-  color: #a5f3fc;
+  color: var(--accent);
   text-decoration: underline;
 }
 
@@ -491,42 +495,42 @@
 .trainingSummary {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 6px 12px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #2a2a2a;
+  gap: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-base);
   flex-shrink: 0;
 }
 
 .summaryItem {
   display: flex;
-  gap: 6px;
+  gap: var(--sp-3);
   align-items: baseline;
 }
 
 .summaryLabel {
-  font-size: 0.6875rem;
-  color: #888;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
 .summaryValue {
-  font-size: 0.8125rem;
-  color: #eee;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
   font-family: monospace;
 }
 
 .summaryProgress {
   flex: 1;
   height: 4px;
-  background: #2a2a2a;
-  border-radius: 2px;
+  background: var(--border-base);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .progressBar {
   height: 100%;
-  background: #2196F3;
-  border-radius: 2px;
-  transition: width 0.3s ease;
+  background: var(--status-info);
+  border-radius: var(--radius-sm);
+  transition: width var(--transition);
 }

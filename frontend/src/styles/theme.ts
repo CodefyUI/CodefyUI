@@ -147,6 +147,39 @@ export const STATUS_COLORS: Record<string, string> = {
   interrupted: '#ff8f00',
 };
 
+/**
+ * Control-flow green — trigger edges and the Start node, as opposed to the
+ * blue data wires.
+ *
+ * In the app itself use `var(--flow-trigger)` / `var(--flow-trigger-deep)`.
+ * This mirror exists for SVG *export*, where the produced file is standalone
+ * and a CSS variable would have nothing to resolve against. `theme.test.ts`
+ * asserts it matches tokens.css.
+ */
+export const FLOW_COLORS = {
+  trigger: '#22c55e',
+  triggerDeep: '#16a34a',
+} as const;
+
+/**
+ * The gold that marks a preset / reusable-subgraph node, as opposed to a
+ * category hue. Same reason as `FLOW_COLORS`: prefer `var(--preset-gold)` in
+ * styling, and use this only where the value has to be a string in JS.
+ */
+export const PRESET_GOLD = '#d4a017';
+
+/**
+ * Mirrors `--surface-raised` in `styles/tokens.css` — the surface a node card,
+ * popover or gallery card sits on, and the base that category hues are tinted
+ * into to make a header or badge fill.
+ *
+ * Style with `var(--surface-raised)`; this exists only for `mixColor()`, which
+ * has to do arithmetic on the value. Three components had each declared their
+ * own copy of this literal before it was exported. `theme.test.ts` asserts it
+ * matches the CSS.
+ */
+export const SURFACE_RAISED = '#242b37';
+
 /** Shared zoom-out floor for both React Flow canvases. Wide skip-aware valley
  * layouts (long UNet-style graphs) need well below React Flow's 0.5 default
  * to fit on screen. */

@@ -152,9 +152,17 @@ for (const surface of ['--surface-app', '--surface-panel', '--surface-raised']) 
   check(`--border-strong on ${surface}`, contrast(t('--border-strong'), t(surface)), 3);
 }
 
-/* 5. Canvas wires are meaningful graphics, so 1.4.11 applies to them too. */
-for (const wire of ['--wire', '--wire-data', '--wire-active']) {
+/* 5. Canvas wires are meaningful graphics, so 1.4.11 applies to them too.
+      The trigger-flow green is the same kind of thing: it is what tells you an
+      edge carries execution order rather than data. */
+for (const wire of ['--wire', '--wire-data', '--wire-active', '--flow-trigger', '--flow-trigger-deep']) {
   check(`${wire} on --surface-canvas`, contrast(t(wire), t('--surface-canvas')), 3);
+}
+
+/* 5b. Preset nodes keep a filled gold header, so the ink on it is ordinary
+       text and needs the full AA bar against every stop of the gradient. */
+for (const stop of t('--preset-fill').match(/#[0-9a-f]{6}/gi) ?? []) {
+  check(`--preset-ink on preset gradient stop ${stop}`, contrast(t('--preset-ink'), stop), 4.5);
 }
 
 /* 6. Accent and status colours are used as text, so they need the text bar. */
@@ -198,7 +206,13 @@ if (!(NODE_HEADER_TINT > 0 && NODE_HEADER_TINT < 1)) {
 for (const cat of CATEGORIES) {
   const fill = mixHex(t('--surface-raised'), t(cat), NODE_HEADER_TINT);
   check(`node title on ${cat} header`, contrast(t('--text-primary'), fill), 4.5);
-  check(`${cat} label on its own header`, contrast(t(cat), fill), 3);
+  // The hue on its own tinted header is the accent bar / chip border — a
+  // graphic, so 3:1. It is deliberately NOT used as the label text: a hue on a
+  // tint of itself measured 3.50-4.16:1 and stays under 4.5 at every tint
+  // strength and every lift, so that pairing is unreadable by construction.
+  check(`${cat} accent bar on its own header`, contrast(t(cat), fill), 3);
+  // The label that sits on the tinted header is ordinary text.
+  check(`--text-muted label on ${cat} header`, contrast(t('--text-muted'), fill), 4.5);
   check(`${cat} as text on --surface-raised`, contrast(t(cat), t('--surface-raised')), 4.5);
 }
 
@@ -213,7 +227,8 @@ const BADGE_PALETTES = [...tokens.keys()].filter(
 );
 for (const token of BADGE_PALETTES) {
   const fill = mixHex(t('--surface-raised'), t(token), NODE_HEADER_TINT);
-  check(`${token} on its own badge tint`, contrast(t(token), fill), 3);
+  check(`${token} as a badge border on its own tint`, contrast(t(token), fill), 3);
+  check(`--text-muted label on ${token} badge`, contrast(t('--text-muted'), fill), 4.5);
   check(`${token} as text on --surface-raised`, contrast(t(token), t('--surface-raised')), 4.5);
   check(`${token} as text on --surface-panel`, contrast(t(token), t('--surface-panel')), 4.5);
 }
@@ -236,6 +251,12 @@ for (const [wash, ink] of WASHES) {
   check(`--text-primary on ${wash} over panel`, contrast(t('--text-primary'), hex), 4.5);
   check(`--text-secondary on ${wash} over panel`, contrast(t('--text-secondary'), hex), 4.5);
   check(`${ink} on ${wash} over panel`, contrast(t(ink), hex), 4.5);
+}
+
+/* 9b. Code editor. Comments and line numbers carry meaning in source, so they
+       are held to the text bar, not to a "decoration" bar. */
+for (const role of ['--code-text', '--code-comment', '--code-gutter']) {
+  check(`${role} on --surface-code`, contrast(t(role), t('--surface-code')), 4.5);
 }
 
 /* 10. Glows are box-shadows and must stay translucent. An opaque one reads as

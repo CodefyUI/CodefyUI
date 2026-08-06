@@ -106,6 +106,31 @@
   --wire-data: #6aa9ff; /* 7.74:1 */
   --wire-active: #22d3ee; /* 10.31:1 */
 
+  /* Control flow. Green distinguishes trigger/execution-order edges and the
+     Start node from the data wires above — it is a semantic distinction, not
+     decoration, so it gets a token rather than the literal that was repeated
+     across BaseNode, StartNode and TriggerEdge. */
+  --flow-trigger: #22c55e; /* 8.17:1 on canvas */
+  --flow-trigger-deep: #16a34a; /* gradient partner, 5.65:1 */
+
+  /* Preset nodes carry a deliberate gold brand rather than a category hue.
+     Unlike the old category headers this one was already legible — dark ink
+     on gold — so it keeps its filled treatment. */
+  --preset-fill: linear-gradient(135deg, #b8860b, #d4a017, #c5941a);
+  --preset-ink: #1a1a1a; /* 7.33:1 on the gradient's mid stop */
+  --preset-gold: #d4a017;
+
+  /* Code editor. The surface was `rgba(0, 0, 0, 0.25)` over whatever happened
+     to be behind it, which made its contrast unverifiable — and two roles were
+     failing on it: comments at 3.39:1 and the line-number gutter at 2.17:1.
+     Comments and line numbers are content, not decoration, so both now clear
+     AA. The syntax hues themselves are a deliberate code theme and already
+     measured 6.7:1 to 11.9:1 here; they are left alone. */
+  --surface-code: #1a2029;
+  --code-text: #e5e7eb;
+  --code-comment: #7f8898; /* was #6b7280 */
+  --code-gutter: #7f8897; /* was #4b5563 */
+
   /* --------------------------------------------------------
      Type scale. Steps are ~1.125 apart at the small end, which
      is the ratio compact systems use; a wider ratio would force

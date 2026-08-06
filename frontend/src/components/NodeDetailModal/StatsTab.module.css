@@ -1,35 +1,35 @@
 .group {
-  margin-bottom: 14px;
+  margin-bottom: var(--sp-4);
 }
 
 .groupTitle {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #6b7280;
-  margin-bottom: 6px;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
 }
 
 .portBlock {
-  border: 1px solid #232323;
-  border-radius: 6px;
-  background: #131313;
-  padding: 8px 10px 10px;
-  margin-bottom: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-panel);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  margin-bottom: var(--sp-3);
 }
 
 /* The port an edge tooltip pointed at. A ring rather than a background so the
    block still reads as one of the list, just the one you asked for. */
 .portFocused {
-  border-color: #0e7490;
-  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.35);
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35);
 }
 
 .portHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 
 .portDot {
@@ -41,17 +41,17 @@
 
 .portName {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  color: #e5e7eb;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
 }
 
 .sampledChip {
   margin-left: auto;
-  font-size: 9px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid #b45309;
-  color: #fbbf24;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--status-warning);
+  color: var(--status-warning);
   white-space: nowrap;
 }
 
@@ -60,33 +60,33 @@
 .healthRow {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 
 .healthBadge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: #1b1b1b;
-  border: 1px solid #2a2a2a;
-  color: #9ca3af;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  border: 1px solid var(--border-base);
+  color: var(--text-muted);
 }
 
 .healthBadge b {
-  color: #d1d5db;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-weight: var(--fw-semibold);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 .healthAlert {
-  border-color: #b91c1c;
-  background: rgba(185, 28, 28, 0.16);
-  color: #fca5a5;
+  border-color: var(--status-error);
+  background: var(--danger-wash);
+  color: var(--status-error);
 }
 
 .healthAlert b {
-  color: #fecaca;
+  color: var(--status-error);
 }
 
 /* ── stat grid ────────────────────────────────────────────────────────── */
@@ -94,28 +94,28 @@
 .statGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 4px 10px;
+  gap: var(--sp-2) var(--sp-4);
 }
 
 .statCell,
 .quantileCell {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
 .statLabel {
-  font-size: 9px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .statValue {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: #e5e7eb;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -126,22 +126,22 @@
 .blockTitle {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 9px;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #6b7280;
-  margin: 10px 0 4px;
+  color: var(--text-muted);
+  margin: var(--sp-4) 0 var(--sp-2);
 }
 
 .quantileRow {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .chartBlock {
-  margin-top: 4px;
+  margin-top: var(--sp-2);
 }
 
 .quantileBlock {
@@ -157,39 +157,39 @@
 .table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .table th {
   text-align: left;
-  font-size: 9px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #6b7280;
-  font-weight: 500;
-  padding: 3px 8px 3px 0;
-  border-bottom: 1px solid #262626;
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
   white-space: nowrap;
 }
 
 .table td {
-  padding: 3px 8px 3px 0;
-  border-bottom: 1px solid #1c1c1c;
-  color: #d1d5db;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   white-space: nowrap;
 }
 
 .colName {
-  color: #e5e7eb;
+  color: var(--text-primary);
 }
 
 .colType {
-  color: #67e8f9;
+  color: var(--accent);
 }
 
 .colMissing {
-  color: #fbbf24;
+  color: var(--status-warning);
 }
 
 .colTop {
@@ -201,19 +201,19 @@
 /* ── misc ─────────────────────────────────────────────────────────────── */
 
 .muted {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .note {
-  font-size: 10px;
-  color: #9ca3af;
-  margin-bottom: 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
 }
 
 .error {
-  font-size: 11px;
-  color: #fca5a5;
-  line-height: 1.5;
+  font-size: var(--fs-xs);
+  color: var(--status-error);
+  line-height: var(--lh-normal);
 }

@@ -37,7 +37,7 @@ export function TriggerEdge(props: EdgeProps) {
       id={props.id}
       path={path}
       style={{
-        stroke: '#22c55e',
+        stroke: 'var(--flow-trigger)',
         strokeDasharray: '6 4',
         strokeWidth: 2,
       }}

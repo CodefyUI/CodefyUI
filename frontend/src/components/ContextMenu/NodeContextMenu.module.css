@@ -10,33 +10,36 @@
 .menu {
   position: fixed;
   z-index: 1000;
-  background: #222;
-  border: 1px solid #444;
-  border-radius: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
   min-width: 160px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-popover);
   overflow: hidden;
-  padding: 4px 0;
+  padding: var(--sp-2) 0;
 }
 
-/* Menu item base — color is dynamic (item.color) — set inline */
+/* Menu item base — color is dynamic (item.color) — set inline.
+   Padding is a single value: sp-4 all round lands the row at ~40px tall
+   (--h-control-lg), the guidance floor for menu rows. */
 .menuItem {
   display: block;
   width: 100%;
-  padding: 7px 14px;
+  padding: var(--sp-4);
   text-align: left;
   background: transparent;
   border: none;
-  font-size: 0.8125rem;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
   cursor: pointer;
 }
 
 .menuItem:hover {
-  background: #2a2a2a;
+  background: var(--surface-hover);
 }
 
 .divider {
   height: 1px;
-  background: #333;
-  margin: 4px 0;
+  background: var(--border-base);
+  margin: var(--sp-2) 0;
 }

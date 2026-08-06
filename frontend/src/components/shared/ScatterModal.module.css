@@ -6,23 +6,22 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--surface-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 9999;
-  padding: 1.5rem;
+  padding: var(--sp-7);
 }
 
 .modal {
-  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
-  border: 1px solid #1f2937;
-  border-radius: 0.5rem;
-  box-shadow: 0 24px 48px -16px rgba(0, 0, 0, 0.7),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-canvas) 100%);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
   display: flex;
   flex-direction: column;
-  font-size: 1rem;
+  font-size: var(--fs-lg);
   max-width: 90vw;
   max-height: 88vh;
   min-width: 36rem;
@@ -34,38 +33,38 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.625rem 0.875rem;
-  border-bottom: 1px solid #1f2937;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-base);
   background: rgba(10, 15, 23, 0.6);
 }
 
 .title {
-  color: #e5e7eb;
-  font-weight: 600;
-  font-size: 1.05rem;
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-lg);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .closeBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 0.25rem;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  width: var(--h-control-sm);
+  height: var(--h-control-sm);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  line-height: 1;
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .closeBtn:hover {
-  background: #1f2937;
-  border-color: #06b6d4;
-  color: #67e8f9;
+  background: var(--surface-hover);
+  border-color: var(--accent-deep);
+  color: var(--accent);
 }
 
 /* ── Body: sidebar + plot ─────────────────────────────────────────────── */
@@ -78,7 +77,7 @@
 .sidebar {
   width: 18rem;
   flex-shrink: 0;
-  border-right: 1px solid #1f2937;
+  border-right: 1px solid var(--border-base);
   background: rgba(10, 15, 23, 0.5);
   display: flex;
   flex-direction: column;
@@ -89,71 +88,71 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 0.625rem 0.75rem 0.4rem 0.75rem;
-  gap: 0.5rem;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-4);
+  gap: var(--sp-3);
 }
 
 .sidebarTitle {
-  color: #cbd5e1;
-  font-size: 1rem;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .showAllBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #94a3b8;
-  font-size: 0.8rem;
-  padding: 0.15rem 0.45rem;
-  border-radius: 0.25rem;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .showAllBtn:hover {
-  border-color: #06b6d4;
-  color: #67e8f9;
+  border-color: var(--accent-deep);
+  color: var(--accent);
 }
 
 .search {
-  margin: 0 0.75rem 0.5rem 0.75rem;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 0.25rem;
-  color: #e5e7eb;
-  font-size: 0.95rem;
-  padding: 0.4rem 0.55rem;
+  margin: 0 var(--sp-4) var(--sp-3) var(--sp-4);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  padding: var(--sp-3) var(--sp-3);
   outline: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .search:focus {
-  border-color: #0e7490;
+  border-color: var(--accent-dim);
 }
 
 .list {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  padding: 0 0.4rem 0.4rem 0.4rem;
+  padding: 0 var(--sp-3) var(--sp-3) var(--sp-3);
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.3rem 0.45rem;
-  border-radius: 0.25rem;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--transition-fast);
 }
 
 .row:hover,
 .rowActive {
-  background: rgba(6, 182, 212, 0.12);
+  background: var(--accent-wash);
 }
 
 .rowHidden {
@@ -173,8 +172,8 @@
 
 .label {
   flex: 1;
-  color: #cbd5e1;
-  font-size: 1rem;
+  color: var(--text-secondary);
+  font-size: var(--fs-lg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -184,11 +183,11 @@
 .eyeBtn {
   background: transparent;
   border: none;
-  color: #64748b;
+  color: var(--text-muted);
   cursor: pointer;
-  line-height: 1;
-  padding: 0.15rem 0.2rem;
-  border-radius: 0.2rem;
+  line-height: var(--lh-tight);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -196,25 +195,25 @@
 }
 
 .eyeBtn:hover {
-  color: #67e8f9;
-  background: rgba(6, 182, 212, 0.12);
+  color: var(--accent);
+  background: var(--accent-wash);
 }
 
 .emptyList {
-  color: #475569;
-  font-size: 0.95rem;
+  color: var(--text-muted);
+  font-size: var(--fs-lg);
   font-style: italic;
   text-align: center;
-  padding: 1rem 0.5rem;
+  padding: var(--sp-5) var(--sp-3);
 }
 
 .recenterHint {
-  color: #475569;
-  font-size: 0.8rem;
-  padding: 0.4rem 0.75rem 0.5rem 0.75rem;
-  border-top: 1px solid #131c28;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  line-height: 1.5;
+  line-height: var(--lh-normal);
 }
 
 /* ── Plot panel ──────────────────────────────────────────────────────── */
@@ -225,7 +224,7 @@
   align-items: center;
   justify-content: center;
   min-width: 0;
-  background: #0b1018;
+  background: var(--surface-canvas);
 }
 
 .canvas {
@@ -240,44 +239,44 @@
 
 .toolbar {
   position: absolute;
-  top: 0.625rem;
-  right: 0.625rem;
+  top: var(--sp-3);
+  right: var(--sp-3);
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--sp-2);
   background: rgba(10, 15, 23, 0.85);
-  border: 1px solid #1f2937;
-  border-radius: 0.375rem;
-  padding: 0.25rem;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  padding: var(--sp-2);
   z-index: 4;
 }
 
 .toolBtn {
   background: transparent;
-  border: 1px solid #1f2937;
-  color: #cbd5e1;
-  width: 1.6rem;
-  height: 1.6rem;
-  border-radius: 0.25rem;
+  border: 1px solid var(--border-base);
+  color: var(--text-secondary);
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  line-height: 1;
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .toolBtn:hover {
-  background: #0e7490;
-  border-color: #06b6d4;
-  color: #fff;
+  background: var(--accent-dim);
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
 }
 
 .zoomLabel {
-  color: #94a3b8;
-  font-size: 0.9rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
   min-width: 2.8rem;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -285,15 +284,15 @@
 }
 
 .status {
-  color: #94a3b8;
-  font-size: 1rem;
+  color: var(--text-muted);
+  font-size: var(--fs-lg);
   text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  padding: 1.5rem;
+  padding: var(--sp-7);
 }
 
 .error {
-  color: #fca5a5;
+  color: var(--status-error);
 }
 
 .dot {
@@ -302,13 +301,13 @@
 
 .dotLabel {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 1.25rem;
+  font-size: var(--fs-2xl);
   pointer-events: none;
   user-select: none;
 }
 
 .crosshair {
-  stroke: #334155;
+  stroke: var(--border-base);
   stroke-width: 1;
   stroke-dasharray: 3 3;
   pointer-events: none;
@@ -318,38 +317,38 @@
 .footer {
   display: flex;
   justify-content: space-between;
-  padding: 0.5rem 0.875rem;
-  border-top: 1px solid #1f2937;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-base);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9rem;
-  color: #94a3b8;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
   background: rgba(10, 15, 23, 0.6);
 }
 
 .dim {
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .tooltip {
   position: fixed;
   z-index: 10000;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 0.375rem;
-  padding: 0.4rem 0.625rem;
-  font-size: 0.9rem;
-  color: #eee;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-md);
+  color: var(--text-primary);
   pointer-events: none;
-  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
+  box-shadow: var(--shadow-popover);
 }
 
 .tooltipLabel {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 
 .tooltipCoords {
-  margin-top: 0.125rem;
-  color: #888;
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.8rem;
+  font-size: var(--fs-sm);
 }

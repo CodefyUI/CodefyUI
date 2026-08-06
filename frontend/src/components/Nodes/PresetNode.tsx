@@ -78,10 +78,13 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               : 'transparent';
 
   const borderColor = selected
-    ? '#ffffff'
+    ? 'var(--text-primary)'
     : statusBorderColor !== 'transparent'
       ? statusBorderColor
-      : '#6B5B00';
+      : // Deliberately dimmer than --status-preset (an idle unselected
+        // border, not the badge/text gold) — no "dim preset" token exists
+        // yet, see migration report.
+        '#6B5B00';
 
   const handleClick = (e: React.MouseEvent) => {
     if (e.detail === 2) {
@@ -95,9 +98,11 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
       className={`${styles.node}${isTriggerTarget ? ` ${baseStyles.entryPoint}` : ''}${isDraggingTrigger ? ` ${baseStyles.triggerDropTarget}` : ''}`}
       style={{
         border: `1px solid ${borderColor}`,
+        // rgb(224,169,43) is --status-preset's own rgb() — no glow token is
+        // paired with it, so this stays a hand-tuned literal at the hue.
         boxShadow: selected
-          ? '0 0 16px rgba(212,160,23,0.3)'
-          : '0 4px 12px rgba(0,0,0,0.4)',
+          ? '0 0 16px rgba(224, 169, 43, 0.3)'
+          : 'var(--shadow)',
       }}
     >
       {/* Trigger target handle — hidden until user drags from Start */}
@@ -135,7 +140,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
                 background: getPortColor(input.data_type),
                 width: 10,
                 height: 10,
-                border: '2px solid #1e1e1e',
+                border: '2px solid var(--surface-raised)',
                 left: -5.5,
                 top: '50%',
                 transform: 'translateY(-50%)',
@@ -179,7 +184,7 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
                 background: getPortColor(output.data_type),
                 width: 10,
                 height: 10,
-                border: '2px solid #1e1e1e',
+                border: '2px solid var(--surface-raised)',
                 right: -5.5,
                 top: '50%',
                 transform: 'translateY(-50%)',

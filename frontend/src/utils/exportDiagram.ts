@@ -1,7 +1,7 @@
 import dagre from '@dagrejs/dagre';
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, PortDefinition } from '../types';
-import { CATEGORY_COLORS } from '../styles/theme';
+import { CATEGORY_COLORS, FLOW_COLORS, PRESET_GOLD } from '../styles/theme';
 import { getPortColor, resolveDynamicInputs, resolveDynamicOutputs } from './index';
 
 /**
@@ -38,9 +38,12 @@ const FONT_FAMILY =
 // Labels longer than these are truncated with an ellipsis so cards stay tidy.
 const MAX_LABEL_CHARS = 28;
 const MAX_PORT_CHARS = 24;
-const PRESET_COLOR = '#D4A017'; // reusable-subgraph accent (matches the toolbar)
+const PRESET_COLOR = PRESET_GOLD; // reusable-subgraph accent
 const FALLBACK_NODE_COLOR = '#607D8B';
-const START_COLOR = '#16a34a'; // Start/entry node accent (border, title, trigger edges)
+// Start/entry node accent (border, title, trigger edges). Sourced from the
+// shared palette rather than restated, since an exported SVG is standalone
+// and cannot resolve `var(--flow-trigger-deep)`.
+const START_COLOR = FLOW_COLORS.triggerDeep;
 const START_FILL = '#dcfce7'; // Start node light-green background
 
 export type DiagramThemeName = 'light' | 'dark';

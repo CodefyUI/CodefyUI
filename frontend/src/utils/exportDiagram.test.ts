@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition, PortDefinition } from '../types';
+import { CATEGORY_COLORS, PRESET_GOLD } from '../styles/theme';
 import { graphToSvg, svgToPngBlob, DIAGRAM_THEMES } from './exportDiagram';
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -479,12 +480,18 @@ describe('graphToSvg', () => {
 
   it('colors a preset node with the preset gold accent', () => {
     const svg = graphToSvg([makeNode('p', { isPreset: true })], []);
-    expect(svg).toContain('stroke="#D4A017"');
+    // Sourced from the shared palette rather than restated, so a future tune of
+    // the gold does not need this literal edited in two places.
+    expect(svg).toContain(`stroke="${PRESET_GOLD}"`);
   });
 
   it('colors a node by its category', () => {
     const svg = graphToSvg([makeNode('c', { definition: mkDef({ category: 'CNN' }) })], []);
-    expect(svg).toContain('stroke="#4CAF50"'); // CNN
+    // Was a hardcoded '#4CAF50' (uppercase); exportDiagram.ts's nodeColor()
+    // reads straight from CATEGORY_COLORS, which theme.test.ts pins against
+    // tokens.css (now lowercase) -- assert against the constant so this
+    // can't silently drift the next time a hue is tuned.
+    expect(svg).toContain(`stroke="${CATEGORY_COLORS.CNN}"`); // CNN
   });
 
   it('falls back to the neutral color for an unknown category', () => {

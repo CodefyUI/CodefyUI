@@ -1,31 +1,32 @@
 .bar {
   position: absolute;
-  top: 8px;
+  top: var(--sp-3);
   left: 50%;
   transform: translateX(-50%);
   z-index: 6;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   max-width: 70%;
-  padding: 4px 8px;
-  border: 1px solid #333;
-  border-radius: 6px;
-  background: rgba(24, 24, 24, 0.94);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
-  font-size: 12px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
 }
 
 .segment {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
 .separator {
-  color: #555;
-  padding: 0 2px;
+  color: var(--text-muted);
+  padding: 0 var(--sp-1);
 }
 
 .crumb {
@@ -33,46 +34,49 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 2px 6px;
+  padding: var(--sp-1) var(--sp-3);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: #bbb;
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
   cursor: pointer;
 }
 
 .crumb:hover {
-  background: #262626;
-  color: #eee;
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .current {
-  color: #2dd4bf;
+  color: var(--accent);
 }
 
 .input {
   width: 140px;
-  padding: 1px 5px;
-  border: 1px solid #2dd4bf;
-  border-radius: 4px;
-  background: #101010;
-  color: #eee;
-  font-size: 12px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
 }
 
 .exit {
-  margin-left: 6px;
-  padding: 2px 8px;
-  border: 1px solid #3a3a3a;
-  border-radius: 4px;
-  background: #202020;
-  color: #ccc;
-  font-size: 11px;
+  margin-left: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
   cursor: pointer;
 }
 
 .exit:hover {
-  border-color: #2dd4bf;
-  color: #2dd4bf;
+  border-color: var(--accent);
+  color: var(--accent);
 }

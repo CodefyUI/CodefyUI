@@ -15,7 +15,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
 import { useI18n } from '../../i18n';
-import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
+import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAISED } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
 import { subgraphIdOf } from '../../utils/subgraph';
 import styles from './BaseNode.module.css';
@@ -94,7 +94,19 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   const liveInputs = resolveDynamicInputs(def, data.params);
   const liveOutputs = resolveDynamicOutputs(def, data.params);
   const category = def?.category ?? 'Utility';
-  const headerColor = CATEGORY_COLORS[category] ?? '#607D8B';
+  // Fallback used to be the raw, unlifted '#607D8B' — a different (dimmer)
+  // value than CATEGORY_COLORS.Utility ('#8097a2'), so an unrecognised
+  // category rendered a colour that had not been contrast-adjusted for dark
+  // surfaces. 'Utility' is the app's own fallback category one line above,
+  // so its already-lifted colour is the correct fallback here too.
+  const headerColor = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
+  // Node headers used to be painted with this raw hue, which measured
+  // 1.85:1-2.69:1 against the unconditional #eeeeee title on twelve of the
+  // fourteen categories. Tinting it into the card surface instead keeps the
+  // colour coding (the hue itself still renders at full strength as the
+  // small category label) while putting the title at 9.2:1-11.7:1 — see
+  // scripts/check-contrast.mjs.
+  const headerFill = mixColor(SURFACE_RAISED, headerColor, NODE_HEADER_TINT);
   const { t, tn } = useI18n();
 
   const isSequentialModel = data.type === 'SequentialModel';
@@ -200,10 +212,10 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
               : 'transparent';
 
   const borderColor = selected
-    ? '#ffffff'
+    ? 'var(--text-primary)'
     : statusBorderColor !== 'transparent'
       ? statusBorderColor
-      : '#444444';
+      : 'var(--border-base)';
 
   const description = def ? tn(def.node_name, 'description', def.description) : '';
 
@@ -239,9 +251,12 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       data-bypassed={isBypassed || undefined}
       style={{
         '--border-color': borderColor,
+        // Selected glow has no matching token (a translucent-white halo,
+        // distinct from the cyan --accent-glow used for focus/selection
+        // elsewhere) — kept literal, see migration report.
         boxShadow: selected
           ? '0 0 16px rgba(255,255,255,0.15)'
-          : '0 4px 12px rgba(0,0,0,0.4)',
+          : 'var(--shadow)',
         cursor: isSequentialModel ? 'pointer' : undefined,
       } as React.CSSProperties}
     >
@@ -266,7 +281,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
       {/* Header */}
       <div
         className={styles.header}
-        style={{ background: headerColor }}
+        style={{ background: headerFill }}
       >
         <span className={styles.headerLabel}>
           {data.label}
@@ -276,6 +291,15 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             {t('node.bypassed')}
           </span>
         )}
+        {/* Full-strength hue on its tinted header — keeps the category
+            identifiable at a glance without the low-contrast opacity dimming
+            this used to carry (was 1.47-1.78:1). */}
+        {/* Deliberately NOT the category hue: a hue drawn on an 18% tint of
+            itself tops out near 4:1 no matter how the hue is tuned, so the
+            label was unreadable by construction. The hue identifies the
+            category through the accent bar, which is a graphic and only
+            needs 3:1; the label itself is ordinary text and gets the text
+            bar. Measured worst case across all 14 categories: 5.11:1. */}
         <span className={styles.headerCategory}>
           {category}
         </span>

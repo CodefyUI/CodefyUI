@@ -1,8 +1,8 @@
 .wrapper {
   position: relative;
-  background: #161616;
-  border: 1px solid #2a2a2a;
-  border-radius: 4px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -17,15 +17,15 @@
 .expandBtn {
   position: absolute;
   top: 2px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
+  right: var(--sp-2);
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  border-radius: var(--radius-sm);
   background: rgba(10, 15, 23, 0.85);
-  border: 1px solid #2a2a2a;
-  color: #67e8f9;
-  font-size: 13px;
-  line-height: 1;
+  border: 1px solid var(--border-base);
+  color: var(--accent);
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -36,66 +36,70 @@
 }
 
 .expandBtn:hover {
-  background: #0e7490;
-  border-color: #06b6d4;
-  color: #fff;
+  background: var(--accent-dim);
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
 }
 
 .empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #161616;
-  border: 1px dashed #2a2a2a;
-  border-radius: 4px;
-  color: #666;
-  font-size: 11px;
+  background: var(--surface-panel);
+  border: 1px dashed var(--border-base);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-style: italic;
 }
 
 .dot {
   cursor: default;
-  transition: r 0.12s ease, stroke 0.12s ease;
+  transition: r var(--transition-fast) ease, stroke var(--transition-fast) ease;
 }
 
 .axis {
-  stroke: #2a2a2a;
+  stroke: var(--border-base);
   stroke-width: 1;
   stroke-dasharray: 2 3;
 }
 
+/* Real SVG <text> (see ScatterPlot.tsx: `transition: fill-opacity` and the
+   `<text>` element confirm it) — rem does not reliably apply here, so
+   font-size stays in px per the migration contract's SVG exception, raised
+   to the 11px floor instead of 9px. */
 .label {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9px;
+  font-size: 11px;
   pointer-events: none;
   user-select: none;
-  transition: fill-opacity 0.12s ease;
+  transition: fill-opacity var(--transition-fast) ease;
 }
 
 .labelActive {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 
 .tooltip {
   position: fixed;
   z-index: 10000;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: #eee;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
   pointer-events: none;
-  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
+  box-shadow: var(--shadow-popover);
 }
 
 .tooltipLabel {
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
 }
 
 .tooltipCoords {
-  margin-top: 2px;
-  color: #888;
+  margin-top: var(--sp-1);
+  color: var(--text-muted);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { ReactFlowProvider } from '@xyflow/react';
 import type { Edge, Node } from '@xyflow/react';
+import { PRESET_GOLD } from '../../styles/theme';
 import type { NodeData, NodeDefinition, OutputData, TensorOutput } from '../../types';
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
@@ -493,7 +494,7 @@ describe('NodeDetailModal — header', () => {
       nodeDetailNodeId: 'p1',
     });
     render(<NodeDetailModal />);
-    expect(screen.getByText('M')).toHaveStyle({ background: '#D4A017' });
+    expect(screen.getByText('M')).toHaveStyle({ background: PRESET_GOLD });
     expect(screen.getByText('PRESET')).toBeInTheDocument();
   });
 

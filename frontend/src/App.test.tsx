@@ -205,40 +205,63 @@ describe('App', () => {
 
   // ── Font-size effect ────────────────────────────────────────────────────────
 
-  it('applies the small font size to the document element', () => {
+  it('applies the small font scale to the document element', () => {
+    // Small is a deliberate density trade for people who want more on screen,
+    // not an accessibility setting. It is applied as a multiplier so it
+    // composes with App.css's viewport clamp rather than replacing it.
     useUIStore.setState({ fontSize: 'small' });
     render(<App />);
-    expect(document.documentElement.style.fontSize).toBe('12px');
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('0.92');
   });
 
-  it('applies the large font size to the document element', () => {
+  it('applies the large font scale to the document element', () => {
     useUIStore.setState({ fontSize: 'large' });
     render(<App />);
-    expect(document.documentElement.style.fontSize).toBe('20px');
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('1.15');
   });
 
-  it('clears the inline font size for the default choice', () => {
-    // Seed a non-empty inline size first to prove the effect clears it.
-    document.documentElement.style.fontSize = '99px';
+  it('applies a neutral scale for the default choice', () => {
+    // The control used to write an absolute root px, where "default" cleared
+    // the inline style and fell through to a `clamp(13.5px, ...)` in App.css
+    // whose floor put the most-used size at 10.8px on a 1366px laptop. It is
+    // now a multiplier over a clamp floored at 16px, so default means "no
+    // adjustment" rather than "no value". Seed a different scale first to
+    // prove the effect overwrites it rather than leaving the seeded value.
+    document.documentElement.style.setProperty('--font-scale', '9');
     useUIStore.setState({ fontSize: 'default' });
     render(<App />);
-    expect(document.documentElement.style.fontSize).toBe('');
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('1');
   });
 
-  it('falls back to clearing the inline size for an unknown font size value', () => {
-    document.documentElement.style.fontSize = '99px';
-    // Drive an out-of-range value to hit the `?? ''` fallback branch.
+  it('falls back to a neutral scale for an unknown font size value', () => {
+    document.documentElement.style.setProperty('--font-scale', '9');
+    // Drive an out-of-range value to hit the `?? '1'` fallback branch. It must
+    // land on 1, not on an empty string: an empty custom property would make
+    // the calc() in App.css invalid and collapse the root size.
     useUIStore.setState({ fontSize: 'weird' as never });
     render(<App />);
-    expect(document.documentElement.style.fontSize).toBe('');
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('1');
   });
 
   it('reacts to font-size changes after mount', () => {
     const { rerender } = render(<App />);
-    expect(document.documentElement.style.fontSize).toBe('');
+    // beforeEach leaves fontSize at 'default', which applies a neutral scale.
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('1');
     useUIStore.setState({ fontSize: 'large' });
     rerender(<App />);
-    expect(document.documentElement.style.fontSize).toBe('20px');
+    expect(
+      document.documentElement.style.getPropertyValue('--font-scale'),
+    ).toBe('1.15');
   });
 
   it('invokes the keyboard shortcuts hook on mount', async () => {

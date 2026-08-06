@@ -1,9 +1,9 @@
 .wrapper {
   position: relative;
-  background: #161616;
-  border: 1px solid #2a2a2a;
-  border-radius: 4px;
-  padding: 6px 6px 4px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
   display: inline-block;
   max-width: 100%;
 }
@@ -14,65 +14,67 @@
 }
 
 .bar {
-  fill: #0e7490;
-  transition: fill 0.12s ease;
+  fill: var(--accent-dim);
+  transition: fill var(--transition-fast) ease;
 }
 
 .barActive {
-  fill: #67e8f9;
+  fill: var(--accent);
 }
 
 .baseline {
-  stroke: #2a2a2a;
+  stroke: var(--border-base);
   stroke-width: 1;
 }
 
+/* Plain HTML text below the <svg> (not SVG itself), so it moves onto the
+   type scale — these are short axis min/max/peak tags, not prose. */
 .axisRow {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 9px;
-  color: #666;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
 }
 
 .axisPeak {
-  color: #4b5563;
+  color: var(--text-muted);
 }
 
 .empty {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #161616;
-  border: 1px dashed #2a2a2a;
-  border-radius: 4px;
-  color: #666;
-  font-size: 11px;
+  background: var(--surface-panel);
+  border: 1px dashed var(--border-base);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-style: italic;
 }
 
 .tooltip {
   position: fixed;
   z-index: 10000;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  padding: 5px 9px;
-  font-size: 11px;
-  color: #eee;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
   pointer-events: none;
-  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
+  box-shadow: var(--shadow-popover);
 }
 
 .tooltipLabel {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
-  color: #9ca3af;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
 }
 
 .tooltipCount {
-  margin-top: 2px;
-  font-weight: 600;
+  margin-top: var(--sp-1);
+  font-weight: var(--fw-semibold);
 }

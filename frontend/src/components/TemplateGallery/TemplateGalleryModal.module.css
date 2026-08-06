@@ -5,7 +5,7 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.68);
+  background: var(--surface-scrim);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
@@ -19,12 +19,10 @@
   max-width: 1180px;
   height: 82vh;
   min-width: 320px;
-  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
-  border: 1px solid #1f2937;
-  border-radius: 10px;
-  box-shadow:
-    0 30px 70px -20px rgba(0, 0, 0, 0.8),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-canvas) 100%);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -36,11 +34,11 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 12px 14px;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-4);
   flex-shrink: 0;
   background: rgba(10, 15, 23, 0.72);
-  border-bottom: 2px solid #06b6d4;
+  border-bottom: 2px solid var(--accent-deep);
 }
 
 .titleBlock {
@@ -48,57 +46,57 @@
 }
 
 .title {
-  color: #e5e7eb;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  line-height: 1.2;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
 }
 
 .subtitle {
-  color: #64748b;
-  font-size: 0.6875rem;
-  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
 }
 
 .search {
   margin-left: auto;
   width: 240px;
   max-width: 40%;
-  padding: 5px 9px;
-  background: #0a0f17;
-  border: 1px solid #334155;
-  border-radius: 5px;
-  color: #e5e7eb;
-  font-size: 0.8125rem;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: var(--fs-md);
   outline: none;
 }
 
 .search:focus {
-  border-color: #06b6d4;
+  border-color: var(--accent-deep);
 }
 
 .closeBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   width: 26px;
   height: 26px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   flex-shrink: 0;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .closeBtn:hover {
-  background: rgba(244, 67, 54, 0.14);
-  border-color: #f44336;
-  color: #ff7b72;
+  background: var(--danger-wash);
+  border-color: var(--status-error);
+  color: var(--status-error);
 }
 
 /* ── Body: card grid left, detail right ─────────────────────────────────── */
@@ -113,47 +111,47 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 14px 16px 20px;
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
 }
 
 .stateMessage {
-  color: #64748b;
-  font-size: 0.8125rem;
-  padding: 28px 4px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  padding: var(--sp-8) var(--sp-2);
   text-align: center;
 }
 
 .errorText {
-  color: #f44336;
-  margin-bottom: 10px;
+  color: var(--status-error);
+  margin-bottom: var(--sp-4);
 }
 
 .retryBtn {
-  font-size: 0.75rem;
-  padding: 4px 10px;
-  background: #1f2937;
-  border: 1px solid #334155;
-  border-radius: 4px;
-  color: #cbd5e1;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .retryBtn:hover {
-  border-color: #06b6d4;
-  color: #22d3ee;
+  border-color: var(--accent-deep);
+  color: var(--accent);
 }
 
 .section {
-  margin-bottom: 18px;
+  margin-bottom: var(--sp-5);
 }
 
 .sectionTitle {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 0 0 8px;
-  font-size: 0.6875rem;
-  font-weight: 700;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -166,56 +164,62 @@
 }
 
 .sectionCount {
-  color: #64748b;
+  color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 400;
+  font-weight: var(--fw-normal);
   letter-spacing: 0;
 }
 
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  gap: var(--sp-4);
 }
 
 .card {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--sp-2);
   min-width: 0;
-  padding: 10px 12px;
+  padding: var(--sp-4) var(--sp-4);
   text-align: left;
-  background: #131b26;
-  border: 1px solid #1f2937;
-  border-radius: 7px;
+  /* Cards are the primary browsing surface — the "cards, nodes, popovers,
+     menus" tier, one step up from the modal's own panel/canvas backdrop. */
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   cursor: pointer;
   color: inherit;
-  transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .card:hover {
-  background: #16202d;
-  border-color: #334155;
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 
 .cardActive {
-  border-color: #06b6d4;
+  border-color: var(--accent-deep);
+  /* rgb(6,182,212) mirrors --accent-deep; kept as a literal ring since alpha
+     rings have no dedicated token. */
   box-shadow: 0 0 0 1px rgba(6, 182, 212, 0.35);
 }
 
 .cardName {
-  color: #e5e7eb;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  /* Gallery cards are a primary browsing surface, not secondary chrome —
+     titles read at the emphasis tier, not the UI-body tier. */
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .cardDesc {
-  color: #64748b;
-  font-size: 0.6875rem;
-  line-height: 1.45;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
   /* Two lines, then ellipsis — the detail pane carries the full text. */
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -229,24 +233,28 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  margin-top: 2px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-1);
 }
 
 .cardChip {
-  font-size: 0.5625rem;
+  /* The hue supplies the border and the fill tint (both graphics, 3:1). The
+     label is text, so it takes the text tier — the hue on a tint of itself
+     measured 3.77-4.16:1 and cannot be tuned up to 4.5. */
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
   border: 1px solid;
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 1.6;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--sp-3);
+  line-height: var(--lh-tight);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .cardCount {
-  color: #475569;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
 }
@@ -256,10 +264,10 @@
 .detail {
   width: 290px;
   flex-shrink: 0;
-  border-left: 1px solid #1f2937;
+  border-left: 1px solid var(--border-base);
   background: rgba(0, 0, 0, 0.18);
   overflow: hidden;
-  padding: 16px 16px 20px;
+  padding: var(--sp-5) var(--sp-5) var(--sp-6);
   display: flex;
   flex-direction: column;
 }
@@ -274,67 +282,69 @@
 }
 
 .detailEmpty {
-  color: #64748b;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 
 .detailName {
-  color: #e5e7eb;
-  font-size: 1rem;
-  font-weight: 600;
-  line-height: 1.3;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
   word-break: break-word;
 }
 
 .detailMeta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 0.6875rem;
+  gap: var(--sp-2) var(--sp-4);
+  margin-top: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .detailSource {
-  margin-top: 6px;
-  color: #475569;
-  font-size: 0.6875rem;
+  margin-top: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 .detailDesc {
-  margin: 12px 0 0;
-  color: #94a3b8;
-  font-size: 0.75rem;
-  line-height: 1.6;
+  /* Prose read at length in the pane, not a caption — same body-copy tier as
+     the card description rather than the smaller generic-table mapping. */
+  margin: var(--sp-4) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
   word-break: break-word;
 }
 
 .detailActions {
   flex-shrink: 0;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #1f2937;
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .primaryBtn,
 .secondaryBtn {
   width: 100%;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .primaryBtn {
-  background: rgba(6, 182, 212, 0.16);
-  border: 1px solid #06b6d4;
-  color: #22d3ee;
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-deep);
+  color: var(--accent);
 }
 
 .primaryBtn:hover:not(:disabled) {
@@ -343,13 +353,13 @@
 
 .secondaryBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
 }
 
 .secondaryBtn:hover:not(:disabled) {
-  border-color: #06b6d4;
-  color: #22d3ee;
+  border-color: var(--accent-deep);
+  color: var(--accent);
 }
 
 .primaryBtn:disabled,
@@ -359,9 +369,9 @@
 }
 
 .detailHint {
-  color: #64748b;
-  font-size: 0.625rem;
-  line-height: 1.5;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
 }
 
 /* Narrow viewports: the detail pane drops below the grid rather than
@@ -374,7 +384,7 @@
   .detail {
     width: auto;
     border-left: none;
-    border-top: 1px solid #1f2937;
+    border-top: 1px solid var(--border-base);
     max-height: 42%;
   }
 

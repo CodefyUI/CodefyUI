@@ -4,7 +4,7 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.68);
+  background: var(--surface-scrim);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
@@ -17,12 +17,10 @@
   width: 90vw;
   height: 90vh;
   min-width: 320px;
-  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
-  border: 1px solid #1f2937;
-  border-radius: 10px;
-  box-shadow:
-    0 30px 70px -20px rgba(0, 0, 0, 0.8),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, var(--surface-panel) 0%, var(--surface-canvas) 100%);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -34,41 +32,41 @@
 .header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
   flex-shrink: 0;
   background: rgba(10, 15, 23, 0.72);
-  border-bottom: 2px solid #1f2937; /* color overridden inline with the accent */
+  border-bottom: 2px solid var(--border-base); /* color overridden inline with the accent */
 }
 
 .nav {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
   flex-shrink: 0;
 }
 
 .navBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   width: 26px;
   height: 26px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.8125rem;
-  line-height: 1;
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .navBtn:hover:not(:disabled) {
-  background: rgba(6, 182, 212, 0.12);
-  border-color: #06b6d4;
-  color: #22d3ee;
+  background: var(--accent-wash);
+  border-color: var(--accent-deep);
+  color: var(--accent);
 }
 
 .navBtn:disabled {
@@ -77,8 +75,8 @@
 }
 
 .navCount {
-  color: #64748b;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   min-width: 48px;
   text-align: center;
@@ -87,13 +85,13 @@
 .icon {
   width: 30px;
   height: 30px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #0a0f17;
-  font-weight: 700;
-  font-size: 0.9375rem;
+  color: var(--text-on-accent);
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-lg);
   flex-shrink: 0;
 }
 
@@ -102,18 +100,18 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
 }
 
 .nameBtn {
   background: transparent;
   border: 1px solid transparent;
-  color: #e5e7eb;
-  font-size: 0.9375rem;
-  font-weight: 600;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
   padding: 1px 5px;
   margin-left: -5px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: text;
   text-align: left;
   /* Hug the name: the identity column is a stretch flex container, so without
@@ -127,19 +125,19 @@
 }
 
 .nameBtn:hover {
-  border-color: #334155;
+  border-color: var(--border-strong);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .nameInput {
-  background: #0a0f17;
-  border: 1px solid #06b6d4;
-  color: #e5e7eb;
-  font-size: 0.9375rem;
-  font-weight: 600;
+  background: var(--surface-canvas);
+  border: 1px solid var(--accent-deep);
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
   padding: 1px 5px;
   margin-left: -5px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   outline: none;
   width: 100%;
   max-width: 380px;
@@ -148,76 +146,76 @@
 .meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
 .metaType {
-  color: #64748b;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .categoryChip,
 .presetChip,
 .statusChip {
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   border: 1px solid;
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 1.5;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--sp-3);
+  line-height: var(--lh-snug);
   white-space: nowrap;
 }
 
 .presetChip {
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   letter-spacing: 0.06em;
 }
 
 /* Bypassed / muted (core#128). Amber rather than red: muting is deliberate,
    not a failure — the same reading `interrupted` gets in the status palette. */
 .bypassChip {
-  font-size: 0.625rem;
-  border: 1px solid #ff8f00;
-  color: #ff8f00;
-  border-radius: 9px;
-  padding: 0 6px;
-  line-height: 1.5;
+  font-size: var(--fs-2xs);
+  border: 1px solid var(--status-interrupted);
+  color: var(--status-interrupted);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--sp-3);
+  line-height: var(--lh-snug);
   white-space: nowrap;
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   letter-spacing: 0.06em;
 }
 
 /* Shown only while the name editor is open, so the commit/cancel keys are
    discoverable without a tooltip. */
 .renameHint {
-  color: #64748b;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
   margin-left: -5px;
 }
 
 .closeBtn {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   width: 26px;
   height: 26px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   flex-shrink: 0;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .closeBtn:hover {
-  background: rgba(244, 67, 54, 0.14);
-  border-color: #f44336;
-  color: #ff7b72;
+  background: var(--danger-wash);
+  border-color: var(--status-error);
+  color: var(--status-error);
 }
 
 /* ── Body: params left, data right ──────────────────────────────────────── */
@@ -231,64 +229,66 @@
 .paramColumn {
   width: 320px;
   flex-shrink: 0;
-  border-right: 1px solid #1f2937;
+  border-right: 1px solid var(--border-base);
   background: rgba(0, 0, 0, 0.18);
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: var(--sp-4) var(--sp-4);
 }
 
 .columnTitle {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #64748b;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-4);
 }
 
 .noParams {
-  color: #64748b;
-  font-size: 0.8125rem;
-  padding: 8px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  padding: var(--sp-3) 0;
 }
 
 /* Preset nodes: their params live on the nodes inside, so this column offers
    the way in rather than a parameter form. Mirrors the config panel. */
 .presetBlock {
-  margin-bottom: 16px;
+  margin-bottom: var(--sp-5);
 }
 
 .presetHint {
-  font-size: 0.75rem;
-  color: #94a3b8;
-  margin-bottom: 8px;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
+  line-height: var(--lh-normal);
 }
 
 .presetConfigureBtn {
   width: 100%;
-  padding: 8px 12px;
-  background: rgba(212, 160, 23, 0.15);
-  border: 1px solid #d4a017;
-  border-radius: 6px;
-  color: #d4a017;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  padding: var(--sp-3) var(--sp-4);
+  /* rgb(224,169,43) mirrors --status-preset; kept as a literal wash since no
+     --preset-wash token exists yet — see the migration report. */
+  background: rgba(224, 169, 43, 0.15);
+  border: 1px solid var(--status-preset);
+  border-radius: var(--radius);
+  color: var(--status-preset);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
-  transition: background 0.12s;
+  transition: background var(--transition-fast);
 }
 
 .presetConfigureBtn:hover {
-  background: rgba(212, 160, 23, 0.26);
+  background: rgba(224, 169, 43, 0.26);
 }
 
 .paramFootnote {
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid #1f2937;
-  color: #64748b;
-  font-size: 0.75rem;
-  line-height: 1.5;
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-base);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
 }
 
 .dataColumn {
@@ -300,10 +300,10 @@
 
 .tabStrip {
   display: flex;
-  gap: 2px;
+  gap: var(--sp-1);
   flex-shrink: 0;
-  padding: 6px 10px 0;
-  border-bottom: 1px solid #1f2937;
+  padding: var(--sp-3) var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-base);
   overflow-x: auto;
 }
 
@@ -311,21 +311,21 @@
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
-  color: #64748b;
-  font-size: 0.75rem;
-  padding: 6px 12px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-3) var(--sp-4);
   cursor: pointer;
   white-space: nowrap;
-  transition: color 0.12s, border-color 0.12s;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .tabBtn:hover {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .tabActive {
-  color: #22d3ee;
-  border-bottom-color: #06b6d4;
+  color: var(--accent);
+  border-bottom-color: var(--accent-deep);
 }
 
 .tabPanel {
@@ -335,45 +335,45 @@
 }
 
 .tabBody {
-  padding: 12px 14px;
+  padding: var(--sp-4) var(--sp-4);
 }
 
 /* ── Capture-tab extras ─────────────────────────────────────────────────── */
 
 .warnHint {
-  background: rgba(255, 193, 7, 0.09);
-  border: 1px solid rgba(255, 193, 7, 0.35);
-  color: #ffc107;
-  border-radius: 5px;
-  padding: 6px 9px;
-  font-size: 0.75rem;
-  margin-bottom: 10px;
+  background: var(--warning-wash);
+  border: 1px solid var(--status-warning);
+  color: var(--status-warning);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-4);
 }
 
 .emptyState {
   text-align: center;
-  color: #64748b;
-  font-size: 0.8125rem;
-  padding: 28px 12px 20px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  padding: var(--sp-8) var(--sp-4) var(--sp-6);
 }
 
 .emptyIcon {
-  font-size: 1.5rem;
-  color: #334155;
-  margin-bottom: 8px;
+  font-size: var(--fs-2xl);
+  color: var(--border-strong);
+  margin-bottom: var(--sp-3);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .emptyHint {
-  color: #64748b;
-  font-size: 0.6875rem;
-  margin-top: 6px;
-  line-height: 1.5;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-3);
+  line-height: var(--lh-normal);
 }
 
 .summaryBlock {
-  border-top: 1px solid #1f2937;
-  padding-top: 10px;
+  border-top: 1px solid var(--border-base);
+  padding-top: var(--sp-4);
 }
 
 /* Charts a node emitted this run (#130), above its captured port values. */
@@ -384,38 +384,38 @@
      stretches its children by default, which left the plot stranded against
      the right edge of a full-width card. */
   align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
 }
 
 .chartBlockTitle {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #64748b;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .summaryTitle {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #64748b;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-3);
 }
 
 .summaryEmpty {
-  color: #64748b;
-  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 
 .summaryRow {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 3px 0;
-  font-size: 0.75rem;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
 }
 
 .summaryDot {
@@ -426,14 +426,14 @@
 }
 
 .summaryName {
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .summaryValue {
-  color: #64748b;
+  color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.6875rem;
+  font-size: var(--fs-xs);
 }
 
 /* ── Docs tab ───────────────────────────────────────────────────────────── */
@@ -443,64 +443,64 @@
 }
 
 .docsSection {
-  margin-bottom: 20px;
+  margin-bottom: var(--sp-6);
 }
 
 .docsSectionTitle {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #64748b;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-3);
 }
 
 .docsDescription {
-  color: #cbd5e1;
-  font-size: 0.8125rem;
-  line-height: 1.6;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
 }
 
 .docsEmpty {
-  color: #64748b;
-  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 
 .docsParamRow {
-  border-left: 2px solid #1f2937;
-  padding: 4px 0 4px 10px;
-  margin-bottom: 10px;
+  border-left: 2px solid var(--border-base);
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-4);
 }
 
 .docsParamHead {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .docsParamName {
-  color: #e5e7eb;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .docsParamType {
-  color: #06b6d4;
-  font-size: 0.625rem;
+  color: var(--accent-deep);
+  font-size: var(--fs-2xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .docsParamDesc {
-  color: #94a3b8;
-  font-size: 0.75rem;
-  line-height: 1.5;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
   margin-top: 2px;
 }
 
 .docsParamMeta {
-  color: #64748b;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   margin-top: 3px;
 }
@@ -508,9 +508,9 @@
 .docsPortRow {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: 0.75rem;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
   flex-wrap: wrap;
 }
 
@@ -523,24 +523,24 @@
 }
 
 .docsPortName {
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .docsPortType {
-  color: #64748b;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .docsPortOptional {
-  color: #64748b;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
 }
 
 .docsPortDesc {
-  color: #64748b;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 /* Narrow viewports: stack the two columns instead of squeezing the form. */
@@ -552,7 +552,7 @@
   .paramColumn {
     width: auto;
     border-right: none;
-    border-bottom: 1px solid #1f2937;
+    border-bottom: 1px solid var(--border-base);
     max-height: 40%;
   }
 }

@@ -35,15 +35,15 @@ function formatTimestamp(ts: number): string {
 }
 
 const LOG_TYPE_COLORS = {
-  info: '#2196F3',
-  error: '#F44336',
-  success: '#4CAF50',
+  info: 'var(--status-info)',
+  error: 'var(--status-error)',
+  success: 'var(--status-success)',
 } as const;
 
 const LOG_TYPE_BG = {
-  info: 'rgba(33,150,243,0.05)',
-  error: 'rgba(244,67,54,0.08)',
-  success: 'rgba(76,175,80,0.05)',
+  info: 'var(--info-wash)',
+  error: 'var(--danger-wash)',
+  success: 'var(--success-wash)',
 } as const;
 
 // ── DEPRECATED magic prefixes (remove one release after #117) ────────────
@@ -474,7 +474,7 @@ export function ResultsPanel() {
                   </div>
                   <div className={styles.summaryItem}>
                     <span className={styles.summaryLabel}>{t('results.bestLoss')}</span>
-                    <span className={styles.summaryValue} style={{ color: '#4CAF50' }}>
+                    <span className={styles.summaryValue} style={{ color: 'var(--status-success)' }}>
                       {Math.min(...trainingData.epochs.map((e) => e.loss)).toFixed(4)}
                     </span>
                   </div>

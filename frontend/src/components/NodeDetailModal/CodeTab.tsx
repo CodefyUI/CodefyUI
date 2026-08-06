@@ -89,7 +89,7 @@ export function CodeTab({ ctx }: { ctx: NodeDetailTabContext }) {
           onChange={(e) => setCount(countParam, typesParam, Number(e.target.value))}
         >
           {Array.from({ length: SCRIPT_MAX_PORTS }, (_, i) => (
-            <option key={i + 1} value={i + 1} style={{ background: '#222' }}>
+            <option key={i + 1} value={i + 1} style={{ background: 'var(--surface-input)' }}>
               {i + 1}
             </option>
           ))}
@@ -107,7 +107,7 @@ export function CodeTab({ ctx }: { ctx: NodeDetailTabContext }) {
             onChange={(e) => setType(typesParam, ports, index, e.target.value)}
           >
             {SELECTABLE_DATA_TYPES.map((type) => (
-              <option key={type} value={type} style={{ background: '#222' }}>
+              <option key={type} value={type} style={{ background: 'var(--surface-input)' }}>
                 {type}
               </option>
             ))}

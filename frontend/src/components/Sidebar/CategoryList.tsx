@@ -26,7 +26,7 @@ interface CategoryListProps<T> {
 // this migration's scope. Left as-is rather than pointing only this one
 // copy at --cat-utility, which would make it disagree with every sibling
 // copy instead of agreeing with them. See migration report.
-const defaultColorFor = (category: string) => CATEGORY_COLORS[category] ?? '#607D8B';
+const defaultColorFor = (category: string) => CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
 
 /**
  * The accordion body shared by every list-shaped sidebar tab (#126): one
@@ -133,7 +133,12 @@ export function CategoryList<T>({
                   aria-expanded={expanded}
                 >
                   <span className={styles.categoryDot} style={{ background: color }} />
-                  <span className={styles.categoryName} style={{ color }}>
+                  {/* The hue identifies the category through the dot and the
+                      underline, which are graphics and only need 3:1. The name
+                      is text: tinting it put several categories at 3.8-4.2:1,
+                      and no amount of hue tuning fixes that because the header
+                      background is itself a tint of the same hue. */}
+                  <span className={styles.categoryName}>
                     {labelFor(category)}
                   </span>
                   <span className={styles.categoryCount}>{items.length}</span>

@@ -8,6 +8,7 @@ import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import type { NodeDefinition, NodeData } from '../../types';
 import * as rest from '../../api/rest';
+import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import BaseNode, { BaseNodeBody } from './BaseNode';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -64,6 +65,20 @@ const flowProps = {
   selectable: true,
   deletable: true,
 } as const;
+
+/**
+ * jsdom/cssstyle normalizes ordinary color-valued CSS properties (but not
+ * custom properties like `--border-color`) to `rgb(r, g, b)` on read. Mirror
+ * that here so header-fill assertions can be computed from the real palette
+ * constants instead of a hand-copied literal.
+ */
+function hexToRgb(hex: string): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 function renderBody(data: NodeData, opts: { id?: string; selected?: boolean; bodyExtra?: React.ReactNode } = {}) {
   const { id = 'n1', selected = false, bodyExtra } = opts;
@@ -216,14 +231,21 @@ describe('BaseNode', () => {
   });
 
   it('falls back to Utility category color when definition has no category', () => {
-    // def.category undefined → category 'Utility'; an unknown category string
-    // would exercise the `?? '#607D8B'` fallback.
+    // def.category undefined → category 'Utility'; an unrecognised category
+    // string exercises the same `?? CATEGORY_COLORS.Utility` fallback path.
     const def = makeDef({ category: 'TotallyUnknownCat' });
     const { container } = renderBody(baseData({ definition: def }));
     expect(screen.getByText('TotallyUnknownCat')).toBeTruthy();
-    // header background falls back to #607D8B → rgb(96, 125, 139)
+    // The header is no longer painted with the raw category hue: it's that
+    // hue tinted into --surface-raised by NODE_HEADER_TINT (mixColor), which
+    // is what took every node title from 1.85:1-2.69:1 contrast up to
+    // 9.2:1-11.7:1 (see BaseNode's headerFill comment). '#242b37' mirrors
+    // --surface-raised; it's hardcoded here the same way BaseNode.tsx
+    // hardcodes it, since theme.ts only mirrors the semantic data palettes,
+    // not chrome/surface tokens (see theme.ts's file comment).
     const header = container.querySelector('[class*="header"]') as HTMLElement;
-    expect(header.style.background).toBe('rgb(96, 125, 139)');
+    const expectedFill = mixColor('#242b37', CATEGORY_COLORS.Utility, NODE_HEADER_TINT);
+    expect(header.style.background).toBe(hexToRgb(expectedFill));
   });
 
   it('renders Utility category when no definition is present', () => {
@@ -284,31 +306,42 @@ describe('BaseNode', () => {
 
   // ── Border color branches ────────────────────────────────────────────────
 
-  it('selected node gets white border + glow shadow', () => {
+  it('selected node gets the text-primary border + glow shadow', () => {
+    // The selected border used to be a hardcoded '#ffffff'; it's now
+    // var(--text-primary) (#f0f4f8, not literal white) — the same token the
+    // node's own title text uses, rather than an unrelated hardcoded white.
+    // jsdom does not resolve var() references on a custom property, so the
+    // raw token string is what `.style` reports.
     const { container } = renderBody(baseData(), { selected: true });
     const node = container.querySelector('[class*="node"]') as HTMLElement;
-    expect(node.style.getPropertyValue('--border-color')).toBe('#ffffff');
+    expect(node.style.getPropertyValue('--border-color')).toBe('var(--text-primary)');
     expect(node.style.boxShadow).toContain('rgba(255,255,255,0.15)');
   });
 
   it('unselected default node gets the default border + drop shadow', () => {
+    // Both values are now CSS custom properties rather than hardcoded
+    // literals ('#444444' / a literal rgba drop shadow) — jsdom does not
+    // resolve var() references, so the raw token strings are what render.
     const { container } = renderBody(baseData());
     const node = container.querySelector('[class*="node"]') as HTMLElement;
-    expect(node.style.getPropertyValue('--border-color')).toBe('#444444');
-    expect(node.style.boxShadow).toContain('rgba(0,0,0,0.4)');
+    expect(node.style.getPropertyValue('--border-color')).toBe('var(--border-base)');
+    expect(node.style.boxShadow).toBe('var(--shadow)');
   });
 
   it.each([
     // `--border-color` is a CSS custom property; jsdom does NOT normalize
-    // custom-prop values, so the raw hex is preserved.
-    ['running', '#FFC107'],
-    ['completed', '#4CAF50'],
-    ['error', '#F44336'],
-    ['cached', '#2196F3'],
+    // custom-prop values, so the raw hex from STATUS_COLORS is preserved
+    // verbatim (lowercase, as theme.ts defines it — theme.test.ts is the one
+    // place that pins these against tokens.css, so referencing the constant
+    // here keeps this test meaningful without duplicating that guarantee).
+    ['running', STATUS_COLORS.running],
+    ['completed', STATUS_COLORS.completed],
+    ['error', STATUS_COLORS.error],
+    ['cached', STATUS_COLORS.cached],
     // core#122: a node that stopped part-way with partial results. Without
     // its own branch it falls through to 'transparent' and looks exactly
     // like a node that never ran.
-    ['interrupted', '#FF8F00'],
+    ['interrupted', STATUS_COLORS.interrupted],
   ] as const)('uses the %s status border when unselected', (status, hex) => {
     const data = baseData({
       executionStatus: status,

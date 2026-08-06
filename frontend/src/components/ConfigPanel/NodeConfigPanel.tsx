@@ -28,7 +28,7 @@ export function NodeConfigPanel() {
 
   const isPreset = selectedNode.data.isPreset;
   const category = def?.category ?? 'Utility';
-  const accentColor = isPreset ? '#D4A017' : (CATEGORY_COLORS[category] ?? '#607D8B');
+  const accentColor = isPreset ? 'var(--status-preset)' : (CATEGORY_COLORS[category] ?? 'var(--cat-utility)');
 
   return (
     <div
@@ -63,7 +63,7 @@ export function NodeConfigPanel() {
       <div className={styles.content}>
         {/* Preset: Configure button */}
         {isPreset && (
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 'var(--sp-5)' }}>
             <div className={styles.presetHint}>
               {t('preset.nodeCount', { count: selectedNode.data.presetDefinition?.nodes.length ?? 0 })}
             </div>
@@ -94,11 +94,11 @@ export function NodeConfigPanel() {
             PythonScript, ComposeTransform) lists what it actually has
             right now. */}
         {def && (liveInputs.length > 0 || liveOutputs.length > 0) && (
-          <div style={{ marginTop: 20 }}>
+          <div style={{ marginTop: 'var(--sp-6)' }}>
             <div className={styles.sectionHeaderPorts}>{t('config.ports')}</div>
 
             {liveInputs.length > 0 && (
-              <div style={{ marginBottom: 8 }}>
+              <div style={{ marginBottom: 'var(--sp-3)' }}>
                 <div className={styles.portSubLabel}>{t('config.inputs')}</div>
                 {liveInputs.map((inp) => (
                   <div key={inp.name} className={styles.portRow}>
@@ -130,38 +130,38 @@ export function NodeConfigPanel() {
 
         {/* Execution status */}
         {selectedNode.data.executionStatus && selectedNode.data.executionStatus !== 'idle' && (
-          <div style={{ marginTop: 20 }}>
+          <div style={{ marginTop: 'var(--sp-6)' }}>
             <div className={styles.sectionHeaderExecution}>{t('config.execution')}</div>
             <div
               style={{
-                padding: '6px 10px',
-                borderRadius: 4,
+                padding: 'var(--sp-3) var(--sp-4)',
+                borderRadius: 'var(--radius-sm)',
                 background:
                   selectedNode.data.executionStatus === 'error'
-                    ? 'rgba(244,67,54,0.1)'
+                    ? 'var(--danger-wash)'
                     : selectedNode.data.executionStatus === 'completed'
-                      ? 'rgba(76,175,80,0.1)'
+                      ? 'var(--success-wash)'
                       : selectedNode.data.executionStatus === 'cached'
-                        ? 'rgba(33,150,243,0.1)'
-                        : 'rgba(255,193,7,0.1)',
+                        ? 'var(--info-wash)'
+                        : 'var(--warning-wash)',
                 border: `1px solid ${
                   selectedNode.data.executionStatus === 'error'
-                    ? '#F44336'
+                    ? 'var(--status-error)'
                     : selectedNode.data.executionStatus === 'completed'
-                      ? '#4CAF50'
+                      ? 'var(--status-completed)'
                       : selectedNode.data.executionStatus === 'cached'
-                        ? '#2196F3'
-                        : '#FFC107'
+                        ? 'var(--status-cached)'
+                        : 'var(--status-running)'
                 }`,
-                fontSize: '0.75rem',
+                fontSize: 'var(--fs-sm)',
                 color:
                   selectedNode.data.executionStatus === 'error'
-                    ? '#F44336'
+                    ? 'var(--status-error)'
                     : selectedNode.data.executionStatus === 'completed'
-                      ? '#4CAF50'
+                      ? 'var(--status-completed)'
                       : selectedNode.data.executionStatus === 'cached'
-                        ? '#2196F3'
-                        : '#FFC107',
+                        ? 'var(--status-cached)'
+                        : 'var(--status-running)',
               }}
             >
               {selectedNode.data.executionStatus === 'error' && selectedNode.data.error
