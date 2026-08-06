@@ -1604,16 +1604,31 @@ def prepare_executable_graph(
         ):
             executable_ids.add(edge["source"])
 
+    # `outermost_of` depends only on `internal_to_preset`, which the loop
+    # below never modifies -- computed once rather than on every iteration.
+    #
+    # Grouped by the OUTERMOST container, not the immediately enclosing
+    # one. Under nesting the only reachable node may be `blk/nest/mul`,
+    # whose immediate container is `blk/nest`; grouping there retains
+    # `nest`'s own contents and prunes the roots sitting directly inside
+    # `blk`, so how deeply a user happened to nest a block would decide
+    # whether its roots survive.
+    outermost_of = {
+        internal_id: outermost_container(internal_id, internal_to_preset)
+        for internal_id in internal_to_preset
+    }
+
     # Two rescue passes, iterated to a fixpoint (#201). Forward reachability
     # only ever walks from a node already known executable to what it
     # FEEDS -- a root with no INCOMING edge of its own (Dataset, Loss, the
     # head of a transform chain) is never the source side of that walk, so
-    # it gets pruned even though something reachable has a required input
-    # wired to it. Both passes below retain such a root once something it
-    # feeds survives; iterating them together (rather than picking a fixed
-    # order) handles a root that is itself inside a preset, or a preset
-    # sibling that itself depends on an outside root, without having to
-    # prove one pass always finishes what the other would still need to do.
+    # it gets pruned even though something reachable has a port -- required
+    # OR optional, this does not check which -- wired to its output. Both
+    # passes below retain such a root once something it feeds survives;
+    # iterating them together (rather than picking a fixed order) handles a
+    # root that is itself inside a preset, or a preset sibling that itself
+    # depends on an outside root, without having to prove one pass always
+    # finishes what the other would still need to do.
     while True:
         before = len(executable_ids)
 
@@ -1622,17 +1637,6 @@ def prepare_executable_graph(
         # in a training preset) -- they have no incoming edge, so
         # reachability alone would prune them out of a block the user did
         # ask to run.
-        #
-        # Grouped by the OUTERMOST container, not the immediately enclosing
-        # one. Under nesting the only reachable node may be `blk/nest/mul`,
-        # whose immediate container is `blk/nest`; grouping there retains
-        # `nest`'s own contents and prunes the roots sitting directly inside
-        # `blk`, so how deeply a user happened to nest a block would decide
-        # whether its roots survive.
-        outermost_of = {
-            internal_id: outermost_container(internal_id, internal_to_preset)
-            for internal_id in internal_to_preset
-        }
         containers_to_include = {
             container
             for internal_id, container in outermost_of.items()

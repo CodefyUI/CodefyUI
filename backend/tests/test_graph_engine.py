@@ -11,6 +11,7 @@ from app.core.graph_engine import (
     topological_sort,
     validate_graph,
 )
+from app.core.node_base import BaseNode, DataType, PortDefinition
 
 
 def test_topological_sort_linear():
@@ -199,10 +200,17 @@ from app.core.graph_engine import find_entry_points, reachable_from_entry_points
 
 def test_execute_graph_untriggered_producer_is_rescued_and_runs():
     """core#201: every path must start from a Start node, but a pure
-    producer (no inputs, no trigger) that feeds a REQUIRED input on a
+    producer (no inputs, no trigger) that feeds a data edge into a
     reachable node is a data dependency of that node, not a draft the user
     forgot to wire up -- it is retained and runs, same as the sibling-root
     rescue already does for a preset's own Dataset/Loss.
+
+    This graph happens to wire the producer into a REQUIRED port (Conv2d's
+    'kernel'), but requiredness is not what the rescue checks -- it does
+    not inspect the target port at all, so an optional port gets the same
+    treatment. See test_untriggered_root_feeding_an_optional_port_* below
+    for that case pinned explicitly (Dataset.train_transform, the issue's
+    own "head of a transform chain" example, is itself optional).
 
     Before #201 this raised GraphValidationError (validate_graph on the
     FULL graph called it valid; execute_graph pruned 'kernel' away and then
@@ -455,6 +463,91 @@ async def test_untriggered_root_actually_executes_and_its_data_flows():
     results = await execute_graph(nodes, edges)
     assert "root" in results, "the untriggered root must actually execute"
     assert results["out"]["value"] is results["root"]["tensor"]
+
+
+def test_untriggered_root_feeding_an_optional_port_is_structurally_retained():
+    """core#201's actual rule (pinned by code review): the rescue does not
+    check whether the target port is required. `Dataset.train_transform`
+    is OPTIONAL -- exactly the port the issue's own "head of a transform
+    chain" example feeds -- so an untriggered root wired to it must be
+    retained on the same terms as one wired to a required port.
+
+    This is deliberately broad, not a bug: restricting the rescue to
+    required ports would fail the issue's own motivating graph, since
+    Dataset's transform ports are optional by design (no transform wired
+    means "use the default ToTensor+Normalize").
+    """
+    from app.core.graph_engine import prepare_executable_graph
+
+    nodes = [
+        _start_node(),
+        _node("aug", "ToTensorTransform"),
+        _node("ds", "Dataset", name="MNIST", split="train", data_dir="./data"),
+    ]
+    edges = [
+        _trigger("t1", "start", "ds"),
+        _data_edge("d1", "aug", "transform", "ds", "train_transform"),
+    ]
+
+    exec_nodes, exec_edges, _ = prepare_executable_graph(nodes, edges)
+    ids = {n["id"] for n in exec_nodes}
+    assert ids == {"start", "aug", "ds"}, ids
+    assert any(e["id"] == "d1" for e in exec_edges), (
+        "the data edge into the OPTIONAL train_transform port must survive pruning"
+    )
+
+
+class _OptionalPortSinkNode(BaseNode):
+    """Reveals whether an OPTIONAL input actually arrived, to distinguish
+    "retained but its data silently dropped" from "retained and wired"."""
+
+    NODE_NAME = "_OptionalPortSink201"
+    CATEGORY = "Test"
+    DESCRIPTION = "Echoes an optional input, or a sentinel if unwired"
+
+    @classmethod
+    def define_inputs(cls):
+        return [PortDefinition(name="maybe", data_type=DataType.ANY, optional=True)]
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params):
+        return {"value": inputs.get("maybe", "UNSET")}
+
+
+@pytest.fixture(autouse=True)
+def _register_optional_port_sink():
+    from app.core.node_registry import registry
+
+    registry._nodes["_OptionalPortSink201"] = _OptionalPortSinkNode
+    yield
+    registry._nodes.pop("_OptionalPortSink201", None)
+
+
+@pytest.mark.asyncio
+async def test_untriggered_root_feeding_an_optional_port_is_retained_and_delivered():
+    """Same rule, executed for real: the rescued root's output must
+    actually reach the optional port, not just survive the structural
+    prune while its data quietly never arrives.
+    """
+    nodes = [
+        _start_node(),
+        _node("root", "TensorCreate", shape="2,2", fill="ones"),
+        _node("sink", "_OptionalPortSink201"),
+    ]
+    edges = [
+        _trigger("t1", "start", "sink"),
+        _data_edge("d1", "root", "tensor", "sink", "maybe"),
+    ]
+    results = await execute_graph(nodes, edges)
+    assert "root" in results, (
+        "the untriggered root must be rescued even though it only feeds an optional port"
+    )
+    assert results["sink"]["value"] is results["root"]["tensor"], (
+        "the rescued root's output must actually reach the optional port"
+    )
 
 
 def test_disconnected_draft_component_is_still_pruned():

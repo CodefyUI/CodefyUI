@@ -25,7 +25,7 @@ A single uvicorn process serves the REST API, the execution WebSocket, and the p
 ## Execution flow
 
 1. **Preset expansion** — preset nodes are flattened into their internal nodes before anything runs.
-2. **Validation** — DAG check, port/type safety, and a required [`Start`](/usage/first-graph) node. A node runs if it is reachable via trigger edges, OR if it feeds a required input into one that is (directly or transitively) — a root with no trigger of its own, like a `Dataset` or the head of a transform chain, is retained rather than pruned out from under a node that needs it (core#201).
+2. **Validation** — DAG check, port/type safety, and a required [`Start`](/usage/first-graph) node. A node runs if it is reachable via trigger edges, OR if it feeds a data connection — required or optional port, does not matter — into one that is (directly or transitively). A root with no trigger of its own, like a `Dataset` or the head of a transform chain, is retained rather than pruned out from under a node that consumes its output (core#201).
 3. **Topological sort** — Kahn's algorithm with cycle detection.
 4. **Parallel execution** — independent nodes run concurrently.
 5. **Caching / dirty tracking** — deterministic node outputs are cached keyed by node type, params, and upstream outputs; changing a node marks it and its downstream dirty so only the affected subgraph re-runs. Non-deterministic nodes (or `cacheable = False`) always run.
