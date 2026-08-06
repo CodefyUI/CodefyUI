@@ -218,13 +218,34 @@ for (const token of BADGE_PALETTES) {
   check(`${token} as text on --surface-panel`, contrast(t(token), t('--surface-panel')), 4.5);
 }
 
-/* 9. The accent wash is a translucent fill; check what it actually composites
-      to, not what its own rgba() claims. */
-const washAlpha = parseFloat(t('--accent-wash').match(/,\s*([\d.]+)\s*\)/)[1]);
-const washOnPanel = overlay(toRgb(t('--accent')), washAlpha, toRgb(t('--surface-panel')));
-const washHex = `#${washOnPanel.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
-check('--text-primary on --accent-wash over panel', contrast(t('--text-primary'), washHex), 4.5);
-check('--accent on --accent-wash over panel', contrast(t('--accent'), washHex), 4.5);
+/* 9. Washes are translucent fills. Check what they actually composite to over
+      the panel they land on, not what their own rgba() claims in isolation —
+      that is the mistake that made the old gallery badges look like 1:1 pairs.
+      Each wash is paired with the text colour that is drawn on it. */
+const WASHES = [
+  ['--accent-wash', '--accent'],
+  ['--success-wash', '--status-success'],
+  ['--danger-wash', '--status-error'],
+  ['--warning-wash', '--status-warning'],
+  ['--info-wash', '--status-info'],
+];
+for (const [wash, ink] of WASHES) {
+  const alpha = parseFloat(t(wash).match(/,\s*([\d.]+)\s*\)/)[1]);
+  const composited = overlay(toRgb(t(ink)), alpha, toRgb(t('--surface-panel')));
+  const hex = `#${composited.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+  check(`--text-primary on ${wash} over panel`, contrast(t('--text-primary'), hex), 4.5);
+  check(`--text-secondary on ${wash} over panel`, contrast(t('--text-secondary'), hex), 4.5);
+  check(`${ink} on ${wash} over panel`, contrast(t(ink), hex), 4.5);
+}
+
+/* 10. Glows are box-shadows and must stay translucent. An opaque one reads as
+       a hard ring, not a glow — easy to introduce when swapping an rgba()
+       literal for a solid colour token. */
+for (const glow of ['--glow-running', '--glow-accent']) {
+  if (!/rgba\([^)]*,\s*0?\.\d+\s*\)/.test(t(glow))) {
+    failures.push(`${glow} must use a translucent rgba() colour, got: ${t(glow)}`);
+  }
+}
 
 /* ---------- report ---------- */
 

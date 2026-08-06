@@ -1,66 +1,71 @@
 /* ── Templates tab: example rows (#126) ── */
 .exampleItem {
   display: block;
-  width: calc(100% - 12px);
-  margin: 2px 6px;
-  padding: 6px 10px;
-  border-radius: 5px;
+  width: calc(100% - var(--sp-4));
+  margin: var(--sp-1) var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius);
   background: transparent;
   border: 1px solid transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .exampleItem:hover {
-  background: #232323;
-  border-color: #3a3a3a;
+  background: var(--surface-hover);
+  border-color: var(--border-base);
 }
 
 .exampleName {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #ddd;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .exampleDesc {
-  font-size: 0.6875rem;
-  color: #777;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: var(--lh-snug);
+  margin-top: var(--sp-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 1px;
 }
 
 .exampleMeta {
-  font-size: 0.625rem;
-  color: #555;
-  margin-top: 3px;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  margin-top: var(--sp-2);
 }
 
 /* ── Footer: the way into the full gallery modal (core#128) ── */
 .browseButton {
   display: block;
   width: 100%;
-  padding: 5px 8px;
-  background: rgba(6, 182, 212, 0.1);
-  border: 1px solid #0e7490;
-  border-radius: 4px;
-  color: #22d3ee;
-  font-size: 0.75rem;
-  font-weight: 600;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
+/* A bolder filled state on hover (rather than a second wash alpha tier,
+   which no token provides) makes this footer CTA read as clearly activated. */
 .browseButton:hover {
-  background: rgba(6, 182, 212, 0.22);
+  background: var(--accent-dim);
+  color: var(--text-on-accent);
 }
 
 .footerHint {
-  margin-top: 5px;
+  margin-top: var(--sp-2);
 }

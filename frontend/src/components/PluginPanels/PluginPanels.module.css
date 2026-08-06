@@ -10,7 +10,7 @@
   flex: 1;
   overflow: auto;
   min-height: 0;
-  padding: 4px 8px;
+  padding: var(--sp-2) var(--sp-3);
 }
 
 /* ── right dock ──────────────────────────────────────────────────────────── */
@@ -18,8 +18,8 @@
 .rightColumn {
   width: 300px;
   flex-shrink: 0;
-  background: #151515;
-  border-left: 1px solid #2a2a2a;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -31,27 +31,27 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--border-base);
 }
 
 .sectionHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  background: #1a1a1a;
-  border-bottom: 1px solid #262626;
-  font-size: 0.72rem;
-  font-weight: 700;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #8fa3ad;
+  color: var(--text-muted);
 }
 
 .icon {
-  font-size: 0.8rem;
-  line-height: 1;
-  color: #4db6ac;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  color: var(--accent-dim);
 }
 
 .sectionTitle {
@@ -61,7 +61,7 @@
 }
 
 .sectionBody {
-  padding: 8px 10px;
+  padding: var(--sp-3) var(--sp-4);
   overflow: auto;
   min-height: 0;
 }

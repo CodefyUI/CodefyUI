@@ -19,6 +19,13 @@ interface CategoryListProps<T> {
   labelFor?: (category: string) => string;
 }
 
+// '#607D8B' (the pre-lift value of --cat-utility) is a repo-wide "unknown
+// category" fallback duplicated across 8+ files (BaseNode, FlowCanvas,
+// QuickNodeSearch, ConfigPanel, NodeDetailModal, SubgraphEditor,
+// exportDiagram, here) and test-pinned in several of them, most outside
+// this migration's scope. Left as-is rather than pointing only this one
+// copy at --cat-utility, which would make it disagree with every sibling
+// copy instead of agreeing with them. See migration report.
 const defaultColorFor = (category: string) => CATEGORY_COLORS[category] ?? '#607D8B';
 
 /**

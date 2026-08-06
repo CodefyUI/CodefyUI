@@ -1,9 +1,9 @@
 /* TabBar.module.css */
 
 .bar {
-  height: 32px;
-  background: #151515;
-  border-bottom: 1px solid #2a2a2a;
+  height: var(--h-control);
+  background: var(--surface-app);
+  border-bottom: 1px solid var(--border-base);
   display: flex;
   align-items: stretch;
   flex-shrink: 0;
@@ -22,15 +22,15 @@
 .tab {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 12px;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4);
   cursor: pointer;
-  border-right: 1px solid #222;
-  font-size: 0.8125rem;
+  border-right: 1px solid var(--border-subtle);
+  font-size: var(--fs-md);
   min-width: 80px;
   max-width: 180px;
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--transition-fast), color var(--transition-fast);
   user-select: none;
 }
 
@@ -42,33 +42,33 @@
 
 /* Edit input inside tab */
 .editInput {
-  background: #111;
-  border: 1px solid #444;
-  border-radius: 3px;
-  color: #eee;
-  font-size: 0.8125rem;
-  padding: 1px 4px;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  padding: var(--sp-1) var(--sp-2);
   width: 80px;
   outline: none;
 }
 
 /* Close button */
 .closeBtn {
-  font-size: 0.9375rem;
-  color: #555;
+  font-size: var(--fs-lg);
+  color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  line-height: 1;
+  line-height: var(--lh-tight);
   width: 16px;
   height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 .closeBtn:hover {
-  color: #ccc;
+  color: var(--text-secondary);
 }
 
 /* Running indicator dot — bg + box-shadow applied inline when running */
@@ -81,12 +81,12 @@
 
 /* Add tab button */
 .addBtn {
-  padding: 0 12px;
+  padding: 0 var(--sp-4);
   background: transparent;
   border: none;
-  border-left: 1px solid #222;
-  color: #555;
-  font-size: 1.0625rem;
+  border-left: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--fs-xl);
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
@@ -94,5 +94,5 @@
 }
 
 .addBtn:hover {
-  color: #ccc;
+  color: var(--text-secondary);
 }

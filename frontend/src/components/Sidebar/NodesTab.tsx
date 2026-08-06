@@ -55,8 +55,8 @@ export function NodeItem({ definition }: NodeItemProps) {
       onMouseLeave={handleMouseLeave}
       className={styles.nodeItem}
       style={{
-        background: hovered ? '#2a2a2a' : 'transparent',
-        borderColor: hovered ? '#444' : 'transparent',
+        background: hovered ? 'var(--surface-hover)' : 'transparent',
+        borderColor: hovered ? 'var(--border-base)' : 'transparent',
       }}
     >
       <div className={styles.nodeItemName}>

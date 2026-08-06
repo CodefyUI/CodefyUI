@@ -87,6 +87,19 @@
   --status-idle: #8593a3; /* was #444 = 1.86:1, i.e. an invisible dot */
   --status-preset: #e0a92b;
 
+  /* Tinted fills for callouts and selected rows. Translucent so they sit on
+     whatever surface they land on; the contrast gate composites them over
+     --surface-panel and checks the text that goes on top. */
+  --success-wash: rgba(94, 194, 105, 0.14);
+  --danger-wash: rgba(255, 107, 99, 0.14);
+  --warning-wash: rgba(255, 201, 77, 0.14);
+  --info-wash: rgba(106, 169, 255, 0.14);
+
+  /* Glows are shadows, so they must stay translucent — an opaque box-shadow
+     reads as a hard ring rather than a glow. */
+  --glow-running: 0 0 6px rgba(255, 193, 7, 0.55);
+  --glow-accent: 0 0 6px rgba(34, 211, 238, 0.55);
+
   /* Canvas wires. These are graphics conveying meaning, so 1.4.11
      applies: >=3:1 against --surface-canvas. */
   --wire: #5b6c82; /* 3.47:1 */
