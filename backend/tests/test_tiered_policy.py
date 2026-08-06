@@ -210,6 +210,31 @@ _MATRIX: list[tuple[str, str | None]] = [
     ("sqlite3", "filesystem"),
     ("codecs", "filesystem"),
     ("os", "process-env"),
+    # core#183 -- the raw C modules `os` is built on (CPython's own `os.py`
+    # does `from nt import *` / `from posix import *`, then `del`s the name).
+    # Reaching them by their own name is reaching `os` itself: same grant,
+    # same tier.
+    ("nt", "process-env"),
+    ("posix", "process-env"),
+    # core#177 CI round 2 -- surfaced by the enumeration test meeting a real
+    # Linux interpreter (nineteen/twenty unclassified names, platform- and
+    # version-dependent). Two of them earned an outright decision rather than
+    # deferral to ACCEPTED_UNGATED_MODULES, each independently verified, not
+    # assumed:
+    #   `readline.add_history(s)` + `.write_history_file(path)` writes
+    #   attacker-directed content to an attacker-chosen path -- verified
+    #   directly (wrote a marked payload, read it back from the target file).
+    #   Same shape as CAPABILITY_MODULES["filesystem"]'s other members.
+    ("readline", "filesystem"),
+    # `spwd.getspnam()` reads the shadow password-hash database. Verified
+    # directly (not assumed from "you have to be root", which the module's
+    # own docstring claims and which turned out to be false in practice): a
+    # plain `open("/etc/shadow")` correctly raised PermissionError for an
+    # unprivileged, non-`shadow`-group test account, but `spwd.getspnam()`
+    # from the SAME account succeeded -- NSS-mediated access can bypass the
+    # file's own permission bits. No existing capability fits "read the
+    # shadow database"; Tier 2 only, same bucket as `pickle` / `ctypes`.
+    ("spwd", None),
     ("subprocess", None),
     ("ctypes", None),
     ("importlib", None),
@@ -256,6 +281,176 @@ def test_tier2_accepts_everything_it_was_told_to(module, capability):
 def test_tier0_accepts_the_pure_compute_list_with_zero_declarations(module):
     _tier0(f"import {module}\n")
     _tier0(f"from {module} import *\n")
+
+
+# ── core#183: `nt` / `posix` are `os`, not a different surface ─────────────
+
+def test_import_nt_or_posix_reaches_the_real_environ_and_remove_at_tier0():
+    """The exact escape core#183 reported, reproduced directly rather than
+    only through the matrix above.
+
+    ``nt`` / ``posix`` are the raw C modules CPython's own ``Lib/os.py``
+    builds ``os`` from (``from nt import *`` on Windows, ``from posix
+    import *`` elsewhere) -- every ``os.remove``, ``os.environ`` and
+    ``os.system`` originates there. Neither name was ever on the blocklist
+    in either direction: not on ``_DANGEROUS_MODULES``, not in
+    ``CAPABILITY_MODULES["process-env"]``, not in
+    ``TIER0_PURE_COMPUTE_MODULES``. Before the fix, ``import nt`` at Tier 0
+    (nothing declared) was accepted outright, and only ``nt.system`` /
+    ``nt.popen`` tripped anything -- the receiver-independent RCE-leaf list,
+    which has no idea what module it is looking at. A real, writable
+    ``nt.environ`` and a real ``nt.remove(path)`` passed clean.
+    """
+    for module in ("nt", "posix"):
+        _refusal(f"import {module}\n")
+        _refusal(f"import {module}\n{module}.environ\n")
+        _refusal(f"import {module}\n{module}.remove('C:/tmp/x')\n")
+        # already caught before the fix -- confirms the leaf rule still
+        # fires independently of the module-level one added for this issue.
+        _refusal(f"import {module}\n{module}.system('x')\n")
+
+
+def test_nt_and_posix_are_gated_by_process_env_not_a_new_capability():
+    """Same door as ``os``, not a new one: no capability vocabulary change,
+    just closing the two names that reached the same module by a side door."""
+    _tier1("import nt\nnt.environ\n", "process-env")
+    _tier1("import posix\nposix.environ\n", "process-env")
+    message = _refusal("import nt\n", capabilities=["network", "filesystem"])
+    assert "process-env" in message
+
+
+def test_the_platform_native_os_backing_module_is_always_on_the_blocklist():
+    """core#177 -- a standing check for the SHAPE of core#183, not just its
+    two names, so a future regression here fails a test instead of waiting
+    for someone to run the validator by hand again.
+
+    core#183 happened because ``nt`` / ``posix`` were never enumerated
+    anywhere, in either direction -- nobody had to remove them from a list;
+    they simply were never added. A test that re-asserts ``"nt" in
+    dangerous_modules()`` guards against the first kind of regression
+    (someone deletes the line) but not the second (the same shape recurring
+    under a name nobody typed into a test file), and it only ever checks the
+    name, never the platform that made it true.
+
+    So this asks the INTERPRETER instead, the same "ask, don't hardcode" move
+    :func:`app.core.plugin_validator._compute_os_path_module_leaves` makes for
+    ``os.path``: CPython's own ``Lib/os.py`` sets ``os.name`` to exactly the
+    raw module it built its implementation from (``'nt'`` on Windows,
+    ``'posix'`` everywhere else CI runs) and then discards the module
+    reference (``from nt import *`` ... ``del nt``) -- so ``os.name`` is the
+    interpreter's own answer to "which raw module must never be missing from
+    the blocklist", not an assumption this test bakes in. Run on CI's Linux
+    box this exercises ``posix``; on a Windows dev machine, ``nt``; on any
+    future platform Python grows, whatever ``os.name`` says there. A
+    regression that drops one of the two names from the blocklist while
+    leaving the other still fails this test on whichever platform runs it.
+    """
+    import os
+    import sys
+
+    native = os.name
+    assert native in sys.builtin_module_names, (
+        f"expected the interpreter to report {native!r} as a builtin module -- "
+        f"if this fails, os.name no longer names a real builtin module and the "
+        f"assumption this test relies on needs revisiting, not the assertion"
+    )
+    assert native in dangerous_modules(), (
+        f"'{native}' is the raw module os.py builds os.remove / os.system / "
+        f"os.environ from (Lib/os.py: `from {native} import *`); it must stay "
+        f"on the blocklist or importing it directly reaches everything "
+        f"'process-env' gates with zero capability declared (core#183)"
+    )
+
+
+def test_every_builtin_module_is_classified_as_blocked_or_accepted():
+    """core#177's actual ask, not the narrower one above: a CLASSIFICATION,
+    not one name.
+
+    core#183 happened because ``nt`` / ``posix`` were never enumerated
+    anywhere, in either direction -- nobody removed them from a list, they
+    were simply never added, and the suite stayed green through it because
+    nothing ever asked "is EVERY name accounted for". That question only has
+    teeth on a BLOCKLIST, where the default is grant: an unclassified name
+    is reachable with zero declaration until someone notices by hand, which
+    is exactly what happened. It does not have the same teeth on an
+    ALLOWLIST, where the default is deny -- see
+    ``test_the_purity_guard_can_see_impurity_in_both_path_implementations``'s
+    own docstring for why a "does every name fall into a pre-approved
+    bucket" assertion over ``TIER0_PATH_HELPERS`` was rejected as pointless
+    there. ``dangerous_modules()`` is the other shape, which is why this
+    test exists and that one deliberately doesn't.
+
+    Every name CPython actually compiled into this interpreter
+    (``sys.builtin_module_names``) must be either on ``dangerous_modules()``
+    or in ``tiers.ACCEPTED_UNGATED_MODULES``, with a reason recorded there.
+    Landing in the accepted set is not a safety verdict by itself -- most of
+    its entries are known-dangerous and simply not yet triaged (core#215) --
+    it is a commitment that the gap is TRACKED, in source and in CI output,
+    rather than silently passing. A future CPython that compiles in a new
+    extension module nobody has classified yet fails this test by name,
+    which is the mechanical catch #183 needed and the narrower test above,
+    on its own, does not provide: CI (``backend-test.yml``) runs
+    ``ubuntu-latest`` only, so ``os.name`` there is always ``'posix'`` --
+    deleting ``"nt"`` from the blocklist alone stays green in CI and would
+    only be caught by someone running the suite on Windows. This test
+    catches that same deletion on ANY platform, because it asks about every
+    compiled-in name at once, not the one platform happens to select.
+    """
+    import sys
+
+    blocked = dangerous_modules()
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    unclassified = sorted(
+        name for name in sys.builtin_module_names
+        if name not in blocked and name not in accepted
+    )
+    assert unclassified == [], (
+        "these builtin modules are neither on the blocklist nor recorded in "
+        f"ACCEPTED_UNGATED_MODULES: {unclassified}. Classify each: add it to "
+        "_DANGEROUS_MODULES (and, if it should be capability-unlockable, a "
+        "CAPABILITY_MODULES group), or -- only if it is genuinely inert, the "
+        "way _io is next to open() -- add it to ACCEPTED_UNGATED_MODULES "
+        "with a one-line reason"
+    )
+
+
+def test_the_enumeration_is_not_vacuous():
+    """Non-vacuity for the classification test above: prove it actually
+    reacts to a name losing its classification, rather than trivially
+    passing because the blocklist happens to be complete right now.
+
+    Uses THIS platform's own native os-backing module (``os.name`` -- 'nt'
+    on Windows, 'posix' everywhere CI runs) as the probe, the same technique
+    ``test_the_platform_native_os_backing_module_is_always_on_the_blocklist``
+    uses: it is guaranteed to be a real entry in ``sys.builtin_module_names``
+    on whatever platform runs this, unlike hardcoding ``"nt"`` specifically,
+    which is not even present in ``sys.builtin_module_names`` outside
+    Windows -- so a probe that hardcoded it would prove nothing when run in
+    this repo's Linux-only CI. Evaluates the classification logic against
+    ``dangerous_modules() - {native}`` directly (no monkeypatching, no
+    subprocess, no second interpreter needed): a pure function of local data
+    that runs identically wherever the suite runs.
+    """
+    import os
+    import sys
+
+    native = os.name
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    assert native not in accepted, (
+        f"test assumption broken: {native!r} is in ACCEPTED_UNGATED_MODULES, "
+        f"so removing it from the blocklist would not surface as unclassified "
+        f"and this probe would not prove anything"
+    )
+    blocked_without_native = dangerous_modules() - {native}
+    unclassified = [
+        name for name in sys.builtin_module_names
+        if name not in blocked_without_native and name not in accepted
+    ]
+    assert native in unclassified, (
+        f"removing {native!r} from the blocklist should have surfaced it as "
+        f"unclassified; it did not, so the enumeration above would not "
+        f"catch this platform's own os-backing module being dropped"
+    )
 
 
 # ── the message is the feature ─────────────────────────────────────────────

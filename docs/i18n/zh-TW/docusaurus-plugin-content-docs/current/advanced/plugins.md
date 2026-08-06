@@ -40,7 +40,7 @@ cdui plugin uninstall deep
 
 ## 安全性——三個層級
 
-外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，其中每一個 `.py` 檔都會被 AST 閘門走訪，決定它可以 import 什麼。閘門有三種答案，而中間那一種才是重點。
+外掛包是在 CodefyUI 行程內執行的 Python。第三方外掛包安裝前，包內任何位置的每一個 `.py` 檔——`nodes/`、`examples/`、`tests/`、`docs/`、`assets/`，或其他任何子目錄——都會被 AST 閘門走訪，決定它可以 import 什麼。不會因為目錄名稱而被排除：外掛載入器可以從包內任何地方 import（節點檔裡寫 `from ..tests import helper` 是可行的），所以掃描範圍必須涵蓋載入器觸及得到的每一個角落。閘門有三種答案，而中間那一種才是重點。
 
 | 層級 | 外掛如何取得 | 涵蓋範圍 |
 |------|----------------------|----------------|
@@ -54,7 +54,7 @@ cdui plugin uninstall deep
 |------------|---------|--------------------------|
 | `network` | `requests`、`urllib`、`http`、`socket` | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
 | `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`、`glob`、`fileinput` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
-| `process-env` | `os`、`ntpath`、`posixpath`、`genericpath` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
+| `process-env` | `os`、`ntpath`、`posixpath`、`genericpath`、`nt`、`posix` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
 
 除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能走第 2 級：**沒有任何能力會交出一個「本身就是用來執行程式碼、或伸手進入直譯器」的模組。** 請注意這句話的精確之處——`process-env` 授予 `os`，而 `os` 會啟動行程。任何能力都不會給你的，是一個為執行程式碼而生的模組。
 
@@ -70,6 +70,7 @@ from os.path import genericpath      # 需要 "process-env"——那是模組
 from os import path                  # 需要 "process-env"——綁定的是 ntpath
 import os / import os.path           # 需要 "process-env"
 import ntpath / posixpath            # 需要 "process-env"
+import nt / posix                    # 需要 "process-env"——os.py 賴以建構自身的原始模組
 ```
 
 第 0 級的清單就是：`join`、`basename`、`dirname`、`split`、`splitext`、`splitdrive`、`normpath`、`normcase`、`isabs`、`commonpath`、`commonprefix`，以及 `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` 這些常數。
@@ -77,6 +78,7 @@ import ntpath / posixpath            # 需要 "process-env"
 被拒絕的那幾行不是吹毛求疵——`os.path` 是一個真正的模組，而它的表面大部分都不是字串處理：
 
 - `os.path` **就是** `ntpath` / `posixpath`，這兩個模組在模組層級執行 `import os` 與 `import sys`，並把兩者都留成一般屬性——所以 `path.os.remove(p)` 會刪掉檔案，`path.sys.modules['subprocess'].run([...])` 會執行指令。
+- `os` 本身**就是** `nt`（Windows）或 `posix`（POSIX）——CPython 自己的 `os.py` 執行 `from nt import *` / `from posix import *`，`os.remove`、`os.environ`、`os.system` 都是從這裡來的。直接以名稱 import 這個原始模組，中間沒有任何攔截，會拿到一模一樣的介面。
 - `expandvars("%WANDB_API_KEY%")` 會回傳該環境變數的值——正是 `process-env` 存在要攔的東西——而 `expanduser("~")` 會回傳你的家目錄。
 - `exists`、`isfile`、`isdir`、`getsize`、`getmtime` 這一類會對你指定的任何路徑呼叫 `stat()`；`abspath`、`realpath`、`relpath` 則會依工作目錄解析，因而洩漏 CodefyUI 安裝在哪裡。
 
@@ -111,6 +113,14 @@ $ cdui plugin install alice/metric-logger
 攔的是那些內建函式，不是那個字：只是剛好同名的**方法**屬於一般程式碼，在每一級都會通過，所以 `torch.compile(model)` 與 `model.eval()` 對外掛而言是允許的。這是刻意的——拒絕它們一直是個長年的誤判——也正是為什麼規則問的是「這個 `eval` 是誰的」，而不是去比對這個字。
 
 但這不代表能力永遠買不到執行程式的權力。`os.system(...)` 與 `os.popen(...)` 只在**以呼叫形式出現時**被拒絕——所以 `f = os.system` 之後再 `f(cmd)` 就繞過了這條規則——而一旦授予 `process-env`，`os.spawnve` / `os.execv` / `os.startfile` 根本不會被拒絕。這與上方 `process-env` 那一列所述是同一件事；之所以在這裡重講一次，是因為這一段先前的版本宣稱了相反的事。
+
+### 預設關閉、第 2 級會解除的屬性名稱
+
+跟上面每一條規則不同——上面那些不論宣告了什麼都一律拒絕，在任何層級都沒有例外——這裡是另一份固定的屬性名稱清單，攔的是第 0 級函式庫自己的東西，在第 0 級與第 1 級被拒絕，到第 2 級則會解除。`numpy.zeros(3).dump(path)` 會把資料原封不動 pickle 到任何路徑，內容還大半是攻擊者可控的；`torch.hub.load(...)` 會下載並執行遠端的 `hubconf.py`；`.savetxt`、`.tofile`、`.load_state_dict_from_url`、`.tensorboard` 以及其他十幾個都是同樣的形狀——它們是 Tier-0 import 回傳值上的**方法**，不是它自己的 import，所以能力閘門（只看得懂 `import` 敘述）根本看不到它們。沒有任何能力解除得了這些東西——它們所在的模組本來就屬於第 0 級，所以任何能力光是點名它都不會多給什麼——和[畫布內腳本政策](/advanced/python-script-node)本來就有的那份清單相同。
+
+這條規則不看接收者是誰，所以是雙向的：外掛**自己的**方法只要剛好同名，一樣會被擋下——你自己類別上的 `self.save(...)`，會被擋得跟 `numpy.array(...).save(...)`一模一樣，這正是腳本政策早就加諸在腳本自己的 `obj.save()` 上的同一種代價。單獨在第 0 級或第 1 級底下，這代表一個類別完全不能定義名叫 `save`、`dump`、`hub`，或清單上其他任何一個名字的方法。
+
+**`--trust-author` 會把整份清單解除。** 一旦外掛以 `--trust-author` 加上 `[security] allowed_modules` 安裝，`.dump` / `.hub` / `.save` 以及清單上其他項目，就又變回普通的屬性名稱——一個已經被信任可以用 `subprocess`、`ctypes` 的外掛，再多攔一個 `arr.dump()` 什麼也保護不到，而且不解除的話，根本不可能寫出一個帶有 `save` 方法的外掛。這跟[每一級都成立的規則](#每一級都成立的規則)裡的每一條都不同——那些不論在哪一級都毫無例外地拒絕：它們攔的是**反射能力**，沒有任何能力或信任層級買得到；而 `.dump` 與 `.hub` 是檔案寫入與遠端程式碼抓取，`--trust-author` 早就用更短的路徑，給了等同或更大的授權。
 
 ### 這不是什麼
 

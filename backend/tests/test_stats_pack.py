@@ -27,6 +27,7 @@ from app.core.graph_engine import execute_graph
 from app.core.node_registry import NodeRegistry
 from app.core.output_entries import build_node_output_entries, declared_media_ports
 from app.core.plugin_validator import validate_python_source
+from app.core.script_policy import TIER0_DENIED_ATTRS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACK_DIR = _REPO_ROOT / "plugins" / "stats"
@@ -255,7 +256,21 @@ def test_the_manifest_declares_no_security_overrides():
     "source", _pack_sources(), ids=[p.name for p in _pack_sources()]
 )
 def test_every_source_file_passes_the_ast_validator(source):
-    validate_python_source(source.read_bytes(), source.name, allowed_modules=None)
+    """Per-file, for a failure that names the exact file rather than just
+    "the pack failed" -- ``test_the_whole_pack_passes_the_directory_gate_...``
+    below covers the same ground through the real ``validate_plugin_dir``
+    wrapper. ``denied_attributes`` passed explicitly (core#179) so a bare
+    call here does not silently model a laxer gate than
+    ``validate_nodes_dir``/``validate_plugin_dir`` actually run at install
+    time; the pack declares no ``[security]`` overrides (see
+    ``test_the_manifest_declares_no_security_overrides`` above), so Tier 0's
+    unlifted set is the correct one to check against."""
+    validate_python_source(
+        source.read_bytes(),
+        source.name,
+        allowed_modules=None,
+        denied_attributes=TIER0_DENIED_ATTRS,
+    )
 
 
 def test_the_whole_pack_passes_the_directory_gate_a_github_install_would_run():

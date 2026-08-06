@@ -40,7 +40,7 @@ Plugin nodes are namespaced to avoid collisions and to self-document graphs — 
 
 ## Security — three tiers
 
-A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file in it is walked by an AST gate that decides what it may import. The gate has three answers, and the middle one is the interesting one.
+A plugin pack is Python that runs in the CodefyUI process. Before a third-party pack is installed, every `.py` file anywhere in it — `nodes/`, `examples/`, `tests/`, `docs/`, `assets/`, any other subdirectory — is walked by an AST gate that decides what it may import. Nothing is exempted by directory name: the plugin loader can import from anywhere in the pack (`from ..tests import helper` works from a node file), so the scan has to reach everywhere the loader does. The gate has three answers, and the middle one is the interesting one.
 
 | Tier | How a plugin gets it | What it covers |
 |------|----------------------|----------------|
@@ -54,7 +54,7 @@ A plugin pack is Python that runs in the CodefyUI process. Before a third-party 
 |------------|---------|--------------------------|
 | `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host — **and write what it downloads to disk**, because `urllib.request.urlretrieve(url, dest)` is one call. |
 | `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can use the file **libraries**. This is not a write boundary: plain `open(p, "w")` is a builtin and needs no declaration at all (see [What this is not](#what-this-is-not)). |
-| `process-env` | `os`, `ntpath`, `posixpath`, `genericpath` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
+| `process-env` | `os`, `ntpath`, `posixpath`, `genericpath`, `nt`, `posix` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
 
 Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only: **no capability hands over a module whose purpose is running code or reaching the interpreter.** Note the precise claim — `process-env` grants `os`, and `os` starts processes. What you do not get from any capability is a module built for executing code.
 
@@ -70,6 +70,7 @@ from os.path import genericpath      # needs "process-env" — a module
 from os import path                  # needs "process-env" — binds ntpath
 import os / import os.path           # needs "process-env"
 import ntpath / posixpath            # needs "process-env"
+import nt / posix                    # needs "process-env" — the raw module os.py builds itself from
 ```
 
 The Tier-0 list is exactly: `join`, `basename`, `dirname`, `split`, `splitext`, `splitdrive`, `normpath`, `normcase`, `isabs`, `commonpath`, `commonprefix`, and the `sep` / `altsep` / `extsep` / `pathsep` / `curdir` / `pardir` / `defpath` constants.
@@ -77,6 +78,7 @@ The Tier-0 list is exactly: `join`, `basename`, `dirname`, `split`, `splitext`, 
 The refused lines are not pedantry — `os.path` is a real module and most of its surface is not string manipulation:
 
 - `os.path` **is** `ntpath` / `posixpath`, and those modules `import os` and `import sys` at module level, leaving both bound as ordinary attributes — so `path.os.remove(p)` deletes a file and `path.sys.modules['subprocess'].run([...])` runs a command.
+- `os` itself **is** `nt` (Windows) or `posix` (POSIX) — CPython's own `os.py` does `from nt import *` / `from posix import *`, which is where `os.remove`, `os.environ` and `os.system` come from. Importing the raw module by name reaches the identical surface with nothing in between.
 - `expandvars("%WANDB_API_KEY%")` returns the value of the environment variable — the exact thing `process-env` exists to gate — and `expanduser("~")` returns your home directory.
 - `exists`, `isfile`, `isdir`, `getsize`, `getmtime` and friends call `stat()` on any path you name; `abspath`, `realpath` and `relpath` resolve against the working directory and so disclose where CodefyUI is installed.
 
@@ -112,6 +114,14 @@ $ cdui plugin install alice/metric-logger
 The builtins, not the spelling: a *method* that shares one of those names is ordinary code and passes at every tier, so `torch.compile(model)` and `model.eval()` are allowed for plugins. That is deliberate — refusing them was a long-standing false positive — and it is why the rule asks whose `eval` this is rather than matching the word.
 
 It does not follow that a capability never buys process execution. `os.system(...)` and `os.popen(...)` are refused *as calls* — but only as calls, so `f = os.system` then `f(cmd)` is one assignment past the rule — and `os.spawnve` / `os.execv` / `os.startfile` are not refused at all once `process-env` is granted. That is the same fact the `process-env` row states; it is repeated here because an earlier version of this paragraph claimed the opposite.
+
+### Attribute names closed by default, lifted at Tier 2
+
+Separately from every rule above — which holds whatever was declared, with no exception at any tier — a fixed list of attribute names on the Tier-0 libraries is refused at Tier 0 and Tier 1, and lifted at Tier 2. `numpy.zeros(3).dump(path)` pickles straight to any path with substantially attacker-chosen content; `torch.hub.load(...)` downloads and executes a remote `hubconf.py`; `.savetxt`, `.tofile`, `.load_state_dict_from_url`, `.tensorboard` and about a dozen more are the same shape — a *method* on a value a Tier-0 import hands back, not an import of its own, so the capability gate (which only ever looks at `import` statements) never sees it. No capability lifts these — the module they live on is already Tier 0, so no capability grants anything new by naming it — the same list the [in-canvas script policy](/advanced/python-script-node) already carries.
+
+The rule is receiver-independent, which cuts both ways: it also refuses the plugin's *own* method if it happens to share one of these names — `self.save(...)` on your own class is blocked exactly like `numpy.array(...).save(...)`, the same cost the script policy already imposes on a script's own `obj.save()`. At Tier 0 or Tier 1 alone, that means a class cannot define a method called `save`, `dump`, `hub`, or any of the others on the list, full stop.
+
+**`--trust-author` lifts this list entirely.** Once a plugin is installed with `--trust-author` and `[security] allowed_modules`, `.dump` / `.hub` / `.save` and the rest of it are ordinary attribute names again — a plugin trusted with `subprocess` and `ctypes` gains nothing from also being refused `arr.dump()`, and the refusal would otherwise have made it impossible to write a plugin with a method named `save` at all. This is unlike every rule in [What holds in every tier](#what-holds-in-every-tier), which stays refused without exception: those refuse *reflection*, which no capability or trust level ever buys; `.dump` and `.hub` are file writes and remote code fetches, and `--trust-author` already grants an equivalent or greater version of both by a shorter route.
 
 ### What this is not
 

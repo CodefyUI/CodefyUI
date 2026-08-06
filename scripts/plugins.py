@@ -49,6 +49,7 @@ from app.core.plugin_loader import (
     save_lockfile,
 )
 from app.core.plugin_validator import PluginValidationError, validate_python_source
+from app.core.script_policy import TIER0_DENIED_ATTRS
 from app.core.security_tiers import (
     CAPABILITIES,
     CAPABILITY_SUMMARY,
@@ -346,6 +347,43 @@ def _validate_security_table(security: Any) -> None:
         )
 
 
+def _denied_attributes_for(allowed_modules: list[str]) -> frozenset[str]:
+    """core#179's ``denied_attributes`` set, lifted at Tier 2.
+
+    A method on a value a Tier-0 import hands back (``numpy.zeros(3).dump(
+    path)``) is an arbitrary file write with zero capability declared: the
+    blocklist gate is keyed on Import nodes, so it never sees what an
+    allowed library's return value can do. Already closed for in-canvas
+    scripts via ``TIER0_DENIED_ATTRS`` passed as ``denied_attributes``; this
+    is the same constant, not a re-derived smaller list, so the two surfaces
+    cannot drift on what "closed" means. Deliberately NOT
+    ``SCRIPT_PROXY_DENIED_ATTRS``, which also folds in the module-gateway
+    attrs (``.hub``'s sibling problem, not this one) and the RCE leaves as
+    attributes -- both closed for scripts for reasons specific to an
+    allowlisted, unreviewed surface that do not hold for a file the user
+    chose to install.
+
+    Lifted entirely at Tier 2 (``allowed_modules`` non-empty, which only
+    happens once ``--trust-author`` has already been accepted -- see
+    ``_install_github``, which refuses to call either caller of this
+    function with a non-empty ``allowed`` otherwise). Closing these at Tier
+    0/1 is right: a plugin that declared nothing, or only a capability, gets
+    no new file-write / remote-fetch-and-execute surface for free, and
+    before core#179 a plugin could not even define a method named ``save``
+    without failing installation outright. Refusing them at Tier 2 is
+    incoherent, and the dunder/RCE-leaf precedent (never lifted by any
+    tier -- see the walker's own denied-attrs handling) does not transfer:
+    those rules refuse REFLECTION, which core#133's own docs say no
+    capability ever buys. ``.dump`` / ``.hub`` / ``.save`` are not
+    reflection -- they are file writes and remote code fetches, and
+    ``--trust-author`` has already granted an equivalent or greater version
+    of both by a shorter route (bare ``subprocess`` reaches further than
+    ``numpy.save`` ever could), so refusing the narrower path while granting
+    the wider one protects nothing.
+    """
+    return frozenset() if allowed_modules else TIER0_DENIED_ATTRS
+
+
 def validate_nodes_dir(
     nodes_dir: Path,
     allowed_modules: list[str],
@@ -362,18 +400,51 @@ def validate_nodes_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
+            denied_attributes=_denied_attributes_for(allowed_modules),
         )
 
 
-# Directories within an extracted plugin tarball that are *not* imported as
-# Python at runtime — safe to skip the AST gate. Everything else (top-level
-# helpers, sub-packages other than ``nodes/``) gets scanned because the
-# plugin loader exposes the entire plugin dir as a namespace package, so
-# ``from .. import _helpers`` from inside ``nodes/foo.py`` would otherwise
-# pull in unscanned code.
-_VALIDATION_SKIP_DIRS = frozenset({
-    "examples", "assets", "tests", "__pycache__", ".git", "docs",
-})
+# Directories within an extracted plugin tarball that are *not* reachable
+# through Python's import system, whatever the loader's ``__path__`` covers --
+# safe to skip the AST gate because there is no route from an ``import``
+# statement to a file in here. Everything else -- ``examples/``, ``tests/``,
+# ``docs/``, ``assets/``, ``__pycache__``, any other top-level helper -- gets
+# scanned, because ``plugin_loader.install_plugin_finder`` registers the
+# WHOLE plugin directory as a PEP-420 namespace package's ``__path__`` (not
+# only ``nodes/``), so ``from .. import _helpers`` -- or ``from ..tests
+# import payload`` -- from inside a scanned ``nodes/foo.py`` would otherwise
+# pull in unscanned code at full trust, automatically, at server boot or
+# reload (core#182).
+#
+# ``__pycache__`` is deliberately NOT on this set, despite an earlier version
+# of this comment claiming it was safe to skip because "a real __pycache__
+# never holds a *.py this glob would match." That is true of the directory
+# CPython writes and irrelevant here: the attacker supplies the tarball, so
+# `__pycache__/payload.py` exists because they put it there, and
+# `"__pycache__".isidentifier()` is `True` -- PEP-420 namespace resolution
+# imports it exactly like any other directory name. Verified directly, not
+# merely argued: with a plugin installed through the real loader, both
+# `importlib.import_module("cdui_plugins.<id>.__pycache__.payload")` and a
+# relative `from ..__pycache__ import payload` inside `nodes/` resolve to the
+# planted file, and `validate_plugin_dir` (before this fix) accepted it
+# silently. Reasoning about what a directory name conventionally holds is not
+# the same claim as reasoning about what Python's import system can reach,
+# and only the second one is what this set is for.
+#
+# ``.git`` is the one name that passes that test for real: `.git` is not a
+# valid identifier (`".git".isidentifier()` is `False`, and `.` cannot appear
+# inside one), so no `import` statement -- absolute or relative -- can ever
+# name a package component spelled that way. That is a structural guarantee
+# independent of what is inside the directory, which is the property this
+# set exists to require before trusting a name to be un-scanned.
+#
+# Narrowing the LOADER's ``__path__`` instead, so a skipped directory were
+# unreachable rather than merely unscanned, was considered and rejected:
+# PEP-420 namespace packages have no native "every subdirectory except these"
+# carve-out, so that route needs a custom import finder/loader -- new import
+# machinery, not an extension of either existing one -- for a difference this
+# scan already erases by scanning first.
+_VALIDATION_SKIP_DIRS = frozenset({".git"})
 
 
 def validate_plugin_dir(
@@ -384,13 +455,27 @@ def validate_plugin_dir(
     """Walk the entire plugin directory and validate every Python source file.
 
     The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
-    bypass via top-level helpers. This visits all ``.py`` files except those
-    in test / docs / asset directories that aren't part of the import graph.
+    bypass via top-level helpers. This visits every ``.py`` file in the tree
+    except the ones under :data:`_VALIDATION_SKIP_DIRS` -- ``.git`` alone,
+    the one name provably unreachable through Python's import system (not a
+    valid identifier, so no ``import`` can ever name it). Nothing else is
+    skipped: ``examples/``, ``tests/``, ``docs/``, ``assets/`` and
+    ``__pycache__`` all get scanned too (core#182), because the plugin
+    loader registers the WHOLE directory as a namespace package's
+    ``__path__``, so a scanned ``nodes/foo.py`` can ``from ..tests import
+    payload`` -- or ``from ..__pycache__ import payload`` -- into any of
+    them.
 
     *capabilities* are the ones the user confirmed at install time. They are
     passed to every file rather than per-file, because a capability is a
     property of the INSTALL, not of a source file: a plugin granted
     ``network`` may reach it from wherever it likes inside its own tree.
+
+    *allowed_modules* also lifts the ``denied_attributes`` closed by
+    core#179 -- see :func:`_denied_attributes_for` -- because a non-empty
+    list here only happens once ``--trust-author`` has already been
+    accepted, and refusing ``arr.dump()`` to a plugin trusted with
+    ``subprocess`` protects nothing.
     """
     if not plugin_root.exists():
         return
@@ -407,6 +492,7 @@ def validate_plugin_dir(
             py.name,
             allowed_modules=allowed_modules,
             capabilities=list(capabilities),
+            denied_attributes=_denied_attributes_for(allowed_modules),
         )
 
 

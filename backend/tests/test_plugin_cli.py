@@ -146,6 +146,201 @@ def test_validate_nodes_dir_rejects_dynamic_getattr(tmp_path):
         plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
 
 
+# ── core#179: a library VALUE's own method escapes import-time gating ──────
+
+def test_validate_nodes_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
+    """``numpy.zeros(3).dump(path)`` pickles straight to any path the file
+    names, with substantially attacker-chosen content
+    (``numpy.frombuffer(payload, dtype=numpy.uint8).dump(p)`` embeds the
+    payload verbatim after a fixed pickle prefix) -- arbitrary file WRITE,
+    zero capability declared.
+
+    ``numpy`` is Tier 0 (``TIER0_PURE_COMPUTE_MODULES``), so ``import numpy``
+    needs no declaration at all, and the import-time capability gate only
+    ever looks at module names on ``Import`` nodes -- it never inspects what
+    a Tier-0-allowed library hands back. ``.dump`` is already closed for
+    in-canvas scripts via ``script_policy.TIER0_DENIED_ATTRS`` passed as
+    ``denied_attributes``; this proves the same mechanism is wired into the
+    installed-plugin surface, not just re-implemented for one leaf.
+    """
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "bad.py").write_text(
+        "import numpy\n"
+        "def pwn(path):\n"
+        "    numpy.zeros(3).dump(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+
+def test_validate_plugin_dir_rejects_numpy_dump_to_an_arbitrary_path(tmp_path):
+    """Same escape, the other entry point: ``validate_plugin_dir`` walks the
+    whole extracted tarball (not only ``nodes/``) and has to close the same
+    door -- it is a separate call to ``validate_python_source`` and does not
+    inherit whatever ``validate_nodes_dir`` was told."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "bad.py").write_text(
+        "import numpy\n"
+        "def pwn(path):\n"
+        "    numpy.zeros(3).dump(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("own method: self.save(path)",
+         "class X:\n    def pwn(self, path):\n        self.save(path)\n"),
+        ("own method: self.dump(x)",
+         "class X:\n    def pwn(self, x):\n        self.dump(x)\n"),
+        ("keras-ish: model.save(p)",
+         "def pwn(model, p):\n    model.save(p)\n"),
+        ("torch.distributed.init_process_group",
+         "import torch\ndef pwn():\n    torch.distributed.init_process_group('gloo')\n"),
+        ("torch.hub.download_url_to_file",
+         "import torch\ndef pwn():\n    torch.hub.download_url_to_file('x', 'y')\n"),
+        ("torch.onnx.export",
+         "import torch\ndef pwn(model, x, p):\n    torch.onnx.export(model, x, p)\n"),
+    ],
+)
+def test_denied_attributes_is_refused_at_tier0_but_liftable_at_tier2(
+    tmp_path, label, source
+):
+    """core#179 follow-up: closing these at Tier 0/1 is right (a plugin that
+    declared nothing, or only a capability, gets no new file-write / remote-
+    fetch-and-execute surface for free) -- refusing them at Tier 2 is
+    incoherent. ``--trust-author`` already hands over ``subprocess``,
+    ``ctypes`` and ``importlib``; a plugin trusted with those but refused
+    ``arr.dump()`` or its OWN ``self.save()`` method makes no sense, and
+    before this fix there was no way to write a plugin with a method named
+    ``save`` at all -- the only fix available to the author was patching
+    CodefyUI itself.
+
+    The dunder/RCE precedent does not transfer here: those rules refuse
+    REFLECTION, which no capability ever buys (core#133's own docs are
+    explicit about this). ``.dump`` / ``.hub`` / ``.save`` are not
+    reflection -- they are file writes and remote code fetches,
+    ``--trust-author`` has already granted an equivalent or greater version
+    of that by a shorter route (``subprocess`` can write files and fetch
+    code far more directly than ``numpy.save`` can), so refusing the
+    narrower path while granting the wider one protects nothing.
+    """
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "n.py").write_text(source, encoding="utf-8")
+
+    # Tier 0/1: nothing declared beyond (at most) a capability -- refused.
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, allowed_modules=[])
+
+    # Tier 2: --trust-author (modelled here as a non-empty allowed_modules,
+    # exactly the condition validate_nodes_dir/validate_plugin_dir's callers
+    # gate on -- see _install_github, which never calls either function with
+    # a non-empty `allowed` unless args.trust_author was already true)
+    # accepts it.
+    plugin_cli.validate_nodes_dir(nodes, allowed_modules=["torch"])
+
+
+def test_denied_attributes_lift_also_applies_to_validate_plugin_dir(tmp_path):
+    """Same Tier-2 lift, the other entry point -- a separate call to
+    ``validate_python_source`` that must not drift from what
+    ``validate_nodes_dir`` does."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "n.py").write_text(
+        "class X:\n    def pwn(self, path):\n        self.save(path)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+    plugin_cli.validate_plugin_dir(root, ["torch"])
+
+
+# ── core#182: a skipped directory is still importable at runtime ───────────
+
+@pytest.mark.parametrize(
+    "skipped_dir", ["tests", "examples", "assets", "docs", "__pycache__"]
+)
+def test_validate_plugin_dir_scans_directories_the_loader_can_still_import(
+    tmp_path, skipped_dir
+):
+    """``plugin_loader.install_plugin_finder`` registers the WHOLE plugin
+    root as a PEP-420 namespace package's ``__path__`` (not just ``nodes/``),
+    so ``cdui_plugins.<id>.tests``, ``.examples``, ``.docs``, ``.assets`` --
+    and ``.__pycache__`` -- are all importable -- a scanned ``nodes/foo.py``
+    doing ``from ..tests import payload`` executes whatever is in ``tests/``
+    at full trust, automatically, at server boot or plugin reload.
+
+    ``_VALIDATION_SKIP_DIRS`` used to carve exactly these five names back out
+    of the scan that ``validate_plugin_dir``'s own docstring says was widened
+    to whole-tree specifically because the loader exposes the whole
+    directory -- reopening the same hole the widening had just closed. The
+    scan's view of "what is in-tree" has to match the loader's, so nothing
+    admits code the AST gate never looked at.
+
+    ``__pycache__`` belongs in this list, not the "genuinely non-importable"
+    one below: it reads as safe only if you reason about what a REAL
+    ``__pycache__`` holds (``.pyc`` files, which never match this walk's own
+    ``*.py`` glob). That reasoning is about the wrong actor -- the directory
+    the interpreter writes is irrelevant here, because the attacker controls
+    every byte of the tarball and can name any directory ``__pycache__`` on
+    purpose. ``__pycache__`` IS a valid Python identifier
+    (``"__pycache__".isidentifier()`` is ``True``), so PEP-420 namespace
+    resolution imports it exactly like any other directory name. Verified
+    directly against the real loader (not merely argued): with a plugin
+    installed via ``install_plugin_finder``, both
+    ``importlib.import_module("cdui_plugins.<id>.__pycache__.payload")`` and
+    a relative ``from ..__pycache__ import payload`` inside ``nodes/``
+    resolve to the file placed there.
+    """
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / skipped_dir).mkdir(parents=True)
+    (root / skipped_dir / "payload.py").write_text(
+        "import os\nos.system('whoami')\n", encoding="utf-8"
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
+def test_pycache_is_a_valid_python_identifier_unlike_git():
+    """The property the split between the two tests here rests on, checked
+    structurally rather than assumed: ``__pycache__`` is an ordinary
+    identifier (any ``import`` statement can name it) and ``.git`` is not
+    (the leading ``.`` makes it a syntax error as an import-path component),
+    which is the actual reason one of them has to be scanned and the other
+    provably cannot be reached through Python's import system at all."""
+    assert "__pycache__".isidentifier()
+    assert not ".git".isidentifier()
+
+
+def test_validate_plugin_dir_still_skips_the_one_genuinely_unreachable_dir(tmp_path):
+    """``.git`` is the only name left in ``_VALIDATION_SKIP_DIRS``, and it
+    stays there because it is PROVABLY unreachable through Python's import
+    system, not merely assumed to be: ``.git`` is not a valid identifier (see
+    ``test_pycache_is_a_valid_python_identifier_unlike_git``), so no
+    ``import`` statement -- absolute or relative -- can ever name a package
+    component spelled that way. ``__pycache__`` no longer gets this
+    exemption; see the parametrized test above for why "looks like an
+    implementation-detail directory" was never the same claim as "cannot be
+    imported"."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "payload.py").write_text(
+        "import os\nos.system('whoami')\n", encoding="utf-8"
+    )
+    plugin_cli.validate_plugin_dir(root, [])  # does not raise
+
+
 # ── load_catalog ────────────────────────────────────────────────────────────
 
 def test_load_catalog_returns_three_direction_packs():

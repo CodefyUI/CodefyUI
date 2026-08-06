@@ -50,8 +50,9 @@ assets_dir      = "assets"
 #     sep/curdir/pardir/extsep/pathsep/altsep/defpath constants. Everything
 #     else on os.path reads the environment (expandvars, expanduser) or hits
 #     the disk (exists, isfile, getsize, abspath), so it needs "process-env" —
-#     as do `import os`, `import os.path`, `from os import path` and
-#     `import ntpath`, all of which hand over the whole os module.
+#     as do `import os`, `import os.path`, `from os import path`,
+#     `import ntpath` and `import nt` / `import posix` (the raw module os.py
+#     builds itself from), all of which hand over the whole os module.
 #     Plain open() is a builtin and needs nothing.
 #
 #   Tier 1 — capabilities. Ask for a group of modules by name. `cdui plugin
