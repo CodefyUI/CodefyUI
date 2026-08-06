@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Any
 
 from ...core.amp import PRECISIONS
@@ -338,23 +339,37 @@ class TrainingLoopNode(BaseNode):
     **Periodic checkpointing (#203).** ``should_stop()`` and the interrupt
     checkpoint above cover every way a RUN can end early -- a Stop click, a
     cancelled browser tab, the submitting process exiting. None of them
-    cover the SERVER PROCESS dying outright (SIGKILL, an OOM kill, power
-    loss, a restart): that path never reaches the interrupt checkpoint,
-    because it only runs on the way OUT of a node that has already decided
-    to return. ``checkpoint_every`` (epochs, ``0`` = disabled, matching
-    ``early_stopping_patience``'s own convention and every other opt-in knob
-    on this node) closes that gap: every Nth COMPLETE epoch, on a run that
-    is training normally, an ordinary checkpoint is written under
-    ``MODELS_DIR/periodic/`` and registered exactly like the interrupt
-    checkpoint (an ``exec_run_artifacts`` row of kind ``checkpoint``, same
+    cover the SERVER PROCESS dying outright (SIGKILL, an OOM kill, a
+    restart): that path never reaches the interrupt checkpoint, because it
+    only runs on the way OUT of a node that has already decided to return.
+    (NOT power loss -- ``write_checkpoint`` deliberately skips fsync, so a
+    rename can be visible with unflushed content; a process death survives
+    because the OS and its page cache do, a power cut does not. See
+    ``core.checkpoints``'s "Durability" section.) ``checkpoint_every``
+    (epochs, ``0`` = disabled, matching ``early_stopping_patience``'s own
+    convention and every other opt-in knob on this node) closes the
+    process-death gap: every Nth COMPLETE epoch, on a run that is training
+    normally, an ordinary checkpoint is written under ``MODELS_DIR/periodic/``
+    and registered exactly like the interrupt checkpoint (an
+    ``exec_run_artifacts`` row of kind ``checkpoint``, same
     ``can_record_artifacts()`` gating, same atomic write). Resuming from one
     needs no new concepts -- the same ``CheckpointLoader.epoch ->
-    start_epoch`` wiring. Retention (``RunStore.prune``) is what bounds the
-    file count once a run's row ages out of the keep-last-N window; it
-    cannot reach a still-active run, so a very frequent ``checkpoint_every``
-    on a very long run legitimately accumulates one file per event until
-    then -- see ``core.checkpoints``' "No row, no file" section for the
-    full reasoning.
+    start_epoch`` wiring.
+
+    Cost is real and NOT bounded while the run is active: each checkpoint is
+    written synchronously on the training thread and costs roughly model
+    size plus optimizer state (often several times the model's own size) --
+    a 200-epoch ResNet-18 at ``checkpoint_every=1`` is on the order of
+    18 GB before the run ends. Retention (``RunStore.prune``) is what
+    bounds the file count, but only once a run's row ages out of the
+    keep-last-N window, which structurally cannot happen while the run is
+    still running -- see ``core.checkpoints``' "No row, no file" section.
+    Each write's duration and this run's cumulative periodic-checkpoint
+    bytes are logged (INFO), so the cost is visible rather than only felt
+    as "training got slower". A run left ``interrupted`` -- including by a
+    server restart retiring an abandoned one -- keeps its periodic
+    checkpoint files even once retention removes its row; see
+    ``RunStore.prune``'s docstring for why.
 
     **Fitting a bigger run on one card (#135).** Two independent levers,
     both off by default:
@@ -469,7 +484,13 @@ class TrainingLoopNode(BaseNode):
                     "server crash loses at most N epochs instead of the "
                     "whole run. Independent of CheckpointSaver and resumes "
                     "the same way: wire CheckpointLoader.epoch to "
-                    "start_epoch (0 = disabled)"
+                    "start_epoch. Each checkpoint is roughly model size "
+                    "plus optimizer state (often several times the "
+                    "model's own size), written synchronously on the "
+                    "training thread; a low N on a large model over a "
+                    "long run can use many GB before the run ends, since "
+                    "nothing bounds this while the run is still active "
+                    "(0 = disabled)"
                 ),
                 min_value=0,
             ),
@@ -766,6 +787,13 @@ class TrainingLoopNode(BaseNode):
         epoch_losses: list[float] = []
         val_epoch_losses: list[float] = []
         lr_history: list[float] = []
+
+        # #203: running total of what checkpoint_every has written so far
+        # THIS call, logged alongside each new periodic checkpoint. Not a
+        # limit -- retention (RunStore.prune) cannot reach a still-active
+        # run, so nothing here bounds it; this only makes the cost visible.
+        # See checkpoint_every's own description for the size/cost warning.
+        periodic_checkpoint_bytes = 0
 
         # Early stopping state
         best_val_loss = float("inf")
@@ -1102,13 +1130,28 @@ class TrainingLoopNode(BaseNode):
             # should_stop exits below so the run's very last epoch is
             # covered too when it happens to land on a multiple.
             if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
-                save_periodic_checkpoint(
+                periodic_path = save_periodic_checkpoint(
                     context, model, optimizer,
                     epoch=epoch + 1,
                     losses=torch.tensor(epoch_losses, dtype=torch.float32),
                     lr_scheduler=lr_scheduler,
                     scaler_state=policy.state_dict(),
                 )
+                # Cumulative, not per-call: retention cannot reach a
+                # still-active run (see the class docstring's "Periodic
+                # checkpointing" section), so this total can only grow for
+                # as long as the run keeps training -- exactly the cost
+                # checkpoint_every's own description warns about.
+                if periodic_path is not None:
+                    try:
+                        periodic_checkpoint_bytes += Path(periodic_path).stat().st_size
+                        logger.info(
+                            "checkpoint_every: %.1f MB written to periodic "
+                            "checkpoints so far this run",
+                            periodic_checkpoint_bytes / (1024 * 1024),
+                        )
+                    except OSError:
+                        pass  # already logged by save_periodic_checkpoint itself
 
             if stopped_early:
                 logger.info("Early stopping triggered at epoch %d (best epoch: %d)", epoch + 1, best_epoch)

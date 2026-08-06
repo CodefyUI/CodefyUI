@@ -32,6 +32,16 @@ key                          contents
 ``scaler_state_dict``        optional ``GradScaler.state_dict()`` (#135)
 ===========================  ============================================
 
+``losses`` covers only the epochs the WRITING CALL ran, matching
+``TrainingLoopNode``'s own "arrays are per call" rule -- the interrupt and
+periodic paths both pass their node's own ``epoch_losses`` as it stands at
+the moment they fire, never the whole history back to epoch 0. A chained
+resume (checkpoint -> resume -> checkpoint again, the realistic
+long-running-job shape) therefore has each LEG's checkpoint carry only
+that leg's own losses; ``epoch`` (always absolute) is what stays accurate
+across the whole chain, not the ``losses`` tensor. Pre-existing for the
+interrupt path; #203 makes it fire routinely rather than only on a stop.
+
 **Honest base_lrs (#149).** ``LRScheduler.__init__`` stamps
 ``group.setdefault("initial_lr", group["lr"])`` onto each optimizer param
 group at CONSTRUCTION time, and ``Optimizer.load_state_dict`` happens to
@@ -39,18 +49,39 @@ carry that key through a round trip -- verified against the installed torch
 2.11.0+cu128: ``update_group`` replaces each LIVE param group with the
 SAVED group's dict wholesale (only ``params``/``param_names`` are patched in
 from the live side), so a saved dict that already has ``initial_lr`` keeps
-it, accidentally, with no code anywhere naming the guarantee. That accident
-stops applying the moment a checkpoint's own ``optimizer_state_dict`` does
-NOT carry the key -- which happens whenever the optimizer being saved never
-had ANY scheduler constructed over it -- and a scheduler built fresh on the
-resumed optimizer then stamps ``initial_lr`` from whatever the CURRENT
-(possibly already-decayed) ``lr`` is, silently treating it as the run's
-starting point. ``initial_lrs`` makes the guarantee explicit instead of
-inherited: captured here at save time, restored onto
-``optimizer.param_groups[i]["initial_lr"]`` by ``CheckpointLoaderNode``
-before anything downstream can construct a scheduler, so a fresh schedule
-always starts from the honest original regardless of what the accidental
-mechanism would or would not have preserved.
+it, accidentally, with no code anywhere naming the guarantee.
+
+**This is a defensive invariant, not a fix for a reachable bug.**
+``initial_lrs`` is derived from ``g.get("initial_lr", g["lr"]) for g in
+optimizer.param_groups`` -- the SAME ``optimizer.param_groups`` that
+``optimizer.state_dict()`` ALSO reads, in the same dict literal, with
+nothing mutating them in between. So for any checkpoint this module can
+actually produce, ``initial_lrs`` and whatever
+``optimizer_state_dict["param_groups"][i].get("initial_lr", lr)`` would
+independently reconstruct are mathematically the same value -- proven,
+not merely tested: when the live group carries ``initial_lr``, both read
+it; when it does not, both fall back to the SAME current ``lr``. There is
+no code path, resume chain or ``update_group`` replacement that makes them
+disagree, because "the live optimizer at save time" is the one and only
+source both draw from. A checkpoint whose optimizer never had a scheduler
+attached has no OTHER, richer truth for either field to recover -- nothing
+in this process ever knew a different number.
+
+What this key buys instead: CodefyUI's own behaviour no longer *depends*
+on ``optimizer.state_dict()``/``load_state_dict()`` choosing to carry
+``initial_lr`` through -- it is read from ``optimizer.param_groups``
+directly and restored explicitly by ``CheckpointLoaderNode``, before
+anything downstream can construct a scheduler. If a future torch release
+(or a plugin's custom ``Optimizer`` subclass) ever stops serialising extra
+param-group keys, or a scheduler ever stops using ``initial_lr`` as its
+name for this, CodefyUI's own contract keeps holding -- what breaks is
+visible as a difference in THIS key, not as a silent, no-diff LR
+corruption discovered by comparing loss curves. See
+``test_initial_lr_is_captured_from_the_live_optimizer_not_its_state_dict``
+in ``test_training_resume.py`` for what actually exercises this: it
+simulates exactly that kind of divergence (a ``state_dict()`` that drops
+the key while the live object keeps it) because no REAL torch behaviour
+today produces one.
 
 ``scaler_state_dict`` is present only for an fp16 run, and holds five plain
 scalars (``scale``, ``growth_factor``, ``backoff_factor``,
@@ -239,13 +270,15 @@ def build_checkpoint(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         # #149: captured explicitly, mirroring LRScheduler.__init__'s own
-        # ``setdefault("initial_lr", lr)`` -- see the "Honest base_lrs"
-        # section above for why this must not be left to
-        # Optimizer.load_state_dict's accidental dict-merge behaviour.
-        # Unconditional (unlike the optional keys below): every optimizer
-        # has param_groups, so there is always something honest to record,
-        # even when it just equals the current lr because nothing has
-        # decayed it yet.
+        # ``setdefault("initial_lr", lr)`` -- a DEFENSIVE invariant, not a
+        # fix for a reachable divergence: this reads the same live
+        # optimizer.param_groups that optimizer.state_dict() (above) also
+        # reads, so the two can never disagree for any checkpoint this
+        # function can actually produce. See the "Honest base_lrs" section
+        # above for what it protects against instead. Unconditional (unlike
+        # the optional keys below): every optimizer has param_groups, so
+        # there is always something honest to record, even when it just
+        # equals the current lr because nothing has decayed it yet.
         "initial_lrs": [
             g.get("initial_lr", g["lr"]) for g in optimizer.param_groups
         ],

@@ -1010,10 +1010,35 @@ class RunStore:
         runs, so a run that becomes eligible between two separate calls to
         this method can never be seen by one call's SELECT and removed by
         another's DELETE -- which would silently orphan its file exactly as
-        before. The unlink itself happens AFTER the commit, and is
-        best-effort (see :func:`core.checkpoints.unlink_checkpoint`): a
-        locked handle or a file some earlier prune already removed must
-        never turn a successful prune into a failed one.
+        before. The unlink itself happens AFTER the commit, off the event
+        loop (``asyncio.to_thread``, matching ``main.py``'s own
+        ``db.connect`` dispatch): this runs after every run finishes and at
+        server startup, on the loop also serving WebSockets and HTTP, and
+        ``Path.resolve()`` plus a delete for what can be hundreds of paths
+        -- the first prune after a fresh deploy, or any prune after
+        lowering ``RUN_RETENTION_KEEP_LAST`` -- is not free, especially
+        against a network or cloud-synced ``MODELS_DIR``. Best-effort (see
+        :func:`core.checkpoints.unlink_checkpoint`): a locked handle or a
+        file some earlier prune already removed must never turn a
+        successful prune into a failed one. Every path actually removed is
+        logged at INFO -- the only audit trail this irreversible,
+        unattended delete leaves.
+
+        **Runs left ``interrupted`` keep their checkpoint files.** Startup
+        orders ``recover_interrupted()`` before this call specifically so
+        an abandoned ``running`` row becomes "prunable in the very next
+        call" (see ``main.py``) -- which means a server that died MID-RUN,
+        restarted, and is running this very prune pass on ITS OWN startup
+        would otherwise delete the periodic checkpoint the user needs to
+        resume the run this feature exists to protect, on the same startup
+        where they'd want to. At the default ``RUN_RETENTION_KEEP_LAST``
+        this is rare (a freshly-interrupted run is the newest thing in the
+        table), but ``keep_last=0`` is a real, documented configuration
+        (``config.py``'s "inverted zero") where it is not. Rows still go on
+        the normal schedule -- only the FILE survives, under its ordinary
+        readable name, recoverable by hand exactly as it was before this
+        method unlinked anything at all. ``succeeded``/``failed``/
+        ``cancelled`` runs are unaffected.
 
         Scoped to ``kind == "checkpoint"`` only. Other artifact kinds
         (``export``, ``image``, a plugin's own) are an open vocabulary this
@@ -1033,11 +1058,16 @@ class RunStore:
 
         def _prune(conn: sqlite3.Connection) -> tuple[int, list[str]]:
             with transaction(conn):
+                # Excludes STATUS_INTERRUPTED so its checkpoint file is
+                # never collected for unlinking -- see the docstring's
+                # "Runs left interrupted" section. The row itself is NOT
+                # exempted: it still goes with the ordinary DELETE below.
                 doomed_paths = [
                     row["path"] for row in conn.execute(
                         "SELECT path FROM exec_run_artifacts WHERE kind = ? "
-                        f"AND run_id IN (SELECT id FROM exec_runs WHERE {where_clause})",
-                        (ARTIFACT_KIND_CHECKPOINT, *params),
+                        "AND run_id IN (SELECT id FROM exec_runs WHERE "
+                        f"{where_clause} AND status != ?)",
+                        (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
                     ).fetchall()
                 ]
                 deleted = conn.execute(
@@ -1049,10 +1079,23 @@ class RunStore:
         if doomed_paths:
             from .checkpoints import unlink_checkpoint
 
-            removed = sum(1 for path in doomed_paths if unlink_checkpoint(path))
-            logger.info(
-                "run retention: removed %d checkpoint file(s) belonging to "
-                "pruned runs (%d already gone or could not be removed)",
-                removed, len(doomed_paths) - removed,
-            )
+            def _unlink_all(paths: list[str]) -> list[str]:
+                """Blocking; dispatched off the event loop below. Returns
+                the paths actually removed, for the audit log."""
+                return [path for path in paths if unlink_checkpoint(path)]
+
+            removed_paths = await asyncio.to_thread(_unlink_all, doomed_paths)
+            if removed_paths:
+                logger.info(
+                    "run retention: removed %d checkpoint file(s) "
+                    "belonging to pruned runs: %s",
+                    len(removed_paths), ", ".join(removed_paths),
+                )
+            missing = len(doomed_paths) - len(removed_paths)
+            if missing:
+                logger.info(
+                    "run retention: %d checkpoint file(s) were already "
+                    "gone or could not be removed (see prior warnings, if "
+                    "any, for which)", missing,
+                )
         return deleted

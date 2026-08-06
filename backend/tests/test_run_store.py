@@ -1088,6 +1088,36 @@ async def test_prune_rejects_a_negative_keep_last(store):
 # the new writer.
 
 
+async def test_prune_keeps_the_checkpoint_file_of_an_interrupted_run(
+    store, db, tmp_path, monkeypatch,
+):
+    """A run left ``interrupted`` -- including by ``recover_interrupted()``
+    retiring an abandoned ``running`` row on server startup, immediately
+    before this same prune pass -- keeps its checkpoint file even once its
+    row is gone. Startup orders recovery before retention specifically so
+    an abandoned row becomes prunable "in the very next call" (main.py);
+    without this exemption, a server that died mid-run could destroy the
+    very checkpoint #203 exists to let it resume, on its own restart, at
+    keep_last=0 (config.py's "inverted zero" -- a real, documented
+    configuration, not a hypothetical one)."""
+    models = tmp_path / "models"
+    models.mkdir()
+    monkeypatch.setattr(settings, "MODELS_DIR", models)
+
+    run = await _make_run(store)
+    checkpoint_file = models / "crash_recovery.pt"
+    checkpoint_file.write_bytes(b"the run's only path back")
+    await store.add_artifact(run.id, "checkpoint", str(checkpoint_file))
+    await store.mark_finished(run.id, "interrupted")
+
+    assert await store.prune(keep_last=0) == 1
+    assert await store.get_run(run.id) is None, "the row still goes"
+    assert checkpoint_file.exists(), (
+        "an interrupted run's checkpoint file must survive its own row "
+        "being pruned -- it is the recovery point the feature exists for"
+    )
+
+
 async def test_prune_deletes_the_checkpoint_files_of_pruned_runs(
     store, db, tmp_path, monkeypatch,
 ):

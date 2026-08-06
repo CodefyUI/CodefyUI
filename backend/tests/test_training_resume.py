@@ -772,39 +772,42 @@ def test_training_on_cuda_moves_reused_optimizer_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# #149: honest base_lrs -- initial_lr survives a resume explicitly, not by
-# accident of Optimizer.load_state_dict's dict-merge behaviour.
-# ---------------------------------------------------------------------------
+# #149: honest base_lrs -- a DEFENSIVE invariant, not a fix for a reachable
+# bug. Verified directly (see task-2-report.md): build_checkpoint derives
+# ``initial_lrs`` from ``g.get("initial_lr", g["lr"]) for g in
+# optimizer.param_groups`` -- the SAME live param_groups that
+# ``optimizer.state_dict()`` (called in the same dict literal, nothing
+# mutating in between) also reads. For any checkpoint this module can
+# actually produce, the two are therefore mathematically identical, and
+# restoring ``initial_lrs`` in CheckpointLoaderNode is a provable no-op
+# against the installed torch 2.11.0+cu128 -- ``Optimizer.load_state_dict``'s
+# ``update_group`` already carries a saved ``initial_lr`` through by
+# accident whenever the checkpoint's own dict has it, and when it does not,
+# a freshly built scheduler's own ``setdefault("initial_lr", lr)`` lands on
+# the identical number this key would have restored.
 #
-# LRScheduler.__init__ does ``group.setdefault("initial_lr", group["lr"])``
-# and Optimizer.load_state_dict's ``update_group`` replaces each live param
-# group with the SAVED group's dict wholesale (verified against the
-# installed torch 2.11.0+cu128 -- see ``core.checkpoints``'s module
-# docstring). So a checkpoint whose OWN ``optimizer_state_dict`` happens to
-# carry ``initial_lr`` already survives a round trip with no fix at all --
-# that is "the case torch already handles" and proves nothing about #149.
-#
-# The bug is specifically about a checkpoint whose optimizer_state_dict does
-# NOT carry ``initial_lr`` (its optimizer object never had ANY scheduler
-# constructed over it at save time -- state_dict() only ever contains the
-# key if something stamped it) while its ``lr`` is not a value a
-# freshly-built scheduler should treat as the schedule's start. That shape
-# is real: e.g. an optimizer whose live param_groups DID carry a meaningful
-# ``initial_lr`` gets it silently replaced -- not merged -- the moment
-# ``load_state_dict`` restores from ANY checkpoint whose own saved dict
-# lacks the key, because ``update_group`` returns the saved group wholesale
-# (only ``params``/``param_names`` are patched in from the live side).
+# What the key buys instead: CodefyUI's OWN contract stops depending on
+# ``optimizer.state_dict()``/``load_state_dict()`` choosing to carry
+# ``initial_lr`` through -- it is read from ``optimizer.param_groups``
+# directly and restored explicitly. The test below proves that decoupling
+# is real by constructing the one situation where it would matter: a
+# ``state_dict()`` that does NOT serialise ``initial_lr`` while the live
+# object still carries it. No real torch behaviour produces that today
+# (confirmed empirically -- see the report); it stands in for "a future
+# torch change, or a plugin's custom Optimizer subclass, alters what gets
+# serialised."
 
 
 def test_checkpoint_captures_initial_lr_explicitly(ckpt_path: str) -> None:
     """The SAVE side: ``initial_lrs`` prefers the scheduler's true origin.
 
-    Not yet about resuming -- just that the key exists and, once a scheduler
-    has decayed the live lr, holds the ORIGINAL rather than the current
-    value. (This specific checkpoint's ``optimizer_state_dict`` also happens
-    to carry ``initial_lr`` by accident, same as it does today -- the crux
-    test below is the one that isolates the explicit key from that
-    accident.)
+    Just that the key exists and, once a scheduler has decayed the live lr,
+    holds the ORIGINAL rather than the current value -- using ordinary
+    torch behaviour throughout, so (as the section note above explains)
+    this checkpoint's ``optimizer_state_dict`` also happens to carry
+    ``initial_lr`` by the same accident. That is expected, not a gap: this
+    test pins the CAPTURE logic's own correctness, independent of whether
+    anything downstream needed it.
     """
     model = _model()
     optimizer = _optimizer("sgd_momentum", model)
@@ -825,39 +828,59 @@ def test_checkpoint_captures_initial_lr_explicitly(ckpt_path: str) -> None:
     assert raw["initial_lrs"] == pytest.approx([0.1])
 
 
-def test_loader_restores_initial_lr_even_when_the_optimizer_state_lacks_it(
+def test_initial_lr_is_captured_from_the_live_optimizer_not_its_state_dict(
     ckpt_path: str,
 ) -> None:
-    """#149's crux: the LOAD side must not depend on torch's accident.
+    """The one real divergence the defensive framing protects against.
 
-    This checkpoint is built to isolate the explicit ``initial_lrs`` key
-    from the accidental carrier: its ``optimizer_state_dict.param_groups``
-    has NO ``initial_lr`` (asserted below, so this test fails loudly rather
-    than silently if ``write_checkpoint``'s payload shape ever changes)
-    while the top-level ``initial_lrs`` key -- the one #149 adds -- says the
-    honest original. A loader that only trusted
-    ``optimizer.load_state_dict``'s own dict-merge would leave a freshly
-    built scheduler treating the CURRENT, decayed lr as its starting point,
-    which is exactly the bug the issue reports.
-
-    Hand-editing the saved payload (rather than deriving this shape from a
-    longer chain of real resumes) follows the same precedent as
-    ``test_old_format_checkpoint_without_scheduler_key_still_loads`` above:
-    it is the loader's CONTRACT under test, not a specific history.
+    ``optimizer.state_dict`` is patched to drop ``initial_lr`` from what it
+    serialises -- standing in for a torch (or custom-optimizer) behaviour
+    change -- while leaving it on the LIVE ``param_groups`` untouched.
+    ``build_checkpoint`` must still capture the truth (it reads
+    ``param_groups`` directly, not through the crippled ``state_dict()``),
+    and ``CheckpointLoaderNode`` must still restore it from ``initial_lrs``
+    even though ``optimizer_state_dict`` -- the ordinary carrier -- lacks
+    it. This is the shape of test the brief asked for ("fails on the
+    history-dependent path specifically"); this codebase does not have a
+    real history that produces it, so the test manufactures the one
+    dependency the code takes on torch's serialisation choices, rather than
+    hand-editing a value no writer would ever produce.
     """
+    from unittest import mock
+
     from app.core import checkpoints
 
     model = _model()
     optimizer = _optimizer("sgd_momentum", model)
-    optimizer.param_groups[0]["lr"] = 0.025  # "current", already decayed
-    target = checkpoints.write_checkpoint(ckpt_path, model, optimizer, epoch=4)
+    scheduler = _scheduler("StepLR", optimizer)  # step_size=2, gamma=0.5
+    for _ in range(2):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["initial_lr"] == pytest.approx(0.1)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.05)
+
+    real_state_dict = optimizer.state_dict
+
+    def _stripped_state_dict():
+        state = real_state_dict()
+        for group in state["param_groups"]:
+            group.pop("initial_lr", None)
+        return state
+
+    with mock.patch.object(optimizer, "state_dict",
+                           side_effect=_stripped_state_dict):
+        target = checkpoints.write_checkpoint(
+            ckpt_path, model, optimizer, epoch=4)
+
     raw = torch.load(target, map_location="cpu", weights_only=True)
     assert "initial_lr" not in raw["optimizer_state_dict"]["param_groups"][0], (
-        "this checkpoint must NOT carry the accidental carrier, or the test "
-        "below would pass even without the #149 fix"
+        "the patched state_dict() must actually have dropped the key, or "
+        "this test is not exercising the simulated divergence"
     )
-    raw["initial_lrs"] = [0.1]  # the explicit, honestly-known truth
-    torch.save(raw, target)
+    assert raw["initial_lrs"] == pytest.approx([0.1]), (
+        "captured from the LIVE param_groups, independent of what the "
+        "(crippled) state_dict() serialised"
+    )
 
     resumed_model = _model()
     resumed_opt = _optimizer("sgd_momentum", resumed_model)
@@ -866,15 +889,11 @@ def test_loader_restores_initial_lr_even_when_the_optimizer_state_lacks_it(
         {"path": ckpt_path, "device": "cpu"},
     )
     restored_opt = restored["optimizer"]
-    assert restored_opt.param_groups[0]["lr"] == pytest.approx(0.025), (
+    assert restored_opt.param_groups[0]["lr"] == pytest.approx(0.05), (
         "the resumed lr itself must still be the checkpoint's current value"
     )
     assert restored_opt.param_groups[0]["initial_lr"] == pytest.approx(0.1)
 
-    # The crux: a scheduler built AFTER the resume -- as a graph that wires
-    # a fresh LRScheduler node from CheckpointLoader's own optimizer output
-    # would -- must see the TRUE original, not the decayed value it resumed
-    # at.
     fresh_scheduler = torch.optim.lr_scheduler.StepLR(restored_opt, step_size=1)
     assert fresh_scheduler.base_lrs == pytest.approx([0.1])
 
@@ -886,10 +905,22 @@ def test_loader_restores_initial_lr_even_when_the_optimizer_state_lacks_it(
 # A server crash mid-run survives nothing today: CheckpointSaver only fires
 # after TrainingLoop returns (never, if the process dies first) and the
 # interrupt checkpoint only fires on a COOPERATIVE stop (never, on a
-# SIGKILL/OOM-kill/power-loss/server-restart). checkpoint_every makes a
-# HEALTHY run write an ordinary checkpoint -- same core.checkpoints
-# machinery, same exec_run_artifacts row discipline as the interrupt path --
-# every N completed epochs, so at most N epochs are ever at risk.
+# SIGKILL/OOM-kill/server-restart -- NOT power loss either; see
+# save_periodic_checkpoint's docstring). checkpoint_every makes a HEALTHY
+# run write an ordinary checkpoint -- same core.checkpoints machinery, same
+# exec_run_artifacts row discipline as the interrupt path -- every N
+# completed epochs, so at most N epochs are ever at risk.
+#
+# The tested boundary below is the QUEUE (ctx.outbox.drain()), not an
+# actual exec_run_artifacts ROW -- the same boundary
+# test_cancellation.py's own interrupt-checkpoint tests use, for the same
+# reason: proving the queue -> row mapping itself (ArtifactSignal ->
+# RunService._record_artifact -> RunStore.add_artifact) is generic and
+# already covered once, for every producer, by
+# test_run_service.py::test_log_artifact_registers_a_row_and_announces_it.
+# save_periodic_checkpoint calls the identical context.log_artifact(...)
+# API that test exercises, so re-proving the row lands here would just
+# duplicate that coverage under a different producer.
 
 
 def _recording_context(**kwargs):
@@ -917,7 +948,14 @@ def periodic_dir(tmp_path, monkeypatch):
 
 
 def _checkpoint_signals(ctx):
-    signals, _dropped = ctx.outbox.drain()
+    """Drain and filter to ``checkpoint`` signals -- and assert none of them
+    were EVICTED first. The outbox is drop-oldest under load (see
+    ``save_periodic_checkpoint``'s "always-present" orphan-window note); an
+    evicted checkpoint signal is a file with no row, which every test using
+    this helper is otherwise implicitly assuming did not happen. One line,
+    so that assumption is checked rather than merely made."""
+    signals, dropped = ctx.outbox.drain()
+    assert dropped == 0, f"{dropped} signal(s) evicted before delivery"
     return [s for s in signals if getattr(s, "kind", None) == "checkpoint"]
 
 
@@ -960,6 +998,35 @@ def test_checkpoint_every_writes_a_file_and_row_at_each_multiple(periodic_dir):
     assert all(a.kind == "checkpoint" for a in artifacts)
     # The row IS the file: every artifact path this run logged exists.
     assert {Path(a.path).name for a in artifacts} == set(files)
+
+
+def test_checkpoint_every_uses_absolute_epochs_on_a_resumed_run(periodic_dir):
+    """The discriminating case a fully-successful, never-resumed run cannot
+    exercise: ``start_epoch`` combined with ``checkpoint_every`` must
+    produce ABSOLUTE epoch numbers, not epochs-completed-THIS-CALL.
+
+    epochs=6, checkpoint_every=2, start_epoch=2 runs absolute epochs
+    3,4,5,6 (call-relative 1,2,3,4). The correct, absolute-indexed
+    implementation fires at absolute 4 and 6. A regression that counted
+    epochs completed in THIS call instead (an easy mistake given this
+    file's own "arrays are per call" / "epochs are absolute" distinction)
+    would report [2, 4] -- call-relative counts mistaken for epoch
+    numbers -- which also happens to be the wrong SET of firing points,
+    not just a mislabelling: this pins both where periodic checkpoints
+    land AND what they call themselves, in the realistic crash -> resume
+    -> crash again scenario #203 exists for.
+    """
+    ctx = _recording_context()
+    model = _model()
+    TrainingLoopNode().execute(
+        {"model": model, "dataloader": _loader(),
+         "optimizer": _optimizer("sgd_momentum", model),
+         "loss_fn": nn.CrossEntropyLoss(), "start_epoch": 2},
+        {"epochs": 6, "checkpoint_every": 2, "device": "cpu"},
+        context=ctx,
+    )
+    artifacts = _checkpoint_signals(ctx)
+    assert [a.meta.get("epoch") for a in artifacts] == [4, 6]
 
 
 def test_checkpoint_every_declines_when_the_run_records_no_artifacts(periodic_dir):
