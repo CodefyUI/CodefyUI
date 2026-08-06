@@ -14,6 +14,14 @@ When you click **Run**, the frontend sends the graph to the backend over a WebSo
 - Each node reports status as it goes: `running` → `completed` (or `error`), with a small **output summary** embedded inline for quick viewing.
 - The **Execution Log** tab shows this per-node progress and any `Print` node output.
 
+## A node without a trigger can still run
+
+Removing a node's trigger edge does not, by itself, take it out of the run. If a **data** edge still connects its output into something that does run — whether that's a required input or an optional one makes no difference — the node runs too, with or without a trigger of its own. A `Dataset` or the first node of a transform chain typically has no trigger at all and is expected to run this way; the same rule applies to anything else you have wired in.
+
+The practical effect: **disconnecting the trigger edge alone no longer parks a branch.** If you want a node to stay wired for later but not run right now, disconnect its **data** edge(s) instead — that is what actually removes it from the run. **Bypass** (right-click a node, or `Ctrl`/`Cmd`+`B`) is a one-click alternative for a node partway through a chain, skipping it while passing its input straight through to whatever it fed — but it only works when the node has an input of the same type as its output to forward, so it is refused on a source node with no inputs at all (`CSVReader`, `ImageReader`, `Dataset`, and the rest of the file-reading nodes). For one of those, disconnecting the edge is the only way to park it.
+
+One consequence worth knowing: a reader node (`CSVReader`, `ImageReader`, and the like) left wired to an input — even an optional one — but never triggered now executes where it used to be silently skipped. If the file it points at has since been deleted or moved, a graph that previously ran without error can start failing with `FileNotFoundError` on that node.
+
 ## Training loops and loss charts
 
 The `TrainingLoop` node emits progress events during training. The **Training** tab of the results panel plots a **live loss chart** as epochs complete, so you can watch convergence in real time.
