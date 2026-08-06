@@ -24,14 +24,23 @@ import { useProjectStore } from './store/projectStore';
 import { useRunStore } from './store/runStore';
 import styles from './App.module.css';
 
-// Map user font-size choice to the documentElement. Setting an empty string
-// removes the inline style, letting App.css's responsive `clamp(...)` take over
-// (capped at 18px). Large jumps clearly above the clamp ceiling so the change
-// is actually visible.
+// Map the user's font-size choice onto the root element. Every size token in
+// `styles/tokens.css` is a rem, so this scales the whole app.
+//
+// These used to be 12px / (unset) / 20px, where "unset" fell through to a
+// viewport-responsive `clamp(13.5px, 0.35vw + 11px, 18px)` in App.css. Two
+// problems with that: the root moved with the window, so the same UI rendered
+// at 15.8px root on a 1366px laptop and 18px on a 2560px monitor and no size
+// in the app was predictable; and at the Small setting a 0.625rem rule — of
+// which there were 38 — came out at 7.5px.
+//
+// Fixed roots instead, with Default at the 16px browser standard. Small is a
+// deliberate density trade for people who want more on screen, not an
+// accessibility setting, and it still keeps body text at 13.1px.
 const FONT_SIZE_PX: Record<string, string> = {
-  small: '12px',
-  default: '',
-  large: '20px',
+  small: '15px',
+  default: '16px',
+  large: '18px',
 };
 
 function RightColumn() {

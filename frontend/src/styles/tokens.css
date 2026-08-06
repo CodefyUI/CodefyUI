@@ -1,0 +1,251 @@
+/* ============================================================
+   CodefyUI design tokens — the single source of truth for
+   colour, type, spacing and elevation across every CSS module.
+
+   Before this file existed there was no custom-property layer at
+   all: `theme.ts` exported SURFACE/TEXT/BRAND/TOOLBAR that nothing
+   imported, and all 54 CSS modules carried their own hex literals.
+   Two grey systems had drifted apart (a flat `#444`/`#555` family
+   in 33 files, a slate family in 21, 8 files mixing both).
+
+   Every colour pair below was solved numerically against WCAG 2.1
+   (sRGB linearisation, relative luminance, (L1+.05)/(L2+.05)) and
+   the surface ramp was spaced on CIE L*, not on contrast ratio —
+   ratio compresses badly at the dark end and would have hidden the
+   fact that the old surfaces sat 1.035:1 apart. The verification
+   script lives in `scripts/check-contrast.mjs`; `pnpm contrast`
+   re-runs it and fails on any regression.
+   ============================================================ */
+
+:root {
+  /* --------------------------------------------------------
+     Surfaces — an elevation ladder, not a set of near-identical
+     blacks. Steps are ~4 CIE L* apart, which is what makes a
+     panel read as a separate plane from the canvas behind it.
+     The old ramp spanned L* 7->16 in steps of 1; this spans
+     L* 6->31. Deliberately not pure black (Material, VS Code,
+     Blender and ComfyUI all sit in #121212-#222).
+     -------------------------------------------------------- */
+  --surface-canvas: #0f1319; /* graph canvas, the plane everything sits on */
+  --surface-app: #151a22; /* app chrome / toolbar base */
+  --surface-panel: #1c222c; /* side panels, results panel */
+  --surface-raised: #242b37; /* cards, nodes, popovers, menus */
+  --surface-input: #2c3441; /* form fields and wells */
+  --surface-hover: #353d4b; /* hover state */
+  --surface-active: #404959; /* pressed / selected row */
+
+  /* Overlay scrim for modals. */
+  --surface-scrim: rgba(6, 9, 13, 0.72);
+
+  /* --------------------------------------------------------
+     Text — three usable tiers plus one deliberately-dim tier.
+     The old scale had six (#eee/#ccc/#888/#666/#555/#444) of
+     which the bottom three failed AA on every surface, so the
+     "less important" text was the unreadable text. Guidance is
+     to cap hierarchy at 2-3 tiers and carry the rest with weight.
+
+     All three usable tiers clear 4.5:1 on every surface above,
+     including --surface-active. --text-disabled is the single
+     exception and is reserved for genuinely inert content.
+     -------------------------------------------------------- */
+  --text-primary: #f0f4f8; /* 14.45:1 on panel — titles, values */
+  --text-secondary: #c6d0da; /* 10.22:1 on panel — body, descriptions */
+  --text-muted: #aeb9c6; /*  8.03:1 on panel — metadata, counts, hints */
+  --text-disabled: #6b7684; /*  3.46:1 on panel — DISABLED/placeholder ONLY */
+  --text-on-accent: #04212b; /*  9.24:1 on --accent — text inside filled accent */
+
+  /* --------------------------------------------------------
+     Borders. Only --border-strong is load-bearing: it outlines
+     real controls, so WCAG 1.4.11 asks for 3:1 against the
+     surface *behind* the control (3.51 on panel, 3.13 on raised).
+     The other two are decorative dividers and are tuned by L*
+     separation instead. Prefer a tonal step over a border where
+     the surfaces already differ — a border on every box is the
+     "visual noise" the guidance warns about.
+     -------------------------------------------------------- */
+  --border-subtle: #262e3a; /* hairline inside a panel */
+  --border-base: #313a48; /* panel edges, section dividers */
+  --border-strong: #6b7787; /* input/button outlines — 3:1 rated */
+  --border-focus: #22d3ee;
+
+  /* --------------------------------------------------------
+     Accent and status. Cyan is unchanged — it already measured
+     well (8.84:1 on panel). Status hues were lifted off their
+     Material 500 values so each clears 4.5:1 as text on a dark
+     surface, per the "use the 200 step, not the 500 step" rule.
+     -------------------------------------------------------- */
+  --accent: #22d3ee;
+  --accent-deep: #06b6d4;
+  --accent-dim: #0e7490;
+  --accent-wash: rgba(34, 211, 238, 0.12); /* tinted backgrounds */
+  --accent-glow: rgba(34, 211, 238, 0.45);
+
+  --status-success: #5ec269;
+  --status-error: #ff6b63;
+  --status-warning: #ffc94d;
+  --status-info: #6aa9ff;
+  --status-idle: #8593a3; /* was #444 = 1.86:1, i.e. an invisible dot */
+  --status-preset: #e0a92b;
+
+  /* Canvas wires. These are graphics conveying meaning, so 1.4.11
+     applies: >=3:1 against --surface-canvas. */
+  --wire: #5b6c82; /* 3.47:1 */
+  --wire-data: #6aa9ff; /* 7.74:1 */
+  --wire-active: #22d3ee; /* 10.31:1 */
+
+  /* --------------------------------------------------------
+     Type scale. Steps are ~1.125 apart at the small end, which
+     is the ratio compact systems use; a wider ratio would force
+     sizes apart faster than a dense tool can afford.
+
+     Values are rem so the Small/Default/Large control still
+     scales the whole app. At the Default root of 16px they read
+     as the px comment on each line. --fs-2xs is the only step
+     below the 12px secondary-text floor and is reserved for
+     non-continuous badge text.
+
+     The old scale concentrated 58% of all rules in four values
+     of which the most common (0.6875rem, 76 uses) never reached
+     13.75px even at the Large setting.
+     -------------------------------------------------------- */
+  --fs-2xs: 0.6875rem; /* 11px — badges only, never a sentence */
+  --fs-xs: 0.75rem; /* 12px — metadata floor */
+  --fs-sm: 0.8125rem; /* 13px — dense secondary text */
+  --fs-md: 0.875rem; /* 14px — body / UI default */
+  --fs-lg: 1rem; /* 16px — emphasis, section titles */
+  --fs-xl: 1.125rem; /* 18px — panel and modal headings */
+  --fs-2xl: 1.375rem; /* 22px — screen headings */
+  --fs-3xl: 1.75rem; /* 28px — the one hero line */
+
+  /* Line-height by role, not by size. 82.9% of font-size rules
+     used to set none, and 24 clamped to `line-height: 1`, which
+     is the tightest value CSS allows and the direct cause of the
+     "cramped" reading. Nothing should use 1. */
+  --lh-tight: 1.25; /* single-line dense UI: node titles, cells, labels */
+  --lh-snug: 1.4; /* short wrapping labels */
+  --lh-normal: 1.55; /* running prose: descriptions, tooltips, help */
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* --------------------------------------------------------
+     Spacing — 4px atomic unit, 8px macro grid. Only 43.6% of
+     the previous 731 spacing values landed on a 4px grid; 6px
+     and 10px were used 193 times between them. Density comes
+     from this scale and from the control heights below, never
+     from shrinking text.
+     -------------------------------------------------------- */
+  --sp-0: 0;
+  --sp-1: 2px; /* hairline nudge only */
+  --sp-2: 4px;
+  --sp-3: 8px; /* minimum padding inside any control */
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 20px;
+  --sp-7: 24px;
+  --sp-8: 32px;
+  --sp-9: 40px;
+  --sp-10: 48px;
+
+  /* Control heights. Compact tier for the canvas, inspector and
+     lists; comfortable tier for menus and dialogs, which stay
+     roomy regardless of how dense the working surfaces get. */
+  --h-control-xs: 24px;
+  --h-control-sm: 28px;
+  --h-control: 32px; /* default compact control */
+  --h-control-lg: 40px; /* primary actions, menu rows, dialog buttons */
+  --h-row: 36px; /* list row in the node palette */
+
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+
+  /* Elevation. Shadows barely register on dark surfaces, so
+     depth is carried by the surface ramp; these add just enough
+     separation for things that float above the page. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+  --shadow-popover: 0 16px 40px -12px rgba(0, 0, 0, 0.7);
+  --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  --focus-ring: 0 0 0 2px var(--surface-panel), 0 0 0 4px var(--border-focus);
+
+  --transition-fast: 120ms ease;
+  --transition: 180ms ease;
+}
+
+/* --------------------------------------------------------
+   Semantic data palettes. These carry meaning (which category
+   a node belongs to, whether a run failed), so unlike the
+   chrome above they are also needed in TypeScript — canvas and
+   SVG code has to compute with them. `styles/theme.ts` mirrors
+   every value below and `theme.test.ts` parses this file to
+   assert the two never drift.
+
+   Hues were lifted only where the Material 500-level tone was
+   too dark to read on a dark surface, per the "use the 200 step
+   on dark backgrounds" rule. Ten of the fourteen node categories
+   are unchanged; the ones that moved are marked.
+   -------------------------------------------------------- */
+:root {
+  /* Node categories */
+  --cat-cnn: #4caf50;
+  --cat-rnn: #2397f3; /* lifted from #2196f3 */
+  --cat-transformer: #c279ce; /* lifted from #9c27b0 */
+  --cat-llm: #a78bfa;
+  --cat-diffusion: #ee60a6; /* lifted from #ec4899 */
+  --cat-classical: #f59e0b;
+  --cat-rl: #ff9800;
+  --cat-data: #00bcd4;
+  --cat-training: #f66358; /* lifted from #f44336 */
+  --cat-io: #a78f86; /* lifted from #795548 */
+  --cat-dataflow: #ff6f00;
+  --cat-utility: #8097a2; /* lifted from #607d8b */
+  --cat-normalization: #26a69a;
+  --cat-tensorops: #838fcf; /* lifted from #5c6bc0 */
+
+  /* Example-gallery categories */
+  --ex-usage-example: #4caf50;
+  --ex-model-architecture: #2397f3; /* lifted */
+  --ex-classical: #26a69a;
+  --ex-llm: #c279ce; /* lifted */
+  --ex-diffusion: #ef6292; /* lifted */
+  --ex-transformer: #26c6da;
+  --ex-rnn: #838fcf; /* lifted */
+  --ex-rl: #f16663; /* lifted */
+  --ex-stats: #a286d3; /* lifted */
+  --ex-fallback: #ff9800;
+
+  /* Difficulty badges */
+  --difficulty-beginner: #4caf50;
+  --difficulty-intermediate: #ff9800;
+  --difficulty-advanced: #f66358; /* lifted */
+
+  /* Run/node execution status */
+  --status-running: #ffc107;
+  --status-completed: #4caf50;
+  --status-cached: #2397f3; /* lifted */
+  --status-skipped: #9e9e9e;
+  --status-interrupted: #ff8f00;
+  /* `idle` was #444 — 1.86:1, an indicator you could not see. A neutral
+     that still reads as "nothing is happening" but is actually visible. */
+}
+
+/* How strongly a category hue is tinted into --surface-raised to make a
+   node's header fill. Mirrored by NODE_HEADER_TINT in styles/theme.ts and
+   asserted by both the contrast gate and theme.test.ts. */
+:root {
+  --node-header-tint: 0.18;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0ms;
+    --transition: 0ms;
+  }
+}

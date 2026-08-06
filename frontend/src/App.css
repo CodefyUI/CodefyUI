@@ -2,6 +2,8 @@
    CodefyUI Global Styles - Dark Theme
    ============================================================ */
 
+@import './styles/tokens.css';
+
 *,
 *::before,
 *::after {
@@ -11,8 +13,12 @@
 }
 
 html {
-  /* Responsive root font-size: scales with viewport, clamped for readability */
-  font-size: clamp(13.5px, 0.35vw + 11px, 18px);
+  /* Fixed root so every rem token in tokens.css renders at a predictable size.
+     App.tsx overrides this per the Small/Default/Large setting. This used to be
+     `clamp(13.5px, 0.35vw + 11px, 18px)`, which tied text size to window width
+     and made the smallest text shrink on exactly the laptop screens that could
+     least afford it. */
+  font-size: 16px;
 }
 
 html,
@@ -24,12 +30,12 @@ body,
 }
 
 body {
-  background-color: #121212;
-  color: #eeeeee;
+  background-color: var(--surface-app);
+  color: var(--text-secondary);
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
     Roboto, sans-serif;
-  font-size: 0.875rem;
-  line-height: 1.5;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
