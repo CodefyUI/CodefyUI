@@ -411,5 +411,8 @@ async def get_output(
     # A diverged tensor's raw values/min/max/mean can be NaN/Inf. Starlette
     # renders with allow_nan=False, so one leaked value 500s the whole
     # response -- same hazard as #129, same fix: the run_store.json_safe
-    # convention established there (see the /stats route above).
+    # convention established there. The /stats route above follows the
+    # same convention but not at this call site -- its sanitisation lives
+    # inside core.port_stats.compute_port_stats (the _num() helper in that
+    # module), not as a wrapping call here.
     return json_safe(payload)
