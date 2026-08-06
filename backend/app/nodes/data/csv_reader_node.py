@@ -61,6 +61,18 @@ class CSVReaderNode(BaseNode):
         from ...config import settings
 
         path = Path(path_str)
+        # A bare filename is what the DATA_FILE upload dropdown produces —
+        # resolve it against DATA_FILES_DIR so picking a file never depends on
+        # the working directory. Checked before the project-mode branch, and
+        # only when the value has no directory component, so existing values
+        # like "data/samples/iris.csv" keep their old resolution untouched.
+        # Living here rather than in execute() matters: cache_fingerprint()
+        # calls this too, so an uploaded file gets fingerprinted by its real
+        # contents instead of silently falling back to None.
+        if not path.is_absolute() and path.parent == Path("."):
+            candidate = settings.DATA_FILES_DIR / path.name
+            if candidate.is_file():
+                return candidate
         if settings.PROJECT_DIR is not None and not path.is_absolute():
             # The bundled sample is special-cased to the install (cwd stays
             # backend/ even in project mode) so demos keep working (spec 7.2).
@@ -117,10 +129,11 @@ class CSVReaderNode(BaseNode):
         return [
             ParamDefinition(
                 name="path",
-                param_type=ParamType.STRING,
-                default="data/samples/iris.csv",
+                param_type=ParamType.DATA_FILE,
+                default="",
                 description=(
-                    "Path to the CSV file (absolute or relative to the backend "
+                    "CSV file to read. Pick one you uploaded from the dropdown, "
+                    "or type a path (absolute, or relative to the backend "
                     "working dir; in project mode, relative paths resolve "
                     "inside the project directory)."
                 ),
@@ -160,7 +173,10 @@ class CSVReaderNode(BaseNode):
 
         path_str = str(params.get("path", "")).strip()
         if not path_str:
-            raise ValueError("CSVReader requires a non-empty `path` param.")
+            raise ValueError(
+                "CSVReader has no file selected. Pick one from the `path` "
+                "dropdown, or use the upload button next to it to add a CSV."
+            )
         path = self._resolve_path(path_str)
         if not path.exists():
             raise FileNotFoundError(f"CSVReader: file not found at {path}")

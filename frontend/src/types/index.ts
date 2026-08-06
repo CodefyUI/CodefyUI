@@ -12,6 +12,8 @@ export interface ParamDefinition {
   param_type:
     | 'int' | 'float' | 'string' | 'bool' | 'select'
     | 'model_file' | 'image_file' | 'tensor_grid' | 'secret'
+    /** Tabular / plain-data upload (CSV, TSV, TXT, JSON); same widget as image_file. */
+    | 'data_file'
     /** Multi-line Python source; rendered with a code editor (core#131). */
     | 'code';
   default: any;

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ParamDefinition } from '../../types';
 import {
+  downloadDataFile,
   downloadImageFile,
   downloadModelFile,
+  listDataFiles,
   listImageFiles,
   listModelFiles,
+  uploadDataFile,
   uploadImageFile,
   uploadModelFile,
 } from '../../api/rest';
@@ -48,6 +51,14 @@ const IMAGE_FILE_BACKEND: FileFieldBackend = {
   download: downloadImageFile,
   accept: '.png,.jpg,.jpeg,.bmp,.webp,.gif,.tiff',
   uploadTitleKey: 'paramField.upload.image',
+};
+
+const DATA_FILE_BACKEND: FileFieldBackend = {
+  list: listDataFiles,
+  upload: uploadDataFile,
+  download: downloadDataFile,
+  accept: '.csv,.tsv,.txt,.json',
+  uploadTitleKey: 'paramField.upload.data',
 };
 
 function FileField({
@@ -200,6 +211,18 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
         onChange={onChange}
         displayLabel={displayLabel}
         backend={IMAGE_FILE_BACKEND}
+      />
+    );
+  }
+
+  if (param.param_type === 'data_file') {
+    return (
+      <FileField
+        param={param}
+        value={value}
+        onChange={onChange}
+        displayLabel={displayLabel}
+        backend={DATA_FILE_BACKEND}
       />
     );
   }

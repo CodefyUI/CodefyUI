@@ -64,8 +64,8 @@ function validateParamValue(p: ParamDefinition, value: unknown): string | null {
       if (typeof value !== 'string') return `param '${p.name}' expects a string`;
       break;
     default:
-      // model_file / image_file / tensor_grid carry editor-managed payloads;
-      // accept whatever the caller sends.
+      // model_file / image_file / data_file / tensor_grid carry
+      // editor-managed payloads; accept whatever the caller sends.
       return null;
   }
   if (typeof value === 'number') {

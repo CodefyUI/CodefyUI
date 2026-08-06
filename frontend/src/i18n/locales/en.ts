@@ -306,6 +306,7 @@ const en = {
   // ParamField (file picker for model / image params)
   'paramField.upload.model': 'Upload model file',
   'paramField.upload.image': 'Upload image file',
+  'paramField.upload.data': 'Upload data file (CSV)',
   'paramField.download': 'Download selected file',
   'paramField.refresh': 'Refresh file list',
   'paramField.selectFile': '-- select file --',

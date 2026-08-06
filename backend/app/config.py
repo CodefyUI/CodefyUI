@@ -186,6 +186,9 @@ class Settings(BaseSettings):
     PRESETS_DIR: Path = Path(__file__).parent / "presets"
     MODELS_DIR: Path = Path(__file__).parent.parent / "data" / "models"
     IMAGES_DIR: Path = Path(__file__).parent.parent / "data" / "images"
+    # Uploads for DATA_FILE params (CSVReader et al). Separate from IMAGES_DIR
+    # so each kind keeps its own extension whitelist and its own dropdown.
+    DATA_FILES_DIR: Path = Path(__file__).parent.parent / "data" / "files"
     EXAMPLES_DIR: Path = Path(__file__).parent.parent.parent / "examples"
 
     # ── Project directory (spec 7.1) ───────────────────────────────────

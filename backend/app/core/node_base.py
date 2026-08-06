@@ -38,6 +38,11 @@ class ParamType(str, Enum):
     SELECT = "select"
     MODEL_FILE = "model_file"
     IMAGE_FILE = "image_file"
+    # Tabular / plain-data upload (CSV, TSV, TXT, JSON). Same editor widget as
+    # IMAGE_FILE — a dropdown of files already uploaded to DATA_FILES_DIR plus
+    # an upload button — so a reader node never requires the learner to type a
+    # filesystem path.
+    DATA_FILE = "data_file"
     TENSOR_GRID = "tensor_grid"
     # Session-only secret (e.g. an API key). The editor masks the input and
     # never persists the value; the save endpoint and the publish pre-flight

@@ -64,6 +64,11 @@ backend/data/images/*
 # Bundled MNIST digit used by the InferenceCNN-MNIST quick-start example
 !backend/data/images/test_digit.png
 # Per-run TensorBoard event files (core#136, TrainingLoop's `tensorboard` param).
+# Uploads for DATA_FILE params (CSVReader's file picker). User data — the
+# directory ships empty, exactly like backend/data/images/.
+backend/data/files/*
+!backend/data/files/.gitkeep
+
 backend/data/runs/
 backend/data/cifar-10-batches-py/
 backend/data/cifar-10-python.tar.gz
