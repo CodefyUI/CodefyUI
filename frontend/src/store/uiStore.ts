@@ -60,6 +60,9 @@ interface UIState {
    * Nodes whose own device param is 'auto' follow this. */
   globalDevice: string;
   setGlobalDevice: (device: string) => void;
+  /** Adopt the backend's best-available device, unless the user has picked one.
+   * Called once at startup — see `main.tsx`. */
+  adoptDefaultDevice: (device: string) => void;
   /** How value edges are drawn on the canvas: orthogonal circuit-board
    * traces ('circuit') or the classic curved beziers ('curve'). */
   edgeStyle: EdgeStyle;
@@ -126,7 +129,7 @@ const loadFontSize = (): FontSize => {
   return 'default';
 };
 
-export const useUIStore = create<UIState>((set) => ({
+export const useUIStore = create<UIState>((set, get) => ({
   tooltipsEnabled: localStorage.getItem(TOOLTIPS_KEY) !== 'false',
   toggleTooltips: () =>
     set((state) => {
@@ -175,6 +178,18 @@ export const useUIStore = create<UIState>((set) => ({
   globalDevice: loadGlobalDevice(),
   setGlobalDevice: (device) => {
     localStorage.setItem(GLOBAL_DEVICE_KEY, device);
+    set({ globalDevice: device });
+  },
+  adoptDefaultDevice: (device) => {
+    // An explicit choice always wins — including an explicit 'cpu', which a
+    // student may have picked deliberately to leave the GPU to someone else.
+    // Presence of the key is what marks a choice; its value cannot, because
+    // the pre-fetch placeholder is also 'cpu'.
+    if (localStorage.getItem(GLOBAL_DEVICE_KEY) !== null) return;
+    if (!device || device === get().globalDevice) return;
+    // Deliberately NOT persisted. Re-derived every start, so the same profile
+    // follows the hardware — a laptop docked to a GPU box picks it up, and a
+    // shared machine does not hand out a stale device to the next student.
     set({ globalDevice: device });
   },
   edgeStyle: loadEdgeStyle(),
