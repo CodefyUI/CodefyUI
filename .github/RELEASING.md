@@ -6,10 +6,30 @@ maintainer's job is to push the tag and check the result before publishing.
 ## TL;DR — happy path
 
 ```bash
-# from main, after the version-bump commit is in
+# 1. Promote CHANGELOG.md's [Unreleased] section to the new version, and
+#    bump the three version fields (see "Before you tag" below).
+# 2. From main, once that commit is in:
 git tag 1.0.0rcN
 git push origin 1.0.0rcN
 ```
+
+## Before you tag
+
+Two things are done by hand, and nothing else in the pipeline checks them for
+you:
+
+1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
+   `## [X.Y.Z] — YYYY-MM-DD`, open a fresh empty `## [Unreleased]` above it, and
+   update the `[Unreleased]` compare link at the bottom to point at the new tag.
+   The tag annotation — which becomes the GitHub release body — should say the
+   same thing; the changelog is what answers "what is on main that nobody has
+   yet" *between* releases, which the tag cannot.
+
+2. **Bump the version in all three files**, which are edited by hand and which
+   nothing reconciles: `backend/pyproject.toml`, `backend/uv.lock` (regenerate
+   with `uv lock`), and `frontend/package.json`. A mismatch between them ships
+   silently — the frontend claiming one version while the backend claims
+   another — so check all three before tagging.
 
 Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.
