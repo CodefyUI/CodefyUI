@@ -1268,6 +1268,46 @@ def _probe_host(host: str) -> str:
     return "127.0.0.1" if host in ("0.0.0.0", "::") else host
 
 
+def _print_uninstalled_builtin_packs() -> None:
+    """Name any built-in pack that shipped on disk but was never installed.
+
+    A release can add a pack — `stats` did — and `cdui update` puts its files
+    in place, but the server loads only what the lockfile records and nothing
+    re-syncs it. The pack is then fully installable and completely invisible:
+    a class follows the update instructions, the new chapter's nodes are not
+    in the palette, and no message anywhere explains why.
+
+    This is discoverability only. Nothing is enabled on the user's behalf —
+    running code someone did not ask for because a release shipped it is a
+    consent decision, not a startup detail, so the pack still installs by hand.
+
+    `cdui start` has already hopped into the venv (`_SKIP_VENV_EXEC` excludes
+    it), so scripts/plugins.py's `app.core.*` imports resolve here. Guarded
+    anyway: a notice must never be the reason a server fails to start.
+    """
+    try:
+        scripts_dir = str(Path(__file__).resolve().parent)
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import plugins as plugin_cli  # noqa: PLC0415 — late import: needs venv
+
+        available = plugin_cli.available_builtin_packs()
+    except Exception:
+        return
+    if not available:
+        return
+    ids = " ".join(pack_id for pack_id, _ in available)
+    names = ", ".join(f"{pack_id} ({name})" for pack_id, name in available)
+    print(t(
+        f"    有尚未安裝的內建外掛：{names}",
+        f"    Built-in packs available but not installed: {names}",
+    ))
+    print(t(
+        f"    安裝：cdui plugin install {ids}",
+        f"    Install with: cdui plugin install {ids}",
+    ))
+
+
 def _display_url(host: str, port: int) -> str:
     """Clickable URL for a bind host: wildcard/loopback render as
     localhost; a concrete LAN IP renders as itself."""
@@ -1429,6 +1469,7 @@ def start() -> None:
                 "    NOTE: anyone who can reach this port controls the "
                 "instance; use only on trusted networks.",
             ))
+        _print_uninstalled_builtin_packs()
 
     if foreground:
         print("=== CodefyUI 啟動（前景；Ctrl+C 停止）===")
