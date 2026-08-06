@@ -84,6 +84,15 @@ class _Probe:
         #: probe's own param, so it cannot see two ALIASES of one device
         #: overlapping; this can.
         self.peak_total = 0
+        #: label -> (entered, release). A label registered here (via
+        #: ``hold``) blocks its node's worker thread on ``release`` instead
+        #: of ``time.sleep(seconds)`` -- a test can then hold a run open
+        #: for as long as it needs, deterministically, rather than sizing a
+        #: sleep duration against wall-clock timing and hoping it survives
+        #: a loaded CI runner (#187). ``entered`` is set the instant the
+        #: node reaches the hold, so ``wait_entered`` can block on an
+        #: observed fact instead of another sleep.
+        self.gates: dict[str, tuple[threading.Event, threading.Event]] = {}
 
     def enter(self, label: str, device: str) -> None:
         with self.lock:
@@ -95,6 +104,39 @@ class _Probe:
     def leave(self) -> None:
         with self.lock:
             self.inflight -= 1
+
+    def hold(self, label: str) -> threading.Event:
+        """Register *label* to block on a gate instead of sleeping.
+
+        Returns the release ``Event``: setting it lets that label's node
+        return from ``execute``. Must be called before the run is
+        submitted -- the node looks its label up in ``gates`` on entry.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        self.gates[label] = (entered, release)
+        return release
+
+    async def wait_entered(self, label: str, timeout: float = 5.0) -> None:
+        """Block until *label*'s node has actually reached its hold point.
+
+        A bounded wait on an observed fact, not a sleep: proves the run is
+        provably occupying its slot (rather than merely admitted-but-not-
+        yet-dispatched) before a test relies on it staying that way.
+
+        Runs the ``Event.wait`` in a thread rather than calling it directly:
+        this is awaited from the test's own coroutine, which runs ON the
+        event loop, and the node's dispatch chain (Start -> ... -> the
+        gated node) needs that SAME event loop to keep turning in order to
+        progress far enough to reach the gate and set it. A direct
+        ``Event.wait`` there would freeze the loop and deadlock against the
+        very thing it is waiting for.
+        """
+        entered, _release = self.gates[label]
+        ok = await asyncio.to_thread(entered.wait, timeout)
+        if not ok:
+            raise AssertionError(
+                f"{label!r} never reached its hold point within {timeout}s")
 
 
 _probe = _Probe()
@@ -133,9 +175,23 @@ class _QueueProbeNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any],
                 params: dict[str, Any]) -> dict[str, Any]:
-        _probe.enter(str(params.get("label", "")), str(params.get("device")))
+        label = str(params.get("label", ""))
+        _probe.enter(label, str(params.get("device")))
         try:
-            time.sleep(float(params.get("seconds", 0.05)))
+            gate = _probe.gates.get(label)
+            if gate is not None:
+                # Held open on a gate (#187) instead of a fixed sleep: the
+                # test controls exactly when this run may finish. Bounded
+                # wait as a safety net only -- a test that forgets to
+                # release should time out and fail loudly, not hang the
+                # suite forever.
+                entered, release = gate
+                entered.set()
+                if not release.wait(timeout=10.0):
+                    raise TimeoutError(
+                        f"probe hold for {label!r} was never released")
+            else:
+                time.sleep(float(params.get("seconds", 0.05)))
         finally:
             _probe.leave()
         return {"value": inputs.get("value")}
@@ -509,23 +565,47 @@ async def test_each_device_keeps_its_own_line(service):
 
 async def test_an_interactive_run_starts_alongside_a_full_gpu_queue(
         service, store, probe):
-    """The acceptance criterion: a classroom demo never waits for training."""
-    training = [await _submit(service, f"train-{i}", device="cuda:0",
-                              seconds=0.4) for i in range(5)]
-    assert len(service.queue_snapshot()["cuda:0"]) == 4
+    """The acceptance criterion: a classroom demo never waits for training.
 
-    demo = await _submit(service, "demo", device="cuda:0", seconds=0.05,
-                         lane=LANE_INTERACTIVE,
-                         session=InteractiveSession())
-    assert demo.status == STATUS_RUNNING
-    assert service.is_active(demo.run_id)
-    assert service.queue_position(demo.run_id) is None
+    ``train-0`` is held open on a gate rather than raced against a sleep
+    duration (#187): "the other four are still queued when the demo
+    finishes" is then true by construction -- train-0 provably cannot
+    finish before the test releases it -- instead of depending on a 0.4s
+    training sleep outlasting a 0.05s demo on whatever CI runner happens to
+    be running this. The flake this replaces was exactly that assumption
+    failing under load: `assert 3 == 4` on an otherwise unrelated PR,
+    4/4 green on rerun.
+    """
+    release_first = probe.hold("train-0")
+    try:
+        training = [await _submit(service, f"train-{i}", device="cuda:0",
+                                  seconds=0.4) for i in range(5)]
+        # train-0 is provably occupying the slot, not merely assumed to be
+        # (admission itself is synchronous -- see RunService._pump -- so
+        # this is a sanity check that the hold is wired up, not a race).
+        await probe.wait_entered("train-0")
+        assert len(service.queue_snapshot()["cuda:0"]) == 4
 
-    record = await _await_terminal(store, demo.run_id, timeout=5)
-    assert record.status == STATUS_SUCCEEDED
-    assert record.options["lane"] == LANE_INTERACTIVE
-    # It really did overtake: four training runs are still waiting.
-    assert len(service.queue_snapshot()["cuda:0"]) == 4
+        demo = await _submit(service, "demo", device="cuda:0", seconds=0.05,
+                             lane=LANE_INTERACTIVE,
+                             session=InteractiveSession())
+        assert demo.status == STATUS_RUNNING
+        assert service.is_active(demo.run_id)
+        assert service.queue_position(demo.run_id) is None
+
+        record = await _await_terminal(store, demo.run_id, timeout=5)
+        assert record.status == STATUS_SUCCEEDED
+        assert record.options["lane"] == LANE_INTERACTIVE
+        # It really did overtake: four training runs are still waiting --
+        # guaranteed (train-0 is still parked on its gate), not timed.
+        assert len(service.queue_snapshot()["cuda:0"]) == 4
+    finally:
+        # However this exits -- an assertion above failing, or the happy
+        # path -- train-0 must be released. Left parked, it would sit out
+        # its 10s safety-net timeout before the worker thread raises,
+        # adding a slow, confusing second failure right next to whatever
+        # assertion actually failed (review follow-up).
+        release_first.set()
 
     for result in training:
         await _await_terminal(store, result.run_id)

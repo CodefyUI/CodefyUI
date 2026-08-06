@@ -512,21 +512,69 @@ async def test_concurrent_invokes_on_one_slug_serialize(
 async def test_invokes_on_different_slugs_interleave(
     test_client, app_db, api_key,
 ):
+    """Different slugs never queue on each other.
+
+    Judged against a serial baseline measured on this runner moments
+    earlier, not a fixed wall-clock budget (#157): the old
+    `elapsed < 1.3` on two 0.7s sleeps left only 0.1s of margin and flaked
+    on a loaded shared CI runner (`1.398 < 1.3`, PR #154's first CI run).
+    The SAME two requests are timed serial-then-concurrent back to back, so
+    whatever this runner's current speed is affects both measurements
+    alike -- only the ratio between them has to hold.
+
+    Both slugs are warmed with one untimed invoke each before either
+    measurement starts (review follow-up). The FIRST-ever invoke of a
+    freshly published app pays a one-time setup cost that later invokes on
+    the same slug don't; without the warm-up, `serial` (always the FIRST
+    hit on both slugs) is measured cold while `interleaved` (always the
+    SECOND) is measured warm, which inflates `serial` well past its
+    steady-state floor. That slack is enough for a fully-serialized
+    regression to slip under `serial * margin` even though it should fail
+    -- confirmed by simulating the regression directly (collapsing both
+    slugs onto one lock, the same class of bug Decision I's per-slug lock
+    exists to prevent): the unwarmed version of this test passed anyway.
+    """
     await _publish(test_client, "para-one",
                    _chain_graph("slow-a", "_SlowPass", {"seconds": 0.7}))
     await _publish(test_client, "para-two",
                    _chain_graph("slow-b", "_SlowPass", {"seconds": 0.7}))
     key_headers = _bearer(api_key["token"])
+
+    async def _invoke_one():
+        return await test_client.post(
+            "/api/apps/para-one/invoke",
+            json={"inputs": {"x": "a"}}, headers=key_headers)
+
+    async def _invoke_two():
+        return await test_client.post(
+            "/api/apps/para-two/invoke",
+            json={"inputs": {"x": "b"}}, headers=key_headers)
+
+    warm1 = await _invoke_one()
+    warm2 = await _invoke_two()
+    assert warm1.status_code == 200 and warm2.status_code == 200
+
     t0 = time.monotonic()
-    r1, r2 = await asyncio.gather(
-        test_client.post("/api/apps/para-one/invoke",
-                         json={"inputs": {"x": "a"}}, headers=key_headers),
-        test_client.post("/api/apps/para-two/invoke",
-                         json={"inputs": {"x": "b"}}, headers=key_headers),
-    )
-    elapsed = time.monotonic() - t0
+    baseline1 = await _invoke_one()
+    baseline2 = await _invoke_two()
+    serial = time.monotonic() - t0
+    assert baseline1.status_code == 200 and baseline2.status_code == 200
+
+    t0 = time.monotonic()
+    r1, r2 = await asyncio.gather(_invoke_one(), _invoke_two())
+    interleaved = time.monotonic() - t0
     assert r1.status_code == 200 and r2.status_code == 200
-    assert elapsed < 1.3           # different slugs never queue on each other
+
+    # True parallelism lands near serial/2; full serialization lands near
+    # serial/1 (ratio ~1.0). 0.85 sits well clear of both -- more headroom
+    # on the "pass" side than the bare 0.75 the review flagged as tight
+    # once the cold/warm asymmetry above is gone -- while still failing
+    # hard on a genuinely serialized run.
+    assert interleaved < serial * 0.85, (
+        f"interleaved={interleaved:.3f}s not well under "
+        f"serial={serial:.3f}s -- different slugs may be queuing on "
+        f"each other"
+    )
 
 
 @pytest.mark.asyncio

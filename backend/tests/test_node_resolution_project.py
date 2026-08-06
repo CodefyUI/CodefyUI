@@ -40,11 +40,33 @@ def test_csvreader_escape_is_rejected(project):
         CSVReaderNode().execute({}, {"path": "../escape.csv"})
 
 
-def test_csvreader_iris_default_special_cased_to_install(project):
-    # The bundled sample resolves against the install CWD (backend/), not the
-    # project, so demos keep working with no copy. cwd is backend/ under pytest.
-    if not Path("data/samples/iris.csv").exists():
+def test_csvreader_iris_default_special_cased_to_install(project, monkeypatch):
+    """The bundled sample resolves against the install CWD (backend/), not
+    the project, so demos keep working with no copy (spec 7.2).
+
+    The node's OWN resolution for this special case is cwd-relative BY
+    DESIGN (csv_reader_node.py: ``path.resolve()`` against whatever the
+    process's cwd is) -- matching real deployment, where the server always
+    runs from backend/ (see scripts/dev.py's ``os.chdir``). So the test
+    pins its OWN cwd to backend/ via monkeypatch rather than trusting
+    whatever pytest happened to be invoked with.
+
+    The previous version instead just checked ``Path("data/samples/
+    iris.csv").exists()`` and skipped if not -- but THAT check is exactly
+    as cwd-relative as the bug #185 fixes elsewhere, so from the repo root
+    it reported the false reason "iris sample not present in this
+    checkout" for a file that is very much present, just not at that path
+    relative to THAT cwd (#185 follow-up). Anchoring only the ``.exists()``
+    check on ``__file__`` is not enough on its own: it would make the skip
+    message honest but then let the node call below fail for real, since
+    the node's resolution would still run under the repo-root cwd -- fixed
+    here instead by making backend/ the actual cwd for this test's
+    duration, so the feature is exercised the way it is deployed.
+    """
+    backend_dir = Path(__file__).resolve().parents[1]
+    if not (backend_dir / "data" / "samples" / "iris.csv").exists():
         pytest.skip("iris sample not present in this checkout")
+    monkeypatch.chdir(backend_dir)
     out = CSVReaderNode().execute(
         {}, {"path": "data/samples/iris.csv", "target_column": "species"})
     assert out["tensor"].shape[0] > 0

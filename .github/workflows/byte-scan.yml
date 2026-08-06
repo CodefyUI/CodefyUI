@@ -1,0 +1,41 @@
+name: Byte Scan
+
+# Fails the build when a tracked source file contains a raw C0 control byte
+# (#209) -- five times so far the root cause has been a one-byte typo (a
+# raw separator instead of an escaped one) that no test, type check or
+# lint catches, and that ripgrep/git grep silently skip rather than
+# search. See scripts/check_control_bytes.py for the detection approach
+# and why it has to be a byte count rather than a grep.
+#
+# No `paths:` filter: every historical instance was a single stray byte
+# inside an otherwise-ordinary file, and the ones caught before reaching
+# main were all under frontend/src/ -- gating this the way backend-test.yml
+# and frontend-build.yml gate on their own areas would leave the other
+# areas unscanned on PRs that don't touch that path. The scan itself is
+# sub-second over the whole tree, so there is no cost to running it always.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: scan tracked files for raw control bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      # No third-party dependency -- stdlib only -- so the system Python
+      # already on the runner image is enough; no setup-python step needed.
+      - name: Scan for raw C0 control bytes
+        run: python3 scripts/check_control_bytes.py
