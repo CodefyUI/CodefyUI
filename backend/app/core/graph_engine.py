@@ -2207,7 +2207,15 @@ async def execute_graph(
 
         # All attempts failed
         assert last_error is not None
-        error_detail: dict[str, str] = {"error": str(last_error)}
+        # `str(exc)` never contains the exception's class name -- str(KeyError('tensor'))
+        # is "'tensor'". The UI's beginner-friendly error mapping used to scan for a
+        # "KeyError:" prefix that this payload could not produce, so every rule in it
+        # was unreachable. Send the type as its own field instead of asking the client
+        # to recover it from the message shape.
+        error_detail: dict[str, str] = {
+            "error": str(last_error),
+            "error_type": type(last_error).__name__,
+        }
         if settings.DEBUG and last_traceback:
             error_detail["traceback"] = last_traceback
         if error_mode == "fail_fast":
