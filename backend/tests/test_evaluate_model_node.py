@@ -208,3 +208,71 @@ def test_precision_bf16_runs_the_forward_pass_in_bf16_but_keeps_params_fp32():
         {"device": "cpu", "precision": "bf16"})
     assert probe.seen_dtype == torch.bfloat16
     assert probe.linear.weight.dtype == torch.float32
+
+
+# ── 1d (#202): step, so several EvaluateModel nodes in one graph don't
+# overwrite each other's point on the eval_accuracy chart ──────────────
+
+
+class _RecordingContext:
+    """Collects log_metric calls; should_stop always False. Mirrors the
+    stub of the same name in test_training_loop_node.py."""
+
+    def __init__(self):
+        self.current_node_id = "eval"
+        self.metrics: list[tuple[str, float, int]] = []
+
+    def should_stop(self):
+        return False
+
+    def log_metric(self, name, value, step, node_id=None):
+        self.metrics.append((name, value, step))
+
+    def can_record_artifacts(self):
+        return False
+
+
+def test_step_param_defaults_to_1_matching_the_prior_hardcoded_behaviour():
+    p = next(p for p in EvaluateModelNode.define_params() if p.name == "step")
+    assert p.default == 1
+
+
+def test_eval_accuracy_is_logged_at_the_default_step_1():
+    """Regression pin: leaving `step` unset must behave exactly like the
+    previous hardcoded `context.log_metric("eval_accuracy", accuracy, 1)`."""
+    ctx = _RecordingContext()
+    result = EvaluateModelNode().execute(
+        {"model": _fresh_model(), "dataset": _dataset()}, {}, context=ctx)
+    assert ctx.metrics == [("eval_accuracy", result["accuracy"], 1)]
+
+
+def test_two_evaluate_model_nodes_with_different_steps_do_not_collide():
+    """Acceptance: several EvaluateModel nodes in one graph no longer
+    overwrite each other -- e.g. a before/after-fine-tuning comparison,
+    each logged at its own step on the shared eval_accuracy series."""
+    ctx = _RecordingContext()
+    EvaluateModelNode().execute(
+        {"model": _fresh_model(), "dataset": _dataset()},
+        {"step": 1}, context=ctx)
+    EvaluateModelNode().execute(
+        {"model": _fresh_model(), "dataset": _dataset()},
+        {"step": 2}, context=ctx)
+    steps = [step for name, _, step in ctx.metrics if name == "eval_accuracy"]
+    assert steps == [1, 2]
+
+
+# ── #202 review fix (Minor 5) ────────────────────────────────────────
+
+
+def test_step_is_clamped_to_its_own_declared_min_value_of_0():
+    """The in-code comment claims step is "coerced and clamped ... like
+    batch_size above" (which does max(1, int(...))); step's own
+    ParamDefinition declares min_value=0. A hand-built graph.json
+    bypassing the editor's bounds must not reach a negative step -- the
+    comment's claim must be true, not just fixed prose."""
+    ctx = _RecordingContext()
+    EvaluateModelNode().execute(
+        {"model": _fresh_model(), "dataset": _dataset()},
+        {"step": -5}, context=ctx)
+    steps = [step for name, _, step in ctx.metrics if name == "eval_accuracy"]
+    assert steps == [0]

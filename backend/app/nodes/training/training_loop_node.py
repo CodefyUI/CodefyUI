@@ -401,6 +401,17 @@ class TrainingLoopNode(BaseNode):
     to INFER from the epoch progress payload was called ``loss``; it is
     ``train_loss`` now, which is the same number under a name that lines up
     with ``val_loss``.
+
+    **val_accuracy (#202).** Recorded alongside ``val_loss``, under the same
+    gate (a validation loader must be wired) plus one more: ``loss_fn`` must
+    be a classification loss (``nn.CrossEntropyLoss`` or ``nn.NLLLoss`` --
+    the only two in this repo's loss map whose targets are integer class
+    indices against ``[B, C]`` logits, which is the shape ``argmax(dim=1)``
+    assumes). A regression or BCE run therefore never gets a val_accuracy
+    series. ``monitor`` (default ``val_loss``) can point early stopping at
+    it instead; requesting ``val_accuracy`` without either gate above
+    holding falls back to ``val_loss`` with a warning rather than
+    comparing against a value that was never computed.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -472,8 +483,23 @@ class TrainingLoopNode(BaseNode):
                 name="early_stopping_patience",
                 param_type=ParamType.INT,
                 default=0,
-                description="Stop if val loss doesn't improve for N epochs (0 = disabled)",
+                description="Stop if the monitored metric doesn't improve for N epochs (0 = disabled)",
                 min_value=0,
+            ),
+            ParamDefinition(
+                name="monitor",
+                param_type=ParamType.SELECT,
+                default="val_loss",
+                description=(
+                    "Metric early stopping watches. val_loss: lower is "
+                    "better (the default). val_accuracy: higher is "
+                    "better -- only recorded for a classification loss "
+                    "(CrossEntropyLoss/NLLLoss) with a val_dataloader "
+                    "wired; falls back to val_loss with a warning when "
+                    "neither holds, rather than watching a value that "
+                    "was never computed."
+                ),
+                options=["val_loss", "val_accuracy"],
             ),
             ParamDefinition(
                 name="checkpoint_every",
@@ -518,7 +544,11 @@ class TrainingLoopNode(BaseNode):
                 description=(
                     "Mixed precision. bf16 roughly halves activation memory "
                     "on Ampere and newer with no other change; fp16 does the "
-                    "same on older cards and adds a loss scaler. A device "
+                    "same on older cards and adds a loss scaler. val_accuracy "
+                    "floats at this same precision rather than being forced "
+                    "to fp32, so it stays comparable with val_loss -- but a "
+                    "lower-precision logit can flip an argmax on a near-tie "
+                    "and shift the reported accuracy slightly. A device "
                     "that cannot honour the choice falls back to fp32 and "
                     "says so."
                 ),
@@ -661,6 +691,7 @@ class TrainingLoopNode(BaseNode):
         tb_writer: Any = None,
     ) -> dict[str, Any]:
         import torch
+        import torch.nn as nn
 
         from ...core.amp import AmpPolicy
         from ...core.device_utils import resolve_node_device, to_device
@@ -679,6 +710,17 @@ class TrainingLoopNode(BaseNode):
         dataloader = inputs["dataloader"]
         optimizer = inputs["optimizer"]
         loss_fn = inputs["loss_fn"]
+        # CrossEntropyLoss / NLLLoss are the only two losses in this repo's
+        # map (loss_node.py's LOSS_TYPES) whose targets are integer class
+        # indices against [B, C] logits -- the shape argmax(dim=1) assumes.
+        # Every other loss (BCE*, the regression losses) is not
+        # argmax-shaped, so val_accuracy is only ever computed, recorded,
+        # or monitored by early stopping when this holds. Getting this
+        # wrong in the permissive direction -- e.g. admitting
+        # BCEWithLogitsLoss -- either crashes on a shape mismatch or
+        # silently broadcasts into a meaningless number, which is worse
+        # than not shipping the feature at all.
+        is_classification_loss = isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))
         val_dataloader = inputs.get("val_dataloader")
         lr_scheduler = inputs.get("lr_scheduler")
         start_epoch = _coerce_start_epoch(inputs.get("start_epoch"))
@@ -686,6 +728,7 @@ class TrainingLoopNode(BaseNode):
         epochs = params.get("epochs", 5)
         device = resolve_node_device(params.get("device"), context)
         patience = params.get("early_stopping_patience", 0)
+        monitor = params.get("monitor", "val_loss")
         checkpoint_every = int(params.get("checkpoint_every", 0) or 0)
         grad_clip = params.get("grad_clip_norm", 0.0)
         batch_metrics = bool(params.get("batch_metrics", False))
@@ -786,6 +829,7 @@ class TrainingLoopNode(BaseNode):
 
         epoch_losses: list[float] = []
         val_epoch_losses: list[float] = []
+        val_epoch_accuracies: list[float] = []
         lr_history: list[float] = []
 
         # #203: running total of what checkpoint_every has written so far
@@ -795,11 +839,66 @@ class TrainingLoopNode(BaseNode):
         # See checkpoint_every's own description for the size/cost warning.
         periodic_checkpoint_bytes = 0
 
-        # Early stopping state
-        best_val_loss = float("inf")
+        # Early stopping state.
+        #
+        # `monitor` picks which scalar is watched: val_loss (lower is
+        # better, the default -- unchanged from before this param existed)
+        # or val_accuracy (higher is better). val_accuracy only exists when
+        # BOTH gates above hold (a val_dataloader is wired AND loss_fn is
+        # classification -- see is_classification_loss); asking to monitor
+        # it without either means there is no series to watch. This
+        # codebase's convention for an unusable request is to degrade with
+        # a loud warning rather than fail the run (precision falling back
+        # to fp32, a scheduler replay that cannot proceed, ...), so the
+        # same rule applies here: fall back to val_loss, which itself falls
+        # further back to avg_train_loss via the pre-existing rule just
+        # below when there is no val_dataloader at all. Resolved once, here
+        # -- not per epoch -- so the warning (if any) is logged once.
+        #
+        # A THIRD reason joins the two above: `monitor` itself might not be
+        # one of the two values the param declares at all. The editor never
+        # sends anything else, but a hand-built graph.json or CLI
+        # invocation is not guaranteed to -- and a typo ("accuracy" instead
+        # of "val_accuracy") must not silently monitor loss with no signal,
+        # the same way the other two reasons are not silent.
+        monitor_is_accuracy = monitor == "val_accuracy"
+        monitor_fallback_reason: str | None = None
+        if patience > 0:
+            if monitor not in ("val_loss", "val_accuracy"):
+                monitor_fallback_reason = (
+                    f"{monitor!r} is not a recognised monitor value "
+                    "(expected 'val_loss' or 'val_accuracy')"
+                )
+            elif monitor_is_accuracy and val_dataloader is None:
+                monitor_fallback_reason = "no val_dataloader is wired"
+            elif monitor_is_accuracy and not is_classification_loss:
+                monitor_fallback_reason = (
+                    "loss_fn is not a classification loss (CrossEntropyLoss "
+                    "or NLLLoss)"
+                )
+        if monitor_fallback_reason is not None:
+            logger.warning(
+                "monitor=%r was requested for early stopping, but %s. "
+                "Falling back to monitor=val_loss.",
+                monitor, monitor_fallback_reason,
+            )
+            monitor_is_accuracy = False
+        best_monitor_value = float("-inf") if monitor_is_accuracy else float("inf")
         best_epoch = 0
         best_state_dict = None
         patience_counter = 0
+        # Set True the epoch early stopping actually breaks the loop on.
+        # NOT derived from best_state_dict/patience_counter at exit time
+        # (which is what metrics["stopped_early"] used to do): the
+        # monitor=val_accuracy degenerate path below can leave
+        # best_state_dict at None on every epoch (nothing ever counts as
+        # an improvement when there is nothing to compare), which made
+        # that derivation silently say False for a run that plainly did
+        # stop early.
+        early_stopping_triggered = False
+        # Logged once, the first epoch it happens, not every epoch of a
+        # persistently-empty val_dataloader.
+        monitor_value_missing_warned = False
 
         # Where a stop landed: the 0-based index of the batch that never ran,
         # and which loop it was in. None until someone presses Stop.
@@ -987,10 +1086,13 @@ class TrainingLoopNode(BaseNode):
 
             # ── Validation phase ──
             avg_val_loss = None
+            avg_val_accuracy = None
             if val_dataloader is not None:
                 model.eval()
                 val_running_loss = 0.0
                 val_batch_count = 0
+                val_correct = 0
+                val_total = 0
 
                 with torch.no_grad():
                     for batch_index, batch_data in enumerate(val_dataloader):
@@ -1022,6 +1124,30 @@ class TrainingLoopNode(BaseNode):
                                 loss = loss_fn(outputs)
                         val_running_loss += loss.item()
                         val_batch_count += 1
+
+                        # Accuracy from this SAME forward pass -- no second
+                        # model call. Same argmax-vs-label comparison as
+                        # EvaluateModel (evaluate_model_node.py:163-165),
+                        # deliberately at whatever precision ``outputs`` was
+                        # already produced at (the policy above) rather than
+                        # forced to fp32: the val_loss next to it is not
+                        # fp32-forced either, and the two must stay
+                        # comparable (see the ``precision`` param
+                        # description for the consequence -- a lower-
+                        # precision logit can flip an argmax on a near-tie).
+                        #
+                        # Classification-only: see is_classification_loss
+                        # above. A regression/BCE loss's outputs are not
+                        # [B, C] class logits, so argmax(dim=1) over them is
+                        # not "the predicted class" -- it is a shape that
+                        # happens to run (or, for a [B, 1] regression head,
+                        # a broadcasted comparison that happens NOT to
+                        # crash) and a number with no meaning either way.
+                        if is_classification_loss and targets is not None:
+                            pred = outputs.argmax(dim=1)
+                            val_correct += int((pred == targets).sum().item())
+                            val_total += int(targets.numel())
+
                         throttle.emit({
                             "event": EVENT_BATCH,
                             "epoch": epoch + 1,
@@ -1040,6 +1166,9 @@ class TrainingLoopNode(BaseNode):
 
                 avg_val_loss = val_running_loss / max(val_batch_count, 1)
                 val_epoch_losses.append(avg_val_loss)
+                if is_classification_loss and val_total > 0:
+                    avg_val_accuracy = val_correct / val_total
+                    val_epoch_accuracies.append(avg_val_accuracy)
 
             # ── LR Scheduler step ──
             if lr_scheduler is not None:
@@ -1055,9 +1184,31 @@ class TrainingLoopNode(BaseNode):
             # ── Early stopping check ──
             stopped_early = False
             if patience > 0:
-                monitor_loss = avg_val_loss if avg_val_loss is not None else avg_train_loss
-                if monitor_loss < best_val_loss:
-                    best_val_loss = monitor_loss
+                if monitor_is_accuracy:
+                    monitor_value = avg_val_accuracy
+                else:
+                    monitor_value = avg_val_loss if avg_val_loss is not None else avg_train_loss
+                # monitor_value can only be None here if monitor_is_accuracy
+                # but this SPECIFIC epoch produced no accuracy points (e.g.
+                # an empty val_dataloader) despite the run-level gates
+                # passing. Loud, like the two run-level fallbacks above:
+                # silently spending patience on a comparison that never
+                # happened would be the same mistake in a smaller dose.
+                if (monitor_is_accuracy and monitor_value is None
+                        and not monitor_value_missing_warned):
+                    logger.warning(
+                        "monitor=val_accuracy but epoch %d produced no "
+                        "val_accuracy points (e.g. an empty val_dataloader); "
+                        "treating it as no improvement for early stopping.",
+                        epoch + 1,
+                    )
+                    monitor_value_missing_warned = True
+                improved = monitor_value is not None and (
+                    monitor_value > best_monitor_value if monitor_is_accuracy
+                    else monitor_value < best_monitor_value
+                )
+                if improved:
+                    best_monitor_value = monitor_value
                     best_epoch = epoch + 1
                     best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
                     patience_counter = 0
@@ -1066,6 +1217,7 @@ class TrainingLoopNode(BaseNode):
 
                 if patience_counter >= patience:
                     stopped_early = True
+                    early_stopping_triggered = True
 
             logger.info(
                 "Epoch %d/%d - Train Loss: %.4f%s%s",
@@ -1088,6 +1240,8 @@ class TrainingLoopNode(BaseNode):
             record_metric("train_loss", avg_train_loss, epoch + 1)
             if avg_val_loss is not None:
                 record_metric("val_loss", avg_val_loss, epoch + 1)
+            if avg_val_accuracy is not None:
+                record_metric("val_accuracy", avg_val_accuracy, epoch + 1)
             record_metric("lr", current_lr, epoch + 1)
             if patience > 0:
                 record_metric("patience_counter", patience_counter,
@@ -1106,6 +1260,8 @@ class TrainingLoopNode(BaseNode):
                 if avg_val_loss is not None:
                     progress_data["val_loss"] = round(avg_val_loss, 6)
                     progress_data["val_losses"] = [round(l, 6) for l in val_epoch_losses]
+                if avg_val_accuracy is not None:
+                    progress_data["val_accuracy"] = round(avg_val_accuracy, 6)
                 if patience > 0:
                     progress_data["patience_counter"] = patience_counter
                     progress_data["best_epoch"] = best_epoch
@@ -1215,11 +1371,20 @@ class TrainingLoopNode(BaseNode):
         metrics = {
             "final_train_loss": epoch_losses[-1] if epoch_losses else 0.0,
             "final_val_loss": val_epoch_losses[-1] if val_epoch_losses else None,
+            "final_val_accuracy": val_epoch_accuracies[-1] if val_epoch_accuracies else None,
             "best_epoch": best_epoch if patience > 0 else completed_epochs,
             "total_epochs_run": len(epoch_losses),
             "start_epoch": start_epoch,
             "last_epoch": completed_epochs,
-            "stopped_early": best_state_dict is not None and patience_counter >= patience,
+            # #202 review: was `best_state_dict is not None and
+            # patience_counter >= patience`, an indirect proxy that
+            # silently read False whenever best_state_dict never got set
+            # -- which the monitor=val_accuracy degenerate path (an empty
+            # val_dataloader; see early_stopping_triggered's own comment)
+            # made newly possible even though the loop DID exit early.
+            # early_stopping_triggered is set at the exact point the break
+            # actually happens, so it cannot drift from what the loop did.
+            "stopped_early": early_stopping_triggered,
             "lr_history": lr_history,
             "interrupted": stopped_at is not None,
             # How much training actually happened, and whether the budget is
@@ -1237,6 +1402,13 @@ class TrainingLoopNode(BaseNode):
         }
         if policy.fell_back:
             metrics["precision_requested"] = policy.requested
+        if patience > 0:
+            # Only meaningful when early stopping actually ran -- with
+            # patience=0, monitor is not consulted at all, so reporting it
+            # would imply a comparison that never happened.
+            metrics["monitor"] = "val_accuracy" if monitor_is_accuracy else "val_loss"
+            if monitor_fallback_reason is not None:
+                metrics["monitor_requested"] = monitor
         # ``tensorboard_logdir`` is added by ``execute`` after the writer is
         # closed and registered, which happens in a ``finally`` outside this
         # method so a run that raises still gets its artifact row.
