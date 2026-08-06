@@ -157,6 +157,11 @@ CAPABILITY_MODULES: dict[str, tuple[str, ...]] = {
         "gzip",
         "lzma",
         "pathlib",
+        # core#177 CI round 2 -- readline.add_history(s) +
+        # .write_history_file(path) is an attacker-directed write of
+        # attacker-directed content, verified directly. See
+        # plugin_validator._DANGEROUS_MODULES for the full writeup.
+        "readline",
         "shutil",
         "sqlite3",
         "tarfile",
@@ -312,7 +317,31 @@ TIER0_PATH_HELPERS: tuple[str, ...] = (
 #: in source and in CI output, rather than silently passing a green suite
 #: the way ``nt``/``posix`` did.
 #:
-#: Three shapes below, not one:
+#: **This set is a UNION across platforms and CPython versions, not a
+#: snapshot of one interpreter.** ``sys.builtin_module_names`` differs by
+#: both: Windows compiles in ``nt`` / ``winreg`` / ``msvcrt`` / ``_winapi``
+#: and never ``posix`` / ``pwd`` / ``grp`` / ``spwd`` / ``fcntl`` / ...; the
+#: reverse holds on Linux; and even within Linux, 3.10/3.11 lack
+#: ``_xxinterpchannels`` (3.12+ only) while 3.12 merges ``_sha256`` /
+#: ``_sha512`` into a single ``_sha2``. core#177's CI round-2 failure was
+#: exactly this: a dict built and tested on one interpreter (Windows) went
+#: green there and red on all three of CI's Linux runners, 19-20 names at
+#: once. Adding an entry here is a commitment about that MODULE, not about
+#: any one build -- expect this dict to keep growing as it meets
+#: interpreters it hasn't met yet, and do not assume an entry present here
+#: implies the module exists on whatever platform is running the suite.
+#:
+#: That asymmetry is safe by construction, not merely hoped: the enumeration
+#: test below (:func:`test_every_builtin_module_is_classified_as_blocked_or_accepted`
+#: in ``test_tiered_policy.py``) walks ``sys.builtin_module_names`` -- the
+#: CURRENT interpreter's real list -- and asks only whether each of THOSE
+#: names is classified. It never asks the reverse (whether every entry in
+#: this dict exists on the current interpreter), so a Windows-only entry
+#: sitting unused while the suite runs on Linux is inert, not an error --
+#: verified directly, not merely reasoned about, by re-reading the
+#: assertion's comprehension before extending this dict for CI round 2.
+#:
+#: Four shapes below, not three:
 #:
 #: 1. **Closed: the wrapper is already unrestricted, so the accelerator
 #:    grants nothing new.** ``_io`` (behind plain ``open()``, which
@@ -327,21 +356,33 @@ TIER0_PATH_HELPERS: tuple[str, ...] = (
 #:    see core#177's own review for the specific check that caught
 #:    ``__pycache__`` being asserted safe on the strength of an argument
 #:    that was never actually tried.
-#: 3. **Deferred: real, verified capability, needs the maintainer's
-#:    per-name judgment call, tracked rather than resolved here.**
-#:    ``_signal``, and eleven more raw C-implementation modules sitting
-#:    directly behind an already-blocklisted or capability-gated wrapper --
+#: 3. **Deferred: raw C-implementation module sitting directly behind an
+#:    already-blocklisted or capability-gated wrapper.**
 #:    :data:`app.core.script_proxy._BLOCKED_IMPLEMENTATION_ROOTS` (the
 #:    runtime boundary for in-canvas scripts) already recognises every one
 #:    of them as dangerous; that recognition was simply never ported to the
-#:    install-time blocklist (core#215). ``winreg`` (full Windows registry
-#:    read/write/delete -- a real persistence and data-exfiltration
-#:    primitive) and ``_xxsubinterpreters`` (``run_string(id, script,
-#:    shared)`` executes an arbitrary string in a sub-interpreter -- an
-#:    ``exec()``-equivalent primitive under a name ``_DANGEROUS_NAMES``
-#:    never looks for) are a different shape again -- not a hidden
-#:    implementation behind something already blocked, but a whole surface
-#:    nobody had considered -- tracked separately (core#216).
+#:    install-time blocklist (core#215). Not resolved here even where the
+#:    wrapper's own capability is a one-line mechanical match (``_bz2``
+#:    behind ``bz2``, already ``filesystem``): CI round 2 kept the
+#:    you-decide-the-check / maintainer-decides-the-blocklist split rather
+#:    than treating "structurally the same shape as something already
+#:    deferred" as licence to resolve five more of them unilaterally.
+#: 4. **Deferred: a whole surface nobody had considered, not a hidden
+#:    implementation behind something already blocked.** ``winreg`` (full
+#:    Windows registry read/write/delete), ``_xxsubinterpreters``
+#:    (``run_string(id, script, shared)`` executes an arbitrary string in a
+#:    sub-interpreter -- an ``exec()``-equivalent primitive under a name
+#:    ``_DANGEROUS_NAMES`` never looks for), ``pwd`` / ``grp`` (POSIX user /
+#:    group database reads) and more added over two CI rounds -- tracked
+#:    separately (core#216).
+#:
+#: Two names broke shape 3/4's "defer, don't decide" pattern in CI round 2,
+#: each independently verified rather than assumed dangerous or assumed
+#: safe: ``readline`` (an attacker-directed file WRITE, proven) and ``spwd``
+#: (a shadow-password-database READ that bypasses its own file's permission
+#: bits via NSS, proven) are both on the blocklist outright -- see
+#: :data:`app.core.plugin_validator._DANGEROUS_MODULES` for the writeup on
+#: each.
 ACCEPTED_UNGATED_MODULES: dict[str, str] = {
     # ── shape 1: the wrapper is already unrestricted or already Tier 0 ──
     "_io": (
@@ -449,6 +490,28 @@ ACCEPTED_UNGATED_MODULES: dict[str, str] = {
                   "as low-severity in the os.path exception's own docs",
     "_suggestions": "typo-suggestion machinery behind error messages "
                     "('did you mean ...'); pure introspection, no I/O",
+    # core#177 CI round 2 (Linux-only names, surfaced only once the
+    # enumeration test met a real Linux interpreter):
+    "_decimal": "the C accelerator behind decimal, already in "
+                "TIER0_PURE_COMPUTE_MODULES with zero declaration; grants "
+                "nothing decimal doesn't already",
+    "_hashlib": "OpenSSL-backed hash dispatcher (hashlib.new(...)); pure "
+                "transform of in-memory bytes, same category as the "
+                "individual _md5/_sha1/etc. accelerators above",
+    "_queue": "thread-safe FIFO held entirely in memory; no I/O of its own, "
+              "and needs _thread (already tracked, core#215) to do anything "
+              "concurrent -- inert on its own",
+    "_uuid": "UUID generation; uuid1() reads the network interface's MAC "
+             "address for uniqueness, a minor hardware-identifier read, not "
+             "a file/network/process/environment capability",
+    "_zoneinfo": "reads the IANA timezone database (e.g. "
+                 "/usr/share/zoneinfo); a public, non-secret, system-standard "
+                 "dataset, not user data -- same category as _locale above",
+    "_testinternalcapi": "CPython's own internal-test-only C API, not a "
+                         "stable or supported surface for third-party code; "
+                         "test scaffolding, not shipped functionality",
+    "_xxtestfuzz": "CPython's own fuzz-testing scaffold module; test "
+                   "infrastructure, not shipped functionality",
     # ── shape 3: real capability, verified, deferred to the maintainer ──
     "pwd": "POSIX: reads the password database (usernames, UIDs, home "
            "directories, login shells) for every account on the machine "
@@ -479,6 +542,35 @@ ACCEPTED_UNGATED_MODULES: dict[str, str] = {
     "_imp": "raw import machinery, lower-level than importlib (Tier-2-only today) -- core#215",
     "_frozen_importlib": "CPython's own bootstrap import machinery -- core#215",
     "_frozen_importlib_external": "same as _frozen_importlib -- core#215",
+    # core#177 CI round 2 -- five more of shape 3, each a mechanical match to
+    # an already-blocked wrapper's own capability, deliberately NOT resolved
+    # here (see the header: "structurally the same shape" was not treated as
+    # licence to decide five more of these unilaterally).
+    "_asyncio": "raw C accelerator behind asyncio, itself already "
+                "Tier-2-only (no capability) -- core#215",
+    "_bz2": 'raw C accelerator behind bz2, itself already capability-gated '
+            '("filesystem") -- core#215',
+    "_lzma": 'raw C accelerator behind lzma, itself already capability-gated '
+             '("filesystem") -- core#215',
+    "_posixshmem": (
+        "raw POSIX shared-memory primitive (shm_open/shm_unlink) behind "
+        "multiprocessing.shared_memory; multiprocessing is already "
+        "Tier-2-only. Verified directly reachable WITHOUT ever importing "
+        "multiprocessing at all -- created a real /dev/shm object through "
+        "_posixshmem alone -- core#215"
+    ),
+    "_sqlite3": (
+        'raw C accelerator behind sqlite3, itself already capability-gated '
+        '("filesystem", and that module\'s own blocklist comment already '
+        "names extension-loading as part of the reason). Worth the "
+        "maintainer's attention regardless: verified directly that "
+        "Connection.enable_load_extension(True) + .load_extension(path) "
+        "loads an arbitrary shared library into the process -- a "
+        "ctypes-equivalent native-code primitive, which may mean "
+        "\"filesystem\" already under-describes what sqlite3/_sqlite3 grant, "
+        "not only that _sqlite3 needs the same tag its wrapper has -- "
+        "core#215"
+    ),
     "winreg": "Windows: full registry read/write/delete -- persistence and "
               "data-exfiltration primitive, no existing capability covers "
               "it -- core#216",
@@ -487,6 +579,35 @@ ACCEPTED_UNGATED_MODULES: dict[str, str] = {
         "sub-interpreter -- an exec()-equivalent primitive under a name "
         "_DANGEROUS_NAMES never looks for -- core#216"
     ),
+    # core#177 CI round 2 -- six more of shape 4 (standalone surfaces, no
+    # already-blocked wrapper to match):
+    "_curses": "terminal UI manipulation (raw mode, screen control) on a "
+               "REAL controlling tty if one is attached (e.g. `cdui start` "
+               "run in a terminal); not a file/network/process/environment "
+               "capability -- a display/input-takeover primitive scoped to "
+               "whatever tty the process happens to have -- core#216",
+    "_curses_panel": "curses' window-stacking extension; adds no capability "
+                     "beyond _curses itself -- core#216",
+    "ossaudiodev": "opens OSS audio device files (e.g. /dev/dsp) if present; "
+                   "a real, if obsolete and typically absent on a modern "
+                   "Linux/CI host, audio-capture primitive -- core#216",
+    "resource": "reads/sets the CURRENT process's own resource limits "
+                "(open files, CPU time, memory, ...); verified an "
+                "unprivileged process cannot raise a hard limit past its "
+                "existing ceiling (ValueError: not allowed to raise maximum "
+                "limit), so this is self-DoS-shaped, not privilege "
+                "escalation -- and CPU/memory DoS against the host process "
+                "is already explicitly out of this gate's stated scope (see "
+                "script_policy's own \"nothing here contains CPU or memory "
+                "either\") -- core#216",
+    "termios": "terminal I/O mode control (raw/cooked, echo) on a REAL "
+               "controlling tty if one is attached; same scope and severity "
+               "class as _curses above, tracked together -- core#216",
+    "_xxinterpchannels": "3.12+ only: channel-based communication between "
+                         "sub-interpreters, the companion module to "
+                         "_xxsubinterpreters above; does not itself execute "
+                         "code but is part of the same PEP 554 family -- "
+                         "core#216",
 }
 
 

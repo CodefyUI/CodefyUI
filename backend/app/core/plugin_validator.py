@@ -117,6 +117,31 @@ _DANGEROUS_MODULES = frozenset({
     # idea what module it is looking at. Gated by ``process-env``, same as
     # ``os`` -- they ARE ``os``, under the name it briefly imports them by.
     "nt", "posix",
+    # core#177 CI round 2 -- the enumeration test meeting a real Linux
+    # interpreter surfaced 19-20 unclassified names (platform- and
+    # version-dependent). Two earned an outright decision here rather than
+    # deferral to ``ACCEPTED_UNGATED_MODULES`` in security_tiers.py, each
+    # independently verified, not assumed to be dangerous by name alone:
+    #
+    # ``readline`` -- ``readline.add_history(s)`` accepts an arbitrary
+    # string, and ``readline.write_history_file(path)`` writes the
+    # accumulated history to an arbitrary path: an attacker-directed write of
+    # attacker-directed content, verified directly (wrote a marked payload,
+    # read the target file back and confirmed it landed). Gated by
+    # ``filesystem``, the same bucket ``pathlib`` / ``tempfile`` / ``shutil``
+    # already sit in -- it is, once you look past the "line editing" framing,
+    # a file-writing library like the rest of that group.
+    #
+    # ``spwd`` -- reads the shadow password-hash database
+    # (``spwd.getspnam()``). The module's own docstring says "You have to be
+    # root to be able to use this module"; verified directly that this is
+    # not reliably true: on a real system, a plain ``open("/etc/shadow")``
+    # correctly raised ``PermissionError`` for an unprivileged account not in
+    # the ``shadow`` group, but ``spwd.getspnam()`` from the SAME account
+    # succeeded regardless -- NSS-mediated lookups can bypass the file's own
+    # permission bits. No existing capability fits "read the shadow
+    # database"; Tier 2 only, the same bucket as ``pickle`` / ``ctypes``.
+    "readline", "spwd",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver

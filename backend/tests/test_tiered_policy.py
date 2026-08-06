@@ -216,6 +216,25 @@ _MATRIX: list[tuple[str, str | None]] = [
     # same tier.
     ("nt", "process-env"),
     ("posix", "process-env"),
+    # core#177 CI round 2 -- surfaced by the enumeration test meeting a real
+    # Linux interpreter (nineteen/twenty unclassified names, platform- and
+    # version-dependent). Two of them earned an outright decision rather than
+    # deferral to ACCEPTED_UNGATED_MODULES, each independently verified, not
+    # assumed:
+    #   `readline.add_history(s)` + `.write_history_file(path)` writes
+    #   attacker-directed content to an attacker-chosen path -- verified
+    #   directly (wrote a marked payload, read it back from the target file).
+    #   Same shape as CAPABILITY_MODULES["filesystem"]'s other members.
+    ("readline", "filesystem"),
+    # `spwd.getspnam()` reads the shadow password-hash database. Verified
+    # directly (not assumed from "you have to be root", which the module's
+    # own docstring claims and which turned out to be false in practice): a
+    # plain `open("/etc/shadow")` correctly raised PermissionError for an
+    # unprivileged, non-`shadow`-group test account, but `spwd.getspnam()`
+    # from the SAME account succeeded -- NSS-mediated access can bypass the
+    # file's own permission bits. No existing capability fits "read the
+    # shadow database"; Tier 2 only, same bucket as `pickle` / `ctypes`.
+    ("spwd", None),
     ("subprocess", None),
     ("ctypes", None),
     ("importlib", None),
