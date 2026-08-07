@@ -98,12 +98,17 @@ def test_rejects_an_unrelated_process_inside_our_checkout(rooted):
 
 
 def test_vite_is_matched_as_a_path_component_not_a_substring(rooted):
-    """A bare substring test would claim `invite.py` is a dev server. It
-    lives in ROOT, so the ownership half would not save it."""
-    assert not dev._is_this_install_process(
-        ["python", str(rooted / "scripts" / "invite.py")], str(rooted))
+    """A bare substring test would claim `invite.py` is a dev server, and a
+    stem-only test would claim a graph named `vite.json` is. Both live in
+    ROOT, so the ownership half of the rule cannot save them."""
+    for benign in (str(rooted / "scripts" / "invite.py"),
+                   str(rooted / "graphs" / "vite.json"),
+                   str(rooted / "backend" / "vitest.config.ts")):
+        assert not dev._is_this_install_process(["python", benign],
+                                                str(rooted)), benign
     # The spellings that must still match.
     for part in ("vite",
+                 str(rooted / "frontend" / "node_modules" / ".bin" / "vite.cmd"),
                  str(rooted / "frontend" / "node_modules" / "vite" / "bin"
                      / "vite.js")):
         assert dev._is_this_install_process(["node", part], str(rooted)), part

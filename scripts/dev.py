@@ -2144,10 +2144,14 @@ def _under_root(path: "str | None") -> bool:
     return candidate == root or candidate.startswith(root + os.sep)
 
 
-#: `vite` as a whole path component or file stem — ``node_modules/vite/…``,
-#: ``…/vite.js``, or the bare word — never as a substring, so a script named
-#: `invite.py` is not mistaken for a dev server.
-_VITE_RE = re.compile(r"(^|[\\/])vite([\\/.]|$)")
+#: `vite` as a whole path component (``node_modules/vite/…``) or as the
+#: executable itself (``…/vite``, ``…/vite.js``, ``…\vite.cmd``). Never a
+#: bare substring: `invite.py` is not a dev server, and neither is a graph
+#: file someone happened to name `vite.json`.
+_VITE_RE = re.compile(
+    r"(^|[\\/])vite[\\/]"
+    r"|(^|[\\/])vite(\.(js|cjs|mjs|cmd|exe|bat|ps1))?$"
+)
 
 
 def _looks_like_a_codefyui_service(cmdline: "list[str]") -> bool:
