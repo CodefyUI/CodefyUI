@@ -404,10 +404,11 @@ async def test_concurrent_roots_persist_under_their_own_node_ids() -> None:
     one per level. ``SequentialModel`` is a root, and several models on one
     canvas all start at level 0.
     """
-    spec = json.loads(
-        json.loads(_SHIPPED_EXAMPLE.read_text(encoding="utf-8"))
-        ["nodes"][1]["data"]["params"]["layers"]
-    )
+    payload = json.loads(_SHIPPED_EXAMPLE.read_text(encoding="utf-8"))
+    spec = json.loads(next(
+        n["data"]["params"]["layers"] for n in payload["nodes"]
+        if n["type"] == "SequentialModel"
+    ))
     model_ids = [f"model-{i}" for i in range(4)]
     nodes = [{"id": "start", "type": "Start", "data": {"params": {}}}] + [
         {"id": mid, "type": "SequentialModel",
