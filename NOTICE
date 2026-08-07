@@ -1,0 +1,45 @@
+CodefyUI
+Copyright (C) 2026 CodefyUI (https://github.com/CodefyUI)
+and the CodefyUI contributors.
+
+CodefyUI is a visual, node-based deep learning pipeline builder.
+Project home: https://github.com/CodefyUI/CodefyUI
+
+
+LICENSING
+---------
+
+CodefyUI is offered under a dual-path licensing model.
+
+  Open source path
+      GNU Affero General Public License, version 3.0 only
+      (SPDX: AGPL-3.0-only). The complete license text is in the file
+      LICENSE distributed with this software. This path covers individual
+      developers, small teams, education, research, community use, and any
+      other use case that can comply with AGPL-3.0 -- including running the
+      unmodified program inside a company.
+
+  Commercial path
+      A separate proprietary license, granted by the copyright holder named
+      above, for proprietary, closed-source, SaaS, OEM, enterprise, or other
+      use that needs terms outside AGPL-3.0. See COMMERCIAL-LICENSE.md.
+
+This NOTICE file is informational. It does not modify the terms of LICENSE.
+Where this file and LICENSE disagree, LICENSE governs.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+CodefyUI redistributes third-party software, both as Python dependencies and
+as compiled assets inside the prebuilt frontend bundle. Their copyright
+notices and license terms are collected in THIRD_PARTY_NOTICES.md, which is
+distributed alongside this file.
+
+
+CONTRIBUTIONS
+-------------
+
+Contributions are accepted under the Developer Certificate of Origin 1.1 and
+the inbound licensing terms stated in CONTRIBUTING.md. Contributors retain
+copyright in their own contributions.

@@ -3,6 +3,7 @@
   "private": true,
   "version": "2.1.1",
   "license": "AGPL-3.0-only",
+  "author": "CodefyUI (https://github.com/CodefyUI)",
   "packageManager": "pnpm@9.15.0",
   "type": "module",
   "scripts": {

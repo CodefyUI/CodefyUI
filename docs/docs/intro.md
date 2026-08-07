@@ -68,5 +68,9 @@ CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node defin
 
 CodefyUI uses a dual-path licensing model:
 
-- **Open source** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE) for individuals, small teams, education, research, and community use.
+- **Open source** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE) for individual developers, small teams, education, research, community use, **and any other use case that can comply with AGPL-3.0**.
 - **Commercial** — for proprietary, closed-source, SaaS, OEM, or enterprise use that needs terms outside AGPL-3.0, [contact the maintainers](https://github.com/CodefyUI/CodefyUI/issues).
+
+**Running CodefyUI unmodified — including on an internal company server — is permitted under AGPL-3.0 and needs no purchase.** Section 13's source-offer requirement is conditioned on *modifying* the program. The [Licensing FAQ](/licensing) works through what that means in practice, including how custom nodes and plugins are treated and what the commercial license actually covers.
+
+Copyright (C) 2026 CodefyUI and the CodefyUI contributors. Contributions are accepted under the Developer Certificate of Origin 1.1 — see [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md).

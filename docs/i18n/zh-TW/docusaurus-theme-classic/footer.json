@@ -39,6 +39,10 @@
     "message": "外掛範本",
     "description": "The label of footer link with label=Plugin Template linking to https://github.com/CodefyUI/CodefyUI-Plugin-Official"
   },
+  "link.item.label.Licensing FAQ": {
+    "message": "授權常見問題",
+    "description": "The label of footer link with label=Licensing FAQ linking to /licensing"
+  },
   "link.item.label.AGPL-3.0": {
     "message": "AGPL-3.0",
     "description": "The label of footer link with label=AGPL-3.0 linking to https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE"
@@ -48,7 +52,7 @@
     "description": "The label of footer link with label=Commercial linking to https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md"
   },
   "copyright": {
-    "message": "Copyright © 2026 CodefyUI. 以 Docusaurus 建置。",
+    "message": "Copyright © 2026 CodefyUI 及 CodefyUI 貢獻者。以 Docusaurus 建置。",
     "description": "The footer copyright"
   }
 }

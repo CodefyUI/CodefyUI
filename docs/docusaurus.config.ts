@@ -128,6 +128,7 @@ const config: Config = {
         {
           title: 'License',
           items: [
+            {label: 'Licensing FAQ', to: '/licensing'},
             {
               label: 'AGPL-3.0',
               href: 'https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE',
@@ -139,7 +140,9 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} CodefyUI. Built with Docusaurus.`,
+      // Holder string is mirrored in NOTICE, the README license section and
+      // backend/pyproject.toml's `authors` -- change all four together.
+      copyright: `Copyright © ${new Date().getFullYear()} CodefyUI and the CodefyUI contributors. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.github,

@@ -314,11 +314,21 @@ source .venv/bin/activate
 pytest tests/ -v
 ```
 
+## Contributing
+
+Pull requests are welcome. Contributions are accepted under the [Developer Certificate of Origin 1.1](https://developercertificate.org/) — commit with `git commit -s`.
+
+Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: it covers the sign-off, how to get a dev environment running, and the PR conventions this repo actually follows.
+
 ## License
+
+Copyright (C) 2026 CodefyUI (https://github.com/CodefyUI) and the CodefyUI contributors. See [NOTICE](NOTICE).
 
 CodefyUI uses a dual path licensing model:
 
 - **Open source path**: AGPL-3.0-only for individual developers, small teams, education, research, community use, and any other use case that can comply with AGPL-3.0.
 - **Commercial path**: proprietary, closed-source, SaaS, OEM, enterprise, or other use cases that need terms outside AGPL-3.0 should contact the maintainers for a commercial license.
+
+Running the unmodified program — including on an internal company server — is permitted under AGPL-3.0 and needs no purchase. AGPL-3.0 §13's source-offer requirement is conditioned on *modifying* the program. See the [Licensing FAQ](https://docs.codefyui.com/licensing) for the details, including what counts as a modification when you write a custom node or a plugin.
 
 Commercial licensing contact: https://github.com/CodefyUI/CodefyUI/issues
