@@ -2,7 +2,7 @@
 id              = "rl"
 name            = "Reinforcement Learning — 強化學習"
 version         = "0.1.0"
-description     = "Educational nodes for the I5 hands-on track: policy gradient (REINFORCE), PPO clip, GRPO group-normalized advantage, and RLHF preference loss. Each RL update is exposed step by step — softmax, gather, baseline, ratio, clip, loss — so the learner sees how rewards become a gradient."
+description     = "Educational content for the I5 hands-on track. One stepped-out node, Edu-PolicyGradient (REINFORCE), which exposes softmax → gather → log → baseline → loss so the learner sees how rewards become a gradient; plus four worked example graphs built from core nodes: the RL framework (C5-1), REINFORCE itself (C5-2), an RLHF reward model scoring two candidates (C5-3), and GRPO's group-relative advantage (C5-4)."
 schema_version  = 1
 requires_codefyui = ">=0.2.0"
 
@@ -12,4 +12,4 @@ examples_dir = "examples"
 
 [lessons]
 chapters = ["C5"]
-lessons  = ["C5-1", "C5-2", "C5-4"]
+lessons  = ["C5-1", "C5-2", "C5-3", "C5-4"]
