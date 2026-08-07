@@ -122,7 +122,7 @@ def test_scheduler_state_roundtrip(sched_type):
     take the **model weights** down with it. The saver therefore has to store
     something the loader can always read back, for every type the
     ``LRScheduler`` node is able to produce -- and torch has changed what those
-    state dicts contain between releases (this repo pins only ``torch>=2.0``,
+    state dicts contain between releases (this repo pins only ``torch>=2.5``,
     so CI resolves whatever is newest).
 
     The type to watch is ``MultiStepLR.milestones``, which is a

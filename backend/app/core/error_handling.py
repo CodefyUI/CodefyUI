@@ -123,17 +123,22 @@ def is_out_of_memory(exc: BaseException) -> bool:
 
     Three shapes, because torch has three:
 
-    * the dedicated exception class, under BOTH of its spellings.
-      ``torch.cuda.OutOfMemoryError`` is the one that exists on 2.0-2.4 --
-      precisely the range this project's declared floor still admits --
-      and ``torch.OutOfMemoryError`` is the 2.5+ name it became an alias
-      of. Checking only the newer spelling would leave the older builds
-      relying on the message match below, which is the fallback rather
-      than the answer.
+    * ``torch.OutOfMemoryError``, the dedicated exception class. It arrived
+      in 2.5 and ``torch.cuda.OutOfMemoryError`` -- the only spelling on
+      2.0-2.4 -- is an alias of it from that release on, so with the 2.5
+      floor this project declares (core#192) the one name covers both. The
+      second ``getattr`` this used to do was a degradation path for
+      versions the floor no longer admits, and a second unexercised way to
+      detect the same condition is worse than none.
     * a plain ``RuntimeError`` whose message says so -- MPS reports
       ``"MPS backend out of memory"`` this way, and so do several
-      out-of-tree backends;
+      out-of-tree backends. NOT a version fallback: this is the only shape
+      those backends ever raise, on any torch.
     * a ``MemoryError``, which is what the CPU allocator raises.
+
+    The ``import torch`` still cannot be assumed to succeed -- ``app.core``
+    is imported by CLI paths that run without it -- so the lookup stays
+    defensive about the module, not about the attribute.
 
     The message match is deliberately narrow (``out of memory`` /
     ``CUDA out of memory``) so an unrelated RuntimeError is never dressed up
@@ -144,14 +149,7 @@ def is_out_of_memory(exc: BaseException) -> bool:
     try:
         import torch
 
-        oom_types = tuple({
-            candidate for candidate in (
-                getattr(torch, "OutOfMemoryError", None),
-                getattr(torch.cuda, "OutOfMemoryError", None),
-            )
-            if isinstance(candidate, type)
-        })
-        if oom_types and isinstance(exc, oom_types):
+        if isinstance(exc, torch.OutOfMemoryError):
             return True
     except Exception:  # noqa: BLE001 - classification must never raise
         pass

@@ -37,7 +37,7 @@ Use the layer editor's **Import** instead. It accepts this example's `graph.json
 |---|---|
 | Architecture | ResNet-18, CIFAR variant — 3x3 stride-1 stem, no maxpool, 4 stages of 2 BasicBlocks (64/128/256/512), 11,173,962 parameters |
 | Optimizer | SGD, lr 0.1, momentum 0.9, Nesterov, weight decay 5e-4 |
-| Schedule | `CosineAnnealingLR`, `T_max` equal to the epoch count (see the gotchas below — this pair is not validated) |
+| Schedule | `CosineAnnealingLR`, `T_max` equal to the epoch count (see the gotchas below — a mismatch is warned about, not enforced) |
 | Loss | Cross-entropy, no label smoothing |
 | Batch size | 128 train, 512 eval |
 | Epochs | 200 |
@@ -159,7 +159,7 @@ curl "http://127.0.0.1:8000/api/runs/<run_id>/metrics?format=csv" -o metrics.csv
 
   Miss a trigger and the run fails with a missing-input error naming a node much further downstream. Drop the one into `SequentialModel`, for instance, and `Optimizer` and `LRScheduler` are pruned with it; the run then dies complaining about `TrainingLoop`. Tracked as issue [#201](https://github.com/CodefyUI/CodefyUI/issues/201).
 
-- **Keep `LRScheduler.T_max` equal to `TrainingLoop.epochs`.** Cosine annealing is stepped once per epoch and reaches zero exactly at `T_max`. Set `T_max` too low and the learning rate sits at zero for the tail of the run; too high and it never anneals fully, which costs roughly a point of accuracy. Nothing validates the pair — the scheduler node cannot see the loop's epoch count. Tracked as issue [#205](https://github.com/CodefyUI/CodefyUI/issues/205).
+- **Keep `LRScheduler.T_max` equal to `TrainingLoop.epochs`.** Cosine annealing is stepped once per epoch and reaches zero exactly at `T_max`. Set `T_max` too high and the run stops partway down the curve, never annealing fully, which costs roughly a point of accuracy; too low and the cosine turns back **up** past `T_max`, so the tail of the run trains at a rising learning rate. `TrainingLoop` warns when the two disagree — in the server log, in the run log the Runs panel shows, and in the canvas Log tab — but it does not enforce the pair, because a truncated schedule is a legitimate choice and `CosineAnnealingWarmRestarts` reuses the same value as `T_0`, where equality would mean no restart ever happens. The same check covers `OneCycleLR.total_steps`, whose default of 1000 is a batch count no epoch budget reaches.
 - **`EvaluateModel` does not follow the run device.** Its `device` parameter defaults to `cpu` and offers no `auto`. Set it to `cuda` explicitly or evaluation will be slow. Tracked as issue [#204](https://github.com/CodefyUI/CodefyUI/issues/204).
 - **The first run downloads CIFAR-10** (about 170 MB). It lands in `backend/data/` by default, or in `<project>/assets/data` when a project directory is open. Later runs reuse it.
 

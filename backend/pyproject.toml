@@ -31,16 +31,19 @@ dependencies = [
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "Pillow>=10.0.0",
-    # NOTE (core#135): this floor is optimistic and has been for a while.
-    # `torch.OutOfMemoryError` (the class `error_handling.is_out_of_memory`
-    # prefers) arrived in 2.5, and `torch.amp.GradScaler(device=...)` -- the
-    # non-deprecated spelling the fp16 path uses -- in 2.4. Nothing BREAKS
-    # below those: the OOM classifier reaches the type through `getattr` and
-    # falls back to matching the message, and `AmpPolicy.for_device` catches
-    # a scaler it cannot build and degrades to fp32 with a warning. Raising
-    # the floor to 2.5 would be honest, and it needs a `uv.lock` regeneration
-    # that does not belong in this change.
-    "torch>=2.0.0",
+    # 2.5 is the floor the code actually assumes (core#192, split out of
+    # core#135). `torch.OutOfMemoryError` -- the public typed alias
+    # `error_handling.is_out_of_memory` matches on -- arrived in 2.5, and
+    # `torch.amp.GradScaler(device=...)`, the non-deprecated spelling the
+    # fp16 path uses, in 2.4. The declared floor said 2.0.0 while both of
+    # those carried a degradation path for versions nobody was testing;
+    # raising it is what let the OOM classifier's older-spelling branch go
+    # away instead of being a second, unexercised way to detect the same
+    # condition. NOTE: `backend/uv.lock` must be regenerated in the SAME
+    # commit as any change to this line -- `backend-test.yml` runs
+    # `uv lock --check` BEFORE it installs anything, so a pyproject-only
+    # bump fails all three matrices in about ten seconds.
+    "torch>=2.5",
     "torchvision>=0.15.0",
     "gymnasium>=0.29.0",
     "safetensors>=0.4.0",

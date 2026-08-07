@@ -300,6 +300,227 @@ def _prepare_scheduler(
     return lr_scheduler
 
 
+#: Prefix every schedule-length note carries into the canvas log. The Log
+#: tab has no warning severity (``LogEntry.type`` is info/error/success), so
+#: the marker in the text is the only thing distinguishing an advisory from
+#: a ``Print`` node's output -- the same device ``PythonScript`` uses for its
+#: dropped-key notes.
+SCHEDULE_NOTE_PREFIX = "[TrainingLoop] "
+
+#: ``kind`` on the ``WarningSignal`` these notes are also sent as, which is
+#: what a client would branch on. Stable token; the sentence is the detail.
+SCHEDULE_WARNING_KIND = "lr_schedule_mismatch"
+
+#: The fact every one of the notes below is a consequence of.
+_PER_EPOCH = (
+    "TrainingLoop steps the scheduler once per EPOCH, so this parameter "
+    "counts epochs, not batches"
+)
+
+
+def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
+    """One sentence about a schedule that does not fit this run, or ``None``.
+
+    Every scheduler ``LRScheduler`` builds is stepped once per EPOCH by the
+    loop below, while PyTorch's own documentation counts optimizer steps for
+    several of the same parameters. The two units are off by
+    ``len(dataloader)``, and nothing anywhere reconciles them -- so a
+    schedule can be entirely wrong for a run without a single thing going
+    red. That is the whole of #205 and #244:
+
+    * ``CosineAnnealingLR.T_max`` larger than ``epochs`` stops the run
+      partway down the cosine (the LR never reaches its minimum); smaller
+      than ``epochs`` is worse, because the cosine turns back UP past
+      ``T_max`` and the tail of the run trains at a rising LR. Either way
+      the loss curve looks plausible and the accuracy is simply a few
+      points short -- the size of gap people then go hunting for in their
+      augmentation.
+    * ``OneCycleLR.total_steps`` defaults to **1000** on the node, which is
+      a plausible batch count and an impossible epoch count. At 20 epochs
+      the run traverses 2% of the cycle: the LR warms up and never anneals,
+      which is the entire point of one-cycle. This one bites a user who
+      changed nothing. In the other direction it does not fail silently at
+      all -- ``OneCycleLR`` raises ``Tried to step N times`` and takes the
+      run with it, which is worth saying BEFORE the epochs that reach it.
+
+    Deliberately advisory, never fatal (#244 option 4, #205's "why not just
+    validate it"): a truncated schedule is a legitimate choice, and refusing
+    to run is too aggressive for a teaching tool.
+
+    ``CosineAnnealingWarmRestarts`` is the exception that stops this being a
+    universal "must equal epochs" rule, and it is inverted rather than
+    exempt: it reuses the node's ``T_max`` as ``T_0``, the length of the
+    FIRST cycle, so equality with ``epochs`` means no restart EVER happens.
+    It is warned about when ``T_0 >= epochs``, and silent below.
+
+    Read off the SCHEDULER OBJECT rather than the ``LRScheduler`` node's
+    params, so the check also covers a scheduler restored from a checkpoint,
+    built by a plugin node, or subclassed -- and so it describes what will
+    actually run rather than what was typed.
+    """
+    import torch.optim.lr_scheduler as sched_module
+
+    if lr_scheduler is None:
+        return None
+    try:
+        epochs = int(epochs)
+    except (TypeError, ValueError):
+        return None
+    if epochs < 1:
+        return None
+
+    def _count(attr: str) -> int | None:
+        """*attr* as a plain positive int, or None if it is anything else.
+
+        A plugin scheduler may carry a tensor, a float or nothing at all
+        under these names. An advisory has no business guessing.
+        """
+        value = getattr(lr_scheduler, attr, None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
+
+    # Checked before CosineAnnealingLR only for the reader's sake: the two
+    # are siblings under LRScheduler, not parent and child, so the order
+    # cannot actually matter.
+    if isinstance(lr_scheduler, sched_module.CosineAnnealingWarmRestarts):
+        t_0 = _count("T_0")
+        if t_0 is not None and t_0 >= epochs:
+            return (
+                f"CosineAnnealingWarmRestarts restarts every T_0={t_0} epochs "
+                f"but TrainingLoop.epochs={epochs}, so no restart will ever "
+                f"happen and this run is a single cosine decay with extra "
+                f"steps. Warm restarts need T_0 SMALLER than epochs -- note "
+                f"this is the opposite of CosineAnnealingLR, where equality "
+                f"is the right setting. T_0 comes from LRScheduler.T_max."
+            )
+        return None
+
+    if isinstance(lr_scheduler, sched_module.CosineAnnealingLR):
+        t_max = _count("T_max")
+        if t_max is None or t_max == epochs:
+            return None
+        if t_max > epochs:
+            consequence = (
+                f"the run covers only {epochs} of the {t_max} epochs the "
+                f"cosine needs, so the learning rate never reaches its minimum"
+            )
+        else:
+            consequence = (
+                f"past T_max the cosine turns back UP, so the last "
+                f"{epochs - t_max} epoch(s) train at a RISING learning rate"
+            )
+        return (
+            f"CosineAnnealingLR anneals over T_max={t_max} epochs but "
+            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- {consequence}. "
+            f"Set LRScheduler.T_max to {epochs} unless the mismatch is "
+            f"deliberate; nothing will fail either way, the accuracy is just "
+            f"quietly worse."
+        )
+
+    if isinstance(lr_scheduler, sched_module.OneCycleLR):
+        total = _count("total_steps")
+        if total is None or total == epochs:
+            return None
+        if total > epochs:
+            percent = 100.0 * epochs / total
+            return (
+                f"OneCycleLR spans total_steps={total} but "
+                f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- this run "
+                f"traverses only {percent:.1f}% of the one-cycle schedule, so "
+                f"the learning rate warms up and NEVER anneals, which is the "
+                f"whole point of one-cycle. Set LRScheduler.total_steps to "
+                f"{epochs}: it is an epoch count here, not the batch count "
+                f"OneCycleLR's own documentation means by a step."
+            )
+        return (
+            f"OneCycleLR spans total_steps={total} but "
+            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- it will raise "
+            f"\"Tried to step {total + 1} times\" at the end of epoch "
+            f"{total + 1} and take the run down with it. Set "
+            f"LRScheduler.total_steps to {epochs}."
+        )
+
+    # The remaining two are not cycle lengths but periods, and only the
+    # degenerate case is reported: a scheduler wired into a run too short to
+    # ever reach its first drop does nothing at all, which is the same
+    # silent-accuracy-loss shape as the cosine cases above and the one
+    # reading of "the two disagree" that has no legitimate counter-example.
+    # A period merely LONGER than ideal is a tuning choice and stays silent.
+    if isinstance(lr_scheduler, sched_module.MultiStepLR):
+        milestones = getattr(lr_scheduler, "milestones", None)
+        try:
+            first = min(int(m) for m in milestones)
+        except (TypeError, ValueError):
+            return None
+        if first < epochs:
+            return None
+        return (
+            f"MultiStepLR's earliest milestone is epoch {first} but "
+            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- no drop will "
+            f"ever happen and the run trains at a constant learning rate. "
+            f"Lower LRScheduler.step_size below {epochs}; the milestones are "
+            f"1x, 2x, 3x and 4x that value."
+        )
+
+    if isinstance(lr_scheduler, sched_module.StepLR):
+        step_size = _count("step_size")
+        if step_size is None or step_size < epochs:
+            return None
+        return (
+            f"StepLR drops the learning rate every {step_size} epochs but "
+            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- the drop never "
+            f"happens and the run trains at a constant learning rate. Lower "
+            f"LRScheduler.step_size below {epochs}, or drop the scheduler."
+        )
+
+    # ExponentialLR decays every epoch (no length to disagree about) and
+    # ReduceLROnPlateau is metric-driven, so neither can be checked against
+    # an epoch count at all.
+    return None
+
+
+def _report_schedule_length(
+    lr_scheduler: Any, epochs: int, context: Any
+) -> str | None:
+    """Emit :func:`_schedule_length_note` everywhere it can be seen.
+
+    Three surfaces, because no single one reaches everybody:
+
+    * ``logger.warning`` -- the server console and the rotating log file.
+      The ONLY channel a ``run_graph.py`` invocation or an exported Python
+      script has at all.
+    * ``context.log_warning`` -- the run's durable event log, which the Runs
+      panel reads back as a ``warning``-toned line while the run is still
+      going. This is the one that arrives on TIME: it is queued the moment
+      the check runs, before the first epoch.
+    * the returned string, which the caller puts in the node's ``__log__``
+      so it also lands in the canvas Log tab. That one only appears when the
+      node finishes -- late, but the canvas has no earlier channel for it
+      (``useGraphExecution`` registers no ``run_warning`` handler and
+      ``LogEntry.type`` has no warning severity).
+
+    Never raises: an advisory must not be able to fail the run it is about.
+    """
+    try:
+        note = _schedule_length_note(lr_scheduler, epochs)
+    except Exception:  # noqa: BLE001 - a note is never worth an exception
+        logger.debug("could not check the LR schedule's length", exc_info=True)
+        return None
+    if note is None:
+        return None
+
+    logger.warning("%s", note)
+    log_warning = getattr(context, "log_warning", None)
+    if callable(log_warning):
+        try:
+            log_warning(SCHEDULE_WARNING_KIND, note)
+        except Exception:  # noqa: BLE001 - see above
+            logger.debug("could not record the LR schedule warning",
+                         exc_info=True)
+    return SCHEDULE_NOTE_PREFIX + note
+
+
 class TrainingLoopNode(BaseNode):
     """Train a model, optionally resuming a previous run.
 
@@ -412,6 +633,17 @@ class TrainingLoopNode(BaseNode):
     it instead; requesting ``val_accuracy`` without either gate above
     holding falls back to ``val_loss`` with a warning rather than
     comparing against a value that was never computed.
+
+    **The schedule's length (#205, #244).** The scheduler is stepped once
+    per EPOCH (the ``LR Scheduler step`` block below), which makes every
+    cycle-length parameter on ``LRScheduler`` an epoch count -- including
+    the two PyTorch itself counts batches for. Before the first epoch runs,
+    :func:`_schedule_length_note` compares the schedule the node was handed
+    against ``epochs`` and says so when they disagree, on the server log, on
+    the run's durable event log (the Runs panel) and in the node's
+    ``__log__`` (the canvas Log tab). Advisory only: it never changes the
+    schedule and never fails the run, because a truncated schedule is a
+    legitimate choice.
     """
 
     NODE_NAME = "TrainingLoop"
@@ -781,6 +1013,16 @@ class TrainingLoopNode(BaseNode):
         # it is usable for this model -- see _prepare_optimizer for the rule.
         optimizer, optimizer_mode = _prepare_optimizer(optimizer, model)
         lr_scheduler = _prepare_scheduler(lr_scheduler, optimizer, start_epoch, optimizer_mode)
+
+        # #205 / #244: does the schedule's length agree with this run's? The
+        # comparison is only possible HERE -- LRScheduler cannot see the
+        # TrainingLoop it feeds (nothing on ExecutionContext exposes the
+        # graph) and validate_graph has no non-fatal channel to say it in.
+        # Checked against the ABSOLUTE ``epochs``, not ``epochs -
+        # start_epoch``: a resumed scheduler is fast-forwarded to
+        # ``start_epoch`` by _prepare_scheduler, so the schedule still spans
+        # the whole run.
+        schedule_note = _report_schedule_length(lr_scheduler, epochs, context)
 
         if start_epoch >= epochs:
             logger.warning(
@@ -1429,6 +1671,13 @@ class TrainingLoopNode(BaseNode):
             # expects to see for "there is no loss scale to store".
             "grad_scaler_state": policy.state_dict(),
         }
+        if schedule_note is not None:
+            # The canvas half of #205/#244. ``__log__`` is the only result
+            # key the Log tab renders, and dunder-prefixed keys are filtered
+            # out of recorded outputs and port summaries, so this adds a log
+            # line and nothing else. Set unconditionally of how the run
+            # ended -- an interrupted run's schedule was just as wrong.
+            result["__log__"] = schedule_note
         if stopped_at is not None:
             result.update(interrupted_result(
                 epoch=completed_epochs, batch=stopped_at["batch"],
