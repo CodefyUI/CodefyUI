@@ -200,6 +200,29 @@ def load_catalog() -> dict[str, Any]:
         return {"schema": 1, "plugins": {}}
 
 
+def available_builtin_packs() -> list[tuple[str, str]]:
+    """Built-in packs shipped on disk that this install has never installed.
+
+    A release can add a pack (``stats`` did), and its files land on disk with
+    the update — but the server only loads what the lockfile records, and
+    nothing re-syncs it. So the pack is fully installable and completely
+    invisible: the nodes never appear, and no message anywhere says why.
+
+    Returns ``(id, display name)`` pairs, sorted, so callers can name them.
+    """
+    try:
+        catalog = load_catalog().get("plugins", {})
+        installed = load_lockfile().get("plugins", {})
+    except Exception:  # never let discoverability break a caller
+        return []
+    out: list[tuple[str, str]] = []
+    for pack_id, entry in catalog.items():
+        if entry.get("kind") != "builtin" or pack_id in installed:
+            continue
+        out.append((pack_id, str(entry.get("name") or pack_id)))
+    return sorted(out)
+
+
 # ── source parsing ─────────────────────────────────────────────────────────
 
 # Accepts owner/repo or owner/repo@ref; owner/repo names are GitHub-permissible.
@@ -1060,11 +1083,31 @@ def _install_github(owner: str, repo: str, ref: str, args, lockfile) -> int:
     return 0
 
 
+def _print_available_builtins() -> None:
+    """Name the built-in packs sitting on disk uninstalled.
+
+    `cdui plugin list` is where the docs send a student whose node is missing
+    (I0-0 says so in as many words), so a pack the update dropped on disk but
+    never registered has to be visible from here — otherwise "it is not
+    installed" and "it does not exist" look identical.
+    """
+    available = available_builtin_packs()
+    if not available:
+        return
+    section("可安裝的內建外掛（尚未安裝）", "Built-in packs available (not installed)")
+    width = max(len(pid) for pid, _ in available) + 2
+    for pack_id, name in available:
+        print(f"  {BOLD}{pack_id.ljust(width)}{RESET}{name}")
+    ids = " ".join(pid for pid, _ in available)
+    info(f"安裝：cdui plugin install {ids}", f"Install with: cdui plugin install {ids}")
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     lockfile = load_lockfile()
     plugins = lockfile.get("plugins", {})
     if not plugins:
         info("尚未安裝任何外掛", "No plugins installed yet")
+        _print_available_builtins()
         return 0
 
     section("已安裝外掛", "Installed plugins")
@@ -1098,6 +1141,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             print(
                 f"  {DIM}{plugin_id.ljust(width)}{name}  [disabled]  {'  '.join(bits)}{RESET}"
             )
+    _print_available_builtins()
     return 0
 
 
