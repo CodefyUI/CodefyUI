@@ -45,8 +45,11 @@ def _run(code: str, inputs: dict | None = None, **params):
 def test_node_metadata():
     assert PythonScriptNode.NODE_NAME == "PythonScript"
     assert PythonScriptNode.CATEGORY == "Utility"
-    # The code is a plain param, so ExecutionCache keys it for free.
-    assert PythonScriptNode.cacheable is True
+    # Never cached: a hit would skip whatever the script does besides return
+    # a value. The cache key still tracks `code` (below), which covers the
+    # EDITED script -- the unedited one is what #223 is about. Reasoning and
+    # the end-to-end repro live in test_cache_python_script_node.py.
+    assert PythonScriptNode.cacheable is False
 
 
 def test_static_schema_matches_default_params():

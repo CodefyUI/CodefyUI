@@ -46,6 +46,8 @@ Some nodes still opt out of caching entirely with `cacheable = False`, for two d
 
 **The node's purpose is a side effect.** `ImageWriter`, `ModelSaver`, and `CheckpointSaver` exist to write a file; a cache hit would return the recorded `{"path": ...}` without touching disk, which is wrong when the node's whole point is the write (deleting the output and re-running must recreate it). These re-execute every run regardless of what feeds them.
 
+**The node might have a side effect and only its author knows.** `PythonScript` runs code you type on the canvas. `code` is a cache-keyed parameter, so an *edited* script re-runs — but an unedited script over unchanged inputs is exactly where a hit happens, and a script can mutate an input tensor or model in place, change process-global `torch`/`numpy` state, or use whatever an `ANY`-typed input port handed it. None of that is visible to the node's type or to any check on its source, so it opts out unconditionally. See [the PythonScript node](../advanced/python-script-node.md#caching).
+
 The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.

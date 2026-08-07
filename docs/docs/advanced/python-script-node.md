@@ -58,7 +58,18 @@ Two more names are in scope besides the allowlisted libraries:
 
 ## Caching
 
-`code` is an ordinary parameter, so the execution cache keys on it like any other: editing the script re-runs this node and everything downstream, and running the same script twice over the same inputs serves the second one from cache.
+**This node is never cached. It re-runs on every run, deliberately, even when nothing upstream changed.**
+
+`code` is an ordinary parameter, so the execution cache does key on it — an edited script re-runs. But that only covers the *edited* script; the unedited one over unchanged inputs is exactly where a cache hit would happen, and a cache hit returns a node's recorded outputs **without running it**. For a pure transform that is invisible. For a script that also *did* something, the something silently does not happen the second time.
+
+Only your script knows which of the two it is, so the node takes the conservative answer. Two side-effect routes are open to any script and cannot be closed without gutting the node:
+
+* **Mutating an input in place.** `inputs` is a shallow copy, so its values are the upstream node's own objects. `inputs["in1"].add_(1)`, `p.data.zero_()` over a MODEL's parameters, or `inputs["in1"].append(x)` all change state that every downstream node shares. That is ordinary numerics — nothing could reasonably flag it.
+* **Process-global state.** `torch.manual_seed`, `numpy.random.seed`, `torch.set_default_dtype` and `torch.set_grad_enabled` are all reachable, and all of them change what the *rest* of the run computes.
+
+Anything reached through an input port is a third route: the ports are typed `ANY`, so a custom node or plugin can hand your script a writer, a logger or an open handle, and the Tier-0 policy never sees it — Tier-0 bounds which *libraries* a script may import, not what the objects it is *given* can do.
+
+The cost is real: a pure-transform script re-runs every time, and because opting out of the cache [propagates downstream](../usage/running-graphs.md#what-is-never-cached), so does everything it feeds. If a step is expensive and genuinely pure, it belongs in a [custom node](./custom-nodes.md), which can declare `cacheable = True` for itself because its author can see all of its code.
 
 ## Output and errors
 

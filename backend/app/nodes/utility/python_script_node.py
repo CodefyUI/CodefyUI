@@ -302,12 +302,54 @@ class PythonScriptNode(BaseNode):
         + " and nothing else. That limits which LIBRARIES it can reach, not "
         "what they can do: this is a guardrail, not a sandbox, and the code "
         "runs in the CodefyUI process with your permissions. Only run "
-        "scripts you trust."
+        "scripts you trust. This node is never cached -- it re-runs on every "
+        "run, even when nothing upstream changed, because only the script "
+        "knows whether it has side effects."
     )
 
-    # The code is an ordinary param, so ExecutionCache already keys on it:
-    # editing the script re-executes this node and everything downstream.
-    cacheable = True
+    # Never cached, deliberately, and this is a correctness decision rather
+    # than a performance one (#223).
+    #
+    # A cache hit returns the recorded outputs WITHOUT calling execute(), so
+    # anything the script did besides return a value simply does not happen
+    # on the second run. That is the same bug #143 fixed for ImageWriter /
+    # ModelSaver / CheckpointSaver, and the same standard applies: a node
+    # whose behaviour is not fully described by its return value cannot be
+    # replayed from that return value.
+    #
+    # The difference is that for those three the node TYPE says it writes,
+    # whereas here it depends on what the user typed -- which is exactly why
+    # the answer has to be the conservative one. Two side-effect routes are
+    # open to any script, need no policy bypass at all, and can never be
+    # closed without gutting the node:
+    #
+    #   * In-place mutation of an input. ``inputs`` is a shallow copy, so
+    #     ``inputs["in1"].add_(1)``, ``p.data.zero_()`` over a MODEL's
+    #     parameters, or ``inputs["in1"].append(x)`` all mutate the object
+    #     upstream produced and downstream nodes share. That is ordinary
+    #     numerics; no AST rule can tell it apart from a pure transform.
+    #   * Process-global state. ``torch.manual_seed``, ``numpy.random.seed``,
+    #     ``torch.set_default_dtype``, ``torch.set_grad_enabled`` are all
+    #     tier-0 reachable and all change what the REST of the run computes.
+    #
+    # File writes are a third route. The tier-0 policy currently refuses the
+    # ones it knows about (``open``, ``torch.save``, ``numpy.savetxt``,
+    # ``ndarray.dump``, ...), but :mod:`app.core.script_policy` says plainly
+    # that its numpy/torch attribute list is a best-effort blocklist over an
+    # API "far too large to enumerate". Deciding cacheability from it would
+    # make every future gap in a SECURITY control silently become a
+    # stale-cache bug as well; the two should not be wired together.
+    #
+    # And the input ports are typed ANY. Whatever a custom node or plugin
+    # hands this script -- a logger, a writer, an open handle -- is reachable
+    # by ordinary attribute access that the tier-0 policy never sees, because
+    # tier-0 bounds which LIBRARIES the script may import, not what the
+    # objects on its input ports can do.
+    #
+    # The cost is real and accepted: a pure-transform script re-runs every
+    # time, and because non-cacheability propagates downstream, so does
+    # everything fed by it. See the PythonScript docs, which say so.
+    cacheable = False
 
     # ── Schema ───────────────────────────────────────────────────────────
 
