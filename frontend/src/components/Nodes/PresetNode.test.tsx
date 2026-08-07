@@ -6,7 +6,23 @@ import { useI18n } from '../../i18n';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import type { NodeDefinition, NodeData, PresetDefinition } from '../../types';
+import { STATUS_COLORS } from '../../styles/theme';
 import PresetNode from './PresetNode';
+
+/**
+ * jsdom/cssstyle normalizes ordinary color-valued CSS properties (like the
+ * `border` shorthand) to `rgb(r, g, b)` on read, but leaves custom
+ * properties and var() references untouched. Mirror that here so the status
+ * border assertions can be computed from STATUS_COLORS instead of a
+ * hand-copied literal.
+ */
+function hexToRgb(hex: string): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 function makeDef(overrides: Partial<NodeDefinition> = {}): NodeDefinition {
   return {
@@ -132,30 +148,42 @@ describe('PresetNode', () => {
   });
 
   // ── Border branches ──
-  it('selected node gets white border + gold glow', () => {
+  it('selected node gets the text-primary border + gold glow', () => {
+    // The selected border used to be a hardcoded '#ffffff'; it's now
+    // var(--text-primary) (#f0f4f8), the same token BaseNode's selected
+    // border uses. jsdom does not resolve var() references embedded in a
+    // border shorthand, so the raw token string is what `.style` reports.
     const { container } = renderPreset(presetData(), { selected: true });
     const node = container.querySelector('[class*="node"]') as HTMLElement;
-    // jsdom normalizes the border shorthand color #ffffff → rgb(255, 255, 255).
-    expect(node.style.border).toBe('1px solid rgb(255, 255, 255)');
-    expect(node.style.boxShadow).toContain('rgba(212,160,23,0.3)');
+    expect(node.style.border).toBe('1px solid var(--text-primary)');
+    // rgba(224,169,43,0.3) is --status-preset's own rgb() (#e0a92b) — no
+    // glow token is paired with it, so PresetNode keeps this as a
+    // hand-tuned literal at the hue (see PresetNode's own comment).
+    expect(node.style.boxShadow).toContain('rgba(224, 169, 43, 0.3)');
   });
 
   it('unselected idle node uses the gold default border', () => {
     const { container } = renderPreset(presetData());
     const node = container.querySelector('[class*="node"]') as HTMLElement;
-    // #6B5B00 → rgb(107, 91, 0)
+    // #6B5B00 → rgb(107, 91, 0). No canonical "dim preset" token exists yet
+    // (see PresetNode's borderColor comment), so this stays a literal.
     expect(node.style.border).toBe('1px solid rgb(107, 91, 0)');
-    expect(node.style.boxShadow).toContain('rgba(0,0,0,0.4)');
+    // The idle drop shadow is now the shared var(--shadow) token rather
+    // than a hardcoded rgba literal; jsdom does not resolve var().
+    expect(node.style.boxShadow).toBe('var(--shadow)');
   });
 
   it.each([
-    ['running', 'rgb(255, 193, 7)'],
-    ['completed', 'rgb(76, 175, 80)'],
-    ['error', 'rgb(244, 67, 54)'],
-    ['cached', 'rgb(33, 150, 243)'],
+    // Sourced from STATUS_COLORS (theme.test.ts pins these against
+    // tokens.css) rather than hand-copied literals, so this can't silently
+    // drift from the palette the way the old hardcoded rgb() values did.
+    ['running', hexToRgb(STATUS_COLORS.running)],
+    ['completed', hexToRgb(STATUS_COLORS.completed)],
+    ['error', hexToRgb(STATUS_COLORS.error)],
+    ['cached', hexToRgb(STATUS_COLORS.cached)],
     // core#122: a preset settles 'interrupted' when an internal node stopped
     // early — it must never roll up to the green 'completed'.
-    ['interrupted', 'rgb(255, 143, 0)'],
+    ['interrupted', hexToRgb(STATUS_COLORS.interrupted)],
   ] as const)('uses the %s status border when unselected', (status, rgb) => {
     const { container } = renderPreset(
       presetData({ executionStatus: status, error: status === 'error' ? 'x' : undefined }),

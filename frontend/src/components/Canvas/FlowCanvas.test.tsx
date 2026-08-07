@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { screen, fireEvent, act } from '@testing-library/react';
 import type { Node, Edge } from '@xyflow/react';
 import type { NodeData, NodeDefinition } from '../../types';
+import { CATEGORY_COLORS } from '../../styles/theme';
 
 // ── Capture everything <ReactFlow> receives ─────────────────────────────────
 // FlowCanvas wires ~20 handlers onto <ReactFlow>. jsdom can't drive real
@@ -178,13 +179,22 @@ describe('minimapNodeColor', () => {
   it('colors note / preset / known-category / unknown-category / missing-definition nodes', () => {
     renderCanvas();
     const color = captured.minimap.nodeColor as (n: any) => string;
+    // No note-category token exists in tokens.css (see minimapNodeColor's
+    // own comment) — kept literal, this is a decorative minimap dot.
     expect(color({ type: 'noteNode', data: {} })).toBe('#FFD700');
-    expect(color({ type: 'baseNode', data: { isPreset: true } })).toBe('#D4A017');
-    expect(color({ type: 'baseNode', data: { definition: { category: 'Training' } } })).toBe('#F44336');
-    // Unknown category falls back to the gray default.
-    expect(color({ type: 'baseNode', data: { definition: { category: 'Nonexistent' } } })).toBe('#607D8B');
+    // This is a plain function return, not a DOM style write, so there is
+    // no jsdom normalization involved — the raw CSS custom property string
+    // comes straight back.
+    expect(color({ type: 'baseNode', data: { isPreset: true } })).toBe('var(--status-preset)');
+    expect(color({ type: 'baseNode', data: { definition: { category: 'Training' } } })).toBe(
+      CATEGORY_COLORS.Training,
+    );
+    // Unknown category falls back to the (lifted-for-legibility) Utility hue.
+    expect(color({ type: 'baseNode', data: { definition: { category: 'Nonexistent' } } })).toBe(
+      CATEGORY_COLORS.Utility,
+    );
     // No definition -> category defaults to 'Utility'.
-    expect(color({ type: 'baseNode', data: {} })).toBe('#607D8B');
+    expect(color({ type: 'baseNode', data: {} })).toBe(CATEGORY_COLORS.Utility);
   });
 });
 

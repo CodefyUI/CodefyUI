@@ -3,24 +3,24 @@
 .wrapper {
   display: inline-block;
   max-width: 100%;
-  padding: 8px 10px 10px;
-  background: #161616;
-  border: 1px solid #2a2a2a;
-  border-radius: 4px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
 }
 
 .title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #ccc;
-  margin-bottom: 2px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-1);
 }
 
 .note {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-style: italic;
-  color: #6b7280;
-  margin-bottom: 4px;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-2);
 }
 
 /* Wide charts scroll inside the card rather than widening the panel. */
@@ -33,13 +33,15 @@
   justify-content: flex-start;
 }
 
+/* Plain HTML text (not SVG), so it moves onto the type scale rather than
+   keeping a raw px value — these are short axis min/max tags, not prose. */
 .axes {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 4px;
-  font-size: 9px;
-  color: #6b7280;
+  gap: var(--sp-4);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
 }
 
 .axisY {
@@ -51,8 +53,8 @@
 }
 
 .unknown {
-  padding: 12px 8px;
-  font-size: 11px;
+  padding: var(--sp-4) var(--sp-3);
+  font-size: var(--fs-xs);
   font-style: italic;
-  color: #6b7280;
+  color: var(--text-muted);
 }

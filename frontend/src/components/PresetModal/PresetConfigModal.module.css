@@ -7,25 +7,25 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--surface-scrim);
   backdrop-filter: blur(4px);
 }
 
 .modal {
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-radius: 12px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
   width: 520px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
 }
 
 /* Header */
 .header {
-  padding: 16px 20px;
-  border-bottom: 2px solid #D4A017;
+  padding: var(--sp-5) var(--sp-6);
+  border-bottom: 2px solid var(--status-preset);
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -39,45 +39,47 @@
 .headerTitleRow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
 
 .headerTitle {
-  font-size: 1.0625rem;
-  font-weight: 700;
-  color: #eee;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--text-primary);
 }
 
 .headerBadge {
-  font-size: 0.625rem;
-  background: rgba(212, 160, 23, 0.2);
-  color: #D4A017;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-weight: 700;
+  font-size: var(--fs-2xs);
+  /* rgb(224,169,43) mirrors --status-preset; kept as a literal wash since no
+     --preset-wash token exists yet — see the migration report. */
+  background: rgba(224, 169, 43, 0.2);
+  color: var(--status-preset);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-bold);
 }
 
 .headerDescription {
-  font-size: 0.75rem;
-  color: #777;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-normal);
 }
 
 .closeBtn {
   background: transparent;
   border: none;
-  color: #666;
-  font-size: 1.125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xl);
   cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
+  padding: 0 var(--sp-2);
+  line-height: var(--lh-tight);
 }
 
 /* Pipeline preview strip */
 .pipelinePreview {
-  padding: 10px 20px;
-  border-bottom: 1px solid #2a2a2a;
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: 1px solid var(--border-base);
   overflow-x: auto;
   flex-shrink: 0;
 }
@@ -85,77 +87,77 @@
 .pipelineInner {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
   min-width: max-content;
 }
 
 .pipelineNodeChip {
-  font-size: 0.6875rem;
-  padding: 3px 8px;
-  background: #252525;
-  border: 1px solid #3a3a3a;
-  border-radius: 4px;
-  color: #ccc;
+  font-size: var(--fs-xs);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .pipelineArrow {
-  color: #555;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 /* Params scroll area */
 .paramsContent {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: var(--sp-5) var(--sp-6);
 }
 
 /* Group header */
 .groupHeader {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #D4A017;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--status-preset);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 10px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid #2a2a2a;
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-base);
 }
 
 .groupParams {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-4);
 }
 
 /* Footer */
 .footer {
-  padding: 12px 20px;
-  border-top: 1px solid #2a2a2a;
+  padding: var(--sp-4) var(--sp-6);
+  border-top: 1px solid var(--border-base);
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--sp-3);
   flex-shrink: 0;
 }
 
 .cancelBtn {
-  padding: 7px 16px;
-  background: #2a2a2a;
-  border: 1px solid #444;
-  border-radius: 6px;
-  color: #aaa;
-  font-size: 0.8125rem;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 
 .applyBtn {
-  padding: 7px 16px;
-  background: #D4A017;
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--status-preset);
   border: none;
-  border-radius: 6px;
-  color: #1a1a1a;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  border-radius: var(--radius);
+  color: var(--text-on-accent);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
   cursor: pointer;
 }

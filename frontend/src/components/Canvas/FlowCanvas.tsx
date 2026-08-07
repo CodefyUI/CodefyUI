@@ -99,11 +99,15 @@ const edgeTypes: EdgeTypes = {
 };
 
 const minimapNodeColor = (node: any) => {
+  // No note-category token exists in tokens.css (see migration report) —
+  // kept literal; this is a decorative minimap dot, not chrome text.
   if (node.type === 'noteNode') return '#FFD700';
   const data = node.data as any;
-  if (data?.isPreset) return '#D4A017';
+  if (data?.isPreset) return 'var(--status-preset)';
   const category = data?.definition?.category ?? 'Utility';
-  return CATEGORY_COLORS[category] ?? '#607D8B';
+  // Fallback used to be the raw, unlifted '#607D8B' — see the same fix in
+  // BaseNode.tsx's headerColor.
+  return CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
 };
 
 
@@ -634,18 +638,18 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           proOptions={proOptions}
           deleteKeyCode="Delete"
           multiSelectionKeyCode="Shift"
-          style={{ background: '#0a0a0a' }}
+          style={{ background: 'var(--surface-canvas)' }}
           defaultEdgeOptions={{
             animated: false,
-            style: { stroke: '#555', strokeWidth: 2 },
+            style: { stroke: 'var(--wire)', strokeWidth: 2 },
           }}
-          connectionLineStyle={{ stroke: '#888', strokeWidth: 2 }}
+          connectionLineStyle={{ stroke: 'var(--wire-active)', strokeWidth: 2 }}
           zoomOnDoubleClick={false}
           snapToGrid={gridSnapEnabled}
           snapGrid={[24, 24]}
         >
           <Background
-            color="#2a2a2a"
+            color="var(--border-subtle)"
             variant={BackgroundVariant.Dots}
             gap={24}
             size={1.5}
@@ -658,8 +662,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
             zoomable
             position="bottom-right"
             nodeColor={minimapNodeColor}
-            maskColor="rgba(0,0,0,0.7)"
-            style={{ background: '#1e1e1e' }}
+            maskColor="var(--surface-scrim)"
+            style={{ background: 'var(--surface-raised)' }}
           />
         </ReactFlow>
       </EdgeLaneProvider>

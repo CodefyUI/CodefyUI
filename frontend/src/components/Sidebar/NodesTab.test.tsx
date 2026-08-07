@@ -235,8 +235,10 @@ describe('NodesTab', () => {
     const item = nameEl.parentElement as HTMLElement;
 
     fireEvent.mouseEnter(item);
-    // Hover background applied (jsdom normalizes to rgb).
-    expect(item.style.background).toBe('rgb(42, 42, 42)');
+    // Hover background applied. Asserted as the token rather than a resolved
+    // colour: what matters is that hovering fills the row from the shared
+    // surface ramp, not which grey the ramp currently happens to hold.
+    expect(item.style.background).toBe('var(--surface-hover)');
     // Tooltip portal renders the description (appears twice: inline + tooltip).
     const tips = screen.getAllByText('tip text');
     expect(tips.length).toBeGreaterThanOrEqual(2);
@@ -261,7 +263,7 @@ describe('NodesTab', () => {
     const item = screen.getByText('Conv2d').parentElement as HTMLElement;
     fireEvent.mouseEnter(item);
     // No tooltip because desc is empty.
-    expect(item.style.background).toBe('rgb(42, 42, 42)');
+    expect(item.style.background).toBe('var(--surface-hover)');
     expect(screen.queryByText('Conv2d desc')).toBeNull();
   });
 

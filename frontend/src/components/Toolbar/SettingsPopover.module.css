@@ -13,14 +13,13 @@
   right: 0;
   width: 23.75rem; /* 380px @ 16px root */
   z-index: 250;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 0.625rem; /* 10px */
-  box-shadow: 0 1.5rem 3.75rem -0.75rem rgba(0, 0, 0, 0.8),
-    0 0 0 1px rgba(6, 182, 212, 0.05);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
   overflow: hidden;
-  font-size: 0.8125rem; /* 13px */
-  color: #e5e7eb;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
 }
 
 .panel::before {
@@ -30,49 +29,49 @@
   right: 0.875rem;
   width: 0.75rem;
   height: 0.75rem;
-  background: #0a0f17;
-  border-left: 1px solid #1f2937;
-  border-top: 1px solid #1f2937;
+  background: var(--surface-raised);
+  border-left: 1px solid var(--border-base);
+  border-top: 1px solid var(--border-base);
   transform: rotate(45deg);
 }
 
 .head {
   position: relative;
-  padding: 0.75rem 1rem 0.625rem;
-  border-bottom: 1px solid #1f2937;
+  padding: var(--sp-4) var(--sp-5) var(--sp-4);
+  border-bottom: 1px solid var(--border-base);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(180deg, #0e1520 0%, #0a0f17 100%);
+  background: linear-gradient(180deg, var(--surface-app) 0%, var(--surface-canvas) 100%);
 }
 
 .head h4 {
-  font-size: 0.8125rem;
-  color: #e5e7eb;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
   margin: 0;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   letter-spacing: 0.01em;
 }
 
 .search {
-  background: #0c1220;
-  border: 1px solid #1f2937;
-  border-radius: 0.3125rem;
-  padding: 0.1875rem 0.5rem;
-  color: #cbd5e1;
-  font-size: 0.6875rem;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
   width: 8.75rem;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--transition-fast);
 }
 
 .search::placeholder {
-  color: #64748b;
+  color: var(--text-disabled);
 }
 
 .search:focus {
-  border-color: #0e7490;
+  border-color: var(--accent-dim);
 }
 
 .body {
@@ -81,8 +80,8 @@
 }
 
 .section {
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #1a2230;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .section:last-child {
@@ -90,21 +89,21 @@
 }
 
 .sectionTitle {
-  padding: 0.5rem 1rem 0.25rem;
-  font-size: 0.65625rem; /* 10.5px */
-  font-weight: 700;
+  padding: var(--sp-3) var(--sp-5) var(--sp-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #06b6d4;
+  color: var(--accent-deep);
 }
 
 .row {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 0.75rem;
-  padding: 0.5rem 1rem;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-5);
   align-items: start;
-  transition: background 0.1s ease;
+  transition: background var(--transition-fast);
 }
 
 .row.interactive {
@@ -112,7 +111,7 @@
 }
 
 .row.interactive:hover {
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--surface-hover);
 }
 
 .row.disabled {
@@ -124,17 +123,17 @@
 }
 
 .name {
-  color: #e5e7eb;
-  font-weight: 500;
-  font-size: 0.8125rem;
-  line-height: 1.35;
+  color: var(--text-primary);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  line-height: var(--lh-snug);
 }
 
 .desc {
-  color: #64748b;
-  font-size: 0.71875rem; /* 11.5px */
-  margin-top: 0.125rem;
-  line-height: 1.45;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
+  line-height: var(--lh-normal);
 }
 
 .ctrl {
@@ -148,12 +147,12 @@
 .toggle {
   width: 2rem;
   height: 1.125rem;
-  border-radius: 0.5625rem;
-  background: #1f2937;
+  border-radius: var(--radius-pill);
+  background: var(--surface-input);
   position: relative;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s ease;
+  transition: background var(--transition-fast);
   border: 0;
   padding: 0;
 }
@@ -161,23 +160,23 @@
 .toggle::after {
   content: '';
   position: absolute;
-  top: 0.125rem;
-  left: 0.125rem;
+  top: var(--sp-1);
+  left: var(--sp-1);
   width: 0.875rem;
   height: 0.875rem;
   border-radius: 50%;
-  background: #475569;
-  transition: all 0.15s ease;
+  background: var(--border-strong);
+  transition: all var(--transition-fast);
 }
 
 .toggle.on {
-  background: #0e7490;
+  background: var(--accent-dim);
 }
 
 .toggle.on::after {
-  left: 1rem;
-  background: #06b6d4;
-  box-shadow: 0 0 0.375rem rgba(6, 182, 212, 0.6);
+  left: var(--sp-5);
+  background: var(--accent-deep);
+  box-shadow: 0 0 0.375rem var(--accent-glow);
 }
 
 .toggle:disabled {
@@ -188,17 +187,17 @@
 /* ----- Segmented control (Mode: Basic / All) ----- */
 .seg {
   display: inline-flex;
-  border: 1px solid #334155;
-  border-radius: 0.3125rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
 }
 
 .segItem {
-  padding: 0.1875rem 0.5rem;
+  padding: var(--sp-2) var(--sp-3);
   cursor: pointer;
-  color: #64748b;
+  color: var(--text-muted);
   background: transparent;
   border: 0;
   font-family: inherit;
@@ -207,18 +206,18 @@
 }
 
 .segItem.active {
-  background: #06b6d4;
-  color: #021821;
+  background: var(--accent-deep);
+  color: var(--text-on-accent);
 }
 
 .segItem:hover:not(.active) {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 
 .buttonGroup {
   display: inline-flex;
-  gap: 0.375rem;
+  gap: var(--sp-3);
   align-items: center;
   justify-content: flex-end;
   flex-wrap: wrap;
@@ -226,21 +225,21 @@
 /* ----- Action button (Compare, Reset) ----- */
 .action {
   background: transparent;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-  padding: 0.25rem 0.625rem;
-  font-size: 0.71875rem;
-  font-weight: 600;
-  border-radius: 0.3125rem;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: inherit;
   white-space: nowrap;
-  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .action:hover:not(:disabled) {
-  background: #1f2937;
-  color: #e5e7eb;
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 .action:disabled {
@@ -248,71 +247,74 @@
   cursor: not-allowed;
 }
 
+/* No dedicated danger-border/danger-wash token exists yet, so both the text
+   and outline collapse onto --status-error (see migration report). */
 .action.danger {
-  color: #fca5a5;
-  border-color: #7f1d1d;
+  color: var(--status-error);
+  border-color: var(--status-error);
 }
 
 .action.danger:hover:not(:disabled) {
-  background: #450a0a;
-  color: #fecaca;
+  background: var(--danger-wash);
+  color: var(--text-primary);
 }
 
 .action.accent {
-  color: #06b6d4;
-  border-color: #0e7490;
-  background: rgba(6, 182, 212, 0.08);
+  color: var(--accent-deep);
+  border-color: var(--accent-dim);
+  background: var(--accent-wash);
 }
 
+/* Only one accent-wash alpha tier exists, so the hover affordance is carried
+   by brightening the text (deep -> accent) rather than a second wash step. */
 .action.accent:hover:not(:disabled) {
-  background: rgba(6, 182, 212, 0.15);
+  background: var(--accent-wash);
+  color: var(--accent);
 }
 
 .select {
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.71875rem;
-  font-weight: 600;
-  border-radius: 0.3125rem;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: inherit;
 }
 
 .select:hover {
-  border-color: #475569;
-  color: #e5e7eb;
+  color: var(--text-primary);
 }
 
 /* Seed field (core#134). Matches .select's chrome so the Training section
    reads as one control column; narrow because a 32-bit seed is at most ten
    digits and a full-width box would dominate the row. */
 .numberInput {
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #cbd5e1;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.71875rem;
-  font-weight: 600;
-  border-radius: 0.3125rem;
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  border-radius: var(--radius-sm);
   font-family: inherit;
   width: 7.5rem;
   text-align: right;
 }
 
 .numberInput:hover {
-  border-color: #475569;
-  color: #e5e7eb;
+  color: var(--text-primary);
 }
 
 .numberInput:focus {
   outline: none;
-  border-color: var(--cd-accent, #2dd4bf);
-  color: #e5e7eb;
+  border-color: var(--accent);
+  color: var(--text-primary);
 }
 
 .numberInput::placeholder {
-  color: #64748b;
-  font-weight: 500;
+  color: var(--text-disabled);
+  font-weight: var(--fw-medium);
 }

@@ -4,7 +4,7 @@ import { openExample } from '../../utils/openExample';
 import { useUIStore } from '../../store/uiStore';
 import { listExamples } from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
-import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
+import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, SURFACE_RAISED, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import styles from './EmptyCanvasOverlay.module.css';
 
 // Quick Start: pinned by path (paths are stable identifiers, robust to
@@ -101,11 +101,13 @@ function renderCard(
       onClick={() => onClick(example)}
       className={styles.presetCard}
       onMouseEnter={(e) => {
-        e.currentTarget.style.borderColor = '#D4A017';
-        e.currentTarget.style.boxShadow = '0 4px 16px rgba(212,160,23,0.15)';
+        e.currentTarget.style.borderColor = 'var(--status-preset)';
+        // rgb(224,169,43) is --status-preset's own rgb() — no glow token is
+        // paired with it, so this stays a hand-tuned literal at the hue.
+        e.currentTarget.style.boxShadow = '0 4px 16px rgba(224, 169, 43, 0.15)';
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = '#3a3a3a';
+        e.currentTarget.style.borderColor = 'var(--border-base)';
         e.currentTarget.style.boxShadow = 'none';
       }}
     >
@@ -120,7 +122,13 @@ function renderCard(
       <div className={styles.presetCardFooter}>
         <span
           className={styles.difficultyBadge}
-          style={{ background: `${catColor}22`, color: catColor }}
+          // Fill is the hue tinted into the card surface and the border carries
+          // the hue at full strength; the label takes the text tier. The old
+          // `${catColor}22` wash with the hue as text measured 2.24:1.
+          style={{
+            background: mixColor(SURFACE_RAISED, catColor, NODE_HEADER_TINT),
+            borderColor: catColor,
+          }}
         >
           {catLabel}
         </span>

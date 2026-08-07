@@ -1,12 +1,12 @@
 .chip {
   display: inline-block;
-  padding: 2px 6px;
-  margin: 2px;
-  border-radius: 4px;
+  padding: var(--sp-1) var(--sp-3);
+  margin: var(--sp-1);
+  border-radius: var(--radius-sm);
   border: 1px solid;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
   white-space: pre;
   cursor: default;
   user-select: text;
@@ -44,41 +44,41 @@
 .tooltip {
   position: fixed;
   z-index: 10000;
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  padding: 8px 10px;
-  box-shadow: 0 12px 28px -8px rgba(0, 0, 0, 0.7);
-  font-size: 11px;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+  box-shadow: var(--shadow-popover);
+  font-size: var(--fs-xs);
   pointer-events: none;
   min-width: 160px;
   max-width: 320px;
   display: grid;
-  gap: 4px;
+  gap: var(--sp-2);
 }
 
 .tooltipRow {
   display: grid;
   grid-template-columns: 56px 1fr;
-  gap: 8px;
+  gap: var(--sp-3);
   align-items: baseline;
 }
 
 .tooltipLabel {
-  color: #888;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 9px;
+  font-size: var(--fs-2xs);
 }
 
 .tooltipValue {
-  color: #eee;
+  color: var(--text-primary);
   word-break: break-all;
 }
 
 .tooltipValueMono {
-  color: #ccc;
+  color: var(--text-secondary);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   word-break: break-all;
 }

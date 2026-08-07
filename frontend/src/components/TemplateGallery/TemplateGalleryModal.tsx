@@ -5,7 +5,7 @@ import { insertExample, openExampleInNewTab } from '../../utils/openExample';
 import { useDialogStore } from '../../store/dialogStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
+import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK, mixColor, NODE_HEADER_TINT, SURFACE_RAISED } from '../../styles/theme';
 // The sidebar's Templates tab (#126) already owns the category order every
 // example surface is expected to share; importing it keeps the modal's grid
 // and the tab's list in the same sequence by construction rather than by
@@ -219,6 +219,11 @@ function TemplateGalleryBody() {
               groups.map(({ category, items }) => {
                 const color =
                   EXAMPLE_CATEGORY_COLORS[category] ?? EXAMPLE_CATEGORY_FALLBACK;
+                // Badge fill is the category hue mixed into --surface-raised
+                // (the same tint node headers use), not an alpha wash over an
+                // unknown backdrop — that pattern is what measured 2.24:1 on
+                // these badges. See scripts/check-contrast.mjs section 8b.
+                const chipFill = mixColor(SURFACE_RAISED, color, NODE_HEADER_TINT);
                 return (
                   <section key={category} className={styles.section}>
                     <h3 className={styles.sectionTitle} style={{ color }}>
@@ -243,7 +248,10 @@ function TemplateGalleryBody() {
                           <span className={styles.cardFooter}>
                             <span
                               className={styles.cardChip}
-                              style={{ color, borderColor: color }}
+                              // Hue on the border (a graphic, 3:1) and in the
+                              // fill; the label is text and takes the text tier.
+                              // The hue on its own tint cannot reach 4.5:1.
+                              style={{ borderColor: color, background: chipFill }}
                             >
                               {exampleCategoryLabel(category)}
                             </span>

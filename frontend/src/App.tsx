@@ -24,14 +24,24 @@ import { useProjectStore } from './store/projectStore';
 import { useRunStore } from './store/runStore';
 import styles from './App.module.css';
 
-// Map user font-size choice to the documentElement. Setting an empty string
-// removes the inline style, letting App.css's responsive `clamp(...)` take over
-// (capped at 18px). Large jumps clearly above the clamp ceiling so the change
-// is actually visible.
-const FONT_SIZE_PX: Record<string, string> = {
-  small: '12px',
-  default: '',
-  large: '20px',
+// The user's font-size choice, as a multiplier on the root size. Every size
+// token in `styles/tokens.css` is a rem, so this scales the whole app.
+//
+// These used to be absolute pixel roots — 12px / (unset) / 20px — where the
+// unset "default" fell through to App.css's viewport clamp. Absolute values
+// fight the viewport instead of composing with it: a flat root that suits a
+// 1366px laptop makes a 2560px monitor render *smaller* than it did before,
+// which is the opposite of the point. A multiplier keeps the window-size
+// response and layers the preference on top.
+//
+// Small is a deliberate density trade for people who want more on screen, not
+// an accessibility setting. It is the one setting where the 12px secondary-text
+// floor in tokens.css does not hold — badge text lands near 10px on a small
+// window — which is the cost of asking for more on screen.
+const FONT_SCALE: Record<string, string> = {
+  small: '0.92',
+  default: '1',
+  large: '1.15',
 };
 
 function RightColumn() {
@@ -107,7 +117,10 @@ function App() {
   const fontSize = useUIStore((s) => s.fontSize);
 
   useEffect(() => {
-    document.documentElement.style.fontSize = FONT_SIZE_PX[fontSize] ?? '';
+    document.documentElement.style.setProperty(
+      '--font-scale',
+      FONT_SCALE[fontSize] ?? '1',
+    );
   }, [fontSize]);
 
   useEffect(() => {

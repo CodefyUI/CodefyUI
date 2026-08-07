@@ -63,13 +63,20 @@ export function TabBar() {
               onDoubleClick={() => startRename(tab.id, tab.name)}
               className={styles.tab}
               style={{
-                background: isActive ? '#1e1e1e' : 'transparent',
-                borderBottom: isActive ? '2px solid #2196F3' : '2px solid transparent',
-                color: isActive ? '#eee' : '#777',
+                background: isActive ? 'var(--surface-raised)' : 'transparent',
+                borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+                color: isActive ? 'var(--text-primary)' : 'var(--text-muted)',
+                // Left as numeric literals: TabBar.test.tsx pins the exact
+                // string ('600'/'400') and isn't in this migration's file
+                // list to update.
                 fontWeight: isActive ? 600 : 400,
               }}
             >
-              {/* Running indicator */}
+              {/* Running indicator. #FFC107 already equals --status-running
+                  exactly (no contrast/colour bug here); left as a literal
+                  because TabBar.test.tsx pins the hex substring in
+                  boxShadow and the test file is outside this migration's
+                  scope. */}
               {isRunning && (
                 <span
                   className={styles.runningDot}

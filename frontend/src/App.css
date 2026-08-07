@@ -2,6 +2,8 @@
    CodefyUI Global Styles - Dark Theme
    ============================================================ */
 
+@import './styles/tokens.css';
+
 *,
 *::before,
 *::after {
@@ -11,8 +13,23 @@
 }
 
 html {
-  /* Responsive root font-size: scales with viewport, clamped for readability */
-  font-size: clamp(13.5px, 0.35vw + 11px, 18px);
+  /* Root size for every rem token in tokens.css.
+
+     This was `clamp(13.5px, 0.35vw + 11px, 18px)`. The problem was never that
+     it scaled with the window — it was the 13.5px floor, which on a 1366px
+     laptop put the most-used size at 10.8px and, at the Small setting, put
+     0.625rem rules at 7.5px.
+
+     So the floor is raised to 16px, which is what makes the 14px body / 12px
+     secondary floors in tokens.css actually hold on a small screen, and the
+     ceiling to 19px so a large monitor gets more than the old 18px rather than
+     less. Between those it still tracks the window.
+
+     --font-scale is the Small/Default/Large control (App.tsx). It multiplies
+     rather than replacing, so the choice composes with the viewport instead of
+     overriding it — which is why Large is genuinely large on a big monitor. */
+  --font-scale: 1;
+  font-size: calc(clamp(16px, 0.35vw + 11px, 19px) * var(--font-scale));
 }
 
 html,
@@ -24,12 +41,12 @@ body,
 }
 
 body {
-  background-color: #121212;
-  color: #eeeeee;
+  background-color: var(--surface-app);
+  color: var(--text-secondary);
   font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
     Roboto, sans-serif;
-  font-size: 0.875rem;
-  line-height: 1.5;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -44,16 +61,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: var(--surface-raised);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: var(--border-base);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: var(--border-strong);
 }
 
 /* ============================================================
@@ -61,61 +78,61 @@ body {
    ============================================================ */
 
 .react-flow {
-  background: #0a0a0a;
+  background: var(--surface-canvas);
 }
 
 .react-flow__background {
-  background: #0a0a0a;
+  background: var(--surface-canvas);
 }
 
 .react-flow__edge-path {
-  stroke: #555;
+  stroke: var(--wire);
   stroke-width: 2;
 }
 
 .react-flow__edge.selected .react-flow__edge-path {
-  stroke: #888;
+  stroke: var(--wire-active);
   stroke-width: 2.5;
 }
 
 .react-flow__edge:hover .react-flow__edge-path {
-  stroke: #777;
+  stroke: var(--wire-data);
 }
 
 .react-flow__connection-path {
-  stroke: #888;
+  stroke: var(--wire-active);
   stroke-width: 2;
 }
 
 /* Controls — covers both v11 and v12 class names */
 .react-flow__controls,
 .react-flow__panel.react-flow__controls {
-  background: #1e1e1e !important;
-  border: 1px solid #333 !important;
-  border-radius: 6px !important;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  background: var(--surface-raised) !important;
+  border: 1px solid var(--border-base) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: var(--shadow) !important;
   overflow: hidden;
 }
 
 .react-flow__controls button,
 .react-flow__controls-button {
-  background: #1e1e1e !important;
+  background: var(--surface-raised) !important;
   border: none !important;
-  border-bottom: 1px solid #2a2a2a !important;
-  color: #aaa !important;
+  border-bottom: 1px solid var(--border-subtle) !important;
+  color: var(--text-muted) !important;
   width: 30px !important;
   height: 30px !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   cursor: pointer !important;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .react-flow__controls button:hover,
 .react-flow__controls-button:hover {
-  background: #333 !important;
-  color: #fff !important;
+  background: var(--surface-hover) !important;
+  color: var(--text-primary) !important;
 }
 
 .react-flow__controls button:last-child,
@@ -137,20 +154,20 @@ body {
 
 /* MiniMap */
 .react-flow__minimap {
-  background: #1e1e1e;
-  border: 1px solid #333;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 .react-flow__minimap-mask {
-  fill: rgba(0, 0, 0, 0.6);
+  fill: var(--surface-scrim);
 }
 
 /* Selection box */
 .react-flow__selection {
-  background: rgba(33, 150, 243, 0.05);
-  border: 1px solid rgba(33, 150, 243, 0.4);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-glow);
 }
 
 /* Node selection wrapper */
@@ -189,13 +206,13 @@ body {
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #2196F3 !important;
-  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+  border-color: var(--border-focus) !important;
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 
 button:focus-visible {
-  outline: 2px solid #2196F3;
+  outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
 
@@ -210,6 +227,13 @@ textarea {
   font-family: inherit;
 }
 
+/* Form controls do not inherit line-height from body — the UA stylesheet sets
+   `normal` on them. Left that way deliberately: every such control in this app
+   is single-line (icon buttons, chevrons, counts), so `normal` costs nothing,
+   and their height comes from the --h-control-* tokens rather than from
+   leading. Anything inside a control that can WRAP must set a line-height
+   itself; `--lh-snug` is the usual choice. */
+
 input[type='number'] {
   -moz-appearance: textfield;
 }
@@ -220,6 +244,6 @@ input[type='number']::-webkit-outer-spin-button {
 }
 
 select option {
-  background: #1e1e1e;
-  color: #ddd;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
 }

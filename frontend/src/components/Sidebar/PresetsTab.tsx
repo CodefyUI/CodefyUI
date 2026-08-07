@@ -33,6 +33,12 @@ export function PresetItem({ preset }: PresetItemProps) {
       onMouseLeave={() => setHovered(false)}
       title={preset.description}
       className={styles.presetItem}
+      // Gold preset-hover tint: a semantic per-item accent (same family as
+      // CATEGORY_COLORS/DIFFICULTY_COLORS below), not chrome, so it is left
+      // outside the grey/accent token sweep. Close to --status-preset
+      // (#e0a92b) but not identical, and there is no wash/alpha variant of
+      // it to reach for; PresetsTab.test.tsx also pins this exact rgba
+      // string. See migration report for the token gap.
       style={{
         background: hovered ? 'rgba(212,160,23,0.08)' : 'transparent',
         borderColor: hovered ? 'rgba(212,160,23,0.3)' : 'transparent',

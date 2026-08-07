@@ -560,7 +560,11 @@ function colorForType(type: string): string {
   if (type === 'Input') return '#4CAF50';
   if (type === 'Output') return '#F44336';
   if (MERGE_TYPES.has(type)) return '#FF9800';
-  // fallback colors by category — duplicated from SubgraphEditorModal LAYER_DEFS
+  // Fallback colors by category, duplicated from SubgraphEditorModal LAYER_DEFS.
+  // NOTE: this is the Subgraph editor's own layer-type palette, still on the
+  // pre-lift Material hues and not yet on the token layer. Migrating it means
+  // deciding what each layer type should map to, so it is tracked separately
+  // rather than half-converted here.
   const colors: Record<string, string> = {
     Conv2d: '#4CAF50', Conv1d: '#4CAF50', ConvTranspose2d: '#4CAF50',
     BatchNorm2d: '#9C27B0', BatchNorm1d: '#9C27B0', LayerNorm: '#9C27B0',

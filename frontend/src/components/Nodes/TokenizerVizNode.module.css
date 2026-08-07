@@ -1,7 +1,7 @@
 .vizArea {
-  border-top: 1px solid #2a2a2a;
-  padding: 8px 10px;
-  background: #161616;
+  border-top: 1px solid var(--border-base);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-panel);
   max-width: 320px;
 }
 
@@ -9,11 +9,11 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   max-height: 140px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #444 transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .chipRow::-webkit-scrollbar {
@@ -22,24 +22,26 @@
 }
 
 .chipRow::-webkit-scrollbar-thumb {
-  background: #444;
-  border-radius: 3px;
+  background: var(--border-strong);
+  border-radius: var(--radius-sm);
 }
 
 .emptyHint {
-  font-size: 11px;
-  color: #666;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
   font-style: italic;
   text-align: center;
-  padding: 6px 0;
+  padding: var(--sp-3) 0;
 }
 
 .truncatedHint {
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid #232323;
-  font-size: 10px;
-  color: #888;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
   text-align: center;
   font-style: italic;
 }

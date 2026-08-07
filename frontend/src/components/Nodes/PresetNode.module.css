@@ -1,25 +1,29 @@
 /* PresetNode.module.css */
 
 .node {
-  background: #1e1e1e;
-  border-radius: 8px;
+  background: var(--surface-raised);
+  border-radius: var(--radius-lg);
   min-width: 180px;
-  font-size: 0.8125rem;
-  color: #eeeeee;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
-/* Gold gradient header */
+/* Gold gradient header — PresetNode's own fixed brand treatment, not a
+   category hue, so it is not part of the mixColor/--surface-raised tint fix
+   applied to BaseNode's headers. Dark-on-gold text below is its own
+   contrast pair and is not part of the dark-surface token system. */
 .header {
   background: linear-gradient(135deg, #B8860B, #D4A017, #C5941A);
-  padding: 6px 10px;
-  border-radius: 7px 7px 0 0;
-  font-weight: 600;
-  font-size: 0.875rem;
+  padding: var(--sp-3) var(--sp-4);
+  /* card radius (--radius-lg) minus the 1px card border, so it nests flush. */
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .headerLabel {
@@ -31,77 +35,81 @@
 }
 
 .headerBadge {
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
   background: rgba(0, 0, 0, 0.3);
-  padding: 2px 5px;
-  border-radius: 3px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
   white-space: nowrap;
   flex-shrink: 0;
-  color: #fff;
-  font-weight: 700;
+  color: var(--text-primary);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.05em;
 }
 
 /* Ports area */
 .portsArea {
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: var(--sp-3);
+  padding-bottom: var(--sp-3);
 }
 
 .inputRow {
   position: relative;
-  padding: 3px 12px 3px 18px;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-5);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .outputRow {
   position: relative;
-  padding: 3px 18px 3px 12px;
+  padding: var(--sp-2) var(--sp-5) var(--sp-2) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .portLabel {
-  font-size: 0.75rem;
-  line-height: 1;
+  font-size: var(--fs-sm);
+  /* Was line-height: 1 — same bug as BaseNode's .portLabel. */
+  line-height: var(--lh-tight);
 }
 
 .portDivider {
   height: 1px;
-  background: #333;
-  margin: 4px 0;
+  background: var(--border-base);
+  margin: var(--sp-2) 0;
 }
 
 /* Footer: node count hint */
 .footer {
-  border-top: 1px solid #333;
-  padding: 5px 10px;
-  font-size: 0.6875rem;
-  color: #888;
+  border-top: 1px solid var(--border-base);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--sp-2);
 }
 
 .footerCount {
-  color: #D4A017;
+  color: var(--status-preset);
 }
 
 /* Status sections */
 .statusBase {
-  padding: 4px 10px;
-  font-size: 0.6875rem;
-  border-top: 1px solid #333;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  border-top: 1px solid var(--border-base);
 }
 
 .statusError {
-  color: #F44336;
+  color: var(--status-error);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -109,12 +117,12 @@
 }
 
 .statusRunning {
-  color: #FFC107;
+  color: var(--status-running);
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .statusRunningDot {
@@ -122,16 +130,16 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #FFC107;
+  background: var(--status-running);
   animation: pulse 1s infinite;
 }
 
 .statusCompleted {
-  color: #4CAF50;
+  color: var(--status-completed);
   text-align: center;
 }
 
 .statusCached {
-  color: #2196F3;
+  color: var(--status-cached);
   text-align: center;
 }

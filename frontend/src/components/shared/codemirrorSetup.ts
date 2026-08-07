@@ -32,51 +32,54 @@ import { python } from '@codemirror/lang-python';
 import { tags } from '@lezer/highlight';
 
 /** Crafted-dark syntax colours, matching the app's editor chrome. */
+// The syntax hues below are a deliberate code theme, not app chrome. All seven
+// measure 6.7:1 to 11.9:1 on --surface-code, so they are left as literals; only
+// the roles that were failing (comment, gutter) and the chrome moved to tokens.
 const highlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: '#c792ea' },
   { tag: [tags.controlKeyword, tags.moduleKeyword], color: '#c792ea' },
-  { tag: [tags.definitionKeyword, tags.operatorKeyword], color: '#06b6d4' },
+  { tag: [tags.definitionKeyword, tags.operatorKeyword], color: 'var(--accent-deep)' },
   { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#82aaff' },
   { tag: [tags.string, tags.special(tags.string)], color: '#c3e88d' },
   { tag: [tags.number, tags.bool, tags.null], color: '#f78c6c' },
-  { tag: tags.comment, color: '#6b7280', fontStyle: 'italic' },
+  { tag: tags.comment, color: 'var(--code-comment)', fontStyle: 'italic' },
   { tag: [tags.className, tags.typeName], color: '#ffcb6b' },
-  { tag: tags.propertyName, color: '#e5e7eb' },
+  { tag: tags.propertyName, color: 'var(--code-text)' },
   { tag: tags.operator, color: '#89ddff' },
-  { tag: tags.variableName, color: '#e5e7eb' },
+  { tag: tags.variableName, color: 'var(--code-text)' },
 ]);
 
 const theme = EditorView.theme(
   {
     '&': {
-      color: '#e5e7eb',
-      backgroundColor: 'rgba(0, 0, 0, 0.25)',
+      color: 'var(--code-text)',
+      backgroundColor: 'var(--surface-code)',
       fontSize: '12px',
       height: '100%',
     },
     '.cm-content': {
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-      caretColor: '#06b6d4',
+      caretColor: 'var(--accent-deep)',
       padding: '6px 0',
     },
     '.cm-scroller': { overflow: 'auto', lineHeight: '1.55' },
     '.cm-gutters': {
       backgroundColor: 'transparent',
-      color: '#4b5563',
+      color: 'var(--code-gutter)',
       border: 'none',
-      borderRight: '1px solid #1f2937',
+      borderRight: '1px solid var(--border-base)',
     },
     '.cm-activeLine': { backgroundColor: 'rgba(6, 182, 212, 0.06)' },
-    '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#9ca3af' },
+    '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--text-muted)' },
     '&.cm-focused': { outline: 'none' },
-    '&.cm-focused .cm-cursor': { borderLeftColor: '#06b6d4' },
+    '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--accent-deep)' },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
       backgroundColor: 'rgba(6, 182, 212, 0.22)',
     },
     // The line the server's policy check pointed at.
     '.cm-errorLine': {
       backgroundColor: 'rgba(239, 68, 68, 0.16)',
-      boxShadow: 'inset 2px 0 0 #ef4444',
+      boxShadow: 'inset 2px 0 0 var(--status-error)',
     },
   },
   { dark: true },

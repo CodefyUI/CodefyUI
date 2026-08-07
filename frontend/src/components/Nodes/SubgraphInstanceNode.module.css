@@ -2,20 +2,24 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 4px 10px 6px;
-  font-size: 10px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
 }
 
 .badge {
-  padding: 1px 6px;
-  border: 1px solid rgba(45, 212, 191, 0.5);
-  border-radius: 3px;
-  color: #2dd4bf;
+  padding: var(--sp-1) var(--sp-3);
+  /* #2dd4bf was one of the app's unresolved ad hoc teals (see the
+     --cd-accent fallback pattern noted in the migration contract);
+     --accent-glow is the same hue family at a near-identical 0.45 alpha. */
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .count {
-  color: #888;
+  color: var(--text-muted);
 }

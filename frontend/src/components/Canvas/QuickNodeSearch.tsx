@@ -154,7 +154,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
           const desc = r.kind === 'node'
             ? tn(r.def.node_name, 'description', r.def.description)
             : r.preset.description;
-          const color = CATEGORY_COLORS[category] ?? '#607D8B';
+          const color = CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility;
 
           return (
             <button type="button"
@@ -169,7 +169,7 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
                 {r.kind === 'preset' && <span className={styles.presetBadge}>{t('preset.badge')}</span>}
                 {desc && <span className={styles.itemDesc}>{desc}</span>}
               </div>
-              <span className={styles.itemCategory} style={{ color }}>{category}</span>
+              <span className={styles.itemCategory}>{category}</span>
             </button>
           );
         })}

@@ -1,43 +1,46 @@
 .vizArea {
-  border-top: 1px solid #2a2a2a;
-  padding: 10px;
-  background: #161616;
+  border-top: 1px solid var(--border-base);
+  padding: var(--sp-4);
+  background: var(--surface-panel);
   width: 320px;
 }
 
 .emptyHint {
-  font-size: 11px;
-  color: #666;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
   font-style: italic;
   text-align: center;
-  padding: 12px 0;
+  padding: var(--sp-4) 0;
 }
 
 .tooBigHint {
-  font-size: 11px;
-  color: #94a3b8;
-  padding: 14px 8px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  padding: var(--sp-4) var(--sp-3);
   text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-3);
   align-items: center;
 }
 
 .expandLink {
   background: transparent;
-  border: 1px solid #0e7490;
-  color: #67e8f9;
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 4px;
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--radius-sm);
   cursor: zoom-in;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .expandLink:hover {
-  background: #0e7490;
-  color: #fff;
+  background: var(--accent-dim);
+  color: var(--text-primary);
 }

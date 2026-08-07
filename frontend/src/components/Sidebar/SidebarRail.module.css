@@ -10,10 +10,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 6px 0;
+  gap: var(--sp-1);
+  padding: var(--sp-3) 0;
   box-sizing: border-box;
-  background: #101010;
+  background: var(--surface-app);
 }
 
 /* Only the four tab buttons live in the tablist; the collapse toggle is a
@@ -22,7 +22,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
 }
 
 .railButton {
@@ -30,33 +30,33 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--h-control);
+  height: var(--h-control);
   padding: 0;
   flex-shrink: 0;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: #6b6b6b;
+  border-radius: var(--radius);
+  color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition-fast), background var(--transition-fast);
 }
 
 .railButton:hover {
-  color: #d8d8d8;
-  background: #1c1c1c;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
 }
 
 .railButton:focus-visible {
-  outline: 1px solid #06b6d4;
+  outline: 1px solid var(--accent-deep);
   outline-offset: 1px;
 }
 
 /* Open tab: teal glyph plus the flush-left marker VS Code's activity bar uses,
    so the active section is readable at a glance even peripherally. */
 .railButtonActive {
-  color: #22d3ee;
-  background: #1a1a1a;
+  color: var(--accent);
+  background: var(--surface-active);
 }
 
 .railButtonActive::before {
@@ -66,12 +66,12 @@
   top: 6px;
   bottom: 6px;
   width: 2px;
-  border-radius: 0 2px 2px 0;
-  background: #06b6d4;
+  border-radius: var(--radius-sm);
+  background: var(--accent-deep);
 }
 
 /* Pushes the collapse toggle to the bottom of the rail. */
 .railSpacer {
   flex: 1;
-  min-height: 8px;
+  min-height: var(--sp-3);
 }

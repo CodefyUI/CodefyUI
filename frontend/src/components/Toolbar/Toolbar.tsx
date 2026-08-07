@@ -196,7 +196,7 @@ function LoadSubMenuPanel({
       <button type="button"
         onClick={() => { onImport(); onClose(); }}
         className={styles.menuItem}
-        style={{ color: '#06b6d4' }}
+        style={{ color: 'var(--accent)' }}
       >
         {t('toolbar.import')}
       </button>
@@ -561,18 +561,20 @@ export function Toolbar() {
   /* ── Status visuals ───────────────────────────────────────────── */
 
   const statusKey = `status.${status}` as const;
+  // Token-mapped onto the app's canonical run-status palette (tokens.css
+  // --status-*, mirrored in styles/theme.ts STATUS_COLORS) instead of this
+  // component's own drifted copy — see migration report.
   const statusDotColors: Record<string, string> = {
-    idle: '#475569',
-    running: '#06b6d4',
-    completed: '#22c55e',
-    error: '#ef4444',
-    cached: '#06b6d4',
-    skipped: '#64748b',
+    idle: 'var(--status-idle)',
+    running: 'var(--status-running)',
+    completed: 'var(--status-completed)',
+    error: 'var(--status-error)',
+    cached: 'var(--status-cached)',
+    skipped: 'var(--status-skipped)',
   };
-  const statusDotColor = statusDotColors[status] ?? '#475569';
-  const statusGlow = status === 'running'
-    ? '0 0 0.375rem rgba(6, 182, 212, 0.6)'
-    : 'none';
+  const statusDotColor = statusDotColors[status] ?? 'var(--status-idle)';
+  // Must stay translucent: a solid colour here draws a hard ring, not a glow.
+  const statusGlow = status === 'running' ? 'var(--glow-running)' : 'none';
 
   return (
     <div className={styles.root}>
@@ -708,7 +710,7 @@ export function Toolbar() {
             className={styles.statusDot}
             style={{ background: statusDotColor, boxShadow: statusGlow }}
           />
-          <span style={{ color: status === 'running' ? '#06b6d4' : undefined }}>
+          <span style={{ color: status === 'running' ? 'var(--status-running)' : undefined }}>
             {t(statusKey)}
           </span>
         </div>

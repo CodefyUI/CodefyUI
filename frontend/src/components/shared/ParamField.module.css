@@ -2,46 +2,46 @@
 
 .input {
   width: 100%;
-  padding: 5px 8px;
-  background: #222;
-  border: 1px solid #444;
-  border-radius: 4px;
-  color: #ddd;
-  font-size: 0.8125rem;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
   outline: none;
   box-sizing: border-box;
 }
 
 .label {
   display: block;
-  font-size: 0.75rem;
-  color: #999;
-  margin-bottom: 3px;
-  font-weight: 500;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-2);
+  font-weight: var(--fw-medium);
 }
 
 /* Bool param row */
 .checkboxRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .checkbox {
   width: 14px;
   height: 14px;
   cursor: pointer;
-  accent-color: #2196F3;
+  accent-color: var(--accent);
 }
 
 /* Bool label overrides base label — removes bottom margin, sets pointer + lighter color */
 .boolLabel {
   display: block;
-  font-size: 0.75rem;
-  font-weight: 500;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
   margin-bottom: 0;
   cursor: pointer;
-  color: #ccc;
+  color: var(--text-secondary);
 }
 
 /* Select cursor override */
@@ -53,7 +53,7 @@
 /* Model file selector */
 .modelFileRow {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-2);
   align-items: center;
 }
 
@@ -64,19 +64,19 @@
 
 .modelFileBtn {
   flex-shrink: 0;
-  padding: 5px 8px;
-  background: #333;
-  border: 1px solid #444;
-  border-radius: 4px;
-  color: #ccc;
-  font-size: 0.75rem;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-hover);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .modelFileBtn:hover:not(:disabled) {
-  background: #444;
-  color: #fff;
+  background: var(--surface-active);
+  color: var(--text-primary);
 }
 
 .modelFileBtn:disabled {
@@ -86,22 +86,22 @@
 
 /* Validation error styling */
 .inputError {
-  border-color: #f44336 !important;
-  box-shadow: 0 0 0 1px rgba(244, 67, 54, 0.3);
+  border-color: var(--status-error) !important;
+  box-shadow: 0 0 0 1px var(--danger-wash);
 }
 
 .errorHint {
   display: block;
-  font-size: 0.6875rem;
-  color: #f44336;
-  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--status-error);
+  margin-top: var(--sp-1);
 }
 
 /* Neutral helper text (e.g. the SECRET-param session-only notice). */
 .hint {
   display: block;
-  font-size: 0.6875rem;
-  color: #888;
-  margin-top: 3px;
-  line-height: 1.35;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: var(--sp-2);
+  line-height: var(--lh-normal);
 }

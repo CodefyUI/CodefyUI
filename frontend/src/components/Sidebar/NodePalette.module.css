@@ -4,8 +4,8 @@
   display: flex;
   flex-direction: row;
   flex-shrink: 0;
-  background: #161616;
-  border-right: 1px solid #2a2a2a;
+  background: var(--surface-panel);
+  border-right: 1px solid var(--border-base);
 }
 
 /* Content panel. Width is an inline style driven by the persisted store value,
@@ -18,7 +18,7 @@
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
-  border-left: 1px solid #2a2a2a;
+  border-left: 1px solid var(--border-base);
 }
 
 /* Drag strip on the sidebar's outer edge — a real layout column, invisible
@@ -29,32 +29,34 @@
   height: 100%;
   cursor: col-resize;
   background: transparent;
-  transition: background 0.15s;
+  transition: background var(--transition-fast);
 }
 
 .resizeHandle:hover {
-  background: rgba(6, 182, 212, 0.35);
+  /* Stronger than --accent-wash (0.35 vs 0.12) — a drag handle needs to read
+     as clearly interactive, not just tinted. Kept literal; see report. */
+  background: rgba(34, 211, 238, 0.35);
 }
 
 /* Focusable (it is an operable splitter), so it needs a visible focus state —
    the 4px strip is too thin for a conventional outline to read. */
 .resizeHandle:focus-visible {
-  background: #06b6d4;
+  background: var(--accent-deep);
   outline: none;
 }
 
 /* ── Panel header ── */
 .header {
-  padding: 12px 10px 8px;
-  border-bottom: 1px solid #2a2a2a;
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  border-bottom: 1px solid var(--border-base);
   flex-shrink: 0;
 }
 
 .headerRow {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
 }
 
 .headerRow .headerTitle {
@@ -63,12 +65,12 @@
 }
 
 .headerTitle {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #888;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -77,18 +79,18 @@
 /* ── Search input ── */
 .searchInput {
   width: 100%;
-  padding: 5px 8px;
-  background: #222;
-  border: 1px solid #333;
-  border-radius: 4px;
-  color: #ddd;
-  font-size: 0.8125rem;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
   outline: none;
   box-sizing: border-box;
 }
 
 .searchInput:focus {
-  border-color: #0e7490;
+  border-color: var(--accent-dim);
 }
 
 /* ── Flexible middle region (list / states) ── */
@@ -111,8 +113,8 @@
 .listToolbar {
   display: flex;
   justify-content: flex-end;
-  gap: 2px;
-  padding: 3px 6px 1px;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
   flex-shrink: 0;
 }
 
@@ -125,16 +127,16 @@
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 4px;
-  color: #777;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .toolbarButton:hover {
-  color: #ddd;
-  background: #232323;
-  border-color: #333;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+  border-color: var(--border-base);
 }
 
 .listBody {
@@ -149,7 +151,7 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding-top: 4px;
+  padding-top: var(--sp-2);
 }
 
 /* ── Mini jump index pinned to the panel's inner edge ── */
@@ -160,9 +162,9 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 4px 0;
-  border-left: 1px solid #202020;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-left: 1px solid var(--border-subtle);
   overflow: hidden;
 }
 
@@ -185,7 +187,7 @@
   height: 6px;
   border-radius: 50%;
   opacity: 0.55;
-  transition: opacity 0.15s, transform 0.15s;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
 
 .jumpDot:hover .jumpDotInner,
@@ -196,20 +198,20 @@
 
 /* ── Category section ── */
 .categorySection {
-  margin-bottom: 4px;
-  scroll-margin-top: 4px;
+  margin-bottom: var(--sp-2);
+  scroll-margin-top: var(--sp-2);
 }
 
 .categoryButton {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
   background: transparent;
   border: none;
   cursor: pointer;
-  color: #eee;
+  color: var(--text-primary);
   text-align: left;
 }
 
@@ -222,8 +224,8 @@
 }
 
 .categoryName {
-  font-size: 0.8125rem;
-  font-weight: 700;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.05em;
   flex: 1;
   overflow: hidden;
@@ -232,106 +234,118 @@
 }
 
 .categoryCount {
-  font-size: 0.6875rem;
-  color: #666;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 
 .categoryChevron {
-  font-size: 0.875rem;
-  color: #999;
-  margin-left: 4px;
-  transition: color 0.15s;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  margin-left: var(--sp-2);
+  transition: color var(--transition-fast);
 }
 
 .categoryButton:hover .categoryChevron {
-  color: #ccc;
+  color: var(--text-secondary);
 }
 
 .categoryNodes {
-  padding-top: 2px;
-  padding-bottom: 4px;
+  padding-top: var(--sp-1);
+  padding-bottom: var(--sp-2);
 }
 
-/* ── Node item ── */
+/* ── Node item ──
+   Densest list in the app: real row height + roomy padding carry the
+   density instead of small text (core token migration). */
 .nodeItem {
   position: relative;
-  padding: 6px 10px;
-  margin: 2px 6px;
-  border-radius: 5px;
+  min-height: var(--h-row);
+  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   cursor: grab;
   border: 1px solid transparent;
-  transition: all 0.15s;
+  transition: all var(--transition-fast);
   user-select: none;
 }
 
 .nodeItemName {
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: #ddd;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  color: var(--text-primary);
+  line-height: var(--lh-tight);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Was single-line ellipsis (the "currently truncated" description the
+   maintainer called out); now wraps up to two lines instead of hiding the
+   rest of the text behind an ellipsis after a handful of characters. */
 .nodeItemDesc {
-  font-size: 0.6875rem;
-  color: #777;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: var(--lh-snug);
+  margin-top: var(--sp-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 1px;
 }
 
 /* ── Node tooltip (portal, fixed position to escape overflow clip) ── */
 .nodeTooltip {
   position: fixed;
   width: 220px;
-  padding: 8px 10px;
-  background: #1e1e1e;
-  border: 1px solid #444;
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   z-index: 9999;
   pointer-events: none;
 }
 
 .nodeTooltipTitle {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #eee;
-  margin-bottom: 4px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--sp-2);
 }
 
 .nodeTooltipDesc {
-  font-size: 0.75rem;
-  color: #aaa;
-  line-height: 1.45;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-normal);
   white-space: normal;
   word-break: break-word;
 }
 
 /* ── Preset item ── */
 .presetItem {
-  padding: 8px 10px;
-  margin: 3px 6px;
-  border-radius: 6px;
+  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius);
   cursor: grab;
   border: 1px solid transparent;
-  transition: all 0.15s;
+  transition: all var(--transition-fast);
   user-select: none;
 }
 
 .presetHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 3px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
 
 .presetName {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #ddd;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -339,69 +353,71 @@
 }
 
 .presetDifficultyBadge {
-  font-size: 0.5625rem;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-weight: 600;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
   flex-shrink: 0;
 }
 
 .presetDesc {
-  font-size: 0.6875rem;
-  color: #777;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: var(--lh-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .presetNodeCount {
-  font-size: 0.625rem;
-  color: #555;
-  margin-top: 3px;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  margin-top: var(--sp-2);
 }
 
 /* ── Footer hint ── */
 .footer {
-  padding: 6px 10px;
-  border-top: 1px solid #2a2a2a;
-  font-size: 0.6875rem;
-  color: #444;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-base);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   text-align: center;
   flex-shrink: 0;
 }
 
 /* ── Loading / error / empty states ── */
 .stateMessage {
-  padding: 20px 10px;
+  padding: var(--sp-6) var(--sp-4);
   text-align: center;
-  color: #666;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 
 .stateMessageMuted {
-  padding: 20px 10px;
+  padding: var(--sp-6) var(--sp-4);
   text-align: center;
-  color: #555;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 
 .errorWrapper {
-  padding: 12px 10px;
+  padding: var(--sp-4);
 }
 
 .errorText {
-  font-size: 0.75rem;
-  color: #F44336;
-  margin-bottom: 8px;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  color: var(--status-error);
+  margin-bottom: var(--sp-3);
+  line-height: var(--lh-normal);
 }
 
 .retryButton {
-  font-size: 0.75rem;
-  padding: 4px 8px;
-  background: #333;
-  border: 1px solid #444;
-  border-radius: 4px;
-  color: #ccc;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   cursor: pointer;
 }

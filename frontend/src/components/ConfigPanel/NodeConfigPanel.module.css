@@ -4,110 +4,110 @@
   width: 300px;
   flex: 1;
   min-height: 0;
-  background: #161616;
-  border-left: 1px solid #2a2a2a;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: opacity 0.2s ease;
+  transition: opacity var(--transition);
 }
 
 /* Panel header */
 .header {
-  padding: 12px 14px;
+  padding: var(--sp-4);
   flex-shrink: 0;
-  background: #1a1a1a;
+  background: var(--surface-raised);
   /* border-bottom color is dynamic (accentColor) — set as inline style */
 }
 
 .headerMeta {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #888;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  margin-bottom: 4px;
+  margin-bottom: var(--sp-2);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .presetBadge {
-  font-size: 0.625rem;
-  background: rgba(212, 160, 23, 0.2);
-  color: #D4A017;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-weight: 600;
+  font-size: var(--fs-2xs);
+  background: var(--warning-wash);
+  color: var(--status-preset);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  font-weight: var(--fw-semibold);
 }
 
 .headerName {
-  font-size: 1rem;
-  font-weight: 600;
-  color: #eee;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-primary);
 }
 
 /* category label color is dynamic (accentColor) — set as inline style */
 .headerCategory {
-  font-size: 0.75rem;
-  margin-top: 2px;
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
 }
 
 .headerDescription {
-  font-size: 0.75rem;
-  color: #666;
-  margin-top: 6px;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-top: var(--sp-3);
+  line-height: var(--lh-snug);
 }
 
 /* Scrollable content */
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: var(--sp-4);
 }
 
 /* Section headers (PARAMETERS, PORTS, etc.) */
 .sectionHeader {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #666;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-4);
 }
 
 .sectionHeaderPorts {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #666;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-3);
 }
 
 .sectionHeaderExecution {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: #666;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-3);
 }
 
 /* Port info rows */
 .portSubLabel {
-  font-size: 0.6875rem;
-  color: #555;
-  margin-bottom: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-2);
 }
 
 .portRow {
-  font-size: 0.75rem;
-  color: #888;
-  padding: 2px 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  padding: var(--sp-2) 0;
   display: flex;
-  gap: 6px;
+  gap: var(--sp-3);
   align-items: center;
 }
 
@@ -116,50 +116,50 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #555;
+  background: var(--text-muted);
   flex-shrink: 0;
 }
 
 .portName {
-  color: #aaa;
+  color: var(--text-muted);
 }
 
 .portType {
-  color: #555;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
 }
 
 .portOptional {
-  color: #444;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
 }
 
 /* Preset configure section */
 .presetHint {
-  font-size: 0.75rem;
-  color: #888;
-  margin-bottom: 8px;
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
+  line-height: var(--lh-snug);
 }
 
 .presetConfigureBtn {
   width: 100%;
-  padding: 8px 12px;
-  background: rgba(212, 160, 23, 0.15);
-  border: 1px solid #D4A017;
-  border-radius: 6px;
-  color: #D4A017;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--warning-wash);
+  border: 1px solid var(--status-preset);
+  border-radius: var(--radius);
+  color: var(--status-preset);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
 }
 
 /* No-params placeholder */
 .noParams {
   text-align: center;
-  color: #444;
-  font-size: 0.8125rem;
-  padding-top: 20px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  padding-top: var(--sp-6);
 }
 
 /* Param description / range hints now live in shared/NodeParamList.module.css,

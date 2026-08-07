@@ -1,60 +1,65 @@
 .note {
   position: relative;
-  background: rgba(26, 26, 26, 0.92);
-  border-radius: 6px;
+  /* rgb(36,43,55) mirrors --surface-raised; kept translucent (a note may
+     float over other nodes/wires) since a custom property's alpha can't be
+     adjusted without color-mix(), which this migration does not introduce. */
+  background: rgba(36, 43, 55, 0.92);
+  border-radius: var(--radius);
   min-width: 120px;
   min-height: 48px;
-  font-size: 0.8125rem;
-  color: #ddd;
-  border: 1px solid #333;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-base);
+  transition: border-color var(--transition), box-shadow var(--transition);
   cursor: default;
 }
 
 .note:hover {
-  border-color: #555;
+  border-color: var(--border-strong);
 }
 
 .accentBar {
   height: 3px;
-  border-radius: 6px 6px 0 0;
+  /* card radius (--radius) minus the 1px card border, so it nests flush. */
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
 }
 
 .bindIcon {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  font-size: 0.625rem;
-  color: #888;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
   pointer-events: none;
 }
 
 /* ── Text note ── */
 .textContent {
-  padding: 8px 10px;
+  padding: var(--sp-3) var(--sp-4);
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.5;
-  font-size: 0.75rem;
-  color: #ccc;
+  line-height: var(--lh-normal);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
   outline: none;
-  min-height: 28px;
+  min-height: var(--h-control-sm);
 }
 
 .textContent:empty::before {
   content: attr(data-placeholder);
-  color: #555;
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .editing {
-  border-color: #666;
-  box-shadow: 0 0 0 1px #666;
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 1px var(--border-strong);
 }
 
 /* ── Image note ── */
 .imageContent {
-  padding: 6px;
+  padding: var(--sp-3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -63,7 +68,7 @@
 
 .imageContent img {
   max-width: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   object-fit: contain;
 }
 
@@ -72,25 +77,26 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 16px 12px;
-  border: 1px dashed #444;
-  border-radius: 4px;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-4);
+  border: 1px dashed var(--border-base);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  color: #666;
-  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
   width: 100%;
   min-height: 60px;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition-fast);
 }
 
 .imagePlaceholder:hover {
-  border-color: #888;
-  color: #aaa;
+  border-color: var(--border-strong);
+  color: var(--text-muted);
 }
 
 .imagePlaceholderIcon {
-  font-size: 1.25rem;
+  font-size: var(--fs-2xl);
 }
 
 /* ── Resize handle ── */
@@ -102,7 +108,7 @@
   height: 12px;
   cursor: nwse-resize;
   opacity: 0;
-  transition: opacity 0.15s;
+  transition: opacity var(--transition-fast);
 }
 
 .note:hover .resizeHandle {
@@ -112,10 +118,10 @@
 .resizeHandle::after {
   content: "";
   position: absolute;
-  bottom: 3px;
-  right: 3px;
+  bottom: var(--sp-2);
+  right: var(--sp-2);
   width: 6px;
   height: 6px;
-  border-right: 1.5px solid #666;
-  border-bottom: 1.5px solid #666;
+  border-right: 1.5px solid var(--border-strong);
+  border-bottom: 1.5px solid var(--border-strong);
 }

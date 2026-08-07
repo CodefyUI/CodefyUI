@@ -3,22 +3,22 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 4px 0;
+  padding: var(--sp-2) 0;
   position: relative;
 }
 
 .expandBtn {
   position: absolute;
   top: 2px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
+  right: var(--sp-3);
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  border-radius: var(--radius-sm);
   background: rgba(10, 15, 23, 0.85);
-  border: 1px solid #1f2937;
-  color: #67e8f9;
-  font-size: 13px;
-  line-height: 1;
+  border: 1px solid var(--border-base);
+  color: var(--accent);
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -26,26 +26,26 @@
   z-index: 5;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   padding: 0;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .expandBtn:hover {
-  background: #0e7490;
-  border-color: #06b6d4;
-  color: #fff;
+  background: var(--accent-dim);
+  border-color: var(--accent-deep);
+  color: var(--text-primary);
 }
 
 .grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--sp-3);
   justify-content: center;
 }
 
 .panel {
-  background: #0a0f17;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
   display: block;
 }
 
@@ -54,22 +54,25 @@
 }
 
 .cell:hover {
-  stroke: #06b6d4;
+  stroke: var(--accent-deep);
   stroke-width: 1.5;
 }
 
+/* Real SVG <text> elements (see HeatmapPlot.tsx) — rem does not reliably
+   apply here, so font-size stays in px per the migration contract's SVG
+   exception, just raised to the 11px floor instead of 9px/10px. */
 .axisLabel {
-  fill: #94a3b8;
-  font-size: 9px;
+  fill: var(--text-muted);
+  font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   pointer-events: none;
 }
 
 .headLabel {
-  fill: #67e8f9;
-  font-size: 10px;
+  fill: var(--accent);
+  font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 600;
+  font-weight: var(--fw-semibold);
   letter-spacing: 0.05em;
   pointer-events: none;
 }
@@ -80,43 +83,45 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
   font-style: italic;
 }
 
 .tooltip {
   position: fixed;
-  background: #020617;
-  border: 1px solid #1e293b;
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-size: 11px;
-  color: #e5e7eb;
+  /* Was #020617, darker than every other tooltip in the app (they converge
+     on --surface-canvas) — normalized for consistency. */
+  background: var(--surface-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
   pointer-events: none;
   z-index: 9999;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  box-shadow: 0 8px 18px -8px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow);
 }
 
 .tooltipHeader {
-  color: #67e8f9;
-  font-weight: 600;
-  margin-bottom: 2px;
+  color: var(--accent);
+  font-weight: var(--fw-semibold);
+  margin-bottom: var(--sp-1);
 }
 
 .tooltipHead {
-  color: #94a3b8;
-  font-weight: 400;
+  color: var(--text-muted);
+  font-weight: var(--fw-normal);
 }
 
 .tooltipPair {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: #cbd5e1;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
 }
 
 .tooltipArrow {
-  color: #06b6d4;
+  color: var(--accent-deep);
 }

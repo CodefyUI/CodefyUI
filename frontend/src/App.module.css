@@ -7,11 +7,11 @@
 .root {
   width: 100vw;
   height: 100vh;
-  background: #121212; /* SURFACE.bg */
+  background: var(--surface-app);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  color: #eeeeee; /* TEXT.primary */
+  color: var(--text-primary);
   font-family: Inter, system-ui, -apple-system, sans-serif;
 }
 
@@ -55,9 +55,8 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
-  background: #161616;
-  border-left: 1px solid #2a2a2a;
+  background: var(--surface-panel);
+  border-left: 1px solid var(--border-base);
   overflow: hidden;
   min-height: 0;
 }
-

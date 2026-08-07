@@ -427,7 +427,7 @@ describe('trigger edges, on the real ResNet-18 / CIFAR-10 example', () => {
       </svg>,
     );
     const style = container.querySelector('path.react-flow__edge-path')?.getAttribute('style') ?? '';
-    expect(style).toContain('stroke: #22c55e');
+    expect(style).toContain('stroke: var(--flow-trigger)');
     expect(style).toContain('stroke-dasharray: 6 4');
   });
 });

@@ -4,13 +4,13 @@
    (which start at 9000). */
 .stack {
   position: fixed;
-  right: 16px;
+  right: var(--sp-5);
   bottom: 188px;
   z-index: 300;
   display: flex;
   flex-direction: column-reverse;
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--sp-4);
   pointer-events: none;
 }
 

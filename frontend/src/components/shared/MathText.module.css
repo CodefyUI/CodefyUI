@@ -2,10 +2,14 @@
    was meant to be rendered when KaTeX rejects a formula. */
 .fallback {
   font-family: ui-monospace, SFMono-Regular, monospace;
-  color: #f5a623;
-  background: rgba(245, 166, 35, 0.08);
-  padding: 0 4px;
-  border-radius: 3px;
+  color: var(--status-warning);
+  background: var(--warning-wash);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  /* Deliberately `em`, not a token: MathText is inline inside arbitrary
+     parent contexts (table cell, tooltip, description) and should stay
+     proportional to whatever font-size is ambient there, the way KaTeX's
+     own sizing does. */
   font-size: 0.85em;
 }
 
@@ -21,5 +25,5 @@
   margin: 0.4em 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 4px;
+  padding: 0 var(--sp-2);
 }

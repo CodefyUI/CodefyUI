@@ -3,78 +3,78 @@
 .tab {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-4);
 }
 
 .contract {
-  font-size: 0.6875rem;
-  line-height: 1.5;
-  color: #9ca3af;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   background: rgba(0, 0, 0, 0.18);
-  border-radius: 3px;
-  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
 }
 
 .ports {
   display: flex;
-  gap: 16px;
+  gap: var(--sp-5);
   flex-wrap: wrap;
 }
 
 .side {
   flex: 1 1 220px;
   min-width: 0;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-  padding: 8px 10px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .sideHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 6px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid #1f2937;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-base);
 }
 
 .sideTitle {
-  font-size: 0.6875rem;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .portRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 3px 0;
+  gap: var(--sp-4);
+  padding: var(--sp-2) 0;
 }
 
 .portName {
-  font-size: 0.75rem;
+  font-size: var(--fs-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .countSelect,
 .typeSelect {
-  background: #171717;
-  color: #e5e7eb;
-  border: 1px solid #2a2a2a;
-  border-radius: 3px;
-  font-size: 0.6875rem;
-  padding: 2px 4px;
+  background: var(--surface-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-2);
 }
 
 .countSelect:focus,
 .typeSelect:focus {
   outline: none;
-  border-color: #06b6d4;
+  border-color: var(--accent-deep);
 }
 
 .typeSelect {
@@ -82,16 +82,16 @@
 }
 
 .security {
-  font-size: 0.6875rem;
-  line-height: 1.5;
-  color: #6b7280;
-  border-top: 1px solid #1f2937;
-  padding-top: 8px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-base);
+  padding-top: var(--sp-3);
 }
 
 .empty {
-  padding: 24px;
+  padding: var(--sp-7);
   text-align: center;
-  color: #6b7280;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }

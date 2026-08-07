@@ -142,8 +142,15 @@ describe('QuickNodeSearch', () => {
       <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={() => {}} />,
     );
     const categorySpan = getByText('Unknown');
-    // CATEGORY_COLORS has no 'Unknown' => '#607D8B' => rgb(96, 125, 139)
-    expect(categorySpan.style.color).toBe('rgb(96, 125, 139)');
+    // The label itself is no longer tinted: a hue drawn on a tint of itself
+    // cannot reach 4.5:1, so the label takes the shared text tier and the hue
+    // identifies the category through the dot instead.
+    expect(categorySpan.style.color).toBe('');
+    // CATEGORY_COLORS has no 'Unknown', so it falls back to the Utility hue
+    // every other unknown-category node uses -- not to a stale literal.
+    const dot = categorySpan.closest('button')?.querySelector('span');
+    expect(dot).toBeTruthy();
+    expect((dot as HTMLElement).style.background).toBe('rgb(128, 151, 162)');
   });
 
   it('boosts the Start node to the top when query is empty', () => {

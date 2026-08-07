@@ -4,7 +4,7 @@ import type { Node } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { useTabStore } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
-import { CATEGORY_COLORS, STATUS_COLORS } from '../../styles/theme';
+import { CATEGORY_COLORS, STATUS_COLORS, PRESET_GOLD } from '../../styles/theme';
 import { topologicalOrder } from '../../utils/topoOrder';
 import { MathText } from '../shared/MathText';
 import { NodeParamList } from '../shared/NodeParamList';
@@ -183,7 +183,10 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const nodeName = def?.node_name ?? node.data.type;
   const category = def?.category ?? 'Utility';
   const isPreset = Boolean(node.data.isPreset);
-  const accent = isPreset ? '#D4A017' : (CATEGORY_COLORS[category] ?? '#607D8B');
+  // Unknown categories (plugin-defined ones) fall back to the Utility hue the
+  // rest of the app uses for them, not to a stale literal — the pre-lift
+  // '#607D8B' rendered those nodes a different colour here than on canvas.
+  const accent = isPreset ? PRESET_GOLD : (CATEGORY_COLORS[category] ?? CATEGORY_COLORS.Utility);
   const status = node.data.executionStatus ?? 'idle';
   const statusColor = STATUS_COLORS[status];
 

@@ -1,6 +1,8 @@
 /* RunsPanel.module.css — the Runs tab of the bottom dock (#124).
-   Palette matches ResultsPanel.module.css: #111 base, #2a2a2a rules,
-   #4d90fe selection, one teal accent for "live". */
+   Palette matches ResultsPanel.module.css: --surface-panel base,
+   --border-base rules, --surface-active for the selected row,
+   --border-focus for keyboard focus, and --accent-deep as the one
+   teal accent for "live". */
 
 .runsBody {
   display: flex;
@@ -26,52 +28,52 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 4px 12px;
-  border-bottom: 1px solid #1e1e1e;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
 .filters {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   flex-wrap: wrap;
 }
 
 .filterBtn {
-  font-size: 0.6875rem;
-  color: #8a8a8a;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
-  min-height: 24px;
-  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  min-height: var(--h-control-xs);
+  padding: var(--sp-2) var(--sp-3);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .filterBtn:hover {
-  color: #ccc;
-  background: #1c1c1c;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
 }
 
 .filterActive {
-  color: #ddd;
-  background: #222;
-  border-color: #3a3a3a;
+  color: var(--text-secondary);
+  background: var(--surface-input);
+  border-color: var(--border-base);
 }
 
 .toolbarRight {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
   flex-shrink: 0;
 }
 
 .countText {
-  font-size: 0.6875rem;
-  color: #666;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   font-family: monospace;
 }
 
@@ -81,7 +83,7 @@
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  font-size: 0.75rem;
+  font-size: var(--fs-sm);
 }
 
 /* The data columns are capped and the ACTIONS column takes the slack, so a
@@ -97,47 +99,47 @@
     72px                  /* duration */
     80px                  /* final loss */
     minmax(140px, 1fr);   /* actions, right-aligned */
-  gap: 8px;
+  gap: var(--sp-3);
   align-items: center;
-  padding: 3px 12px;
-  color: #bbb;
-  border-bottom: 1px solid #171717;
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
 }
 
 .row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-hover);
 }
 
 .rowSelected {
-  background: rgba(77, 144, 254, 0.1);
+  background: var(--surface-active);
 }
 
 .row:focus-visible {
-  outline: 2px solid #4d90fe;
+  outline: 2px solid var(--border-focus);
   outline-offset: -2px;
 }
 
 .rowHeader {
-  color: #888;
-  font-weight: 600;
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.625rem;
-  border-bottom: 1px solid #2a2a2a;
+  font-size: var(--fs-2xs);
+  border-bottom: 1px solid var(--border-base);
   cursor: default;
   position: sticky;
   top: 0;
-  background: #111;
+  background: var(--surface-panel);
   z-index: 1;
 }
 
 .rowHeader:hover {
-  background: #111;
+  background: var(--surface-panel);
 }
 
 .nameCell {
-  color: #ddd;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -145,82 +147,82 @@
 
 .mono {
   font-family: monospace;
-  color: #999;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .queuePos {
-  color: #06b6d4;
+  color: var(--accent-deep);
 }
 
 .empty {
-  padding: 20px 12px;
+  padding: var(--sp-6) var(--sp-4);
   text-align: center;
-  color: #555;
-  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
 }
 
 .listError {
-  padding: 4px 12px;
-  background: rgba(244, 67, 54, 0.1);
-  color: #F44336;
-  font-size: 0.75rem;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--danger-wash);
+  color: var(--status-error);
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
 /* ── status chips ── */
 
 .chip {
-  font-size: 0.625rem;
-  font-weight: 600;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid;
-  padding: 1px 5px;
+  padding: var(--sp-1) var(--sp-2);
   text-align: center;
   white-space: nowrap;
   justify-self: start;
 }
 
 .chip_running {
-  color: #06b6d4;
-  border-color: rgba(6, 182, 212, 0.45);
-  background: rgba(6, 182, 212, 0.12);
+  color: var(--accent-deep);
+  border-color: var(--accent-glow);
+  background: var(--accent-wash);
 }
 
 .chip_queued {
-  color: #FFC107;
-  border-color: rgba(255, 193, 7, 0.4);
-  background: rgba(255, 193, 7, 0.1);
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+  background: var(--warning-wash);
 }
 
 .chip_succeeded {
-  color: #66BB6A;
-  border-color: rgba(102, 187, 106, 0.4);
-  background: rgba(102, 187, 106, 0.1);
+  color: var(--status-success);
+  border-color: var(--status-success);
+  background: var(--success-wash);
 }
 
 .chip_failed {
-  color: #EF5350;
-  border-color: rgba(239, 83, 80, 0.45);
-  background: rgba(239, 83, 80, 0.12);
+  color: var(--status-error);
+  border-color: var(--status-error);
+  background: var(--danger-wash);
 }
 
 /* Cancelled is a decision; interrupted is a crash that left a row behind.
    Reading the same would hide the one the user needs to act on. */
 .chip_cancelled {
-  color: #999;
-  border-color: #3a3a3a;
-  background: #1c1c1c;
+  color: var(--text-muted);
+  border-color: var(--border-base);
+  background: var(--surface-raised);
 }
 
 .chip_interrupted {
-  color: #D9873F;
-  border-color: rgba(217, 135, 63, 0.45);
-  background: rgba(217, 135, 63, 0.12);
+  color: var(--status-interrupted);
+  border-color: var(--status-interrupted);
+  background: var(--warning-wash);
 }
 
 /* ── row actions ── */
@@ -228,46 +230,46 @@
 .actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
   justify-content: flex-end;
 }
 
 .rowBtn {
-  font-size: 0.625rem;
-  font-weight: 600;
-  color: #999;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
   background: transparent;
-  border: 1px solid #3a3a3a;
-  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   /* 24px tall: small enough for a dense table, large enough to hit. */
-  min-height: 24px;
-  padding: 2px 8px;
+  min-height: var(--h-control-xs);
+  padding: var(--sp-1) var(--sp-3);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .rowBtn:hover:not(:disabled) {
-  color: #eee;
-  background: #222;
+  color: var(--text-primary);
+  background: var(--surface-hover);
 }
 
 .rowBtn:disabled {
-  color: #444;
-  border-color: #2a2a2a;
+  color: var(--text-disabled);
+  border-color: var(--border-base);
   cursor: not-allowed;
 }
 
-/* #EF5350 on the #111 panel is 5.4:1 — the resting colour has to clear
-   4.5:1 too, which the previous muted #C05C58 (4.4:1) narrowly did not. */
+/* status-error on the panel surface clears 4.5:1, so the resting colour
+   (not just the hover state) can carry it directly. */
 .rowBtnDanger {
-  color: #EF5350;
-  border-color: rgba(239, 83, 80, 0.3);
+  color: var(--status-error);
+  border-color: var(--status-error);
 }
 
 .rowBtnDanger:hover:not(:disabled) {
-  color: #EF5350;
-  background: rgba(239, 83, 80, 0.12);
-  border-color: rgba(239, 83, 80, 0.45);
+  color: var(--status-error);
+  background: var(--danger-wash);
+  border-color: var(--status-error);
 }
 
 /* ── detail ── */
@@ -275,37 +277,37 @@
 .detail {
   flex: 1.1;
   min-width: 0;
-  border-left: 1px solid #2a2a2a;
+  border-left: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: 0 0 8px;
+  padding: 0 0 var(--sp-3);
 }
 
 .detailHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-bottom: 1px solid #2a2a2a;
-  background: #1a1a1a;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-base);
+  background: var(--surface-raised);
   position: sticky;
   top: 0;
   z-index: 1;
 }
 
 .detailTitle {
-  color: #eee;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .detailMeta {
-  font-size: 0.6875rem;
-  color: #888;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
   font-family: monospace;
   white-space: nowrap;
 }
@@ -314,29 +316,29 @@
   margin-left: auto;
   background: transparent;
   border: none;
-  color: #777;
-  font-size: 0.9375rem;
-  line-height: 1;
+  color: var(--text-muted);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 var(--sp-1);
 }
 
 .detailClose:hover {
-  color: #eee;
+  color: var(--text-primary);
 }
 
 .detailError {
-  margin: 6px 12px 0;
-  padding: 4px 8px;
-  background: rgba(244, 67, 54, 0.1);
-  color: #EF5350;
-  border-radius: 3px;
-  font-size: 0.75rem;
+  margin: var(--sp-3) var(--sp-4) 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--danger-wash);
+  color: var(--status-error);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   word-break: break-word;
 }
 
 .detailSection {
-  padding: 4px 12px;
+  padding: var(--sp-2) var(--sp-4);
 }
 
 /* Section title on the left, its one action on the right. Baseline-aligned
@@ -346,22 +348,22 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .sectionHeader {
-  font-size: 0.6875rem;
-  color: #999;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-weight: var(--fw-semibold);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 6px 0 4px;
+  padding: var(--sp-3) 0 var(--sp-2);
 }
 
 .detailEmpty {
-  color: #555;
-  font-size: 0.75rem;
-  padding: 4px 0 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) 0 var(--sp-3);
 }
 
 /* artifacts */
@@ -369,24 +371,24 @@
 .artifactList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
 }
 
 .artifactRow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 0.6875rem;
+  gap: var(--sp-3);
+  font-size: var(--fs-xs);
 }
 
 .artifactKind {
-  color: #06b6d4;
+  color: var(--accent-deep);
   font-family: monospace;
   flex-shrink: 0;
 }
 
 .artifactPath {
-  color: #bbb;
+  color: var(--text-secondary);
   font-family: monospace;
   flex: 1;
   min-width: 0;
@@ -408,13 +410,13 @@
 
 .logLine {
   display: flex;
-  gap: 8px;
-  font-size: 0.6875rem;
-  line-height: 1.5;
+  gap: var(--sp-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
 }
 
 .logTime {
-  color: #555;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -423,19 +425,19 @@
 }
 
 .tone_info .logText {
-  color: #999;
+  color: var(--text-secondary);
 }
 
 .tone_success .logText {
-  color: #66BB6A;
+  color: var(--status-success);
 }
 
 .tone_error .logText {
-  color: #EF5350;
+  color: var(--status-error);
 }
 
 .tone_warning .logText {
-  color: #FFC107;
+  color: var(--status-warning);
 }
 
 /* ── narrow dock ──────────────────────────────────────────────────────

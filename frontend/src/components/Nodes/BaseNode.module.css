@@ -1,14 +1,14 @@
 /* ── Node container base ── */
 .node {
   position: relative;
-  background: #1e1e1e;
-  border-radius: 8px;
+  background: var(--surface-raised);
+  border-radius: var(--radius-lg);
   min-width: 160px;
-  font-size: 0.8125rem;
-  color: #eeeeee;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
   /* Dynamic border is injected via --border-color custom property */
-  border: 1px solid var(--border-color, #444444);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  border: 1px solid var(--border-color, var(--border-base));
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
 /* ── Bypassed / muted (core#128) ──
@@ -36,13 +36,16 @@
 }
 
 .bypassBadge {
-  font-size: 0.5625rem;
-  font-weight: 700;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
   letter-spacing: 0.08em;
-  padding: 0 4px;
-  border-radius: 3px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-sm);
+  /* Deliberately lighter-weight than --surface-scrim (a full modal backdrop) —
+     just enough to keep the badge legible over any header hue. */
   background: rgba(0, 0, 0, 0.45);
-  color: #ffffff;
+  color: var(--text-primary);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -54,44 +57,51 @@
   left: 50%;
   transform: translateX(-50%);
   width: 240px;
-  padding: 8px 10px;
-  background: #161616;
-  border: 1px solid #444;
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
   z-index: 300;
   pointer-events: none;
 }
 
 .tooltipTitle {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: #eee;
-  margin-bottom: 4px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--text-primary);
+  margin-bottom: var(--sp-2);
 }
 
 .tooltipDesc {
-  font-size: 0.75rem;
-  color: #aaa;
-  line-height: 1.45;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  line-height: var(--lh-normal);
   white-space: normal;
   word-break: break-word;
 }
 
 /* ── Header ── */
 .header {
-  /* Dynamic: background set via inline style (headerColor from category) */
-  padding: 6px 10px;
-  border-radius: 7px 7px 0 0;
-  font-weight: 600;
-  font-size: 0.875rem;
+  /* Dynamic: background set via inline style — a tint of the category hue
+     mixed into --surface-raised (see BaseNode.tsx), not the raw hue. */
+  padding: var(--sp-3) var(--sp-4);
+  /* card radius (--radius-lg) minus the 1px card border, so the header's
+     top corners nest flush inside it. */
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .headerLabel {
+  /* Inherits var(--text-primary) from .node — 9.2:1-11.7:1 on every
+     category's tinted header fill (was raw-hue-background + unconditional
+     #eeeeee, 1.85:1-2.69:1 on twelve of fourteen categories). */
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -99,48 +109,58 @@
 }
 
 .headerCategory {
-  font-size: 0.625rem;
-  opacity: 0.65;
+  /* NOT the category hue. Drawing the hue on an 18% tint of that same hue
+     caps out near 4:1 for every hue and every tint strength — it is
+     unreadable by construction, not by tuning. The category stays
+     identifiable through the accent bar (a graphic, 3:1) while the label
+     itself is ordinary text and gets the text bar. Worst case across all
+     fourteen categories: 5.11:1.
+     Before that it was opacity: 0.65 over the title colour, at 1.47-1.78:1. */
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
   background: transparent;
-  padding: 2px 0;
-  border-radius: 3px;
+  padding: var(--sp-1) 0;
+  border-radius: var(--radius-sm);
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 /* ── Ports area ── */
 .portsArea {
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: var(--sp-3);
+  padding-bottom: var(--sp-3);
 }
 
 /* ── Port row ── */
 .portRowInput {
   position: relative;
-  padding: 3px 12px 3px 18px;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-5);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .portRowOutput {
   position: relative;
-  padding: 3px 18px 3px 12px;
+  padding: var(--sp-2) var(--sp-5) var(--sp-2) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .portLabel {
   /* Dynamic: color set via inline style (getPortColor) */
-  font-size: 0.75rem;
-  line-height: 1;
+  font-size: var(--fs-sm);
+  /* Was line-height: 1 — the tightest value CSS allows, on every port name
+     of every node. */
+  line-height: var(--lh-tight);
 }
 
 .portOptional {
-  color: #666;
-  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
 }
 
 /* ── Port handle base ── */
@@ -148,7 +168,7 @@
 .portHandle {
   width: 10px !important;
   height: 10px !important;
-  border: 2px solid #1e1e1e !important;
+  border: 2px solid var(--surface-raised) !important;
   border-radius: 50% !important;
   cursor: crosshair !important;
 }
@@ -168,32 +188,34 @@
 /* ── Divider ── */
 .divider {
   height: 1px;
-  background: #333;
-  margin: 4px 0;
+  background: var(--border-base);
+  margin: var(--sp-2) 0;
 }
 
 /* ── Params section ── */
 .paramsSection {
-  border-top: 1px solid #333;
-  padding: 5px 10px;
+  border-top: 1px solid var(--border-base);
+  padding: var(--sp-2) var(--sp-4);
 }
 
 .paramRow {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  padding: 2px 0;
+  gap: var(--sp-3);
+  padding: var(--sp-1) 0;
 }
 
 .paramName {
-  font-size: 0.6875rem;
-  color: #777;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
 }
 
 .paramValue {
-  font-size: 0.6875rem;
-  color: #bbb;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
   font-family: monospace;
   max-width: 120px;
   overflow: hidden;
@@ -204,74 +226,83 @@
 
 /* ── CODE param preview (core#131) ── */
 .codePreview {
-  margin: 3px 0 1px;
-  padding: 5px 6px;
-  border: 1px solid #2a2a2a;
-  border-left: 2px solid #06b6d4;
-  border-radius: 3px;
+  margin: var(--sp-2) 0 var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-deep);
+  border-radius: var(--radius-sm);
+  /* Darkening wash over the card, not a flat surface fill — no token covers
+     this (distinct role from the modal-level --surface-scrim). */
   background: rgba(0, 0, 0, 0.28);
   overflow: hidden;
 }
 
 .codePreviewLine {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.625rem;
-  line-height: 1.45;
-  color: #c8c8c8;
+  font-size: var(--fs-xs);
+  /* Single line per row (overflow hidden + ellipsis) — tight leading reads
+     fine since it can never wrap. */
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
   white-space: pre;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .codePreviewMore {
-  font-size: 0.5938rem;
-  color: #6b7280;
-  padding-top: 2px;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  padding-top: var(--sp-1);
 }
 
 .codePreviewEmpty {
-  font-size: 0.6875rem;
-  color: #6b7280;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
   font-style: italic;
-  padding: 3px 0;
+  padding: var(--sp-2) 0;
 }
 
 /* ── Sequential subgraph section ── */
 .subgraphSection {
-  border-top: 1px solid #333;
-  padding: 6px 10px;
+  border-top: 1px solid var(--border-base);
+  padding: var(--sp-3) var(--sp-4);
   text-align: center;
 }
 
 .subgraphLayerRow {
-  font-size: 0.6875rem;
-  color: #888;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--sp-2);
 }
 
 .subgraphLayerCount {
-  color: #F44336;
-  font-weight: 600;
+  color: var(--status-error);
+  font-weight: var(--fw-semibold);
 }
 
 .subgraphHint {
-  font-size: 0.5625rem;
-  color: #555;
-  margin-top: 2px;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  margin-top: var(--sp-1);
 }
 
 /* ── Status footer base ── */
 .statusFooter {
-  padding: 4px 10px;
-  font-size: 0.6875rem;
-  border-top: 1px solid #333;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  border-top: 1px solid var(--border-base);
 }
 
 .statusError {
-  color: #F44336;
+  color: var(--status-error);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -279,12 +310,12 @@
 }
 
 .statusRunning {
-  color: #FFC107;
+  color: var(--status-running);
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .statusRunningDot {
@@ -292,26 +323,32 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #FFC107;
+  background: var(--status-running);
   animation: pulse 1s infinite;
 }
 
 .statusCompleted {
-  color: #4CAF50;
+  color: var(--status-completed);
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
 }
 
 .downloadBtn {
-  background: #2e3d2e;
-  border: 1px solid #4CAF50;
-  border-radius: 4px;
-  color: #9fe0a1;
-  font-size: 0.6875rem;
-  padding: 3px 8px;
+  /* --success-wash exists but is paired with --status-success (a slightly
+     different green than --status-completed); this button sits inside the
+     .statusCompleted footer and stays hue-matched to that sibling text
+     instead, so the wash is hand-derived from --status-completed's own
+     rgb() rather than switching tokens. */
+  background: rgba(76, 175, 80, 0.18);
+  border: 1px solid var(--status-completed);
+  border-radius: var(--radius-sm);
+  color: var(--status-completed);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  padding: var(--sp-1) var(--sp-3);
   cursor: pointer;
   max-width: 200px;
   overflow: hidden;
@@ -321,8 +358,8 @@
 }
 
 .downloadBtn:hover:not(:disabled) {
-  background: #3c533d;
-  color: #fff;
+  background: rgba(76, 175, 80, 0.28);
+  color: var(--text-primary);
 }
 
 .downloadBtn:disabled {
@@ -331,12 +368,12 @@
 }
 
 .statusCached {
-  color: #2196F3;
+  color: var(--status-cached);
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-3);
 }
 
 .statusCachedDot {
@@ -344,7 +381,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #2196F3;
+  background: var(--status-cached);
 }
 
 /* ── Progress bar (training) ── */
@@ -355,30 +392,35 @@
 .progressInfo {
   display: flex;
   justify-content: space-between;
-  font-size: 0.625rem;
-  margin-bottom: 3px;
-  color: #FFC107;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-tight);
+  margin-bottom: var(--sp-2);
+  color: var(--status-running);
 }
 
 .progressBarTrack {
   width: 100%;
   height: 4px;
-  background: #333;
+  background: var(--border-base);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progressBarFill {
   height: 100%;
-  background: #FFC107;
+  background: var(--status-running);
   border-radius: 2px;
   transition: width 0.3s ease;
 }
 
 /* ── Port connection-drag highlighting ── */
 .portCompatible {
+  /* Hue matches --status-completed's rgb() exactly. --glow-running and
+     --glow-accent exist as premade glow shadows but neither is green;
+     --success-wash is green but at 0.14 alpha, too weak for this ring.
+     Kept as a hand-tuned literal, hue-matched to the border below. */
   box-shadow: 0 0 6px 2px rgba(76, 175, 80, 0.6);
-  border-color: #4CAF50 !important;
+  border-color: var(--status-completed) !important;
 }
 
 .portIncompatible {
@@ -391,8 +433,11 @@
    qualify as a compatible drop target), so it always wins there while the
    green compat glow stays on the other candidate handles. */
 .portDetaching {
-  border-color: #F44336 !important;
-  box-shadow: 0 0 0 3px rgba(244, 67, 54, 0.3), 0 0 10px 2px rgba(244, 67, 54, 0.45) !important;
+  border-color: var(--status-error) !important;
+  /* rgb(255,107,99) is --status-error's own rgb() — --danger-wash exists but
+     at 0.14 alpha, too weak for this warning ring; hand-tuned alpha keeps
+     the ring's original strength while matching the token's hue exactly. */
+  box-shadow: 0 0 0 3px rgba(255, 107, 99, 0.3), 0 0 10px 2px rgba(255, 107, 99, 0.45) !important;
 }
 
 /* ── Pulse animation (re-declared here so it is self-contained) ── */
@@ -416,17 +461,21 @@
   left: -6px !important;
   transform: rotate(45deg) !important;
   border-radius: 2px !important;
-  transition: all 0.15s ease;
+  transition: all var(--transition-fast);
 }
 
 .triggerHandleActive {
-  /* Visible when user drags from Start trigger */
+  /* Visible when user drags from Start trigger. var(--flow-trigger) is the app's
+     recurring "trigger / control-flow" green (Start node, entry-point
+     marker) — a deliberately different hue from --status-completed's green,
+     and tokens.css has no dedicated trigger-flow colour yet (see migration
+     report). */
   width: 14px !important;
   height: 14px !important;
   min-width: 14px !important;
   min-height: 14px !important;
-  background: #22c55e !important;
-  border: 2px solid #fff !important;
+  background: var(--flow-trigger) !important;
+  border: 2px solid var(--text-primary) !important;
   opacity: 1;
   pointer-events: all;
   box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
@@ -442,11 +491,12 @@
   height: 14px !important;
   min-width: 14px !important;
   min-height: 14px !important;
-  background: #1e1e1e !important;
-  border: 2px solid #F44336 !important;
+  background: var(--surface-raised) !important;
+  border: 2px solid var(--status-error) !important;
   opacity: 1;
   pointer-events: all;
-  box-shadow: 0 0 8px rgba(244, 67, 54, 0.6);
+  /* rgb(255,107,99) is --status-error's own rgb() — see .portDetaching. */
+  box-shadow: 0 0 8px rgba(255, 107, 99, 0.6);
 }
 
 /* ── Node glow when it is a valid trigger drop target ── */
@@ -458,7 +508,7 @@
 
 /* Entry point marker — applied when node is a trigger target (connected from Start) */
 .entryPoint {
-  outline: 2px solid #22c55e;
+  outline: 2px solid var(--flow-trigger);
   outline-offset: 3px;
   box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18), 0 4px 12px rgba(0, 0, 0, 0.4);
 }
@@ -470,13 +520,13 @@
   left: -10px;
   width: 18px;
   height: 18px;
-  background-color: #22c55e;
+  background-color: var(--flow-trigger);
   border-radius: 50%;
-  border: 2px solid #0a0a0a;
+  border: 2px solid var(--surface-canvas);
   background-image: url("./flag-icon.svg");
   background-size: 12px 12px;
   background-repeat: no-repeat;
   background-position: center;
-  color: #ffffff;
+  color: var(--text-primary);
   z-index: 10;
 }
