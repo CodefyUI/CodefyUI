@@ -36,6 +36,17 @@ Then on GitHub:
    The workflow already sets:
    - `frontend-dist.tar.gz` attached
    - body = your tag annotation (`git tag -a -m "..."`)
+     > **Writing the annotation from a file? Pass `--cleanup=verbatim`.**
+     > `git tag -F notes.md` strips every line beginning with `#` as a
+     > comment, so all your markdown headings silently vanish and the release
+     > body arrives as one unbroken wall of text. It looks fine from the
+     > command line — the tag exists, the build succeeds, the asset attaches
+     > — and you only notice by reading the rendered release. This ate all
+     > five headings of 2.1.0's notes on the first attempt:
+     > ```bash
+     > git tag -a X.Y.Z --cleanup=verbatim -F notes.md
+     > ```
+     > `-m "..."` on the command line is unaffected.
    - `prerelease` = true if the tag matches `rc` / `beta` / `alpha` / `dev`
    - `make_latest` = true (overrides GitHub's "skip prereleases for /latest"
      so `releases/latest/download/...` resolves to this rc)
