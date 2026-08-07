@@ -20,6 +20,7 @@ which ``security.allowed_modules`` the user accepted.
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import json
 import os
 import re
@@ -407,24 +408,171 @@ def _denied_attributes_for(allowed_modules: list[str]) -> frozenset[str]:
     return frozenset() if allowed_modules else TIER0_DENIED_ATTRS
 
 
+# ── core#220: the walk covers what the LOADER covers, by extension ─────────
+#
+# ``validate_plugin_dir`` used to enumerate ``*.py``. The loader imports more
+# than that: ``plugin_loader.install_plugin_finder`` sets the synthetic
+# package's ``__path__`` to the plugin directory, which puts the stock
+# ``FileFinder`` loaders in charge, and those accept every suffix in
+# ``importlib.machinery.all_suffixes()``. Verified on a real interpreter, not
+# reasoned about -- a plugin whose ``nodes/`` held only ``helper.pyc``,
+# ``w.pyw`` and ``native.cp314-win_amd64.pyd``::
+#
+#     loader suffixes:        ['.py', '.pyw', '.pyc', '.cp314-win_amd64.pyd', '.pyd']
+#     files a *.py glob sees: ['__init__.py']            (i.e. none of them)
+#     pkgutil reports:        ['helper', 'native', 'w']  (i.e. all of them)
+#     validate_plugin_dir():  ACCEPTED, no exception
+#
+# ...and the ``.pyc`` then imported and ran its ``os.system`` payload. That is
+# not the gate failing open on a rule; it is the gate never running, which is
+# strictly worse and is why this is keyed on the interpreter's own answer
+# rather than on a hardcoded list -- the same "ask, don't assume" move
+# ``_compute_os_path_module_leaves`` makes for ``os.path``.
+#
+# ``.pyw`` and the extension suffixes are unioned in explicitly ON TOP of
+# ``all_suffixes()`` because that function answers for the CURRENT
+# interpreter, and a tarball is not installed on the machine that built it:
+# ``.pyw`` is a source suffix only on Windows, and ``.so`` / ``.pyd`` /
+# ``.dylib`` each exist on exactly one platform. Scanning the union means the
+# verdict on a given tarball does not depend on which OS ran the installer.
+_EXTRA_SOURCE_SUFFIXES = frozenset({".pyw"})
+_CROSS_PLATFORM_BINARY_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".pyd", ".so", ".dylib",
+})
+
+#: Suffixes that are Python SOURCE and can therefore be handed to the AST
+#: gate. ``.pyw`` is ordinary Python text -- only the launcher treats it
+#: differently -- so it is scanned, not refused.
+SCANNABLE_SUFFIXES: frozenset[str] = (
+    frozenset(importlib.machinery.SOURCE_SUFFIXES) | _EXTRA_SOURCE_SUFFIXES
+)
+
+#: Every suffix an ``import`` statement can resolve to a file, anywhere this
+#: tarball might be installed. Asserted against ``all_suffixes()`` by a
+#: standing test, so a future CPython that grows a loader suffix fails loudly
+#: instead of silently widening the hole this closed.
+LOADER_SUFFIXES: frozenset[str] = (
+    frozenset(importlib.machinery.all_suffixes())
+    | SCANNABLE_SUFFIXES
+    | _CROSS_PLATFORM_BINARY_SUFFIXES
+)
+
+
+def loader_suffix(path: Path) -> str | None:
+    """The loader suffix *path* would be imported under, or ``None``.
+
+    Longest match wins, because the extension suffixes nest:
+    ``native.cp314-win_amd64.pyd`` ends with both ``.cp314-win_amd64.pyd``
+    and ``.pyd``, and the longer one is the right answer twice over -- it is
+    what the refusal message should name, and stripping only ``.pyd`` would
+    leave a stem of ``native.cp314-win_amd64``, which the identifier test in
+    :func:`_names_an_importable_module` would then wave through.
+
+    A name that is ONLY a suffix (a file literally called ``.py``) answers
+    ``None``: the stem would be empty, so there is no module name for an
+    ``import`` statement to spell.
+    """
+    name = path.name
+    best: str | None = None
+    for suffix in LOADER_SUFFIXES:
+        if len(name) > len(suffix) and name.endswith(suffix):
+            if best is None or len(suffix) > len(best):
+                best = suffix
+    return best
+
+
+def _names_an_importable_module(path: Path, suffix: str) -> bool:
+    """Whether an ``import`` statement could name the module *path* holds.
+
+    The same structural question ``_VALIDATION_SKIP_DIRS`` asks about
+    ``.git``, applied to a FILE: strip the loader suffix and ask whether what
+    is left is a valid Python identifier. If it is not, no import statement
+    -- absolute or relative -- can name it, so nothing can reach it.
+
+    This exists for exactly one shape, and getting it wrong in either
+    direction is a real failure, so it was verified rather than reasoned
+    about. CPython writes its own bytecode cache as
+    ``__pycache__/real.cpython-314.pyc``; an attacker writes
+    ``__pycache__/payload.pyc``. Both are ``.pyc`` files in the same
+    directory, and they are not the same thing::
+
+        __pycache__/payload.pyc            stem 'payload'          identifier
+        __pycache__/real.cpython-314.pyc   stem 'real.cpython-314' NOT
+
+        pkgutil.iter_modules(__pycache__)          -> ['payload']
+        import <pkg>.nodes.__pycache__.payload     -> OK, ran the bytecode
+        import <pkg>.nodes.__pycache__.real        -> ModuleNotFoundError
+
+    So the refusal has to fire on the first and must NOT fire on the second:
+    a plugin directory that any interpreter has ever imported from has a
+    ``__pycache__`` full of the second kind, including this repo's own
+    built-in packs, and refusing to install over an ordinary compilation
+    artifact would be a false positive with no matching security value.
+
+    Applied only to the suffixes that get REFUSED. Source files are scanned
+    whatever they are called: scanning is never wrong, and the previous
+    ``*.py`` glob scanned an unimportably-named ``my-node.py`` too.
+    """
+    return path.name[: -len(suffix)].isidentifier()
+
+
+def _validate_importable_tree(
+    root: Path,
+    allowed_modules: list[str],
+    capabilities: Iterable[str],
+    *,
+    skip_dirs: frozenset[str] = frozenset(),
+) -> None:
+    """AST-scan every importable source file under *root*; refuse the rest.
+
+    "The rest" is the whole point. A ``.pyc`` cannot be AST-scanned without
+    decompiling it and a ``.pyd`` / ``.so`` cannot be scanned even in
+    principle, so the only two honest answers are "refuse" and "import
+    unexamined code at full trust". This picks the first, by name, with a
+    message that says which file and why -- never a silent skip, which is
+    exactly what the ``*.py`` glob was doing.
+    """
+    if not root.exists():
+        return
+    root_resolved = root.resolve()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel_parts = path.resolve().relative_to(root_resolved).parts
+        if skip_dirs and any(part in skip_dirs for part in rel_parts):
+            continue
+        suffix = loader_suffix(path)
+        if suffix is None:
+            continue
+        rel = "/".join(rel_parts)
+        if suffix not in SCANNABLE_SUFFIXES:
+            if not _names_an_importable_module(path, suffix):
+                continue
+            raise PluginValidationError(
+                f"'{rel}' cannot be installed: Python's import system loads "
+                f"'{suffix}' files, but they are compiled rather than source, "
+                f"so the security scan cannot look inside one. Every file a "
+                f"plugin can have imported has to be readable as source -- "
+                f"ship the '.py' this was built from instead"
+            )
+        content = path.read_bytes()
+        if not content.strip():
+            continue
+        validate_python_source(
+            content,
+            path.name,
+            allowed_modules=allowed_modules,
+            capabilities=list(capabilities),
+            denied_attributes=_denied_attributes_for(allowed_modules),
+        )
+
+
 def validate_nodes_dir(
     nodes_dir: Path,
     allowed_modules: list[str],
     capabilities: Iterable[str] = (),
 ) -> None:
-    if not nodes_dir.exists():
-        return
-    for py in sorted(nodes_dir.rglob("*.py")):
-        content = py.read_bytes()
-        if not content.strip():
-            continue
-        validate_python_source(
-            content,
-            py.name,
-            allowed_modules=allowed_modules,
-            capabilities=list(capabilities),
-            denied_attributes=_denied_attributes_for(allowed_modules),
-        )
+    _validate_importable_tree(nodes_dir, allowed_modules, capabilities)
 
 
 # Directories within an extracted plugin tarball that are *not* reachable
@@ -475,19 +623,29 @@ def validate_plugin_dir(
     allowed_modules: list[str],
     capabilities: Iterable[str] = (),
 ) -> None:
-    """Walk the entire plugin directory and validate every Python source file.
+    """Walk the entire plugin directory and validate every importable file.
 
     The original ``validate_nodes_dir`` only checked ``nodes/`` which left a
-    bypass via top-level helpers. This visits every ``.py`` file in the tree
-    except the ones under :data:`_VALIDATION_SKIP_DIRS` -- ``.git`` alone,
-    the one name provably unreachable through Python's import system (not a
-    valid identifier, so no ``import`` can ever name it). Nothing else is
-    skipped: ``examples/``, ``tests/``, ``docs/``, ``assets/`` and
-    ``__pycache__`` all get scanned too (core#182), because the plugin
-    loader registers the WHOLE directory as a namespace package's
-    ``__path__``, so a scanned ``nodes/foo.py`` can ``from ..tests import
-    payload`` -- or ``from ..__pycache__ import payload`` -- into any of
-    them.
+    bypass via top-level helpers. This visits every file in the tree that
+    Python's import system could load, except the ones under
+    :data:`_VALIDATION_SKIP_DIRS` -- ``.git`` alone, the one name provably
+    unreachable through Python's import system (not a valid identifier, so
+    no ``import`` can ever name it). Nothing else is skipped: ``examples/``,
+    ``tests/``, ``docs/``, ``assets/`` and ``__pycache__`` all get scanned
+    too (core#182), because the plugin loader registers the WHOLE directory
+    as a namespace package's ``__path__``, so a scanned ``nodes/foo.py`` can
+    ``from ..tests import payload`` -- or ``from ..__pycache__ import
+    payload`` -- into any of them.
+
+    "Every file the import system could load" is by EXTENSION as well as by
+    directory since core#220: this used to glob ``*.py`` while the loader
+    also accepts ``.pyw``, ``.pyc`` and ``.pyd`` / ``.so``, so a plugin
+    shipping ``nodes/helper.pyc`` and no ``helper.py`` was never scanned at
+    all -- the gate did not fail open, it never ran. Source suffixes are
+    scanned; compiled ones are refused by name (see
+    :func:`_validate_importable_tree`), because a plugin has no legitimate
+    reason to ship a bytecode-only or binary module through this path and
+    neither can be AST-scanned.
 
     *capabilities* are the ones the user confirmed at install time. They are
     passed to every file rather than per-file, because a capability is a
@@ -500,23 +658,12 @@ def validate_plugin_dir(
     accepted, and refusing ``arr.dump()`` to a plugin trusted with
     ``subprocess`` protects nothing.
     """
-    if not plugin_root.exists():
-        return
-    root_resolved = plugin_root.resolve()
-    for py in sorted(plugin_root.rglob("*.py")):
-        rel_parts = py.resolve().relative_to(root_resolved).parts
-        if any(part in _VALIDATION_SKIP_DIRS for part in rel_parts):
-            continue
-        content = py.read_bytes()
-        if not content.strip():
-            continue
-        validate_python_source(
-            content,
-            py.name,
-            allowed_modules=allowed_modules,
-            capabilities=list(capabilities),
-            denied_attributes=_denied_attributes_for(allowed_modules),
-        )
+    _validate_importable_tree(
+        plugin_root,
+        allowed_modules,
+        capabilities,
+        skip_dirs=_VALIDATION_SKIP_DIRS,
+    )
 
 
 # ── runtime helpers ────────────────────────────────────────────────────────

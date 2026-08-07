@@ -52,8 +52,8 @@ cdui plugin uninstall deep
 
 | 能力 | 解鎖 | 你正在同意的事 |
 |------------|---------|--------------------------|
-| `network` | `requests`、`urllib`、`http`、`socket` | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
-| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`、`glob`、`fileinput` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
+| `network` | `requests`、`urllib`、`http`、`socket`、`ssl`，以及它們背後的原始 C 模組（`_socket`、`_ssl`） | 這個外掛可以與任何主機收發資料——**並把下載到的內容寫入磁碟**，因為 `urllib.request.urlretrieve(url, dest)` 只要一行。 |
+| `filesystem` | `pathlib`、`tempfile`、`shutil`、`zipfile`、`tarfile`、`gzip`、`bz2`、`lzma`、`codecs`、`sqlite3`（含 `_sqlite3`）、`glob`、`fileinput`、`readline` | 這個外掛可以使用檔案**函式庫**。這不是寫入的邊界：單純的 `open(p, "w")` 是內建函式，完全不需要任何宣告（見[這不是什麼](#這不是什麼)）。 |
 | `process-env` | `os`、`ntpath`、`posixpath`、`genericpath`、`nt`、`posix` | 這個外掛拿到**整個 `os` 模組**：讀取*並修改*此行程的環境變數（**包含其中的 API 金鑰**）、啟動其他程式（`os.execv`、`os.spawnve`、`os.startfile`），以及刪除或重新命名檔案。這個名字是大家索取它的理由，但授予的範圍比名字大。 |
 
 除此之外都不是能力。`subprocess`、`sys`、`importlib`、`ctypes`、`pickle`、`marshal`、`dill`、`shelve`、`runpy`、`code`、`signal`、`atexit`、`webbrowser`、`threading`、`asyncio`、`multiprocessing` 一律只能走第 2 級：**沒有任何能力會交出一個「本身就是用來執行程式碼、或伸手進入直譯器」的模組。** 請注意這句話的精確之處——`process-env` 授予 `os`，而 `os` 會啟動行程。任何能力都不會給你的，是一個為執行程式碼而生的模組。
@@ -121,6 +121,22 @@ $ cdui plugin install alice/metric-logger
 這條規則不看接收者是誰，所以是雙向的：外掛**自己的**方法只要剛好同名，一樣會被擋下——你自己類別上的 `self.save(...)`，會被擋得跟 `numpy.array(...).save(...)`一模一樣，這正是腳本政策早就加諸在腳本自己的 `obj.save()` 上的同一種代價。單獨在第 0 級或第 1 級底下，這代表一個類別完全不能定義名叫 `save`、`dump`、`hub`，或清單上其他任何一個名字的方法。
 
 **`--trust-author` 會把整份清單解除。** 一旦外掛以 `--trust-author` 加上 `[security] allowed_modules` 安裝，`.dump` / `.hub` / `.save` 以及清單上其他項目，就又變回普通的屬性名稱——一個已經被信任可以用 `subprocess`、`ctypes` 的外掛，再多攔一個 `arr.dump()` 什麼也保護不到，而且不解除的話，根本不可能寫出一個帶有 `save` 方法的外掛。這跟[每一級都成立的規則](#每一級都成立的規則)裡的每一條都不同——那些不論在哪一級都毫無例外地拒絕：它們攔的是**反射能力**，沒有任何能力或信任層級買得到；而 `.dump` 與 `.hub` 是檔案寫入與遠端程式碼抓取，`--trust-author` 早就用更短的路徑，給了等同或更大的授權。
+
+### 請附原始碼，不要附位元組碼
+
+外掛壓縮檔裡只要是 Python 匯入系統載入得了的檔案，都必須是可讀的**原始碼**。
+安裝時掃描的是整個目錄（不只 `nodes/`），且枚舉依據是載入器接受的副檔名
+（`importlib.machinery.all_suffixes()`）而不是 `*.py`：`.py` 與 `.pyw` 會被掃描，
+`.pyc`、`.pyo`、`.pyd`、`.so`、`.dylib` 則在安裝時**點名拒絕**，而且不論你從哪個平台安裝都一樣。
+
+拒絕是誠實的答案，不是偏好：`.pyc` 要反組譯才能掃，編譯好的擴充模組則原則上就不可能做 AST 掃描。
+否則就是匯入一份閘門從未打開過的程式碼——而這正是以前發生的事：`nodes/` 裡只有 `helper.pyc`
+而沒有 `helper.py` 的套件，會在伺服器啟動時被匯入，以完全信任執行，沒有宣告任何能力，
+也不需要 `--trust-author`，而且從頭到尾沒被看過一眼。
+
+編譯快取不受影響。CPython 寫的快取是 `__pycache__/<name>.cpython-311.pyc`，
+它的主檔名不是合法識別字，任何 `import` 語句都叫不出它，所以會被跳過；
+攻擊者放的 `__pycache__/payload.pyc` **叫得出來**，因此會被拒絕。
 
 ### 這不是什麼
 

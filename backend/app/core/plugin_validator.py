@@ -142,6 +142,209 @@ _DANGEROUS_MODULES = frozenset({
     # permission bits. No existing capability fits "read the shadow
     # database"; Tier 2 only, the same bucket as ``pickle`` / ``ctypes``.
     "readline", "spwd",
+
+    # ── core#215: the raw C modules the blocked ones are BUILT ON ────────
+    #
+    # core#183 closed ``nt`` / ``posix`` (see above) and stopped there. The
+    # siblings were never enumerated, and there are a lot of them: CPython
+    # writes most of the stdlib as a thin Python wrapper over a private C
+    # module, and the private module is the whole surface under a name this
+    # blocklist had never heard of. ``script_proxy._BLOCKED_IMPLEMENTATION_
+    # ROOTS`` -- the RUNTIME boundary for in-canvas scripts -- had recognised
+    # twelve of them as dangerous since long before this; that recognition
+    # was simply never ported here, to the INSTALL-time gate, which is the
+    # one a plugin or custom node passes through.
+    #
+    # The class was enumerated mechanically rather than by memory: import
+    # every name on this blocklist in a FRESH interpreter and diff
+    # ``sys.modules``, which is what turned up ``_overlapped`` and
+    # ``_interpreters`` sitting behind ``asyncio`` with nobody having listed
+    # either. Each was then VERIFIED individually -- the point of the
+    # exercise is what a module reaches, not what it is called.
+    #
+    # Tier 2 (no capability ever unlocks these), because each one's purpose
+    # is executing code or reaching the interpreter:
+    #
+    # ``_thread`` -- ``start_new_thread(fn, ())`` spawned a real OS thread
+    # (verified: got back a live native thread id and the worker ran).
+    # Matches ``threading``.
+    #
+    # ``_ctypes`` -- ``LoadLibrary("kernel32.dll")`` returned a live module
+    # handle (verified), and the surface holds ``CFuncPtr``,
+    # ``call_function``, ``_memmove_addr`` and ``_string_at_addr``:
+    # arbitrary foreign calls and arbitrary memory. Matches ``ctypes``.
+    #
+    # ``_pickle`` -- ``_pickle.loads(payload)`` executed a ``__reduce__``
+    # target and handed back its result (verified with a marked payload).
+    # Matches ``pickle``; deserialisation IS execution here.
+    #
+    # ``_signal`` -- ``raise_signal`` ("Send a signal to the executing
+    # process", its own docstring), ``signal`` (handler registration) and
+    # ``set_wakeup_fd``. One call kills or hijacks the server's own signal
+    # handling. Matches ``signal``.
+    #
+    # ``_asyncio`` -- the interesting one, because its surface looks inert
+    # (``Future``, ``Task``, loop bookkeeping) and is not.
+    # ``_asyncio._set_running_loop(obj)`` was verified to make the HOST's
+    # own ``asyncio.get_running_loop()`` return the attacker's object: this
+    # backend runs on asyncio, so that is process-global state poisoning of
+    # the loop the server itself resolves through -- the same category as
+    # ``torch.zeros = mine``, which this walker already refuses by name.
+    # Matches ``asyncio``.
+    #
+    # ``_imp`` -- ``create_dynamic`` is documented, in the module itself, as
+    # "Create an extension module": it loads an arbitrary native extension
+    # into this process. With ``create_builtin``, ``exec_dynamic`` and
+    # ``init_frozen`` beside it this is strictly lower-level than
+    # ``importlib``, which is already Tier 2.
+    #
+    # ``_frozen_importlib`` -- verified to BE ``importlib._bootstrap`` (an
+    # identity check, not a resemblance), and
+    # ``_frozen_importlib.__import__("subprocess")`` handed back the real
+    # ``subprocess`` module with a working ``.run``. That is a complete
+    # bypass of every import rule in this file: the walker sees one import
+    # of a module nobody has heard of, and the module hands over any other
+    # module by name at runtime.
+    #
+    # ``_frozen_importlib_external`` -- the same object for
+    # ``importlib._bootstrap_external``: ``SourceFileLoader``,
+    # ``SourcelessFileLoader``, ``ExtensionFileLoader``, ``FileFinder``,
+    # ``PathFinder``, and ``marshal`` (itself on this blocklist) bound as a
+    # plain attribute.
+    #
+    # ``_multiprocessing`` -- ``SemLock`` (named, cross-process
+    # semaphores), plus ``recv`` / ``send`` / ``closesocket`` operating
+    # directly on socket handles. Matches ``multiprocessing``.
+    #
+    # ``_posixsubprocess`` -- POSIX. Its entire surface is ``fork_exec``,
+    # whose own docstring reads "Spawn a fresh new child process. Fork a
+    # child process ... before calling exec() in the child process."
+    # Verified by reading that surface on a live Linux interpreter. Process
+    # execution with no ``subprocess`` anywhere.
+    #
+    # ``_posixshmem`` -- POSIX. Verified directly, not carried over from the
+    # issue: ``shm_open("/name", O_CREAT|O_RDWR)`` plus ``os.write``
+    # produced a real 64-byte object under ``/dev/shm`` holding a marked
+    # payload, visible outside the process, and ``shm_unlink`` removed it
+    # again -- all with no ``multiprocessing`` import at all.
+    #
+    # ``_winapi`` -- Windows. Verified: ``CreateProcess`` spawned a real
+    # process which ran ``cmd.exe`` and wrote a marked file. ``CreateFile``,
+    # ``CopyFile2``, ``CreateNamedPipe`` and ``CreateJunction`` are on the
+    # same module. This is ``subprocess`` and half of ``shutil``, raw.
+    #
+    # ``_overlapped`` -- Windows, and NOT on anybody's list before this: it
+    # only surfaced from the fresh-interpreter sweep, where ``import
+    # asyncio`` dragged it in. It is the raw async-I/O engine behind
+    # asyncio's ProactorEventLoop, and unlike ``select`` / ``fcntl`` (both
+    # deliberately accepted as "waits on handles somebody else already
+    # made") its surface contains connection-ESTABLISHING verbs:
+    # ``WSAConnect``, ``ConnectPipe``, and ``Overlapped.ConnectEx``. Stated
+    # honestly: it still needs a handle it cannot create itself, and every
+    # handle source is now gated, so this entry is completeness rather than
+    # a demonstrated standalone escape.
+    #
+    # ``msvcrt`` -- Windows. ``getch`` / ``getwch`` read a console keypress
+    # WITHOUT echoing it, with ``kbhit`` and ``ungetch`` alongside: a
+    # keystroke-capture primitive aimed at whatever console ``cdui start``
+    # was launched in. Also ``get_osfhandle`` / ``open_osfhandle`` (raw
+    # Win32 HANDLE <-> C file descriptor, in both directions), ``locking``,
+    # and ``SetErrorMode`` / ``heapmin`` (process-wide C-runtime state).
+    # Stated honestly: this one is gated on the module's own documented
+    # surface, read from a real Windows interpreter -- no live keystroke was
+    # captured, because the check ran without an interactive console.
+    "_thread", "_ctypes", "_pickle", "_signal", "_asyncio", "_imp",
+    "_frozen_importlib", "_frozen_importlib_external", "_multiprocessing",
+    "_posixsubprocess", "_posixshmem", "_winapi", "_overlapped", "msvcrt",
+    # ``_socket`` / ``_ssl`` / ``ssl`` and ``_sqlite3`` are the members of
+    # this class that a CAPABILITY covers rather than ``--trust-author``;
+    # they live in ``CAPABILITY_MODULES`` and the verification for each is
+    # recorded there, next to the group it joins.
+    "_socket", "_ssl", "ssl", "_sqlite3",
+
+    # ── core#216: surfaces nobody had considered at all ──────────────────
+    #
+    # Not "the raw thing behind something already blocked" -- these are
+    # whole capabilities that were simply never enumerated in either
+    # direction, the same way ``nt`` / ``posix`` never were. Tier 2 for all
+    # of them: no existing capability's consent line describes any of these,
+    # and inventing a fourth capability name is a vocabulary change that
+    # wants its own issue rather than a line in a tuple.
+    #
+    # ``winreg`` -- Windows registry, and the verification was end to end:
+    # created ``HKCU\\Software\\<probe>``, wrote a value, read it back,
+    # enumerated the REAL ``HKCU\\...\\CurrentVersion\\Run`` key (ten live
+    # entries -- OneDrive, Steam, Discord, Docker Desktop, ...), and deleted
+    # the probe key again. Create, write, read and delete all worked with
+    # zero declared capability. That Run key is the canonical
+    # survives-a-reboot persistence location on Windows and it is writable
+    # through the exact same API that just read it.
+    #
+    # ``_interpreters`` / ``_xxsubinterpreters`` -- an ``exec()`` this gate
+    # cannot see. Verified end to end: ``create()`` then ``exec(id, src)``
+    # ran attacker source in a sub-interpreter, and that source called
+    # ``os.system`` and wrote a marked file. ``run_string``, ``run_func``
+    # and ``call`` are the same door. The reason nothing caught it is
+    # precise: ``exec`` IS in ``_DANGEROUS_NAMES``, but ``_calls_the_builtin``
+    # only fires when the receiver resolves to ``builtins``, and this
+    # receiver is a module. BOTH names are listed because CPython RENAMED
+    # the module in 3.13 -- core#216 names only ``_xxsubinterpreters``,
+    # which does not exist on 3.13+, where the live primitive is called
+    # ``_interpreters``. Gating only the name in the issue would have been a
+    # no-op on every interpreter this project's own developers run.
+    #
+    # ``_interpchannels`` / ``_xxinterpchannels`` / ``_interpqueues`` -- the
+    # rest of the PEP 554 / PEP 734 family: channel and queue plumbing
+    # between interpreters. Verified they carry no execution primitive of
+    # their own, and listed anyway so the family is closed as a unit rather
+    # than by its most obvious member -- which is the failure mode
+    # ``nt``/``posix`` and this whole issue are about.
+    #
+    # ``pwd`` / ``grp`` -- POSIX account databases. Verified: ``getpwall()``
+    # enumerated 27 accounts with names, UIDs, home directories and login
+    # shells, ``getgrall()`` 58 groups with membership. Verified in the
+    # OTHER direction too, because it changes the verdict's honesty:
+    # ``/etc/passwd`` was world-readable to that account, so a plain
+    # ``open()`` -- deliberately ungated here -- already reaches the same
+    # content on a local-files host. What these add is a complete structured
+    # enumeration in one call, and the NSS-mediated case where the backing
+    # store is a directory service (LDAP/AD/SSSD) rather than a file. That
+    # second half was NOT verified; it is the same mechanism that made
+    # ``spwd`` blockable, and ``spwd`` is already on this list, so leaving
+    # its two siblings open was the odd position.
+    #
+    # ``syslog`` -- verified that ``openlog(ident="sshd",
+    # facility=LOG_AUTH)`` followed by ``syslog(...)`` is accepted with no
+    # error: the program name an entry is attributed to is caller-chosen, so
+    # this is log forgery into the auth facility, not just a log write. NOT
+    # verified that the entry landed in ``/var/log`` -- the test host had no
+    # listener on ``/dev/log`` -- so what is proven is that the API accepts
+    # an arbitrary identity and message.
+    #
+    # ``termios`` -- verified the part that matters: with ``sys.stdin`` NOT
+    # a tty, ``os.open("/dev/tty")`` plus ``tcgetattr`` still succeeded on
+    # the REAL controlling terminal, and ``tcsetattr`` and the ``ECHO`` flag
+    # are right there. So a plugin can turn echo off and read the terminal
+    # the server was launched from regardless of what its own stdio is
+    # attached to -- the common case for a self-hosted ``cdui start``.
+    #
+    # ``_curses`` / ``_curses_panel`` -- verified surface (301 names)
+    # including ``initscr``, ``noecho``, ``cbreak`` and ``endwin``: display
+    # and input takeover of that same terminal. ``_curses_panel`` is the
+    # window-stacking extension and adds nothing beyond ``_curses``; listed
+    # with it so the pair cannot drift.
+    #
+    # ``ossaudiodev`` -- opens OSS audio device files (``/dev/dsp``) for
+    # reading, which is microphone capture. This is the ONE entry in this
+    # commit gated WITHOUT a live reproduction: CPython removed the module
+    # in 3.13 and both interpreters available here are 3.14, so the gate
+    # rests on CPython's own documented surface. Said plainly rather than
+    # dressed up, because a reviewer should know which entries were proven
+    # and which were read.
+    "winreg", "_interpreters", "_xxsubinterpreters",
+    "_interpchannels", "_xxinterpchannels", "_interpqueues",
+    "pwd", "grp", "syslog", "termios", "_curses", "_curses_panel",
+    "ossaudiodev",
 })
 
 # Attribute-access patterns that are RCE in disguise whatever the receiver

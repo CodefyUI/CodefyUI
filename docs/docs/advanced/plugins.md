@@ -52,8 +52,8 @@ A plugin pack is Python that runs in the CodefyUI process. Before a third-party 
 
 | Capability | Unlocks | What you are agreeing to |
 |------------|---------|--------------------------|
-| `network` | `requests`, `urllib`, `http`, `socket` | The plugin can send and receive data from any host — **and write what it downloads to disk**, because `urllib.request.urlretrieve(url, dest)` is one call. |
-| `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3`, `glob`, `fileinput` | The plugin can use the file **libraries**. This is not a write boundary: plain `open(p, "w")` is a builtin and needs no declaration at all (see [What this is not](#what-this-is-not)). |
+| `network` | `requests`, `urllib`, `http`, `socket`, `ssl`, and the raw C modules behind them (`_socket`, `_ssl`) | The plugin can send and receive data from any host — **and write what it downloads to disk**, because `urllib.request.urlretrieve(url, dest)` is one call. |
+| `filesystem` | `pathlib`, `tempfile`, `shutil`, `zipfile`, `tarfile`, `gzip`, `bz2`, `lzma`, `codecs`, `sqlite3` (and `_sqlite3`), `glob`, `fileinput`, `readline` | The plugin can use the file **libraries**. This is not a write boundary: plain `open(p, "w")` is a builtin and needs no declaration at all (see [What this is not](#what-this-is-not)). |
 | `process-env` | `os`, `ntpath`, `posixpath`, `genericpath`, `nt`, `posix` | The plugin gets **the whole `os` module**: read *and change* this process's environment (**including any API keys in it**), start other programs (`os.execv`, `os.spawnve`, `os.startfile`), and delete or rename files. The name is what people ask for it for; the grant is bigger than the name. |
 
 Nothing else is a capability. `subprocess`, `sys`, `importlib`, `ctypes`, `pickle`, `marshal`, `dill`, `shelve`, `runpy`, `code`, `signal`, `atexit`, `webbrowser`, `threading`, `asyncio` and `multiprocessing` are Tier 2 only: **no capability hands over a module whose purpose is running code or reaching the interpreter.** Note the precise claim — `process-env` grants `os`, and `os` starts processes. What you do not get from any capability is a module built for executing code.
@@ -97,7 +97,7 @@ $ cdui plugin install alice/metric-logger
   Ref: default branch (a1b2c3d)
 
 > This plugin requests the following capabilities
-    network -> reach the network -- send and receive data from any host, and write what it downloads to disk (requests, urllib, http, socket)
+    network -> reach the network -- send and receive data from any host, and write what it downloads to disk (requests, urllib, http, socket, ssl)
   A capability is a declaration, not a sandbox: once granted, the plugin may
   use that group of modules and CodefyUI stops asking.
   Grant these? [y/N]:
@@ -122,6 +122,28 @@ Separately from every rule above — which holds whatever was declared, with no 
 The rule is receiver-independent, which cuts both ways: it also refuses the plugin's *own* method if it happens to share one of these names — `self.save(...)` on your own class is blocked exactly like `numpy.array(...).save(...)`, the same cost the script policy already imposes on a script's own `obj.save()`. At Tier 0 or Tier 1 alone, that means a class cannot define a method called `save`, `dump`, `hub`, or any of the others on the list, full stop.
 
 **`--trust-author` lifts this list entirely.** Once a plugin is installed with `--trust-author` and `[security] allowed_modules`, `.dump` / `.hub` / `.save` and the rest of it are ordinary attribute names again — a plugin trusted with `subprocess` and `ctypes` gains nothing from also being refused `arr.dump()`, and the refusal would otherwise have made it impossible to write a plugin with a method named `save` at all. This is unlike every rule in [What holds in every tier](#what-holds-in-every-tier), which stays refused without exception: those refuse *reflection*, which no capability or trust level ever buys; `.dump` and `.hub` are file writes and remote code fetches, and `--trust-author` already grants an equivalent or greater version of both by a shorter route.
+
+### Ship source, not bytecode
+
+Every file in a plugin tarball that Python's import system could load has to
+be readable as **source**. The installer scans the whole directory, not just
+`nodes/`, and it enumerates by what the loader accepts (`importlib.machinery.all_suffixes()`)
+rather than by `*.py`: `.py` and `.pyw` are scanned, and `.pyc` / `.pyo` /
+`.pyd` / `.so` / `.dylib` are **refused by name** at install time, on every
+platform regardless of which one you install from.
+
+The refusal is the honest answer rather than a policy preference. A `.pyc`
+would have to be decompiled to be scanned and a compiled extension cannot be
+scanned even in principle, so the alternative is importing code the gate
+never opened — which is exactly what used to happen: a pack whose `nodes/`
+held `helper.pyc` and no `helper.py` was imported at server boot, at full
+trust, with no capability declared and without `--trust-author`, having never
+been looked at.
+
+Compilation artifacts are not affected. CPython writes its cache as
+`__pycache__/<name>.cpython-311.pyc`, whose stem is not a valid identifier,
+so no `import` statement can name it — those are skipped. An
+attacker-supplied `__pycache__/payload.pyc` **can** be named, and is refused.
 
 ### What this is not
 
