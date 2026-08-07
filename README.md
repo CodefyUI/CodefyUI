@@ -33,12 +33,12 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 ```
 
 Installs only what's needed to run the app: `git`, `uv`, and Python (via uv). The frontend bundle is downloaded prebuilt from the latest GitHub release, and the backend is **checked out at that same release tag** so the two stay in sync — **no Node.js or pnpm required for end users**. After install, **open a new terminal** and run from anywhere:
@@ -206,11 +206,11 @@ loss`; `Edu-Patchify` makes `unfold → permute → flatten` visible. Switch
 
 ### Writing your own plugin
 
-Fork the [**Official Plugin Template**](https://github.com/treeleaves30760/CodefyUI-Plugin-Official) — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. The README there walks you through every field and the AST security gate.
+Fork the [**Official Plugin Template**](https://github.com/CodefyUI/CodefyUI-Plugin-Official) — a working, MIT-licensed plugin with two example nodes, a sample example graph, a test suite, and a fully-commented manifest. The README there walks you through every field and the AST security gate.
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
+cdui plugin install CodefyUI/CodefyUI-Plugin-Official
 
 # After forking
 cdui plugin install your-username/your-fork
@@ -321,4 +321,4 @@ CodefyUI uses a dual path licensing model:
 - **Open source path**: AGPL-3.0-only for individual developers, small teams, education, research, community use, and any other use case that can comply with AGPL-3.0.
 - **Commercial path**: proprietary, closed-source, SaaS, OEM, enterprise, or other use cases that need terms outside AGPL-3.0 should contact the maintainers for a commercial license.
 
-Commercial licensing contact: https://github.com/treeleaves30760/CodefyUI/issues
+Commercial licensing contact: https://github.com/CodefyUI/CodefyUI/issues

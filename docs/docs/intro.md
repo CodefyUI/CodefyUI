@@ -25,12 +25,12 @@ Install only what's needed to run the app (`git`, `uv`, and Python) — **no Nod
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 ```
 
 Then open a new terminal and run:
@@ -68,5 +68,5 @@ CodefyUI is **backend-authoritative**: `GET /api/nodes` returns every node defin
 
 CodefyUI uses a dual-path licensing model:
 
-- **Open source** — [AGPL-3.0-only](https://github.com/treeleaves30760/CodefyUI/blob/main/LICENSE) for individuals, small teams, education, research, and community use.
-- **Commercial** — for proprietary, closed-source, SaaS, OEM, or enterprise use that needs terms outside AGPL-3.0, [contact the maintainers](https://github.com/treeleaves30760/CodefyUI/issues).
+- **Open source** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE) for individuals, small teams, education, research, and community use.
+- **Commercial** — for proprietary, closed-source, SaaS, OEM, or enterprise use that needs terms outside AGPL-3.0, [contact the maintainers](https://github.com/CodefyUI/CodefyUI/issues).

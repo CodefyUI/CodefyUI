@@ -247,7 +247,7 @@ api.nodes.registerRenderer('my_plugin:MyNode', {
 });
 ```
 
-The [plugin template](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)'s SDK wraps this with `createRoot`, so you can write the body as a React component.
+The [plugin template](https://github.com/CodefyUI/CodefyUI-Plugin-Official)'s SDK wraps this with `createRoot`, so you can write the body as a React component.
 
 ### `api.events` — live run events
 

@@ -15,12 +15,12 @@ Graph Copilot is built on two CodefyUI features: the [plugin frontend extension 
 ## Installation
 
 ```bash
-cdui plugin install treeleaves30760/CodefyUI-Plugin-Graph-Copilot
+cdui plugin install CodefyUI/CodefyUI-Plugin-Graph-Copilot
 ```
 
 Then reload the editor (press F5 or close and reopen the tab). The Graph Copilot panel appears as a floating widget in the editor.
 
-Plugin source and issues: [github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot](https://github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot)
+Plugin source and issues: [github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot](https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot)
 
 ## Quick start
 

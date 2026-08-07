@@ -29,23 +29,23 @@
   },
   "link.item.label.GitHub": {
     "message": "GitHub",
-    "description": "The label of footer link with label=GitHub linking to https://github.com/treeleaves30760/CodefyUI"
+    "description": "The label of footer link with label=GitHub linking to https://github.com/CodefyUI/CodefyUI"
   },
   "link.item.label.Issues": {
     "message": "問題回報",
-    "description": "The label of footer link with label=Issues linking to https://github.com/treeleaves30760/CodefyUI/issues"
+    "description": "The label of footer link with label=Issues linking to https://github.com/CodefyUI/CodefyUI/issues"
   },
   "link.item.label.Plugin Template": {
     "message": "外掛範本",
-    "description": "The label of footer link with label=Plugin Template linking to https://github.com/treeleaves30760/CodefyUI-Plugin-Official"
+    "description": "The label of footer link with label=Plugin Template linking to https://github.com/CodefyUI/CodefyUI-Plugin-Official"
   },
   "link.item.label.AGPL-3.0": {
     "message": "AGPL-3.0",
-    "description": "The label of footer link with label=AGPL-3.0 linking to https://github.com/treeleaves30760/CodefyUI/blob/main/LICENSE"
+    "description": "The label of footer link with label=AGPL-3.0 linking to https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE"
   },
   "link.item.label.Commercial": {
     "message": "商業授權",
-    "description": "The label of footer link with label=Commercial linking to https://github.com/treeleaves30760/CodefyUI/blob/main/COMMERCIAL-LICENSE.md"
+    "description": "The label of footer link with label=Commercial linking to https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md"
   },
   "copyright": {
     "message": "Copyright © 2026 CodefyUI. 以 Docusaurus 建置。",

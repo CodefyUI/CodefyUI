@@ -17,12 +17,12 @@ description: 透過一行指令安裝 CodefyUI —— 一般使用者只需要 g
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 ```
 
 預設安裝到 `~/CodefyUI`（macOS/Linux）或 `%USERPROFILE%\CodefyUI`（Windows）。可用環境變數 `CODEFYUI_DIR` 覆寫。

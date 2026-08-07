@@ -25,12 +25,12 @@ description: 視覺化、節點式的深度學習管線建構工具。在瀏覽�
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/treeleaves30760/CodefyUI/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/CodefyUI/CodefyUI/main/install.ps1 | iex"
 ```
 
 接著重新開啟一個 terminal 並執行：
@@ -68,5 +68,5 @@ CodefyUI 採 **後端權威** 設計：`GET /api/nodes` 回傳所有節點定義
 
 CodefyUI 採用雙軌授權模式：
 
-- **開源路徑** — [AGPL-3.0-only](https://github.com/treeleaves30760/CodefyUI/blob/main/LICENSE)，適用於個人開發者、小型團隊、教育、研究與社群使用。
-- **商業路徑** — 若需要閉源、SaaS、OEM 或企業部署等不適合 AGPL-3.0 的條款，請[聯絡維護者](https://github.com/treeleaves30760/CodefyUI/issues)。
+- **開源路徑** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE)，適用於個人開發者、小型團隊、教育、研究與社群使用。
+- **商業路徑** — 若需要閉源、SaaS、OEM 或企業部署等不適合 AGPL-3.0 的條款，請[聯絡維護者](https://github.com/CodefyUI/CodefyUI/issues)。

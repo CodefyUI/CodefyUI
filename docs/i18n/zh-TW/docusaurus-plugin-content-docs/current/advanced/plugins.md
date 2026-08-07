@@ -151,11 +151,11 @@ cdui plugin new my-plugin --ui     # 另含一個接好 SDK 的 React 前端
 
 它會產生 manifest、一個範例節點、一個測試（內含 `cdui_plugins.<id>` 命名空間 shim，讓本地 `pytest` 可直接執行），並在加上 `--ui` 時產生一個 Vite + React 的 `ui/`，其 `src/sdk/` 即為型別化的外掛 SDK。外掛會建立在 `./my-plugin/`；用下方的 `cdui plugin dev` 連結後即可開始編輯。
 
-若需更完整的參考，可 Fork **[官方外掛模板](https://github.com/treeleaves30760/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。
+若需更完整的參考，可 Fork **[官方外掛模板](https://github.com/CodefyUI/CodefyUI-Plugin-Official)**——一個可運作、採 MIT 授權的外掛，包含兩個範例節點、一張範例圖、一套測試，以及一份完整註解的資訊清單 (manifest)。它的 README 逐欄解說每個欄位與 AST 安全閘門。
 
 ```bash
 # Install the template itself to see the pattern live
-cdui plugin install treeleaves30760/CodefyUI-Plugin-Official
+cdui plugin install CodefyUI/CodefyUI-Plugin-Official
 
 # After forking
 cdui plugin install your-username/your-fork

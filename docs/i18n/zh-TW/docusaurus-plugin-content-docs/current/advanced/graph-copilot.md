@@ -15,12 +15,12 @@ Graph Copilot 建構於兩項 CodefyUI 功能之上：[外掛前端擴充 API](/
 ## 安裝
 
 ```bash
-cdui plugin install treeleaves30760/CodefyUI-Plugin-Graph-Copilot
+cdui plugin install CodefyUI/CodefyUI-Plugin-Graph-Copilot
 ```
 
 接著重新載入編輯器（按 F5 或關閉後重新開啟分頁）。Graph Copilot 面板將以浮動小工具的形式出現在編輯器中。
 
-外掛原始碼與問題回報：[github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot](https://github.com/treeleaves30760/CodefyUI-Plugin-Graph-Copilot)
+外掛原始碼與問題回報：[github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot](https://github.com/CodefyUI/CodefyUI-Plugin-Graph-Copilot)
 
 ## 快速上手
 
