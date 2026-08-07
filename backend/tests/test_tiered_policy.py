@@ -243,6 +243,66 @@ _MATRIX: list[tuple[str, str | None]] = [
     ("threading", None),
 ]
 
+# core#215 / core#216 -- the same matrix, for the names core#183 stopped
+# short of. Two shapes, and they are kept in one list because the tier
+# question is identical for both:
+#
+#   * the raw C module a blocklisted one is BUILT ON. `os` had `nt`/`posix`;
+#     `socket` has `_socket`, `pickle` has `_pickle`, and so on down the
+#     stdlib. Reaching the private module by name is reaching the public one,
+#     so it takes the public one's tier -- which is what makes `_socket`
+#     "network" and `_thread` trusted-only, rather than one blanket answer.
+#   * a whole surface nobody had enumerated in either direction (`winreg`,
+#     the sub-interpreter family, the POSIX account databases, the tty
+#     modules). Tier 2 for all of them: no existing capability's consent
+#     sentence describes any of these, and `spwd` above is the precedent --
+#     "no capability fits" means trusted-only, not a new capability invented
+#     in passing.
+#
+# Every entry's verification is recorded in `plugin_validator`'s own comment
+# next to the name, or in `CAPABILITY_MODULES` for the ones a capability
+# covers. Platform is irrelevant here: the gate is a static AST walk, so
+# `import msvcrt` is refused on Linux and `import pwd` on Windows, which is
+# the correct answer for a tarball that can be installed anywhere.
+_MATRIX += [
+    # -- raw C implementations, capability-covered ----------------------
+    ("_socket", "network"),
+    ("_ssl", "network"),
+    # `ssl` itself was never on the blocklist at all, and it is not merely a
+    # cipher library: see the dedicated test below.
+    ("ssl", "network"),
+    ("_sqlite3", "filesystem"),
+    # -- raw C implementations, trusted-only ----------------------------
+    ("_thread", None),
+    ("_ctypes", None),
+    ("_pickle", None),
+    ("_signal", None),
+    ("_asyncio", None),
+    ("_imp", None),
+    ("_frozen_importlib", None),
+    ("_frozen_importlib_external", None),
+    ("_multiprocessing", None),
+    ("_posixsubprocess", None),
+    ("_posixshmem", None),
+    ("_winapi", None),
+    ("_overlapped", None),
+    ("msvcrt", None),
+    # -- surfaces nobody had considered, trusted-only -------------------
+    ("winreg", None),
+    ("_interpreters", None),
+    ("_xxsubinterpreters", None),
+    ("_interpchannels", None),
+    ("_xxinterpchannels", None),
+    ("_interpqueues", None),
+    ("pwd", None),
+    ("grp", None),
+    ("syslog", None),
+    ("termios", None),
+    ("_curses", None),
+    ("_curses_panel", None),
+    ("ossaudiodev", None),
+]
+
 
 @pytest.mark.parametrize(("module", "capability"), _MATRIX)
 def test_tier0_refuses_every_blocked_module(module, capability):
@@ -359,6 +419,284 @@ def test_the_platform_native_os_backing_module_is_always_on_the_blocklist():
         f"os.environ from (Lib/os.py: `from {native} import *`); it must stay "
         f"on the blocklist or importing it directly reaches everything "
         f"'process-env' gates with zero capability declared (core#183)"
+    )
+
+
+# ── core#215: the siblings core#183 stopped short of ───────────────────────
+
+def test_the_runtime_implementation_blocklist_is_ported_to_the_install_time_gate():
+    """core#215's literal complaint, as a standing check.
+
+    ``script_proxy._BLOCKED_IMPLEMENTATION_ROOTS`` is the RUNTIME boundary
+    for in-canvas scripts, and it has known since long before core#215 that
+    ``_thread``, ``_socket``, ``_ctypes``, ``_pickle``, ``_winapi``,
+    ``msvcrt``, ``_posixsubprocess``, ``_multiprocessing``, ``_imp`` and the
+    two ``_frozen_importlib`` modules are dangerous -- it refuses any value
+    whose defining module is one of them. That recognition was never carried
+    across to the INSTALL-time gate, so the same codebase held both of these
+    at once::
+
+        collections._ctypes    # refused: a script may not hold that
+        import _ctypes         # accepted: a plugin may, zero declaration
+
+    The two boundaries protect the same process from the same code, so a
+    name one of them calls dangerous cannot be a name the other has never
+    heard of. ``_io`` is the single exception and it is not a gap: it is a
+    documented ACCEPT in ``ACCEPTED_UNGATED_MODULES``, because ``open()`` is
+    deliberately ungated for installed files, so the assertion asks for
+    "classified", not "blocked".
+    """
+    from app.core import script_proxy
+
+    blocked = dangerous_modules()
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    unclassified = sorted(
+        name for name in script_proxy._BLOCKED_IMPLEMENTATION_ROOTS
+        if name not in blocked and name not in accepted
+    )
+    assert unclassified == [], (
+        "the in-canvas RUNTIME boundary refuses values defined by these "
+        f"modules, but the install-time gate has never heard of them: "
+        f"{unclassified}. A plugin can therefore `import` what a script "
+        "cannot even be handed. Put each on _DANGEROUS_MODULES, or record "
+        "an explicit accept in ACCEPTED_UNGATED_MODULES the way _io is"
+    )
+
+
+def test_the_underscore_implementation_of_a_blocked_module_is_classified_too():
+    """The SHAPE of core#215, not its list of names -- so the next one is
+    caught mechanically instead of by somebody auditing by hand again.
+
+    CPython's own convention is that a stdlib module ``x`` is a thin Python
+    wrapper over a private C module ``_x``: ``socket``/``_socket``,
+    ``pickle``/``_pickle``, ``signal``/``_signal``, ``ssl``/``_ssl``,
+    ``sqlite3``/``_sqlite3``, ``bz2``/``_bz2``, ``asyncio``/``_asyncio``.
+    Every one of those pairs was a hole. So: for each name on the blocklist,
+    if this interpreter actually HAS a module called ``_<name>``, that module
+    must be classified too -- blocked, or accepted with a reason.
+
+    Deliberately keyed on the interpreter (``importlib.util.find_spec``)
+    rather than a hardcoded list, the same "ask, don't assume" move
+    ``_compute_os_path_module_leaves`` makes: a future CPython that grows a
+    ``_webbrowser`` accelerator fails this test the day it ships.
+
+    What this canNOT see, said plainly so nobody mistakes it for total
+    coverage: the pairs whose names do not rhyme. ``_thread`` is behind
+    ``threading``, ``_posixsubprocess`` behind ``subprocess``,
+    ``_overlapped`` behind ``asyncio``. Those were found by importing every
+    blocklisted module in a fresh interpreter and diffing ``sys.modules``,
+    which is a sweep to re-run when auditing, not an assertion cheap enough
+    to run per-test. This covers the mechanical majority; the sweep covers
+    the rest.
+    """
+    import importlib.util
+
+    blocked = dangerous_modules()
+    accepted = set(tiers.ACCEPTED_UNGATED_MODULES)
+    unclassified = []
+    for name in sorted(blocked):
+        private = "_" + name
+        if private in blocked or private in accepted:
+            continue
+        try:
+            exists = importlib.util.find_spec(private) is not None
+        except (ImportError, ValueError):
+            exists = False
+        if exists:
+            unclassified.append((private, name))
+    assert unclassified == [], (
+        "these private C modules sit directly behind a module this gate "
+        f"already blocks, and are themselves unclassified: {unclassified}. "
+        "Reaching the private one by name reaches the public one's surface "
+        "(core#183 for nt/posix, core#215 for the rest) -- decide about each: "
+        "blocklist it (plus a CAPABILITY_MODULES group if its wrapper has "
+        "one), or record why it grants nothing in ACCEPTED_UNGATED_MODULES"
+    )
+
+
+@pytest.mark.parametrize(
+    ("module", "reaches"),
+    [
+        # Each line is a primitive VERIFIED to work through the raw module
+        # alone, with no import of its public wrapper anywhere. The verdicts
+        # are recorded next to the names in `plugin_validator`; these pin
+        # that the gate refuses the shape an attacker would actually write.
+        ("_thread", "_thread.start_new_thread(payload, ())"),
+        ("_socket", "_socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)"),
+        ("_ctypes", "_ctypes.LoadLibrary('kernel32.dll', 0)"),
+        ("_pickle", "_pickle.loads(blob)"),
+        ("_signal", "_signal.raise_signal(15)"),
+        ("_imp", "_imp.create_dynamic(spec)"),
+        ("_frozen_importlib", "_frozen_importlib.__import__('subprocess')"),
+        ("_winapi", "_winapi.CreateProcess(None, cmd, None, None, 0, 0, None, None, None)"),
+        ("_posixsubprocess", "_posixsubprocess.fork_exec(argv, argv, 1, (), None, None)"),
+        ("_posixshmem", "_posixshmem.shm_open('/x', 66, 384)"),
+        ("winreg", "winreg.SetValueEx(key, 'Run', 0, 1, payload)"),
+        ("_interpreters", "_interpreters.exec(iid, src)"),
+        ("_xxsubinterpreters", "_xxsubinterpreters.run_string(iid, src)"),
+        ("pwd", "pwd.getpwall()"),
+        ("grp", "grp.getgrall()"),
+        ("syslog", "syslog.openlog(ident='sshd')"),
+        ("termios", "termios.tcsetattr(fd, 0, attrs)"),
+        ("_curses", "_curses.initscr()"),
+    ],
+)
+def test_the_verified_escape_is_refused_at_tier0(module, reaches):
+    """One row per primitive that was actually made to run during the
+    core#215 / core#216 triage, refused at Tier 0 in the spelling an
+    attacker would use rather than only as a bare import.
+
+    The import is what the gate sees, so the import is what has to be
+    refused -- but writing the CALL out here is the point: it records what
+    the module was verified to REACH, in code, next to the assertion that it
+    is closed. ``_interpreters.exec(...)`` is the one worth reading twice:
+    ``exec`` is in ``_DANGEROUS_NAMES``, and the call rule still does not
+    fire on it, because ``_calls_the_builtin`` asks whether the receiver
+    resolves to ``builtins`` and this receiver is a module. Only the import
+    rule closes that door.
+    """
+    message = _refusal(f"import {module}\n\ndef go():\n    {reaches}\n")
+    assert f"Importing '{module}' is not allowed" in message
+
+
+def test_the_subinterpreter_exec_primitive_is_blocked_under_both_of_its_names():
+    """The rename is the trap, and gating only the name in the issue would
+    have shipped a no-op.
+
+    core#216 reports ``_xxsubinterpreters``. CPython RENAMED that module to
+    ``_interpreters`` in 3.13, so on 3.13+ -- which includes the interpreter
+    this repo's own developers run -- ``_xxsubinterpreters`` does not exist
+    and gating it protects nothing, while the live primitive sits under a
+    name still absent from every list. The reverse holds on 3.10-3.12, which
+    is what CI runs. Both names, or the gate is version-dependent.
+
+    Whichever name this interpreter actually has must also be REAL: the
+    assertion below refuses to pass vacuously on a Python that has neither.
+    """
+    import importlib.util
+
+    for name in ("_xxsubinterpreters", "_interpreters"):
+        assert name in dangerous_modules(), (
+            f"{name!r} executes arbitrary source in a sub-interpreter "
+            f"(create() + exec(id, src), verified to spawn a process from "
+            f"inside one); it must be blocked under BOTH spellings because "
+            f"CPython renamed it in 3.13"
+        )
+        message = _refusal(f"import {name}\n")
+        assert "--trust-author" in message, (
+            "no capability may ever unlock an exec() primitive"
+        )
+
+    present = [
+        name for name in ("_xxsubinterpreters", "_interpreters")
+        if importlib.util.find_spec(name) is not None
+    ]
+    assert present, (
+        "this interpreter has neither name, so the test above proved nothing "
+        "about a reachable module -- if CPython renamed it again, add the new "
+        "spelling to the blocklist and to this test"
+    )
+
+
+def test_ssl_alone_reaches_the_network_and_now_says_so():
+    """``ssl`` was never on the blocklist in either direction, and it is not
+    just a cipher library.
+
+    ``ssl.get_server_certificate((host, port))`` opens the connection
+    ITSELF -- its own source calls ``create_connection`` -- so ``import
+    ssl`` was outbound network egress at Tier 0 with nothing declared,
+    verified by fetching 1411 bytes of live certificate from a real host.
+    That makes an attacker-chosen host:port reachable, which is a beacon
+    whatever comes back.
+
+    core#215 flagged ``_ssl`` and noted in passing that its wrapper "is not
+    on the blocklist at all today". Gating the raw engine while leaving the
+    wrapper open would have been a gate protecting nothing, so both are on
+    ``network`` -- the capability whose consent line already promises
+    exactly this ("send and receive data from any host").
+    """
+    assert "ssl" in dangerous_modules()
+    assert tiers.capability_for_module("ssl") == "network"
+    assert tiers.capability_for_module("_ssl") == "network"
+    _tier1("import ssl\n\ndef go(h):\n    return ssl.get_server_certificate((h, 443))\n",
+           "network")
+    message = _refusal("import ssl\n", capabilities=["filesystem", "process-env"])
+    assert "requires capability 'network'" in message
+
+
+def test_the_capability_summaries_still_cover_what_was_added_to_their_groups():
+    """A group grew; the sentence a user answers y/N to has to still be true
+    of everything in it.
+
+    ``network`` gained ``_socket`` / ``_ssl`` / ``ssl`` and ``filesystem``
+    gained ``_sqlite3``. Both are covered by the existing wording -- the raw
+    modules are the same surface as the wrappers already named -- and this
+    pins that the wording was checked rather than assumed, the same way
+    ``test_the_process_env_summary_admits_what_the_os_module_is`` pins the
+    ``os`` framing.
+    """
+    network = tiers.CAPABILITY_SUMMARY["network"]
+    assert "any host" in network
+    assert "ssl" in network, "ssl joined the group; the consent line should say so"
+    filesystem = tiers.CAPABILITY_SUMMARY["filesystem"]
+    assert "sqlite3" in filesystem
+
+
+def test_the_compression_accelerators_were_verified_rather_than_matched():
+    """The one place this wave deliberately did NOT follow the wrapper's tier.
+
+    ``bz2`` and ``lzma`` are gated by ``filesystem``, and core#215 recorded
+    ``_bz2`` / ``_lzma`` as "a mechanical match to an already-blocked
+    wrapper's own capability". Checking rather than matching says otherwise:
+    ``dir(_bz2)`` is exactly ``{BZ2Compressor, BZ2Decompressor}`` and
+    ``_lzma`` adds only filter constants -- neither takes a path, and the
+    file access the wrappers are gated for lives in ``BZ2File`` /
+    ``LZMAFile``, ordinary Python calling the already-unrestricted
+    ``open()``. So they are accepted, in the same category as ``zlib``,
+    which was already accepted on exactly this reasoning.
+
+    This test exists because "same shape as something already blocked" is
+    the reasoning that would have blocked them, and it would have been
+    wrong. If a future CPython gives ``_bz2`` a path-taking entry point,
+    this fails and the decision gets re-made.
+    """
+    import importlib.util
+
+    for name in ("_bz2", "_lzma"):
+        assert name in tiers.ACCEPTED_UNGATED_MODULES
+        assert name not in dangerous_modules()
+        if importlib.util.find_spec(name) is None:  # pragma: no cover
+            continue
+        module = importlib.import_module(name)
+        public = {n for n in dir(module) if not n.startswith("_")}
+        takers = {n for n in public if "file" in n.lower() or "open" in n.lower()}
+        assert takers == set(), (
+            f"{name} grew a file-facing entry point ({sorted(takers)}); the "
+            f"accept in ACCEPTED_UNGATED_MODULES rests on it having none, so "
+            f"re-decide rather than editing this assertion"
+        )
+    _tier0("import _bz2\nimport _lzma\n")
+
+
+def test_nothing_is_left_deferred_in_the_accepted_set():
+    """``ACCEPTED_UNGATED_MODULES`` used to hold two kinds of entry: real
+    accepts, and known-dangerous names parked there with an issue number
+    while somebody decided. The parked ones were indistinguishable from the
+    accepts except by reading the reason string, which is how twenty-nine
+    live gaps sat in a green suite.
+
+    core#215 and core#216 emptied that second kind. This pins it: an entry
+    here is a VERDICT, so no reason string may still be pointing at an issue
+    as the place where the decision will be made.
+    """
+    parked = sorted(
+        name for name, reason in tiers.ACCEPTED_UNGATED_MODULES.items()
+        if "core#215" in reason or "core#216" in reason
+    )
+    assert parked == [], (
+        f"{parked} are recorded as accepted but their reason still defers to "
+        "an issue. Either the module is accepted -- say why, without the "
+        "issue number doing the work -- or it belongs on the blocklist"
     )
 
 

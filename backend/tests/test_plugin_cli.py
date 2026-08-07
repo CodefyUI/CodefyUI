@@ -341,6 +341,258 @@ def test_validate_plugin_dir_still_skips_the_one_genuinely_unreachable_dir(tmp_p
     plugin_cli.validate_plugin_dir(root, [])  # does not raise
 
 
+# ── core#220: the scan globbed *.py, the loader imports more ──────────────
+#
+# core#182 established the property "what the scan considers in-tree matches
+# what the loader can import" and enforced it by DIRECTORY. The same property
+# was broken by file EXTENSION one layer down, and this is the worse half:
+# core#182's gap meant unscanned code in a directory the walk skipped, while
+# this one meant the walk never produced a single file to scan. The gate did
+# not fail open on a rule -- it never ran.
+
+
+def _plugin_with(tmp_path, filename: str, payload: bytes) -> Path:
+    """A minimal plugin tree whose ``nodes/`` holds one extra file."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "nodes" / filename).write_bytes(payload)
+    return root
+
+
+@pytest.mark.parametrize(
+    ("filename", "suffix"),
+    [
+        ("helper.pyc", ".pyc"),
+        ("helper.pyo", ".pyo"),
+        ("native.pyd", ".pyd"),
+        ("native.so", ".so"),
+        ("native.dylib", ".dylib"),
+    ],
+)
+def test_validate_plugin_dir_refuses_compiled_modules_it_cannot_scan(
+    tmp_path, filename, suffix
+):
+    """A plugin shipping a compiled module is refused BY NAME, loudly.
+
+    Before this, ``validate_plugin_dir`` globbed ``*.py`` while
+    ``plugin_loader.install_plugin_finder`` handed the whole plugin
+    directory to the stock ``FileFinder`` loaders, which accept every suffix
+    in ``importlib.machinery.all_suffixes()``. A pack whose ``nodes/`` held
+    ``helper.pyc`` and no ``helper.py`` was imported by
+    ``NodeRegistry.discover`` at server boot -- at full trust, with no
+    capability declared and without ``--trust-author`` -- having never been
+    opened by the gate.
+
+    Refusal rather than scanning is the honest answer for both kinds:
+    ``.pyc`` would need decompiling, and a ``.pyd`` / ``.so`` cannot be
+    AST-scanned even in principle. The alternative is importing code nobody
+    looked at, which is the thing this whole module exists to prevent.
+
+    The binary suffixes of OTHER platforms are refused too. A tarball is not
+    installed on the machine that built it, so a verdict that depended on
+    which OS ran the installer would be a verdict an attacker picks.
+    """
+    root = _plugin_with(tmp_path, filename, b"\x00\x01\x02 not source")
+    with pytest.raises(PluginValidationError) as excinfo:
+        plugin_cli.validate_plugin_dir(root, [])
+    message = str(excinfo.value)
+    assert filename in message, "the refusal must name the file"
+    assert suffix in message, "the refusal must name why it could not be scanned"
+
+
+def test_the_refused_bytecode_really_is_importable(tmp_path):
+    """Non-vacuity for the test above: prove the file it refuses is a file
+    the import system would genuinely have loaded, rather than a shape that
+    only looks dangerous.
+
+    Compiles a real payload to bytecode, deletes the source, and checks that
+    ``pkgutil`` -- the same enumeration ``NodeRegistry.discover`` walks with
+    -- reports it as an importable module while a ``*.py`` glob sees
+    nothing. Without this, the refusal could be guarding a phantom.
+    """
+    import pkgutil
+    import py_compile
+
+    root = tmp_path / "pack"
+    nodes = root / "nodes"
+    nodes.mkdir(parents=True)
+    (nodes / "__init__.py").write_text("", encoding="utf-8")
+    src = nodes / "payload_src.py"
+    src.write_text("import os\nos.system('whoami')\n", encoding="utf-8")
+    py_compile.compile(str(src), cfile=str(nodes / "helper.pyc"), doraise=True)
+    src.unlink()
+
+    scanned_by_the_old_glob = sorted(p.name for p in root.rglob("*.py"))
+    importable = sorted(m.name for m in pkgutil.iter_modules([str(nodes)]))
+    assert "helper" in importable, (
+        "the premise of core#220: pkgutil (what NodeRegistry.discover walks) "
+        "reports the bytecode-only module as importable"
+    )
+    assert scanned_by_the_old_glob == ["__init__.py"], (
+        "the other half of the premise: a *.py glob never sees it"
+    )
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
+def test_validate_plugin_dir_scans_pyw_as_the_source_it_is(tmp_path):
+    """``.pyw`` is a loader suffix and is ordinary Python text, so it is
+    SCANNED rather than refused -- refusing it would be a false positive,
+    and skipping it was the bug.
+
+    Scanned on every platform, not only where ``SOURCE_SUFFIXES`` lists it.
+    ``.pyw`` is Windows-only as a loader suffix, so a scan running on Linux
+    would otherwise wave through a file that a Windows install of the same
+    tarball imports.
+    """
+    root = _plugin_with(tmp_path, "w.pyw", b"import os\nos.system('whoami')\n")
+    with pytest.raises(PluginValidationError) as excinfo:
+        plugin_cli.validate_plugin_dir(root, [])
+    assert "Importing 'os' is not allowed" in str(excinfo.value), (
+        "a .pyw should reach the ordinary AST rules, not the refuse-by-suffix "
+        "path -- it is source"
+    )
+
+    clean = _plugin_with(tmp_path / "ok", "w.pyw", b"VALUE = 1\n")
+    plugin_cli.validate_plugin_dir(clean, [])   # does not raise
+
+
+def test_the_scan_covers_every_suffix_the_import_system_accepts(tmp_path):
+    """The standing check core#220 asks for: a future CPython that adds a
+    loader suffix fails here instead of silently widening the hole.
+
+    Asked of the interpreter (``importlib.machinery.all_suffixes()``) rather
+    than compared against a copy of today's answer, and asserted on
+    BEHAVIOUR rather than on set membership -- every suffix gets a real file
+    written under a real plugin root, and the walk has to do one of exactly
+    two things with it: scan it as source, or refuse it by name. A third
+    outcome, "walked straight past it", is the state this closed, and a
+    membership check would not have distinguished the third from the second.
+    """
+    import importlib.machinery
+
+    accepts = set(importlib.machinery.all_suffixes())
+    assert accepts <= plugin_cli.LOADER_SUFFIXES, (
+        "this interpreter's import system accepts suffixes the plugin scan "
+        f"does not consider: {sorted(accepts - plugin_cli.LOADER_SUFFIXES)}"
+    )
+    assert set(importlib.machinery.SOURCE_SUFFIXES) <= plugin_cli.SCANNABLE_SUFFIXES
+
+    for index, suffix in enumerate(sorted(accepts | plugin_cli.LOADER_SUFFIXES)):
+        root = _plugin_with(
+            tmp_path / f"probe{index}",
+            "probe" + suffix,
+            b"import os\nos.system('whoami')\n",
+        )
+        with pytest.raises(PluginValidationError) as excinfo:
+            plugin_cli.validate_plugin_dir(root, [])
+        message = str(excinfo.value)
+        if suffix in plugin_cli.SCANNABLE_SUFFIXES:
+            assert "Importing 'os' is not allowed" in message, (
+                f"{suffix!r} is source, so it must reach the AST rules"
+            )
+        else:
+            assert suffix in message and "probe" in message, (
+                f"{suffix!r} cannot be scanned, so the refusal must name the "
+                f"file and say why -- silence is the core#220 bug"
+            )
+
+
+def test_longest_suffix_wins_so_a_versioned_extension_is_still_refused(tmp_path):
+    """``native.cp314-win_amd64.pyd`` ends with two loader suffixes, and
+    picking the short one would defeat the refusal.
+
+    Strip only ``.pyd`` and the stem is ``native.cp314-win_amd64``, which is
+    not an identifier -- so the "can an import statement name this?" screen
+    would skip it, and a real compiled extension (the exact filename
+    ``setuptools`` produces) would sail through unexamined. Strip the full
+    ``.cp314-win_amd64.pyd`` and the stem is ``native``, which it can.
+    """
+    import importlib.machinery
+
+    versioned = importlib.machinery.EXTENSION_SUFFIXES[0]
+    root = _plugin_with(tmp_path, "native" + versioned, b"\x00binary")
+    assert plugin_cli.loader_suffix(
+        root / "nodes" / ("native" + versioned)
+    ) == versioned, "longest match must win"
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_plugin_dir(root, [])
+
+
+def test_a_cpython_written_bytecode_cache_is_not_mistaken_for_a_payload(tmp_path):
+    """The false positive the refusal must NOT produce.
+
+    Any plugin directory an interpreter has ever imported from carries a
+    ``__pycache__`` full of ``<name>.cpython-NNN.pyc`` -- this repo's own
+    built-in packs included, which is how this surfaced. Those are not
+    reachable by any import statement: strip ``.pyc`` and the stem is
+    ``real.cpython-314``, which is not a valid identifier, so no import can
+    name it. An attacker-placed ``payload.pyc`` in the SAME directory has
+    the stem ``payload``, which is.
+
+    Verified rather than argued, because the distinction carries the whole
+    rule: with a plugin exposed through the real loader,
+    ``import <pkg>.nodes.__pycache__.payload`` ran the planted bytecode
+    while ``import <pkg>.nodes.__pycache__.real`` raised
+    ``ModuleNotFoundError``, and ``pkgutil.iter_modules`` listed only the
+    first. So the refusal fires on the one that is reachable and stays quiet
+    on the one that is not -- the same structural test ``.git`` gets, applied
+    to a filename instead of a directory name.
+    """
+    import py_compile
+
+    root = tmp_path / "pack"
+    nodes = root / "nodes"
+    cache = nodes / "__pycache__"
+    cache.mkdir(parents=True)
+    (nodes / "__init__.py").write_text("", encoding="utf-8")
+    (nodes / "real.py").write_text("VALUE = 1\n", encoding="utf-8")
+    py_compile.compile(str(nodes / "real.py"), doraise=True)
+
+    artifacts = sorted(p.name for p in cache.iterdir())
+    assert artifacts, "py_compile should have written a cache file"
+    for name in artifacts:
+        assert not name[: -len(".pyc")].isidentifier(), (
+            f"{name} is CPython's own cache artifact; the premise of this "
+            "test is that its stem is unspellable as a module name"
+        )
+    plugin_cli.validate_plugin_dir(root, [])   # does not raise
+
+    # ...and the same directory with an attacker-named file in it does raise.
+    py_compile.compile(
+        str(nodes / "real.py"), cfile=str(cache / "payload.pyc"), doraise=True
+    )
+    with pytest.raises(PluginValidationError) as excinfo:
+        plugin_cli.validate_plugin_dir(root, [])
+    assert "payload.pyc" in str(excinfo.value)
+
+
+def test_validate_nodes_dir_refuses_the_same_compiled_module(tmp_path):
+    """The other entry point. ``validate_nodes_dir`` is a separate call into
+    the walker and used to carry its own ``*.py`` glob, so a fix applied to
+    one of the two would have left the narrower one open."""
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "helper.pyc").write_bytes(b"\x00\x01 not source")
+    with pytest.raises(PluginValidationError):
+        plugin_cli.validate_nodes_dir(nodes, [])
+
+
+def test_the_git_directory_exemption_survives_the_suffix_rule(tmp_path):
+    """``.git`` holds loose objects and packfiles with arbitrary names, and
+    it is skipped for a structural reason that the suffix rule must not
+    quietly undo: ``.git`` is not a valid identifier, so no import can name
+    a component spelled that way (core#182). A ``.pyc`` planted in there is
+    still unreachable."""
+    root = tmp_path / "pack"
+    (root / "nodes").mkdir(parents=True)
+    (root / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "payload.pyc").write_bytes(b"\x00\x01 not source")
+    plugin_cli.validate_plugin_dir(root, [])   # does not raise
+
+
 # ── load_catalog ────────────────────────────────────────────────────────────
 
 def test_load_catalog_returns_three_direction_packs():

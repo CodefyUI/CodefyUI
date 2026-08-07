@@ -136,6 +136,19 @@ _CAPABILITY_TYPES: tuple[type, ...] = (
 #: ``numpy.random.bit_generator.RLock`` resolving to ``_thread`` on one numpy
 #: version and ``threading`` on another. Blocking only the wrapper would make
 #: the rule depend on which of the two a library happened to import from.
+#:
+#: core#215 -- this set used to be the ONLY place in the codebase that knew
+#: these names were dangerous. It is the RUNTIME boundary, for in-canvas
+#: scripts; the INSTALL-time gate a plugin or custom node passes through
+#: (:data:`app.core.plugin_validator._DANGEROUS_MODULES`) had never heard of
+#: any of them, so ``import _ctypes`` in a plugin was accepted with zero
+#: declaration while ``collections._ctypes`` was refused in a script. That
+#: recognition has now been ported: every name below is on the install-time
+#: blocklist too, except ``_io``, which is a documented accept in
+#: :data:`app.core.security_tiers.ACCEPTED_UNGATED_MODULES` because
+#: ``open()`` is deliberately ungated. A standing test in
+#: ``test_tiered_policy.py`` asserts that property, so the two boundaries
+#: cannot drift apart again in the direction that caused core#215.
 _BLOCKED_IMPLEMENTATION_ROOTS: frozenset[str] = frozenset({
     "nt", "posix", "_io", "_thread", "_socket", "_ssl", "_ctypes",
     "_pickle", "_winapi", "msvcrt", "_posixsubprocess", "_multiprocessing",
