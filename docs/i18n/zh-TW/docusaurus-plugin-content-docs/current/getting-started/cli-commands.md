@@ -13,12 +13,12 @@ description: cdui 啟動器指令 —— install、start、status、dev、build�
 | 指令 | 說明 |
 |------|------|
 | `cdui install` | 安裝後端依賴；下載預編好的前端（若有 `pnpm` 則改在本地 build）。 |
-| `cdui update` | 更新到最新 release（prebuilt 路徑），或拉取 `main`（原始碼建置）並重新同步前端。不會詢問任何問題 —— 除非用 `--gpu` / `--dev` 覆蓋，否則沿用 venv 中既有的 PyTorch 變體與 dev 工具。 |
+| `cdui update` | 更新到最新 release（prebuilt 路徑），或拉取 `main`（原始碼建置）並重新同步前端。不會詢問任何問題 —— 除非用 `--gpu` / `--dev` 覆蓋，否則沿用 venv 中既有的 PyTorch 變體與 dev 工具。伺服器還在執行時會拒絕（它會刪掉那台伺服器正在服務的 `frontend/dist`）—— 請先 `cdui stop`。 |
 | `cdui start` | 正式模式 —— 單一 uvicorn 跑 `:8000`，在背景執行（不需要 Node）。`--foreground`／`-f` 改為前景執行。 |
 | `cdui status` | btop／k9s 風格的儀表板：CPU、記憶體、磁碟、GPU、前幾名程序，外加伺服器的 PID 與健康狀態。即時刷新（每 2 秒；`Ctrl+C` 離開）。傳入一個數字可設定間隔（`cdui status 1`），或用 `--once` 只顯示單一畫面。 |
 | `cdui dev` | 開發者模式 —— 後端 `:8000` + Vite HMR `:5173`（需要 Node + pnpm）。 |
 | `cdui build` | 在本地建置前端 bundle（需要 Node + pnpm）。 |
-| `cdui stop` | 停止所有服務（包含背景伺服器）。 |
+| `cdui stop` | 停止**這個安裝**的服務：pidfile 記錄的背景伺服器，加上從這個目錄啟動的殘留行程（前景 `cdui start`、`cdui dev` 的 Vite、遺留 worker）。加上 `--all` 則改為停止整台機器上所有 CodefyUI 與 Vite 行程 —— 那會波及其他使用者的伺服器與無關的 Vite dev server，共用主機請勿使用。 |
 | `cdui test` | 執行後端測試。 |
 | `cdui clean` | 移除虛擬環境、`node_modules` 與 `frontend/dist`。 |
 | `cdui uninstall` | clean + 移除 PATH 上的啟動器。 |
