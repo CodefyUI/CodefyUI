@@ -28,21 +28,17 @@ OOM_MESSAGE = (
     "CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total "
     "capacity of 15.99 GiB of which 0 bytes is free.")
 
-#: `torch.OutOfMemoryError` arrived in torch 2.5 and the declared floor is
-#: lower, so the tests raise whichever shape the INSTALLED torch actually
-#: produces. That is not a workaround -- it is the same reason
-#: `is_out_of_memory` checks the type and the message: on an older build a
-#: CUDA allocation failure really is a bare `RuntimeError`, and the handler
-#: has to work there too.
-_TORCH_OOM = getattr(__import__("torch"), "OutOfMemoryError", None)
-has_oom_type = _TORCH_OOM is not None
-requires_oom_type = pytest.mark.skipif(
-    not has_oom_type, reason="torch < 2.5 has no OutOfMemoryError type")
+#: `torch.OutOfMemoryError` arrived in torch 2.5, which is the floor
+#: `backend/pyproject.toml` declares since core#192 -- so it is a plain
+#: attribute access here, not a `getattr` with a fallback. If this line ever
+#: raises `AttributeError`, the installed torch is below the declared floor
+#: and that is the bug.
+_TORCH_OOM = __import__("torch").OutOfMemoryError
 
 
 def _cuda_oom() -> BaseException:
     """The exception this torch raises when a CUDA allocation does not fit."""
-    return (_TORCH_OOM or RuntimeError)(OOM_MESSAGE)
+    return _TORCH_OOM(OOM_MESSAGE)
 
 
 class _HungryNode(BaseNode):
@@ -91,34 +87,47 @@ def _graph():
 # ── classification ────────────────────────────────────────────────────────
 
 
-@requires_oom_type
 def test_the_dedicated_torch_oom_type_is_recognised():
     """By TYPE, not by message -- the message match is the fallback."""
     assert is_out_of_memory(_TORCH_OOM("no message about memory here")) is True
 
 
 def test_both_spellings_of_the_oom_class_are_recognised():
-    """``torch.cuda.OutOfMemoryError`` is the one that exists on 2.0-2.4.
+    """``torch.cuda.OutOfMemoryError`` is an ALIAS from 2.5 on (core#192).
 
-    That range is exactly what this project's declared floor still admits,
-    so checking only the 2.5+ ``torch.OutOfMemoryError`` spelling would
-    leave those builds falling through to the MESSAGE match -- which is the
-    fallback, not the answer. On 2.5+ the two names are one object and this
-    asserts the same thing twice, which costs nothing and keeps the
-    guarantee pinned if they ever diverge again.
+    ``is_out_of_memory`` used to look both names up through ``getattr``
+    because 2.0-2.4 -- which the old ``torch>=2.0.0`` floor admitted -- only
+    had the ``torch.cuda`` one. With the floor at 2.5 the two names are one
+    object, so the single check covers both. This test is what would catch
+    a future release splitting them apart again, which is the only thing
+    that could make the removed branch matter.
     """
     import torch
 
-    for spelling in ("OutOfMemoryError",):
-        cls = getattr(torch, spelling, None)
-        if isinstance(cls, type):
-            assert is_out_of_memory(cls("silent")) is True
-        cuda_cls = getattr(torch.cuda, spelling, None)
-        if isinstance(cuda_cls, type):
-            assert is_out_of_memory(cuda_cls("silent")) is True
-    # At least one of the two must exist on any supported build.
-    assert (isinstance(getattr(torch, "OutOfMemoryError", None), type)
-            or isinstance(getattr(torch.cuda, "OutOfMemoryError", None), type))
+    assert torch.cuda.OutOfMemoryError is torch.OutOfMemoryError
+    assert is_out_of_memory(torch.OutOfMemoryError("silent")) is True
+    assert is_out_of_memory(torch.cuda.OutOfMemoryError("silent")) is True
+
+
+def test_the_declared_torch_floor_is_the_one_the_code_assumes():
+    """The floor and the code that leans on it must not drift apart.
+
+    ``is_out_of_memory`` reaches ``torch.OutOfMemoryError`` as a plain
+    attribute now. Lowering the floor back below 2.5 without restoring the
+    older spelling's branch would leave the classifier falling through to
+    the MESSAGE match on those builds -- silently, since a message match
+    still returns True for a real CUDA OOM and only fails for the ones
+    torch raises without one.
+    """
+    import re
+    from pathlib import Path
+
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml")
+    spec = re.search(r'"torch>=([\d.]+)"', pyproject.read_text(encoding="utf-8"))
+    assert spec is not None, "no torch floor declared in backend/pyproject.toml"
+    major, minor = (int(part) for part in spec.group(1).split(".")[:2])
+    assert (major, minor) >= (2, 5), (
+        f"torch floor is {spec.group(1)}; torch.OutOfMemoryError needs >= 2.5")
 
 
 def test_a_torch_oom_is_recognised():

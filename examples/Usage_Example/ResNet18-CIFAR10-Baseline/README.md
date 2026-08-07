@@ -166,7 +166,9 @@ back, and the Runs panel re-attaches and replays what it missed.
   the wall clock.
 - The `TrainingLoop.epochs` value and `LRScheduler.T_max` must stay equal —
   cosine annealing is stepped once per epoch and reaches zero exactly at
-  `T_max`. Nothing validates the pair (issue #205); the CI test below does.
+  `T_max`. `TrainingLoop` warns when they disagree but still runs, because a
+  truncated schedule is a legitimate choice; the CI test below is what holds
+  this graph to the pair.
 - **The `layers` string is in its lean form.** The layer editor's serializer
   writes a `position` on every node, a `params: {}` on every param-less node and
   explicit null handles on every edge; none of those are in the committed text.
