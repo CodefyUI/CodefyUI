@@ -322,6 +322,14 @@ const zhTW: Record<TranslationKey, string> = {
   // Execution errors
   'execution.error.noEntryPoints': '尚未定義起始節點。請從節點面板拖曳一個 Start 節點，並連接到要開始執行的節點。',
 
+  // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
+  // utils/errorMessages.ts). Each one names what to change, not just what broke.
+  'error.missingTensorInput': '這個節點需要一個 tensor 輸入，但沒有收到。請檢查所有必要的輸入是否都已接線。',
+  'error.missingInput': '缺少必要的輸入「{key}」。請檢查這個輸入是否已接線。',
+  'error.linearShapeMismatch': '尺寸不符：這一層收到 {got} 個特徵，但它設定的是 {expected} 個。請把這一層的 in_features 改成 {got}，或調整前一層讓它輸出 {expected} 個。',
+  'error.invalidReshape': '無法變形成 {shape}：這個 tensor 有 {size} 個元素，無法整除成該形狀。請檢查批次大小與前一層的維度。',
+  'error.channelMismatch': '通道數不符：這一層設定的輸入通道是 {expected}，但收到 {got}。請把它的 in_channels 改成 {got}，或調整接到它的來源。',
+
   // Re-attach (#121): the run kept going while the tab was closed.
   'execution.reattached': '已重新連上仍在執行中的工作',
 

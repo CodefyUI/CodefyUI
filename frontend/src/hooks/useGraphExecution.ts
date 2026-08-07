@@ -10,6 +10,7 @@ import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
 import { getRun, validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
+import { friendlyError } from '../utils/errorMessages';
 import { useI18n } from '../i18n';
 import { RECONNECTED_EVENT, type ExecutionWebSocket } from '../api/ws';
 
@@ -144,9 +145,14 @@ export function useGraphExecution() {
             eventTab?.nodes.find((n) => n.id === data.node_id)?.data?.label ??
             String(data.node_id).slice(0, 8);
 
+          // Map the exception here, where `error_type` is still available --
+          // the panels only ever see the composed line, and the type cannot be
+          // recovered from `str(exc)` afterwards.
+          const detail = data.error ? friendlyError(data.error, data.error_type) : '';
+
           store.addTabLog(tabId, {
             nodeId: data.node_id,
-            message: `Node ${nodeLabel} ${data.status}${data.error ? ': ' + data.error : ''}`,
+            message: `Node ${nodeLabel} ${data.status}${detail ? ': ' + detail : ''}`,
             type:
               data.status === 'error'
                 ? 'error'

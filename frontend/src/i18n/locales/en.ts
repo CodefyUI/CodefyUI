@@ -336,6 +336,14 @@ const en = {
   // Execution errors
   'execution.error.noEntryPoints': 'No entry points defined. Drag a Start node from the palette and connect it to the node you want to start execution from.',
 
+  // Beginner-facing rewrites of raw Python/PyTorch exceptions (see
+  // utils/errorMessages.ts). Each one names what to change, not just what broke.
+  'error.missingTensorInput': "This node expected a 'tensor' input but did not receive one. Check that every required input is connected.",
+  'error.missingInput': "Missing required input '{key}'. Check that it is connected.",
+  'error.linearShapeMismatch': 'Size mismatch: this layer received {got} features but is configured for {expected}. Set the layer\'s in_features to {got}, or change the previous layer so it outputs {expected}.',
+  'error.invalidReshape': 'Cannot reshape to {shape}: the tensor has {size} elements, which does not divide evenly into that shape. Check the batch size and the dimensions of the previous layer.',
+  'error.channelMismatch': 'Channel mismatch: this layer is configured for {expected} input channels but received {got}. Set its in_channels to {got}, or change what feeds it.',
+
   // Re-attach (#121): the run kept going while the tab was closed.
   'execution.reattached': 'Reconnected to a run that is still in progress',
 
