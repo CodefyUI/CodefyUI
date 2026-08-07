@@ -68,5 +68,9 @@ CodefyUI 採 **後端權威** 設計：`GET /api/nodes` 回傳所有節點定義
 
 CodefyUI 採用雙軌授權模式：
 
-- **開源路徑** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE)，適用於個人開發者、小型團隊、教育、研究與社群使用。
+- **開源路徑** — [AGPL-3.0-only](https://github.com/CodefyUI/CodefyUI/blob/main/LICENSE)，適用於個人開發者、小型團隊、教育、研究、社群使用，**以及任何能遵守 AGPL-3.0 的其他使用情境**。
 - **商業路徑** — 若需要閉源、SaaS、OEM 或企業部署等不適合 AGPL-3.0 的條款，請[聯絡維護者](https://github.com/CodefyUI/CodefyUI/issues)。
+
+**未經修改直接執行 CodefyUI——包含架在公司內部伺服器上——是 AGPL-3.0 明文允許的，不需要購買授權。** 第 13 條的「提供原始碼」義務，前提是你*修改了*本程式。[授權常見問題](/licensing)會逐項說明這在實務上代表什麼，包含自訂節點與外掛怎麼算、以及商業授權實際涵蓋哪些情況。
+
+Copyright (C) 2026 CodefyUI 及 CodefyUI 貢獻者。貢獻以 Developer Certificate of Origin 1.1 為準——請見 [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md)。

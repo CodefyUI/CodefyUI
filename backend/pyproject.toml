@@ -2,6 +2,16 @@
 name = "codefyui-backend"
 version = "2.1.1"
 description = "Visual Node-Based ML Pipeline Builder - Backend"
+# Names the copyright holder in distribution metadata. Until this landed, no
+# file in the repository said who owns CodefyUI, which left the commercial
+# path in COMMERCIAL-LICENSE.md with no identifiable licensor (core#248).
+# The string here matches NOTICE, the README license section and the docs
+# footer -- change all four together if the holder is ever restated as a
+# person or a registered entity. `email` is deliberately omitted rather than
+# guessed: PEP 621 allows a name-only entry, and the project's published
+# contact is the issue tracker, not a mailbox.
+authors = [{ name = "CodefyUI" }]
+maintainers = [{ name = "CodefyUI" }]
 requires-python = ">=3.10"
 # PEP 639 SPDX license expression (bare string). The previous PEP 621
 # table form `{ text = "..." }` is rejected by setuptools >= 77 with
