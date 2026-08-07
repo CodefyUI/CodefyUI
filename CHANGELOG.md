@@ -22,8 +22,26 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [2.1.0] — 2026-08-06
+
+A classroom-readiness release. The headline items are not new features: they
+are the things that stopped a room full of students from getting started at
+all, several of which had been failing silently.
+
 ### Security
 
+- **The install and update path pointed at a repository the project no longer
+  owns.** `install.sh`, `install.ps1`, `scripts/dev.py` and the two README
+  one-liners all fetched from `treeleaves30760/CodefyUI`, which survived only
+  on a GitHub rename redirect. That redirect dies permanently the moment
+  anyone creates a repo at the old path, and the old owner name stays
+  claimable — at which point every install and every `cdui update` would clone
+  and unpack `frontend-dist.tar.gz` from a repository the maintainer does not
+  control, with no signature or checksum verification anywhere in the path.
+  All 54 references repointed, and a test now asserts the four copies agree
+  and that no tracked file names the old owner. ([#231])
 - Closed three bypasses in the plugin and custom-node AST gate: `import nt` /
   `import posix` (the C-level modules `os` itself imports from and re-exports —
   neither had ever been enumerated), a skip-directory scan gap, and an
@@ -31,6 +49,25 @@ received — each links to the release it was published as.
 
 ### Added
 
+- A real design-token layer (`src/styles/tokens.css`) with a contrast gate that
+  runs as the first step of `pnpm build`. There was no token layer at all
+  before: 69 of 142 measured elements failed WCAG AA, 70 rendered under 13px,
+  and the welcome screen's own headline measured 2.66:1. Node titles sat between
+  1.85:1 and 2.69:1 on twelve of the fourteen categories — on every node, in
+  every graph. Now 2 of 125 fail, and both are disabled controls, which SC 1.4.3
+  exempts. ([#229])
+- `cdui --version`, a `version` field on `/api/health`, and the version in the
+  OpenAPI document. Nothing reported a version before, so a bug report from a
+  classroom could not say which build it came from. A test now asserts the three
+  hand-edited version fields agree. ([#236])
+- `cdui plugin list` and the `cdui start` banner now name built-in packs that
+  shipped on disk but were never installed. A release can add a pack and
+  `cdui update` places its files, but the server loads only what the lockfile
+  records — so the pack is fully installable and completely invisible.
+  Measured on a real install: all five current packs were uninstalled while the
+  superseded `c1`–`c6` remained. Discoverability only; nothing is auto-enabled.
+  ([#233])
+- This changelog, and a "Before you tag" section in `RELEASING.md`. ([#237])
 - Periodic checkpointing on `TrainingLoop` (`checkpoint_every`), so a run killed
   by SIGKILL, an OOM kill or a restart keeps its completed epochs instead of
   losing all of them. Checkpoints were previously written only after the loop
@@ -41,6 +78,42 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **Serving the editor on a LAN address rendered a blank page.** `generateId()`
+  called `crypto.randomUUID()` unguarded; that API is secure-context only, so
+  it is `undefined` over plain HTTP — exactly `cdui start --host <lan-ip>`, the
+  way one machine is pointed at a room. The call happens during module
+  evaluation, so `createRoot().render()` was never reached and `<div id="root">`
+  stayed empty, with only a console `TypeError` to show for it. The teacher saw
+  a working URL; every student saw white. ([#230])
+- **A shared GPU machine trained every student on the CPU.** The global device
+  fell back to `cpu` for anyone who had never opened Settings, while the backend
+  already computed the best available device and served it — the frontend simply
+  never read that field. An explicit choice, including an explicit `cpu`, still
+  wins. ([#235])
+- **The beginner-friendly error messages had never run in production.** Every
+  rule in `friendlyError` matched a `KeyError:` / `ValueError:` prefix, but the
+  backend sends `str(exc)`, which never contains the class name —
+  `str(KeyError('tensor'))` is `"'tensor'"`. The tests passed because they fed
+  it strings the backend cannot emit. A student who forgot a connection saw the
+  literal text `'tensor'`. The exception class now travels as its own field, and
+  the messages are localized. Added the most common first-CNN mistake, which
+  appeared nowhere: `mat1 and mat2 shapes cannot be multiplied` now names the
+  two numbers and which one to change. ([#234])
+- The plugin catalog advertised fourteen nodes that no pack installs — `deep`
+  claimed twelve and ships five, `rl` claimed four and ships one. `cdui plugin
+  search` prints that prose verbatim, so it is where a student learns what to
+  type into a palette that then returns nothing. ([#232])
+- `cdui` could hang forever on a locked-down network: `_ensure_uv()` runs before
+  every command and its installer had no timeout, so a network that drops
+  packets was indistinguishable from a slow one. Now bounded, with an error that
+  names the ways out. ([#231])
+- `LRScheduler`'s epoch units are now stated where the mistake is made. The
+  scheduler steps once per epoch, so `T_max` should normally equal
+  `TrainingLoop.epochs` — the two live on different nodes with nothing between
+  them, and getting it wrong costs a few points of accuracy while looking like
+  an architecture problem. Documented rather than enforced, since a truncated
+  schedule is legitimate and `CosineAnnealingWarmRestarts` reuses the same value
+  as `T_0`, where equality would mean no restart ever happens. ([#238])
 - `GET /api/execution/outputs/...` returned 500 for any tensor containing NaN or
   Inf, taking the inspector's I/O tab down with it — Starlette renders with
   `allow_nan=False`. Also: writers that always write, content-aware cache keys,
@@ -69,6 +142,7 @@ Notes for these live in their GitHub release, written as the tag annotation:
 
 | Version | Date | Notes |
 |---|---|---|
+| 2.1.0 | 2026-08-06 | [release](https://github.com/CodefyUI/CodefyUI/releases/tag/2.1.0) |
 | 2.0.0 | 2026-08-05 | [release](https://github.com/CodefyUI/CodefyUI/releases/tag/2.0.0) |
 | 1.4.2 | 2026-07-20 | [release](https://github.com/CodefyUI/CodefyUI/releases/tag/1.4.2) |
 | 1.4.1 | 2026-07-20 | [release](https://github.com/CodefyUI/CodefyUI/releases/tag/1.4.1) |
@@ -95,4 +169,15 @@ Release candidates before 1.0.0 are on the
 [#221]: https://github.com/CodefyUI/CodefyUI/pull/221
 [#225]: https://github.com/CodefyUI/CodefyUI/pull/225
 [#226]: https://github.com/CodefyUI/CodefyUI/pull/226
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...main
+[#229]: https://github.com/CodefyUI/CodefyUI/pull/229
+[#230]: https://github.com/CodefyUI/CodefyUI/pull/230
+[#231]: https://github.com/CodefyUI/CodefyUI/pull/231
+[#232]: https://github.com/CodefyUI/CodefyUI/pull/232
+[#233]: https://github.com/CodefyUI/CodefyUI/pull/233
+[#234]: https://github.com/CodefyUI/CodefyUI/pull/234
+[#235]: https://github.com/CodefyUI/CodefyUI/pull/235
+[#236]: https://github.com/CodefyUI/CodefyUI/pull/236
+[#237]: https://github.com/CodefyUI/CodefyUI/pull/237
+[#238]: https://github.com/CodefyUI/CodefyUI/pull/238
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...main
+[2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0

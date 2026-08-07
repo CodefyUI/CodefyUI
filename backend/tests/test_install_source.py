@@ -71,12 +71,17 @@ def test_every_entry_point_agrees_on_one_owner():
 # ── Nothing anywhere may still point at the pre-rename owner ─────────────────
 
 def test_no_tracked_file_references_the_old_owner():
-    # This file is excluded from its own scan: it has to name the forbidden
-    # string in order to forbid it. Everything else in the tree is fair game.
-    self_path = ":!backend/tests/test_install_source.py"
+    # Two files may name the old owner, for the same reason: they are talking
+    # ABOUT it rather than pointing at it. This guard has to name the string in
+    # order to forbid it, and the changelog has to name it to record the fix.
+    # Everything else in the tree is fair game.
+    exclusions = [
+        ":!backend/tests/test_install_source.py",
+        ":!CHANGELOG.md",
+    ]
     try:
         out = subprocess.run(
-            ["git", "grep", "-l", OLD_OWNER, "--", ".", self_path],
+            ["git", "grep", "-l", OLD_OWNER, "--", ".", *exclusions],
             cwd=ROOT, capture_output=True, text=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover
