@@ -337,8 +337,8 @@ class PythonScriptNode(BaseNode):
     # ``ndarray.dump``, ...), but :mod:`app.core.script_policy` says plainly
     # that its numpy/torch attribute list is a best-effort blocklist over an
     # API "far too large to enumerate". Deciding cacheability from it would
-    # make every future gap in a SECURITY control silently become a stale
-    # -cache bug as well; the two should not be wired together.
+    # make every future gap in a SECURITY control silently become a
+    # stale-cache bug as well; the two should not be wired together.
     #
     # And the input ports are typed ANY. Whatever a custom node or plugin
     # hands this script -- a logger, a writer, an open handle -- is reachable
