@@ -5,12 +5,25 @@ training nodes (MODEL world).
 It reads a JSON layer specification and builds a real nn.Sequential that
 can be passed to Optimizer and TrainingLoop.  Users describe the architecture
 with familiar parameters; no Python coding required.
+
+**Why this node is stateful (#253).** It OWNS trainable parameters, and
+``TrainingLoop`` mutates them in place. That breaks the cache's
+``f(params, upstream) -> output`` assumption exactly the way it breaks for
+every layer node, so it carries :class:`StatefulModuleMixin` like they do --
+which is also what makes ``Persist weights between runs`` and ``Reset all
+weights now`` (Settings > Training Behavior) mean anything here. Before
+#253 this node was a cacheable ROOT with no inputs, so nothing could ever
+invalidate it: run 2 was handed run 1's already-trained module straight out
+of ``ExecutionCache``, and with ``TrainingLoop`` cacheable too, no training
+happened at all. ``DiffusionUNet`` is the same shape done right and was the
+model for this.
 """
 
 import logging
 from typing import Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.stateful_module import StatefulModuleMixin
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +237,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
     return cls(**p)
 
 
-class SequentialModelNode(BaseNode):
+class SequentialModelNode(StatefulModuleMixin, BaseNode):
     NODE_NAME = "SequentialModel"
     CATEGORY = "Training"
     DESCRIPTION = (
@@ -232,6 +245,14 @@ class SequentialModelNode(BaseNode):
         "Double-click to open the architecture editor and drag-and-drop layers. "
         "Outputs a MODEL that can be connected to Optimizer and TrainingLoop."
     )
+
+    #: The whole architecture lives in one param, so the layer spec IS the
+    #: structure. Edit the architecture and the hash changes, which drops the
+    #: persisted weights -- correct, since they no longer fit the new shapes.
+    #: Changing anything else about the run (learning rate, epochs, batch
+    #: size) leaves the hash alone and therefore keeps the weights, which is
+    #: the point of the setting.
+    structural_params = ("layers",)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -283,16 +304,79 @@ class SequentialModelNode(BaseNode):
             ),
         ]
 
-    def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+    def build_module(self, params: dict[str, Any]) -> "torch.nn.Module":
         import json
+
         from .graph_model import build_graph_model
 
-        layers_str = params.get("layers", "{}")
-        spec = json.loads(layers_str)
-        model = build_graph_model(spec)
+        return build_graph_model(json.loads(params.get("layers", "{}")))
+
+    def _weights_are_persisted(
+        self, context: Any, params: dict[str, Any],
+    ) -> bool:
+        """True when THIS call will be handed weights an earlier run trained.
+
+        Asked before :meth:`get_or_build_module`, because that call is what
+        makes the answer stop being true. A miss inside the store drops the
+        node's other structure hashes, so "my hash is already there" is
+        exactly "the module I am about to get was built by an earlier run".
+
+        Never raises -- an advisory log line must not be able to fail the
+        node that produces it.
+        """
+        store = getattr(context, "node_state_store", None)
+        if (
+            context is None
+            or not getattr(context, "weights_persistent", False)
+            or store is None
+            or not getattr(context, "current_node_id", "")
+        ):
+            return False
+        try:
+            wanted = self._structure_hash(params)
+            return any(
+                key[2] == wanted
+                for key in store.keys_for_node(
+                    context.graph_id, context.current_node_id)
+            )
+        except Exception:  # noqa: BLE001 - advisory only
+            logger.debug("could not inspect persisted node state", exc_info=True)
+            return False
+
+    def execute(
+        self,
+        inputs: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        context: Any = None,
+    ) -> dict[str, Any]:
+        resumed = self._weights_are_persisted(context, params)
+        model = self.get_or_build_module(context, params)
 
         total = sum(p.numel() for p in model.parameters())
         layer_count = len(model.layers)
         logger.info("Built graph model with %d layers, %s parameters", layer_count, f"{total:,}")
 
-        return {"model": model}
+        # #253: say which of the two happened. Whether a rerun continues
+        # training or restarts it is a real choice with no obviously right
+        # default, so the node does not make it silently -- the setting
+        # decides and this line reports the decision. ``__log__`` is the one
+        # result key the canvas Log tab renders, and dunder keys are filtered
+        # out of recorded outputs and port summaries, so this adds a log line
+        # and nothing else (same mechanism as TrainingLoop's schedule note).
+        if resumed:
+            note = (
+                f"Continuing from weights an earlier run left behind "
+                f"({total:,} parameters). Training resumes from those weights "
+                f"rather than starting over. To start from a fresh "
+                f"initialisation, use Settings > Training Behavior > "
+                f"'Reset all weights now', or turn off 'Persist weights "
+                f"between runs'."
+            )
+        else:
+            note = (
+                f"Fresh initialisation ({total:,} parameters across "
+                f"{layer_count} layers)."
+            )
+
+        return {"model": model, "__log__": note}

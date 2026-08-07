@@ -653,6 +653,22 @@ class TrainingLoopNode(BaseNode):
         "learning rate scheduling, and gradient clipping."
     )
 
+    #: #253. Training IS a side effect: it mutates the incoming model's
+    #: weights and the optimizer's buffers in place, and writes a metric
+    #: series per epoch. A cache hit replays the recorded outputs without
+    #: calling ``execute``, so none of that happens -- the second Run of a
+    #: graph did no training at all and still reported success. The returned
+    #: ``model`` handle looks like the whole story and is not, which is the
+    #: same shape as the writer nodes in #143 and ``PythonScript`` in #256.
+    #:
+    #: Deliberately independent of what feeds this node. Making the weight
+    #: source non-cacheable propagates down here for SequentialModel-shaped
+    #: graphs, but ``ModelLoader``/``CheckpointLoader`` stay cacheable by
+    #: #144, so a resume-from-disk graph would still cache the training away.
+    #: ``DiffusionTrainingLoop`` already declared this; the generic loop did
+    #: not, and inherited ``True`` from ``BaseNode``.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
