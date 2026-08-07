@@ -76,6 +76,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -2502,6 +2503,28 @@ def uninstall() -> None:
     print(f"=== 解除安裝完成。若要完全移除，請手動刪除：{ROOT} ===")
 
 
+def _codefyui_version() -> str:
+    """Version string for `cdui --version`.
+
+    Reads `backend/pyproject.toml` directly rather than importing
+    `app.core.version`, because this must answer without the venv -- a
+    half-finished install is one of the cases where someone needs the number.
+    Falls back to the dist build stamp, which a no-Node install always has
+    even when the checkout is missing.
+    """
+    try:
+        text = (BACKEND_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        m = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    stamp = _read_build_stamp()
+    if isinstance(stamp, dict) and stamp.get("tag"):
+        return f"{stamp['tag']} (from dist build stamp)"
+    return "unknown"
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 COMMANDS = {
@@ -2566,6 +2589,13 @@ def _dispatch_project_subcommand() -> int:
 
 
 if __name__ == "__main__":
+    # Before anything else, including the uv bootstrap: `--version` has to
+    # answer on a broken or half-installed machine, because that is exactly
+    # when someone is being asked which version they are on.
+    if len(sys.argv) >= 2 and sys.argv[1] in ("--version", "-V", "version"):
+        print(f"CodefyUI {_codefyui_version()}")
+        sys.exit(0)
+
     # Long-form sub-grouped commands come first.
     if len(sys.argv) >= 2 and sys.argv[1] == "plugin":
         sys.exit(_dispatch_plugin_subcommand())

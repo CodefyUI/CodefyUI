@@ -70,6 +70,7 @@ from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
 from .core.port_stats import PortStatsCache
+from .core.version import get_version
 from .core import plugin_loader
 from .core.plugin_loader import (
     MANIFEST_FILENAME,
@@ -356,7 +357,7 @@ async def lifespan(app: FastAPI):
     app.state.db = None
 
 
-app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+app = FastAPI(title=settings.APP_NAME, version=get_version(), lifespan=lifespan)
 
 
 # ── Security middleware ───────────────────────────────────────────────
@@ -481,6 +482,11 @@ async def _cache_usage() -> dict[str, dict[str, int]]:
 async def health():
     body = {
         "status": "ok",
+        # Unconditional, unlike `project` below: this is a new capability
+        # rather than a refactor, and the whole point is that a bug reporter
+        # on any install can state their version. It is also the first thing
+        # `cdui status` and the install check can assert against.
+        "version": get_version(),
         "nodes_loaded": len(registry.nodes),
         "presets_loaded": len(preset_registry.presets),
         "caches": await _cache_usage(),
