@@ -727,6 +727,56 @@ export interface ImageFileInfo {
   size: number;
 }
 
+// ── Data files (CSV / TSV / TXT / JSON) — backs the `data_file` param type ──
+export interface DataFileInfo {
+  filename: string;
+  size: number;
+}
+
+export async function listDataFiles(): Promise<DataFileInfo[]> {
+  const res = await fetch(`${BASE_URL}/files`);
+  if (!res.ok) throw new Error(`Failed to list data files: ${res.statusText}`);
+  return res.json();
+}
+
+export async function uploadDataFile(file: File): Promise<DataFileInfo> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await apiFetch(`${BASE_URL}/files/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Upload failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function deleteDataFile(filename: string) {
+  const res = await apiFetch(`${BASE_URL}/files/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Delete failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function downloadDataFile(filename: string) {
+  const urlPath = filename.split('/').map(encodeURIComponent).join('/');
+  const res = await fetch(`${BASE_URL}/files/download/${urlPath}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Download failed: ${res.statusText}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.split('/').pop() as string;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function listImageFiles(): Promise<ImageFileInfo[]> {
   const res = await fetch(`${BASE_URL}/images`);
   if (!res.ok) throw new Error(`Failed to list image files: ${res.statusText}`);

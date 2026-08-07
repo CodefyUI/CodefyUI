@@ -37,6 +37,7 @@ from .api import (
     routes_apps,
     routes_custom_nodes,
     routes_examples,
+    routes_data_files,
     routes_execution_outputs,
     routes_execution_state,
     routes_graph,
@@ -442,6 +443,7 @@ app.include_router(routes_plugins.router)
 app.include_router(routes_plugin_frontend.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
+app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)

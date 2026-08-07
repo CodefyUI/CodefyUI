@@ -4,8 +4,9 @@ import type { ParamDefinition } from '../../types';
 import { useToastStore } from '../../store/toastStore';
 import { useI18n } from '../../i18n';
 
-// Mock the REST file backends used by the model_file / image_file variants so
-// we can drive list/upload/download success + failure paths deterministically.
+// Mock the REST file backends used by the model_file / image_file / data_file
+// variants so we can drive list/upload/download success + failure paths
+// deterministically.
 vi.mock('../../api/rest', () => ({
   validateScript: vi.fn(),
   listModelFiles: vi.fn(),
@@ -14,6 +15,9 @@ vi.mock('../../api/rest', () => ({
   listImageFiles: vi.fn(),
   uploadImageFile: vi.fn(),
   downloadImageFile: vi.fn(),
+  listDataFiles: vi.fn(),
+  uploadDataFile: vi.fn(),
+  downloadDataFile: vi.fn(),
 }));
 
 import {
@@ -23,6 +27,9 @@ import {
   listImageFiles,
   uploadImageFile,
   downloadImageFile,
+  listDataFiles,
+  uploadDataFile,
+  downloadDataFile,
 } from '../../api/rest';
 vi.mock('./ScriptCodeField', () => ({
   ScriptCodeField: ({ param, displayLabel }: any) => (
@@ -57,13 +64,19 @@ beforeEach(() => {
     listImageFiles,
     uploadImageFile,
     downloadImageFile,
+    listDataFiles,
+    uploadDataFile,
+    downloadDataFile,
   ].forEach((fn) => vi.mocked(fn).mockReset());
   vi.mocked(listModelFiles).mockResolvedValue([{ filename: 'm1.pt' } as any]);
   vi.mocked(listImageFiles).mockResolvedValue([{ filename: 'a.png' } as any]);
+  vi.mocked(listDataFiles).mockResolvedValue([{ filename: 'grades.csv' } as any]);
   vi.mocked(uploadModelFile).mockResolvedValue({ filename: 'up.pt' } as any);
   vi.mocked(uploadImageFile).mockResolvedValue({ filename: 'up.png' } as any);
+  vi.mocked(uploadDataFile).mockResolvedValue({ filename: 'up.csv' } as any);
   vi.mocked(downloadModelFile).mockResolvedValue(undefined as any);
   vi.mocked(downloadImageFile).mockResolvedValue(undefined as any);
+  vi.mocked(downloadDataFile).mockResolvedValue(undefined as any);
 });
 
 afterEach(() => {
@@ -487,6 +500,33 @@ describe('ParamField — image_file FileField backend', () => {
     fireEvent.change(fileInput, { target: { files: [new File(['x'], 'n.png')] } });
     await waitFor(() => expect(uploadImageFile).toHaveBeenCalled());
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('img', 'up.png'));
+  });
+});
+
+describe('ParamField — data_file FileField backend', () => {
+  it('uses the data backend list/upload', async () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <ParamField param={mkParam({ name: 'path', param_type: 'data_file' })} value="" onChange={onChange} />,
+    );
+    await waitFor(() => expect(listDataFiles).toHaveBeenCalled());
+    await screen.findByRole('option', { name: 'grades.csv' });
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(fileInput.accept).toContain('.csv');
+    fireEvent.change(fileInput, { target: { files: [new File(['a,b\n1,2\n'], 'n.csv')] } });
+    await waitFor(() => expect(uploadDataFile).toHaveBeenCalled());
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('path', 'up.csv'));
+  });
+
+  it('starts empty on a fresh node rather than inheriting a previous pick', async () => {
+    // Regression guard: the dropdown lists every uploaded file, but a newly
+    // dragged node's value must stay '' until the learner picks one.
+    render(
+      <ParamField param={mkParam({ name: 'path', param_type: 'data_file' })} value="" onChange={() => {}} />,
+    );
+    await waitFor(() => expect(listDataFiles).toHaveBeenCalled());
+    await screen.findByRole('option', { name: 'grades.csv' });
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
   });
 });
 

@@ -292,6 +292,7 @@ const zhTW: Record<TranslationKey, string> = {
   // ParamField（模型 / 影像檔案選擇器）
   'paramField.upload.model': '上傳模型檔案',
   'paramField.upload.image': '上傳影像檔案',
+  'paramField.upload.data': '上傳資料檔案（CSV）',
   'paramField.download': '下載選取的檔案',
   'paramField.refresh': '重新整理檔案列表',
   'paramField.selectFile': '-- 選擇檔案 --',
