@@ -35,7 +35,20 @@ Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.
    The workflow already sets:
    - `frontend-dist.tar.gz` attached
-   - body = your tag annotation (`git tag -a -m "..."`)
+   - body = your tag annotation — **always pass `--cleanup=verbatim`**
+     > `git tag` strips every line beginning with `#` as a comment, so a
+     > markdown annotation silently loses all its headings and the release
+     > body arrives as one unbroken wall of text.
+     >
+     > **This applies to `-m "..."` just as much as to `-F notes.md`** —
+     > verified both ways; only `--cleanup=verbatim` preserves them:
+     > ```bash
+     > git tag -a X.Y.Z --cleanup=verbatim -F notes.md   # or -m "..."
+     > ```
+     > The failure is invisible from the command line: the tag exists, Release
+     > Build succeeds, the asset attaches, and the body is non-empty. You only
+     > see it by reading the rendered release page. This ate all five headings
+     > of 2.1.0's notes on the first attempt.
    - `prerelease` = true if the tag matches `rc` / `beta` / `alpha` / `dev`
    - `make_latest` = true (overrides GitHub's "skip prereleases for /latest"
      so `releases/latest/download/...` resolves to this rc)
