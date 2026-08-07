@@ -24,6 +24,35 @@ received — each links to the release it was published as.
 
 Nothing yet.
 
+## [2.1.1] — 2026-08-08
+
+A small release cut for one reason: the CSVReader file picker landed on `main`
+two commits after the 2.1.0 tag, so nobody running a released version had it.
+The textbook's I1-1 lab instructs students to upload `grades.csv` through that
+picker, which made the instructions false for every installed copy. Shipping it
+is the fix.
+
+### Added
+
+- **`CSVReader` gets a file picker, like `ImageReader` already had** ([#239],
+  contributed by [@oyea0801]). `path` was a free-text field defaulting to
+  `data/samples/iris.csv`, so using your own CSV meant knowing where CodefyUI
+  keeps its data directory and typing a path relative to it. It is now a
+  dropdown plus an upload button: pick the file off your machine and it stays
+  in the dropdown for every later graph. The default is now empty — a starter
+  graph should not name a file that only exists on the author's computer.
+  Adds `/api/files` for listing and uploading data files.
+
+  The eight shipped example graphs that read a CSV all set `path` explicitly
+  with a directory component, so the changed default does not affect them.
+
+### Fixed
+
+- **The release guide gave advice that was wrong in one detail** ([#241]).
+  It said `git tag -m "..."` was unaffected by the comment-stripping that eats
+  markdown headings from tag annotations. It is not — `-m` loses them exactly
+  as `-F` does, verified both ways. Only `--cleanup=verbatim` preserves them.
+
 ## [2.1.0] — 2026-08-06
 
 A classroom-readiness release. The headline items are not new features: they
@@ -179,5 +208,9 @@ Release candidates before 1.0.0 are on the
 [#236]: https://github.com/CodefyUI/CodefyUI/pull/236
 [#237]: https://github.com/CodefyUI/CodefyUI/pull/237
 [#238]: https://github.com/CodefyUI/CodefyUI/pull/238
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...main
+[#239]: https://github.com/CodefyUI/CodefyUI/pull/239
+[#241]: https://github.com/CodefyUI/CodefyUI/pull/241
+[@oyea0801]: https://github.com/oyea0801
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main
+[2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
