@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -21,6 +22,8 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+
+logger = logging.getLogger(__name__)
 
 ProviderAdapter = Callable[[ChatRequest, httpx.AsyncClient], AsyncIterator[dict[str, Any]]]
 
@@ -178,12 +181,27 @@ class LLMChatNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
+        from ...core.loop_control import interrupted_result
+
         provider = _normalize_provider(params.get("provider", "ChatGPT API"))
         req = _build_request(provider, inputs, params)
-        text, usage = asyncio.run(_collect_chat(req, _ADAPTERS[provider], progress_callback))
+        text, usage, stopped_after = asyncio.run(
+            _collect_chat(req, _ADAPTERS[provider], progress_callback,
+                          context=context)
+        )
         result: dict[str, Any] = {"text": text}
         if usage:
             result["__usage__"] = usage
+        if stopped_after is not None:
+            # #155: whatever the model had already streamed stays on the
+            # `text` port -- a student who stops a long generation should
+            # see the half-written answer, not an empty string -- but the
+            # run is not allowed to call a truncated completion a success.
+            # ``batch`` is the shared "how far the loop got" field the other
+            # interruptible nodes use (DDPMSampler counts denoising steps in
+            # it, Map counts items); here it counts streamed chunks.
+            result.update(interrupted_result(batch=stopped_after,
+                                             chars=len(text)))
         return result
 
 
@@ -391,30 +409,112 @@ def _coerce_pil_image(value: Any) -> Any:
     raise TypeError(f"Unsupported image input type for LLMChat: {type(value).__name__}")
 
 
+async def _close_stream(stream: Any) -> None:
+    """Tear down a provider stream now rather than eventually. Never raises.
+
+    Every adapter in ``_ADAPTERS`` is an async GENERATOR that holds an open
+    ``async with client.stream(...)`` across its yields. Merely breaking out
+    of the ``async for`` therefore leaves the HTTP response -- and the socket
+    under it -- alive until the garbage collector or ``asyncio.run``'s
+    closing ``shutdown_asyncgens`` gets to it, which is AFTER the
+    ``AsyncClient`` that owns the connection has already been closed.
+    ``aclose()`` throws ``GeneratorExit`` in at the suspended yield, which
+    runs the adapter's ``async with`` exit and releases the connection while
+    its client is still alive. One mechanism covers all four provider options
+    precisely because all three adapter modules are written this way; none of
+    them needs a provider-specific cancel call.
+
+    ``aclose`` is looked up rather than assumed: ``ProviderAdapter`` promises
+    only an ``AsyncIterator``, which a hand-rolled iterator class or a test
+    double can satisfy without one.
+
+    Swallowing is deliberate. This runs on the way out of a generation that
+    has already produced its result -- or that the user has just stopped --
+    and a transport hiccup while hanging up is worth a log line, not a failed
+    node or an exception that masks the real one on the way out.
+    """
+    aclose = getattr(stream, "aclose", None)
+    if not callable(aclose):
+        return
+    try:
+        await aclose()
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning(
+            "could not close the LLM provider stream cleanly; the connection "
+            "will be reclaimed when the client is torn down",
+            exc_info=True,
+        )
+
+
 async def _collect_chat(
     req: ChatRequest,
     adapter: ProviderAdapter,
     progress_callback: Any | None = None,
-) -> tuple[str, dict[str, int]]:
+    *,
+    context: Any = None,
+) -> tuple[str, dict[str, int], int | None]:
+    """Drain *adapter*'s event stream, or stop early when the run is stopping.
+
+    Returns ``(text, usage, stopped_after)``, where ``stopped_after`` is None
+    for a generation that finished on its own and otherwise the number of
+    chunks that had arrived when ``context.should_stop()`` flipped.
+
+    #155: before this, ``context`` was a dead parameter all the way down and
+    Stop simply did not apply to an LLM call -- the click was acknowledged
+    and the node kept streaming until the provider decided to finish, which
+    with ``max_tokens`` up to 200_000 is minutes of a class waiting. The
+    check is one ``threading.Event.is_set()`` per streamed chunk (see
+    ``loop_control.stop_checker``), which is nothing next to the network
+    round trip that delivered the chunk.
+
+    It is checked AFTER the chunk is appended and reported, so the partial
+    text always includes everything that actually arrived, and once BEFORE
+    the request goes out, so a stop that landed while this node sat in the
+    queue does not still pay for a whole generation.
+
+    Known limit, deliberate: the stop lands on the next chunk boundary, so a
+    provider that has gone quiet -- still thinking, or stalled -- is not
+    interrupted until it says something or ``_common.TIMEOUT`` expires. The
+    await that would have to be cancelled lives inside the adapter, and
+    racing every ``__anext__`` against a timer would cost a task per token.
+    Same shape as the other interruptible nodes, which cannot preempt a
+    single long batch either.
+    """
+    from ...core.loop_control import stop_checker
+
+    should_stop = stop_checker(context)
     chunks: list[str] = []
+    stopped_after: int | None = None
+
     async with httpx.AsyncClient() as client:
-        async for event in adapter(req, client):
-            etype = event.get("type")
-            if etype == "text_delta":
-                delta = str(event.get("text", ""))
-                chunks.append(delta)
-                if progress_callback is not None:
-                    progress_callback({"text": "".join(chunks)})
-            elif etype == "error":
-                raise RuntimeError(str(event.get("message", "LLM provider error")))
-            elif etype == "done":
-                message = event.get("message") or {}
-                content = str(message.get("content") or "".join(chunks))
-                raw_usage = event.get("usage")
-                usage = raw_usage if isinstance(raw_usage, dict) else {}
-                return content, {
-                    str(k): int(v)
-                    for k, v in usage.items()
-                    if isinstance(v, (int, float))
-                }
-    return "".join(chunks), {}
+        # Bound to a name so it can be closed on every exit path, not only
+        # the one that runs the generator to exhaustion.
+        stream = adapter(req, client)
+        try:
+            if should_stop():
+                return "", {}, 0
+            async for event in stream:
+                etype = event.get("type")
+                if etype == "text_delta":
+                    delta = str(event.get("text", ""))
+                    chunks.append(delta)
+                    if progress_callback is not None:
+                        progress_callback({"text": "".join(chunks)})
+                elif etype == "error":
+                    raise RuntimeError(str(event.get("message", "LLM provider error")))
+                elif etype == "done":
+                    message = event.get("message") or {}
+                    content = str(message.get("content") or "".join(chunks))
+                    raw_usage = event.get("usage")
+                    usage = raw_usage if isinstance(raw_usage, dict) else {}
+                    return content, {
+                        str(k): int(v)
+                        for k, v in usage.items()
+                        if isinstance(v, (int, float))
+                    }, None
+                if should_stop():
+                    stopped_after = len(chunks)
+                    break
+        finally:
+            await _close_stream(stream)
+    return "".join(chunks), {}, stopped_after
