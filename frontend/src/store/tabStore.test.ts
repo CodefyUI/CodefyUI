@@ -2235,6 +2235,30 @@ describe('persistence (module reload)', () => {
     }
   });
 
+  it('module evaluation survives a missing randomUUID with nothing persisted', async () => {
+    // The blank-page bug: a first-time visitor over plain-HTTP LAN has no
+    // stored tabs, so loadTabs() reaches `generateId()`. That call ran at
+    // module-evaluation time, so an unguarded `crypto.randomUUID()` threw
+    // before `createRoot().render()` — the whole app rendered as an empty
+    // <div id="root"> with only a console TypeError.
+    const realCrypto = globalThis.crypto;
+    localStorage.removeItem(STORAGE_KEY);
+    try {
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: { getRandomValues: realCrypto.getRandomValues.bind(realCrypto) },
+      });
+      const mod = await import('./tabStore');
+      expect(mod.useTabStore.getState().tabs).toHaveLength(1);
+      expect(mod.useTabStore.getState().activeTabId).toBeTruthy();
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        configurable: true,
+        value: realCrypto,
+      });
+    }
+  });
+
   it('saveTabs persists state changes (trailing-edge debounce)', async () => {
     vi.useFakeTimers();
     try {
