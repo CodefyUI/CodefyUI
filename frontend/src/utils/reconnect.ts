@@ -119,6 +119,63 @@ const escapeCssString = (value: string): string =>
   value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
 /**
+ * Build the synthetic left-button `mousedown` that starts a reconnect.
+ *
+ * `view` is load-bearing (#219), and the comment that used to sit at the
+ * dispatch site — "nothing downstream reads `event.view`" — was wrong. The
+ * press BUBBLES into React Flow's canvas, and both d3 gesture recognizers
+ * mounted there dereference `view` on every mousedown they see: d3-drag's
+ * `mousedowned` calls `nodrag(event.view)` and d3-zoom's calls
+ * `dragDisable(event.view)` — the same function, whose first statement is
+ * `view.document.documentElement`, with no null check, in a dependency we do
+ * not own (d3-drag/src/nodrag.js). A `MouseEvent` constructed without `view`
+ * has `view === null`, so omitting it throws exactly the "Cannot read
+ * properties of null (reading 'document')" #219 recorded — from inside React
+ * Flow, on a press we synthesized ourselves.
+ *
+ * The window is taken from the anchor's OWN document rather than the ambient
+ * global, because that is the realm the element actually lives in.
+ *
+ * The fallback is what the original omission was really working around.
+ * jsdom validates `view` by identity against its own global proxy, and under
+ * vitest the copied globals mean NO window object passes — not `window`, not
+ * `globalThis`, not `document.defaultView`, which are all the same rejected
+ * object there. So the standard init is tried first (that is what a real
+ * browser gets, byte for byte what a user's press looks like) and only when
+ * the constructor refuses is `view` installed as an own property, which
+ * shadows the prototype getter and reads back identically to every consumer.
+ * Without that second path the guard would be untestable, which is how it
+ * went missing in the first place.
+ */
+function createReconnectPress(
+  doc: Document,
+  clientX: number,
+  clientY: number,
+): MouseEvent {
+  const init: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    buttons: 1,
+    clientX,
+    clientY,
+  };
+  // Null for a detached document: no window to name, and `view: null` is the
+  // constructor's own default, so that degrades to the old behavior rather
+  // than throwing.
+  const view = doc.defaultView;
+  if (!view) return new MouseEvent('mousedown', init);
+
+  try {
+    return new MouseEvent('mousedown', { ...init, view });
+  } catch {
+    const press = new MouseEvent('mousedown', init);
+    Object.defineProperty(press, 'view', { value: view, configurable: true });
+    return press;
+  }
+}
+
+/**
  * Redirect a connection-starting mousedown from a connected input Handle to
  * the given edge's target reconnect anchor.
  *
@@ -169,20 +226,9 @@ export function redirectMouseDownToReconnectAnchor(
   if (!anchor) return false;
 
   // The anchor's own handler requires button === 0 and reads the pointer
-  // position from the event, so mirror the original press exactly. `view` is
-  // intentionally omitted: nothing downstream reads `event.view`
-  // (@xyflow/system resolves the document from `event.target`), and jsdom's
-  // UIEvent init rejects window objects passed through vitest's copied
-  // globals (same reason @testing-library/dom omits it).
+  // position from the event, so mirror the original press exactly.
   anchor.dispatchEvent(
-    new MouseEvent('mousedown', {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-      buttons: 1,
-      clientX: event.clientX,
-      clientY: event.clientY,
-    }),
+    createReconnectPress(doc, event.clientX, event.clientY),
   );
   event.preventDefault();
   event.stopPropagation();

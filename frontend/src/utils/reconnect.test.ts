@@ -155,6 +155,41 @@ describe('redirectMouseDownToReconnectAnchor', () => {
     expect(event.stopPropagation).toHaveBeenCalledTimes(1);
   });
 
+  it('carries a `view`, so the d3 handlers on the canvas can read `event.view.document` (#219)', () => {
+    // The dispatched press bubbles into React Flow's canvas, where BOTH d3
+    // gesture recognizers dereference `event.view` on every mousedown:
+    // d3-drag's `mousedowned` calls `nodrag(event.view)` and d3-zoom's calls
+    // `dragDisable(event.view)` — the same function, whose first statement
+    // is `view.document.documentElement`, unguarded, in a dependency we do
+    // not own. A `MouseEvent` built without `view` has `view === null`, and
+    // that read is exactly the "Cannot read properties of null (reading
+    // 'document')" #219 recorded. The listener below is that read, verbatim.
+    const canvas = mountCanvas();
+    const { received } = mountAnchorFixture('e1', 'target', canvas);
+    const handle = document.createElement('div');
+    canvas.appendChild(handle);
+
+    let thrown: unknown = null;
+    canvas.addEventListener('mousedown', (e) => {
+      try {
+        void (e as MouseEvent).view!.document.documentElement;
+      } catch (err) {
+        // jsdom reports a listener throw to window.onerror rather than
+        // propagating it out of dispatchEvent, so it has to be captured
+        // here or the test would pass while the canvas was breaking.
+        thrown = err;
+      }
+    });
+
+    const event = stubEvent({ currentTarget: handle });
+    expect(redirectMouseDownToReconnectAnchor(event, 'e1')).toBe(true);
+
+    expect(received).toHaveLength(1);
+    expect(received[0].view).not.toBeNull();
+    expect(received[0].view).toBe(canvas.ownerDocument.defaultView);
+    expect(thrown).toBeNull();
+  });
+
   it('returns false and leaves the event untouched when no anchor exists', () => {
     const event = stubEvent();
     expect(redirectMouseDownToReconnectAnchor(event, 'e1')).toBe(false);
