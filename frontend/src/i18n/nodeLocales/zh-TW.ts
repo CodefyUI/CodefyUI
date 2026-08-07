@@ -502,11 +502,15 @@ const zhTW: NodeTranslations = {
     description: '建立學習率排程器',
     params: {
       type: '排程器類型',
-      step_size: 'StepLR 的步長',
-      gamma: '衰減因子',
-      T_max: 'CosineAnnealingLR 的最大迭代數',
+      step_size:
+        'StepLR：每隔幾個 epoch 降一次學習率。MultiStepLR：在此值的 1、2、3、4 倍處各降一次。TrainingLoop 是每個 epoch 走一步排程器，所以這裡算的是 epoch，不是 batch。',
+      gamma:
+        'StepLR、MultiStepLR、ExponentialLR 的衰減因子；ReduceLROnPlateau 也拿它當 factor。',
+      T_max:
+        'CosineAnnealingLR：一個 cosine 週期的長度，單位是 epoch。通常應該設成和 TrainingLoop.epochs 一樣——排程器每個 epoch 走一步，設小了會在學習率還很高的時候就結束，設大了則是只走到曲線中途，兩者通常會少掉幾個百分點的準確率，而且畫面上完全看不出來是排程造成的。這裡刻意不強制：截斷的排程本來就是合理選擇。CosineAnnealingWarmRestarts 會把這個值當成 T_0（第一次重啟前的週期長度），那種情況下設成和 epochs 一樣反而永遠不會重啟。',
       max_lr: 'OneCycleLR 的最大學習率',
-      total_steps: 'OneCycleLR 的總訓練步數',
+      total_steps:
+        'OneCycleLR：整個 one-cycle 排程的長度。TrainingLoop 是每個 epoch 走一步，所以這裡要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）。預設值 1000 遠大於一般的 epoch 數，照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。',
     },
   },
 
