@@ -22,7 +22,39 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A learning-rate schedule whose length did not match the run said nothing**
+  ([#252]). `TrainingLoop` steps the scheduler once per epoch, so every
+  cycle-length parameter on `LRScheduler` counts epochs — while PyTorch counts
+  batches for several of the same parameters, and nothing reconciled the two.
+  A schedule could therefore be entirely wrong without one thing going red: no
+  exception, no warning, a loss curve that looks normal, and an accuracy a few
+  points short.
+
+  Worst was `OneCycleLR.total_steps`, whose default of 1000 is a plausible
+  batch count and an impossible epoch count: at 20 epochs the run traverses 2%
+  of the cycle, so the learning rate warms up and never anneals — for a user
+  who changed nothing. `CosineAnnealingLR.T_max` disagreeing with
+  `TrainingLoop.epochs` is the same trap one step less silent.
+
+  `TrainingLoop` now compares the two before the first epoch runs and says so
+  in the server log, in the run log the Runs panel reads back, and in the
+  canvas Log tab. Advisory only: it never changes the schedule and never fails
+  the run, because a truncated schedule is a legitimate choice. The default of
+  1000 is deliberately unchanged — a new default would rewrite what every
+  already-saved graph does, silently, on update. `CosineAnnealingWarmRestarts`
+  is inverted rather than exempt: it reuses the same value as `T_0`, where
+  equality would mean no restart ever happens.
+
+### Changed
+
+- **The declared torch floor is 2.5, up from 2.0.0** ([#252]). It is the
+  version the code already assumed: `torch.OutOfMemoryError` arrived there, and
+  the OOM classifier had been carrying a second lookup for the pre-2.5 spelling
+  that nothing exercised. That branch is gone; the message match stays, since
+  it is how MPS and out-of-tree backends report an OOM on any torch. Installs
+  on torch 2.0-2.4 are no longer supported.
 
 ## [2.1.1] — 2026-08-08
 
@@ -210,6 +242,7 @@ Release candidates before 1.0.0 are on the
 [#238]: https://github.com/CodefyUI/CodefyUI/pull/238
 [#239]: https://github.com/CodefyUI/CodefyUI/pull/239
 [#241]: https://github.com/CodefyUI/CodefyUI/pull/241
+[#252]: https://github.com/CodefyUI/CodefyUI/pull/252
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
