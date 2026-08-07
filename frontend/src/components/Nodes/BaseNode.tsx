@@ -209,7 +209,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
               // exactly like one that never ran.
               data.executionStatus === 'interrupted'
               ? STATUS_COLORS.interrupted
-              : 'transparent';
+              : // core#260: passed over because something upstream failed —
+                // it did not run, which is not the same as never having
+                // been asked to. A preset can settle here too, so the two
+                // cards must agree about what 'skipped' looks like.
+                data.executionStatus === 'skipped'
+                ? STATUS_COLORS.skipped
+                : 'transparent';
 
   const borderColor = selected
     ? 'var(--text-primary)'
@@ -505,6 +511,13 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
         <div className={`${styles.statusFooter} ${styles.statusCached}`}>
           <span className={styles.statusCachedDot} />
           {t('node.cached')}
+        </div>
+      )}
+
+      {/* Status footer — skipped */}
+      {data.executionStatus === 'skipped' && (
+        <div className={`${styles.statusFooter} ${styles.statusSkipped}`}>
+          {t('node.skipped')}
         </div>
       )}
     </div>

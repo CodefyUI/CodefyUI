@@ -184,6 +184,10 @@ describe('PresetNode', () => {
     // core#122: a preset settles 'interrupted' when an internal node stopped
     // early — it must never roll up to the green 'completed'.
     ['interrupted', hexToRgb(STATUS_COLORS.interrupted)],
+    // core#260: and 'skipped' when every internal node was passed over
+    // because something upstream failed. Without its own branch the box
+    // falls through to 'transparent' and looks like it was never reached.
+    ['skipped', hexToRgb(STATUS_COLORS.skipped)],
   ] as const)('uses the %s status border when unselected', (status, rgb) => {
     const { container } = renderPreset(
       presetData({ executionStatus: status, error: status === 'error' ? 'x' : undefined }),
@@ -213,9 +217,22 @@ describe('PresetNode', () => {
     expect(screen.getByText('Completed')).toBeTruthy();
   });
 
+  // core#260: the engine settles a preset as 'cached' when every internal
+  // node was a cache hit, so this footer is the ONLY thing that tells a
+  // student "this box did not actually run this time".
   it('renders the cached footer', () => {
     renderPreset(presetData({ executionStatus: 'cached' }));
     expect(screen.getByText('Cached')).toBeTruthy();
+  });
+
+  it('renders the skipped footer', () => {
+    renderPreset(presetData({ executionStatus: 'skipped' }));
+    expect(screen.getByText('Skipped')).toBeTruthy();
+  });
+
+  it('does not claim a cached preset completed', () => {
+    renderPreset(presetData({ executionStatus: 'cached' }));
+    expect(screen.queryByText('Completed')).toBeNull();
   });
 
   // ── Click / modal ──

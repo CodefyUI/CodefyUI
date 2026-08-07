@@ -1690,6 +1690,37 @@ def prepare_executable_graph(
     return executable_nodes, executable_edges, internal_to_preset
 
 
+#: How one internal node's terminal status contributes to the status its
+#: CONTAINER (preset box or subgraph instance) reports (#260). The highest
+#: rank any internal reached wins, so the box answers the only question the
+#: user is actually asking of it -- "did this thing do anything?" -- and the
+#: three answers are distinguishable instead of all being "completed":
+#:
+#:  - ``completed`` (2) beats everything: one node that really ran means the
+#:    box really ran. A MIXED box (some cached, some executed) is genuinely
+#:    a box that did work, so it must not be demoted to ``cached``.
+#:  - ``skipped`` (1) beats ``cached``: ``skipped`` is emitted in exactly one
+#:    place (``_execute_single_node``, "skipped: upstream node failed") and it
+#:    means a node was NOT ATTEMPTED because something upstream blew up. That
+#:    is strictly worse news than a cache hit, and reporting the box as
+#:    ``cached`` would claim a complete, reusable result when a piece of it is
+#:    missing. Note that a failure INSIDE the box already settles it as
+#:    ``error`` below and stops the done-count from ever filling, so the case
+#:    that reaches here is the one where the failing node was OUTSIDE: the
+#:    whole box was passed over, and ``skipped`` says so.
+#:  - ``cached`` (0) is what is left: every single internal was a cache hit,
+#:    so nothing executed. This is the case #260 is about.
+_CONTAINER_STATUS_RANK: dict[str, int] = {
+    "cached": 0,
+    "skipped": 1,
+    "completed": 2,
+}
+#: Rank -> the status the container emits. Inverse of the map above.
+_CONTAINER_RANK_STATUS: dict[int, str] = {
+    rank: status for status, rank in _CONTAINER_STATUS_RANK.items()
+}
+
+
 async def execute_graph(
     nodes: list[dict],
     edges: list[dict],
@@ -1782,8 +1813,10 @@ async def execute_graph(
         for n in expanded_nodes:
             force_rerun.add(n["id"])
 
-    # Container aggregation: emit "running" once at start, "completed" only when
-    # all internal nodes finish.
+    # Container aggregation: emit "running" once at start, and one terminal
+    # status only when all internal nodes finish -- which of
+    # completed/skipped/cached depends on what those internals actually did
+    # (see _CONTAINER_STATUS_RANK).
     #
     # `container_of` is resolved ONCE, transitively, and only over ids that are
     # actually in the executable node list. Both halves matter:
@@ -1803,11 +1836,15 @@ async def execute_graph(
     # container_total[cid] = internal nodes belonging to that container
     # container_done[cid] = internal nodes that have completed/cached/skipped
     # container_started[cid] = True once "running" has been emitted for it
+    # container_outcome[cid] = the strongest terminal status seen so far,
+    #   as a rank (see _CONTAINER_STATUS_RANK) -- this is what the container
+    #   itself reports once every internal node has finished (#260).
     container_total: dict[str, int] = defaultdict(int)
     for _container in container_of.values():
         container_total[_container] += 1
     container_done: dict[str, int] = defaultdict(int)
     container_started: set[str] = set()
+    container_outcome: dict[str, int] = {}
 
     async def _emit_preset_aware(
         node_id: str,
@@ -1820,8 +1857,13 @@ async def execute_graph(
         the canvas draws in place of the nodes that expansion produced. Its
         internals (in ``container_of``) roll up into one status:
         - First running/cached -> emit container 'running'
-        - Every completed/cached/skipped increments done count; emit
-          'completed' only on the last one
+        - Every completed/cached/skipped increments done count; on the last
+          one the container emits the WINNING status by
+          ``_CONTAINER_STATUS_RANK`` -- 'completed' if anything actually
+          ran, 'skipped' if nothing ran and something was passed over,
+          'cached' when every internal was a cache hit (#260). Before that
+          the box said 'completed' unconditionally, so a preset that did
+          nothing at all was indistinguishable from one that trained
         - 'error' emits immediately (the container failed)
         - 'interrupted' likewise: a container whose training node stopped
           early did not complete, so it must never roll up to 'completed'
@@ -1854,14 +1896,25 @@ async def execute_graph(
                 await _maybe_await(on_progress(container_id, "running", None))
             return
 
-        if status in ("completed", "cached", "skipped"):
+        if status in _CONTAINER_STATUS_RANK:
             container_done[container_id] += 1
-            # Make sure "running" was emitted at least once
+            # Remember the strongest thing that happened inside this box, so
+            # the terminal status below can tell "it trained" from "every
+            # node was a cache hit" (#260).
+            rank = _CONTAINER_STATUS_RANK[status]
+            if rank > container_outcome.get(container_id, -1):
+                container_outcome[container_id] = rank
+            # Make sure "running" was emitted at least once. Kept even for a
+            # fully-cached box: whether the box will settle 'cached' is not
+            # knowable until its LAST internal reports, so the alternative is
+            # to withhold every status until then and leave the node at
+            # 'idle' while its internals work.
             if container_id not in container_started:
                 container_started.add(container_id)
                 await _maybe_await(on_progress(container_id, "running", None))
             if container_done[container_id] >= container_total[container_id]:
-                await _maybe_await(on_progress(container_id, "completed", None))
+                terminal = _CONTAINER_RANK_STATUS[container_outcome[container_id]]
+                await _maybe_await(on_progress(container_id, terminal, None))
 
     # A SEEDED run is a SERIAL run (#134). Per-node seeding below sets the
     # PROCESS-GLOBAL RNGs, and two nodes running concurrently would reseed

@@ -154,6 +154,7 @@ const en = {
   'node.running': 'Running...',
   'node.completed': 'Completed',
   'node.cached': 'Cached',
+  'node.skipped': 'Skipped',
   'node.error': 'Error: {error}',
   'node.bypassed': 'BYPASS',
   'node.bypassed.title': 'Bypassed: this node is skipped and passes its input straight through',

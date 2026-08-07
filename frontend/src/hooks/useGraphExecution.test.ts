@@ -263,6 +263,36 @@ describe('useGraphExecution - node_status handler', () => {
     expect(tab.logs.some((l: any) => l.message.includes('cached'))).toBe(false);
   });
 
+  // core#260: the engine now settles a PRESET as 'cached' (every node inside
+  // it was a cache hit) or 'skipped' (every node inside it was passed over),
+  // where it used to say 'completed' regardless. Nothing on this path is
+  // preset-aware — a node id is a node id — and that is the claim worth
+  // pinning, because it is what lets PresetNode render the new statuses at
+  // all. Asserted end to end, from a wire frame to the node's own data.
+  it.each(['cached', 'skipped'] as const)(
+    'lands a %s status on a preset node exactly as on an ordinary one',
+    (status) => {
+      setTabs([
+        makeTab('t1', {
+          nodes: [
+            { id: 'box', type: 'presetNode', data: { label: 'Pipeline', isPreset: true } },
+          ],
+          edges: [],
+        }),
+      ]);
+      const ws = tabById('t1').ws as FakeWs;
+      renderHook(() => useGraphExecution());
+
+      act(() => {
+        ws.emit('node_status', { node_id: 'box', status: 'running' });
+        ws.emit('node_status', { node_id: 'box', status });
+      });
+      flushFrame();
+
+      expect(tabById('t1').nodes[0].data.executionStatus).toBe(status);
+    },
+  );
+
   it('logs completed status with the node label as success', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
