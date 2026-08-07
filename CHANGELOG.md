@@ -24,6 +24,39 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **The second Run of a training graph did no training, and reported success**
+  ([#253]). `TrainingLoop` inherited the default `cacheable = True`, and a
+  cache hit replays a node's recorded outputs without calling it — so no
+  weights were updated, no metrics were written, and the canvas said
+  `completed` anyway. On four of the six shipped examples that train, run 2
+  and run 3 executed the training loop zero times. Two of those are teaching
+  plugin examples students open in class (`C2-5 MLP-MNIST-Training`,
+  `C3-1 LeNet-MNIST-Training`). Change a hyperparameter, press Run, and the
+  loss curve you get back is the previous run's, with nothing to tell you.
+
+  The other two shipped training graphs were protected only by accident, and
+  the accident is scheduled for removal: their `ModelSaver` may only write
+  under `./data`, `Dataset`'s cache fingerprint walks all of `./data`, so the
+  write happened to invalidate the dataset. Scoping that walk ([#259]) would
+  have broken those graphs too. This fix does not depend on it.
+
+  `SequentialModel` was the other half. It owns the weights `TrainingLoop`
+  mutates, declared no inputs, and was cacheable — a root nothing could ever
+  invalidate, so run 2 was handed run 1's *already trained* module. Making
+  only `TrainingLoop` re-run would therefore have traded "no training at all"
+  for "every run silently continues from the last run's weights", which is
+  arguably worse because the numbers still look plausible. It now carries
+  `StatefulModuleMixin` like every other weight-owning node, so **Settings →
+  Training Behavior → Persist weights between runs** and **Reset all weights
+  now** decide which of the two happens, and the node writes which one it did
+  to its Log tab on every run.
+
+  Also fixes a latent engine race this exposed: nodes at one topological
+  level run concurrently on an unseeded run and shared one mutable
+  `current_node_id`, so a node's persisted weights could be filed under a
+  concurrent sibling's node id — out of reach of "Reset all weights now".
+  Each node now gets its own view of that field.
+
 - **A learning-rate schedule whose length did not match the run said nothing**
   ([#252]). `TrainingLoop` steps the scheduler once per epoch, so every
   cycle-length parameter on `LRScheduler` counts epochs — while PyTorch counts
@@ -243,6 +276,8 @@ Release candidates before 1.0.0 are on the
 [#239]: https://github.com/CodefyUI/CodefyUI/pull/239
 [#241]: https://github.com/CodefyUI/CodefyUI/pull/241
 [#252]: https://github.com/CodefyUI/CodefyUI/pull/252
+[#253]: https://github.com/CodefyUI/CodefyUI/issues/253
+[#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1

@@ -46,9 +46,13 @@ Some nodes still opt out of caching entirely with `cacheable = False`, for two d
 
 **The node's purpose is a side effect.** `ImageWriter`, `ModelSaver`, and `CheckpointSaver` exist to write a file; a cache hit would return the recorded `{"path": ...}` without touching disk, which is wrong when the node's whole point is the write (deleting the output and re-running must recreate it). These re-execute every run regardless of what feeds them.
 
+`TrainingLoop` is in this group too, for the same reason in a different medium: what it produces is not the `model` handle it returns but the *change* to the weights that handle points at, plus a metric series per epoch. Neither survives a cache hit — so it re-executes every run, regardless of whether everything feeding it was unchanged.
+
 **The node might have a side effect and only its author knows.** `PythonScript` runs code you type on the canvas. `code` is a cache-keyed parameter, so an *edited* script re-runs — but an unedited script over unchanged inputs is exactly where a hit happens, and a script can mutate an input tensor or model in place, change process-global `torch`/`numpy` state, or use whatever an `ANY`-typed input port handed it. None of that is visible to the node's type or to any check on its source, so it opts out unconditionally. See [the PythonScript node](../advanced/python-script-node.md#caching).
 
-The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every layer that owns weights (`Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
+The same opt-out covers nodes whose output escapes the cache key for other reasons — `GaussianNoise`, `DDPMSampler`, `BackwardOnce`, `DiffusionTrainingLoop`, and every node that owns weights (`SequentialModel`, `DiffusionUNet`, and every layer node: `Linear`, `Conv2d`, `LSTM` and the rest), whose parameters drift as training proceeds.
+
+For those weight-owning nodes, what a second **Run** does with the weights is your choice rather than the cache's: **Settings → Training Behavior → Persist weights between runs** (on by default) continues from where the last run finished, and **Reset all weights now** throws them away so the next run starts from a fresh initialisation. `SequentialModel` states which of the two it did in its **Log** tab every run, so a loss curve that starts unexpectedly low always has a written explanation.
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.
 

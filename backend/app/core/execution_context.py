@@ -338,8 +338,17 @@ class ExecutionContext:
     backward_mode: bool = False
     auto_backward: bool = False
 
-    # Mutated per-node by graph_engine before each execute() call so that
+    # Set per-node by graph_engine before each execute() call so that
     # StatefulModuleMixin.get_or_build_module knows which node it is in.
+    #
+    # The node sees it on a SHALLOW COPY of this context, made per node --
+    # never on the shared instance (#253). Nodes at one topological level run
+    # concurrently on an unseeded run, so a single shared field is read by
+    # one node's worker thread after the next node has already overwritten
+    # it, and the weights get persisted under the wrong node's id. Everything
+    # else on the copy is the same object, so this field is the only one that
+    # is per-node; do not add another that needs to be written by a node and
+    # read by the engine.
     current_node_id: str = ""
 
     # Populated during a run when backward_mode is True. Maps

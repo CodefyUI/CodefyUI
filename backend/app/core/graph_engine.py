@@ -2103,8 +2103,29 @@ async def execute_graph(
                                                       payload=data))
 
                     # Tell stateful nodes which node-id they belong to.
+                    #
+                    # On a PER-NODE VIEW of the context, not the shared one
+                    # (#253). ``current_node_id`` used to be assigned here
+                    # and read much later, inside the worker thread, with an
+                    # ``await`` in between -- so on an unseeded run, where
+                    # ``max_workers`` is 4, the sibling that acquired the
+                    # semaphore next overwrote the field before this node's
+                    # thread ever read it, and `StatefulModuleMixin` filed
+                    # the node's weights under a DIFFERENT node's id. It
+                    # never showed up because a seeded run is a serial run
+                    # (see ``max_workers`` above) and the stateful nodes that
+                    # existed were all mid-chain, one per level.
+                    #
+                    # ``copy.copy`` and not ``replace``/``deepcopy``: every
+                    # collaborator on the context -- the stop event, the
+                    # outbox, ``node_state_store``, ``grad_targets`` -- must
+                    # stay the SAME object, so cancellation, logging and
+                    # gradient capture are unaffected. Only the scalar field
+                    # differs per node.
+                    node_context = context
                     if context is not None:
-                        context.current_node_id = node_id
+                        node_context = copy.copy(context)
+                        node_context.current_node_id = node_id
 
                     # Per-node seeding (#134). Every node starts from a seed
                     # derived from (run seed, node id), so its weight init,
@@ -2122,7 +2143,7 @@ async def execute_graph(
                         inputs,
                         params,
                         progress_callback=_progress_bridge,
-                        context=context,
+                        context=node_context,
                     )
                     result = await loop.run_in_executor(None, fn)
                     # Everything this node queued goes out BEFORE its
