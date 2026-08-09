@@ -33,8 +33,23 @@
  *   - Transport frames (`attached`, `detached`, `cache_cleared`,
  *     `reconnected`, protocol `error`) carry no cursor and are not run events.
  *
- * Everything dropped here still occupies a cursor in the durable log, which is
- * why a delivered event carries `seq` as well — see `ExecutionEvent`.
+ * The first two are belt to the third's braces, and it is worth being exact
+ * about which is load-bearing today. Both are answered by the WS handler
+ * directly rather than written to a run's durable log
+ * (`ws_execution.py` — `handle_submit`'s refusal, and both `handle_cancel`
+ * "nothing to cancel" paths), so neither carries a `cursor` and the no-cursor
+ * rule already drops them before their own guard is reached. The guards stay
+ * because they encode which frame is misleading rather than merely
+ * unrecognised: `normalizeExecutionFrame` is exported as a pure mapping over
+ * the frame vocabulary, a plugin host runs against whatever server version the
+ * user installed, and the day a refusal starts carrying a cursor the cost of
+ * not having them is a still-running run reported to every plugin as failed.
+ * Tests pin both the reason they do not fire today and the behaviour if that
+ * changes.
+ *
+ * Frames that ARE in the durable log and still get dropped here — `artifact`,
+ * `run_warning`, an all-malformed `metric` — do occupy a cursor, which is why
+ * a delivered event carries `seq` as well; see `ExecutionEvent`.
  *
  * ── Delivery ─────────────────────────────────────────────────────────────
  *
@@ -108,10 +123,13 @@ export type ExecutionEventDraft =
  * dense. Plenty of durable entries never become plugin events:
  *
  *   - `artifact` and `run_warning` — outside the published union.
- *   - `execution_error` with `rejected: true`, and `execution_stopped` with
- *     `reason: "not_running"` — deliberately dropped as misleading.
  *   - a `metric` entry whose every point was malformed, or which the server
  *     collapsed because the payload was too large.
+ *
+ * (The other two documented drops — a refused submit and a cancel with nothing
+ * to cancel — are NOT in this list, because they never enter the log: the WS
+ * handler answers them itself and they carry no cursor at all. They cost the
+ * numbering nothing.)
  *
  * Each of those still consumes a cursor. A run that saves a checkpoint emits
  * an `artifact` every time, so cursor jumps are not an edge case — they are
@@ -250,6 +268,10 @@ export function normalizeExecutionFrame(raw: unknown): ExecutionEventDraft[] {
 
     case 'execution_error': {
       // A refused submit — nothing started, and `run_id` is somebody else's.
+      // Unreachable from today's server, which sends this frame without a
+      // cursor (the guard above catches it first); kept because the frame is
+      // misleading rather than unknown, and a server that starts logging it
+      // must not be able to turn it into `run_finished: failed`.
       if (frame.rejected === true) return [];
       const error = str(frame.error);
       return [{
@@ -470,11 +492,27 @@ export function flushExecutionEvents(): void {
   }
 }
 
+/**
+ * Tap a tab's socket, replacing an earlier tap if the socket has changed.
+ *
+ * The guard compares the SOCKET, not just the tab id. A tab keeps one
+ * `ExecutionWebSocket` for its whole life today (`tabStore.ts` constructs it
+ * once, at tab creation, and never reassigns `tab.ws`), so this costs nothing
+ * now — but an id-only guard fails silently rather than loudly the moment that
+ * stops being true. `attached.has(tabId)` would report the tab as covered
+ * while the handler sat on the discarded socket: every frame of the live one
+ * unseen, and a listener leaked on a dead one. Neither shows up as an error.
+ */
 function attachTab(tabId: string, ws: ExecutionWebSocket | undefined): void {
   // A tab with no socket cannot happen through the store's own API, but this
   // runs inside a zustand subscriber: throwing here would surface as a
   // failure in whatever unrelated code wrote to the store.
-  if (!ws || attached.has(tabId)) return;
+  if (!ws) return;
+  const existing = attached.get(tabId);
+  if (existing) {
+    if (existing.ws === ws) return;
+    detachTab(tabId);
+  }
   const handler = (data: unknown) => onFrame(data);
   ws.on('*', handler);
   attached.set(tabId, { ws, handler });

@@ -4,9 +4,13 @@ import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import { useTabStore } from '../store/tabStore';
 import type { CodefyUIPluginAPI } from './api';
-import { _clearPluginPanels, getPluginPanels } from './panels';
+import {
+  _clearPluginPanels, getPluginPanels, registerPluginPanel,
+  subscribePluginPanels,
+} from './panels';
 import {
   _clearPluginToolbarButtons, getPluginToolbarButtons,
+  registerPluginToolbarButton,
 } from './toolbarButtons';
 import {
   _resetExecutionEvents, executionEventSubscriberCount, executionEventTapCount,
@@ -242,6 +246,49 @@ describe('plugin unload leaves nothing behind', () => {
     unloadPluginFrontends();
     expect(getPluginPanels()).toHaveLength(0);
     expect(getPluginToolbarButtons()).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  /**
+   * The id sweep is the second line of defence behind the tracked cleanups,
+   * and until now it only survived because the tracked path had already
+   * emptied the registries before it ran — so it was never the thing doing the
+   * work, and a throw inside it would have skipped every LATER plugin's sweep.
+   *
+   * This drives it directly: registrations the host never tracked (the case
+   * the sweep exists for) plus a host subscriber that throws out of the
+   * registry's own `notify()`.
+   */
+  it('a sweep that throws does not cancel the rest of the teardown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockPluginsResponse([
+      { id: 'noisy', enabled: true, frontend_entry: '/plugins/noisy/frontend/index.js' },
+      { id: 'quiet', enabled: true, frontend_entry: '/plugins/quiet/frontend/index.js' },
+    ]);
+    await loadPluginFrontends(
+      () => document.createElement('div'),
+      vi.fn(async () => ({ default: () => {} })),
+    );
+
+    registerPluginPanel('noisy', { id: 'p', title: 'P' });
+    registerPluginToolbarButton('noisy', {
+      id: 'b', icon: '*', tooltip: 'B', onClick: () => {},
+    });
+    registerPluginPanel('quiet', { id: 'p', title: 'P' });
+
+    const off = subscribePluginPanels(() => {
+      throw new Error('host subscriber exploded');
+    });
+    try {
+      expect(() => unloadPluginFrontends()).not.toThrow();
+    } finally {
+      off();
+    }
+
+    // 'noisy' is swept first and throws. Its toolbar button must still go
+    // (the step after the throw), and so must 'quiet' (the iteration after).
+    expect(getPluginToolbarButtons()).toHaveLength(0);
+    expect(getPluginPanels()).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
   });
 

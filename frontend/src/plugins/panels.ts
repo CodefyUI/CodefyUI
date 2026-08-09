@@ -85,6 +85,33 @@ function notify(): void {
 }
 
 /**
+ * Detach a panel's element from wherever the host put it, containing a throw.
+ *
+ * `Element.remove()` cannot fail in a spec-compliant DOM — it is a no-op on a
+ * node with no parent — so the only way in is a plugin shadowing `remove` as
+ * an own property on the element the host handed it. That is not exotic: the
+ * element is plugin-reachable by construction, `addPanel` returns it, and a
+ * plugin wrapping it in a framework adapter can install anything on it.
+ *
+ * What made this worth containing is not the DOM call, it is what follows it.
+ * Every caller deletes from `panels` FIRST and calls `notify()` after, so a
+ * throw in between leaves the cached `snapshot` holding a panel the Map no
+ * longer has: `useSyncExternalStore` keeps rendering a tab whose
+ * `getPluginPanel(key)` is `undefined`. Containing it here, once, makes every
+ * caller — including the teardown sweep, which must finish — exception-safe by
+ * construction rather than by argument.
+ */
+function detachElement(panel: PluginPanel): void {
+  try {
+    panel.element.remove();
+  } catch (err) {
+    console.warn(
+      `[plugins] panel '${panel.key}' element.remove() failed:`, err,
+    );
+  }
+}
+
+/**
  * Register (or update) a panel and return its stable container element.
  *
  * Re-registering the same id returns the SAME element and updates the
@@ -129,7 +156,7 @@ export function removePluginPanel(pluginId: string, localId: string): void {
   const panel = panels.get(key);
   if (!panel) return;
   panels.delete(key);
-  panel.element.remove();
+  detachElement(panel);
   notify();
 }
 
@@ -139,7 +166,7 @@ export function removePluginPanelsFor(pluginId: string): void {
   for (const panel of Array.from(panels.values())) {
     if (panel.pluginId !== pluginId) continue;
     panels.delete(panel.key);
-    panel.element.remove();
+    detachElement(panel);
     changed = true;
   }
   if (changed) notify();
@@ -181,7 +208,7 @@ export function notifyPanelVisibility(panel: PluginPanel, visible: boolean): voi
 
 /** Test helper — drop all panels. */
 export function _clearPluginPanels(): void {
-  for (const panel of panels.values()) panel.element.remove();
+  for (const panel of panels.values()) detachElement(panel);
   panels.clear();
   notify();
 }
