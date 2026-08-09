@@ -115,14 +115,40 @@ def test_save_outside_data_dir_raises(tmp_path):
 # test covered it, which is why the suite stayed green. These are that test.
 
 
+#: Set by :func:`_detonate` if the restricted unpickler ever runs the payload
+#: in :class:`_Detonator`. A module-level flag rather than a file write or a
+#: subprocess, so a regression shows up as a failed assertion instead of as a
+#: side effect somebody has to go looking for.
+_DETONATED = False
+
+
+def _detonate() -> None:
+    global _DETONATED
+    _DETONATED = True
+
+
+class _Detonator:
+    """A pickle that executes on load -- exactly what weights_only stops."""
+
+    def __reduce__(self):
+        return (_detonate, ())
+
+
+class _NotATorchLayer(nn.Module):
+    """A real ``nn.Module``, defined outside torch, so outside the allowlist."""
+
+    def forward(self, x):  # pragma: no cover - never reached; load is refused
+        return x
+
+
 @contextmanager
-def _saved(path: str):
-    """Yield *path*, and take the file back out of MODELS_DIR afterwards."""
+def _saved(name: str):
+    """Yield a MODELS_DIR-relative *name*, and delete the file afterwards."""
     settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        yield path
+        yield name
     finally:
-        (settings.MODELS_DIR / path).unlink(missing_ok=True)
+        (settings.MODELS_DIR / name).unlink(missing_ok=True)
 
 
 def test_full_model_round_trips_through_saver_and_loader():
@@ -167,9 +193,7 @@ def test_full_model_load_still_refuses_arbitrary_pickle():
     careful not to introduce.
     """
     with _saved("_full_model_hostile.pt") as path:
-        settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        target = settings.MODELS_DIR / path
-        torch.save({"payload": _Detonator()}, str(target))
+        torch.save({"payload": _Detonator()}, str(settings.MODELS_DIR / path))
 
         with pytest.raises(ValueError) as excinfo:
             ModelLoaderNode().execute(
@@ -188,7 +212,6 @@ def test_full_model_refusal_names_what_it_stopped_on_and_what_to_do():
     rather than the raw unpickler traceback the mode used to produce.
     """
     with _saved("_full_model_foreign.pt") as path:
-        settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
         torch.save(_NotATorchLayer(), str(settings.MODELS_DIR / path))
 
         with pytest.raises(ValueError) as excinfo:
@@ -227,28 +250,3 @@ def test_full_model_allowlist_covers_torchs_layers_and_nothing_else():
     assert all(name.startswith("torch.nn.") for name in names)
     # Cached: the walk runs once and hands back the same list object.
     assert torch_nn_layer_globals() is allowed
-
-
-#: Set by :class:`_Detonator` if the restricted unpickler ever runs it. A
-#: module-level flag rather than a file write, so a regression is visible
-#: even if the payload's own side effect is sandboxed away.
-_DETONATED = False
-
-
-def _detonate() -> None:
-    global _DETONATED
-    _DETONATED = True
-
-
-class _Detonator:
-    """A pickle that executes on load -- exactly what weights_only stops."""
-
-    def __reduce__(self):
-        return (_detonate, ())
-
-
-class _NotATorchLayer(nn.Module):
-    """A real ``nn.Module``, defined outside torch, so outside the allowlist."""
-
-    def forward(self, x):  # pragma: no cover - never reached; load is refused
-        return x
