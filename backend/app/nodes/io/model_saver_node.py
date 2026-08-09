@@ -58,30 +58,27 @@ class ModelSaverNode(BaseNode):
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         import torch
-        from pathlib import Path
 
         from ...config import settings
+        from ...core.data_paths import resolve_data_path
 
         model = inputs["model"]
         path = params.get("path", "model_weights.pt")
         save_mode = params.get("save_mode", "state_dict")
         fmt = params.get("format", "pytorch")
 
-        p = Path(path)
-        if not p.is_absolute():
-            p = settings.MODELS_DIR / p
-        p = p.resolve()
-
-        # Restrict writes to project data directory
-        data_root = settings.MODELS_DIR.parent.resolve()
-        if not p.is_relative_to(data_root):
-            raise ValueError("Output path must be within the project data directory")
+        # Inside the data directory, and not over CodefyUI's own storage --
+        # ``core.data_paths`` owns both halves of that rule and is shared
+        # with ImageWriter and the checkpoint writers (#224).
+        p = resolve_data_path(path, base=settings.MODELS_DIR)
 
         if fmt == "safetensors":
             if save_mode == "full_model":
                 raise ValueError("safetensors format only supports state_dict mode, not full_model")
             if p.suffix not in (".safetensors",):
-                p = p.with_suffix(".safetensors")
+                # Re-validated: the path written must be the path checked.
+                p = resolve_data_path(p.with_suffix(".safetensors"),
+                                      base=settings.MODELS_DIR)
 
         p.parent.mkdir(parents=True, exist_ok=True)
 

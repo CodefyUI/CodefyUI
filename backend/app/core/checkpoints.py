@@ -136,6 +136,15 @@ aged out of the keep-last-N window, so it does not, and structurally cannot,
 bound how many periodic checkpoints a single STILL-RUNNING job accumulates
 -- see ``TrainingLoopNode``'s ``checkpoint_every`` docs for that trade-off.
 
+The sweep deletes only what it can prove it wrote (#224). The delete guard
+is :func:`owned_checkpoint_path`, NOT the write guard: "may a node write
+here" is a permissive question and "did we write this" is not, and letting
+one answer both made an unattended, irreversible sweep as broad as an
+ordinary write. Which is what makes the paragraph above true in the first
+place -- ``interrupted/`` and ``periodic/`` are not merely where these files
+happen to go, they are the definition of what retention is allowed to
+remove.
+
 Durability
 ----------
 ``write_checkpoint`` stages to a temporary file in the destination
@@ -159,11 +168,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from ..config import settings
+from .data_paths import resolve_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -179,27 +190,87 @@ INTERRUPT_DIRNAME = "interrupted"
 #: path-safety rules.
 PERIODIC_DIRNAME = "periodic"
 
+#: The sub-directories of ``MODELS_DIR`` this module writes into on its own
+#: initiative, and therefore owns the lifecycle of. Retention will unlink a
+#: file under one of these and nowhere else -- see
+#: :func:`owned_checkpoint_path`.
+OWNED_DIRNAMES = (INTERRUPT_DIRNAME, PERIODIC_DIRNAME)
+
 #: Cap on each path component built from a run/node id. Long enough to stay
 #: recognisable, short enough that a deep MODELS_DIR plus two components
 #: cannot push the whole path past Windows' 260-character default limit.
 MAX_NAME_PART = 48
+
+#: The filename shape :func:`interrupt_checkpoint_path` and
+#: :func:`periodic_checkpoint_path` produce: two id components, then the
+#: position (``-e<epoch>`` with an optional ``b<batch>``), then ``.pt``.
+#: The numbers accept a leading ``-`` because both builders pass their
+#: arguments through ``int()`` rather than rejecting a negative epoch.
+#: ``test_generated_checkpoint_names_are_recognised_as_owned`` asserts the
+#: builders and this pattern agree, so the two cannot drift apart silently.
+_OWNED_NAME = re.compile(r"^.+-e-?\d+(?:b-?\d+)?\.pt$")
 
 
 def resolve_checkpoint_path(path: str | Path) -> Path:
     """Absolute, validated destination for *path*.
 
     A relative path is taken as relative to ``MODELS_DIR``. The result must
-    stay inside the project data directory -- this is the only thing
-    standing between a graph parameter and an arbitrary file write.
+    stay inside the project data directory and must not name CodefyUI's own
+    storage -- this is the only thing standing between a graph parameter and
+    an arbitrary file write. The rule itself lives in
+    :func:`core.data_paths.resolve_data_path`, shared with ``ModelSaver``
+    and ``ImageWriter``; see that module for what "own storage" covers and
+    why the data root alone was not enough (#224).
+
+    WRITE scope only. Retention's delete uses :func:`owned_checkpoint_path`,
+    which is deliberately much narrower -- see that function.
+    """
+    return resolve_data_path(path, base=settings.MODELS_DIR)
+
+
+def owned_checkpoint_path(path: str | Path) -> Path | None:
+    """Resolve *path* iff this module wrote it; ``None`` otherwise (#224).
+
+    The DELETE rule, and it is not the write rule. ``resolve_checkpoint_path``
+    answers "may a node write here", which is a permissive question by
+    design: the whole data directory is a node's to write into. Retention
+    asks a different one -- "did WE write this, so that removing the row
+    obliges us to remove the file" -- and answering it with the write rule
+    made an unattended, irreversible sweep as broad as an ordinary write.
+
+    Only two call sites ever produce a ``checkpoint``-kind artifact row:
+    ``loop_control.save_interrupt_checkpoint`` and
+    ``save_periodic_checkpoint``, which write to
+    :func:`interrupt_checkpoint_path` and :func:`periodic_checkpoint_path`
+    respectively -- both under a sub-directory of ``MODELS_DIR`` named in
+    :data:`OWNED_DIRNAMES`, both with a generated filename. ``kind`` is an
+    open vocabulary (see ``run_store``'s ``ARTIFACT_KIND_*`` comment) and the
+    plugin API can log artifacts, so anything else claiming to be a
+    ``checkpoint`` is by definition not one of ours and is left alone.
+
+    Note what this does NOT cover, on purpose: a ``CheckpointSaver`` the
+    user wired into the graph. That node writes where the user told it to
+    and records no artifact row at all, so retention never saw it before
+    this change either -- and if something starts logging one, the file
+    still belongs to the user, exactly as ``RunStore.delete_run`` already
+    reasons about explicitly-named artifact files.
+
+    ``Path.resolve()`` runs first, so a symlink planted inside ``periodic/``
+    that points at the database resolves to the database, lands outside the
+    owned directories and is refused. Returns the resolved path when it is
+    ours, ``None`` when it is not -- callers log the rejection rather than
+    raising, because one odd row must not fail a whole prune.
     """
     resolved = Path(path)
     if not resolved.is_absolute():
         resolved = settings.MODELS_DIR / resolved
     resolved = resolved.resolve()
 
-    data_root = settings.MODELS_DIR.parent.resolve()
-    if not resolved.is_relative_to(data_root):
-        raise ValueError("Output path must be within the project data directory")
+    if not _OWNED_NAME.match(resolved.name):
+        return None
+    models_dir = settings.MODELS_DIR.resolve()
+    if not any(resolved.is_relative_to(models_dir / d) for d in OWNED_DIRNAMES):
+        return None
     return resolved
 
 
@@ -388,21 +459,25 @@ def unlink_checkpoint(path: str | Path) -> bool:
     hand-deleted file is just as possible) or a permissions error are all
     logged and swallowed. Never raises.
 
-    Only removes a path that resolves inside the project data directory --
-    the same rule :func:`resolve_checkpoint_path` enforces on write. An
-    artifact's ``kind`` is an open vocabulary (see ``run_store``'s
-    ``ARTIFACT_KIND_*`` comment), so a row mislabelled ``checkpoint`` by
-    something outside this module's own writers must not turn an automatic
-    sweep into a delete of an arbitrary file.
+    Only removes a path :func:`owned_checkpoint_path` recognises as one this
+    module itself wrote -- a generated filename under ``MODELS_DIR/interrupted/``
+    or ``MODELS_DIR/periodic/``. Until #224 the guard here was
+    :func:`resolve_checkpoint_path`, the WRITE rule, which permits anything
+    under the data root: an artifact's ``kind`` is an open vocabulary (see
+    ``run_store``'s ``ARTIFACT_KIND_*`` comment) and the plugin API can log
+    artifacts, so a row mislabelled ``checkpoint`` turned this automatic
+    sweep into a delete of an arbitrary file -- on a default install, up to
+    and including ``codefyui.db`` itself. Prove-we-wrote-it replaces
+    trust-the-row.
 
     Returns True when a file was actually removed.
     """
-    try:
-        resolved = resolve_checkpoint_path(path)
-    except ValueError:
+    resolved = owned_checkpoint_path(path)
+    if resolved is None:
         logger.warning(
-            "retention: not deleting artifact path %r -- it resolves "
-            "outside the project data directory", str(path),
+            "retention: not deleting artifact path %r -- it is not a file "
+            "this server wrote (expected a generated checkpoint name under "
+            "MODELS_DIR/%s)", str(path), " or MODELS_DIR/".join(OWNED_DIRNAMES),
         )
         return False
     try:

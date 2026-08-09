@@ -1101,11 +1101,14 @@ async def test_prune_keeps_the_checkpoint_file_of_an_interrupted_run(
     keep_last=0 (config.py's "inverted zero" -- a real, documented
     configuration, not a hypothetical one)."""
     models = tmp_path / "models"
-    models.mkdir()
+    (models / "interrupted").mkdir(parents=True)
     monkeypatch.setattr(settings, "MODELS_DIR", models)
 
     run = await _make_run(store)
-    checkpoint_file = models / "crash_recovery.pt"
+    # Under interrupted/ with a generated name, i.e. a file retention DOES
+    # own and WOULD delete (#224) -- otherwise the ownership guard, not the
+    # interrupted-status exemption this test is about, is what saves it.
+    checkpoint_file = models / "interrupted" / "run1-node1-e3b12.pt"
     checkpoint_file.write_bytes(b"the run's only path back")
     await store.add_artifact(run.id, "checkpoint", str(checkpoint_file))
     await store.mark_finished(run.id, "interrupted")
@@ -1122,17 +1125,17 @@ async def test_prune_deletes_the_checkpoint_files_of_pruned_runs(
     store, db, tmp_path, monkeypatch,
 ):
     models = tmp_path / "models"
-    models.mkdir()
+    (models / "periodic").mkdir(parents=True)
     monkeypatch.setattr(settings, "MODELS_DIR", models)
 
     old_run = await _make_run(store)
-    old_file = models / "old.pt"
+    old_file = models / "periodic" / "old-node1-e1.pt"
     old_file.write_bytes(b"old checkpoint")
     await store.add_artifact(old_run.id, "checkpoint", str(old_file))
     await store.mark_finished(old_run.id, "succeeded")
 
     kept_run = await _make_run(store)
-    kept_file = models / "kept.pt"
+    kept_file = models / "periodic" / "kept-node1-e1.pt"
     kept_file.write_bytes(b"kept checkpoint")
     await store.add_artifact(kept_run.id, "checkpoint", str(kept_file))
     await store.mark_finished(kept_run.id, "succeeded")
@@ -1146,13 +1149,16 @@ async def test_prune_tolerates_a_checkpoint_file_already_gone(
     store, db, tmp_path, monkeypatch,
 ):
     """A file removed by hand (or an earlier, interrupted prune) must not
-    turn a successful prune into a failed one."""
+    turn a successful prune into a failed one.
+
+    Under periodic/ with a generated name so the ownership guard (#224)
+    passes and the FileNotFoundError branch is the one being exercised."""
     models = tmp_path / "models"
-    models.mkdir()
+    (models / "periodic").mkdir(parents=True)
     monkeypatch.setattr(settings, "MODELS_DIR", models)
 
     run = await _make_run(store)
-    missing = models / "already_gone.pt"
+    missing = models / "periodic" / "gone-node1-e7.pt"
     await store.add_artifact(run.id, "checkpoint", str(missing))
     await store.mark_finished(run.id, "succeeded")
     assert not missing.exists()
@@ -1183,10 +1189,11 @@ async def test_prune_does_not_touch_a_non_checkpoint_artifact_file(
 async def test_prune_refuses_to_delete_a_checkpoint_path_outside_the_data_dir(
     store, db, tmp_path, monkeypatch,
 ):
-    """Defense in depth: the SAME path-safety rule ``write_checkpoint``
-    enforces on write also guards the delete, so a row whose path was not
-    produced by this module's own writers cannot become an arbitrary file
-    deletion."""
+    """A row whose path was not produced by this module's own writers
+    cannot become an arbitrary file deletion. Outside the data directory is
+    the easy half; ``test_prune_does_not_delete_a_checkpoint_row_pointing_
+    inside_the_data_dir`` in test_data_path_safety.py covers the half that
+    the write-scoped guard used to wave through (#224)."""
     models = tmp_path / "data" / "models"
     models.mkdir(parents=True)
     monkeypatch.setattr(settings, "MODELS_DIR", models)
