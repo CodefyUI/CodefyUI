@@ -91,56 +91,24 @@ class SubmitRunRequest(BaseModel):
     name: str | None = None
 
 
-def _reject_oversized_body(request: Request) -> None:
-    """413 when ``Content-Length`` declares more than ``MAX_RUN_BODY_BYTES``.
-
-    Same setting, same comparison and same message text as the two sibling
-    submit routes (``routes_graph_run`` step 2, ``routes_apps`` step 3), so a
-    client that talks to more than one of them sees one behaviour. Only the
-    envelope differs, and only because these routes have different envelopes:
-    the sibling routes answer with the 9-key run envelope on every path, this
-    router answers with ``{"detail": ...}`` on every path (see the module
-    docstring). Borrowing their envelope for this one status would make
-    ``POST /api/runs`` the only route in the file a client had to special-case.
-
-    Checked against the header BEFORE anything reads the body, which is why
-    ``submit_run`` parses its own body instead of declaring a pydantic
-    parameter: FastAPI reads and JSON-parses a declared body before the
-    endpoint (and before its dependencies) runs, so a cap placed after that
-    point has already paid for the bytes it is refusing.
-
-    Advisory, exactly like the siblings: a chunked request declares no length
-    and is not caught here. The cap that matters for this route is the one on
-    what gets *persisted* — every submit writes an immutable ``graph_snapshot``
-    row, a queued run never reaches a terminal state, and the keep-last-N
-    retention only prunes finished runs (``RUN_RETENTION_KEEP_LAST``), so
-    without this nothing at all reclaims an oversized submit.
-    """
-    content_length = request.headers.get("content-length")
-    if content_length is None:
-        return
-    try:
-        declared_bytes = int(content_length)
-    except ValueError:
-        declared_bytes = 0
-    if declared_bytes > settings.MAX_RUN_BODY_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"request body is {declared_bytes} bytes "
-                f"(max {settings.MAX_RUN_BODY_BYTES})"
-            ),
-        )
-
-
 async def _read_submit_body(request: Request) -> SubmitRunRequest:
     """Read and validate the submit body by hand, keeping FastAPI's 422.
 
-    Hand-parsing is the price of capping before the read; it must not also
-    cost callers the error shape they already handle. Both failure modes are
-    re-raised as ``RequestValidationError`` with the same ``loc`` prefix
-    FastAPI applies (``("body", ...)``) and ``include_url=False``, so a bad
-    submit answers byte-for-byte what a declared pydantic body answered.
+    The body cap that used to sit in front of this read is gone. It compared
+    ``Content-Length`` to ``MAX_RUN_BODY_BYTES`` and was advisory — a chunked
+    request declares no length and was never measured at all — so it is
+    replaced by ``core.body_limit``, which counts the bytes as they arrive and
+    covers every route rather than the three that remembered to ask (core#265).
+    The cap still matters most here: every submit writes an immutable
+    ``graph_snapshot`` row, a queued run never reaches a terminal state, and
+    keep-last-N retention only prunes finished runs
+    (``RUN_RETENTION_KEEP_LAST``), so nothing else reclaims an oversized submit.
+
+    The hand-parse stays. It no longer buys the cap anything — the middleware
+    refuses inside ``request.body()`` whoever calls it — but it is what keeps
+    this route's 422 identical to a declared pydantic body's: both failure
+    modes are re-raised as ``RequestValidationError`` with the same ``loc``
+    prefix FastAPI applies (``("body", ...)``) and ``include_url=False``.
     """
     raw = await request.body()
     try:
@@ -284,10 +252,10 @@ async def submit_run(request: Request):
     way; a queued run parks the long poll properly instead of returning
     empty pages.
 
-    The body is capped and parsed here rather than declared as a pydantic
-    parameter — see ``_reject_oversized_body`` for why the order matters.
+    The body is parsed here rather than declared as a pydantic parameter —
+    see ``_read_submit_body``. Its size ceiling is enforced by
+    ``core.body_limit`` for every route, not by this one.
     """
-    _reject_oversized_body(request)
     body = await _read_submit_body(request)
     service = _get_service(request)
     try:

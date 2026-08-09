@@ -24,7 +24,6 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ..config import settings
 from ..core import api_contract
 from ..core.api_contract import InputCoercionError, OutputSerializationError
 from ..core.device_utils import resolve_device
@@ -606,21 +605,12 @@ async def run_graph_as_function(name: str, request: Request):
     #    pre-flight rejections.
     run_id = uuid4().hex
 
-    # 2. Body size cap, checked against Content-Length BEFORE reading the body.
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            declared_bytes = int(content_length)
-        except ValueError:
-            declared_bytes = 0
-        if declared_bytes > settings.MAX_RUN_BODY_BYTES:
-            return error_response(
-                413, run_id=run_id, graph=name, code="payload_too_large",
-                message=(
-                    f"request body is {declared_bytes} bytes "
-                    f"(max {settings.MAX_RUN_BODY_BYTES})"
-                ),
-            )
+    # 2. The body cap used to live here, comparing Content-Length against
+    #    MAX_RUN_BODY_BYTES. It was advisory — a chunked request declares no
+    #    length and walked straight past it — and it is now enforced for every
+    #    route by core.body_limit, which counts the bytes as they arrive. The
+    #    413 still answers with this module's envelope; main.py's
+    #    RequestBodyTooLarge handler renders it (core#265).
 
     # 3. Strict name matching: execute exactly what was named, or nothing.
     if _sanitize_name(name) != name:
