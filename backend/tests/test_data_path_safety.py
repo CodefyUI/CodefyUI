@@ -363,6 +363,33 @@ async def test_prune_does_not_delete_a_foreign_name_inside_an_owned_directory(
     assert intruder.exists()
 
 
+@pytest.mark.parametrize("where", ["", "checkpoints", "../scratch"])
+async def test_prune_does_not_delete_a_generated_looking_name_elsewhere(
+    store, default_layout, where,
+):
+    """The directory half of the rule, on its own.
+
+    ``run3-loop1-e12.pt`` is exactly the shape the generators produce, and
+    a user who has seen one of those files is quite likely to name their own
+    the same way -- or to copy one somewhere they can find it again. The
+    filename alone therefore proves nothing; retention has to see it in a
+    directory it owns. Added because reverting only the containment check
+    left every other test in this file green."""
+    target = (default_layout.models / where / "run3-loop1-e12.pt").resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"named like ours, not ours")
+
+    run = await _make_run(store)
+    await store.add_artifact(run.id, "checkpoint", str(target))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert target.exists(), (
+        "retention deleted a file it never wrote, on the strength of its "
+        "filename alone"
+    )
+
+
 async def test_prune_does_not_follow_a_symlink_out_of_an_owned_directory(
     store, default_layout,
 ):
