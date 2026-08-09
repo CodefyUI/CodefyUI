@@ -3,6 +3,7 @@ import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import { generateId } from '../../utils';
 import { applyValleyPass, isTriggerEdge } from '../../utils/autoLayout';
+import { LAYER_TYPE_COLORS } from '../../styles/theme';
 
 export interface PortDef {
   id: string;
@@ -69,6 +70,54 @@ const ACTIVATION_MAP: Record<string, string> = {
 
 export function isMergeType(t: string): boolean {
   return MERGE_TYPES.has(t);
+}
+
+/**
+ * Which slot of the layer palette a layer type belongs to (core#228).
+ *
+ * The one place a layer type is classified. Both the colour below and the
+ * palette groups in `LayersEditorModal` read it, so the two cannot disagree
+ * about what a `BatchNorm2d` is — which they previously could, because each
+ * carried its own hex table and the only thing holding them together was a
+ * comment saying "duplicated from".
+ */
+export type LayerCategory = keyof typeof LAYER_TYPE_COLORS;
+
+const LAYER_CATEGORIES: Record<string, LayerCategory> = {
+  Conv2d: 'Convolution', Conv1d: 'Convolution', ConvTranspose2d: 'Convolution',
+  BatchNorm2d: 'Normalization', BatchNorm1d: 'Normalization',
+  LayerNorm: 'Normalization', GroupNorm: 'Normalization',
+  InstanceNorm2d: 'Normalization',
+  MaxPool2d: 'Pooling', AvgPool2d: 'Pooling', AdaptiveAvgPool2d: 'Pooling',
+  Dropout: 'Regularization',
+  Linear: 'Linear', Embedding: 'Linear',
+  Flatten: 'Utility',
+  ReLU: 'Activation', LeakyReLU: 'Activation', GELU: 'Activation',
+  SiLU: 'Activation', Mish: 'Activation', ELU: 'Activation',
+  SELU: 'Activation', PReLU: 'Activation', Sigmoid: 'Activation',
+  Tanh: 'Activation', Hardswish: 'Activation', Softmax: 'Activation',
+  Input: 'Input',
+  Output: 'Output',
+};
+
+export function layerCategoryOf(type: string): LayerCategory {
+  if (MERGE_TYPES.has(type)) return 'Merge';
+  // A type the palette does not list gets its own name rather than falling
+  // into whichever category happens to share its colour.
+  return LAYER_CATEGORIES[type] ?? 'Unknown';
+}
+
+/**
+ * Colour for a layer type, straight off the token layer.
+ *
+ * Used to be a hex table here and a second, hand-synced one in
+ * `LAYER_DEFS` — both on the pre-lift Material tones, so the layers editor
+ * painted a different purple, blue, red and blue-grey than the rest of the
+ * app. Now there is one table and it lives in `tokens.css`, where the
+ * contrast gate can see it.
+ */
+export function colorForType(type: string): string {
+  return LAYER_TYPE_COLORS[layerCategoryOf(type)];
 }
 
 // ── Main-editor workflow import types & functions ──
@@ -534,7 +583,7 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
         data: {
           layerType: 'Input',
           params: {},
-          color: '#4CAF50',
+          color: colorForType('Input'),
           ports: [{ id: inPortId, name: 'x' }],
           isBoundary: true,
         },
@@ -546,7 +595,7 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
         data: {
           layerType: 'Output',
           params: {},
-          color: '#F44336',
+          color: colorForType('Output'),
           ports: [{ id: outPortId, name: 'out' }],
           isBoundary: true,
         },
@@ -554,27 +603,6 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
     ],
     edges: [],
   };
-}
-
-function colorForType(type: string): string {
-  if (type === 'Input') return '#4CAF50';
-  if (type === 'Output') return '#F44336';
-  if (MERGE_TYPES.has(type)) return '#FF9800';
-  // Fallback colors by category, duplicated from LayersEditorModal LAYER_DEFS.
-  // NOTE: this is the Subgraph editor's own layer-type palette, still on the
-  // pre-lift Material hues and not yet on the token layer. Migrating it means
-  // deciding what each layer type should map to, so it is tracked separately
-  // rather than half-converted here.
-  const colors: Record<string, string> = {
-    Conv2d: '#4CAF50', Conv1d: '#4CAF50', ConvTranspose2d: '#4CAF50',
-    BatchNorm2d: '#9C27B0', BatchNorm1d: '#9C27B0', LayerNorm: '#9C27B0',
-    GroupNorm: '#9C27B0', InstanceNorm2d: '#9C27B0',
-    MaxPool2d: '#2196F3', AvgPool2d: '#2196F3', AdaptiveAvgPool2d: '#2196F3',
-    Dropout: '#FF9800',
-    Linear: '#00BCD4', Embedding: '#00BCD4',
-    Flatten: '#607D8B',
-  };
-  return colors[type] ?? '#F44336';
 }
 
 export interface ValidationError {

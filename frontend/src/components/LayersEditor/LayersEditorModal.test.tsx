@@ -48,7 +48,9 @@ vi.mock('@xyflow/react', async (importOriginal) => {
   };
 });
 
-import { LayersEditorModal } from './LayersEditorModal';
+import { LayersEditorModal, ALL_LAYER_DEFS } from './LayersEditorModal';
+import { graphToFlow, layerCategoryOf } from './graphSerialization';
+import { LAYER_TYPE_COLORS } from '../../styles/theme';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -262,6 +264,47 @@ describe('LayersEditorModal', () => {
     // ReLU has zero params → no badge.
     fireEvent.change(search, { target: { value: 'ReLU' } });
     expect(screen.queryByText('0p')).toBeNull();
+  });
+
+  // ── One palette, one colour (core#228) ────────────────────────────────────
+  //
+  // `LAYER_DEFS` used to carry a `color` per entry and `graphSerialization`
+  // carried a second copy of the same table for the nodes those entries drop
+  // onto — hand-synced, with a comment in one file naming the other. These
+  // hold the two halves together now that only one of them has hexes.
+
+  it('files every palette entry under a category the colour table knows', () => {
+    for (const def of ALL_LAYER_DEFS) {
+      expect(layerCategoryOf(def.type), `${def.type} is mis-filed`).toBe(def.category);
+      expect(LAYER_TYPE_COLORS[def.category]).toBeTruthy();
+    }
+  });
+
+  it('paints a palette dot the same colour as the node that type becomes', () => {
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    const search = screen.getByPlaceholderText('Search layers...');
+    // jsdom normalizes an inline background to rgb(), so compare in that form.
+    const asRgb = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      return `rgb(${r}, ${g}, ${b})`;
+    };
+
+    // One type per colour slot. `Embedding` rather than `Linear` because the
+    // latter is also a group heading, so the text appears twice.
+    for (const type of ['Conv2d', 'BatchNorm2d', 'MaxPool2d', 'Dropout', 'Embedding', 'Flatten', 'ReLU', 'Concat']) {
+      fireEvent.change(search, { target: { value: type } });
+      const dot = screen.getByText(type).closest('div')!.querySelector('span') as HTMLElement;
+      // What the *serializer* stamps on a node of this type, reached through
+      // graphToFlow rather than through colorForType, so the two paths are
+      // compared and not just the one function.
+      const { nodes } = graphToFlow(
+        JSON.stringify({ version: 2, nodes: [{ id: 'n', type }], edges: [] }),
+      );
+      expect(dot.style.background, `palette dot for ${type}`).toBe(
+        asRgb(nodes[0].data.color),
+      );
+    }
   });
 
   it('LayerPaletteItem.handleDragStart sets the drag payload and effect', () => {
