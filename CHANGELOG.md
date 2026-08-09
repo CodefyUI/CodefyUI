@@ -46,15 +46,21 @@ received — each links to the release it was published as.
   follow the same rule, and a non-boolean is refused with a message saying
   so.
 
-- **Determinism could be welded on for the life of the server process**
+- **Determinism could stay applied after the run that asked for it had gone**
   ([#190]). `execute_graph` enters the refcounted determinism scope by hand
   and pairs it in a `finally`, and two statements sat outside that pairing:
   creating the outbox pump task, and awaiting it during teardown. Either one
-  raising left the scope's depth above zero permanently, which stops
-  `torch.use_deterministic_algorithms` from ever being restored again — and
-  suppresses every later run's baseline capture as well. Both are now inside
-  the guard. Narrow paths, but the consequence had quietly grown from "one
-  run loses its restore" to "this process never restores again".
+  raising left the scope open, holding `torch.use_deterministic_algorithms`
+  at the failed run's setting and suppressing every later run's baseline
+  capture. Both are now inside the guard.
+
+  Scope, measured rather than assumed: on CPython the depth does come back
+  once the traceback is released, because finalising the suspended generator
+  runs the `finally` that was skipped. So this is bounded by whatever holds
+  the traceback — a stored exception, an unretrieved task — rather than
+  permanent, which is less severe than [#190] states. It is still a
+  correctness property resting on an interpreter detail nothing in the code
+  states, on a setting that is process-global.
 
 - **A failing wake-up on the run gate replaced the exception the run
   actually failed with** ([#190]). `_RunExclusion._wake` guarded the one line
