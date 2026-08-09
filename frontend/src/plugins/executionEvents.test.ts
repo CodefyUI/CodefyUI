@@ -242,6 +242,30 @@ describe('normalizeExecutionFrame', () => {
     })).toEqual([]);
   });
 
+  /**
+   * The two tests above feed frames carrying a cursor, which is what makes the
+   * `rejected` / `not_running` guards reachable at all. The real server does
+   * not send them that way: both are answered by the WS handler itself and
+   * never written to a run's durable log, so the no-cursor rule drops them
+   * first and the guards are belt to its braces. Pinned because the module
+   * doc now says exactly that, and a doc claim nobody checks goes stale.
+   */
+  it('drops the wire shapes of a refusal and a no-op cancel on the no-cursor rule', () => {
+    for (const frame of [
+      // ws_execution.py, handle_submit: the interactive cap / one-run-per-session
+      // refusal. `run_id` names the run this socket was ALREADY following.
+      {
+        type: 'execution_error', error: 'too many interactive runs',
+        rejected: true, run_id: 'still-running',
+      },
+      // ws_execution.py, handle_cancel: both "nothing to cancel" answers.
+      { type: 'execution_stopped', reason: 'not_running' },
+      { type: 'execution_stopped', reason: 'not_running', run_id: 'r1' },
+    ]) {
+      expect(normalizeExecutionFrame(frame), JSON.stringify(frame)).toEqual([]);
+    }
+  });
+
   it('drops transport frames, which carry no cursor', () => {
     for (const frame of [
       { type: 'attached', run_id: 'r1', cursor: 4, status: 'running' },
@@ -421,6 +445,38 @@ describe('subscribeExecutionEvents', () => {
     expect(executionEventTapCount()).toBe(0);
     expect(ws0.wildcardCount).toBe(0);
     expect(ws1.wildcardCount).toBe(0);
+  });
+
+  /**
+   * A tab keeps one socket for its whole life today, so this cannot happen
+   * through the store's own API — which is exactly why it is worth pinning.
+   * An id-only guard fails silently here: the tab still LOOKS covered, while
+   * the tap sits on the socket nobody is using and every frame of the live one
+   * goes unseen. Nothing throws and no count looks wrong.
+   */
+  it('re-taps a tab whose socket is replaced in place', () => {
+    const [ws0] = seedTabs(1);
+    const seen: ExecutionEvent[] = [];
+    subscribeExecutionEvents((e) => seen.push(e));
+    expect(ws0.wildcardCount).toBe(1);
+
+    const ws1 = new FakeWs();
+    useTabStore.setState({
+      tabs: [{
+        ...useTabStore.getState().tabs[0],
+        ws: ws1 as unknown as ExecutionWebSocket,
+      }] as never,
+    });
+
+    // Still one tap for the one tab — but on the socket it actually has now,
+    // and the handler on the discarded one is released rather than leaked.
+    expect(executionEventTapCount()).toBe(1);
+    expect(ws0.wildcardCount).toBe(0);
+    expect(ws1.wildcardCount).toBe(1);
+
+    ws1.emit({ type: 'execution_start', run_id: 'r1', cursor: 1 });
+    runFrame();
+    expect(seen.map((e) => e.type)).toEqual(['run_started']);
   });
 
   it('buffers nothing once the last subscriber has gone', () => {

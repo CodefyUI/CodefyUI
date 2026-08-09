@@ -51,22 +51,45 @@ function notify(): void {
   listeners.forEach((l) => l());
 }
 
-/** Register (or replace) a button. Returns a remove function. */
+/**
+ * Register (or replace) a button. Returns a remove function.
+ *
+ * The returned disposer is scoped to the registration that produced it, not to
+ * the id — the same discipline as `registerNodeRenderer`. Re-registering an id
+ * REPLACES, so an id-keyed disposer meant the disposer from a superseded
+ * registration took the live button down with it:
+ *
+ *     const undoA = addToolbarButton({ id: 'go', ... });  // A
+ *     addToolbarButton({ id: 'go', ... });                // B replaces A
+ *     undoA();                                            // ...removed B
+ *
+ * That is not hypothetical bookkeeping: the host tracks every disposer for
+ * teardown, so a plugin that re-registers a button on its own state change
+ * accumulates stale disposers that are all still holding the live button's id.
+ *
+ * `removeToolbarButton(id)` — the published by-id remover — is unchanged and
+ * still removes whatever currently holds the id.
+ */
 export function registerPluginToolbarButton(
   pluginId: string,
   opts: PluginToolbarButtonOptions,
 ): () => void {
   const key = buttonKey(pluginId, opts.id);
-  buttons.set(key, {
+  const button: PluginToolbarButton = {
     key,
     pluginId,
     localId: opts.id,
     icon: opts.icon,
     tooltip: opts.tooltip,
     onClick: opts.onClick,
-  });
+  };
+  buttons.set(key, button);
   notify();
-  return () => removePluginToolbarButton(pluginId, opts.id);
+  return () => {
+    if (buttons.get(key) !== button) return;
+    buttons.delete(key);
+    notify();
+  };
 }
 
 export function removePluginToolbarButton(pluginId: string, localId: string): void {

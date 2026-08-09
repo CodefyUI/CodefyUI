@@ -79,6 +79,17 @@ received — each links to the release it was published as.
   which reads a file straight off disk with no validation; it failed closed
   (a 500, nothing written or leaked). (#200)
 
+- **A stale `addToolbarButton` disposer removed the button that had replaced
+  it** ([#186]). Re-adding a toolbar button id replaces the button, but the
+  remove function returned by the *superseded* registration was keyed by id,
+  so calling it took the live replacement down instead of doing nothing. A
+  plugin that re-registers a button when its own state changes accumulates
+  exactly those disposers, and the host tracks every one of them for teardown.
+  The disposer is now scoped to the registration that produced it — the same
+  discipline `nodes.registerRenderer` already used. `removeToolbarButton(id)`
+  is unchanged and still removes whatever currently holds the id; both
+  behaviours are now in the published contract and the plugin docs.
+
 ### Changed
 
 - `components/SubgraphEditor/` is now `components/LayersEditor/`. It never
@@ -271,6 +282,38 @@ received — each links to the release it was published as.
   The seeded sibling above it is untouched: it compares two fixed outputs
   from two different explicit seeds, which is the shape that was already
   safe.
+
+- **The plugin host's teardown belt could not survive being needed** ([#186]).
+  Three latent gaps, none reachable from the shipped UI, all in the paths that
+  run when a plugin is unloaded or hot-reloaded:
+
+  A panel is deleted from the registry *before* its element is detached and
+  the change is published *after*, so a throw in between left the published
+  snapshot holding a panel the registry no longer had — a dock tab whose
+  lookup returns `undefined`. The detach is now contained, so every caller
+  publishes. The sweep that drops whatever a plugin left registered is
+  likewise no longer able to abort: it used to propagate out of the teardown
+  loop, skipping every later plugin's sweep and the widget-stack clear. It had
+  never been observed to fail only because the tracked cleanups had already
+  emptied the registries by the time it ran — the second line of defence was
+  correct by accident, and would have failed in precisely the case it exists
+  for. Both are now driven by tests that make them fail.
+
+  The plugin event stream's tab tap also keyed on tab id alone, so a tab whose
+  socket was replaced would have kept a handler on the discarded one and seen
+  nothing from the live one — silently, with every count still looking right.
+  It compares the socket now.
+
+- **Two claims in the plugin execution-event docs were not true** ([#186]).
+  The module presented its `rejected: true` and `reason: "not_running"` drops
+  as load-bearing, and told plugin authors those frames "still consume a
+  cursor" in the durable log. They do neither: the WebSocket handler answers
+  both itself and sends no `cursor`, so the no-cursor rule already drops them
+  and they occupy nothing in the log — which matters, because `cursor` is what
+  the contract sells for detecting gaps. The guards stay (a plugin host runs
+  against whatever server version is installed, and the day a refusal carries
+  a cursor, forwarding it reports a still-running run as failed), but the docs
+  now say which rule actually fires, and a test pins the real wire shapes.
 
 ## [2.2.0] — 2026-08-10
 
@@ -763,6 +806,7 @@ Release candidates before 1.0.0 are on the
 [#275]: https://github.com/CodefyUI/CodefyUI/issues/275
 [#222]: https://github.com/CodefyUI/CodefyUI/issues/222
 [#277]: https://github.com/CodefyUI/CodefyUI/issues/277
+[#186]: https://github.com/CodefyUI/CodefyUI/issues/186
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

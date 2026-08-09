@@ -319,6 +319,11 @@ export interface CodefyUIPluginAPI {
      * Add a toolbar button — requires apiVersion >= 3. Returns a remove
      * function. Placement and overflow are the host's: buttons share one
      * group and collapse into a menu when the window is too narrow.
+     *
+     * Re-adding an id replaces the button, and the returned remove function
+     * is scoped to the registration it came from: a disposer whose button has
+     * since been replaced does nothing, rather than removing the replacement.
+     * Use `removeToolbarButton(id)` to remove whatever currently holds an id.
      */
     addToolbarButton(opts: PluginToolbarButtonOptions): () => void;
     removeToolbarButton(id: string): void;
