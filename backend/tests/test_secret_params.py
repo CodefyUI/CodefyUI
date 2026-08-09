@@ -209,3 +209,95 @@ def test_scrub_plugin_namespaced_secret(_plugin_secret_node):
     assert nodes[0]["data"]["params"]["token"] == ""
     assert nodes[1]["data"]["params"]["token"] == ""
     assert find_secret_violations(nodes) == []
+
+
+# ── core#200 follow-ups: a null type, and portable preset definitions ────
+
+
+def test_null_type_does_not_crash_either_walker():
+    """A node whose ``"type"`` is explicitly null.
+
+    ``node.get("type", "")`` answers ``None`` for a key that is PRESENT with
+    a null value, and ``_preset_secret_param_map`` then called
+    ``None.startswith`` and raised. Reachable only through the publish gate,
+    which reads a graph file straight off disk with no pydantic validation --
+    ``/save`` and ``/export`` are protected by ``NodeData.type: str``. It
+    failed closed (a 500, nothing written or leaked), which is why it was a
+    follow-up rather than a blocker; it should simply be a node with no known
+    secret params.
+    """
+    nodes = [
+        {"id": "a", "type": None, "data": {"params": {"openai_api_key": "sk"}}},
+        {"id": "b", "data": {"params": {"openai_api_key": "sk"}}},  # absent
+        {"id": "c", "type": 7, "data": {"params": {"openai_api_key": "sk"}}},
+    ]
+    assert find_secret_violations(nodes) == []
+    assert scrub_graph_secrets(nodes) == 0
+    # And a null type inside a collapsed block is the same non-event.
+    subgraphs = [{"id": "blk", "nodes": [{"id": "x", "type": None,
+                                          "data": {"params": {}}}]}]
+    assert find_secret_violations([], subgraphs=subgraphs) == []
+
+
+def test_find_violations_walks_portable_preset_definitions():
+    """A key baked into a preset DEFINITION's own defaults.
+
+    The third place a graph file can carry a node. ``iter_secret_slots``
+    (the run path) and ``scrub_preset_definition_secrets`` (the save path)
+    both cover it; the publish pre-flight did not, so a hand-edited file with
+    a key in a portable preset's defaults published cleanly while the
+    identical key one level up was refused.
+    """
+    presets = [{
+        "preset_name": "SecretChat",
+        "nodes": [
+            {"id": "chat", "type": "LLMChat",
+             "params": {"openai_api_key": "sk-leak", "anthropic_api_key": ""}},
+            {"id": "printer", "type": "Print", "params": {"label": "out"}},
+        ],
+    }]
+    assert find_secret_violations([], presets=presets) == [
+        {"node_id": "preset:SecretChat/chat", "param": "openai_api_key"},
+    ]
+    # Without the argument the walk is exactly as blind as it used to be,
+    # which is what makes the assertion above a real one.
+    assert find_secret_violations([]) == []
+
+
+def test_preset_definition_walk_tolerates_malformed_entries():
+    presets = [
+        None,
+        {"preset_name": "NoNodes"},
+        {"preset_name": "BadNodes", "nodes": "not a list"},
+        {"preset_name": "BadInner", "nodes": [None, 7, {"id": "n"}]},
+        {"preset_name": "BadParams", "nodes": [
+            {"id": "n", "type": "LLMChat", "params": None}]},
+        # Empty and null secrets are not violations, same as everywhere else.
+        {"preset_name": "Clean", "nodes": [
+            {"id": "n", "type": "LLMChat",
+             "params": {"openai_api_key": "", "anthropic_api_key": None}}]},
+        # A definition with no name still reports something addressable.
+        {"nodes": [{"id": "n", "type": "LLMChat",
+                    "params": {"openai_api_key": "sk"}}]},
+    ]
+    assert find_secret_violations([], presets=presets) == [
+        {"node_id": "preset:/n", "param": "openai_api_key"},
+    ]
+
+
+def test_all_three_carriers_are_reported_together():
+    nodes = [{"id": "top", "type": "LLMChat",
+              "data": {"params": {"openai_api_key": "sk-top"}}}]
+    subgraphs = [{"id": "blk", "nodes": [
+        {"id": "in", "type": "LLMChat",
+         "data": {"params": {"openai_api_key": "sk-blk"}}}]}]
+    presets = [{"preset_name": "P", "nodes": [
+        {"id": "def", "type": "LLMChat",
+         "params": {"openai_api_key": "sk-p"}}]}]
+    assert find_secret_violations(
+        nodes, subgraphs=subgraphs, presets=presets,
+    ) == [
+        {"node_id": "top", "param": "openai_api_key"},
+        {"node_id": "blk/in", "param": "openai_api_key"},
+        {"node_id": "preset:P/def", "param": "openai_api_key"},
+    ]

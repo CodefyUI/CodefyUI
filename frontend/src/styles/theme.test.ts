@@ -10,6 +10,8 @@ import {
   DATA_TYPE_COLORS_ON_LIGHT,
   DATA_TYPE_LIGHT_VARS,
   DATA_TYPE_VARS,
+  LAYER_TYPE_COLORS,
+  LAYER_TYPE_VARS,
   DIAGRAM_CHROME,
   DIAGRAM_CHROME_VARS,
   TOKEN_COLORS,
@@ -97,6 +99,24 @@ describe('tokens.css / theme.ts agreement', () => {
 
   it('node header tint matches the CSS variable', () => {
     expect(String(NODE_HEADER_TINT)).toBe(cssVar('--node-header-tint'));
+  });
+
+  it('defines a CSS variable for every layer category', () => {
+    expect(Object.keys(LAYER_TYPE_VARS).sort()).toEqual(
+      Object.keys(LAYER_TYPE_COLORS).sort(),
+    );
+  });
+
+  it.each(Object.keys(LAYER_TYPE_COLORS))(
+    'layer category %s matches its CSS variable',
+    (name) => {
+      expect(LAYER_TYPE_COLORS[name]).toBe(cssVar(LAYER_TYPE_VARS[name]));
+    },
+  );
+
+  it('has no orphaned --layer-* variable on either side', () => {
+    const declared = [...cssTokens.keys()].filter((k) => k.startsWith('--layer-')).sort();
+    expect(declared).toEqual(Object.values(LAYER_TYPE_VARS).sort());
   });
 
   it.each([
@@ -198,6 +218,53 @@ describe('tokens.css / diagram export palette agreement', () => {
       ),
     ].sort();
     expect(declared).toEqual(mirrored);
+  });
+});
+
+/**
+ * core#228. The layers editor kept a private copy of a layer-type palette, in
+ * two files that were hand-synced, and never got the dark-surface lift the rest
+ * of the app did. So the same conceptual colour was one value on the canvas and
+ * a different, dimmer one inside the editor.
+ *
+ * These are hue identities, not semantic ones: purple means Normalization to
+ * the layers editor and Transformer to the canvas, and that difference is
+ * deliberate (the two palettes classify different things). What has to hold is
+ * that the app has ONE purple.
+ */
+describe('the layers editor and the canvas agree on a hue', () => {
+  it.each([
+    ['the green', 'Convolution', 'CNN'],
+    ['the purple', 'Normalization', 'Transformer'],
+    ['the blue', 'Pooling', 'RNN'],
+    ['the orange', 'Regularization', 'RL'],
+    ['the cyan', 'Linear', 'Data'],
+    ['the blue-grey', 'Utility', 'Utility'],
+    ['the red', 'Activation', 'Training'],
+  ])('%s is the same value in both palettes', (_hue, layer, category) => {
+    expect(LAYER_TYPE_COLORS[layer]).toBe(CATEGORY_COLORS[category]);
+  });
+
+  it('carries none of the pre-lift Material tones', () => {
+    // Measured too dark to read on a dark surface and lifted app-wide; the
+    // layers editor was the last place still shipping the originals.
+    const preLift = ['#9c27b0', '#2196f3', '#f44336', '#607d8b'];
+    for (const [name, value] of Object.entries(LAYER_TYPE_COLORS)) {
+      expect(preLift, `${name} is still a pre-lift tone`).not.toContain(
+        value.toLowerCase(),
+      );
+    }
+  });
+
+  it('gives the boundary and unknown slots their own names, not a shared one', () => {
+    // Seven hues across eleven roles. The duplication is intentional and
+    // recorded here so a future edit to one of them is a decision rather than
+    // an accident.
+    expect(LAYER_TYPE_COLORS.Input).toBe(LAYER_TYPE_COLORS.Convolution);
+    expect(LAYER_TYPE_COLORS.Output).toBe(LAYER_TYPE_COLORS.Activation);
+    expect(LAYER_TYPE_COLORS.Unknown).toBe(LAYER_TYPE_COLORS.Activation);
+    expect(LAYER_TYPE_COLORS.Merge).toBe(LAYER_TYPE_COLORS.Regularization);
+    expect(new Set(Object.values(LAYER_TYPE_COLORS)).size).toBe(7);
   });
 });
 

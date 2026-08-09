@@ -117,7 +117,7 @@ describe('computeEdgeLanes', () => {
   });
 
   it('treats a missing handle as its own stable key rather than throwing', () => {
-    // The subgraph layer editor connects handles that carry no id at all.
+    // The layers editor connects handles that carry no id at all.
     const lanes = computeEdgeLanes([
       { id: 'e1', source: 'A', target: 'B' },
       { id: 'e2', source: 'A', target: 'C', sourceHandle: null },

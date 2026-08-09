@@ -36,7 +36,7 @@ interface Wire extends LaneEdgeInput {
 
 interface Options {
   circuit?: boolean;
-  /** Top/Bottom handles, as used by the subgraph layer editor. */
+  /** Top/Bottom handles, as used by the layers editor. */
   vertical?: boolean;
   /** Drop the lane map, reproducing how these edges routed before the fix. */
   unlaned?: boolean;
@@ -198,7 +198,7 @@ describe('backward wires', () => {
 });
 
 describe('vertical sub-canvas (Top/Bottom handles)', () => {
-  // The subgraph layer editor flows downwards and its handles carry no id.
+  // The layers editor flows downwards and its handles carry no id.
   const wires: Wire[] = [
     { id: 'p', source: 'A', target: 'B', sourceX: 0, sourceY: 0, targetX: 160, targetY: 300 },
     { id: 'q', source: 'A', target: 'C', sourceX: 0, sourceY: 0, targetX: 200, targetY: 420 },

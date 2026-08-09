@@ -1,8 +1,9 @@
-// frontend/src/components/SubgraphEditor/graphSerialization.ts
+// frontend/src/components/LayersEditor/graphSerialization.ts
 import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import { generateId } from '../../utils';
 import { applyValleyPass, isTriggerEdge } from '../../utils/autoLayout';
+import { LAYER_TYPE_COLORS } from '../../styles/theme';
 
 export interface PortDef {
   id: string;
@@ -47,7 +48,7 @@ export interface GraphSpec {
 
 const MERGE_TYPES = new Set(['Add', 'Concat', 'Multiply', 'Subtract', 'Mean', 'Stack']);
 
-/** All layer types that the SubgraphEditor can represent. */
+/** All layer types that the layers editor can represent. */
 const KNOWN_LAYER_TYPES = new Set([
   'Conv2d', 'Conv1d', 'ConvTranspose2d',
   'BatchNorm2d', 'BatchNorm1d', 'LayerNorm', 'GroupNorm', 'InstanceNorm2d',
@@ -60,7 +61,7 @@ const KNOWN_LAYER_TYPES = new Set([
   'Add', 'Concat', 'Multiply', 'Subtract', 'Mean', 'Stack',
 ]);
 
-/** Map main-editor Activation node's `function` param → SubgraphEditor layer type. */
+/** Map main-editor Activation node's `function` param → layers-editor layer type. */
 const ACTIVATION_MAP: Record<string, string> = {
   relu: 'ReLU', leaky_relu: 'LeakyReLU', gelu: 'GELU', silu: 'SiLU',
   mish: 'Mish', elu: 'ELU', selu: 'SELU', prelu: 'PReLU',
@@ -69,6 +70,54 @@ const ACTIVATION_MAP: Record<string, string> = {
 
 export function isMergeType(t: string): boolean {
   return MERGE_TYPES.has(t);
+}
+
+/**
+ * Which slot of the layer palette a layer type belongs to (core#228).
+ *
+ * The one place a layer type is classified. Both the colour below and the
+ * palette groups in `LayersEditorModal` read it, so the two cannot disagree
+ * about what a `BatchNorm2d` is — which they previously could, because each
+ * carried its own hex table and the only thing holding them together was a
+ * comment saying "duplicated from".
+ */
+export type LayerCategory = keyof typeof LAYER_TYPE_COLORS;
+
+const LAYER_CATEGORIES: Record<string, LayerCategory> = {
+  Conv2d: 'Convolution', Conv1d: 'Convolution', ConvTranspose2d: 'Convolution',
+  BatchNorm2d: 'Normalization', BatchNorm1d: 'Normalization',
+  LayerNorm: 'Normalization', GroupNorm: 'Normalization',
+  InstanceNorm2d: 'Normalization',
+  MaxPool2d: 'Pooling', AvgPool2d: 'Pooling', AdaptiveAvgPool2d: 'Pooling',
+  Dropout: 'Regularization',
+  Linear: 'Linear', Embedding: 'Linear',
+  Flatten: 'Utility',
+  ReLU: 'Activation', LeakyReLU: 'Activation', GELU: 'Activation',
+  SiLU: 'Activation', Mish: 'Activation', ELU: 'Activation',
+  SELU: 'Activation', PReLU: 'Activation', Sigmoid: 'Activation',
+  Tanh: 'Activation', Hardswish: 'Activation', Softmax: 'Activation',
+  Input: 'Input',
+  Output: 'Output',
+};
+
+export function layerCategoryOf(type: string): LayerCategory {
+  if (MERGE_TYPES.has(type)) return 'Merge';
+  // A type the palette does not list gets its own name rather than falling
+  // into whichever category happens to share its colour.
+  return LAYER_CATEGORIES[type] ?? 'Unknown';
+}
+
+/**
+ * Colour for a layer type, straight off the token layer.
+ *
+ * Used to be a hex table here and a second, hand-synced one in
+ * `LAYER_DEFS` — both on the pre-lift Material tones, so the layers editor
+ * painted a different purple, blue, red and blue-grey than the rest of the
+ * app. Now there is one table and it lives in `tokens.css`, where the
+ * contrast gate can see it.
+ */
+export function colorForType(type: string): string {
+  return LAYER_TYPE_COLORS[layerCategoryOf(type)];
 }
 
 // ── Main-editor workflow import types & functions ──
@@ -263,22 +312,22 @@ export function flowToGraphJson(nodes: Node<LayerNodeData>[], edges: Edge[]): st
   return JSON.stringify(spec);
 }
 
-const SUBGRAPH_NODE_W = 160;
-const SUBGRAPH_NODE_H = 40;
-const SUBGRAPH_NODESEP = 40;
-const SUBGRAPH_RANKSEP = 60;
-function getSubgraphLayoutConfig(
+const LAYER_NODE_W = 160;
+const LAYER_NODE_H = 40;
+const LAYER_NODESEP = 40;
+const LAYER_RANKSEP = 60;
+function getLayerLayoutConfig(
   nodeCount: number,
 ): { nodesep: number; ranksep: number } {
   if (nodeCount > 50) return { nodesep: 28, ranksep: 42 };
   if (nodeCount > 25) return { nodesep: 32, ranksep: 50 };
-  return { nodesep: SUBGRAPH_NODESEP, ranksep: SUBGRAPH_RANKSEP };
+  return { nodesep: LAYER_NODESEP, ranksep: LAYER_RANKSEP };
 }
 
-type SubgraphPos = { x: number; y: number; width: number; height: number };
+type LayerPos = { x: number; y: number; width: number; height: number };
 
 // Column wrapping was removed in favor of the shared skip-aware valley pass
-// (applyValleyPass with axis 'x'): a TB subgraph never splits into columns;
+// (applyValleyPass with axis 'x'): a TB layer graph never splits into columns;
 // ranks covered by a skip connection shift rightward instead.
 
 /**
@@ -346,7 +395,7 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
   /* v8 ignore stop */
 
   const g = new dagre.graphlib.Graph();
-  const cfg = getSubgraphLayoutConfig(spec.nodes.length);
+  const cfg = getLayerLayoutConfig(spec.nodes.length);
   g.setGraph({
     rankdir: 'TB',
     nodesep: cfg.nodesep,
@@ -355,7 +404,7 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
   g.setDefaultEdgeLabel(() => ({}));
 
   for (const n of spec.nodes) {
-    g.setNode(n.id, { width: SUBGRAPH_NODE_W, height: SUBGRAPH_NODE_H });
+    g.setNode(n.id, { width: LAYER_NODE_W, height: LAYER_NODE_H });
   }
   const nodeIds = new Set(spec.nodes.map((n) => n.id));
   for (const e of spec.edges) {
@@ -366,7 +415,7 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
 
   dagre.layout(g);
 
-  const raw = new Map<string, SubgraphPos>();
+  const raw = new Map<string, LayerPos>();
   for (const n of spec.nodes) {
     const pos = g.node(n.id);
     // Every node was registered via g.setNode above, so dagre always returns a pos.
@@ -374,10 +423,10 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
     if (!pos) continue;
     /* v8 ignore stop */
     raw.set(n.id, {
-      x: pos.x - SUBGRAPH_NODE_W / 2,
-      y: pos.y - SUBGRAPH_NODE_H / 2,
-      width: SUBGRAPH_NODE_W,
-      height: SUBGRAPH_NODE_H,
+      x: pos.x - LAYER_NODE_W / 2,
+      y: pos.y - LAYER_NODE_H / 2,
+      width: LAYER_NODE_W,
+      height: LAYER_NODE_H,
     });
   }
   const wrapped = applyValleyPass(raw, spec.edges, {
@@ -403,14 +452,14 @@ function assignPositionsFromTopology(spec: GraphSpec): void {
  * Auto-layout React Flow nodes top-to-bottom using dagre for proper
  * branching support and measured-dimension-aware spacing.
  */
-export function autoLayoutSubgraph(
+export function autoLayoutLayers(
   nodes: Node<LayerNodeData>[],
   edges: Edge[],
 ): Node<LayerNodeData>[] {
   if (nodes.length === 0) return nodes;
 
   const g = new dagre.graphlib.Graph();
-  const cfg = getSubgraphLayoutConfig(nodes.length);
+  const cfg = getLayerLayoutConfig(nodes.length);
   g.setGraph({
     rankdir: 'TB',
     nodesep: cfg.nodesep,
@@ -419,8 +468,8 @@ export function autoLayoutSubgraph(
   g.setDefaultEdgeLabel(() => ({}));
 
   for (const node of nodes) {
-    const w = node.measured?.width ?? node.width ?? SUBGRAPH_NODE_W;
-    const h = node.measured?.height ?? node.height ?? SUBGRAPH_NODE_H;
+    const w = node.measured?.width ?? node.width ?? LAYER_NODE_W;
+    const h = node.measured?.height ?? node.height ?? LAYER_NODE_H;
     g.setNode(node.id, { width: w, height: h });
   }
 
@@ -433,15 +482,15 @@ export function autoLayoutSubgraph(
 
   dagre.layout(g);
 
-  const raw = new Map<string, SubgraphPos>();
+  const raw = new Map<string, LayerPos>();
   for (const n of nodes) {
     const pos = g.node(n.id);
     // Every node was registered via g.setNode above, so dagre always returns a pos.
     /* v8 ignore start */
     if (!pos) continue;
     /* v8 ignore stop */
-    const w = n.measured?.width ?? n.width ?? SUBGRAPH_NODE_W;
-    const h = n.measured?.height ?? n.height ?? SUBGRAPH_NODE_H;
+    const w = n.measured?.width ?? n.width ?? LAYER_NODE_W;
+    const h = n.measured?.height ?? n.height ?? LAYER_NODE_H;
     raw.set(n.id, {
       x: pos.x - w / 2,
       y: pos.y - h / 2,
@@ -534,7 +583,7 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
         data: {
           layerType: 'Input',
           params: {},
-          color: '#4CAF50',
+          color: colorForType('Input'),
           ports: [{ id: inPortId, name: 'x' }],
           isBoundary: true,
         },
@@ -546,7 +595,7 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
         data: {
           layerType: 'Output',
           params: {},
-          color: '#F44336',
+          color: colorForType('Output'),
           ports: [{ id: outPortId, name: 'out' }],
           isBoundary: true,
         },
@@ -554,27 +603,6 @@ export function emptyGraph(): { nodes: Node<LayerNodeData>[]; edges: Edge[] } {
     ],
     edges: [],
   };
-}
-
-function colorForType(type: string): string {
-  if (type === 'Input') return '#4CAF50';
-  if (type === 'Output') return '#F44336';
-  if (MERGE_TYPES.has(type)) return '#FF9800';
-  // Fallback colors by category, duplicated from SubgraphEditorModal LAYER_DEFS.
-  // NOTE: this is the Subgraph editor's own layer-type palette, still on the
-  // pre-lift Material hues and not yet on the token layer. Migrating it means
-  // deciding what each layer type should map to, so it is tracked separately
-  // rather than half-converted here.
-  const colors: Record<string, string> = {
-    Conv2d: '#4CAF50', Conv1d: '#4CAF50', ConvTranspose2d: '#4CAF50',
-    BatchNorm2d: '#9C27B0', BatchNorm1d: '#9C27B0', LayerNorm: '#9C27B0',
-    GroupNorm: '#9C27B0', InstanceNorm2d: '#9C27B0',
-    MaxPool2d: '#2196F3', AvgPool2d: '#2196F3', AdaptiveAvgPool2d: '#2196F3',
-    Dropout: '#FF9800',
-    Linear: '#00BCD4', Embedding: '#00BCD4',
-    Flatten: '#607D8B',
-  };
-  return colors[type] ?? '#F44336';
 }
 
 export interface ValidationError {

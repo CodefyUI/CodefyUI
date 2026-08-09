@@ -4,13 +4,14 @@ import type { Node } from '@xyflow/react';
 import { LayerNode } from './LayerNode';
 import { nodeProps, renderWithFlow } from '../../test/utils';
 import { useI18n } from '../../i18n';
+import { colorForType } from './graphSerialization';
 import type { LayerNodeData } from './graphSerialization';
 
 function makeData(overrides: Partial<LayerNodeData> = {}): LayerNodeData {
   return {
     layerType: 'Conv2d',
     params: {},
-    color: '#4CAF50',
+    color: colorForType('Conv2d'),
     ...overrides,
   };
 }
@@ -66,7 +67,7 @@ describe('LayerNode', () => {
       }),
     );
     // 5 params -> 2 more
-    const expected = useI18n.getState().t('subgraph.layerNode.moreParams', { count: 2 });
+    const expected = useI18n.getState().t('layersEditor.layerNode.moreParams', { count: 2 });
     expect(screen.getByText(expected)).toBeTruthy();
     // Only first 3 keys are rendered as rows.
     expect(screen.getByText('a')).toBeTruthy();
@@ -82,17 +83,17 @@ describe('LayerNode', () => {
   });
 
   it('applies selected styling (white border + colored glow)', () => {
-    const { container } = renderLayer(makeData({ color: '#00BCD4' }), true);
+    const { container } = renderLayer(makeData({ color: colorForType('Linear') }), true);
     const root = container.querySelector('div') as HTMLElement;
     expect(root.style.border).toContain('rgb(255, 255, 255)');
-    expect(root.style.boxShadow).toContain('#00BCD444');
+    expect(root.style.boxShadow).toContain(colorForType('Linear') + '44');
   });
 
   it('applies unselected styling (color border + plain shadow)', () => {
-    const { container } = renderLayer(makeData({ color: '#00BCD4' }), false);
+    const { container } = renderLayer(makeData({ color: colorForType('Linear') }), false);
     const root = container.querySelector('div') as HTMLElement;
-    // #00BCD488 normalizes to rgba(0, 188, 212, ...).
-    expect(root.style.border).toContain('rgba(0, 188, 212');
+    // The hue at full strength, not the old 53%-alpha version (core#228).
+    expect(root.style.border).toContain('rgb(0, 188, 212)');
     expect(root.style.boxShadow).toContain('rgba(0,0,0,0.4)');
   });
 });

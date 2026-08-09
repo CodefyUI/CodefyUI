@@ -74,7 +74,7 @@ function CodePreview({ source }: { source: string }) {
  * below memoizes a slot-less version for the regular ``baseNode`` xyflow type.
  */
 export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
-  const openSubgraphModal = useTabStore((s) => s.openSubgraphModal);
+  const openLayersModal = useTabStore((s) => s.openLayersModal);
   const openNodeDetail = useTabStore((s) => s.openNodeDetail);
   const enterSubgraph = useTabStore((s) => s.enterSubgraph);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
@@ -169,12 +169,12 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
   const handleClick = (e: React.MouseEvent) => {
     if (e.detail === 2 && isSequentialModel) {
-      openSubgraphModal(id);
+      openLayersModal(id);
     }
   };
 
   // Double-click opens the Node Detail Modal (#127) — except on
-  // SequentialModel, whose double-click already belongs to the subgraph
+  // SequentialModel, whose double-click already belongs to the layers
   // editor (handled above by `handleClick`; opening two modals at once would
   // be worse than either).
   //
@@ -385,18 +385,18 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
 
       {/* Params display — special view for SequentialModel */}
       {isSequentialModel && (
-        <div className={styles.subgraphSection}>
+        <div className={styles.layersSection}>
           {(() => {
             let count = 0;
             try { count = JSON.parse(data.params.layers ?? '[]').length; } catch { /* ignore */ }
             return (
               <>
-                <div className={styles.subgraphLayerRow}>
-                  <span className={styles.subgraphLayerCount}>{count}</span>
-                  <span>{t('subgraph.layerCount', { count: '' }).replace(/\s*$/, '')}</span>
+                <div className={styles.layersRow}>
+                  <span className={styles.layersCount}>{count}</span>
+                  <span>{t('layersEditor.layerCount', { count: '' }).replace(/\s*$/, '')}</span>
                 </div>
-                <div className={styles.subgraphHint}>
-                  {t('subgraph.hint')}
+                <div className={styles.layersHint}>
+                  {t('layersEditor.hint')}
                 </div>
               </>
             );

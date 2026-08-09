@@ -116,10 +116,17 @@ function subscribeGraphChanged(cb: () => void): () => void {
   let prevTab = useTabStore.getState().tabs.find((t) => t.id === prevTabId);
   return useTabStore.subscribe((state) => {
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
+    // `subgraphs` belongs here alongside nodes and edges (core#200 item 3):
+    // it is part of what `graph.getGraph()` answers with, so renaming a block
+    // or editing its insides and stepping back out changes the bytes a plugin
+    // would read while telling it nothing happened. Reference comparison, the
+    // same as the other two -- every store action that touches the definition
+    // list replaces it.
     const changed =
       state.activeTabId !== prevTabId
       || tab?.nodes !== prevTab?.nodes
-      || tab?.edges !== prevTab?.edges;
+      || tab?.edges !== prevTab?.edges
+      || tab?.subgraphs !== prevTab?.subgraphs;
     prevTabId = state.activeTabId;
     prevTab = tab;
     if (changed) cb();

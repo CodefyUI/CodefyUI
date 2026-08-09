@@ -48,7 +48,9 @@ vi.mock('@xyflow/react', async (importOriginal) => {
   };
 });
 
-import { SubgraphEditorModal } from './SubgraphEditorModal';
+import { LayersEditorModal, ALL_LAYER_DEFS } from './LayersEditorModal';
+import { graphToFlow, layerCategoryOf } from './graphSerialization';
+import { LAYER_TYPE_COLORS } from '../../styles/theme';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -92,7 +94,7 @@ function validGraphJson(): string {
 
 /**
  * Install a tab whose active node carries `layersJson` in params.layers, and
- * open the subgraph modal on it. Returns the node id.
+ * open the layers editor on it. Returns the node id.
  */
 function setupOpenModal(layersJson: string | undefined, opts?: { paramsUndefined?: boolean }): string {
   const tabId = 't1';
@@ -124,7 +126,7 @@ function setupOpenModal(layersJson: string | undefined, opts?: { paramsUndefined
         edges: [],
         selectedNodeId: null,
         presetModalNodeId: null,
-        subgraphModalNodeId: nodeId,
+        layersModalNodeId: nodeId,
         undoStack: [],
         redoStack: [],
         dirtyNodeIds: new Set(),
@@ -147,7 +149,7 @@ function setupOpenModal(layersJson: string | undefined, opts?: { paramsUndefined
   return nodeId;
 }
 
-describe('SubgraphEditorModal', () => {
+describe('LayersEditorModal', () => {
   beforeEach(() => {
     useI18n.setState({ locale: 'en' });
     useToastStore.setState({ toasts: [] });
@@ -166,13 +168,13 @@ describe('SubgraphEditorModal', () => {
 
   // ── Main export gating ────────────────────────────────────────────────────
 
-  it('returns null when there is no subgraphModalNodeId', () => {
+  it('returns null when there is no layersModalNodeId', () => {
     setupOpenModal(validGraphJson());
     // Clear the modal node id → main export early-returns null.
     useTabStore.setState({
-      tabs: useTabStore.getState().tabs.map((t) => ({ ...t, subgraphModalNodeId: null })) as any,
+      tabs: useTabStore.getState().tabs.map((t) => ({ ...t, layersModalNodeId: null })) as any,
     });
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     expect(container.firstChild).toBeNull();
   });
 
@@ -180,15 +182,15 @@ describe('SubgraphEditorModal', () => {
     setupOpenModal(validGraphJson());
     // Point modal at a node id that does not exist.
     useTabStore.setState({
-      tabs: useTabStore.getState().tabs.map((t) => ({ ...t, subgraphModalNodeId: 'missing' })) as any,
+      tabs: useTabStore.getState().tabs.map((t) => ({ ...t, layersModalNodeId: 'missing' })) as any,
     });
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     expect(container.firstChild).toBeNull();
   });
 
   it('renders the editor with the title and layer count for a valid graph', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     expect(screen.getByText('Model Architecture Editor')).toBeTruthy();
     // 4 nodes in the valid graph.
     expect(screen.getByText('4 layers')).toBeTruthy();
@@ -198,14 +200,14 @@ describe('SubgraphEditorModal', () => {
     // node.data.params exists but has no `layers` → `?? '{}'` → graphToFlow
     // returns emptyGraph (0 spec nodes) → initial uses emptyGraph() (2 nodes).
     setupOpenModal(undefined);
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     expect(screen.getByText('2 layers')).toBeTruthy();
   });
 
   it('falls back to {} when node.data.params is undefined', () => {
     // Covers `node.data.params?.layers` optional chaining + `?? '{}'`.
     setupOpenModal(undefined, { paramsUndefined: true });
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     expect(screen.getByText('2 layers')).toBeTruthy();
   });
 
@@ -214,7 +216,7 @@ describe('SubgraphEditorModal', () => {
     // { nodes: [], edges: [] } (length 0) → `if (parsed.nodes.length === 0)`
     // true branch → emptyGraph() (2 boundary nodes).
     setupOpenModal(JSON.stringify({ version: 2, nodes: [], edges: [] }));
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     expect(screen.getByText('2 layers')).toBeTruthy();
   });
 
@@ -222,7 +224,7 @@ describe('SubgraphEditorModal', () => {
 
   it('filters the layer palette via the search box and shows the Merge category label', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const search = screen.getByPlaceholderText('Search layers...') as HTMLInputElement;
 
     // Default: all categories visible, including the localized Merge group.
@@ -241,7 +243,7 @@ describe('SubgraphEditorModal', () => {
 
   it('shows a parameter-count badge for layers with params and hovers a palette item', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const search = screen.getByPlaceholderText('Search layers...');
     // Linear has 2 params → "2p" badge.
     fireEvent.change(search, { target: { value: 'Linear' } });
@@ -264,9 +266,50 @@ describe('SubgraphEditorModal', () => {
     expect(screen.queryByText('0p')).toBeNull();
   });
 
+  // ── One palette, one colour (core#228) ────────────────────────────────────
+  //
+  // `LAYER_DEFS` used to carry a `color` per entry and `graphSerialization`
+  // carried a second copy of the same table for the nodes those entries drop
+  // onto — hand-synced, with a comment in one file naming the other. These
+  // hold the two halves together now that only one of them has hexes.
+
+  it('files every palette entry under a category the colour table knows', () => {
+    for (const def of ALL_LAYER_DEFS) {
+      expect(layerCategoryOf(def.type), `${def.type} is mis-filed`).toBe(def.category);
+      expect(LAYER_TYPE_COLORS[def.category]).toBeTruthy();
+    }
+  });
+
+  it('paints a palette dot the same colour as the node that type becomes', () => {
+    setupOpenModal(validGraphJson());
+    render(<LayersEditorModal />);
+    const search = screen.getByPlaceholderText('Search layers...');
+    // jsdom normalizes an inline background to rgb(), so compare in that form.
+    const asRgb = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+      return `rgb(${r}, ${g}, ${b})`;
+    };
+
+    // One type per colour slot. `Embedding` rather than `Linear` because the
+    // latter is also a group heading, so the text appears twice.
+    for (const type of ['Conv2d', 'BatchNorm2d', 'MaxPool2d', 'Dropout', 'Embedding', 'Flatten', 'ReLU', 'Concat']) {
+      fireEvent.change(search, { target: { value: type } });
+      const dot = screen.getByText(type).closest('div')!.querySelector('span') as HTMLElement;
+      // What the *serializer* stamps on a node of this type, reached through
+      // graphToFlow rather than through colorForType, so the two paths are
+      // compared and not just the one function.
+      const { nodes } = graphToFlow(
+        JSON.stringify({ version: 2, nodes: [{ id: 'n', type }], edges: [] }),
+      );
+      expect(dot.style.background, `palette dot for ${type}`).toBe(
+        asRgb(nodes[0].data.color),
+      );
+    }
+  });
+
   it('LayerPaletteItem.handleDragStart sets the drag payload and effect', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const search = screen.getByPlaceholderText('Search layers...');
     fireEvent.change(search, { target: { value: 'Flatten' } });
     const item = screen.getByText('Flatten').closest('div')!;
@@ -274,7 +317,7 @@ describe('SubgraphEditorModal', () => {
     const setData = vi.fn();
     const dt: any = { setData, effectAllowed: '' };
     fireEvent.dragStart(item, { dataTransfer: dt });
-    expect(setData).toHaveBeenCalledWith('application/subgraph-layer', 'Flatten');
+    expect(setData).toHaveBeenCalledWith('application/codefyui-layer', 'Flatten');
     expect(dt.effectAllowed).toBe('move');
   });
 
@@ -282,7 +325,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onNodesChange / onEdgesChange apply changes through the store setters', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     expect(lastFlowProps).toBeTruthy();
 
     // Remove the Linear node via a node change.
@@ -300,7 +343,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onNodeClick selects a layer node → ParamEditor; onPaneClick clears selection', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     // Select the Linear (plain) node → ParamEditor with its params.
     act(() => {
@@ -319,7 +362,7 @@ describe('SubgraphEditorModal', () => {
 
   it('selecting a boundary node renders the PortListEditor', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodeClick({}, { id: 'in1' });
     });
@@ -330,7 +373,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onConnect appends an edge with default styling and null handles fall back to undefined', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       // null source/target handles exercise the `?? undefined` fallbacks.
       lastFlowProps.onConnect({
@@ -352,7 +395,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onConnect preserves explicit handles when provided', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onConnect({
         source: 'lin1',
@@ -369,7 +412,7 @@ describe('SubgraphEditorModal', () => {
 
   it('isValidConnection covers all branches', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const isValid = lastFlowProps.isValidConnection as (c: any) => boolean;
 
     // target not found → false.
@@ -404,7 +447,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onNodesDelete prunes nodes, their edges, and clears selection', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     // Select merge1 first so the selection-clearing branch runs.
     act(() => {
@@ -421,7 +464,7 @@ describe('SubgraphEditorModal', () => {
 
   it('onNodesDelete keeps selection when a different node is deleted', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodeClick({}, { id: 'lin1' });
     });
@@ -437,7 +480,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleDragOver prevents default and sets the drop effect', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const preventDefault = vi.fn();
     const dt: any = { dropEffect: '' };
     act(() => {
@@ -449,7 +492,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleDrop with a known layer type adds a node at the mapped position', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     const preventDefault = vi.fn();
     act(() => {
       lastFlowProps.onDrop({
@@ -467,7 +510,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleDrop with no layer type is a no-op', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onDrop({
         preventDefault: vi.fn(),
@@ -483,7 +526,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleDrop with an unknown layer type does not add a node (addLayer early return)', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onDrop({
         preventDefault: vi.fn(),
@@ -500,7 +543,7 @@ describe('SubgraphEditorModal', () => {
 
   it('ParamEditor edits int, float, and renders for a param-less layer', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     // Select Linear (int params).
     act(() => {
@@ -531,7 +574,7 @@ describe('SubgraphEditorModal', () => {
 
   it('ParamEditor shows "No parameters" for a layer with no params and deletes the layer', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     // Add a ReLU (no params) and select it.
     act(() => {
@@ -567,7 +610,7 @@ describe('SubgraphEditorModal', () => {
       edges: [],
     });
     setupOpenModal(json);
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodeClick({}, { id: 'lin1' });
     });
@@ -580,7 +623,7 @@ describe('SubgraphEditorModal', () => {
 
   it('editing a port name through PortListEditor updates the node', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodeClick({}, { id: 'in1' });
     });
@@ -591,7 +634,7 @@ describe('SubgraphEditorModal', () => {
 
   it('adding then removing an Input port also removes orphaned edges (handleRemoveEdges)', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodeClick({}, { id: 'in1' });
     });
@@ -612,13 +655,13 @@ describe('SubgraphEditorModal', () => {
 
   it('Apply on a valid graph serializes layers and closes the modal', () => {
     const nodeId = setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     fireEvent.click(screen.getByText('Apply'));
 
     const tab = useTabStore.getState().tabs[0];
     // Modal closed.
-    expect(tab.subgraphModalNodeId).toBeNull();
+    expect(tab.layersModalNodeId).toBeNull();
     // Layers updated on the node with serialized JSON containing our nodes.
     const node = tab.nodes.find((n) => n.id === nodeId)!;
     const saved = node.data.params!.layers as string;
@@ -638,7 +681,7 @@ describe('SubgraphEditorModal', () => {
       edges: [],
     });
     setupOpenModal(badJson);
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     fireEvent.click(screen.getByText('Apply'));
 
@@ -646,36 +689,36 @@ describe('SubgraphEditorModal', () => {
     expect(toasts.length).toBe(1);
     expect(toasts[0].type).toBe('error');
     // Still open.
-    expect(useTabStore.getState().tabs[0].subgraphModalNodeId).not.toBeNull();
+    expect(useTabStore.getState().tabs[0].layersModalNodeId).not.toBeNull();
   });
 
   it('Cancel (footer button) closes the modal', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     // There are two "Cancel" buttons (footer + would-be header ✕); footer text.
     fireEvent.click(screen.getAllByText('Cancel')[0]);
-    expect(useTabStore.getState().tabs[0].subgraphModalNodeId).toBeNull();
+    expect(useTabStore.getState().tabs[0].layersModalNodeId).toBeNull();
   });
 
   it('the header ✕ button closes the modal', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     fireEvent.click(screen.getByText('✕'));
-    expect(useTabStore.getState().tabs[0].subgraphModalNodeId).toBeNull();
+    expect(useTabStore.getState().tabs[0].layersModalNodeId).toBeNull();
   });
 
   it('clicking the overlay backdrop closes the modal, clicking the panel does not', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const overlay = container.querySelector('div')!;
 
     // Click on the inner panel (currentTarget !== target) → stays open.
     fireEvent.click(screen.getByText('Model Architecture Editor'));
-    expect(useTabStore.getState().tabs[0].subgraphModalNodeId).not.toBeNull();
+    expect(useTabStore.getState().tabs[0].layersModalNodeId).not.toBeNull();
 
     // Click directly on the backdrop (target === currentTarget) → closes.
     fireEvent.click(overlay);
-    expect(useTabStore.getState().tabs[0].subgraphModalNodeId).toBeNull();
+    expect(useTabStore.getState().tabs[0].layersModalNodeId).toBeNull();
   });
 
   // ── Snap toggle ───────────────────────────────────────────────────────────
@@ -691,7 +734,7 @@ describe('SubgraphEditorModal', () => {
       edges: [],
     });
     setupOpenModal(json);
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     // Initially OFF.
     expect(screen.getByText('Snap: OFF')).toBeTruthy();
@@ -718,7 +761,7 @@ describe('SubgraphEditorModal', () => {
       edges: [],
     });
     setupOpenModal(json);
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     fireEvent.click(screen.getByText('Snap: OFF'));
     const inNode = (lastFlowProps.nodes as any[]).find((n) => n.id === 'in1');
     // Unchanged → identical positions.
@@ -729,7 +772,7 @@ describe('SubgraphEditorModal', () => {
 
   it('Auto Layout repositions nodes and schedules a fitView', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     fitViewSpy.mockClear();
     fireEvent.click(screen.getByText('Auto Layout'));
     // setTimeout(fitView) fires.
@@ -743,7 +786,7 @@ describe('SubgraphEditorModal', () => {
 
   it('Export builds a JSON blob and triggers a download anchor', () => {
     setupOpenModal(validGraphJson());
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
 
     const createUrl = vi
       .spyOn(URL, 'createObjectURL')
@@ -776,7 +819,7 @@ describe('SubgraphEditorModal', () => {
 
   it('Import button clicks the hidden file input', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     const clickSpy = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
     fireEvent.click(screen.getByText('Import'));
@@ -785,7 +828,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect with no file selected is a no-op', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
     // No files → early return.
     fireEvent.change(fileInput, { target: { files: [] } });
@@ -819,7 +862,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect imports a GraphSpec v2 file (graphspec branch)', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const spec = JSON.stringify({
       version: 2,
       nodes: [
@@ -838,7 +881,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect imports a main-editor workflow with layer nodes (workflow-layers branch)', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const workflow = JSON.stringify({
       nodes: [
         { id: 'a', type: 'Conv2d', position: { x: 0, y: 0 }, data: { params: { in_channels: 3 } } },
@@ -854,7 +897,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect imports a workflow with an Activation node (function → layer mapping)', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     // An Activation node whose `function` maps via ACTIVATION_MAP makes
     // detection = workflow-layers and converts to a ReLU layer.
     const workflow = JSON.stringify({
@@ -871,7 +914,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect imports a single SequentialModel workflow (workflow-sequential, len 1)', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const inner = JSON.stringify({
       version: 2,
       nodes: [
@@ -894,7 +937,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect with multiple SequentialModels opens the selector and imports a choice', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const innerA = JSON.stringify({
       version: 2,
       nodes: [
@@ -940,7 +983,7 @@ describe('SubgraphEditorModal', () => {
 
   it('SequentialModelSelector: cancel button and backdrop both close it', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     const inner = JSON.stringify({ version: 2, nodes: [], edges: [] });
     const workflow = JSON.stringify({
       nodes: [
@@ -973,7 +1016,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleSelectSequentialModel surfaces a toast when the chosen model is invalid', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     // Two models so the selector is shown; one has an EMPTY graph so importing
     // it throws "Empty or invalid graph" → caught → toast.
     const emptyInner = JSON.stringify({ version: 2, nodes: [], edges: [] });
@@ -1006,7 +1049,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect with unparseable JSON shows the import-fail toast (unknown branch)', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     importText(container, 'not-json-at-all');
     const toasts = useToastStore.getState().toasts;
     expect(toasts.length).toBe(1);
@@ -1015,7 +1058,7 @@ describe('SubgraphEditorModal', () => {
 
   it('handleFileSelect with valid JSON but no importable content throws noContent', () => {
     setupOpenModal(validGraphJson());
-    const { container } = render(<SubgraphEditorModal />);
+    const { container } = render(<LayersEditorModal />);
     // Valid JSON, has nodes/edges arrays but no known layer nodes and no
     // SequentialModel → detection = unknown → throws noContent → toast.
     const json = JSON.stringify({ nodes: [{ id: 'x', type: 'Weird' }], edges: [] });
@@ -1030,7 +1073,7 @@ describe('SubgraphEditorModal', () => {
   it('renders the empty-canvas hint when there are no nodes', () => {
     // Force a zero-node graph by deleting both boundary nodes after open.
     setupOpenModal(undefined); // emptyGraph → 2 nodes
-    render(<SubgraphEditorModal />);
+    render(<LayersEditorModal />);
     act(() => {
       lastFlowProps.onNodesChange([{ type: 'remove', id: (lastFlowProps.nodes as any[])[0].id }]);
     });

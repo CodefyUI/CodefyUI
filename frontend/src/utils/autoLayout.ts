@@ -126,7 +126,7 @@ type ValleyPos = { x: number; y: number; width: number; height: number };
  * untouched. A skip is an eligible edge whose endpoints both lie on the spine
  * (longest forward path) and whose rank span is at least `minSpan`.
  * Components are processed independently because a single dagre call over a
- * disconnected graph (the subgraph editor does this) places components side
+ * disconnected graph (the layers editor does this) places components side
  * by side with shared rank coordinates — a whole-map pass would let one
  * component's skip bend another. Cycle-safe: only forward edges (rank
  * increasing) are walked, so back edges are simply ignored.

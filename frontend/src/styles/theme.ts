@@ -136,6 +136,50 @@ export const DATA_TYPE_LIGHT_VARS: Record<string, string> = {
   ANY: '--diagram-light-type-any',
 };
 
+/**
+ * Layer-type palette for the layers editor (core#228).
+ *
+ * Its own scheme, deliberately: the layers editor paints kinds of torch layer,
+ * not node categories, and the two disagree about what a hue means (purple is
+ * normalisation here, Transformer on the canvas). Where the *hue* is the same
+ * idea — "the app's blue", "the app's red" — the value is the same value, so a
+ * reader is not shown two different reds on two surfaces.
+ *
+ * This lives in TypeScript for the same reason `CATEGORY_COLORS` does: the
+ * editor's nodes are React Flow cards whose header fill is computed with
+ * `mixColor`, and its serializer has to stamp a colour into node data. Mirrors
+ * the `--layer-*` tokens; `theme.test.ts` asserts the match and
+ * `scripts/check-contrast.mjs` re-derives every measurement.
+ */
+export const LAYER_TYPE_COLORS: Record<string, string> = {
+  Input: '#4caf50',
+  Convolution: '#4caf50',
+  Normalization: '#c279ce',
+  Pooling: '#2397f3',
+  Regularization: '#ff9800',
+  Linear: '#00bcd4',
+  Utility: '#8097a2',
+  Activation: '#f66358',
+  Merge: '#ff9800',
+  Output: '#f66358',
+  Unknown: '#f66358',
+};
+
+/** `--layer-*` variable name for each layer category. */
+export const LAYER_TYPE_VARS: Record<string, string> = {
+  Input: '--layer-input',
+  Convolution: '--layer-convolution',
+  Normalization: '--layer-normalization',
+  Pooling: '--layer-pooling',
+  Regularization: '--layer-regularization',
+  Linear: '--layer-linear',
+  Utility: '--layer-utility',
+  Activation: '--layer-activation',
+  Merge: '--layer-merge',
+  Output: '--layer-output',
+  Unknown: '--layer-unknown',
+};
+
 /** `--type-*` variable name for each data type (the canvas / dark values). */
 export const DATA_TYPE_VARS: Record<string, string> = {
   TENSOR: '--type-tensor',

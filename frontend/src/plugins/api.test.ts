@@ -83,6 +83,39 @@ describe('graph surface', () => {
     expect(calls).toBe(seen);
   });
 
+  it('onGraphChanged fires for a definition-only change (core#200 item 3)', () => {
+    // Renaming a block, or editing its insides and stepping back out, changes
+    // `subgraphs` and nothing else. The subscription compared only nodes and
+    // edges, so a plugin watching the graph was never told -- even though
+    // `graph.getGraph()` would have answered with different bytes.
+    const api = freshApi();
+    // Set the canvas up BEFORE subscribing, so the only thing that moves
+    // afterwards is the definition list. An instance on the canvas is what
+    // keeps the definition reachable -- `getSerializedGraph` drops orphans.
+    const store = useTabStore.getState();
+    store.setNodes([{
+      id: 'inst', type: 'baseNode', position: { x: 0, y: 0 },
+      data: { label: 'Encoder', type: 'subgraph:blk', params: {} },
+    } as never]);
+    store.setSubgraphs([{
+      id: 'blk', name: 'Encoder', description: '',
+      nodes: [], edges: [], interface: { inputs: [], outputs: [], triggerTargets: [] },
+    }]);
+
+    const before = JSON.stringify(api.graph.getGraph());
+    let calls = 0;
+    const off = api.graph.onGraphChanged(() => { calls += 1; });
+
+    useTabStore.getState().renameSubgraph('blk', 'Decoder');
+    expect(calls).toBe(1);
+    // The premise: the graph a plugin can read really did change bytes.
+    expect(JSON.stringify(api.graph.getGraph())).not.toBe(before);
+
+    off();
+    useTabStore.getState().renameSubgraph('blk', 'Encoder');
+    expect(calls).toBe(1);
+  });
+
   it('onGraphChanged registers its unsubscribe with trackCleanup', () => {
     const tracked: Array<() => void> = [];
     const api = buildPluginAPI(
