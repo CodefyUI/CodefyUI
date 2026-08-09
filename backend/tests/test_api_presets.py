@@ -177,3 +177,93 @@ async def test_create_still_accepts_a_canvas_with_no_instances(
         "edges": [],
     })
     assert resp.status_code == 200, resp.text
+
+
+# -- dynamic port counts survive preset extraction (#196) -----------------
+#
+# Both loops used to read the STATIC define_inputs() / define_outputs(),
+# which answer for the DEFAULT params. A ComposeTransform(steps=5) therefore
+# reported two ports however many it had, and step_3..step_5 never reached
+# `exposed_inputs` -- so edges into them had nowhere to reattach when the
+# preset was dropped back onto a canvas.
+
+
+@pytest.mark.asyncio
+async def test_preset_exposes_every_port_a_dynamic_node_actually_has(
+    test_client, _isolated_presets,
+):
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Five Steps",
+        "nodes": [
+            {"id": "cmp", "type": "ComposeTransform",
+             "data": {"params": {"steps": 5}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text
+
+    exposed = {p["internal_port"] for p in resp.json()["exposed_inputs"]}
+    assert exposed == {f"step_{i}" for i in range(1, 6)}
+
+
+@pytest.mark.asyncio
+async def test_preset_exposes_dynamic_ports_in_both_directions(
+    test_client, _isolated_presets,
+):
+    """PythonScript varies inputs AND outputs, so it catches a fix applied to
+    only one of the two loops."""
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Wide Script",
+        "nodes": [
+            {"id": "py", "type": "PythonScript",
+             "data": {"params": {"input_ports": 4, "output_ports": 3,
+                                 "code": "return {}"}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text
+
+    body = resp.json()
+    assert {p["internal_port"] for p in body["exposed_inputs"]} == {
+        f"in{i}" for i in range(1, 5)}
+    assert {p["internal_port"] for p in body["exposed_outputs"]} == {
+        f"out{i}" for i in range(1, 4)}
+
+
+@pytest.mark.asyncio
+async def test_preset_still_exposes_the_default_ports_of_a_static_node(
+    test_client, _isolated_presets,
+):
+    """The dynamic form delegates to the static one for everything else, so
+    a node holding no port param must be completely unaffected."""
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Static",
+        "nodes": [
+            {"id": "cmp", "type": "ComposeTransform", "data": {"params": {}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text
+    assert {p["internal_port"] for p in resp.json()["exposed_inputs"]} == {
+        "step_1", "step_2"}
+
+
+def test_registry_types_a_port_that_only_exists_at_this_port_count():
+    """``_resolve_port_type`` read the same static definition, so a stored
+    preset naming step_5 resolved to "ANY" and the canvas drew a grey handle
+    where the wire is a TRANSFORM."""
+    from app.core.node_registry import registry as node_registry
+
+    preset = preset_registry._load_and_resolve({
+        "preset_name": "Five Steps",
+        "nodes": [{"id": "cmp", "type": "ComposeTransform",
+                   "params": {"steps": 5}}],
+        "edges": [],
+        # data_type omitted on purpose: that is what makes the registry
+        # resolve it from the node class.
+        "exposed_inputs": [{"name": "s5", "internal_node": "cmp",
+                            "internal_port": "step_5"}],
+        "exposed_outputs": [],
+    }, node_registry)
+
+    assert preset.exposed_inputs[0].data_type == "TRANSFORM"

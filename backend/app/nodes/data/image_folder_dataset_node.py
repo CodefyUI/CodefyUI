@@ -207,7 +207,60 @@ class ImageFolderDatasetNode(BaseNode):
         dataset = ImageFolder(str(root),
                               transform=seeded_for_node(transform, context))
 
+        _verify_sample_images(dataset.samples)
+
         return {"dataset": dataset, "classes": list(dataset.classes)}
+
+
+#: How many images :func:`_verify_sample_images` opens. Enough to catch a
+#: truncated export or a folder of renamed files -- the two ways this goes
+#: wrong in practice, both of which affect many files, not one -- while
+#: staying a fixed cost that does not grow with the dataset.
+VERIFY_SAMPLE_SIZE = 32
+
+
+def _verify_sample_images(samples: list[tuple[str, int]]) -> None:
+    """Open a spread sample of *samples*, raising on the first unreadable one.
+
+    The node checks the directory tree carefully and, until #197, never
+    checked a single file. ``ImageFolder`` accepts anything with a listed
+    extension, so a truncated, zero-byte or merely renamed ``.png`` builds
+    fine here and raises ``PIL.UnidentifiedImageError`` from inside a
+    DataLoader WORKER, potentially minutes into training, naming nothing
+    the user can act on -- the exact class of error the node's other
+    messages go out of their way to avoid.
+
+    An EVEN spread from the first file to the last, not the first N:
+    ``samples`` is ordered by class, so the first N would only ever inspect
+    the alphabetically first class and a dataset whose last class is the
+    broken one would sail through. A sample rather than everything: full
+    validation would read the whole dataset at build time, which is the cost
+    this node exists to defer.
+
+    ``verify()`` and not ``load()``: it reads structure (a PNG's chunk CRCs,
+    a JPEG's markers) without decoding pixels, which is what makes 32 files
+    free. It also invalidates the handle, hence the fresh ``open`` per file.
+    """
+    from PIL import Image
+
+    if not samples:
+        return
+    count = min(VERIFY_SAMPLE_SIZE, len(samples))
+    last = len(samples) - 1
+    indices = sorted({i * last // max(1, count - 1) for i in range(count)})
+    for path, _label in (samples[i] for i in indices):
+        try:
+            with Image.open(path) as image:
+                image.verify()
+        except Exception as exc:  # noqa: BLE001 - re-raised with the path
+            raise ValueError(
+                f"'{path}' is not a readable image ({type(exc).__name__}: "
+                f"{exc}). ImageFolder takes any file with an image "
+                f"extension, so a truncated download, a zero-byte file or "
+                f"something renamed to .png gets this far and then fails "
+                f"inside a data-loading worker mid-training. Remove or "
+                f"re-export the file and run again."
+            ) from exc
 
 
 def _missing_root_message(base: Path, root: Path, split: str) -> str:

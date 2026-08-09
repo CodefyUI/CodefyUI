@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -153,6 +155,59 @@ def is_param_visible(
         if not any(str(candidate) == actual for candidate in accepted):
             return False
     return True
+
+
+#: JS ``parseInt``'s numeric prefix: optional whitespace, optional sign,
+#: then ASCII digits, and whatever follows is ignored. ``[0-9]`` rather than
+#: ``\d``, which in Python also matches Devanagari and other Unicode digits
+#: that ``parseInt`` rejects.
+_LEADING_INT = re.compile(r"\s*([+-]?[0-9]+)")
+
+
+def resolve_count_param(
+    params: dict[str, Any] | None,
+    name: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """A port-count param, clamped. The backend twin of ``clampCount``.
+
+    ONE convention for every param that decides how many ports a node has --
+    ``ComposeTransform``'s ``steps``, ``PythonScript``'s ``input_ports`` /
+    ``output_ports``, ``Split``'s ``chunks``. Each used to spell its own
+    ``int(raw)``, and each therefore disagreed with the canvas in the same
+    way: the frontend reads these with ``parseInt(String(raw), 10)``, which
+    takes a NUMERIC PREFIX, while ``int()`` demands the whole string. So
+    ``{"steps": "5.7"}`` drew five handles and validated two, and
+    ``{"steps": "6 chains"}`` drew six and validated two -- the canvas
+    offering ports the engine then rejected as invalid input ports.
+
+    Only reachable through hand-edited or externally-generated graph JSON;
+    the INT widget cannot produce any of these. Clamps rather than raises,
+    because the callers are the palette, the validator and the renderer,
+    none of which has anywhere to put an exception.
+
+    Deliberately NOT ``int(float(raw))``, which was the obvious fix and is
+    the wrong one: it agrees on ``"5.7"`` but then reads ``"1e3"`` as 1000
+    where ``parseInt("1e3", 10)`` is 1, trading one divergence for another.
+
+    Booleans go to *default* -- ``String(true)`` is ``"true"``, which
+    ``parseInt`` rejects -- rather than to Python's ``int(True) == 1``.
+    """
+    raw = (params or {}).get(name, default)
+    parsed: int | None
+    if isinstance(raw, bool):
+        parsed = None
+    elif isinstance(raw, (int, float)):
+        parsed = math.floor(raw) if math.isfinite(raw) else None
+    else:
+        match = _LEADING_INT.match("" if raw is None else str(raw))
+        parsed = int(match.group(1)) if match else None
+    if parsed is None:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
 
 
 class BaseNode(ABC):

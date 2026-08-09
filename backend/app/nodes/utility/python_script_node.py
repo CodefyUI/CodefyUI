@@ -70,6 +70,7 @@ from ...core.node_base import (
     ParamDefinition,
     ParamType,
     PortDefinition,
+    resolve_count_param,
 )
 from ...core.script_policy import (
     ESCAPE_HATCH_HINT,
@@ -160,13 +161,15 @@ def _script_builtins_base() -> dict[str, Any]:
 
 
 def resolve_port_count(params: dict[str, Any] | None, name: str) -> int:
-    """Clamp a port-count param into ``1..MAX_PORTS``, tolerating garbage."""
-    raw = (params or {}).get(name, 1)
-    try:
-        count = int(raw)
-    except (TypeError, ValueError):
-        count = 1
-    return max(1, min(MAX_PORTS, count))
+    """Clamp a port-count param into ``1..MAX_PORTS``, tolerating garbage.
+
+    Shares :func:`resolve_count_param` with ``ComposeTransform`` and
+    ``Split`` so the three stay ONE convention, and the one the canvas
+    mirrors (#197).
+    """
+    return resolve_count_param(
+        params, name, default=1, minimum=1, maximum=MAX_PORTS,
+    )
 
 
 def resolve_port_types(
