@@ -1189,12 +1189,46 @@ def validate_graph(
             if param_def.name not in param_values:
                 continue
             value = param_values[param_def.name]
-            if param_def.min_value is not None and value < param_def.min_value:
+            # Both comparisons under one guard, because a bound is only
+            # meaningful against a value that can be ORDERED against it and
+            # the check used to assume that silently (#193). ``"abc" < 1``
+            # and ``None < 1`` both raise TypeError, and the raise escaped
+            # ``validate_graph`` entirely: the run route is written to turn
+            # this function's return value into a 409 ``invalid_graph``
+            # envelope, so a value it could not compare arrived at the
+            # client as a 500 with no idea which parameter caused it.
+            #
+            # Not hypothetical in either direction. A hand-authored
+            # graph.json or a direct API POST can put a string on an INT
+            # param; and the canvas's own numeric field yields NaN for a
+            # CLEARED input, which ``JSON.stringify`` writes as ``null`` --
+            # so a saved graph with an emptied box was a 500 waiting to be
+            # re-run. A non-comparable value is a validation error, and is
+            # now reported as one, naming the parameter like its
+            # neighbours.
+            #
+            # ``except TypeError`` rather than an isinstance check on
+            # (int, float): the predicate that matters is "does it order
+            # against the bound", which numpy scalars and a plugin's own
+            # numeric type satisfy without being either.
+            try:
+                below = (param_def.min_value is not None
+                         and value < param_def.min_value)
+                above = (param_def.max_value is not None
+                         and value > param_def.max_value)
+            except TypeError:
+                errors.append(
+                    f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
+                    f"value {value!r} is not a number, so it cannot be "
+                    f"checked against its allowed range"
+                )
+                continue
+            if below:
                 errors.append(
                     f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
                     f"value {value} is below minimum {param_def.min_value}"
                 )
-            if param_def.max_value is not None and value > param_def.max_value:
+            if above:
                 errors.append(
                     f"Parameter '{param_def.name}' on node {node['id']} ({node['type']}): "
                     f"value {value} is above maximum {param_def.max_value}"
@@ -2304,10 +2338,29 @@ async def execute_graph(
     # Entered by hand rather than with a ``with`` block so the whole body
     # below keeps its indentation; the paired exit lives in the ``finally``
     # that already owns this function's teardown.
+    #
+    # Hand-entering means the pairing is not the language's job any more,
+    # so every statement between the two has to be looked at (#190). The
+    # cost of getting it wrong went UP when the scope became refcounted:
+    # under save-and-restore a skipped exit cost one run its restore, while
+    # under refcounting the depth never returns to 0, so determinism is
+    # never restored again for the LIFE OF THE PROCESS and every later
+    # scope's baseline capture is suppressed too (see
+    # ``seeding.deterministic_scope``). One unlucky teardown poisons the
+    # server until someone restarts it.
     determinism = deterministic_scope(wants_determinism)
     determinism.__enter__()
 
-    pump_task = asyncio.create_task(_pump(), name=f"outbox-pump:{run_id or '-'}")
+    # Gap 1: outside the try below, and ``create_task`` raises RuntimeError
+    # on a loop that is closing. ``BaseException`` because a leaked depth
+    # outlives whatever is being torn down.
+    try:
+        pump_task = asyncio.create_task(_pump(),
+                                        name=f"outbox-pump:{run_id or '-'}")
+    except BaseException:
+        determinism.__exit__(None, None, None)
+        raise
+
     try:
         # Before the forward pass: zero any accumulated gradients on persisted
         # modules so backward_mode doesn't keep summing across runs.
@@ -2390,12 +2443,22 @@ async def execute_graph(
         except Exception:  # noqa: BLE001 - a lost event must not mask the outcome
             logger.warning("final signal flush failed", exc_info=True)
         finally:
-            pump_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pump_task
-            # Hand determinism back to whatever the process had before this
-            # run. Last, so nothing above can skip it.
-            determinism.__exit__(None, None, None)
+            # Gap 2: ``await pump_task`` re-raises anything ``_pump`` died
+            # of that is not CancelledError, and the exit used to be its
+            # PEER rather than its finally — so the comment below ("nothing
+            # above can skip it") was true of the outer chain and false of
+            # the three lines it sat under. ``_pump`` catches Exception
+            # around ``_deliver`` but not around its own ``outbox.wait()``,
+            # and never catches BaseException at all, so the path is narrow
+            # rather than closed.
+            try:
+                pump_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await pump_task
+            finally:
+                # Hand determinism back to whatever the process had before
+                # this run. Last, and now genuinely unskippable.
+                determinism.__exit__(None, None, None)
 
 
 async def _maybe_await(val: Any) -> Any:

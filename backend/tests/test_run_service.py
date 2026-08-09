@@ -1752,6 +1752,54 @@ async def test_two_cancels_do_not_wedge_the_gate_shut(hold):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hold", ["exclusive", "shared"])
+async def test_a_failing_wake_does_not_replace_the_runs_own_exception(hold):
+    """#190: the release path must not overwrite what the run failed with.
+
+    Both holds release inside the ``finally`` of an
+    ``@asynccontextmanager``, so an exception raised there SUBSTITUTES
+    itself for the body's — the user gets a message about the notifier and
+    the actual failure is gone. The guard on ``_wake`` covered the
+    ``ensure_future`` line only, which is the half that cannot fail in
+    practice; the await below it, where a failing notification actually
+    surfaces, was bare.
+
+    Asserted on the exception IDENTITY, not just its type: a replacement
+    would most plausibly be a RuntimeError, and so is what we inject.
+    """
+    class _FlakyGate(_RunExclusion):
+        """Subclassed rather than patched: ``_RunExclusion`` has __slots__."""
+
+        explode = True
+
+        async def _notify_all(self) -> None:
+            if self.explode:
+                raise RuntimeError("condition is bound to another loop")
+            await _RunExclusion._notify_all(self)
+
+    gate = _FlakyGate()
+    original = RuntimeError("what the run actually failed with")
+
+    with pytest.raises(RuntimeError) as caught:
+        async with getattr(gate, hold)():
+            raise original
+
+    assert caught.value is original, (
+        f"the run's exception was replaced by {caught.value!r}")
+    assert not gate.busy, "the gate stayed held"
+
+    # And it is genuinely reusable: the hold is given back before the
+    # notification is even attempted, so a failed wake cannot wedge it.
+    gate.explode = False
+
+    async def _take() -> str:
+        async with gate.exclusive():
+            return "in"
+
+    assert await asyncio.wait_for(_take(), timeout=2.0) == "in"
+
+
+@pytest.mark.asyncio
 async def test_a_cancelled_waiter_does_not_block_the_next_run():
     """The queue behind a cancelled waiter must still drain.
 

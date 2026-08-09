@@ -251,3 +251,95 @@ def test_every_conditional_param_hides_exactly_where_it_does_not_apply():
     assert always_visible == {"type", "reduction"}, (
         "a new always-visible param needs an explicit decision: every loss "
         "must accept it, or execute() must reject it where it does not")
+
+
+# ── the tables against the torch that is actually installed (#189) ────────
+
+
+def _accepting(param, node_default):
+    """Losses whose signature takes *param* AND defaults it to ours."""
+    import inspect
+
+    import torch.nn as nn
+
+    found = set()
+    for name in loss_node.LOSS_TYPES:
+        signature = inspect.signature(getattr(nn, name).__init__).parameters
+        if param in signature and signature[param].default == node_default:
+            found.add(name)
+    return found
+
+
+def test_the_applicability_tables_match_the_installed_torch_signatures():
+    """Same guard as ``Optimizer``'s, for the loss side of #134.
+
+    A declared table describes torch at the moment it was written and has
+    no way of noticing when that stops being true. This is the noticing.
+    """
+    for param, node_default, declared in (
+        ("weight", None, loss_node._WEIGHT_TYPES),
+        ("ignore_index", loss_node.DEFAULT_IGNORE_INDEX,
+         loss_node._IGNORE_INDEX_TYPES),
+        ("label_smoothing", 0.0, loss_node._LABEL_SMOOTHING_TYPES),
+        ("pos_weight", None, loss_node._POS_WEIGHT_TYPES),
+    ):
+        found = _accepting(param, node_default)
+        assert found == set(declared), (
+            f"the {param} table no longer matches this torch: it accepts-"
+            f"and-agrees for {sorted(found)}, the node declares "
+            f"{sorted(declared)}")
+
+
+def test_reduction_really_is_the_argument_all_of_them_share():
+    """``LOSS_TYPES``' header comment, asserted rather than asserted-in-prose.
+
+    ``execute`` puts ``reduction`` in ``kwargs`` unconditionally, so a loss
+    that stopped taking it would fail at construction for every user of that
+    type — with a TypeError from inside torch rather than anything naming
+    this node.
+    """
+    assert _accepting("reduction", "mean") == set(loss_node.LOSS_TYPES)
+
+
+#: Every keyword each loss took when this was written (torch 2.13), minus
+#: ``self``. ``size_average``/``reduce`` are torch's own deprecated pair and
+#: are recorded, not exposed. A snapshot; see the test below.
+_TORCH_LOSS_KWARGS = {
+    "CrossEntropyLoss": {"ignore_index", "label_smoothing", "reduce",
+                         "reduction", "size_average", "weight"},
+    "MSELoss": {"reduce", "reduction", "size_average"},
+    "BCEWithLogitsLoss": {"pos_weight", "reduce", "reduction", "size_average",
+                          "weight"},
+    "L1Loss": {"reduce", "reduction", "size_average"},
+    "SmoothL1Loss": {"beta", "reduce", "reduction", "size_average"},
+    "NLLLoss": {"ignore_index", "reduce", "reduction", "size_average",
+                "weight"},
+    "KLDivLoss": {"log_target", "reduce", "reduction", "size_average"},
+    "HuberLoss": {"delta", "reduction"},
+    "BCELoss": {"reduce", "reduction", "size_average", "weight"},
+    "MarginRankingLoss": {"margin", "reduce", "reduction", "size_average"},
+    "CosineEmbeddingLoss": {"margin", "reduce", "reduction", "size_average"},
+}
+
+
+def test_no_new_torch_loss_knob_arrives_unnoticed():
+    """The loss half of #189's ask. See the Optimizer twin for the rationale.
+
+    Note what this already reveals: ``SmoothL1Loss.beta``, ``HuberLoss.delta``
+    and ``KLDivLoss.log_target`` are real hyperparameters torch offers and
+    the node does not expose. That is a standing decision, not an oversight
+    — recorded here so it stays a decision.
+    """
+    import inspect
+
+    import torch.nn as nn
+
+    current = {}
+    for name in loss_node.LOSS_TYPES:
+        signature = inspect.signature(getattr(nn, name).__init__).parameters
+        current[name] = {k for k in signature if k != "self"}
+
+    assert current == _TORCH_LOSS_KWARGS, (
+        "this torch's loss signatures differ from the recorded ones. For "
+        "each added keyword: expose it (a ParamDefinition plus an "
+        "applicability set) or record it above as reviewed-and-declined.")

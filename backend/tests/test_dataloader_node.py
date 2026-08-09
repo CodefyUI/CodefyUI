@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import pickle
 import random
 
+import numpy as np
 import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -241,6 +243,27 @@ def _tagged_draws(seed, dataset, node_id="loader-1"):
     return by_worker
 
 
+@contextlib.contextmanager
+def _global_rngs_restored():
+    """Put ``random``, numpy and torch back exactly as they were.
+
+    ``seed_rngs`` seeds all THREE process-global RNGs, so a helper that
+    saves only ``random``'s state hands every test that runs afterwards a
+    numpy and a torch stream pinned to a derived constant (#190). Nothing
+    in the suite depends on that today — the point is that nothing should
+    be able to start, because the symptom would surface as an unrelated
+    test going flaky depending on collection order, which is close to the
+    most expensive class of bug to chase.
+    """
+    states = (random.getstate(), np.random.get_state(), torch.get_rng_state())
+    try:
+        yield
+    finally:
+        random.setstate(states[0])
+        np.random.set_state(states[1])
+        torch.set_rng_state(states[2])
+
+
 def _predicted_draws(seed, node_id, worker_id, count):
     """What ``worker_init_fn`` promises worker *worker_id* will draw.
 
@@ -248,17 +271,37 @@ def _predicted_draws(seed, node_id, worker_id, count):
     this worker) — which is the property the function exists for. torch's
     own per-worker seeding would produce a different stream, so this is
     what tells "our seeding took effect" apart from "torch seeded it".
+
+    Seeds the globals to get there, and hands them back; see
+    :func:`_global_rngs_restored`.
     """
     from app.core.execution_context import ExecutionContext
     from app.core.seeding import derive_seed, seed_rngs
 
     base = ExecutionContext(seed=seed).derive_seed(f"dataloader:{node_id}")
-    state = random.getstate()
-    try:
+    with _global_rngs_restored():
         seed_rngs(derive_seed(base, f"worker:{worker_id}"))
         return [random.random() for _ in range(count)]
-    finally:
-        random.setstate(state)
+
+
+def test_predicted_draws_leaves_no_global_rng_pinned():
+    """The measuring stick must not move what it measures (#190).
+
+    Asserted by DRAWING either side rather than by comparing saved state
+    blobs: a pinned RNG is only a problem because of what the next caller
+    gets out of it, and two consecutive calls to a pinned generator return
+    the same number — which is exactly the assertion below.
+    """
+    _predicted_draws(21, "loader-1", 0, 4)
+    first = (random.random(), float(np.random.random()),
+             float(torch.rand(1)))
+    _predicted_draws(21, "loader-1", 0, 4)
+    second = (random.random(), float(np.random.random()),
+              float(torch.rand(1)))
+
+    assert first != second, (
+        "a global RNG is still pinned to the derived worker seed: "
+        f"{first} came back again as {second}")
 
 
 def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
