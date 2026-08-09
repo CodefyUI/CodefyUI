@@ -345,6 +345,47 @@ for (const token of BADGE_PALETTES) {
   check(`${token} as text on --surface-panel`, contrast(t(token), t('--surface-panel')), 4.5);
 }
 
+/* 8c. The layers editor's own layer-type palette (core#228). It was a pair of
+       hand-synced hex tables inside `components/LayersEditor` that this gate
+       could not see, still on the pre-lift Material tones the rest of the app
+       had already moved off. Its nodes are built the same way canvas nodes
+       are — a card on --surface-raised, a header tinted from the hue, the hue
+       itself as the card's outline — so it gets the same checks as section 8.
+       If a future edit puts a raw hue back behind white header text, the first
+       of these is what fails. */
+const LAYER_TYPES = [...tokens.keys()].filter((k) => k.startsWith('--layer-'));
+if (LAYER_TYPES.length === 0) {
+  failures.push('no --layer-* tokens found — the layers editor palette is missing');
+}
+for (const layer of LAYER_TYPES) {
+  const fill = mixHex(t('--surface-raised'), t(layer), NODE_HEADER_TINT);
+  check(`layer title on ${layer} header`, contrast(t('--text-primary'), fill), 4.5);
+  // The hue at full strength as the header's accent rule, on the tint of
+  // itself just above.
+  check(`${layer} accent on its own header`, contrast(t(layer), fill), 3);
+  // It also outlines the whole card, so it has to hold both sides of that
+  // border: the card fill inside and the editor's canvas outside.
+  check(`${layer} outline against the card`, contrast(t(layer), t('--surface-raised')), 3);
+  check(`${layer} outline against the canvas`, contrast(t(layer), t('--surface-canvas')), 3);
+  // And it is the dot beside each entry in the palette list.
+  check(`${layer} as a palette dot on --surface-panel`, contrast(t(layer), t('--surface-panel')), 3);
+}
+
+/* Seven distinct hues across eleven roles (Input shares the green with
+   Convolution, Output and the unknown-type fallback share the red with
+   Activation). Measure the distinct ones against each other: a palette whose
+   members all clear 3:1 but look alike is a different failure. The floor is
+   well under the 16.1 dE00 the current set achieves — it records that these
+   are not near-neighbours, it is not a target to design down to. */
+const distinctLayerHues = [...new Set(LAYER_TYPES.map((k) => t(k)))].map((v) => [v, v]);
+const layerPair = closestPair(distinctLayerHues);
+checked += 1;
+if (layerPair.min < 10) {
+  failures.push(
+    `layer palette: ${layerPair.pair.join(' and ')} are only ${layerPair.min.toFixed(2)} dE00 apart (needs 10)`
+  );
+}
+
 /* 9. Washes are translucent fills. Check what they actually composite to over
       the panel they land on, not what their own rgba() claims in isolation —
       that is the mistake that made the old gallery badges look like 1:1 pairs.

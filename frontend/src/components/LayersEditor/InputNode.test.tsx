@@ -3,13 +3,14 @@ import { screen } from '@testing-library/react';
 import type { Node } from '@xyflow/react';
 import { InputNode } from './InputNode';
 import { nodeProps, renderWithFlow } from '../../test/utils';
+import { colorForType } from './graphSerialization';
 import type { LayerNodeData } from './graphSerialization';
 
 function makeData(overrides: Partial<LayerNodeData> = {}): LayerNodeData {
   return {
     layerType: 'Input',
     params: {},
-    color: '#4CAF50',
+    color: colorForType('Input'),
     isBoundary: true,
     ...overrides,
   };
@@ -55,14 +56,16 @@ describe('InputNode', () => {
     const root = container.querySelector('div') as HTMLElement;
     // Selected uses the white border branch (jsdom normalizes #fff -> rgb()).
     expect(root.style.border).toContain('rgb(255, 255, 255)');
-    expect(root.style.boxShadow).toContain('#4CAF5044');
+    expect(root.style.boxShadow).toContain(colorForType('Input') + '44');
   });
 
   it('applies the unselected border/box-shadow styling when not selected', () => {
     const { container } = renderInput(makeData({ ports: [{ id: 'p1', name: 'x' }] }), false);
     const root = container.querySelector('div') as HTMLElement;
-    // Unselected green border with alpha normalizes to rgba(76, 175, 80, ...).
-    expect(root.style.border).toContain('rgba(76, 175, 80');
+    // Unselected: the layer hue at full strength outlines the card. It used
+    // to be drawn at 53% alpha, which composited to 2.9-3.8:1 against the
+    // canvas behind it (core#228).
+    expect(root.style.border).toContain('rgb(76, 175, 80)');
     expect(root.style.boxShadow).toContain('rgba(0,0,0,0.4)');
   });
 });

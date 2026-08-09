@@ -8,7 +8,7 @@ import { NodeConfigPanel } from './components/ConfigPanel/NodeConfigPanel';
 import { InspectorPanel } from './components/InspectorPanel/InspectorPanel';
 import { ResultsPanel } from './components/ResultsPanel/ResultsPanel';
 import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
-import { SubgraphEditorModal } from './components/SubgraphEditor/SubgraphEditorModal';
+import { LayersEditorModal } from './components/LayersEditor/LayersEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
 import { ToastContainer } from './components/shared/Toast';
@@ -154,7 +154,7 @@ function App() {
       <TabBar />
       {hasActiveTab && <TabContent tabId={activeTabId} />}
       <PresetConfigModal />
-      <SubgraphEditorModal />
+      <LayersEditorModal />
       <NodeDetailModal />
       <TemplateGalleryModal />
       <ToastContainer />

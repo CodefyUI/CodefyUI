@@ -8,12 +8,15 @@ import {
   flowToGraphJson,
   graphToFlow,
   emptyGraph,
-  autoLayoutSubgraph,
+  autoLayoutLayers,
   validateGraph,
+  colorForType,
+  layerCategoryOf,
   type GraphSpec,
   type LayerNodeData,
   type WorkflowData,
 } from './graphSerialization';
+import { LAYER_TYPE_COLORS } from '../../styles/theme';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -589,17 +592,19 @@ describe('graphToFlow', () => {
       }),
     );
     const color = (id: string) => res.nodes.find((n) => n.id === id)!.data.color;
-    expect(color('i')).toBe('#4CAF50');
-    expect(color('o')).toBe('#F44336');
-    expect(color('add')).toBe('#FF9800');
-    expect(color('conv')).toBe('#4CAF50');
-    expect(color('bn')).toBe('#9C27B0');
-    expect(color('pool')).toBe('#2196F3');
-    expect(color('drop')).toBe('#FF9800');
-    expect(color('lin')).toBe('#00BCD4');
-    expect(color('flat')).toBe('#607D8B');
-    // Unknown type falls back to red.
-    expect(color('wat')).toBe('#F44336');
+    expect(color('i')).toBe(LAYER_TYPE_COLORS.Input);
+    expect(color('o')).toBe(LAYER_TYPE_COLORS.Output);
+    expect(color('add')).toBe(LAYER_TYPE_COLORS.Merge);
+    expect(color('conv')).toBe(LAYER_TYPE_COLORS.Convolution);
+    expect(color('bn')).toBe(LAYER_TYPE_COLORS.Normalization);
+    expect(color('pool')).toBe(LAYER_TYPE_COLORS.Pooling);
+    expect(color('drop')).toBe(LAYER_TYPE_COLORS.Regularization);
+    expect(color('lin')).toBe(LAYER_TYPE_COLORS.Linear);
+    expect(color('flat')).toBe(LAYER_TYPE_COLORS.Utility);
+    // A type the palette does not know gets the unknown slot, not whichever
+    // category happens to share its hue.
+    expect(layerCategoryOf('TotallyUnknown')).toBe('Unknown');
+    expect(color('wat')).toBe(LAYER_TYPE_COLORS.Unknown);
   });
 
   it('ignores edges referencing unknown node ids during layout', () => {
@@ -779,14 +784,56 @@ describe('emptyGraph', () => {
     // Distinct generated ids.
     expect(input.id).not.toBe(output.id);
   });
+
+  it('paints its boundary nodes from the same table graphToFlow uses', () => {
+    // These two used to be `'#4CAF50'` and `'#F44336'` written out by hand
+    // here, a third copy of the palette after LAYER_DEFS and colorForType
+    // (core#228). A starter graph and an imported one have to agree.
+    const [input, output] = emptyGraph().nodes;
+    expect(input.data.color).toBe(colorForType('Input'));
+    expect(output.data.color).toBe(colorForType('Output'));
+  });
 });
 
-// ── autoLayoutSubgraph ─────────────────────────────────────────────────────
+// ── the layer palette ──────────────────────────────────────────────────────
 
-describe('autoLayoutSubgraph', () => {
+describe('colorForType / layerCategoryOf', () => {
+  it('resolves every category through the token mirror, with no hex of its own', () => {
+    // The point of core#228: there is one table, and it is the one in
+    // tokens.css. If someone reintroduces a literal here this fails, because
+    // the literal will not be a value the token layer knows.
+    const known = new Set(Object.values(LAYER_TYPE_COLORS));
+    for (const type of [
+      'Input', 'Output', 'Conv2d', 'BatchNorm2d', 'MaxPool2d', 'Dropout',
+      'Linear', 'Flatten', 'ReLU', 'Concat', 'NoSuchLayer',
+    ]) {
+      expect(known.has(colorForType(type))).toBe(true);
+      expect(colorForType(type)).toBe(LAYER_TYPE_COLORS[layerCategoryOf(type)]);
+    }
+  });
+
+  it('files every merge type under Merge', () => {
+    for (const type of ['Add', 'Concat', 'Multiply', 'Subtract', 'Mean', 'Stack']) {
+      expect(layerCategoryOf(type)).toBe('Merge');
+    }
+  });
+
+  it('never answers with one of the pre-lift Material tones', () => {
+    // The four hues that were measured too dark to read on a dark surface and
+    // were lifted app-wide. The layers editor kept the originals until #228.
+    const preLift = ['#9c27b0', '#2196f3', '#f44336', '#607d8b'];
+    for (const type of ['BatchNorm2d', 'MaxPool2d', 'ReLU', 'Flatten', 'Output', 'Nope']) {
+      expect(preLift).not.toContain(colorForType(type).toLowerCase());
+    }
+  });
+});
+
+// ── autoLayoutLayers ─────────────────────────────────────────────────────
+
+describe('autoLayoutLayers', () => {
   it('returns the same array reference for an empty node list', () => {
     const nodes: Node<LayerNodeData>[] = [];
-    expect(autoLayoutSubgraph(nodes, [])).toBe(nodes);
+    expect(autoLayoutLayers(nodes, [])).toBe(nodes);
   });
 
   it('positions nodes using measured/explicit/default dimensions', () => {
@@ -799,7 +846,7 @@ describe('autoLayoutSubgraph', () => {
       flowNode('c', {}),
     ];
     const edges = [edge('e1', 'a', 'b'), edge('e2', 'b', 'c')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(3);
     // Layout assigns finite, non-identical positions down the chain.
     const ys = laid.map((n) => n.position.y);
@@ -810,7 +857,7 @@ describe('autoLayoutSubgraph', () => {
   it('ignores edges that reference ids not in the node set', () => {
     const nodes = [flowNode('a', {}), flowNode('b', {})];
     const edges = [edge('e1', 'a', 'b'), edge('ghost', 'a', 'zzz')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(2);
   });
 
@@ -821,7 +868,7 @@ describe('autoLayoutSubgraph', () => {
       flowNode(id, {}, { width: 160, height: 2000 });
     const nodes = [tall('t0'), tall('t1'), tall('t2'), tall('t3')];
     const edges = [edge('e0', 't0', 't1'), edge('e1', 't1', 't2'), edge('e2', 't2', 't3')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(4);
     // No horizontal wrapping: single column.
     const xs = new Set(laid.map((n) => n.position.x));
@@ -835,7 +882,7 @@ describe('autoLayoutSubgraph', () => {
       const edges = Array.from({ length: count - 1 }, (_, i) =>
         edge(`e${i}`, `n${i}`, `n${i + 1}`),
       );
-      return autoLayoutSubgraph(nodes, edges);
+      return autoLayoutLayers(nodes, edges);
     };
     expect(mk(30)).toHaveLength(30); // >25 bucket
     expect(mk(60)).toHaveLength(60); // >50 bucket

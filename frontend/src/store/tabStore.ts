@@ -200,7 +200,16 @@ export interface TabState {
   subgraphStack: SubgraphFrame[];
   selectedNodeId: string | null;
   presetModalNodeId: string | null;
-  subgraphModalNodeId: string | null;
+  /**
+   * Node whose *layers* editor is open, or null (core#199).
+   *
+   * Unrelated to `subgraphs` / `subgraphStack` above, which are graph nesting
+   * (core#137). This one drives `components/LayersEditor`, a modal that edits
+   * one SequentialModel node's `layers` JSON param — a list of neural-network
+   * layers, not a nested graph. The two features shared the word "subgraph"
+   * until the rename.
+   */
+  layersModalNodeId: string | null;
   /**
    * Node whose detail modal (#127) is open, or null. Transient like the other
    * two modal ids above — never persisted, so a reload lands on the canvas
@@ -280,7 +289,7 @@ function createTabState(id: string, name: string): TabState {
     subgraphStack: [],
     selectedNodeId: null,
     presetModalNodeId: null,
-    subgraphModalNodeId: null,
+    layersModalNodeId: null,
     nodeDetailNodeId: null,
     nodeDetailTab: null,
     nodeDetailPort: null,
@@ -343,11 +352,14 @@ interface TabStoreState {
   selectNodeExclusively: (id: string | null) => void;
   openPresetModal: (id: string) => void;
   closePresetModal: () => void;
-  openSubgraphModal: (id: string) => void;
-  closeSubgraphModal: () => void;
+  /* The layers editor (core#199) — one node's `layers` param. Not nesting;
+     the graph-nesting actions are `enterSubgraph` / `exitSubgraph` / friends
+     further down. */
+  openLayersModal: (id: string) => void;
+  closeLayersModal: () => void;
   openNodeDetail: (id: string, target?: { tab?: string; port?: string }) => void;
   closeNodeDetail: () => void;
-  updateSubgraphLayers: (nodeId: string, layersJson: string) => void;
+  updateNodeLayers: (nodeId: string, layersJson: string) => void;
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
   clear: () => void;
@@ -1652,11 +1664,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   closePresetModal: () =>
     set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ presetModalNodeId: null })) }),
 
-  openSubgraphModal: (id) =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ subgraphModalNodeId: id })) }),
+  openLayersModal: (id) =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ layersModalNodeId: id })) }),
 
-  closeSubgraphModal: () =>
-    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ subgraphModalNodeId: null })) }),
+  closeLayersModal: () =>
+    set({ tabs: updateTab(get().tabs, get().activeTabId, () => ({ layersModalNodeId: null })) }),
 
   // Opening the detail modal also selects the node, in ONE commit. Every entry
   // point (double-click, context menu, Enter, the modal's own prev/next
@@ -1688,7 +1700,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       })),
     }),
 
-  updateSubgraphLayers: (nodeId, layersJson) =>
+  updateNodeLayers: (nodeId, layersJson) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: tab.nodes.map((n) =>
@@ -1754,7 +1766,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         subgraphStack: [],
         selectedNodeId: null,
         presetModalNodeId: null,
-        subgraphModalNodeId: null,
+        layersModalNodeId: null,
         nodeDetailNodeId: null,
         // A cleared canvas is a fresh, unbound graph. Drop the metadata tied
         // to the previously-open graph so the next save doesn't silently

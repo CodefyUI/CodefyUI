@@ -3,13 +3,14 @@ import { screen } from '@testing-library/react';
 import type { Node } from '@xyflow/react';
 import { OutputNode } from './OutputNode';
 import { nodeProps, renderWithFlow } from '../../test/utils';
+import { colorForType } from './graphSerialization';
 import type { LayerNodeData } from './graphSerialization';
 
 function makeData(overrides: Partial<LayerNodeData> = {}): LayerNodeData {
   return {
     layerType: 'Output',
     params: {},
-    color: '#F44336',
+    color: colorForType('Output'),
     isBoundary: true,
     ...overrides,
   };
@@ -52,14 +53,15 @@ describe('OutputNode', () => {
     const { container } = renderOutput(makeData({ ports: [{ id: 'p1', name: 'y' }] }), true);
     const root = container.querySelector('div') as HTMLElement;
     expect(root.style.border).toContain('rgb(255, 255, 255)');
-    expect(root.style.boxShadow).toContain('#F4433644');
+    expect(root.style.boxShadow).toContain(colorForType('Output') + '44');
   });
 
   it('applies the unselected styling when not selected', () => {
     const { container } = renderOutput(makeData({ ports: [{ id: 'p1', name: 'y' }] }), false);
     const root = container.querySelector('div') as HTMLElement;
-    // #F4433688 normalizes to rgba(244, 67, 54, ...).
-    expect(root.style.border).toContain('rgba(244, 67, 54');
+    // The lifted red (#f66358) at full strength -- was #F4433688, i.e. the
+    // pre-lift tone at 53% alpha (core#228).
+    expect(root.style.border).toContain('rgb(246, 99, 88)');
     expect(root.style.boxShadow).toContain('rgba(0,0,0,0.4)');
   });
 });

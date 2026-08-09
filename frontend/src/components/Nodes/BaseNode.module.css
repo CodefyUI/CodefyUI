@@ -264,14 +264,14 @@
   padding: var(--sp-2) 0;
 }
 
-/* ── Sequential subgraph section ── */
-.subgraphSection {
+/* ── SequentialModel layer summary (opens the layers editor) ── */
+.layersSection {
   border-top: 1px solid var(--border-base);
   padding: var(--sp-3) var(--sp-4);
   text-align: center;
 }
 
-.subgraphLayerRow {
+.layersRow {
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
   color: var(--text-muted);
@@ -281,12 +281,12 @@
   gap: var(--sp-2);
 }
 
-.subgraphLayerCount {
+.layersCount {
   color: var(--status-error);
   font-weight: var(--fw-semibold);
 }
 
-.subgraphHint {
+.layersHint {
   font-size: var(--fs-xs);
   line-height: var(--lh-snug);
   color: var(--text-muted);
