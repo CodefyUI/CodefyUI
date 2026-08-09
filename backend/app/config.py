@@ -50,6 +50,33 @@ class Settings(BaseSettings):
     # 64 MB comfortably covers a handful of base64 image inputs.
     # Env-overridable as CODEFYUI_MAX_RUN_BODY_BYTES.
     MAX_RUN_BODY_BYTES: int = 64 * 1024 * 1024  # 64 MB
+    # The WebSocket twin of the number above, for `WS /ws/execution` — which
+    # carries a whole graph in one text frame and so needs a ceiling of its
+    # own. It is NOT enforced here: a WebSocket has no request body, so
+    # core.body_limit skips its scope deliberately, and by the time
+    # ``receive_text()`` returns the message is already assembled. The only
+    # place a frame can be refused before it is buffered is the transport,
+    # so this value is handed to uvicorn as ``--ws-max-size`` by
+    # ``scripts/dev.py`` (both `cdui start` and `cdui dev`), and the
+    # ``websockets`` library enforces it WHILE assembling fragments — the
+    # same count-as-it-arrives property core.body_limit gives HTTP.
+    #
+    # Why it exists at all (core#274): uvicorn's own ``ws_max_size`` default
+    # is 16 MB, so before this setting the canvas socket was capped four
+    # times STRICTER than the HTTP routes, by a number nobody in this repo
+    # chose, that no launch path passed and no user could tune. A graph
+    # between 16 and 64 MB was accepted by POST /api/graph/run/{name} and
+    # refused by the socket the editor actually uses.
+    #
+    # It therefore DEFAULTS TO MAX_RUN_BODY_BYTES rather than to a literal
+    # of its own (see _ws_cap_follows_body_cap): one graph ceiling, both
+    # transports, and raising CODEFYUI_MAX_RUN_BODY_BYTES moves both. Set
+    # CODEFYUI_WS_MAX_MESSAGE_BYTES to split them apart deliberately.
+    #
+    # NOTE this only binds on the launch paths CodefyUI controls. Running
+    # `uvicorn app.main:app` by hand gets uvicorn's 16 MB back unless you
+    # pass --ws-max-size yourself; the deployment guide says so.
+    WS_MAX_MESSAGE_BYTES: int = 64 * 1024 * 1024  # 64 MB
 
     # ── Stage-2 publish storage + limits (spec Section 8) ──────────────
     # All env-overridable via the CODEFYUI_ prefix like everything else.
@@ -228,6 +255,22 @@ class Settings(BaseSettings):
     # RUN_QUEUE_MAX_CONCURRENT_* above: that one bounds RUNS per device,
     # this one bounds NODES inside a single run.
     MAX_PARALLEL_NODES: int = 4
+
+    @model_validator(mode="after")
+    def _ws_cap_follows_body_cap(self) -> "Settings":
+        """An unset WS ceiling tracks MAX_RUN_BODY_BYTES (core#274).
+
+        The two caps bound the same thing — one graph — over two transports,
+        so the default has to be the same number or the pair drifts the
+        moment an operator raises one. ``model_fields_set`` lists ONLY fields
+        provided from env/init (never class defaults), so an explicit
+        ``CODEFYUI_WS_MAX_MESSAGE_BYTES`` still wins and the two can be
+        split apart on purpose. Same precedence idiom as
+        ``_derive_project_roots`` below.
+        """
+        if "WS_MAX_MESSAGE_BYTES" not in self.model_fields_set:
+            self.WS_MAX_MESSAGE_BYTES = self.MAX_RUN_BODY_BYTES
+        return self
 
     @model_validator(mode="after")
     def _derive_project_roots(self) -> "Settings":

@@ -15,7 +15,7 @@ class FakeWS {
   readyState = 0; // CONNECTING
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: { code?: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   send = vi.fn();
   close = vi.fn(() => {
@@ -33,9 +33,14 @@ class FakeWS {
   fireMessage(data: unknown) {
     this.onmessage?.({ data });
   }
-  fireClose() {
+  /**
+   * @param code RFC 6455 close code, as the browser's CloseEvent carries it.
+   * Defaults to 1006 (abnormal closure) — what a dropped link actually looks
+   * like, and the case every pre-existing test here is about.
+   */
+  fireClose(code = 1006) {
     this.readyState = FakeWS.CLOSED;
-    this.onclose?.();
+    this.onclose?.({ code });
   }
   fireError() {
     this.onerror?.();
@@ -299,6 +304,93 @@ describe('onclose / reconnect', () => {
     second.fireOpen(); // recovery → success toast
 
     expect(addToastSpy).toHaveBeenCalledWith(expect.any(String), 'success');
+  });
+
+  // Harness note: a test that fires a close and then ENDS leaves a live
+  // reconnect chain behind. `afterEach`'s runOnlyPendingTimers starts that
+  // chain's `connect()`, whose awaited microtasks can land after the next
+  // test's `beforeEach` has already reset `FakeWS.instances` — pushing a
+  // stray socket into a later test's count. Every test below therefore ends
+  // with `ws.disconnect()`, which sets `intentionalClose` and cancels the
+  // pending timer.
+
+  // ── close code 1009: the graph we sent was too big (core#274) ──────────
+  // The server refuses an oversized frame WHILE assembling its fragments, so
+  // the application never sees the message and cannot answer with the usual
+  // {"type": "error"} frame — the close code is the only channel the failure
+  // has. Verified against a live uvicorn: the close carries 1009 plus a
+  // reason, and both survive a 100 MB overshoot. This client used to throw
+  // both away and run the generic reconnect path, so "your graph is too
+  // large" reached the user as "Connection lost" followed by "Connection
+  // restored" — and the next Run click failed the same silent way.
+
+  it('reports a 1009 close as "too large" rather than a generic outage', async () => {
+    const ws = new ExecutionWebSocket();
+    const { socket, promise } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+    addToastSpy.mockClear();
+
+    socket.fireClose(1009);
+
+    const errorToasts = addToastSpy.mock.calls.filter(
+      (c: [string, ToastType?]) => c[1] === 'error',
+    );
+    expect(errorToasts).toHaveLength(1);
+    // The message has to actually say what went wrong — a generic error
+    // toast would be no better than the warning it replaces.
+    expect(errorToasts[0][0]).toMatch(/too large/i);
+    ws.disconnect(); // see note above the describe block
+  });
+
+  it('does not also show the generic "connection lost" warning for a 1009', async () => {
+    const ws = new ExecutionWebSocket();
+    const { socket, promise } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+    addToastSpy.mockClear();
+
+    socket.fireClose(1009);
+
+    // Two toasts contradicting each other is worse than one wrong one: the
+    // specific reason claims the one-per-outage slot.
+    const warningToasts = addToastSpy.mock.calls.filter(
+      (c: [string, ToastType?]) => c[1] === 'warning',
+    );
+    expect(warningToasts).toHaveLength(0);
+    ws.disconnect(); // see note above the describe block
+  });
+
+  it('still reconnects after a 1009 — the socket is fine, the message was not', async () => {
+    const ws = new ExecutionWebSocket();
+    const { socket, promise } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+
+    socket.fireClose(1009);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // A replacement socket exists, so the canvas is usable again without a
+    // page reload — the user just has to send something smaller.
+    expect(FakeWS.instances).toHaveLength(2);
+    ws.disconnect(); // see note above the describe block
+  });
+
+  it('leaves an ordinary drop on the generic path', async () => {
+    const ws = new ExecutionWebSocket();
+    const { socket, promise } = await startConnect(ws);
+    socket.fireOpen();
+    await promise;
+    addToastSpy.mockClear();
+
+    socket.fireClose(1006); // abnormal closure — a real dropped link
+
+    expect(addToastSpy).toHaveBeenCalledWith(expect.any(String), 'warning');
+    const errorToasts = addToastSpy.mock.calls.filter(
+      (c: [string, ToastType?]) => c[1] === 'error',
+    );
+    expect(errorToasts).toHaveLength(0);
+    ws.disconnect(); // see note above the describe block
   });
 
   it('only shows one disconnect toast across repeated backoff ticks', async () => {

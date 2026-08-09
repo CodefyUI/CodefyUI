@@ -139,13 +139,48 @@ through the passthrough would win inside uvicorn and desync all of that, so it
 exits with code 2 and tells you to use `cdui start --host` instead.
 :::
 
-:::tip Does --proxy-headers actually change anything today?
-Set it -- it is correct, and it is what makes `X-Forwarded-*` trustworthy at the
-uvicorn layer rather than merely present. But be aware that CodefyUI's own code
-does not currently read `X-Forwarded-Proto`. The one place a scheme is baked
-into a response is the OpenAPI document for a published app, which advertises
-`http://your-host/api/apps/<slug>` even when reached over HTTPS. Adjust the URL
-by hand if you hand that document to a client generator.
+:::tip --proxy-headers is what makes the OpenAPI document say `https`
+Set it. Behind TLS it is not merely tidy, it is load-bearing.
+
+The one place CodefyUI bakes a scheme into a response is the OpenAPI document
+for a published app, and its `servers[].url` (plus the two copy-paste `curl`
+snippets) is built from the scheme of the incoming request. uvicorn rewrites
+that scheme from `X-Forwarded-Proto` **only** when started with
+`--proxy-headers`, and **only** for a peer inside `--forwarded-allow-ips`.
+
+So: with both flags set, a document fetched over HTTPS advertises
+`https://your-host/api/apps/<slug>` and Swagger UI's "Try it out" works.
+Without them, it advertises `http://` even when reached over HTTPS -- the
+browser then blocks the call as mixed content, and a generated client gets the
+wrong base URL.
+
+CodefyUI deliberately never reads `X-Forwarded-Proto` itself. If it did, any
+client could forge the header and dictate the URL your published app advertises
+to every integrator who fetches the document; leaving it to uvicorn keeps the
+"is this hop trusted?" decision in the one place that has been told the answer.
+
+**Mind `--forwarded-allow-ips` if your proxy is not on this machine.** It
+defaults to `127.0.0.1`, so a proxy in another container or on another host is
+*not* trusted, its `X-Forwarded-Proto` is ignored, and the document quietly goes
+back to advertising `http://` -- with no error anywhere. Set it to the proxy's
+address (the `nginx` example below terminates on the same host, which is why
+`127.0.0.1` is correct there).
+:::
+
+:::note WebSocket message size
+`cdui start` and `cdui dev` pass uvicorn `--ws-max-size`, derived from
+`CODEFYUI_WS_MAX_MESSAGE_BYTES` (default: whatever `CODEFYUI_MAX_RUN_BODY_BYTES`
+is, i.e. 64 MB). This is the largest graph the canvas may send over
+`/ws/execution`; uvicorn's own default is 16 MB, which is *stricter* than the
+HTTP body ceiling and would refuse graphs the REST API accepts.
+
+Because `cdui` derives the flag, `--ws-max-size` is refused after `--` -- set
+the environment variable instead. If you invoke uvicorn by hand you get its
+16 MB back unless you pass the flag yourself.
+
+Note your proxy has a say too: nginx's `client_max_body_size` bounds HTTP
+bodies, and a WebSocket frame that large needs `proxy_read_timeout` headroom to
+finish arriving.
 :::
 
 ## A systemd unit

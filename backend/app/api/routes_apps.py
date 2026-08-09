@@ -734,6 +734,7 @@ _CONTRACT_TYPE_TO_SCHEMA: dict[str, dict[str, Any]] = {
 def _openapi_document(
     slug: str, version: int, contract_doc: dict[str, Any], host: str,
     git_commit: str | None = None, git_dirty: int | None = None,
+    scheme: str = "http",
 ) -> dict[str, Any]:
     """A COMPLETE standalone OpenAPI 3.1 document for the active version.
 
@@ -741,7 +742,38 @@ def _openapi_document(
     are all always present — never a fragment (openapi-generator chokes on
     partials). Generated from the version's stored ``contract_json``;
     ``servers`` derives from the validated request Host (host_guard
-    already vetted it). JSON only — no HTML (Stage-5 veto).
+    already vetted it) and from *scheme*. JSON only — no HTML (Stage-5
+    veto).
+
+    On *scheme* (core#275)
+    ----------------------
+    This used to be the literal string ``"http"``, which was true of the
+    only deployment CodefyUI was written for — one machine, loopback, no
+    TLS — and stopped being true the moment the documented way to deploy
+    it became a reverse proxy terminating HTTPS. An ``http://`` server URL
+    handed to a browser is blocked as mixed content, so Swagger UI's "Try
+    it out" fails, and a generated client either fails or silently
+    downgrades.
+
+    The caller passes ``request.url.scheme``, which is ``"https"`` exactly
+    when uvicorn's ``ProxyHeadersMiddleware`` has rewritten the ASGI scope
+    from ``X-Forwarded-Proto`` — i.e. when the operator ran with
+    ``--proxy-headers`` and the hop is in ``--forwarded-allow-ips``. That
+    indirection is the whole point and is NOT worth "simplifying": reading
+    ``X-Forwarded-Proto`` in this function directly would let any client
+    forge the advertised scheme by sending a header, whereas uvicorn only
+    honours it from a trusted peer. The app trusts the scope; only the
+    transport trusts the header.
+
+    Rejected: emitting a RELATIVE ``servers`` entry (``{"url": "/"}``,
+    which OpenAPI 3 permits and which sidesteps scheme and host entirely).
+    It is a real option for ``servers`` alone, but ``base_url`` below also
+    builds the two ``x-codefyui-curl`` snippets, and a copy-pasteable
+    ``curl -X POST "/api/apps/<slug>/invoke"`` is not a command. Going
+    relative would have left the scheme question unanswered in two of the
+    three places it is asked — the same bug, moved somewhere with no test
+    on it — while additionally costing the standalone-document property
+    this generator exists to provide.
     """
     input_properties: dict[str, Any] = {}
     required_inputs: list[str] = []
@@ -800,7 +832,7 @@ def _openapi_document(
         },
     }
 
-    base_url = f"http://{host}/api/apps/{slug}"
+    base_url = f"{scheme}://{host}/api/apps/{slug}"
     bash_curl = (
         f'curl -s -X POST "{base_url}/invoke" \\\n'
         '  -H "Authorization: Bearer cdui_YOUR_KEY" \\\n'
@@ -945,9 +977,14 @@ async def get_app_openapi(slug: str, request: Request):
                             "publish or activate one first")
     contract_doc = json.loads(resolved["contract_json"])
     host = request.headers.get("host", f"{settings.HOST}:{settings.PORT}")
+    # ``request.url.scheme`` reads the ASGI scope, which uvicorn's
+    # ProxyHeadersMiddleware rewrites from a TRUSTED X-Forwarded-Proto when
+    # started with --proxy-headers. Never read that header here — see
+    # _openapi_document's docstring (core#275).
     return _openapi_document(
         slug, int(resolved["active_version"]), contract_doc, host,
         git_commit=resolved["git_commit"], git_dirty=resolved["git_dirty"],
+        scheme=request.url.scheme,
     )
 
 

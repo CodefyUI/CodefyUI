@@ -24,6 +24,25 @@ const MAX_RECONNECT_ATTEMPTS = 10;
  */
 export const RECONNECTED_EVENT = 'reconnected';
 
+/**
+ * RFC 6455 close code 1009, "message too big".
+ *
+ * Sent by the server's WebSocket layer when a frame we sent exceeded its
+ * ceiling (`CODEFYUI_WS_MAX_MESSAGE_BYTES`, handed to uvicorn as
+ * `--ws-max-size`). It is refused *while the fragments are assembled*, so
+ * the application never sees the message and cannot answer with the usual
+ * `{"type": "error"}` frame — the close code is the only channel the
+ * failure has.
+ *
+ * Verified end to end against a live uvicorn (core#274): the close frame
+ * carries 1009 plus a reason, and both survive even a 100 MB overshoot
+ * against a 4 MB ceiling. Before this constant existed the editor threw
+ * both away and ran the generic reconnect path, so an oversized graph
+ * looked exactly like a flaky network — "Connection lost", "Connection
+ * restored", and the same silent failure on the next Run click.
+ */
+const WS_CLOSE_MESSAGE_TOO_BIG = 1009;
+
 export class ExecutionWebSocket {
   private ws: WebSocket | null = null;
   private handlers: Map<string, MessageHandler[]> = new Map();
@@ -61,11 +80,23 @@ export class ExecutionWebSocket {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event?: { code?: number }) => {
       if (this.intentionalClose) return;
       // Don't loop on initial-connect failure — the connect() promise has
       // already rejected and the caller is responsible for surfacing that.
       if (!this.hasBeenConnected) return;
+      if (event?.code === WS_CLOSE_MESSAGE_TOO_BIG) {
+        useToastStore.getState().addToast(
+          useI18n.getState().t('connection.tooLarge'),
+          'error',
+        );
+        // Claim the one-toast-per-outage slot so scheduleReconnect's generic
+        // "connection lost" does not immediately contradict the specific
+        // reason we just gave. The socket itself is healthy — it was the
+        // message that was refused — so we still reconnect, and the user
+        // still gets "connection restored" when it comes back.
+        this.notifiedDisconnect = true;
+      }
       this.scheduleReconnect();
     };
 
