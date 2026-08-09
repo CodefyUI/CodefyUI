@@ -61,6 +61,20 @@ def secret_param_names(node_type: str) -> set[str]:
     }
 
 
+def _type_of(node: Mapping[str, Any]) -> str:
+    """A node's type as a string, whatever the file actually contains.
+
+    ``node.get("type", "")`` is NOT enough: a key present with a null value
+    returns ``None``, and ``_preset_secret_param_map`` then calls
+    ``.startswith`` on it and raises ``AttributeError`` (core#200 item 6). The
+    walkers here are the only readers of a graph that never passed through
+    pydantic -- the publish gate reads a file straight off disk, while
+    ``/save`` and ``/export`` are protected by ``NodeData.type: str`` -- so
+    this is where the coercion belongs.
+    """
+    return str(node.get("type") or "")
+
+
 def _params_of(node: dict[str, Any]) -> dict[str, Any] | None:
     data = node.get("data")
     if not isinstance(data, dict):
@@ -158,7 +172,7 @@ def scrub_graph_secrets(
     """
     changed = 0
     for node in nodes:
-        node_type = node.get("type", "")
+        node_type = _type_of(node)
         # Regular node: blank its own declared SECRET params.
         names = secret_param_names(node_type)
         if names:
@@ -264,7 +278,7 @@ def _iter_node_secret_slots(
     directions symmetric: extraction blanks a slot to ``""`` rather than
     deleting it, so the same slot is still there to be found on the way back.
     """
-    node_type = node.get("type", "")
+    node_type = _type_of(node)
     names = secret_param_names(node_type)
     if names:
         params = _params_of(node)
@@ -360,7 +374,7 @@ def iter_secret_slots(
             params = inner.get("params")
             if not isinstance(params, dict):
                 continue
-            for name in sorted(secret_param_names(str(inner.get("type", "")))):
+            for name in sorted(secret_param_names(_type_of(inner))):
                 if name in params:
                     yield ((("presets", outer, "nodes", index, "params", name)),
                            params, name)
@@ -422,6 +436,7 @@ def find_secret_violations(
     nodes: Iterable[dict[str, Any]],
     *,
     subgraphs: Iterable[Any] | None = None,
+    presets: Iterable[Any] | None = None,
     preset_fallback: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Report every non-empty SECRET-typed param still present in ``nodes``.
@@ -441,6 +456,18 @@ def find_secret_violations(
     a block is a ``subgraph:<id>`` REFERENCE into this same flat list -- so
     walking every entry covers arbitrary depth without recursing.
 
+    ``presets`` is the graph's own portable preset DEFINITIONS (core#200 item
+    5). This is the third and last place a file can carry a node, and it was
+    the one this walk missed: ``scrub_preset_definition_secrets`` exists to
+    clean it on the save path and ``iter_secret_slots`` covers it on the run
+    path, so a key baked into a portable preset's own defaults published
+    cleanly while the identical key one level up was refused. A definition
+    node's params sit directly on the node (``presets[].nodes[].params``),
+    not under ``data`` -- a flatter shape than everywhere else. Violations are
+    addressed ``preset:<name>/<inner id>``, which is the type string an
+    instance of that preset actually wears, so the report names something the
+    reader can look up rather than an index into a list.
+
     ``preset_fallback`` resolves presets defined only in the graph's own
     ``presets[]``; without it a preset node's ``internalParams`` slots cannot
     be identified as secret at all.
@@ -448,7 +475,7 @@ def find_secret_violations(
     violations: list[dict[str, str]] = []
 
     def scan(node: dict[str, Any], node_id: str) -> None:
-        node_type = node.get("type", "")
+        node_type = _type_of(node)
         # Regular node: report its own declared SECRET params.
         names = secret_param_names(node_type)
         if names:
@@ -493,5 +520,30 @@ def find_secret_violations(
                 continue
             inner_id = str(inner.get("id", ""))
             scan(inner, f"{definition_id}{SUBGRAPH_SEPARATOR}{inner_id}")
+
+    # Portable preset definitions. Not `scan`: a definition node keeps its
+    # params directly on the node rather than under `data`, and it can never
+    # itself be a `preset:` instance, so the internalParams half does not
+    # apply. Nesting needs no recursion here either -- a preset whose body
+    # uses another preset carries a `preset:<name>` REFERENCE, and that inner
+    # definition is its own entry in this same list.
+    for preset in presets or []:
+        if not isinstance(preset, dict):
+            continue
+        preset_name = str(preset.get("preset_name") or preset.get("name") or "")
+        inner_nodes = preset.get("nodes")
+        if not isinstance(inner_nodes, list):
+            continue
+        for inner in inner_nodes:
+            if not isinstance(inner, dict):
+                continue
+            params = inner.get("params")
+            if not isinstance(params, dict):
+                continue
+            inner_id = str(inner.get("id", ""))
+            address = f"preset:{preset_name}{SUBGRAPH_SEPARATOR}{inner_id}"
+            for name in sorted(secret_param_names(_type_of(inner))):
+                if _is_nonempty_secret(params.get(name)):
+                    violations.append({"node_id": address, "param": name})
 
     return violations

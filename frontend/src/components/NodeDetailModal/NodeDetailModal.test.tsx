@@ -144,7 +144,7 @@ function seedTab(partial: Partial<TabState>) {
     selectedNodeId: null,
     nodeDetailNodeId: null,
     presetModalNodeId: null,
-    subgraphModalNodeId: null,
+    layersModalNodeId: null,
     activeSegment: null,
     lastRunId: null,
     recordOutputs: true,
@@ -272,7 +272,7 @@ describe('NodeDetailModal — open paths', () => {
     fireEvent.keyDown(document, { key: 'Enter' });
     expect(activeTab().nodeDetailNodeId).toBeNull();
 
-    seedTab({ nodes: [node('n1')], selectedNodeId: 'n1', subgraphModalNodeId: 'n1' });
+    seedTab({ nodes: [node('n1')], selectedNodeId: 'n1', layersModalNodeId: 'n1' });
     fireEvent.keyDown(document, { key: 'Enter' });
     expect(activeTab().nodeDetailNodeId).toBeNull();
 
@@ -373,7 +373,7 @@ describe('NodeDetailModal — double-click split regression', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('a SequentialModel double-click keeps opening the subgraph editor, not the modal', () => {
+  it('a SequentialModel double-click keeps opening the layers editor, not the modal', () => {
     vi.useFakeTimers();
     seedTab({
       nodes: [
@@ -393,7 +393,7 @@ describe('NodeDetailModal — double-click split regression', () => {
       fireEvent.dblClick(container.querySelector('.react-flow__node')!.firstElementChild!);
     });
 
-    expect(activeTab().subgraphModalNodeId).toBe('seq');
+    expect(activeTab().layersModalNodeId).toBe('seq');
     expect(activeTab().nodeDetailNodeId).toBeNull();
   });
 });

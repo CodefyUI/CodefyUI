@@ -36,7 +36,8 @@ import {
   emptyGraph,
   validateGraph,
   isMergeType,
-  autoLayoutSubgraph,
+  colorForType,
+  autoLayoutLayers,
   detectImportFormat,
   convertWorkflowToGraphSpec,
   type LayerNodeData as GraphLayerNodeData,
@@ -47,10 +48,22 @@ import type { ParamDefinition } from '../../types';
 
 // ── Layer definitions (matches backend _build_layer) ──
 
+/**
+ * A palette entry: what to call a layer type and what to ask the user for.
+ *
+ * Deliberately carries no colour. It used to, and `graphSerialization` carried
+ * a second copy of the same table for the nodes on the canvas, hand-synced —
+ * a comment there literally read "duplicated from LAYER_DEFS". Colour now
+ * comes from `colorForType()`, which resolves through the `--layer-*` tokens
+ * (core#228), so the palette dot and the node it drops onto cannot disagree.
+ *
+ * `category` is the group heading; `layerCategoryOf()` in graphSerialization
+ * classifies the same types for colour, and `LayersEditorModal.test.tsx` holds
+ * the two against each other.
+ */
 interface LayerDef {
   type: string;
   category: string;
-  color: string;
   params: ParamDefinition[];
 }
 
@@ -64,95 +77,101 @@ const p_float = (name: string, def: number, desc: string, min: number | null = 0
 const LAYER_DEFS: LayerDef[] = [
   // Convolution
   {
-    type: 'Conv2d', category: 'Convolution', color: '#4CAF50',
+    type: 'Conv2d', category: 'Convolution',
     params: [p_int('in_channels', 1, 'Input channels'), p_int('out_channels', 32, 'Output channels'), p_int('kernel_size', 3, 'Kernel size'), p_int('stride', 1, 'Stride'), p_int('padding', 1, 'Padding', 0)],
   },
   {
-    type: 'Conv1d', category: 'Convolution', color: '#4CAF50',
+    type: 'Conv1d', category: 'Convolution',
     params: [p_int('in_channels', 1, 'Input channels'), p_int('out_channels', 32, 'Output channels'), p_int('kernel_size', 3, 'Kernel size'), p_int('stride', 1, 'Stride'), p_int('padding', 1, 'Padding', 0)],
   },
   {
-    type: 'ConvTranspose2d', category: 'Convolution', color: '#4CAF50',
+    type: 'ConvTranspose2d', category: 'Convolution',
     params: [p_int('in_channels', 32, 'Input channels'), p_int('out_channels', 16, 'Output channels'), p_int('kernel_size', 3, 'Kernel size'), p_int('stride', 1, 'Stride'), p_int('padding', 1, 'Padding', 0)],
   },
   // Normalization
   {
-    type: 'BatchNorm2d', category: 'Normalization', color: '#9C27B0',
+    type: 'BatchNorm2d', category: 'Normalization',
     params: [p_int('num_features', 32, 'Number of features')],
   },
   {
-    type: 'BatchNorm1d', category: 'Normalization', color: '#9C27B0',
+    type: 'BatchNorm1d', category: 'Normalization',
     params: [p_int('num_features', 32, 'Number of features')],
   },
   {
-    type: 'LayerNorm', category: 'Normalization', color: '#9C27B0',
+    type: 'LayerNorm', category: 'Normalization',
     params: [p_int('normalized_shape', 512, 'Normalized shape')],
   },
   {
-    type: 'GroupNorm', category: 'Normalization', color: '#9C27B0',
+    type: 'GroupNorm', category: 'Normalization',
     params: [p_int('num_groups', 8, 'Number of groups'), p_int('num_channels', 32, 'Number of channels')],
   },
   {
-    type: 'InstanceNorm2d', category: 'Normalization', color: '#9C27B0',
+    type: 'InstanceNorm2d', category: 'Normalization',
     params: [p_int('num_features', 32, 'Number of features')],
   },
   // Pooling
   {
-    type: 'MaxPool2d', category: 'Pooling', color: '#2196F3',
+    type: 'MaxPool2d', category: 'Pooling',
     params: [p_int('kernel_size', 2, 'Kernel size'), p_int('stride', 2, 'Stride')],
   },
   {
-    type: 'AvgPool2d', category: 'Pooling', color: '#2196F3',
+    type: 'AvgPool2d', category: 'Pooling',
     params: [p_int('kernel_size', 2, 'Kernel size'), p_int('stride', 2, 'Stride')],
   },
   {
-    type: 'AdaptiveAvgPool2d', category: 'Pooling', color: '#2196F3',
+    type: 'AdaptiveAvgPool2d', category: 'Pooling',
     params: [p_int('output_size', 1, 'Output size')],
   },
   // Regularization
   {
-    type: 'Dropout', category: 'Regularization', color: '#FF9800',
+    type: 'Dropout', category: 'Regularization',
     params: [p_float('p', 0.5, 'Dropout probability', 0, 1)],
   },
   // Linear
   {
-    type: 'Linear', category: 'Linear', color: '#00BCD4',
+    type: 'Linear', category: 'Linear',
     params: [p_int('in_features', 512, 'Input features'), p_int('out_features', 10, 'Output features')],
   },
   {
-    type: 'Embedding', category: 'Linear', color: '#00BCD4',
+    type: 'Embedding', category: 'Linear',
     params: [p_int('num_embeddings', 10000, 'Vocabulary size'), p_int('embedding_dim', 256, 'Embedding dimension')],
   },
   // Utility
   {
-    type: 'Flatten', category: 'Utility', color: '#607D8B',
+    type: 'Flatten', category: 'Utility',
     params: [],
   },
   // Activations
-  { type: 'ReLU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'LeakyReLU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'GELU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'SiLU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'Mish', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'ELU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'SELU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'PReLU', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'Sigmoid', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'Tanh', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'Hardswish', category: 'Activation', color: '#F44336', params: [] },
-  { type: 'Softmax', category: 'Activation', color: '#F44336', params: [] },
+  { type: 'ReLU', category: 'Activation', params: [] },
+  { type: 'LeakyReLU', category: 'Activation', params: [] },
+  { type: 'GELU', category: 'Activation', params: [] },
+  { type: 'SiLU', category: 'Activation', params: [] },
+  { type: 'Mish', category: 'Activation', params: [] },
+  { type: 'ELU', category: 'Activation', params: [] },
+  { type: 'SELU', category: 'Activation', params: [] },
+  { type: 'PReLU', category: 'Activation', params: [] },
+  { type: 'Sigmoid', category: 'Activation', params: [] },
+  { type: 'Tanh', category: 'Activation', params: [] },
+  { type: 'Hardswish', category: 'Activation', params: [] },
+  { type: 'Softmax', category: 'Activation', params: [] },
 ];
 
 const MERGE_LAYER_DEFS: LayerDef[] = [
-  { type: 'Add', category: 'Merge', color: '#FF9800', params: [] },
-  { type: 'Concat', category: 'Merge', color: '#FF9800', params: [p_int('dim', 1, 'Concatenation dim')] },
-  { type: 'Multiply', category: 'Merge', color: '#FF9800', params: [] },
-  { type: 'Subtract', category: 'Merge', color: '#FF9800', params: [] },
-  { type: 'Mean', category: 'Merge', color: '#FF9800', params: [] },
-  { type: 'Stack', category: 'Merge', color: '#FF9800', params: [p_int('dim', 1, 'Stack dim')] },
+  { type: 'Add', category: 'Merge', params: [] },
+  { type: 'Concat', category: 'Merge', params: [p_int('dim', 1, 'Concatenation dim')] },
+  { type: 'Multiply', category: 'Merge', params: [] },
+  { type: 'Subtract', category: 'Merge', params: [] },
+  { type: 'Mean', category: 'Merge', params: [] },
+  { type: 'Stack', category: 'Merge', params: [p_int('dim', 1, 'Stack dim')] },
 ];
 
-const ALL_LAYER_DEFS: LayerDef[] = [...LAYER_DEFS, ...MERGE_LAYER_DEFS];
+/**
+ * Exported so a test can hold `category` against `layerCategoryOf()` — the
+ * group a type is filed under in the palette and the group it is coloured by
+ * have to be the same group, and nothing but a test can say so now that the
+ * colour no longer sits next to the category on the same line.
+ */
+export const ALL_LAYER_DEFS: LayerDef[] = [...LAYER_DEFS, ...MERGE_LAYER_DEFS];
 const LAYER_DEF_MAP_FULL = new Map(ALL_LAYER_DEFS.map((d) => [d.type, d]));
 
 // ── Layer Palette Item ──
@@ -161,7 +180,7 @@ function LayerPaletteItem({ def }: { def: LayerDef }) {
   const [hovered, setHovered] = useState(false);
 
   const handleDragStart = (event: React.DragEvent) => {
-    event.dataTransfer.setData('application/subgraph-layer', def.type);
+    event.dataTransfer.setData('application/codefyui-layer', def.type);
     event.dataTransfer.effectAllowed = 'move';
   };
 
@@ -191,7 +210,7 @@ function LayerPaletteItem({ def }: { def: LayerDef }) {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          background: def.color,
+          background: colorForType(def.type),
           flexShrink: 0,
         }}
       />
@@ -252,18 +271,17 @@ function ParamEditor({
             background: '#3a1515',
             border: '1px solid #F44336',
             borderRadius: 4,
-            color: '#F44336',
             fontSize: '0.6875rem',
             cursor: 'pointer',
           }}
         >
-          {t('subgraph.deleteLayer')}
+          {t('layersEditor.deleteLayer')}
         </button>
       </div>
 
       {(!def || def.params.length === 0) && (
         <div style={{ fontSize: '0.75rem', color: '#666', textAlign: 'center', padding: '8px 0' }}>
-          {t('subgraph.noParams')}
+          {t('layersEditor.noParams')}
         </div>
       )}
 
@@ -364,7 +382,7 @@ function SequentialModelSelector({
           fontSize: '0.9375rem',
           color: '#eee',
         }}>
-          {t('subgraph.import.selectModel')}
+          {t('layersEditor.import.selectModel')}
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
           {models.map((m, i) => (
@@ -409,7 +427,7 @@ function SequentialModelSelector({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.cancel')}
+            {t('layersEditor.cancel')}
           </button>
           <button type="button"
             onClick={() => onSelect(models[selectedIdx].layersJson)}
@@ -424,7 +442,7 @@ function SequentialModelSelector({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.import')}
+            {t('layersEditor.import')}
           </button>
         </div>
       </div>
@@ -444,7 +462,7 @@ const nodeTypes: NodeTypes = {
   outputNode: OutputNode,
 };
 
-function SubgraphFlowInner({
+function LayersFlowInner({
   initialLayersJson,
   onApply,
   onCancel,
@@ -564,7 +582,7 @@ function SubgraphFlowInner({
         data: {
           layerType,
           params: defaultParams,
-          color: def.color,
+          color: colorForType(layerType),
           isMerge: isMergeType(layerType),
           isBoundary: false,
         },
@@ -582,7 +600,7 @@ function SubgraphFlowInner({
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
-      const layerType = event.dataTransfer.getData('application/subgraph-layer');
+      const layerType = event.dataTransfer.getData('application/codefyui-layer');
       if (!layerType) return;
 
       const position = screenToFlowPosition({
@@ -646,7 +664,7 @@ function SubgraphFlowInner({
   };
 
   const handleAutoLayout = useCallback(() => {
-    setNodes((prev) => autoLayoutSubgraph(prev, edges));
+    setNodes((prev) => autoLayoutLayers(prev, edges));
     setTimeout(() => fitView({ padding: 0.3 }), 50);
   }, [edges, fitView]);
 
@@ -672,7 +690,7 @@ function SubgraphFlowInner({
       try {
         loadGraphSpecIntoEditor(layersJson);
       } catch (err) {
-        useToastStore.getState().addToast(t('subgraph.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
       }
     },
     [loadGraphSpecIntoEditor, t],
@@ -701,7 +719,7 @@ function SubgraphFlowInner({
             /* v8 ignore start */
             if (newNodes.length === 0) throw new Error('No convertible layers found');
             /* v8 ignore stop */
-            setNodes(autoLayoutSubgraph(newNodes, newEdges));
+            setNodes(autoLayoutLayers(newNodes, newEdges));
             setEdges(newEdges);
             setSelectedNodeId(null);
             setTimeout(() => fitView({ padding: 0.3 }), 50);
@@ -718,10 +736,10 @@ function SubgraphFlowInner({
 
           case 'unknown':
           default:
-            throw new Error(t('subgraph.import.noContent'));
+            throw new Error(t('layersEditor.import.noContent'));
         }
       } catch (err) {
-        useToastStore.getState().addToast(t('subgraph.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
       }
     };
     reader.readAsText(file);
@@ -744,7 +762,7 @@ function SubgraphFlowInner({
 
   // i18n category labels
   const getCategoryLabel = (category: string) => {
-    if (category === 'Merge') return t('subgraph.category.merge');
+    if (category === 'Merge') return t('layersEditor.category.merge');
     return category;
   };
 
@@ -795,25 +813,24 @@ function SubgraphFlowInner({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: '1.0625rem', fontWeight: 700, color: '#eee' }}>
-              {t('subgraph.title')}
+              {t('layersEditor.title')}
             </span>
             <span
               style={{
                 fontSize: '0.6875rem',
                 background: 'rgba(244,67,54,0.15)',
-                color: '#F44336',
                 padding: '2px 8px',
                 borderRadius: 3,
                 fontWeight: 600,
               }}
             >
-              {t('subgraph.layerCount', { count: nodes.length })}
+              {t('layersEditor.layerCount', { count: nodes.length })}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button type="button"
               onClick={() => setSnapEnabled((v) => !v)}
-              title={t('subgraph.snapTitle')}
+              title={t('layersEditor.snapTitle')}
               style={{
                 padding: '5px 12px',
                 background: snapEnabled ? 'rgba(244,67,54,0.18)' : '#2a2a2a',
@@ -825,11 +842,11 @@ function SubgraphFlowInner({
                 fontWeight: 600,
               }}
             >
-              {snapEnabled ? t('subgraph.snapOn') : t('subgraph.snapOff')}
+              {snapEnabled ? t('layersEditor.snapOn') : t('layersEditor.snapOff')}
             </button>
             <button type="button"
               onClick={handleAutoLayout}
-              title={t('subgraph.autoLayoutTitle')}
+              title={t('layersEditor.autoLayoutTitle')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -840,11 +857,11 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.autoLayout')}
+              {t('layersEditor.autoLayout')}
             </button>
             <button type="button"
               onClick={handleImport}
-              title={t('subgraph.import.title')}
+              title={t('layersEditor.import.title')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -855,11 +872,11 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.import')}
+              {t('layersEditor.import')}
             </button>
             <button type="button"
               onClick={handleExport}
-              title={t('subgraph.export.title')}
+              title={t('layersEditor.export.title')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -870,7 +887,7 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.export')}
+              {t('layersEditor.export')}
             </button>
             <button type="button"
               onClick={onCancel}
@@ -913,11 +930,11 @@ function SubgraphFlowInner({
                   marginBottom: 6,
                 }}
               >
-                {t('subgraph.palette')}
+                {t('layersEditor.palette')}
               </div>
               <input
                 type="text"
-                placeholder={t('subgraph.searchLayers')}
+                placeholder={t('layersEditor.searchLayers')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 style={{
@@ -978,7 +995,7 @@ function SubgraphFlowInner({
                     padding: '20px',
                   }}
                 >
-                  {t('subgraph.empty')}
+                  {t('layersEditor.empty')}
                 </div>
               </div>
             )}
@@ -1008,7 +1025,7 @@ function SubgraphFlowInner({
                   setEdges((prev) => prev.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
                   setSelectedNodeId((prev) => (prev && ids.has(prev) ? null : prev));
                 }}
-                style={{ background: '#111' }}
+                style={{ background: 'var(--surface-canvas)' }}
                 defaultEdgeOptions={{
                   animated: false,
                   style: { stroke: '#555', strokeWidth: 2 },
@@ -1047,7 +1064,7 @@ function SubgraphFlowInner({
                 flexShrink: 0,
               }}
             >
-              {t('subgraph.params')}
+              {t('layersEditor.params')}
             </div>
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {selectedNode ? (
@@ -1074,7 +1091,7 @@ function SubgraphFlowInner({
                     fontSize: '0.75rem',
                   }}
                 >
-                  {t('subgraph.noParams')}
+                  {t('layersEditor.noParams')}
                 </div>
               )}
             </div>
@@ -1104,7 +1121,7 @@ function SubgraphFlowInner({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.cancel')}
+            {t('layersEditor.cancel')}
           </button>
           <button type="button"
             onClick={handleApply}
@@ -1119,7 +1136,7 @@ function SubgraphFlowInner({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.apply')}
+            {t('layersEditor.apply')}
           </button>
         </div>
 
@@ -1147,12 +1164,12 @@ function SubgraphFlowInner({
 
 // ── Main Export ──
 
-export function SubgraphEditorModal() {
+export function LayersEditorModal() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
-  const closeSubgraphModal = useTabStore((s) => s.closeSubgraphModal);
-  const updateSubgraphLayers = useTabStore((s) => s.updateSubgraphLayers);
+  const closeLayersModal = useTabStore((s) => s.closeLayersModal);
+  const updateNodeLayers = useTabStore((s) => s.updateNodeLayers);
 
-  const nodeId = activeTab.subgraphModalNodeId;
+  const nodeId = activeTab.layersModalNodeId;
   const node = activeTab.nodes.find((n) => n.id === nodeId);
 
   if (!nodeId || !node) return null;
@@ -1160,16 +1177,16 @@ export function SubgraphEditorModal() {
   const layersJson = (node.data.params?.layers as string) ?? '{}';
 
   const handleApply = (newLayersJson: string) => {
-    updateSubgraphLayers(nodeId, newLayersJson);
-    closeSubgraphModal();
+    updateNodeLayers(nodeId, newLayersJson);
+    closeLayersModal();
   };
 
   return (
     <ReactFlowProvider>
-      <SubgraphFlowInner
+      <LayersFlowInner
         initialLayersJson={layersJson}
         onApply={handleApply}
-        onCancel={closeSubgraphModal}
+        onCancel={closeLayersModal}
       />
     </ReactFlowProvider>
   );

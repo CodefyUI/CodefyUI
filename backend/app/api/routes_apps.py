@@ -198,13 +198,17 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
     # immutable, API-exposed snapshot. The editor and POST /api/graph/save
     # both blank secrets, so this only fires on a file dropped in by hand.
     #
-    # Scoped to every place the file can carry a node: top-level `nodes` AND
-    # `subgraphs[].nodes` (core#137). `preset_fallback` so a preset defined
-    # only in this file's own `presets[]` still resolves its secret slots --
-    # without it a graph-embedded preset's internalParams are invisible here.
+    # Scoped to every place the file can carry a node: top-level `nodes`,
+    # `subgraphs[].nodes` (core#137), and `presets[].nodes` (core#200 item 5 --
+    # a key baked into a portable preset's own DEFAULTS used to publish
+    # cleanly, while the identical key one level up was refused).
+    # `preset_fallback` so a preset defined only in this file's own `presets[]`
+    # still resolves its secret slots -- without it a graph-embedded preset's
+    # internalParams are invisible here.
     secret_violations = find_secret_violations(
         nodes,
         subgraphs=subgraphs,
+        presets=graph_data.get("presets", []),
         preset_fallback=preset_fallback,
     )
     if secret_violations:

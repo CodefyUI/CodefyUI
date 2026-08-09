@@ -291,6 +291,44 @@
   --type-list: #cddc39;
   --type-transform: #ffc107;
   --type-any: #9e9e9e;
+
+  /* Layer types, for the layers editor (`components/LayersEditor`, core#228).
+
+     This is its own scheme, not the node-category scheme above: it paints the
+     kinds of torch layer a SequentialModel can contain, and the mapping is
+     genuinely different — purple means normalisation here and Transformer on
+     the canvas, and there is no pooling concept among the node categories at
+     all. So it gets its own names rather than borrowing `--cat-*` by value and
+     letting the code lie about what it means.
+
+     The *values* are shared where the concept is "the app's blue" or "the
+     app's red": a reader should not see two different reds depending on which
+     surface they are looking at. That is the bug this group closes. The editor
+     had these hues twice over — once in `LAYER_DEFS`, once in
+     `graphSerialization.colorForType()`, hand-synced — and both copies were
+     still on the pre-lift Material 500 tones that the rest of the app moved off
+     when it turned out they were too dark to read on a dark surface. Four of
+     the seven are marked below with what they used to be.
+
+     Eleven names, seven hues. Input/Convolution share the green and
+     Output/Activation/unknown share the red, because they always did and
+     because the boundary nodes are drawn as a different shape anyway; naming
+     each role separately is what lets that change later without a hunt. */
+  --layer-input: #4caf50;
+  --layer-convolution: #4caf50;
+  --layer-normalization: #c279ce; /* lifted from #9c27b0 */
+  --layer-pooling: #2397f3; /* lifted from #2196f3 */
+  --layer-regularization: #ff9800;
+  --layer-linear: #00bcd4;
+  --layer-utility: #8097a2; /* lifted from #607d8b */
+  --layer-activation: #f66358; /* lifted from #f44336 */
+  --layer-merge: #ff9800;
+  --layer-output: #f66358; /* lifted from #f44336 */
+  /* A layer type the editor does not know — a hand-edited file, or a torch
+     module added to the backend but not yet to the palette. Same red as
+     Output, which is what it has always rendered as; it has its own name so
+     the code can say "unknown" instead of quietly reading "activation". */
+  --layer-unknown: #f66358; /* lifted from #f44336 */
 }
 
 /* --------------------------------------------------------
