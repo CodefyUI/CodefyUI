@@ -126,16 +126,16 @@ export type ExecutionEventDraft =
  *   - a `metric` entry whose every point was malformed, or which the server
  *     collapsed because the payload was too large.
  *
- * (The other two documented drops — a refused submit and a cancel with nothing
- * to cancel — are NOT in this list, because they never enter the log: the WS
- * handler answers them itself and they carry no cursor at all. They cost the
- * numbering nothing.)
- *
  * Each of those still consumes a cursor. A run that saves a checkpoint emits
  * an `artifact` every time, so cursor jumps are not an edge case — they are
  * what an ordinary training run looks like. Telling plugins to read a jump as
  * data loss (which an earlier draft of this contract did) would have made a
  * dashboard cry wolf on every checkpoint.
+ *
+ * The other two drops the module documents — a refused submit, and a cancel
+ * with nothing to cancel — are deliberately NOT in that list. The WS handler
+ * answers both itself and sends no cursor, so they never enter the log and
+ * cost the numbering nothing.
  *
  * `seq` is this module's own counter, incremented once per event actually
  * handed to subscribers, per run. It is dense by construction: the only thing
