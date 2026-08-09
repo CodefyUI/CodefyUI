@@ -28,10 +28,19 @@ untouched.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+import copy
+from typing import Any, Iterable, Iterator, Mapping
 
 from .node_base import ParamType
 from .node_registry import registry
+
+#: One extracted secret's address inside a graph -- see
+#: :func:`iter_secret_slots`. Positional rather than id-based on purpose: a
+#: hand-edited graph may carry duplicate node ids, and two slots sharing a
+#: vault key would restore each other's value.
+SecretAddress = tuple[Any, ...]
+#: ``{address: original value}``. Held in memory only; never serialized.
+SecretVault = dict[SecretAddress, Any]
 
 
 def secret_param_names(node_type: str) -> set[str]:
@@ -238,6 +247,175 @@ def scrub_subgraph_definition_secrets(
             preset_fallback=preset_fallback,
         )
     return changed
+
+
+def _iter_node_secret_slots(
+    node: dict[str, Any],
+    prefix: tuple[Any, ...],
+    preset_fallback: Mapping[str, Any] | None,
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """Yield every SECRET-typed slot of ONE serialized node.
+
+    A "slot" is ``(address, container, key)`` where ``container[key]`` is the
+    value — a writable handle, so extraction and re-injection can share this
+    one walk instead of two loops that drift apart.
+
+    Only keys that are PRESENT are yielded. That is what makes the two
+    directions symmetric: extraction blanks a slot to ``""`` rather than
+    deleting it, so the same slot is still there to be found on the way back.
+    """
+    node_type = node.get("type", "")
+    names = secret_param_names(node_type)
+    if names:
+        params = _params_of(node)
+        if params is not None:
+            for name in sorted(names):
+                if name in params:
+                    yield (*prefix, "params", name), params, name
+    # Preset instance: secrets can also sit per inner node in internalParams.
+    preset_secrets = _preset_secret_param_map(node_type, preset_fallback)
+    if preset_secrets:
+        internal_params = _internal_params_of(node)
+        if internal_params is not None:
+            for internal_id in sorted(preset_secrets):
+                inner = internal_params.get(internal_id)
+                if not isinstance(inner, dict):
+                    continue
+                for name in sorted(preset_secrets[internal_id]):
+                    if name in inner:
+                        yield ((*prefix, "internalParams", internal_id, name),
+                               inner, name)
+
+
+def iter_secret_slots(
+    graph: Mapping[str, Any],
+    *,
+    preset_fallback: Mapping[str, Any] | None = None,
+) -> Iterator[tuple[SecretAddress, dict[str, Any], str]]:
+    """Yield every SECRET-typed slot of a WHOLE graph, writable handles and all.
+
+    Where the ``scrub_*`` functions above each take one piece of a graph and
+    leave the caller to combine them (four calls, in the right order, with
+    the right ``preset_fallback`` — see ``routes_graph``), this takes the
+    whole ``{"nodes", "edges", "presets", "subgraphs"}`` envelope and covers
+    all of it. The run path needs exactly that: one call that cannot be
+    half-applied.
+
+    ``preset_fallback`` defaults to one built from the graph's OWN
+    ``presets[]``, so the caller cannot forget it — without it a preset
+    node's ``internalParams`` slots are not identifiable as secret at all.
+
+    Addresses are POSITIONAL (``("nodes", 3, "params", "openai_api_key")``)
+    rather than id-based. Ids would read better, but a hand-edited graph may
+    carry duplicates, and two slots colliding on one vault key would restore
+    each other's value. Indices are unique by construction and survive the
+    ``json.dumps``/``loads`` round trip the snapshot column makes, which is
+    the only round trip an address has to outlive.
+    """
+    if not isinstance(graph, Mapping):
+        return
+    raw_presets = graph.get("presets")
+    presets = raw_presets if isinstance(raw_presets, list) else []
+    if preset_fallback is None:
+        # Lazy import, for the same reason preset_registry is imported lazily
+        # above: keeping graph_engine out of this module's import graph.
+        from .graph_engine import build_preset_fallback
+        preset_fallback = build_preset_fallback(presets)
+
+    nodes = graph.get("nodes")
+    if isinstance(nodes, list):
+        for index, node in enumerate(nodes):
+            if isinstance(node, dict):
+                yield from _iter_node_secret_slots(
+                    node, ("nodes", index), preset_fallback)
+
+    # Subgraph definitions hold ORDINARY nodes. Nesting needs no recursion:
+    # the list is flat and a block inside a block is a `subgraph:<id>`
+    # reference into this same list.
+    subgraphs = graph.get("subgraphs")
+    if isinstance(subgraphs, list):
+        for outer, definition in enumerate(subgraphs):
+            if not isinstance(definition, dict):
+                continue
+            inner_nodes = definition.get("nodes")
+            if not isinstance(inner_nodes, list):
+                continue
+            for index, inner in enumerate(inner_nodes):
+                if isinstance(inner, dict):
+                    yield from _iter_node_secret_slots(
+                        inner, ("subgraphs", outer, "nodes", index),
+                        preset_fallback)
+
+    # Portable preset DEFINITIONS carry defaults in a flatter shape:
+    # `params` directly on the node, not under `data`.
+    for outer, preset in enumerate(presets):
+        if not isinstance(preset, dict):
+            continue
+        inner_nodes = preset.get("nodes")
+        if not isinstance(inner_nodes, list):
+            continue
+        for index, inner in enumerate(inner_nodes):
+            if not isinstance(inner, dict):
+                continue
+            params = inner.get("params")
+            if not isinstance(params, dict):
+                continue
+            for name in sorted(secret_param_names(str(inner.get("type", "")))):
+                if name in params:
+                    yield ((("presets", outer, "nodes", index, "params", name)),
+                           params, name)
+
+
+def split_graph_secrets(
+    graph: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], SecretVault]:
+    """Separate a graph from its secrets: ``(scrubbed graph, vault)``.
+
+    The input is NEVER modified — the caller usually still needs the real
+    values to execute with. When the graph carries no secret at all the same
+    object is returned unchanged (nothing to protect, and a deep copy of a
+    large graph on every submit is not free); otherwise the returned graph is
+    a deep copy with every secret blanked to ``""``.
+
+    The vault is plain in-memory Python, deliberately: it is the half that
+    must NOT be written anywhere. See ``RunService`` for the lifetime
+    argument that makes that safe.
+    """
+    if not any(_is_nonempty_secret(container[key])
+               for _address, container, key in iter_secret_slots(graph)):
+        return graph, {}
+    scrubbed = copy.deepcopy(dict(graph))
+    vault: SecretVault = {}
+    for address, container, key in iter_secret_slots(scrubbed):
+        value = container[key]
+        if _is_nonempty_secret(value):
+            vault[address] = value
+            container[key] = ""
+    return scrubbed, vault
+
+
+def restore_graph_secrets(
+    graph: Mapping[str, Any], vault: SecretVault | None,
+) -> int:
+    """Put a vault's values back into ``graph`` (in place). Returns how many.
+
+    The inverse of :func:`split_graph_secrets`, over the same walk, so an
+    address can only be found by the same code that produced it.
+
+    A missing address is silently skipped rather than raised on, and that is
+    the safe direction: the slot keeps the ``""`` it was scrubbed to, and the
+    node fails with whatever "no API key" error it already raises. The
+    opposite failure — a graph that quietly runs with a key it should not
+    have, or a crash that strands a run — is worse.
+    """
+    if not vault:
+        return 0
+    restored = 0
+    for address, container, key in iter_secret_slots(graph):
+        if address in vault:
+            container[key] = vault[address]
+            restored += 1
+    return restored
 
 
 def find_secret_violations(

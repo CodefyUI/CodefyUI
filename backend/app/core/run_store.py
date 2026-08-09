@@ -35,6 +35,16 @@ five consumers. ``dataclasses.asdict`` covers the REST-serialisation side.
 ``RunRecord`` deliberately omits ``graph_snapshot`` — a run list must not
 deserialize a megabyte of graph per row on every poll of the Runs panel;
 fetch it explicitly with ``get_graph_snapshot``.
+
+What that column is NOT, since #251: a byte-for-byte copy of what the client
+submitted. SECRET-typed param values are blanked before the insert, exactly
+as they are on every other path that persists a graph, and a queued run's
+real values are re-injected from process memory at promotion
+(``RunService``). MIGRATION_003 still describes the column as an "immutable
+copy of the submitted graph" — that text is left alone deliberately, because
+SQLite stores a table's original DDL verbatim in ``sqlite_master`` and
+editing a shipped migration would make a fresh database disagree with a
+migrated one over a comment.
 """
 
 from __future__ import annotations
@@ -652,6 +662,72 @@ class RunStore:
             ).rowcount
 
         return await self.db.run(_update)
+
+    async def list_terminal_graph_snapshots(
+        self, *, limit: int = 1000,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """``[(run_id, graph)]`` for FINISHED runs, newest first.
+
+        Terminal rows only, and that restriction is the point rather than an
+        optimisation: an active row's snapshot may be about to be read back
+        by a promotion in this very process (``RunService._load_graph``), so
+        it is not a safe thing for a sweep to rewrite underneath. A finished
+        run's snapshot has no reader left at all.
+
+        Rows whose JSON will not parse are skipped rather than raised on — a
+        sweep that aborts on one corrupt row leaves every row after it
+        unswept, which for the caller (:meth:`RunService.scrub_stored_secrets`)
+        would mean leaving secrets in place.
+        """
+        active = tuple(sorted(ACTIVE_STATUSES))
+
+        def _select(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT id, graph_snapshot FROM exec_runs WHERE status NOT IN "
+                f"({','.join('?' * len(active))}) "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (*active, int(limit)),
+            ).fetchall()
+
+        out: list[tuple[str, dict[str, Any]]] = []
+        for row in await self.db.run(_select):
+            try:
+                graph = json.loads(row["graph_snapshot"])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "run %s: graph_snapshot is not valid JSON; skipping",
+                    row["id"])
+                continue
+            if isinstance(graph, dict):
+                out.append((row["id"], graph))
+        return out
+
+    async def replace_graph_snapshot(
+        self, run_id: str, graph: dict[str, Any],
+    ) -> bool:
+        """Overwrite a FINISHED run's stored graph. True when the row moved.
+
+        The only writer of ``graph_snapshot`` other than ``create_run``, and
+        deliberately the narrowest one that can exist: the status guard is
+        repeated in the WHERE clause so a row that became active between a
+        caller's read and this write is left alone rather than blanked.
+
+        This exists for exactly one job — removing SECRET values an older
+        build persisted (#251). The column's "immutable copy of the submitted
+        graph" contract holds for everything a reader can still use; a
+        credential in a finished run's snapshot is not that, it is residue.
+        """
+        active = tuple(sorted(ACTIVE_STATUSES))
+        payload = _dumps(graph)
+
+        def _update(conn: sqlite3.Connection) -> int:
+            return conn.execute(
+                "UPDATE exec_runs SET graph_snapshot = ? WHERE id = ? AND "
+                f"status NOT IN ({','.join('?' * len(active))})",
+                (payload, run_id, *active),
+            ).rowcount
+
+        return bool(await self.db.run(_update))
 
     # ── events ────────────────────────────────────────────────────────────
 

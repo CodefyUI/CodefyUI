@@ -89,6 +89,42 @@ received — each links to the release it was published as.
   it is how MPS and out-of-tree backends report an OOM on any torch. Installs
   on torch 2.0-2.4 are no longer supported.
 
+### Security
+
+- **A SECRET param typed into a graph was written in clear text into the run
+  database** ([#251]). Every other path that persists a graph already scrubbed
+  SECRET values — save, export, publish pre-flight, preset creation, Python
+  codegen — but the run path wrote `exec_runs.graph_snapshot` exactly as
+  submitted. An API key typed into an `LLMChat` node therefore landed verbatim
+  in the shared SQLite file, and run history is pruned by COUNT (the newest
+  200), not by age, so on a quiet install it never aged out. The column is not
+  reachable over the API, so this was a leak at rest: in the database file, in
+  any backup of it, and in any copy of the install tree.
+
+  The snapshot is now stored scrubbed. A queued run's secrets are held in
+  process memory keyed by run id and re-injected when the run is promoted off
+  the queue, so a queued graph still executes with the key its submitter typed
+  and nothing changes for the user. Holding them in memory is safe for one
+  specific reason: the queue is in memory too, and `recover_interrupted`
+  retires every `queued` row a dead process left behind — so a snapshot can
+  only ever be read back by the same process that wrote it, which is exactly
+  how long the values are kept.
+
+  Startup also sweeps values written by older builds out of finished runs and
+  logs how many it removed. **That sweep is not a secure erase** — SQLite
+  releases the old page to its freelist without zeroing it, so a copy can
+  persist in the file and its `-wal` sidecar until a `VACUUM`. If you ran a
+  graph carrying a SECRET param on an earlier version, rotate that key.
+
+- **Documented that ambient credentials are instance-wide** ([#251]). A new
+  [Shared Instances](https://docs.codefyui.com/usage/shared-instances) page
+  states what a shared box actually shares: once one person completes the
+  ChatGPT sign-in every graph bills to their personal account and anyone can
+  sign them out, an `LLMChat` node with an empty key silently spends whatever
+  is in `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, and `KaggleDataset` uses the
+  service account's credentials. No behaviour changed — this is correct for a
+  single-user install, and the point is that nothing said so.
+
 ## [2.1.1] — 2026-08-08
 
 A small release cut for one reason: the CSVReader file picker landed on `main`
@@ -276,6 +312,7 @@ Release candidates before 1.0.0 are on the
 [#239]: https://github.com/CodefyUI/CodefyUI/pull/239
 [#241]: https://github.com/CodefyUI/CodefyUI/pull/241
 [#252]: https://github.com/CodefyUI/CodefyUI/pull/252
+[#251]: https://github.com/CodefyUI/CodefyUI/issues/251
 [#253]: https://github.com/CodefyUI/CodefyUI/issues/253
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [@oyea0801]: https://github.com/oyea0801

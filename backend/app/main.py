@@ -342,6 +342,11 @@ async def lifespan(app: FastAPI):
     # makes it prunable in the very next call. Both steps log their own
     # counts when they do anything.
     await run_service.recover_interrupted()
+    # Then the SECRET sweep (#251): recovery has just made every row terminal,
+    # which is the only kind this may rewrite, and pruning has not yet run —
+    # so a row that is about to be deleted costs one wasted scrub rather than
+    # a key surviving in a row that pruning was never going to reach.
+    await run_service.scrub_stored_secrets()
     await run_service.prune_retention()
 
     yield
