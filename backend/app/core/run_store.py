@@ -1121,6 +1121,18 @@ class RunStore:
         store does not otherwise own the lifecycle of, and at least one
         (``tensorboard``) is a DIRECTORY, not a file -- widening this beyond
         checkpoints is a deliberately separate decision.
+
+        **And ``kind == "checkpoint"`` is not on its own enough to delete
+        anything (#224).** ``kind`` is a free-text column, and
+        ``ExecutionContext.log_artifact`` -- which the plugin API reaches --
+        writes both the kind and the path. A row is therefore a CLAIM, not
+        evidence. ``unlink_checkpoint`` re-derives the answer from the path
+        instead: it removes a file only where
+        ``checkpoints.owned_checkpoint_path`` recognises it as one this
+        server wrote, i.e. a generated filename under
+        ``MODELS_DIR/interrupted/`` or ``MODELS_DIR/periodic/``. Anything
+        else is skipped and logged. The row still goes either way; retention
+        over the table does not depend on the file being removable.
         """
         if keep_last < 0:
             raise ValueError(f"keep_last must be >= 0, got {keep_last}")

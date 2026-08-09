@@ -102,6 +102,46 @@ found by hand.
 
 ### Fixed
 
+- **A path typed into a node parameter could overwrite the run database, and
+  an unattended prune could delete a file it never wrote** ([#224]). One
+  write-scoped rule — "stay inside the project data directory" — guarded both
+  directions, and on a default install the database is inside that directory.
+
+  *Write.* With the default `cdui start` and no `--project`, `PROJECT_DIR` is
+  `None`, the project-mode derivation never runs, and `MODELS_DIR` stays
+  `backend/data/models` — one level below `codefyui.db`. So `../codefyui.db`
+  as a `CheckpointSaver` or `ModelSaver` path resolved to the live database
+  and passed the guard, and a training run wrote a `.pt` payload over it. No
+  plugin and no mislabelled row required. Project mode was never affected:
+  there `MODELS_DIR` is `<project>/assets/models` and the database, which
+  stays install-global, is outside the data root entirely. `ImageWriter`
+  shares the same rule but was not reachable this way — it forces the file
+  extension to match its `format`, so `../codefyui.db` was rewritten to
+  `codefyui.png` and landed beside the database; what it could overwrite was
+  any file under the data root ending in an image extension.
+
+  *Delete.* `RunStore.prune` unlinks the file of every pruned artifact row
+  whose `kind` is `checkpoint`. `kind` is a free-text column and the plugin
+  API can log artifacts, so a row claiming `kind="checkpoint"` with a path
+  pointing at anything else under the data root had that file removed by a
+  background sweep, with no user action and no confirmation.
+
+  Both now have their own rule, because they ask different questions. Writes
+  stay permissive — the data directory is a node's to write into — minus
+  CodefyUI's own storage: the database and its SQLite `-wal` / `-shm` /
+  `-journal` sidecars, derived from `DB_PATH` at call time and compared with
+  case folding so a differently-cased spelling cannot slip past on Windows.
+  Deletes no longer trust the row at all: retention removes a file only where
+  it can prove it wrote it — a generated checkpoint filename under
+  `MODELS_DIR/interrupted/` or `MODELS_DIR/periodic/`, the only two places
+  the interrupt and periodic writers put anything. Everything else is skipped
+  and logged, and the row still goes either way.
+
+  Nothing about ordinary use changes: checkpoints, saved models and written
+  images work exactly as before in both modes, including to arbitrary
+  sub-directories under the data root. A `CheckpointSaver` file the user named
+  themselves was never touched by retention before and still is not.
+
 - **Every request-body size cap could be walked past by chunking, and four
   routes had no cap at all** ([#265], [#242]). Three routes capped their body
   by comparing `Content-Length` to `MAX_RUN_BODY_BYTES`. A chunked request —
@@ -521,8 +561,12 @@ Release candidates before 1.0.0 are on the
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [#242]: https://github.com/CodefyUI/CodefyUI/issues/242
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
+<<<<<<< HEAD
 [#196]: https://github.com/CodefyUI/CodefyUI/issues/196
 [#197]: https://github.com/CodefyUI/CodefyUI/issues/197
+=======
+[#224]: https://github.com/CodefyUI/CodefyUI/issues/224
+>>>>>>> origin/main
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
