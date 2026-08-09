@@ -129,7 +129,9 @@ curl -X POST http://127.0.0.1:8000/api/runs \
 
 **問題不在 `base_lrs`。** 在已經還原過的優化器上建立排程器，起點一樣是 0.1：`Optimizer.state_dict()` 會把第一個排程器蓋在 param group 上的 `initial_lr` 一起存走，`load_state_dict` 會把它還原回來，而 `LRScheduler.__init__` 是用 `setdefault` 讀它，不會覆蓋掉既有的值。兩種接法都實際量過，跟理論上的 cosine 相符到 1.4e-17。
 
-**接法真正決定的，是檢查點裡存的排程進度會被「還原」還是被「重建」。** `CheckpointLoader` 只能把 `scheduler_state_dict` 還原進有接到它身上的排程器。這個輸入沒接，存下來的狀態就會被丟掉（只留一行 log），排程改成用「從 `base_lrs` 重播 `start_epoch` 次 step」的方式重建。對 `CosineAnnealingLR` 來說重播是精確的 — 所以這一頁的配方兩種接法都安全 — 但由指標驅動的 `ReduceLROnPlateau` 沒辦法重播：它的 `best` 和 `num_bad_epochs` 會無聲歸零，本來下一個 epoch 就要觸發的衰減會被往後推。這個一般性問題記在 issue [#149](https://github.com/CodefyUI/CodefyUI/issues/149)。
+**接法真正決定的，是檢查點裡存的排程進度會被「還原」還是被「重建」。** `CheckpointLoader` 只能把 `scheduler_state_dict` 還原進有接到它身上的排程器。這個輸入沒接，存下來的狀態就會被丟掉，排程改成用「從 `base_lrs` 重播 `start_epoch` 次 step」的方式重建。對 `CosineAnnealingLR` 來說重播是精確的 — 所以這一頁的配方兩種接法都安全 — 但由指標驅動的 `ReduceLROnPlateau` 沒辦法重播：它的 `best` 和 `num_bad_epochs` 會歸零，本來下一個 epoch 就要觸發的衰減會被往後推。
+
+這件事你不必事先就知道了。兩邊現在都會在你看得到的地方講出來 — 伺服器 log、執行記錄面板讀回來的執行 log，以及畫布上該節點的 **Log** 分頁：`CheckpointLoader` 會說它正在丟掉一份存下來的排程進度，並指名該接哪個輸入；`TrainingLoop` 則會說它沒辦法把排程放回原本的位置。
 :::
 
 ## 自己驗證數字

@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ...core.advisories import emit_advisory, join_notes
 from ...core.amp import PRECISIONS
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
@@ -244,9 +245,16 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
 
 
 def _prepare_scheduler(
-    lr_scheduler: Any, optimizer: Any, start_epoch: int, optimizer_mode: str
-) -> Any:
+    lr_scheduler: Any,
+    optimizer: Any,
+    start_epoch: int,
+    optimizer_mode: str,
+    context: Any = None,
+) -> tuple[Any, str | None]:
     """Attach the scheduler to ``optimizer`` and position it at ``start_epoch``.
+
+    Returns ``(scheduler, note)``, where *note* is a user-visible advisory
+    (#149) or ``None``; the caller stacks it into the node's ``__log__``.
 
     Three situations, in order of preference:
 
@@ -263,9 +271,22 @@ def _prepare_scheduler(
     is re-pointed at the live one. Re-pointing rather than reconstructing keeps
     ``last_epoch``/``_step_count``/``base_lrs`` and works for scheduler types
     whose constructor arguments cannot be recovered from ``state_dict()``.
+
+    Case 2 has a failure mode that used to be invisible (#149). The
+    fast-forward declines for a ``ReduceLROnPlateau`` -- a metric-driven
+    schedule cannot be replayed without the original loss history -- and
+    bails out for a schedule that raises mid-replay. Both leave the run
+    training on a schedule that is NOT where the epoch counter says it is,
+    and both used to say so only in the server log, which nobody watching
+    the canvas ever sees. Measured on a plateau schedule resumed from an
+    8-epoch checkpoint whose last 5 epochs were flat: the decay that was
+    one epoch away was postponed indefinitely, with no error and an INFO
+    line. It is an advisory rather than an error because training on a
+    reset schedule is still training, and refusing to run is too
+    aggressive for a teaching tool -- the same call #244 made.
     """
     if lr_scheduler is None:
-        return None
+        return None, None
 
     name = type(lr_scheduler).__name__
     if getattr(lr_scheduler, "optimizer", optimizer) is not optimizer:
@@ -294,10 +315,27 @@ def _prepare_scheduler(
             )
         else:
             logger.info("%s resumes at last_epoch=%d (restored state)", name, last_epoch)
-    elif start_epoch > 0 and _fast_forward_scheduler(lr_scheduler, optimizer, start_epoch):
-        logger.info("Fast-forwarded %s to last_epoch=%d", name, lr_scheduler.last_epoch)
+    elif start_epoch > 0:
+        if _fast_forward_scheduler(lr_scheduler, optimizer, start_epoch):
+            logger.info("Fast-forwarded %s to last_epoch=%d", name, lr_scheduler.last_epoch)
+        else:
+            return lr_scheduler, emit_advisory(
+                f"{name} could not be repositioned to epoch {start_epoch}, so "
+                f"this resumed run starts its learning-rate schedule over from "
+                f"the beginning while the epoch counter continues from "
+                f"{start_epoch}. Wire the scheduler through "
+                f"CheckpointSaver.lr_scheduler AND CheckpointLoader.lr_scheduler "
+                f"so its exact state is stored and restored instead of replayed "
+                f"-- for a metric-driven schedule like ReduceLROnPlateau that is "
+                f"the only faithful way, because its plateau history is not "
+                f"recoverable from the epoch number.",
+                kind=SCHEDULE_RESUME_WARNING_KIND,
+                prefix=SCHEDULE_NOTE_PREFIX,
+                context=context,
+                logger=logger,
+            )
 
-    return lr_scheduler
+    return lr_scheduler, None
 
 
 #: Prefix every schedule-length note carries into the canvas log. The Log
@@ -310,6 +348,12 @@ SCHEDULE_NOTE_PREFIX = "[TrainingLoop] "
 #: ``kind`` on the ``WarningSignal`` these notes are also sent as, which is
 #: what a client would branch on. Stable token; the sentence is the detail.
 SCHEDULE_WARNING_KIND = "lr_schedule_mismatch"
+
+#: The other schedule advisory, kept a SEPARATE token (#149): "the schedule
+#: you configured does not fit this run" and "this resumed run could not put
+#: the schedule back where it was" are different problems with different
+#: fixes, and a client that branches on ``kind`` needs to tell them apart.
+SCHEDULE_RESUME_WARNING_KIND = "lr_schedule_resume_lost"
 
 #: The fact every one of the notes below is a consequence of.
 _PER_EPOCH = (
@@ -485,20 +529,12 @@ def _report_schedule_length(
 ) -> str | None:
     """Emit :func:`_schedule_length_note` everywhere it can be seen.
 
-    Three surfaces, because no single one reaches everybody:
-
-    * ``logger.warning`` -- the server console and the rotating log file.
-      The ONLY channel a ``run_graph.py`` invocation or an exported Python
-      script has at all.
-    * ``context.log_warning`` -- the run's durable event log, which the Runs
-      panel reads back as a ``warning``-toned line while the run is still
-      going. This is the one that arrives on TIME: it is queued the moment
-      the check runs, before the first epoch.
-    * the returned string, which the caller puts in the node's ``__log__``
-      so it also lands in the canvas Log tab. That one only appears when the
-      node finishes -- late, but the canvas has no earlier channel for it
-      (``useGraphExecution`` registers no ``run_warning`` handler and
-      ``LogEntry.type`` has no warning severity).
+    The delivery itself moved to ``core.advisories.emit_advisory`` in #149,
+    which needs the identical three-surface treatment from
+    ``CheckpointLoader``; that module's docstring is where the three
+    surfaces and why each is needed are written down. What stays here is
+    the DECISION -- whether there is anything to say -- which only this
+    node can make.
 
     Never raises: an advisory must not be able to fail the run it is about.
     """
@@ -510,15 +546,13 @@ def _report_schedule_length(
     if note is None:
         return None
 
-    logger.warning("%s", note)
-    log_warning = getattr(context, "log_warning", None)
-    if callable(log_warning):
-        try:
-            log_warning(SCHEDULE_WARNING_KIND, note)
-        except Exception:  # noqa: BLE001 - see above
-            logger.debug("could not record the LR schedule warning",
-                         exc_info=True)
-    return SCHEDULE_NOTE_PREFIX + note
+    return emit_advisory(
+        note,
+        kind=SCHEDULE_WARNING_KIND,
+        prefix=SCHEDULE_NOTE_PREFIX,
+        context=context,
+        logger=logger,
+    )
 
 
 class TrainingLoopNode(BaseNode):
@@ -1028,7 +1062,10 @@ class TrainingLoopNode(BaseNode):
         # #118: keep the incoming optimizer (and therefore its state) whenever
         # it is usable for this model -- see _prepare_optimizer for the rule.
         optimizer, optimizer_mode = _prepare_optimizer(optimizer, model)
-        lr_scheduler = _prepare_scheduler(lr_scheduler, optimizer, start_epoch, optimizer_mode)
+        # ``resume_note`` (#149) fires only on a resumed run whose schedule
+        # could not be put back where it was -- see _prepare_scheduler.
+        lr_scheduler, resume_note = _prepare_scheduler(
+            lr_scheduler, optimizer, start_epoch, optimizer_mode, context)
 
         # #205 / #244: does the schedule's length agree with this run's? The
         # comparison is only possible HERE -- LRScheduler cannot see the
@@ -1689,13 +1726,17 @@ class TrainingLoopNode(BaseNode):
             # expects to see for "there is no loss scale to store".
             "grad_scaler_state": policy.state_dict(),
         }
-        if schedule_note is not None:
-            # The canvas half of #205/#244. ``__log__`` is the only result
-            # key the Log tab renders, and dunder-prefixed keys are filtered
-            # out of recorded outputs and port summaries, so this adds a log
-            # line and nothing else. Set unconditionally of how the run
-            # ended -- an interrupted run's schedule was just as wrong.
-            result["__log__"] = schedule_note
+        # The canvas half of #205/#244 and of #149. ``__log__`` is the only
+        # result key the Log tab renders, and dunder-prefixed keys are
+        # filtered out of recorded outputs and port summaries, so this adds
+        # log lines and nothing else. Set unconditionally of how the run
+        # ended -- an interrupted run's schedule was just as wrong. Both
+        # notes can fire in one run (a resumed run whose schedule could not
+        # be repositioned AND whose length disagrees with epochs), so they
+        # are stacked rather than one overwriting the other.
+        combined_note = join_notes(resume_note, schedule_note)
+        if combined_note is not None:
+            result["__log__"] = combined_note
         if stopped_at is not None:
             result.update(interrupted_result(
                 epoch=completed_epochs, batch=stopped_at["batch"],

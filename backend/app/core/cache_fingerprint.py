@@ -1,12 +1,20 @@
 """Content-aware fingerprints folded into ExecutionCache keys (#144, #145).
 
 #116 (PR #142) made every file-reading node ``cacheable = False`` outright:
-correct, but it means a Dataset/CSV/model-weights root re-reads from disk on
+correct, but it means a Dataset/CSV/image root re-reads from disk on
 every run even when nothing on disk changed. The cache key already hashes
 ``params``, but a ``path`` param only names WHERE to read, not what is
 there -- so two runs with an edited file underneath an unchanged path
 string produce the same key, and the second run gets the first run's
 answer.
+
+Note what a fingerprint does NOT license. #144 originally restored eight
+reader nodes; #254 took ``ModelLoader`` and ``CheckpointLoader`` back out,
+because a fingerprint describes what a node READS and those two also WRITE
+-- ``load_state_dict`` mutates the model the graph handed them, and a
+cache hit skips execute() and therefore skips the write. The hook answers
+"has the input changed", never "is a hit safe"; see
+``BaseNode.cacheable``.
 
 The fix is not "cache everything" or "cache nothing" but "put enough of
 the *content* into the key that a change on disk changes the key too".

@@ -2079,8 +2079,10 @@ async def execute_graph(
             return
 
         # Check cache (skip for force-rerun nodes from partial re-execution).
-        # Stateful nodes opt out via cacheable=False because their internal
-        # weights drift across runs.
+        # Nodes opt out via cacheable=False when their recorded outputs stop
+        # describing what they did -- drifting weights, a live model or
+        # optimizer handle something downstream mutates, or a side effect
+        # no output carries. See ``BaseNode.cacheable`` for the four cases.
         #
         # Important: if ANY upstream is non-cacheable, *this* node also cannot
         # be safely cached for this run. The cache key only encodes upstream

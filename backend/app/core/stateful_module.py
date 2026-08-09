@@ -20,6 +20,12 @@ on every call — preserving the original stateless behaviour.
 Stateful nodes opt out of :class:`ExecutionCache` via ``cacheable = False``:
 the cache assumes ``f(params, upstream) -> output`` is deterministic, which
 breaks once the module's internal weights drift.
+
+That is the first of four reasons a node opts out, and owning the weights
+is only the sharpest one -- #254 added the node that merely HANDS a live
+model or optimizer onward, which the cache is equally unable to describe.
+``BaseNode.cacheable`` lists all four; a node that owns weights but does
+not use this mixin is still expected to declare the flag.
 """
 
 from __future__ import annotations

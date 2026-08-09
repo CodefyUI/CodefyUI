@@ -35,10 +35,10 @@ received — each links to the release it was published as.
   loss curve you get back is the previous run's, with nothing to tell you.
 
   The other two shipped training graphs were protected only by accident, and
-  the accident is scheduled for removal: their `ModelSaver` may only write
-  under `./data`, `Dataset`'s cache fingerprint walks all of `./data`, so the
-  write happened to invalidate the dataset. Scoping that walk ([#259]) would
-  have broken those graphs too. This fix does not depend on it.
+  the accident has since been removed ([#259], below): their `ModelSaver` may
+  only write under `./data`, `Dataset`'s cache fingerprint walked all of
+  `./data`, so the write happened to invalidate the dataset. This fix does
+  not depend on it, which is what let the walk be scoped.
 
   `SequentialModel` was the other half. It owns the weights `TrainingLoop`
   mutates, declared no inputs, and was cacheable — a root nothing could ever
@@ -79,6 +79,90 @@ received — each links to the release it was published as.
   already-saved graph does, silently, on update. `CosineAnnealingWarmRestarts`
   is inverted rather than exempt: it reuses the same value as `T_0`, where
   equality would mean no restart ever happens.
+
+- **A cache hit skipped the mutation that was the node's whole point**
+  ([#254]). [#253] fixed the case where the mutated thing was the weights a
+  training loop updates. Five more nodes are handed a live `model` or
+  `optimizer`, write into it, and hand it back — and a cache hit returns
+  their recorded outputs without calling them, so the write never happens
+  while the node reports success. Measured across three runs against one
+  shared cache, each node ran once and then not at all:
+
+  - `ModelLoader` — "load pretrained weights, then fine-tune" quietly became
+    one long run: the file's weights reached training only on run 1
+    (0.05 → 0.085 → 0.157).
+  - `CheckpointLoader` — the resume did not happen; the model kept whatever
+    the previous run had left on it.
+  - `LRScheduler` — `TrainingLoop` received a scheduler already at the end of
+    the schedule it ran last time. With `StepLR(step_size=1, gamma=0.1)` over
+    two epochs it saw learning rates 0.1, then 0.001, then 1e-05.
+  - `EvaluateModel` — one `eval_accuracy` point logged across three runs, so
+    the chart was empty on runs the canvas called successful.
+  - `Inference` — the prediction of a network that had since been trained
+    further.
+
+  All five are now `cacheable = False`, and so are `Optimizer`, `DQN`, `PPO`
+  and `RewardModel`: those four hand out a live model or optimizer with no
+  input that could ever invalidate them, which is what made the five
+  reachable in the first place — `DQN`, `PPO` and `RewardModel` are
+  `SequentialModel`'s [#253] bug one package over.
+
+  This does take back the `cacheable = True` that [#144] gave `ModelLoader`
+  and `CheckpointLoader`, and it costs less than that sounds. Opting out
+  propagates downstream, and both take their model from a weight-owning
+  node, which is already non-cacheable — measured on that shape, both
+  executed on all three runs *before* this change. [#144]'s fingerprint
+  mechanism is untouched and still serves `CSVReader`, `FileReader`,
+  `ImageReader`, `ImageBatchReader`, `Dataset` and `ImageFolderDataset`.
+
+  Two registry-wide invariants now hold the line: no cacheable node may hand
+  out a `MODEL` or `OPTIMIZER`, and no cacheable node's `execute` may record
+  a metric or write a checkpoint. The hand audit found five nodes; the
+  invariants find the next one.
+
+- **Resuming a checkpoint could throw away its learning-rate schedule
+  silently** ([#149]). `CheckpointLoader.lr_scheduler` is an optional input.
+  Leave it unwired and a checkpoint that stores the schedule's position has
+  nothing to restore it into, so the position is discarded and the schedule
+  is rebuilt by replaying epochs instead. For `StepLR` or
+  `CosineAnnealingLR` that replay is exact; for a metric-driven
+  `ReduceLROnPlateau` it cannot be — measured on an 8-epoch checkpoint whose
+  last five epochs were a plateau, `best` and `num_bad_epochs` came back as
+  `inf`/`0` instead of `0.8`/`5`, postponing indefinitely a decay that was
+  one epoch away. It was reported at INFO, i.e. nowhere a canvas user looks.
+
+  Both halves are now advisories on all three surfaces [#252] built —
+  server log, the run log the Runs panel reads back, and the node's Log tab:
+  `CheckpointLoader` says it is discarding a stored schedule position and
+  names the input to connect, and `TrainingLoop` says when it could not put
+  a schedule back where it was. Advisory, never fatal.
+
+  The mechanism this issue was filed for — a scheduler built on a restored
+  optimizer starting from a decayed `base_lrs` — does not occur, and the
+  measurements are on the issue. `initial_lr` survives an optimizer state
+  round trip and `LRScheduler.__init__` reads it with `setdefault`; the
+  `initial_lrs` checkpoint key added since makes that independent of torch's
+  behaviour rather than dependent on it.
+
+- **`Dataset` re-read itself whenever anything else under `data_dir`
+  changed** ([#259]). The cache fingerprint walked the whole directory
+  recursively. In a project directory every dataset shares one
+  `assets/data/`, so downloading a second dataset invalidated the first, and
+  a large tree paid a full recursive stat every run whether or not that
+  dataset had moved — the opposite of what [#144] restored the caching for.
+  It is now scoped to the directory the dataset itself lives in (`MNIST/`,
+  `cifar-10-batches-py/`, and so on), read off torchvision's own class
+  attributes so an upstream rename is a changed answer rather than a
+  fingerprint that covers nothing. An unrecognised name still walks the tree,
+  because over-invalidation costs a re-read and under-invalidation costs a
+  wrong experiment.
+
+  This was blocked on [#253], because the over-invalidation was the only
+  thing keeping the shipped `ModelSaver` graphs from skipping training
+  entirely: the saver may only write under `./data`, and that write dirtied
+  the dataset's key. Measured on three shipped graphs run three times each
+  against one shared cache, counting real `TrainingLoop.execute()` calls:
+  1/1/1 on all three, with the dataset now a cache hit on runs 2 and 3.
 
 ### Changed
 
@@ -324,9 +408,12 @@ Release candidates before 1.0.0 are on the
 [#238]: https://github.com/CodefyUI/CodefyUI/pull/238
 [#239]: https://github.com/CodefyUI/CodefyUI/pull/239
 [#241]: https://github.com/CodefyUI/CodefyUI/pull/241
+[#144]: https://github.com/CodefyUI/CodefyUI/issues/144
+[#149]: https://github.com/CodefyUI/CodefyUI/issues/149
 [#252]: https://github.com/CodefyUI/CodefyUI/pull/252
 [#251]: https://github.com/CodefyUI/CodefyUI/issues/251
 [#253]: https://github.com/CodefyUI/CodefyUI/issues/253
+[#254]: https://github.com/CodefyUI/CodefyUI/issues/254
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main

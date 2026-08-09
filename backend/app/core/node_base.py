@@ -161,9 +161,24 @@ class BaseNode(ABC):
     DESCRIPTION: str = ""
 
     # If False, graph_engine bypasses ExecutionCache for this node type.
-    # StatefulModuleMixin overrides to False because internal weights
-    # drift between runs and break the "same params + same upstream =>
-    # same output" invariant the cache relies on.
+    # The cache relies on "same params + same upstream => same output",
+    # and there are four ways a node breaks it, each with its own issue:
+    #
+    #   1. it OWNS trainable parameters, which drift between runs
+    #      (StatefulModuleMixin; #253 added SequentialModel);
+    #   2. it HANDS OUT a live mutable handle -- a MODEL or an OPTIMIZER,
+    #      or a scheduler -- that something downstream then mutates in
+    #      place, so the recorded handle describes an object that no
+    #      longer exists (#254);
+    #   3. its product is a SIDE EFFECT the return value does not carry:
+    #      a file write (#143), a metric point (#254), a trained model
+    #      (#253);
+    #   4. it reads external state a fingerprint cannot describe -- a
+    #      network resource, credentials (#116, #144).
+    #
+    # ``test_cache_live_handle_nodes.py`` asserts 2 and 3 over the whole
+    # registry, so a new node that breaks either fails there rather than
+    # in somebody's loss curve.
     cacheable: ClassVar[bool] = True
 
     @classmethod

@@ -8,6 +8,25 @@ class LRSchedulerNode(BaseNode):
     CATEGORY = "Training"
     DESCRIPTION = "Create a learning rate scheduler for an optimizer"
 
+    # #254. A scheduler is a live handle exactly like a model or an
+    # optimizer: ``TrainingLoop`` steps it once per epoch, so its
+    # ``last_epoch`` advances during the run and the recorded output stops
+    # describing it. Replaying it hands the next run a scheduler that has
+    # already finished its schedule. Measured, three runs against one
+    # ExecutionCache with StepLR(step_size=1, gamma=0.1) over 2 epochs:
+    # 1 / 0 / 0 real execute() calls, and TrainingLoop received
+    # (last_epoch=0, lr=0.1), then (2, 0.001), then (4, 1e-05) -- run 3
+    # trained four orders of magnitude below the learning rate on the node,
+    # with nothing anywhere saying so. ``OneCycleLR`` is worse: it raises
+    # "Tried to step N times" and takes the run down.
+    #
+    # Constructing a scheduler is microseconds, and it is not a #144 node
+    # (it reads nothing off disk), so there is no cost to weigh against
+    # that. The output port is typed ANY rather than MODEL/OPTIMIZER, which
+    # is why ``test_cache_live_handle_nodes.py`` names this node explicitly
+    # instead of catching it with the port-type rule.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

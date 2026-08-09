@@ -17,13 +17,31 @@ class ModelLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load model weights from a .pt/.pth file into a model, or load a full saved model"
 
-    # #144: cacheable again -- cache_fingerprint() below folds the resolved
-    # weights file's (size, mtime, and for small files a content hash) into
-    # the cache key. Re-training and re-saving to the same path between runs
-    # is the normal workflow; the fingerprint changes with the resave, so
-    # the cache correctly misses instead of silently serving the previous
-    # epoch's weights.
-    cacheable = True
+    # #254. In ``state_dict`` mode this node's product is a MUTATION of the
+    # model it was handed -- ``load_state_dict`` writes in place -- and a
+    # cache hit returns the recorded outputs without calling execute(), so
+    # the load simply does not happen. Measured on the realistic shape
+    # (pretrained weights -> fine-tune), fed by a cacheable model source and
+    # run three times against one ExecutionCache: 1 / 0 / 0 real execute()
+    # calls, and TrainingLoop saw the file's weight only on run 1
+    # (0.05 -> 0.085 -> 0.157) -- every later run silently continued from
+    # where the last one stopped instead of restarting from the file.
+    #
+    # In ``full_model`` mode there is no input to mutate, but the module it
+    # returns is a live handle that downstream training mutates in place;
+    # replaying it hands run 2 run 1's already-trained network. That is
+    # exactly the ``SequentialModel`` bug #253 fixed, one node over.
+    #
+    # This DOES undo the ``cacheable = True`` #144 gave it -- measured, and
+    # smaller than it sounds. The engine refuses to cache a node with any
+    # non-cacheable upstream, and ``state_dict`` mode's model comes from a
+    # weight-owning node, every one of which is non-cacheable; on the
+    # shipped shape it measured 1 / 1 / 1 execute() calls across three runs
+    # BEFORE this change, i.e. the hit #144 re-enabled was already
+    # unreachable there. #144's fingerprint mechanism is untouched and
+    # still serves the reader nodes it was built for (Dataset, CSVReader,
+    # ImageReader ...).
+    cacheable = False
 
     @staticmethod
     def _resolve_path(path: str) -> "Path":
@@ -35,19 +53,6 @@ class ModelLoaderNode(BaseNode):
         if not p.is_absolute():
             p = settings.MODELS_DIR / p
         return p.resolve()
-
-    @classmethod
-    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
-        from ...core.cache_fingerprint import path_fingerprint
-
-        path = str(params.get("path", "") or "")
-        if not path:
-            return None
-        try:
-            resolved = cls._resolve_path(path)
-        except Exception:
-            return None
-        return path_fingerprint(resolved)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

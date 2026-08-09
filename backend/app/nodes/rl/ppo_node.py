@@ -8,6 +8,12 @@ class PPONode(BaseNode):
     CATEGORY = "RL"
     DESCRIPTION = "Create a PPO actor-critic network for reinforcement learning"
 
+    # #253/#254: a weight-owning module handed out by a node with no
+    # required input is a cache root nothing can invalidate, so a hit gives
+    # the next run the network the previous run already trained. See
+    # ``DQNNode`` for the full reasoning; these three are one omission.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
