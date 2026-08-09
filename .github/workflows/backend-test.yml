@@ -156,6 +156,101 @@ jobs:
         working-directory: backend
         run: .venv\Scripts\python.exe -c "from app.main import app; print('FastAPI app:', app.title)"
 
+  # ── the suite against a BUILT frontend (core#285) ────────────────────────
+  #
+  # `backend/app/main.py` registers the SPA catch-all only when
+  # `frontend/dist/index.html` exists, and a checkout does not have one. So
+  # every job above tests the branch where that route is ABSENT -- which is
+  # the branch almost nobody runs. The no-Node release path ships
+  # `frontend/dist`, so a real installation is always the other branch, and
+  # so is any developer who has run `pnpm build`.
+  #
+  # core#285 is what that costs: four traversal assertions in
+  # `test_api_data_files.py` were deterministically red for anyone with a
+  # built frontend and green here, for as long as the catch-all has existed.
+  # A whole category of defect -- anything whose behaviour depends on that
+  # route existing -- was structurally unreachable, the same shape of gap as
+  # core#245 item 4 (platforms) along a different axis (build state).
+  #
+  # ONE job, not a build step bolted onto the matrix, for two reasons:
+  #
+  #   * The matrix has to keep testing the OTHER state. `cdui dev` is a
+  #     supported configuration and dist-absent is what it runs; if every job
+  #     built the frontend, nothing would cover that half and this comment
+  #     would be describing the opposite blind spot a year from now.
+  #   * Build state is not a function of Python version or platform, so
+  #     running it four times buys four copies of one answer -- the argument
+  #     the `lint` job below and the Windows job above already make.
+  #
+  # What it costs: one more ubuntu job, ~4 minutes of billed runner time
+  # (checkout + uv + torch install + the full suite), of which the frontend
+  # build itself is about 20 seconds -- measured on `frontend-build.yml`,
+  # where pnpm/setup-node take 8s, `pnpm install --frozen-lockfile` 1s
+  # against a warm store cache and `pnpm build` 10s. Added WALL-CLOCK time is
+  # zero: it runs in parallel and finishes well inside the Windows job's
+  # ~7 minutes, which is and stays the critical path.
+  #
+  # 3.11 because `install.ps1` / `install.sh` pin it, so this job is the
+  # closest thing in CI to what an installed user actually runs.
+  test-with-frontend:
+    name: pytest (built frontend, Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          # Pinned to the major matching frontend/pnpm-lock.yaml's
+          # `lockfileVersion: '9.0'`, same as frontend-build.yml.
+          version: 9
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build the frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f dist/index.html
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Provision Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install backend (with [dev] extra)
+        working-directory: backend
+        run: |
+          uv venv --python 3.11
+          uv pip install -e ".[dev]"
+
+      # Without this the job could silently decay into a fifth copy of the
+      # matrix: a frontend build that produced nothing would leave the SPA
+      # routes unregistered, the suite would pass, and the gap core#285 is
+      # about would be back with a green tick on top of it.
+      - name: Confirm the SPA routes are actually registered
+        working-directory: backend
+        run: |
+          .venv/bin/python -c "
+          from app.main import app
+          names = {getattr(r, 'name', '') for r in app.routes}
+          assert 'spa_fallback' in names, 'no SPA catch-all: this job is testing the wrong branch'
+          assert 'assets' in names, 'no /assets mount: this job is testing the wrong branch'
+          print('SPA routes registered')
+          "
+
+      - name: pytest
+        working-directory: backend
+        run: .venv/bin/python -m pytest tests/ -q
+
   # ── ruff (core#245 item 2) ───────────────────────────────────────────────
   #
   # Its own job rather than a step in the matrix: lint is platform- and

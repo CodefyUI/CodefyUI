@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import mimetypes
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.convertors import Convertor, register_url_convertor
 
 from .api import (
     routes_apps,
@@ -609,12 +611,65 @@ async def reload_nodes():
     )
 
 
-# Production mode: serve the pre-built frontend bundle. The catch-all is
-# registered last so it never shadows /api/* or /ws/* routes (FastAPI matches
-# in registration order). Skipped silently in dev when dist/ doesn't exist.
+# Production mode: serve the pre-built frontend bundle. Skipped silently in
+# dev when dist/ doesn't exist.
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
-if (DIST_DIR / "index.html").exists():
+#: URL prefixes the SPA must never answer, so a frontend ``fetch()`` error
+#: stays distinguishable from "the SPA loaded". Both halves of the exclusion
+#: below are generated from this tuple, so they cannot drift apart.
+NON_SPA_PREFIXES = ("api/", "ws/")
+
+
+class _SpaPathConvertor(Convertor[str]):
+    """``{full_path:spa_path}`` — everything ``:path`` matches, minus the API.
+
+    #285. The catch-all used to be a plain ``{full_path:path}`` whose handler
+    opened with a ``startswith`` check, on the reasoning that FastAPI matches
+    in registration order and the catch-all is registered last. Registration
+    order is not enough, because Starlette's router does not stop at the
+    first route whose PATH matches — it records a path-matched/method-missed
+    route as a PARTIAL match and keeps looking, and a partial match with no
+    full match anywhere is answered **405 Method Not Allowed**.
+
+    So ``DELETE /api/files/../../etc/passwd`` — no API route matches, because
+    ``{filename}`` does not span ``/`` — reached this GET-only catch-all,
+    matched it by path, missed it by method, and came back 405 instead of the
+    404 that same request gets when ``dist/`` is absent. The handler's own
+    check never ran: the 405 is produced by the router, before any handler.
+
+    Excluding the prefixes in the PATTERN removes the route from
+    consideration entirely, so an unhandled ``/api`` path is answered by the
+    API layer in both builds — 404 when nothing matches, and still 405 when a
+    real API route matched the path but not the method. That last case is the
+    reason this is a lookahead in the catch-all rather than an all-methods
+    ``/api/{rest:path}`` 404 route registered ahead of it: such a route would
+    FULL-match every wrong-method request to a real endpoint and turn its
+    honest 405 into a 404.
+    """
+
+    regex = "(?!" + "|".join(re.escape(prefix) for prefix in NON_SPA_PREFIXES) + ").*"
+
+    def convert(self, value: str) -> str:
+        return value
+
+    def to_string(self, value: str) -> str:
+        return value
+
+
+register_url_convertor("spa_path", _SpaPathConvertor())
+
+
+def mount_spa(target: FastAPI, dist_dir: Path) -> None:
+    """Register the static-asset mount and the SPA catch-all on *target*.
+
+    Takes the app and the directory as arguments rather than reading the
+    module globals so the production wiring can be exercised against a
+    throwaway ``dist`` — which is the other half of #285. This code used to be
+    reachable only through the ``if (DIST_DIR / "index.html").exists()``
+    branch below, so every test of it was either skipped or subtly wrong on a
+    checkout whose frontend had never been built, and CI's checkout never is.
+    """
     # Vite emits content-hashed asset filenames (e.g. index-LKCMvfbh.js), so a
     # given URL's bytes never change — cache them aggressively & immutably.
     class _ImmutableStaticFiles(StaticFiles):
@@ -623,9 +678,9 @@ if (DIST_DIR / "index.html").exists():
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
             return resp
 
-    app.mount(
+    target.mount(
         "/assets",
-        _ImmutableStaticFiles(directory=DIST_DIR / "assets"),
+        _ImmutableStaticFiles(directory=dist_dir / "assets"),
         name="assets",
     )
 
@@ -636,30 +691,32 @@ if (DIST_DIR / "index.html").exists():
     # every WebSocket / mutating request is rejected 403 ("loads but the Run
     # button does nothing"). `no-cache` forces revalidation on every load so
     # the document always matches the running server.
-    _INDEX_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+    index_headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
-    def _index_response() -> FileResponse:
-        return FileResponse(DIST_DIR / "index.html", headers=_INDEX_HEADERS)
-
-    # Paths that should 404 instead of falling through to index.html so that
-    # frontend fetch() errors stay distinguishable from "the SPA loaded".
-    _NON_SPA_PREFIXES = ("api/", "ws/")
-
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @target.get("/{full_path:spa_path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
-        if full_path.startswith(_NON_SPA_PREFIXES):
+        # Belt and braces: unreachable while the convertor above holds, and
+        # kept because the failure it guards against is silent. If the pattern
+        # ever stops excluding these, an /api typo would start answering 200
+        # index.html — a frontend fetch() would then parse HTML as JSON and
+        # report something unrelated, instead of the 404 it asked for.
+        if full_path.startswith(NON_SPA_PREFIXES):
             raise HTTPException(status_code=404, detail="Not Found")
         # Defence against path traversal: resolve the candidate and confirm
-        # it's still inside DIST_DIR. Browsers normalise ``..`` segments
+        # it's still inside dist_dir. Browsers normalise ``..`` segments
         # before sending, but ``curl --path-as-is`` and other tools don't,
         # and a stray ``..`` would previously let local processes read any
         # file the server's UID could open.
-        dist_resolved = DIST_DIR.resolve()
-        candidate = (DIST_DIR / full_path).resolve()
+        dist_resolved = dist_dir.resolve()
+        candidate = (dist_dir / full_path).resolve()
         try:
             candidate.relative_to(dist_resolved)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid path")
         if full_path and candidate.is_file():
             return FileResponse(candidate)
-        return _index_response()
+        return FileResponse(dist_dir / "index.html", headers=index_headers)
+
+
+if (DIST_DIR / "index.html").exists():
+    mount_spa(app, DIST_DIR)
