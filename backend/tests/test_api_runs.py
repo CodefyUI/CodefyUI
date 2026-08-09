@@ -330,6 +330,104 @@ async def test_submit_rejects_bad_input(client, payload, expected):
     assert response.status_code == expected, response.text
 
 
+# ── body cap (#250 item 3) ────────────────────────────────────────────────
+# The two sibling submit routes have capped their request bodies against
+# Content-Length since they were written (test_api_graph_run's
+# test_run_413_payload_too_large, test_api_apps_invoke's
+# test_invoke_413_body_cap_writes_no_row). This route was simply missed, and
+# it is the one where the omission persists: every submit writes a
+# graph_snapshot row, and retention only prunes finished runs.
+
+
+async def test_submit_413_over_the_body_cap(client, monkeypatch):
+    """Same status, same setting and same message as the sibling routes."""
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 16)
+    response = await client.post("/api/runs", json={"graph": _graph()})
+    assert response.status_code == 413, response.text
+    detail = response.json()["detail"]
+    assert "max 16" in detail, detail
+    assert "bytes" in detail
+
+
+async def test_submit_413_writes_no_run_row(client, monkeypatch):
+    """The point of the cap: an over-cap submit leaves nothing behind.
+
+    A rejected submit that still recorded its graph would be the worst of
+    both worlds — the row and its graph_snapshot are what accumulate, and a
+    queued or running row is never eligible for retention at all.
+    """
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 16)
+    assert (await client.post(
+        "/api/runs", json={"graph": _graph()})).status_code == 413
+    listing = (await client.get("/api/runs")).json()
+    assert listing["total"] == 0
+    assert listing["runs"] == []
+
+
+async def test_submit_cap_is_checked_before_the_body_is_read(client, monkeypatch):
+    """Ordering, proved by behaviour rather than by reading the source.
+
+    The payload is over the cap AND is not valid JSON. Refusing on the
+    header first answers 413; reading the body first answers 422 on the
+    decode error. So this fails the moment the guard moves after the read —
+    which is exactly what declaring a pydantic body parameter would do,
+    since FastAPI reads and parses a declared body before the endpoint (and
+    before its dependencies) runs.
+    """
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 16)
+    response = await client.post(
+        "/api/runs",
+        content=b"{ this is not json, and it is well over sixteen bytes",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 413, response.text
+
+
+async def test_submit_under_the_cap_is_unaffected(client, monkeypatch):
+    """A body inside the cap still submits — the guard is a ceiling, not a
+    gate. Pinned because the cheapest way to pass the tests above is to
+    reject everything."""
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 1024 * 1024)
+    response = await client.post("/api/runs", json={"graph": _graph()})
+    assert response.status_code == 200, response.text
+    await _poll_until_terminal(client, response.json()["run_id"])
+
+
+async def test_submit_keeps_fastapis_422_for_a_bad_body(client):
+    """Hand-parsing the body must not change the error callers already
+    handle: same 422, same ``("body", ...)`` loc prefix, same detail list."""
+    response = await client.post("/api/runs", json={"options": {}})
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, list) and detail
+    assert detail[0]["loc"][:2] == ["body", "graph"]
+    assert detail[0]["type"] == "missing"
+    # pydantic's docs URL is stripped, exactly as FastAPI strips it.
+    assert "url" not in detail[0]
+
+
+async def test_submit_keeps_fastapis_422_for_malformed_json(client):
+    response = await client.post(
+        "/api/runs",
+        content=b"{not json",
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail[0]["type"] == "json_invalid"
+    assert detail[0]["loc"][0] == "body"
+
+
+def test_submit_still_documents_its_request_body():
+    """Hand-parsing takes the body out of the generated schema unless it is
+    put back — an endpoint with no documented body on /docs is a regression
+    a passing test suite would otherwise never notice."""
+    post = app.openapi()["paths"]["/api/runs"]["post"]
+    schema = post["requestBody"]["content"]["application/json"]["schema"]
+    assert set(schema["properties"]) == {"graph", "options", "name"}
+    assert schema["required"] == ["graph"]
+
+
 async def test_submit_requires_the_session_token(run_app):
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url=BASE_URL) as anonymous:

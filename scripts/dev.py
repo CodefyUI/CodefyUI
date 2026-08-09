@@ -13,6 +13,8 @@
                       --yes / -y         略過互動，自動偵測 + 非 dev
                 從 TTY 不帶旗標執行會跳出互動選單；從非 TTY（curl|bash、CI）走 --yes。
     update      拉取最新版本並重新安裝依賴（接受同 install 的旗標）
+                伺服器還在執行時會拒絕（會刪掉它正在服務的 dist），
+                請先 cdui stop。
     build       建置 frontend dist（需 Node + pnpm，給開發者）
     dev         啟動開發伺服器（HMR；需 Node + pnpm）
     start       啟動 production（單一 uvicorn，用 frontend/dist；不需 Node）
@@ -44,7 +46,11 @@
                 離開碼：0 成功、1 失敗/取消/無法送出、2 參數錯誤、130 Ctrl+C
                 （Ctrl+C 只是停止跟隨，run 仍在伺服器上繼續執行）。
                 離線、不需要伺服器的單次執行請用 backend/run_graph.py。
-    stop        停止所有服務（含背景伺服器）
+    stop        停止「這個安裝」的服務：pidfile 記錄的背景伺服器，加上從這個
+                目錄啟動的殘留行程（前景 start、dev 模式的 vite、遺留 worker）。
+                旗標：--all   改為停止整台機器上所有 CodefyUI 與 Vite 行程。
+                              會波及其他使用者、以及與 CodefyUI 無關的 Vite
+                              dev server；共用主機請勿使用。
     test        執行 backend 測試
     clean       移除虛擬環境、node_modules 與 frontend/dist
     uninstall   解除安裝：clean + 移除全域 cdui launcher
@@ -1201,6 +1207,28 @@ def update() -> None:
     # this process already imported the old dev.py either way.
     gpu, dev = _resolve_update_options(sys.argv[2:])
 
+    # Nothing below this line is survivable by a running server: the checkout
+    # is hard-realigned under it, the frontend/dist it is serving is deleted,
+    # and its dependencies are rewritten in the venv it imported from. The
+    # result is not a crash — it is a server that stays up, keeps answering,
+    # and returns 404 for its own JavaScript, which is far harder to
+    # recognise than a clean refusal. On one laptop that was survivable
+    # because you knew you had started it; on a shared box the server you
+    # break is usually not yours.
+    #
+    # `_running_server_pid()` is the same liveness check `cdui status` runs,
+    # deliberately: two answers to "is it running" would eventually disagree.
+    # It also clears a stale pidfile as a side effect, so a crashed server
+    # cannot block an update forever.
+    running = _running_server_pid()
+    if running is not None:
+        err(f"伺服器正在執行中（PID {running}，{_display_url(*_server_addr())}），"
+            f"不能在此時 update。請先執行 cdui stop。",
+            f"A CodefyUI server is running (PID {running}, "
+            f"{_display_url(*_server_addr())}) — refusing to update underneath "
+            f"it. Stop it first: cdui stop")
+        sys.exit(1)
+
     # Decide whether this install will use a prebuilt release dist (no Node) or
     # build the frontend from source (pnpm available / forced). On the prebuilt
     # path we MUST pin the backend to the same release tag as the dist — pulling
@@ -2031,7 +2059,9 @@ def dev() -> None:
 
 
 def stop() -> None:
-    print("=== 停止所有服務 ===")
+    """停止此安裝的服務。加 --all 才會掃掉整台機器上的 CodefyUI / Vite。"""
+    sweep_everything = "--all" in sys.argv[2:]
+    print("=== 停止服務 ===")
     # First, stop the tracked background server gracefully via its PID. On
     # POSIX it was started with start_new_session, so its PID is also its
     # process-group leader — kill the whole group to catch any children.
@@ -2048,14 +2078,186 @@ def stop() -> None:
     SERVER_PIDFILE.unlink(missing_ok=True)
     SERVER_ADDRFILE.unlink(missing_ok=True)
 
-    # Sweep up anything else (foreground starts, dev-mode vite, stray workers).
+    # Then sweep up anything the pidfile does not know about — a foreground
+    # `cdui start`, a `cdui dev` vite, a worker that outlived its parent.
+    if sweep_everything:
+        _sweep_every_install()
+    else:
+        _sweep_this_install(already_stopped=pid)
+    print("=== 完成 ===")
+
+
+def _sweep_this_install(already_stopped: "int | None" = None) -> None:
+    """Stop leftover processes started FROM THIS CHECKOUT, and only those.
+
+    The sweep exists for a real reason: a foreground start writes no pidfile,
+    so without it `cdui stop` cannot stop what `cdui start -f` began. What it
+    must not do is reach outside this install. On one laptop those are the
+    same set; on a shared server they are not, and the untargeted version of
+    this sweep ends everyone else's training — plus every unrelated Vite dev
+    server on the box, which was never CodefyUI's to kill.
+
+    Scoped by ownership rather than by name: a process counts only when it
+    both looks like ours AND runs out of ``ROOT``.
+    """
+    strays = [p for p in _this_install_pids() if p != already_stopped]
+    for stray in strays:
+        print(t(f"  停止此安裝的殘留行程（PID {stray}）...",
+                f"  Stopping leftover process from this install (PID {stray})..."))
+        _terminate_pid(stray)
+    if not _has_psutil():
+        print(t("  （未安裝 psutil，無法辨識殘留行程；只停止了 pidfile 記錄的伺服器）",
+                "  (psutil unavailable — leftover processes cannot be "
+                "identified; only the pidfile server was stopped)"))
+
+
+def _sweep_every_install() -> None:
+    """`--all`: the pre-#250 machine-wide sweep, kept but no longer default.
+
+    Still the right thing on a single-user machine whose pidfile has been
+    lost, and the only thing that catches a server started from a checkout
+    that no longer exists. It is opt-in because it cannot tell whose server
+    it is stopping, and `pkill -f vite` is not even scoped to CodefyUI.
+    """
+    print(t("  --all：停止這台機器上所有 CodefyUI 與 Vite 行程（含其他使用者的）...",
+            "  --all: stopping EVERY CodefyUI and Vite process on this "
+            "machine (other people's included)..."))
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/IM", "uvicorn.exe"], capture_output=True)
         subprocess.run(["taskkill", "/F", "/FI", "WINDOWTITLE eq vite*"], capture_output=True)
     else:
         subprocess.run(["pkill", "-f", "uvicorn app.main:app"], capture_output=True)
         subprocess.run(["pkill", "-f", "vite"], capture_output=True)
-    print("=== 完成 ===")
+
+
+def _under_root(path: "str | None") -> bool:
+    """True when *path* is ROOT itself or lives inside it.
+
+    ``normcase`` so Windows' case and separator variants compare equal, and
+    the explicit ``+ os.sep`` so a sibling checkout called ``codefyui-old``
+    is not mistaken for a child of ``codefyui``.
+    """
+    if not path:
+        return False
+    root = os.path.normcase(str(ROOT))
+    candidate = os.path.normcase(str(path))
+    return candidate == root or candidate.startswith(root + os.sep)
+
+
+#: `vite` as a whole path component (``node_modules/vite/…``) or as the
+#: executable itself (``…/vite``, ``…/vite.js``, ``…\vite.cmd``). Never a
+#: bare substring: `invite.py` is not a dev server, and neither is a graph
+#: file someone happened to name `vite.json`.
+_VITE_RE = re.compile(
+    r"(^|[\\/])vite[\\/]"
+    r"|(^|[\\/])vite(\.(js|cjs|mjs|cmd|exe|bat|ps1))?$"
+)
+
+
+def _looks_like_a_codefyui_service(cmdline: "list[str]") -> bool:
+    """Name-only test: is this the shape of a CodefyUI backend or a Vite?
+
+    ``app.main:app`` is the uvicorn target every start path uses; ``vite``
+    covers the dev-mode frontend. Says nothing about WHOSE it is — that is
+    ``_is_this_install_process``'s job, and answering this one first keeps
+    the ownership check (which costs a ``cwd()`` syscall) off every process
+    on the machine.
+    """
+    parts = [os.path.normcase(part) for part in cmdline]
+    return any("app.main:app" in part or _VITE_RE.search(part)
+               for part in parts)
+
+
+def _is_this_install_process(cmdline: "list[str]", cwd: "str | None") -> bool:
+    """True for a CodefyUI backend / Vite dev server owned by THIS checkout.
+
+    Two independent questions, both of which must answer yes: does it look
+    like one of ours, and is it *this* install's? The second is satisfied
+    either by a launch path inside ROOT (the venv's ``uvicorn`` and
+    ``node_modules/vite`` both are) or by a working directory inside ROOT
+    (``cdui dev`` starts the backend in ``backend/`` and the frontend in
+    ``frontend/``).
+
+    A pure function of what a process reports, so the matching rule can be
+    tested without spawning anything.
+    """
+    if not _looks_like_a_codefyui_service(cmdline):
+        return False
+    return any(_under_root(part) for part in cmdline) or _under_root(cwd)
+
+
+def _this_install_pids() -> "list[int]":
+    """PIDs matching ``_is_this_install_process``, minus us and our parents.
+
+    Needs psutil — a declared backend dependency, and ``stop`` runs inside
+    the venv, so it is there in every supported install. When it is not, the
+    list is empty and only the pidfile server is stopped: failing to stop a
+    stray is recoverable, stopping the wrong process is not.
+    """
+    try:
+        import psutil  # noqa: PLC0415 — optional, ships with the backend
+    except ImportError:
+        return []
+
+    ours = {os.getpid()}
+    try:
+        ours.update(parent.pid for parent in psutil.Process().parents())
+    except Exception:  # noqa: BLE001 — a missing ancestor must not stop the sweep
+        pass
+
+    found: list[int] = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            pid = proc.info["pid"]
+            if pid in ours:
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            if not _looks_like_a_codefyui_service(cmdline):
+                continue
+            if _is_this_install_process(cmdline, None):
+                found.append(pid)
+                continue
+            # The launch path did not settle ownership, so fall back to the
+            # working directory — a second syscall, and one that is denied
+            # for other users' processes, which is why it is asked last and
+            # only of the handful that got this far.
+            try:
+                cwd = proc.cwd()
+            except Exception:  # noqa: BLE001 — psutil raises several types
+                continue
+            if _is_this_install_process(cmdline, cwd):
+                found.append(pid)
+        except Exception:  # noqa: BLE001 — a process that vanished mid-scan
+            continue
+    return found
+
+
+def _terminate_pid(pid: int) -> None:
+    """Stop ONE process (plus its children on Windows).
+
+    Deliberately not ``_terminate_posix``: that signals the whole process
+    GROUP, which is correct for the background server (started with
+    ``start_new_session``, so its group is exactly itself and its children)
+    and wrong for a swept stray, whose group is whatever shell job launched
+    it — potentially the caller's own script.
+    """
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True)
+        return
+    import signal  # noqa: PLC0415 — only needed here, POSIX only
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    for _ in range(20):  # up to ~2s for a graceful shutdown
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _terminate_posix(pid: int) -> None:

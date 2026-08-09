@@ -13,12 +13,12 @@ description: The cdui launcher commands — install, start, status, dev, build, 
 | Command | Description |
 |---------|-------------|
 | `cdui install` | Install backend deps; download the prebuilt frontend (or build locally if `pnpm` is available). |
-| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (source build) and re-sync the frontend. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. |
+| `cdui update` | Update to the latest release (prebuilt path) or pull `main` (source build) and re-sync the frontend. Never prompts — reuses the PyTorch variant and dev tooling already in the venv unless `--gpu` / `--dev` override. Refuses while a server is running (it would delete the `frontend/dist` that server is serving) — `cdui stop` first. |
 | `cdui start` | Production mode — single uvicorn on `:8000`, in the background (no Node needed). `--foreground` / `-f` runs it attached. |
 | `cdui status` | btop / k9s-style dashboard: CPU, memory, disk, GPU, top processes, plus the server's PID and health. Refreshes live (every 2s; `Ctrl+C` to quit). Pass a number to set the interval (`cdui status 1`), or `--once` for a single frame. |
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm). |
 | `cdui build` | Build the frontend bundle locally (requires Node + pnpm). |
-| `cdui stop` | Stop all services (including the background server). |
+| `cdui stop` | Stop **this install's** services: the background server from the pidfile, plus leftovers started from this directory (a foreground `cdui start`, `cdui dev`'s Vite, stray workers). Add `--all` to stop every CodefyUI and Vite process on the machine instead — that reaches other people's servers and unrelated Vite dev servers, so avoid it on a shared host. |
 | `cdui test` | Run backend tests. |
 | `cdui clean` | Remove the virtualenv, `node_modules`, and `frontend/dist`. |
 | `cdui uninstall` | Clean + remove the PATH launcher. |

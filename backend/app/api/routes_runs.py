@@ -25,21 +25,25 @@ is what ``test_auth_drift.py`` guards for those two, and what
 guards here).
 
 Errors: 400 for a malformed submit or an unknown status filter, 404 for an
-unknown run, 503 when the service is not on ``app.state`` (the
-``routes_execution_outputs._get_store`` precedent — the lifespan does not
-run under httpx's ASGITransport).
+unknown run, 413 for a submit over ``MAX_RUN_BODY_BYTES``, 503 when the
+service is not on ``app.state`` (the ``routes_execution_outputs._get_store``
+precedent — the lifespan does not run under httpx's ASGITransport). All of
+them answer ``{"detail": ...}``; the 9-key run envelope belongs to
+``routes_graph_run`` / ``routes_apps``, not here.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import json
 from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ..config import settings
 from ..core.run_service import (
@@ -85,6 +89,80 @@ class SubmitRunRequest(BaseModel):
     graph: dict[str, Any]
     options: Any = None
     name: str | None = None
+
+
+def _reject_oversized_body(request: Request) -> None:
+    """413 when ``Content-Length`` declares more than ``MAX_RUN_BODY_BYTES``.
+
+    Same setting, same comparison and same message text as the two sibling
+    submit routes (``routes_graph_run`` step 2, ``routes_apps`` step 3), so a
+    client that talks to more than one of them sees one behaviour. Only the
+    envelope differs, and only because these routes have different envelopes:
+    the sibling routes answer with the 9-key run envelope on every path, this
+    router answers with ``{"detail": ...}`` on every path (see the module
+    docstring). Borrowing their envelope for this one status would make
+    ``POST /api/runs`` the only route in the file a client had to special-case.
+
+    Checked against the header BEFORE anything reads the body, which is why
+    ``submit_run`` parses its own body instead of declaring a pydantic
+    parameter: FastAPI reads and JSON-parses a declared body before the
+    endpoint (and before its dependencies) runs, so a cap placed after that
+    point has already paid for the bytes it is refusing.
+
+    Advisory, exactly like the siblings: a chunked request declares no length
+    and is not caught here. The cap that matters for this route is the one on
+    what gets *persisted* — every submit writes an immutable ``graph_snapshot``
+    row, a queued run never reaches a terminal state, and the keep-last-N
+    retention only prunes finished runs (``RUN_RETENTION_KEEP_LAST``), so
+    without this nothing at all reclaims an oversized submit.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return
+    try:
+        declared_bytes = int(content_length)
+    except ValueError:
+        declared_bytes = 0
+    if declared_bytes > settings.MAX_RUN_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"request body is {declared_bytes} bytes "
+                f"(max {settings.MAX_RUN_BODY_BYTES})"
+            ),
+        )
+
+
+async def _read_submit_body(request: Request) -> SubmitRunRequest:
+    """Read and validate the submit body by hand, keeping FastAPI's 422.
+
+    Hand-parsing is the price of capping before the read; it must not also
+    cost callers the error shape they already handle. Both failure modes are
+    re-raised as ``RequestValidationError`` with the same ``loc`` prefix
+    FastAPI applies (``("body", ...)``) and ``include_url=False``, so a bad
+    submit answers byte-for-byte what a declared pydantic body answered.
+    """
+    raw = await request.body()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RequestValidationError([{
+            "type": "json_invalid",
+            "loc": ("body", exc.pos),
+            "msg": "JSON decode error",
+            "input": {},
+            "ctx": {"error": exc.msg},
+        }], body=raw)
+    try:
+        return SubmitRunRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise RequestValidationError(
+            [
+                {**err, "loc": ("body", *err.get("loc", ()))}
+                for err in exc.errors(include_url=False)
+            ],
+            body=payload,
+        )
 
 
 async def _queue_positions(service: RunService,
@@ -179,8 +257,21 @@ async def _require_run(service: RunService, run_id: str) -> RunRecord:
     return record
 
 
-@router.post("")
-async def submit_run(body: SubmitRunRequest, request: Request):
+@router.post("", openapi_extra={
+    # Hand-parsing the body takes it out of the generated schema, and an
+    # endpoint whose /docs page shows no request body is worse documentation
+    # than the cap is worth. Re-declare the same model, inlined because
+    # nothing references the component any more.
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": SubmitRunRequest.model_json_schema(),
+            },
+        },
+    },
+})
+async def submit_run(request: Request):
     """Persist and schedule a run. Returns as soon as it is scheduled.
 
     Deliberately does NOT wait for the run: that is the entire point of the
@@ -192,7 +283,12 @@ async def submit_run(body: SubmitRunRequest, request: Request):
     device's FIFO (#123). Poll the row, or long-poll ``/events``, either
     way; a queued run parks the long poll properly instead of returning
     empty pages.
+
+    The body is capped and parsed here rather than declared as a pydantic
+    parameter — see ``_reject_oversized_body`` for why the order matters.
     """
+    _reject_oversized_body(request)
+    body = await _read_submit_body(request)
     service = _get_service(request)
     try:
         result = await service.submit(body.graph, options=body.options,
