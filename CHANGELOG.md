@@ -22,7 +22,64 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A `Map` body ran with no execution context, so augmentation inside one was
+  silently unseeded** ([#196]). The loop called `instance.execute(inputs,
+  params)` directly — the last node-execute call site in the repository that
+  did not go through `invoke_node` — so every node in a Map sub-graph saw
+  `context=None`. `seed_pipeline` returns the pipeline unchanged when there is
+  no context, so a seeded run's augmentation inside a Map was neither
+  reproducible nor isolated, with no error and no warning. The body also lost
+  its cancellation flag, its metric/artifact sink and its device.
+
+  The body now gets a per-node **copy** of the run's context (the rule the
+  engine has followed since [#253]), with the inner node id qualified by the
+  Map's own — `map1__node_0` — because preset internals are named `node_0`,
+  `node_1`, … and three things key off that field: the transform seed label,
+  `StatefulModuleMixin`'s weight key, and the node id on every signal. The
+  body deliberately does *not* get the Map's progress callback, which the
+  engine binds to the Map node's id.
+
+- **A preset built from a node with param-driven ports lost the extra ports**
+  ([#196]). Preset extraction and the preset registry both read the static
+  `define_inputs()` / `define_outputs()`, which answer for the *default*
+  params. A `ComposeTransform(steps=5)` therefore reported two ports however
+  many it had, so `step_3`..`step_5` never reached `exposed_inputs` and edges
+  into them had nowhere to reattach when the preset was dropped back onto a
+  canvas. `PythonScript` was affected in both directions. Both sites now use
+  the dynamic form, which the params were already in scope for.
+
+- **The metrics CSV export was open to formula injection, and unreadable in
+  Excel** ([#196]). `csv.writer` quotes commas, quotes and newlines correctly,
+  but quoting is not what stops a formula: a spreadsheet evaluates a cell
+  beginning `=`, `+`, `-`, `@`, tab or CR. Two columns are user-influenced —
+  `name`, which any plugin or custom node picks when it calls
+  `context.log_metric`, and `node_id`, straight off the graph JSON. Text cells
+  are now prefixed with an apostrophe when they lead with one of those;
+  numeric cells are untouched, so a negative value stays a number. The body
+  also gains a UTF-8 BOM: `charset=utf-8` is not enough for Excel on Windows,
+  which reads a BOM-less CSV in the ANSI codepage and mangles every non-ASCII
+  name — in a product that ships a zh-TW locale.
+
+- **`ImageFolderDataset` validated the directory tree and never a single
+  file** ([#197]). `ImageFolder` accepts anything with an image extension, so
+  a truncated, zero-byte or merely renamed `.png` built fine and then raised
+  `PIL.UnidentifiedImageError` from inside a DataLoader worker, potentially
+  minutes into training, naming nothing actionable. The node now opens an even
+  spread of at most 32 files at build time — a fixed cost that does not grow
+  with the dataset — and names the first unreadable one.
+
+- **The three port-count params disagreed with the canvas about anything with
+  a trailing character** ([#197]). `ComposeTransform`'s `steps`,
+  `PythonScript`'s `input_ports`/`output_ports` and `Split`'s `chunks` each
+  spelled their own `int(raw)`, while the canvas reads all three with
+  `parseInt(String(raw), 10)`, which takes a numeric *prefix*. So
+  `{"steps": "5.7"}` drew five handles and validated two, and an edge into
+  `step_3` was refused as an invalid input port. All three now share one
+  helper that mirrors `parseInt` — including on `"1e3"`, where the obvious
+  `int(float(raw))` fix would have traded one divergence for another. Only
+  reachable through hand-edited or externally-generated graph JSON.
 
 ## [2.2.0] — 2026-08-10
 
@@ -464,6 +521,8 @@ Release candidates before 1.0.0 are on the
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [#242]: https://github.com/CodefyUI/CodefyUI/issues/242
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
+[#196]: https://github.com/CodefyUI/CodefyUI/issues/196
+[#197]: https://github.com/CodefyUI/CodefyUI/issues/197
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

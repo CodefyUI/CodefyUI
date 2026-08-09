@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 from collections import defaultdict
 from typing import Any
@@ -49,7 +50,7 @@ class MapNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
-        from ...core.graph_engine import topological_sort
+        from ...core.graph_engine import invoke_node, topological_sort
         from ...core.loop_control import (
             EVENT_BATCH,
             ProgressThrottle,
@@ -108,6 +109,12 @@ class MapNode(BaseNode):
         throttle = ProgressThrottle(progress_callback)
         stopped_at_item: int | None = None
 
+        # The Map's own id, as the engine stamped it on this context. Used
+        # to qualify the body's node ids below; "map" only when Map is being
+        # driven by something that keeps no per-node identity (a bare
+        # ``execute`` in a test).
+        outer_node_id = getattr(context, "current_node_id", "") or "map"
+
         results = []
         for i, item in enumerate(items):
             if should_stop():
@@ -130,7 +137,54 @@ class MapNode(BaseNode):
                     node_inputs[in_port.internal_port] = item
 
                 instance = node_cls()
-                result = instance.execute(node_inputs, node_def.get("data", {}).get("params", {}))
+
+                # #196: the body used to run on ``context=None`` -- the last
+                # node-execute call site in the repo that did not go through
+                # ``invoke_node``. It cost every inner node its seed stream
+                # (``seed_pipeline`` hands back the raw pipeline when there
+                # is no context, so augmentation inside a Map was neither
+                # reproducible nor isolated, with no error and no warning),
+                # its cancellation flag, its metric/artifact sink and its
+                # device.
+                #
+                # A per-inner-node COPY, never the shared object: the same
+                # rule ``graph_engine`` follows since #253. Every
+                # collaborator on the context -- the stop event, the outbox,
+                # ``node_state_store`` -- stays the SAME object; only the
+                # scalar id differs. It also means the caller's
+                # ``current_node_id`` is untouched, so there is nothing to
+                # restore after the loop.
+                #
+                # The id is QUALIFIED with the Map's own, using the ``a__b``
+                # separator preset expansion already uses
+                # (``graph_engine._expand_preset``). Preset internals are
+                # named ``node_0``, ``node_1``, ... so a bare inner id is
+                # unique only within one body, and three things key off this
+                # field: ``seeded_for_node``'s ``transform:<id>`` seed label
+                # (two transform nodes in one body must draw different
+                # streams), ``StatefulModuleMixin``'s ``(graph_id,
+                # current_node_id, structure_hash)`` (two same-shaped
+                # stateful nodes must not share weights -- across two Map
+                # instances as well as within one body), and the node id on
+                # every metric/warning/artifact the body emits.
+                node_context = context
+                if context is not None:
+                    node_context = copy.copy(context)
+                    node_context.current_node_id = f"{outer_node_id}__{node_id}"
+
+                result = invoke_node(
+                    instance,
+                    node_inputs,
+                    node_def.get("data", {}).get("params", {}),
+                    # Deliberately NOT the Map's own callback. The engine
+                    # binds that to the MAP node's id, so an inner training
+                    # loop's per-batch frames would arrive on the canvas as
+                    # the Map node's progress and race the per-item frames
+                    # emitted below. The body gets the context (state) but
+                    # not the outer node's progress channel (presentation).
+                    progress_callback=None,
+                    context=node_context,
+                )
                 node_outputs[node_id] = result
 
             out = node_outputs.get(out_port.internal_node, {}).get(out_port.internal_port)
