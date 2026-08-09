@@ -2342,12 +2342,21 @@ async def execute_graph(
     # Hand-entering means the pairing is not the language's job any more,
     # so every statement between the two has to be looked at (#190). The
     # cost of getting it wrong went UP when the scope became refcounted:
-    # under save-and-restore a skipped exit cost one run its restore, while
-    # under refcounting the depth never returns to 0, so determinism is
-    # never restored again for the LIFE OF THE PROCESS and every later
-    # scope's baseline capture is suppressed too (see
-    # ``seeding.deterministic_scope``). One unlucky teardown poisons the
-    # server until someone restarts it.
+    # a skipped exit used to cost one run its restore, whereas now the
+    # depth does not return to 0, so ``use_deterministic_algorithms`` stays
+    # at the failed run's setting and every LATER scope's baseline capture
+    # is suppressed as well (see ``seeding.deterministic_scope``).
+    #
+    # How far that actually reaches, measured rather than assumed, because
+    # #190 overstates it: ``deterministic_scope`` is a generator-based
+    # context manager, so once the traceback holding this frame is released
+    # CPython finalises the suspended generator and runs the very
+    # ``finally`` that was skipped. The window is therefore however long
+    # something holds the traceback -- a stored exception, an unretrieved
+    # task -- not the life of the process. Still worth closing: it is a
+    # process-global setting whose correctness would otherwise rest on an
+    # interpreter detail nothing here states, and which no implementation
+    # without prompt refcounting provides.
     determinism = deterministic_scope(wants_determinism)
     determinism.__enter__()
 
