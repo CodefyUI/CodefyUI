@@ -290,18 +290,29 @@ def test_predicted_draws_leaves_no_global_rng_pinned():
     Asserted by DRAWING either side rather than by comparing saved state
     blobs: a pinned RNG is only a problem because of what the next caller
     gets out of it, and two consecutive calls to a pinned generator return
-    the same number — which is exactly the assertion below.
-    """
-    _predicted_draws(21, "loader-1", 0, 4)
-    first = (random.random(), float(np.random.random()),
-             float(torch.rand(1)))
-    _predicted_draws(21, "loader-1", 0, 4)
-    second = (random.random(), float(np.random.random()),
-              float(torch.rand(1)))
+    the same number.
 
-    assert first != second, (
-        "a global RNG is still pinned to the derived worker seed: "
-        f"{first} came back again as {second}")
+    Compared PER RNG, and that is not cosmetic. A single tuple comparison
+    passes as soon as any ONE component moves — and ``random`` always moves,
+    because it is the one the old code did restore, so its stream advances
+    across the two calls. The tuple version of this test was green against
+    a helper that pinned both numpy and torch; only the per-generator
+    version fails, and it names which one.
+    """
+    def _after_a_call() -> dict[str, float]:
+        _predicted_draws(21, "loader-1", 0, 4)
+        return {
+            "random": random.random(),
+            "numpy": float(np.random.random()),
+            "torch": float(torch.rand(1)),
+        }
+
+    first, second = _after_a_call(), _after_a_call()
+    pinned = sorted(name for name in first if first[name] == second[name])
+
+    assert not pinned, (
+        f"still pinned to the derived worker seed: {pinned} — the same "
+        f"number came back from a fresh draw ({first} then {second})")
 
 
 def test_a_seeded_multi_worker_loader_iterates_and_seeds_its_workers():
