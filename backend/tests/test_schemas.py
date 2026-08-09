@@ -1,4 +1,4 @@
-from app.schemas.models import NodeData, EdgeData
+from app.schemas.models import EdgeData
 
 
 def test_edge_data_default_type_is_data():

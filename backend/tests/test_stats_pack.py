@@ -190,7 +190,6 @@ def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path):
         "plugins": {plugin_id: {"source_kind": "user", "enabled": True}},
     }
     registry = NodeRegistry()
-    package = f"cdui_plugins.{plugin_id}.nodes"
 
     def reload_pack() -> int:
         """The plugin half of rediscover_all, verbatim."""

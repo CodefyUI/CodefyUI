@@ -97,7 +97,7 @@ class RandomForestClassifierNode(BaseNode):
         x_query_np = x_query.detach().cpu().float().numpy()
 
         labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
-        labels = [str(l) for l in labels]
+        labels = [str(label) for label in labels]
         if x_train_np.shape[0] != len(labels):
             raise ValueError(
                 f"RandomForestClassifier: features and labels length mismatch — "

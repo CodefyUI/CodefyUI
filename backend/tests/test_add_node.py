@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 import torch
 
 from app.nodes.tensor_ops.add_node import AddNode

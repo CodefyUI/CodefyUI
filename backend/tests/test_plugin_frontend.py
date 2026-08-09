@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core import plugin_loader
 from app.core.plugin_loader import frontend_entry_rel
 
 
@@ -47,9 +48,6 @@ def test_entry_rel_rejects_paths_outside_frontend_dir():
 
 def test_entry_rel_normalizes_backslashes():
     assert frontend_entry_rel({"frontend": {"entry": "frontend\\index.js"}}) == "frontend/index.js"
-
-
-from app.core import plugin_loader
 
 
 def _write_frontend_plugin(root: Path, plugin_id: str, *, enabled: bool = True,

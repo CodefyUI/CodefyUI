@@ -17,8 +17,6 @@ so non-dev installs keep working untouched.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 
 import pytest
 

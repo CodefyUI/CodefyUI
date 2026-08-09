@@ -1,7 +1,6 @@
 """Project-mode Settings derivation (spec 7.1): PROJECT_DIR repoints the
 graph/asset roots, with an explicitly-provided root always winning."""
 
-from pathlib import Path
 
 import pytest
 

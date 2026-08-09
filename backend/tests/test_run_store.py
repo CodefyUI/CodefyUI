@@ -1063,7 +1063,7 @@ async def test_prune_keeps_the_newest_n_and_cascades(store, db):
 async def test_prune_never_deletes_queued_or_running_runs(store):
     old_active = await _make_run(store, name="active")
     await store.mark_running(old_active.id)
-    old_queued = await _make_run(store, name="queued")
+    await _make_run(store, name="queued")  # left queued on purpose
     for _ in range(3):
         done = await _make_run(store)
         await store.mark_finished(done.id, "succeeded")

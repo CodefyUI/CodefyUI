@@ -1,6 +1,6 @@
 from typing import Any
 
-from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.node_base import BaseNode, DataType, PortDefinition
 
 
 class SwitchNode(BaseNode):

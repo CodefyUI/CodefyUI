@@ -29,7 +29,7 @@ from ...core.node_base import (
     PortDefinition,
 )
 from ...core.step_trace import StepRecorder
-from ._demo_vectors import DEMO_VECTORS, DIM as DEMO_DIM
+from ._demo_vectors import DEMO_VECTORS
 
 
 # Future GloVe asset specs (not published yet — first attempt raises a friendly

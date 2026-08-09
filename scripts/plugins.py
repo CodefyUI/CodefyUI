@@ -43,7 +43,6 @@ else:
 
 from app.core.plugin_loader import (
     MANIFEST_FILENAME,
-    iter_plugin_dirs,
     load_lockfile,
     plugins_builtin_root,
     plugins_user_root,

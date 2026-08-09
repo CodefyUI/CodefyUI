@@ -12,7 +12,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-from app.core import device_utils
 from app.core.device_utils import (
     cuda_device_count,
     describe_accelerator,

@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException
 
 from ..config import settings
 from ..core.graph_engine import GraphValidationError, build_preset_fallback, validate_graph
-from ..core.node_registry import registry
 from ..core.project import (
     GraphAmbiguityError,
     collect_graph_files,

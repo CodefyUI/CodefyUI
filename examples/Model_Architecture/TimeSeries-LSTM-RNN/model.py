@@ -178,4 +178,4 @@ if __name__ == "__main__":
     ax.legend()
     fig.tight_layout()
     fig.savefig("prediction_result.png", dpi=150)
-    print(f"\nPlot saved to prediction_result.png")
+    print("\nPlot saved to prediction_result.png")

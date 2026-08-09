@@ -30,7 +30,7 @@ mimetypes.add_type("font/woff", ".woff")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
@@ -74,7 +74,6 @@ from .core.port_stats import PortStatsCache
 from .core.version import get_version
 from .core import plugin_loader
 from .core.plugin_loader import (
-    MANIFEST_FILENAME,
     install_plugin_finder,
     iter_plugin_dirs,
     load_lockfile,

@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from .memory_budget import format_bytes, value_bytes
 

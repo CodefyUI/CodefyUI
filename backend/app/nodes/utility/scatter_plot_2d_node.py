@@ -93,7 +93,7 @@ class ScatterPlot2DNode(BaseNode):
             ax.scatter(pts[:, 0], pts[:, 1], s=18, alpha=0.8)
         else:
             labels_list = labels.tolist() if hasattr(labels, "tolist") else list(labels)
-            labels_s = [str(l) for l in labels_list]
+            labels_s = [str(label) for label in labels_list]
             classes = sorted(set(labels_s))
             cmap = plt.get_cmap("tab10")
             arr = np.asarray(labels_s)

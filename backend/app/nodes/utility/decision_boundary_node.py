@@ -108,7 +108,7 @@ class DecisionBoundaryNode(BaseNode):
                 f"DecisionBoundary only supports 2D features [N, 2]; got {tuple(x_np.shape)}."
             )
         labels = y.tolist() if hasattr(y, "tolist") else list(y)
-        labels = [str(l) for l in labels]
+        labels = [str(label) for label in labels]
 
         steps = max(20, min(500, int(params.get("grid_steps", 200))))
         title = str(params.get("title", ""))

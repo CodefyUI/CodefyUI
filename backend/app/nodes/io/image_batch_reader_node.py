@@ -1,7 +1,13 @@
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+
+if TYPE_CHECKING:
+    # `pathlib` is imported lazily inside the methods below (startup cost);
+    # this makes the "Path" annotations resolvable to a type checker without
+    # paying that cost at import time.
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

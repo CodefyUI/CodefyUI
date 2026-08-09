@@ -9,7 +9,6 @@ import subprocess
 import pytest
 
 import project
-from app.core.plugin_loader import tomllib
 from app.core.secret_params import secret_param_names
 
 

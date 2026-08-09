@@ -1,5 +1,4 @@
 # backend/tests/test_graph_model.py
-import json
 
 import pytest
 import torch

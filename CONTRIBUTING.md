@@ -147,7 +147,7 @@ uv pip install -e ".[dev]"
 `uv venv --python 3.11` pins the version. **Bare `uv` commands in a fresh clone or worktree do not** — they resolve to whatever the newest CPython on your machine is, which today can be 3.14. CI never tests that:
 
 - `backend/pyproject.toml` declares `requires-python = ">=3.10"`.
-- `.github/workflows/backend-test.yml` runs a matrix of **3.10, 3.11, 3.12** only.
+- `.github/workflows/backend-test.yml` runs a matrix of **3.10, 3.11, 3.12** only (on ubuntu, plus one Windows job on 3.12).
 - `cdui install` and both launchers (`cdui`, `cdui.cmd`) hardcode **3.11**.
 
 So a test that passes locally on 3.14 tells you nothing about 3.10, and a syntax feature you reach for might be above the declared floor. Always create the venv with an explicit `--python 3.11` (or `3.10` if you want to develop against the floor), and let CI cover the rest.
@@ -169,19 +169,23 @@ More detail: [Dev Install](https://docs.codefyui.com/getting-started/dev-install
 
 ## Running the checks
 
-There is no lint step and no formatter in this repository — do not go looking for one. There is also no pre-commit hook, so **nothing runs automatically**. These are the real gates, and you run them yourself.
+There is a linter (`ruff`) and there is no formatter — do not go looking for one. There is also no pre-commit hook, so **nothing runs automatically**. These are the real gates, and you run them yourself.
 
-### `cdui test` only runs the backend
+### `cdui test` runs both halves
 
-This surprises people, so it is worth stating flatly. From `scripts/dev.py:2471`, the whole function is:
+It used to run only `pytest` in `backend/`, which meant a green `cdui test` said nothing about the 138 frontend test files. Since core#245 it runs both and prints a summary naming each half:
 
-```python
-def test() -> None:
-    pytest = _require_venv_tool("pytest")
-    run([pytest], cwd=BACKEND_DIR)
+```
+=== Test summary ===
+  backend   PASS
+  frontend  PASS
 ```
 
-That is `pytest` with no arguments, in `backend/`, discovering `backend/tests/` via `testpaths` in `pyproject.toml`. It never touches the frontend. **If you changed anything under `frontend/`, `cdui test` passing means nothing about your change.**
+Three things worth knowing:
+
+- **A missing `pnpm` is a skip, not a failure.** CodefyUI has a deliberate no-Node install path (the release ships a prebuilt `frontend-dist.tar.gz`), so a machine with no Node is a healthy machine. The frontend half is reported as `SKIPPED` — never as a pass — and CI's `frontend-build.yml` runs those tests regardless.
+- **Both halves always finish.** A red backend does not stop the frontend from running; you get both answers in one pass. The exit code is 1 if either failed.
+- **`--backend` / `--frontend`** narrow the run when you know what you touched. Anything else is rejected rather than ignored — `cdui test -k foo` used to run the whole suite while looking like it had filtered.
 
 ### The full local set
 
@@ -192,7 +196,10 @@ Run every line that applies to what you touched:
 # which no test, type check or grep catches (ripgrep silently skips them).
 python scripts/check_control_bytes.py
 
-# Backend -- if you touched backend/, examples/, plugins/ or scripts/
+# Repository root -- always. Same rule set CI runs (see ruff.toml).
+uvx ruff@0.14.4 check .
+
+# Backend + frontend. Add --backend if you only touched Python.
 ./cdui test
 
 # Backend -- if you edited backend/pyproject.toml. CI runs this BEFORE
@@ -201,10 +208,10 @@ python scripts/check_control_bytes.py
 # dependency change.
 cd backend && uv lock --check
 
-# Frontend -- if you touched frontend/
+# Frontend -- if you touched frontend/. `cdui test` covers `pnpm test`;
+# these are the type-check and build gates it does not run.
 cd frontend && pnpm install
 cd frontend && pnpm exec tsc -b
-cd frontend && pnpm test
 cd frontend && pnpm build
 ```
 
@@ -213,9 +220,17 @@ Two notes on the frontend commands:
 - **`tsc -b`, not `tsc --noEmit`.** `frontend/tsconfig.json` is a solution-style config with `"files": []` and project references, so `tsc --noEmit` against it checks **zero files** and passes no matter what is broken. Build mode follows the references and actually type-checks `src/`.
 - **`pnpm build` includes the contrast gate.** The build script is `node scripts/check-contrast.mjs && tsc -b && vite build` — the first step re-derives every WCAG contrast relationship claimed by `frontend/src/styles/tokens.css` and fails the build if a token pair drops below threshold. Run it alone with `pnpm contrast` when you are editing colours.
 
+### The linter
+
+`ruff.toml` at the repo root covers `backend/`, `scripts/`, `plugins/` and `examples/` — the same blast radius `backend-test.yml` uses. It runs the rule set ruff itself defaults to (`E4`, `E7`, `E9`, `F`): unused imports, undefined names, unused locals, `== None`, bare `except`, syntax errors.
+
+It is deliberately narrow. `E501` (line length), `I001` (import order) and the `B` / `SIM` / `UP` families are **not** enabled, and the file says why for each, with the finding count from the first run. If you want to turn one on, that is a welcome PR — one rule family at a time, with the fixes in the same diff.
+
+There is no frontend linter yet. That is a bigger argument because it drags a formatting decision along with it; see core#245.
+
 ### What CI runs that you cannot easily run locally
 
-- **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12, plus `uv lock --check` and a smoke import (`from app.main import app`) that catches import-time syntax errors.
+- **`backend-test.yml`** runs the whole suite on Python 3.10, 3.11 and 3.12 on ubuntu, **plus one Windows job on 3.12**, plus `uv lock --check`, a smoke import (`from app.main import app`) that catches import-time syntax errors, and `ruff check`. The Windows job is not decoration: CPython 3.12 replaced `os.path.exists` / `isdir` / `isfile` / `islink` with `nt` C fast paths **on Windows only**, and `ntpath` guards that behind `try: from nt import ... except ImportError:` — so on ubuntu the fallback always wins and no Python version in an ubuntu-only matrix can ever see the difference (core#258). If you change anything that touches paths, processes or file locking, expect Windows to have an opinion.
 - **`byte-scan.yml`** runs `scripts/check_control_bytes.py` over every tracked file on every PR, with no path filter.
 - **`frontend-build.yml`** runs install, `tsc -b`, `pnpm build`, a `dist/` sanity check, then `pnpm test` — on `frontend/**` changes only.
 
