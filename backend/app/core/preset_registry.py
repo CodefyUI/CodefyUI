@@ -114,7 +114,15 @@ class PresetRegistry:
         cls = node_registry.get(node.type)
         if not cls:
             return "ANY"
-        ports = cls.define_inputs() if direction == "input" else cls.define_outputs()
+        # #196: the DYNAMIC form. `InternalNodeSchema` carries the stored
+        # params, so a port that only exists at this instance's port count
+        # (ComposeTransform's step_3.., PythonScript's in3../out3..) resolves
+        # to its real data type instead of silently falling through to "ANY"
+        # and colouring the preset's handle grey.
+        ports = (
+            cls.define_inputs_dynamic(node.params) if direction == "input"
+            else cls.define_outputs_dynamic(node.params)
+        )
         port = next((p for p in ports if p.name == port_name), None)
         return port.data_type.value if port else "ANY"
 

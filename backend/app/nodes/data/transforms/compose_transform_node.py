@@ -9,6 +9,7 @@ from ....core.node_base import (
     ParamDefinition,
     ParamType,
     PortDefinition,
+    resolve_count_param,
 )
 from ._base import CHAIN_OUTPUT_DESC, TransformStepNode, compose
 
@@ -24,13 +25,13 @@ def _step_count(params: dict[str, Any] | None) -> int:
 
     Called by the palette, the validator and the renderer with whatever the
     graph JSON happens to hold, which after a hand edit is not necessarily
-    an integer at all.
+    an integer at all. :func:`resolve_count_param` is the one convention
+    every port-count param shares, and the one the canvas mirrors (#197).
     """
-    try:
-        count = int((params or {}).get("steps", DEFAULT_STEPS))
-    except (TypeError, ValueError):
-        return DEFAULT_STEPS
-    return max(MIN_STEPS, min(MAX_STEPS, count))
+    return resolve_count_param(
+        params, "steps",
+        default=DEFAULT_STEPS, minimum=MIN_STEPS, maximum=MAX_STEPS,
+    )
 
 
 class ComposeTransformNode(TransformStepNode):

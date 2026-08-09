@@ -1,17 +1,29 @@
 from typing import Any
 
-from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
+from ...core.node_base import (
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+    resolve_count_param,
+)
 
 MAX_CHUNKS = 32
 
 
 def _resolve_chunks(params: dict[str, Any] | None) -> int:
-    raw = (params or {}).get("chunks", 2)
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
-        n = 2
-    return max(1, min(MAX_CHUNKS, n))
+    """How many ``chunk_i`` outputs this instance has.
+
+    Shares :func:`resolve_count_param` with ``ComposeTransform`` and
+    ``PythonScript``: three port-count params spelling their own ``int()``
+    is how the backend and the canvas came to disagree in the first place
+    (#197), so tightening two of the three would just have left a third
+    convention behind.
+    """
+    return resolve_count_param(
+        params, "chunks", default=2, minimum=1, maximum=MAX_CHUNKS,
+    )
 
 
 class SplitNode(BaseNode):

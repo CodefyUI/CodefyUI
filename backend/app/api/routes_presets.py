@@ -114,8 +114,16 @@ async def create_preset(request: CreatePresetRequest):
         if not node_cls:
             continue
 
-        # Unconnected input ports → exposed inputs
-        for port in node_cls.define_inputs():
+        # Unconnected input ports → exposed inputs.
+        #
+        # #196: the DYNAMIC form, because the static one answers for the
+        # DEFAULT params. A ComposeTransform(steps=5) reports two ports
+        # through `define_inputs()` however many it actually has, so
+        # step_3..step_5 never reached `exposed_inputs` and the edges into
+        # them had nowhere to reattach when the preset was dropped back onto
+        # a canvas. Same for PythonScript, whose `input_ports` /
+        # `output_ports` params drive both directions.
+        for port in node_cls.define_inputs_dynamic(node["params"]):
             if (node["id"], port.name) not in connected_inputs:
                 # Build unique name: use node_id prefix if multiple nodes expose same port name
                 exposed_inputs.append({
@@ -126,8 +134,8 @@ async def create_preset(request: CreatePresetRequest):
                     "description": f"{node['type']}: {port.description}",
                 })
 
-        # Unconnected output ports → exposed outputs
-        for port in node_cls.define_outputs():
+        # Unconnected output ports → exposed outputs (see above).
+        for port in node_cls.define_outputs_dynamic(node["params"]):
             if (node["id"], port.name) not in connected_outputs:
                 exposed_outputs.append({
                     "name": f"{node['id']}_{port.name}",

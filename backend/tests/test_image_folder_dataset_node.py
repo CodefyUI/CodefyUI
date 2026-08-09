@@ -320,3 +320,79 @@ def test_a_directory_with_no_class_folders_says_so(tmp_path: Path):
     _write_images(root / "train", 2)  # images, but no class level
     with pytest.raises(ValueError, match="no sub-directories"):
         _run({"path": str(root), "split": "train"})
+
+
+# ── the FILES, not only the tree (#197) ──────────────────────────────────
+#
+# The node validated the directory tree carefully and never opened a single
+# file. ImageFolder accepts anything with a listed extension, so a
+# truncated, zero-byte or merely renamed .png built fine and then raised
+# PIL.UnidentifiedImageError from inside a DataLoader worker, potentially
+# minutes into training, naming nothing the user could act on.
+
+
+def test_a_zero_byte_image_is_named_at_build_time(tree: Path):
+    (tree / "train" / "cat" / "broken.png").write_bytes(b"")
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(tree), "split": "train"})
+    assert "broken.png" in str(excinfo.value)
+
+
+def test_a_renamed_non_image_is_named_at_build_time(tree: Path):
+    (tree / "train" / "dog" / "notes.png").write_text("this is not a png")
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(tree), "split": "train"})
+    assert "notes.png" in str(excinfo.value)
+
+
+def test_a_truncated_image_is_named_at_build_time(tree: Path):
+    """The one PIL's ``open`` alone would miss: the header parses, so only
+    ``verify()`` (chunk CRCs / markers) catches it."""
+    good = tree / "train" / "cat" / "0.png"
+    truncated = tree / "train" / "cat" / "cut.png"
+    truncated.write_bytes(good.read_bytes()[:-40])
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(tree), "split": "train"})
+    assert "cut.png" in str(excinfo.value)
+
+
+def test_a_healthy_tree_is_not_rejected(tree: Path):
+    """The check must not have made an ordinary dataset unloadable."""
+    assert len(_run({"path": str(tree), "split": "train"})["dataset"]) == 5
+
+
+def test_the_check_spreads_across_classes_rather_than_taking_the_first_n(
+    monkeypatch, tmp_path: Path,
+):
+    """``samples`` is ordered by class, so a first-N sample would only ever
+    inspect the alphabetically first one and miss every later class."""
+    from app.nodes.data import image_folder_dataset_node as node_module
+
+    monkeypatch.setattr(node_module, "VERIFY_SAMPLE_SIZE", 4)
+    root = tmp_path / "wide"
+    _write_images(root / "aaa", 20)
+    _write_images(root / "zzz", 20)
+    (root / "zzz" / "broken.png").write_bytes(b"")
+
+    with pytest.raises(ValueError) as excinfo:
+        _run({"path": str(root), "split": "(none)"})
+    assert "broken.png" in str(excinfo.value)
+
+
+def test_the_check_costs_a_bounded_number_of_opens(monkeypatch, tmp_path: Path):
+    """A fixed cost, not one that grows with the dataset -- reading every
+    file at build time is exactly what this node exists to defer."""
+    from app.nodes.data import image_folder_dataset_node as node_module
+
+    root = tmp_path / "big"
+    _write_images(root / "cat", 100)
+    opened: list[str] = []
+    real_open = Image.open
+
+    def _counting_open(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", _counting_open)
+    _run({"path": str(root), "split": "(none)"})
+    assert 0 < len(opened) <= node_module.VERIFY_SAMPLE_SIZE
