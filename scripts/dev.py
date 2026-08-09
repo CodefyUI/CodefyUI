@@ -24,6 +24,14 @@
                                       區網 IP 可讓其他裝置存取 — 任何能連到該埠
                                       的人都能控制此實例，只在信任的網路使用。
                       --port <n>      埠號（預設 8000）
+                      --project <dir> 指定專案目錄（codefyui.project.toml）
+                      --              其後的參數原樣轉給 uvicorn，例如
+                                      cdui start -- --proxy-headers
+                                        --forwarded-allow-ips 127.0.0.1
+                                      放在反向代理後面時，還必須設定環境變數
+                                      CODEFYUI_EXTRA_ALLOWED_HOSTS 為對外主機名，
+                                      否則每個請求（含網頁本身）都會回 421。
+                                      詳見文件的 Deployment 頁。
     status      顯示系統與伺服器狀態儀表板（像 btop / k9s：CPU、記憶體、
                 磁碟、GPU、行程、伺服器 PID 與健康檢查）
                 預設持續刷新（每 2 秒，Ctrl+C 離開）；輸出被導向管線或非互動
@@ -1319,6 +1327,66 @@ def _parse_host_port(argv: list) -> "tuple[str, int]":
     return host, port
 
 
+def _split_forwarded_args(argv: list) -> "tuple[list, list]":
+    """Split start's argv at the first bare ``--``.
+
+    Everything before the separator belongs to ``cdui start``; everything
+    after it is forwarded to uvicorn verbatim, so flags this launcher knows
+    nothing about (``--proxy-headers``, ``--root-path``,
+    ``--forwarded-allow-ips``, ``--timeout-keep-alive``) become reachable
+    without giving up the daemon, the pidfile, ``cdui status`` and
+    ``cdui stop``.
+
+    The separator is what makes the two namespaces non-colliding, and it has
+    to cut in BOTH directions:
+
+    * ``_parse_host_port`` / ``_parse_project`` / the ``-f`` scan are
+      positional scanners that would otherwise happily read a forwarded
+      ``--host`` as cdui's own. They are handed the head only.
+    * A future ``cdui start`` flag can never shadow a uvicorn flag of the
+      same name, because the tail is never scanned for cdui flags.
+
+    Only the FIRST ``--`` is consumed. Any later one is a uvicorn argument
+    and is forwarded untouched.
+    """
+    if "--" not in argv:
+        return list(argv), []
+    cut = argv.index("--")
+    return list(argv[:cut]), list(argv[cut + 1:])
+
+
+# uvicorn flags that `cdui start` owns and must not receive twice. Both are
+# mirrored into three places that would silently disagree with the real bind:
+# CODEFYUI_HOST/PORT in the child env (which is what app.core.auth builds the
+# Host whitelist from), SERVER_ADDRFILE (what `cdui status` and `cdui stop`
+# report), and the health poll below. A forwarded copy wins on uvicorn's
+# argparse and desyncs all three, so refuse it and name the real flag.
+_UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port")
+
+
+def _reject_owned_uvicorn_flags(extra: list) -> None:
+    """Exit(2) if the forwarded tail redefines a bind flag cdui owns."""
+    for a in extra:
+        name = a.split("=", 1)[0]
+        if name in _UVICORN_FLAGS_CDUI_OWNS:
+            err(
+                f"{name} 不能透過 -- 轉發給 uvicorn，請直接用 cdui start {name}。",
+                f"{name} cannot be forwarded to uvicorn after `--`; "
+                f"use `cdui start {name}` instead.",
+            )
+            print(
+                t(
+                    "  cdui 會把綁定位址寫進 server.addr 與子行程環境變數，"
+                    "轉發的複本會讓 cdui status / cdui stop 與實際綁定不一致。",
+                    "  cdui records the bind address in server.addr and in the "
+                    "child environment; a forwarded copy would desync it from "
+                    "`cdui status` and `cdui stop`.",
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+
 def _parse_project(argv: list) -> "str | None":
     """Read --project <dir> from start/dev argv (same lightweight style as
     --host)."""
@@ -1509,6 +1577,7 @@ def start() -> None:
     """Production 模式：單一 uvicorn 由 FastAPI 直接 serve dist。
 
     預設背景執行（daemon）；加 --foreground / -f 改在前景執行。
+    `--` 之後的參數原樣轉給 uvicorn（反向代理用）。
     """
     if not DIST_INDEX.exists():
         print(
@@ -1519,8 +1588,12 @@ def start() -> None:
         )
         sys.exit(1)
 
-    foreground = any(a in ("-f", "--foreground") for a in sys.argv[2:])
-    host, port = _parse_host_port(sys.argv[2:])
+    # Everything after a bare `--` is uvicorn's; cdui's own flags are only
+    # ever read from the head, so the two sets cannot collide.
+    own_argv, uvicorn_extra = _split_forwarded_args(sys.argv[2:])
+    _reject_owned_uvicorn_flags(uvicorn_extra)
+    foreground = any(a in ("-f", "--foreground") for a in own_argv)
+    host, port = _parse_host_port(own_argv)
 
     existing = _running_server_pid()
     if existing is not None:
@@ -1530,7 +1603,7 @@ def start() -> None:
 
     _warn_if_dist_stale()
     _apply_dev_env()
-    project = _parse_project(sys.argv[2:])
+    project = _parse_project(own_argv)
     if project is not None:
         _activate_project(project)
     # settings.HOST/PORT (and therefore init_allowed_hosts) must agree
@@ -1539,7 +1612,9 @@ def start() -> None:
     os.environ["CODEFYUI_HOST"] = host
     os.environ["CODEFYUI_PORT"] = str(port)
     uvicorn = _require_venv_tool("uvicorn")
-    cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port)]
+    # Extras go last so `app.main:app` keeps its position — the process
+    # matchers in `cdui stop` key on it.
+    cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port), *uvicorn_extra]
     SERVER_ADDRFILE.parent.mkdir(parents=True, exist_ok=True)
     SERVER_ADDRFILE.write_text(f"{host}:{port}")
 
@@ -1553,6 +1628,11 @@ def start() -> None:
                 "    注意：任何能連到這個埠的人都能控制此實例；只在信任的網路使用。",
                 "    NOTE: anyone who can reach this port controls the "
                 "instance; use only on trusted networks.",
+            ))
+        if uvicorn_extra:
+            print(t(
+                f"    uvicorn 額外參數 → {' '.join(uvicorn_extra)}",
+                f"    extra uvicorn args → {' '.join(uvicorn_extra)}",
             ))
         _print_uninstalled_builtin_packs()
 

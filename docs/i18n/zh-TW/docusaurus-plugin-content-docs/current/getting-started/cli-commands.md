@@ -45,6 +45,25 @@ cdui stop       # 停止背景伺服器
 cdui start -f   # 改為前景執行（Ctrl+C 停止）
 ```
 
+## `cdui start` 的參數
+
+| 參數 | 說明 |
+|------|------|
+| `--foreground`、`-f` | 改為前景執行，不進背景。當行程是由 systemd 之類的管理者看著時必須用這個。 |
+| `--host <位址>` | 綁定位址（預設 `127.0.0.1`）。`0.0.0.0` 或區網 IP 可讓其他機器連進來 —— 任何連得上這個埠的人都能控制此實例，所以只在信任的網路使用。請見[發佈](/usage/publish)。 |
+| `--port <n>` | 埠號（預設 `8000`）。 |
+| `--project <目錄>` | 指定含有 `codefyui.project.toml` 的專案目錄 —— 請見[專案目錄](/usage/project-directories)。 |
+| `--` | 單獨一個 `--` 之後的所有參數會原樣轉給 uvicorn，例如 `cdui start -- --proxy-headers --root-path /x`。`cdui start` 只從分隔符號之前的部分讀自己的參數，所以兩邊不會互相干擾。`--host` 與 `--port` 在那裡會被拒絕（離開碼 2），因為綁定位址是由 `cdui` 自己記錄的 —— 請改用 `cdui start --host`。 |
+
+```bash
+# 放在反向代理後面：只綁定回送位址，並信任代理轉發的標頭。
+cdui start --host 127.0.0.1 --port 8000 -- --proxy-headers --forwarded-allow-ips 127.0.0.1
+```
+
+:::warning 加了代理還必須把它的主機名稱加進白名單
+伺服器對任何不認得的 `Host` 一律回 `421`，連網頁本身也不例外，所以在你把 `CODEFYUI_EXTRA_ALLOWED_HOSTS` 設成對外名稱之前，代理後面看到的會是一片空白的網頁。完整說明請見 **[放在反向代理後面](/usage/deployment)**。
+:::
+
 ## 不啟動伺服器執行圖
 
 你不需要網頁 UI 就能執行一張圖 —— 請見 **[CLI 圖形執行器](/usage/cli-runner)**：
