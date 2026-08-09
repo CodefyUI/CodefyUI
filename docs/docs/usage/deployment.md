@@ -158,6 +158,13 @@ CodefyUI deliberately never reads `X-Forwarded-Proto` itself. If it did, any
 client could forge the header and dictate the URL your published app advertises
 to every integrator who fetches the document; leaving it to uvicorn keeps the
 "is this hop trusted?" decision in the one place that has been told the answer.
+
+**Mind `--forwarded-allow-ips` if your proxy is not on this machine.** It
+defaults to `127.0.0.1`, so a proxy in another container or on another host is
+*not* trusted, its `X-Forwarded-Proto` is ignored, and the document quietly goes
+back to advertising `http://` -- with no error anywhere. Set it to the proxy's
+address (the `nginx` example below terminates on the same host, which is why
+`127.0.0.1` is correct there).
 :::
 
 :::note WebSocket message size
