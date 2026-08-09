@@ -968,6 +968,31 @@ def test_every_allowlisted_path_helper_is_real_and_is_not_a_module():
 # private ``os.path._get*`` helpers -- and fail if the call touches any of
 # them. That asks the property directly: does this helper consult the
 # filesystem, the environment, or the working directory?
+#
+# Screen 4 (core#258) exists because screens 1-3 are all *Python-level*
+# interception, and CPython 3.12 put four of these helpers out of Python's
+# reach on Windows. ``Lib/ntpath.py`` opens with::
+#
+#     try:
+#         from nt import _path_isdir as isdir
+#         from nt import _path_isfile as isfile
+#         from nt import _path_islink as islink
+#         from nt import _path_exists as exists
+#     except ImportError:
+#
+# so from 3.12 (3.14 for ``lexists``) those names are C builtins that call
+# the Win32 API directly. They never touch ``os.stat``, and ``stat`` raises no
+# audit event, so all three earlier screens go blind at once and report a
+# ``stat()``-on-any-path helper as pure. ``nt`` does not exist on Linux, so the
+# ``except ImportError`` always fires there and no amount of Python versions in
+# an ubuntu-only CI matrix can surface it -- which is why this arrived together
+# with the Windows job in ``backend-test.yml``.
+#
+# Screen 4 asks the one question no implementation detail can hide from: hold
+# the input string fixed and vary the state of the filesystem underneath it. A
+# string transform answers identically in every world; anything that consults
+# the disk cannot. It is a pure ADDITION -- it can only ever find more, never
+# excuse a helper the other screens caught.
 
 _OS_INTERCEPTS = (
     "stat", "lstat", "fstat", "readlink", "getcwd", "getcwdb",
@@ -994,6 +1019,117 @@ _PATH_HELPER_ARGS: dict[str, tuple] = {
 }
 
 _AUDIT_STATE: dict[str, object] = {"installed": False, "armed": False, "events": []}
+
+#: Screen 4's worlds. Every basename is the SAME LENGTH and lowercase on
+#: purpose: a pure helper's answer may mention the path it was handed, so the
+#: comparison canonicalises that substring away before asking whether two
+#: worlds disagreed. Equal-length, dot-free, case-stable names keep that
+#: substitution exact under ``normcase``, ``splitext`` and ``splitdrive``.
+_WORLD_NAMES = {"absent": "absent", "file": "wfilea", "dir": "wdirbb",
+                "symlink": "wlinkc"}
+_WORLD_TOKEN = "<world>"
+
+#: ``{"root": Path, "paths": {world: str}, "symlink": bool}``, built once.
+_WORLDS: dict[str, object] = {}
+
+
+def _path_worlds() -> dict[str, object]:
+    """Build (once) a directory holding one path per filesystem state.
+
+    The four worlds differ ONLY in what exists at the probe path: nothing, a
+    file, a directory, a symbolic link. Creating a symlink needs a privilege on
+    Windows (Developer Mode, or an elevated process), so whether that world
+    exists is reported rather than assumed -- see the precondition in
+    ``test_the_purity_guard_can_see_impurity_in_both_path_implementations``
+    for why ``islink`` specifically cannot be judged without it.
+    """
+    if _WORLDS:
+        return _WORLDS
+    import atexit
+    import os
+    import shutil
+    import tempfile
+
+    root = tempfile.mkdtemp(prefix="cdui-path-worlds-")
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    paths = {w: os.path.join(root, n) for w, n in _WORLD_NAMES.items()}
+    target = os.path.join(root, "targetf")
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write("cdui")
+    with open(paths["file"], "w", encoding="utf-8") as fh:
+        fh.write("cdui")
+    os.mkdir(paths["dir"])
+    has_symlink = True
+    try:
+        os.symlink(target, paths["symlink"])
+    except (OSError, NotImplementedError, AttributeError):
+        # Unprivileged Windows without Developer Mode. Report it; do not
+        # quietly drop the world, because one helper is only visible in it.
+        has_symlink = False
+        paths.pop("symlink")
+    _WORLDS.update({"root": root, "paths": paths, "symlink": has_symlink,
+                    "target": target})
+    return _WORLDS
+
+
+def _is_os_primitive(value: object) -> bool:
+    """Is *value* a C builtin defined by the platform's raw OS module?
+
+    ``nt`` / ``posix`` are what ``os`` itself is built on, so a callable that
+    answers with one of them executes below Python entirely -- which is exactly
+    the condition screens 1-3 cannot see through. Used only to decide whether a
+    precondition is REQUIRED, never to decide whether a helper is impure:
+    ``nt`` exports pure string transforms too (``_path_normpath`` is
+    ``os.path.normpath`` on Windows from 3.12).
+    """
+    return getattr(value, "__module__", None) in ("nt", "posix")
+
+
+def _world_args(name: str, path: str, other: str) -> "tuple | None":
+    """Call shape for screen 4, with *path* in the position under test.
+
+    ``None`` means "not path-shaped" -- ``sameopenfile`` takes file
+    descriptors and ``samestat`` takes stat results, so varying a path
+    underneath them measures nothing.
+    """
+    if name in ("sameopenfile", "samestat"):
+        return None
+    if name in ("commonpath", "commonprefix"):
+        return ([path, other],)
+    if name in ("samefile", "relpath"):
+        return (path, other)
+    if name == "join":
+        return (path, "b")
+    return (path,)
+
+
+def _screen4_filesystem_differential(name: str, module) -> bool:
+    """True when ``module.name``'s answer depends on the state of the disk.
+
+    Runs OUTSIDE the interception window of screens 1-3 on purpose: this screen
+    needs the real ``os.stat`` in place, because the whole point is to let the
+    helper reach a real filesystem and then watch whether the filesystem's
+    state shows up in the answer.
+    """
+    value = getattr(module, name, None)
+    if not callable(value):
+        return False
+    worlds = _path_worlds()
+    paths: dict = worlds["paths"]  # type: ignore[assignment]
+    other: str = worlds["target"]  # type: ignore[assignment]
+    seen: set[str] = set()
+    for world, path in paths.items():
+        args = _world_args(name, path, other)
+        if args is None:
+            return False
+        try:
+            answer = repr(value(*args))
+        except Exception as exc:            # noqa: BLE001 - the class IS the answer
+            answer = f"!{type(exc).__name__}"
+        # Canonicalise the one substring a pure helper is entitled to echo,
+        # so "it mentioned the path I gave it" is not mistaken for "it looked".
+        seen.add(answer.replace(_WORLD_NAMES[world], _WORLD_TOKEN))
+    return len(seen) > 1
 
 
 def _install_audit_hook() -> None:
@@ -1101,6 +1237,10 @@ def _probe_path_helper(name: str, module=None) -> set[str]:
         touched.append("returned os.environ")
     if cwd and cwd in result:
         touched.append("returned the cwd")
+    # Screen 4, deliberately after the `finally` above: it needs the REAL os
+    # functions back before it can let the helper reach a real filesystem.
+    if _screen4_filesystem_differential(name, module):
+        touched.append("answer depends on the filesystem")
     return set(touched)
 
 
@@ -1157,6 +1297,16 @@ def test_the_purity_guard_can_see_impurity_in_both_path_implementations():
     read the environment or hit the disk, are visible to the guard on both
     implementations. If a future edit blunts a screen -- drops ``os.stat`` from
     the interception list, say -- this is the test that notices.
+
+    core#258: it also noticed something no edit of ours caused. On Windows from
+    CPython 3.12, ``exists`` / ``isdir`` / ``isfile`` / ``islink`` (and
+    ``lexists`` from 3.14) are ``nt`` C builtins rather than ``genericpath``
+    Python functions, and every screen this test had was Python-level
+    interception. It failed here honestly -- the probe really had gone blind on
+    the platform most of this project's users are on -- and stayed invisible to
+    CI only because CI was ubuntu-only, where ``from nt import ...`` always
+    raises ``ImportError``. Screen 4 restores the sensitivity; the Windows job
+    in ``backend-test.yml`` is what keeps it honest.
     """
     import ntpath
     import os.path
@@ -1172,6 +1322,22 @@ def test_the_purity_guard_can_see_impurity_in_both_path_implementations():
         "islink", "ismount", "getsize", "getmtime", "getatime", "getctime",
         "samefile", "realpath", "abspath", "relpath",
     }
+
+    # ``islink`` is the one name whose impurity NO other world can expose: it
+    # answers False for a missing path, a file and a directory alike, so only a
+    # real symbolic link separates it from a string transform. Where its
+    # implementation is a raw OS primitive, screens 1-3 cannot see it either --
+    # so if we also cannot build that world, the probe would under-report and
+    # say nothing about it. Fail loudly instead of passing quietly.
+    if not _path_worlds()["symlink"]:
+        for impl in (os.path, ntpath, posixpath):
+            assert not _is_os_primitive(getattr(impl, "islink", None)), (
+                f"{impl.__name__}.islink is a C primitive from "
+                f"{getattr(impl.islink, '__module__', '?')!r}, and this "
+                "machine cannot create a symbolic link -- the probe has no "
+                "way to tell it apart from a pure string helper. Enable "
+                "Developer Mode (or run elevated) so the symlink world exists."
+            )
 
     allowlisted = set(tiers.TIER0_PATH_HELPERS)
     for module in (os.path, ntpath, posixpath):
@@ -1196,6 +1362,103 @@ def test_the_purity_guard_can_see_impurity_in_both_path_implementations():
         # Non-vacuity: a probe that inspects nothing would report nothing.
         assert len(caught) >= 12, f"[{where}] only caught {sorted(caught)}"
         assert {"os", "sys", "genericpath"} <= modules_seen, where
+
+
+# ── core#258: does WHICH module implements a helper change the verdict? ────
+#
+# The security question the issue raises, stated precisely: both gates have a
+# rule keyed on a module NAME, and ``nt`` is on the blocklist. From CPython
+# 3.12 on Windows, ``os.path.exists`` IS an ``nt`` function. So the answer to
+# "which module does this callable belong to" differs between the platform CI
+# runs and the platform students run. Does a verdict differ with it?
+#
+# No -- and the two tests below are why, one per gate, rather than an argument
+# in a PR body that nothing re-checks.
+
+
+def test_every_os_path_implementation_module_is_blocked_so_a_cpython_move_is_a_no_op():
+    """The structural reason the ``nt`` migration cannot change a verdict.
+
+    ``script_proxy`` is the gate that reasons about objects: it takes a
+    callable's own ``__module__`` (``_defining_root``) and refuses anything
+    whose root is on ``_BLOCKED_DEFINING_ROOTS``. A CPython release that
+    re-homes ``os.path.exists`` from ``genericpath`` to ``nt`` changes that
+    root -- so the verdict is stable only if the set of roots an ``os.path``
+    helper can possibly answer with is CLOSED under the blocklist.
+
+    It is: ``ntpath``, ``posixpath``, ``genericpath``, ``nt`` and ``posix`` are
+    all blocked, so the move is from one refused root to another refused root.
+    Asserted over the live modules, so a future CPython that invents a sixth
+    implementation module fails here instead of silently opening a door.
+    """
+    import ntpath
+    import os.path
+    import posixpath
+
+    from app.core.script_proxy import _BLOCKED_DEFINING_ROOTS  # noqa: SLF001
+
+    assert {"nt", "posix", "ntpath", "posixpath", "genericpath"} <= (
+        _BLOCKED_DEFINING_ROOTS
+    )
+
+    for module in (os.path, ntpath, posixpath):
+        for name in sorted(dir(module)):
+            if name.startswith("_"):
+                continue
+            value = getattr(module, name)
+            if not callable(value) or isinstance(value, type):
+                continue
+            root = (getattr(value, "__module__", "") or "").split(".")[0]
+            assert root in _BLOCKED_DEFINING_ROOTS, (
+                f"{module.__name__}.{name} is defined by {root!r}, which the "
+                "runtime gate does NOT refuse -- a library re-exporting it "
+                "under a harmless name would hand a script a path helper the "
+                "policy has never classified."
+            )
+
+
+def test_the_install_time_verdict_does_not_depend_on_which_module_implements_it():
+    """The other gate, which never asks the question at all -- on purpose.
+
+    ``validate_python_source`` is a static AST walk: it screens the LEAF NAMES
+    of ``from os.path import ...`` against ``TIER0_PATH_HELPERS``, and never
+    imports, resolves or introspects the callable. So its verdict is the same
+    string comparison on every platform and every version, whatever ``nt``
+    holds today. Pinned with one accepted name and one refused name that
+    CPython has actually moved, plus the observed attribution, so the test
+    documents the platform split it is proving irrelevant.
+    """
+    import ntpath
+
+    # ``normpath`` moved to ``nt`` on Windows 3.12+; ``exists`` did too.
+    # Neither is a module and neither answer depends on that.
+    assert ntpath.normpath.__module__ in ("nt", "ntpath")
+    assert ntpath.exists.__module__ in ("nt", "genericpath")
+
+    _tier0("from os.path import normpath\n")               # allowlisted: accepted
+    assert "process-env" in _refusal("from os.path import exists\n")
+
+
+def test_the_purity_probe_can_see_through_a_c_fast_path():
+    """Screen 4's own sensitivity -- the guard for the guard's newest screen.
+
+    Screens 1-3 are Python-level interception and are blind to a C builtin by
+    construction. This asserts the property screen 4 was added for, using the
+    live ``os.path``: a helper that consults the disk is caught even when the
+    interception screens see nothing, and a helper that is a pure string
+    transform is NOT caught even when it is the same kind of C builtin
+    (``os.path.normpath`` is ``nt._path_normpath`` on Windows 3.12+, and it
+    stays clean -- which is what stops screen 4 from being a rule that just
+    says "implemented in C means dangerous").
+    """
+    import os.path
+
+    assert _screen4_filesystem_differential("exists", os.path)
+    assert _screen4_filesystem_differential("isdir", os.path)
+    assert _screen4_filesystem_differential("isfile", os.path)
+    for pure in ("normpath", "basename", "dirname", "join", "splitext",
+                 "normcase", "isabs", "split", "splitdrive"):
+        assert not _screen4_filesystem_differential(pure, os.path), pure
 
 
 def test_the_helpers_a_plugin_actually_wants_still_work():

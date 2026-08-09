@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import pytest
 import torch
-from PIL import Image
 
-from app.config import settings
 from app.nodes.io.image_writer_node import ImageWriterNode
 
 

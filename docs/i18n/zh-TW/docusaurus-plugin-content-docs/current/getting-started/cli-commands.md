@@ -19,7 +19,7 @@ description: cdui 啟動器指令 —— install、start、status、dev、build�
 | `cdui dev` | 開發者模式 —— 後端 `:8000` + Vite HMR `:5173`（需要 Node + pnpm）。 |
 | `cdui build` | 在本地建置前端 bundle（需要 Node + pnpm）。 |
 | `cdui stop` | 停止**這個安裝**的服務：pidfile 記錄的背景伺服器，加上從這個目錄啟動的殘留行程（前景 `cdui start`、`cdui dev` 的 Vite、遺留 worker）。加上 `--all` 則改為停止整台機器上所有 CodefyUI 與 Vite 行程 —— 那會波及其他使用者的伺服器與無關的 Vite dev server，共用主機請勿使用。 |
-| `cdui test` | 執行後端測試。 |
+| `cdui test` | 執行整個專案的測試：後端（`pytest`）與前端（`vitest`）。沒有 pnpm 時前端那半會標成 `SKIPPED` 而不是失敗 —— release 安裝本來就沒有 Node。兩邊一定都會跑完，所以跑一次就能同時知道兩邊的結果；任一邊失敗就以離開碼 1 結束。用 `--backend` / `--frontend` 可以只跑其中一邊。 |
 | `cdui clean` | 移除虛擬環境、`node_modules` 與 `frontend/dist`。 |
 | `cdui uninstall` | clean + 移除 PATH 上的啟動器。 |
 

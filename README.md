@@ -58,7 +58,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui dev` | Developer mode — backend `:8000` + Vite HMR `:5173` (requires Node + pnpm) |
 | `cdui build` | Build the frontend bundle locally (requires Node + pnpm) |
 | `cdui stop` | Stop **this install's** services: the background server, plus leftovers started from this directory (foreground `cdui start`, `cdui dev`'s Vite). `--all` stops every CodefyUI and Vite process on the machine instead — including other people's, so avoid it on a shared host |
-| `cdui test` | Run backend tests |
+| `cdui test` | Run the backend (`pytest`) and frontend (`vitest`) tests; the frontend half is skipped, not failed, when pnpm is absent |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
 | `cdui uninstall` | Clean + remove the PATH launcher |
 | `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `C2`, `owner/repo[@ref]`, or full GitHub URL) |

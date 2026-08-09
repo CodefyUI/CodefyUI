@@ -169,7 +169,8 @@ class DiffusionTrainingLoopNode(BaseNode):
                 context.log_metric("train_loss", avg, epoch + 1)
             if progress_callback:
                 progress_callback({"event": "epoch", "epoch": epoch + 1, "total_epochs": epochs,
-                                   "loss": round(avg, 6), "losses": [round(l, 6) for l in epoch_losses]})
+                                   "loss": round(avg, 6),
+                                   "losses": [round(loss, 6) for loss in epoch_losses]})
             if should_stop():
                 stopped_at = {"phase": "epoch", "batch": 0}
                 break

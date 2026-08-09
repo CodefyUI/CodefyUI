@@ -20,10 +20,16 @@ model for this.
 """
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 from ...core.stateful_module import StatefulModuleMixin
+
+if TYPE_CHECKING:
+    # `torch` is imported lazily inside the functions below (startup cost);
+    # this makes the "torch.nn.Module" annotations resolvable to a type
+    # checker without paying that cost at import time.
+    import torch
 
 logger = logging.getLogger(__name__)
 

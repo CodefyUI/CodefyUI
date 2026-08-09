@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 import torch
 
@@ -97,7 +95,8 @@ def test_numerical_correctness_against_manual_sdpa():
 
     node = EduSelfAttentionNode()
     params = {"embed_dim": d, "causal": False, "temperature": 1.0, "seed": 42}
-    res = node.execute({"tensor": x}, params)
+    # First run primes the node's projections; the reference below reuses them.
+    node.execute({"tensor": x}, params)
 
     # Re-run and use the same node's projections to compute reference.
     # The node returns weights and output; verify output ≈ weights @ V where

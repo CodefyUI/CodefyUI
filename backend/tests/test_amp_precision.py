@@ -9,7 +9,6 @@ it use less memory) are marked and skipped elsewhere.
 
 from __future__ import annotations
 
-import copy
 
 import pytest
 import torch

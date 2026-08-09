@@ -74,7 +74,6 @@ from ...core.node_base import (
 from ...core.script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_FILENAME,
-    TIER0_MODULE_PATHS,
     TIER0_MODULES,
     validate_script_source,
 )

@@ -21,6 +21,7 @@ on:
       - 'plugins/**'
       - 'scripts/**'
       - 'frontend/src/plugins/contract.ts'
+      - 'ruff.toml'
       - '.github/workflows/backend-test.yml'
   push:
     branches:
@@ -31,6 +32,7 @@ on:
       - 'plugins/**'
       - 'scripts/**'
       - 'frontend/src/plugins/contract.ts'
+      - 'ruff.toml'
       - '.github/workflows/backend-test.yml'
   workflow_dispatch:
 
@@ -83,3 +85,102 @@ jobs:
         working-directory: backend
         run: |
           .venv/bin/python -c "from app.main import app; print('FastAPI app:', app.title)"
+
+  # ── Windows (core#245 item 4, core#258) ──────────────────────────────────
+  #
+  # The matrix above covers VERSIONS, not PLATFORMS, and some of what this
+  # repository has been bitten by is only reachable on Windows: `os.execv`
+  # orphaning a child (see `_reexec()` in dev.py), file locking, path
+  # separators -- and the standard library's own `nt` / `posix` split, which
+  # the plugin security gate reasons about directly.
+  #
+  # core#258 is the concrete case, and it is why this job exists at all.
+  # `Lib/ntpath.py` does `try: from nt import _path_exists as exists /
+  # except ImportError:`. `nt` is Windows-only, so on ubuntu that import
+  # ALWAYS fails and the Python fallback is ALWAYS used. No Python version
+  # added to an ubuntu-only matrix can ever surface the difference -- only a
+  # different runner can.
+  #
+  # 3.12 rather than 3.11, deliberately:
+  #   * 3.12 is where CPython moved exists/isdir/isfile/islink to `nt` C
+  #     fast paths, so it is the lowest version in the matrix on which
+  #     Windows and Linux stdlib behaviour actually diverge. A Windows 3.11
+  #     job would have been blind to core#258.
+  #   * Windows + 3.11 is not uncovered: `install.ps1` pins 3.11 and
+  #     `install-check.yml` already runs it on windows-latest.
+  #   * It is the newest version in the matrix, so it doubles as the
+  #     forward-compatibility signal on the platform most students use.
+  # One version on purpose: the full 3-version cross-product would triple CI
+  # time for signal that is about the platform, not the version.
+  test-windows:
+    name: pytest (Windows, Python 3.12)
+    runs-on: windows-latest
+    # Windows runners are slower than ubuntu and the torch wheel is large;
+    # the ubuntu job's 20 minutes is not enough headroom here.
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      # Astral's own action rather than the ubuntu job's `curl | sh`. The
+      # PowerShell installer edits the *user* PATH in the registry, which an
+      # already-running runner process never sees, so the shell one-liner
+      # would need us to guess its install directory and echo that into
+      # $GITHUB_PATH. The action does that correctly and is maintained by the
+      # same people as the installer.
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Verify uv is on PATH
+        run: uv --version
+
+      - name: Provision Python 3.12
+        run: uv python install 3.12
+
+      - name: Verify uv.lock is in sync with pyproject.toml
+        working-directory: backend
+        run: uv lock --check
+
+      - name: Create venv and install backend (with [dev] extra)
+        working-directory: backend
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev]"
+
+      - name: pytest
+        working-directory: backend
+        run: .venv\Scripts\python.exe -m pytest tests/ -q
+
+      - name: Smoke-import backend (catches syntax errors at import time)
+        working-directory: backend
+        run: .venv\Scripts\python.exe -c "from app.main import app; print('FastAPI app:', app.title)"
+
+  # ── ruff (core#245 item 2) ───────────────────────────────────────────────
+  #
+  # Its own job rather than a step in the matrix: lint is platform- and
+  # version-independent, so running it three times would only buy three
+  # copies of the same answer.
+  #
+  # Runs from the REPOSITORY ROOT, not from `backend/`. The config lives in
+  # `ruff.toml` at the root because the Python here is not only the backend
+  # package -- `scripts/` holds the CLI and `plugins/` and `examples/` hold
+  # node code that ships to users, and this workflow's own `paths:` filter
+  # already treats all four as one blast radius.
+  lint:
+    name: ruff check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `uvx` pins the version so a new ruff release cannot turn main red
+      # overnight. Bump it deliberately, in a PR that also fixes whatever the
+      # new rules find.
+      - name: ruff check
+        run: uvx ruff@0.14.4 check --output-format=github .

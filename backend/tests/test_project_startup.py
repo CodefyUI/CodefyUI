@@ -105,7 +105,7 @@ def test_git_provenance_status_call_failure_keeps_commit(tmp_path, monkeypatch):
 
 
 def test_check_stale_pins():
-    manifest_dir = None  # unused; pins read from a written manifest
+    # No manifest_dir here on purpose: the pins go in as a dict.
     lockfile = {"plugins": {"pack-a": {"sha": "a" * 40}}}
     # pack-a present + matching -> not stale; pack-b missing -> stale;
     # pack-a mismatched sha -> stale.

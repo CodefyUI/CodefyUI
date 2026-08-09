@@ -135,7 +135,6 @@ def test_image_reader_inference_pipeline_shape_compatible_with_mnist_cnn(images_
     Conv2d(1, 32, 3, padding=1). Catches the regression where the inference
     example failed because the image had the wrong number of channels.
     """
-    import torch
     import torch.nn as nn
 
     from app.nodes.io.image_reader_node import ImageReaderNode

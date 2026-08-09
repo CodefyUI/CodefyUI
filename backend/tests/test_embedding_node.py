@@ -36,7 +36,6 @@ def test_lookup_returns_correct_shape():
 
 def test_padding_idx_zeroed_in_table():
     """When padding_idx is set, that row of the embedding table is zero."""
-    indices = torch.tensor([[0, 1, 2]], dtype=torch.long)
     node = EmbeddingNode()
     ctx = _ctx()
     mod = node.get_or_build_module(ctx, {"num_embeddings": 10, "embedding_dim": 4, "padding_idx": 0})

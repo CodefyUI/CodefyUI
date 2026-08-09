@@ -146,7 +146,7 @@ def run_inference():
     probs = torch.softmax(logits, dim=-1)
     preds = probs.argmax(dim=1)
 
-    print(f"\nSample predictions:")
+    print("\nSample predictions:")
     print(f"  {'True':>5}  {'Pred':>5}  {'Confidence':>10}")
     print(f"  {'-'*25}")
     for i in range(10):
@@ -154,7 +154,6 @@ def run_inference():
 
 
 if __name__ == "__main__":
-    import sys
     from pathlib import Path
 
     if not Path(WEIGHTS_PATH).exists():

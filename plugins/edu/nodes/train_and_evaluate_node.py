@@ -120,10 +120,10 @@ class TrainAndEvaluateNode(BaseNode):
         x_query = x_query.float()
 
         labels = y_train.tolist() if isinstance(y_train, torch.Tensor) else list(y_train)
-        labels = [str(l) for l in labels]
+        labels = [str(label) for label in labels]
         classes = sorted(set(labels))
         idx = {c: i for i, c in enumerate(classes)}
-        y_idx = torch.tensor([idx[l] for l in labels], dtype=torch.long)
+        y_idx = torch.tensor([idx[label] for label in labels], dtype=torch.long)
 
         # 把隱藏堆疊接上一個輸出層（壓到類別數）。輸入維度從堆疊最後一個 Linear 推得。
         modules = list(net_in.children())

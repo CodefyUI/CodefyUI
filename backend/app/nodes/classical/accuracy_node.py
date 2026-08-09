@@ -20,7 +20,6 @@ from ...core.node_base import (
     BaseNode,
     DataType,
     ParamDefinition,
-    ParamType,
     PortDefinition,
 )
 
@@ -98,7 +97,7 @@ class AccuracyNode(BaseNode):
 
         # Normalize to strings so '0' vs 0 mismatches don't sink the comparison.
         preds_s = [str(p) for p in preds_list]
-        labels_s = [str(l) for l in labels_list]
+        labels_s = [str(label) for label in labels_list]
 
         correct = sum(1 for p, y in zip(preds_s, labels_s) if p == y)
         total = len(preds_s)

@@ -1512,12 +1512,14 @@ class TrainingLoopNode(BaseNode):
                     "epoch": epoch + 1,
                     "total_epochs": epochs,
                     "loss": round(avg_train_loss, 6),
-                    "losses": [round(l, 6) for l in epoch_losses],
+                    "losses": [round(loss, 6) for loss in epoch_losses],
                     "lr": current_lr,
                 }
                 if avg_val_loss is not None:
                     progress_data["val_loss"] = round(avg_val_loss, 6)
-                    progress_data["val_losses"] = [round(l, 6) for l in val_epoch_losses]
+                    progress_data["val_losses"] = [
+                        round(loss, 6) for loss in val_epoch_losses
+                    ]
                 if avg_val_accuracy is not None:
                     progress_data["val_accuracy"] = round(avg_val_accuracy, 6)
                 if patience > 0:

@@ -51,7 +51,12 @@
                 旗標：--all   改為停止整台機器上所有 CodefyUI 與 Vite 行程。
                               會波及其他使用者、以及與 CodefyUI 無關的 Vite
                               dev server；共用主機請勿使用。
-    test        執行 backend 測試
+    test        執行整個專案的測試：backend（pytest）+ frontend（vitest）
+                沒有 pnpm 時會略過前端測試並在結果表明講「略過」，不會失敗
+                （release 安裝本來就不需要 Node）。兩邊都會跑完才回報，
+                任一邊失敗就以離開碼 1 結束。
+                旗標：--backend    只跑後端
+                      --frontend   只跑前端
     clean       移除虛擬環境、node_modules 與 frontend/dist
     uninstall   解除安裝：clean + 移除全域 cdui launcher
 
@@ -2670,14 +2675,133 @@ def run_graph() -> None:
         sys.exit(1)
 
 
-def test() -> None:
+def _run_status(cmd: list, cwd: Path) -> int:
+    """Run *cmd* and return its exit code instead of raising.
+
+    ``run()`` passes ``check=True``, so the first non-zero exit aborts the
+    whole command. ``test`` deliberately wants the opposite: a red backend
+    must not hide the frontend result, because learning about both halves in
+    one pass is the entire point of running both.
+    """
+    # Our own headings go through Python's buffered stdout; the child writes
+    # to the same fd directly. When stdout is a pipe rather than a terminal --
+    # a file, a CI log -- the buffer is not flushed at each print, so
+    # "=== Backend: pytest ===" lands AFTER pytest's own output and the
+    # headings appear to label the wrong half. Observed, then fixed.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if sys.platform == "win32":
+        # Same reason as run(): Windows won't resolve pnpm.cmd without a shell.
+        return subprocess.run(
+            subprocess.list2cmdline(cmd), cwd=cwd, shell=True).returncode
+    return subprocess.run(cmd, cwd=cwd).returncode
+
+
+#: Marker for a half that was not run at all, as distinct from 0 (passed) or
+#: any non-zero exit code (failed). ``None`` keeps the three states separate
+#: in the summary, which is the thing the old command could not say.
+_SKIPPED = None
+
+
+def _run_backend_tests() -> int:
     pytest = _require_venv_tool("pytest")
-    run([pytest], cwd=BACKEND_DIR)
+    section("Backend：pytest", "Backend: pytest")
+    return _run_status([pytest], cwd=BACKEND_DIR)
 
 
-    # No bulk `dev-install` shortcut: official packs are opt-in. Contributors
-    # decide per-chapter what they need and run ``plugin install`` themselves
-    # (matches what an end user would do via the global ``cdui plugin``).
+def _run_frontend_tests() -> "int | None":
+    """Run ``pnpm test`` (vitest), or return ``_SKIPPED`` with a reason printed.
+
+    CodefyUI has a deliberate no-Node install path — ``cdui install`` fetches
+    ``frontend-dist.tar.gz`` from the release when pnpm is absent, so a
+    perfectly healthy install can have no Node at all. Such a machine must
+    still get a useful ``cdui test``, so a missing pnpm is a documented skip,
+    never an error.
+    """
+    if not (FRONTEND_DIR / "package.json").exists():
+        warn("找不到 frontend/package.json，略過前端測試",
+             "frontend/package.json not found — skipping frontend tests")
+        return _SKIPPED
+    if not shutil.which("pnpm"):
+        warn(
+            "未偵測到 pnpm，略過前端測試（vitest）。安裝 Node.js 24+ 與 pnpm 後\n"
+            "  即可在本機跑完整套測試；CI 的 frontend-build.yml 仍然會跑它們。",
+            "pnpm not detected — skipping the frontend tests (vitest). Install\n"
+            "  Node.js 24+ and pnpm to run the full suite locally; CI's\n"
+            "  frontend-build.yml runs them either way.",
+        )
+        return _SKIPPED
+
+    section("Frontend：pnpm test（vitest）", "Frontend: pnpm test (vitest)")
+    if not (FRONTEND_DIR / "node_modules").exists():
+        print(t("=== Frontend: 首次執行，安裝 node_modules ===",
+                "=== Frontend: first run, installing node_modules ==="))
+        code = _run_status(["pnpm", "install"], cwd=FRONTEND_DIR)
+        if code != 0:
+            err("pnpm install 失敗，無法執行前端測試",
+                "pnpm install failed — cannot run the frontend tests")
+            return code
+    return _run_status(["pnpm", "test"], cwd=FRONTEND_DIR)
+
+
+def _test_summary_line(label: str, code: "int | None") -> str:
+    if code is _SKIPPED:
+        return f"  {DIM}{label:<10}{RESET}{YELLOW}{t('略過', 'SKIPPED')}{RESET}"
+    if code == 0:
+        return f"  {DIM}{label:<10}{RESET}{GREEN}{t('通過', 'PASS')}{RESET}"
+    return (f"  {DIM}{label:<10}{RESET}{RED}{t('失敗', 'FAIL')}{RESET}"
+            f" {GRAY}(exit {code}){RESET}")
+
+
+def test() -> None:
+    """Run the backend suite and the frontend suite, and say which ones ran.
+
+    Until core#245 this was ``pytest`` in ``backend/`` and nothing else, while
+    138 frontend test files went unrun — so a contributor could see a green
+    ``cdui test``, push, and fail ``pnpm test`` in CI. CONTRIBUTING.md points
+    people at this command, so the name has to mean what it says.
+
+    Both halves always run to completion; the exit code is non-zero if either
+    failed. A skipped half is reported as skipped, never as a pass.
+
+    ``--backend`` / ``--frontend`` narrow the run. They are selectors, so
+    passing both is the same as passing neither: run everything. Unknown
+    arguments are an error rather than being ignored -- the old command
+    silently swallowed ``-k foo``, which looks exactly like a filter that
+    worked.
+    """
+    args = sys.argv[2:]
+    valid = {"--backend", "--frontend"}
+    unknown = [a for a in args if a not in valid]
+    if unknown:
+        err(f"未知的參數：{' '.join(unknown)}。只接受 --backend / --frontend。",
+            f"unrecognised argument(s): {' '.join(unknown)}. "
+            "Only --backend / --frontend are accepted.")
+        print(t("  要篩選個別測試請直接執行 pytest 或 pnpm test。",
+                "  To filter individual tests, run pytest or pnpm test directly."),
+              file=sys.stderr)
+        sys.exit(2)
+    selected = valid & set(args)
+    want_backend = not selected or "--backend" in selected
+    want_frontend = not selected or "--frontend" in selected
+
+    backend_code: "int | None" = _run_backend_tests() if want_backend else _SKIPPED
+    frontend_code: "int | None" = _run_frontend_tests() if want_frontend else _SKIPPED
+
+    print()
+    section("測試結果", "Test summary")
+    print(_test_summary_line("backend", backend_code))
+    print(_test_summary_line("frontend", frontend_code))
+    print()
+
+    failed = [c for c in (backend_code, frontend_code) if c is not _SKIPPED and c != 0]
+    if failed:
+        sys.exit(1)
+
+
+# No bulk `dev-install` shortcut: official packs are opt-in. Contributors
+# decide per-chapter what they need and run ``plugin install`` themselves
+# (matches what an end user would do via the global ``cdui plugin``).
 
 
 def clean() -> None:

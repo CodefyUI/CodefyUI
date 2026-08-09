@@ -15,7 +15,6 @@ from ..config import settings
 from .backward_pass import (
     attach_retain_grad,
     capture_grads,
-    grad_health,
     run_backward,
     select_backward_target,
     zero_module_grads,

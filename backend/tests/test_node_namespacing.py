@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
 
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import NodeRegistry, _plugin_id_from_package, qualify

@@ -19,7 +19,6 @@ Architecture: Stem -> 4 stages [3,3,9,3] blocks at dims [96,192,384,768] -> Head
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 import torchvision
 import torchvision.transforms as T

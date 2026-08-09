@@ -6,7 +6,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 
 from ..config import settings
-from ..core.node_base import BaseNode
 from ..core.node_registry import registry
 from ..core import plugin_loader
 from ..core.plugin_loader import rediscover_all

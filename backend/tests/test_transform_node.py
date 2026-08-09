@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-import torch
 
 from app.nodes.data.transform_node import TransformNode
 

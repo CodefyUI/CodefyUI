@@ -7,6 +7,8 @@ import pytest
 from app.core.graph_engine import (
     GraphValidationError,
     execute_graph,
+    find_entry_points,
+    reachable_from_entry_points,
     topological_levels,
     topological_sort,
     validate_graph,
@@ -195,9 +197,6 @@ def test_validate_graph_required_input_satisfied_by_edge():
     assert node2_missing == [], f"Node 2's input should be satisfied: {node2_missing}"
 
 
-from app.core.graph_engine import find_entry_points, reachable_from_entry_points
-
-
 def test_execute_graph_untriggered_producer_is_rescued_and_runs():
     """core#201: every path must start from a Start node, but a pure
     producer (no inputs, no trigger) that feeds a data edge into a
@@ -352,7 +351,6 @@ def test_find_entry_points_none():
 
 
 def test_reachable_traverses_data_edges_only():
-    nodes = [{"id": n} for n in ["start", "ds", "dl", "model"]]
     edges = [
         {"id": "e1", "source": "start", "target": "ds", "type": "trigger"},
         {"id": "e2", "source": "ds", "target": "dl", "type": "data"},
@@ -363,7 +361,6 @@ def test_reachable_traverses_data_edges_only():
 
 
 def test_reachable_handles_disconnected_components():
-    nodes = [{"id": n} for n in ["a", "b", "x", "y"]]
     edges = [
         {"id": "e1", "source": "a", "target": "b", "type": "data"},
         {"id": "e2", "source": "x", "target": "y", "type": "data"},

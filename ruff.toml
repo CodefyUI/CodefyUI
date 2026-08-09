@@ -1,0 +1,68 @@
+# Ruff configuration for every piece of Python in this repository (core#245).
+#
+# Lives at the repo root rather than in `backend/pyproject.toml` because the
+# Python here is not only the backend package: `scripts/` holds the CLI
+# (`dev.py`, `plugins.py`, `project.py`), and `plugins/` and `examples/` hold
+# node code that ships to users. `backend-test.yml` already treats all four as
+# one blast radius; the linter covers the same ground.
+#
+# Frontend linting (eslint / biome) is deliberately NOT started here. It is a
+# larger argument -- it drags in a formatting decision, and a formatter that
+# lands in the same PR as CI plumbing gets reviewed as neither. See core#245.
+
+# Only ever look at Python. Kept explicit so a stray `.pyi` or notebook does
+# not quietly join the gate later.
+include = ["**/*.py"]
+
+extend-exclude = [
+    # The plugin scaffold is Jinja-ish source with `{{plugin_snake}}`
+    # placeholders. It is not valid Python until `cdui plugin new` renders it,
+    # and `ruff` reports that (correctly) as a syntax error.
+    "scripts/templates/**",
+    # Developer scratch venvs. `.venv/` is already gitignored; this catches the
+    # `.venv312`-style siblings people make when reproducing a version bug.
+    ".venv*",
+    "**/.venv*",
+]
+
+[lint]
+# Ruff's own default rule set, adopted deliberately rather than by omission.
+#
+# The first linter in a repository has exactly one job beyond finding bugs: it
+# has to LAND GREEN. A gate that starts red teaches people that red is normal,
+# which costs more than the gate is worth. So this starts at pyflakes plus the
+# pycodestyle rules that describe real mistakes rather than formatting taste:
+#
+#   F    unused imports, undefined names, unused locals, f-string mistakes
+#   E4   import placement
+#   E7   `== None`, `== True`, bare `except`, ambiguous names, lambda-assign
+#   E9   syntax errors and IO errors
+#
+# Deliberately NOT enabled yet, with the count from the first full run so that
+# whoever turns one on knows what they are signing up for:
+#
+#   E501  line-too-long (1373). A formatting decision. This codebase writes
+#         long explanatory comments on purpose and reflowing them all would
+#         bury every future `git blame`.
+#   I001  unsorted-imports (153). Import ordering belongs to a formatter, and
+#         adopting one is its own PR with its own review.
+#   RUF001/2/3 ambiguous-unicode (210). The project is bilingual by design;
+#         these fire on ordinary Traditional Chinese in strings, comments and
+#         docstrings. False positives here, all of them.
+#   B, SIM, UP, C4 (~200). Each is worth doing and each is a behaviour-adjacent
+#         rewrite. They should arrive one rule family at a time, in a diff a
+#         reviewer can actually check -- not riding along with CI plumbing.
+select = ["E4", "E7", "E9", "F"]
+
+[lint.per-file-ignores]
+# E402 = "module import not at top of file". Both of these violate it on
+# purpose, and both would be WRONG if the imports moved up.
+#
+# `main.py` registers MIME types before anything imports Starlette's
+# StaticFiles: on Windows the registry answer for `.js` is routinely clobbered
+# by other installers, and a `text/plain` `.js` makes the browser refuse the
+# module script, leaving a blank SPA. The registration has to win the race.
+"backend/app/main.py" = ["E402"]
+# `conftest.py` puts `backend/` and `scripts/` on `sys.path` before importing
+# anything from them -- that is the whole reason the file exists.
+"backend/tests/conftest.py" = ["E402"]
