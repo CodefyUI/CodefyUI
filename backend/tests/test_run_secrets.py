@@ -503,18 +503,20 @@ async def test_freed_pages_are_zeroed_so_pruning_leaves_no_residue(
         store, service, db, db_path):
     """Retention DELETEs a row; its bytes must not stay in a freed page.
 
-    The operation `PRAGMA secure_delete=ON` actually protects, and it is not
-    the one it looks like. Measured on SQLite 3.50.4 with the real schema:
+    This pins the DELETE half of what `PRAGMA secure_delete=ON` buys, because
+    it is the one retention exercises continuously against exactly the rows
+    that used to hold unscrubbed keys. Measured on SQLite 3.50.4 with the
+    real schema, explicit checkpoints on both sides:
 
-      insert -> checkpoint -> UPDATE -> checkpoint   no residue either way
-      insert -> checkpoint -> DELETE -> checkpoint   residue WITHOUT the
-                                                     pragma, none with it
+      DELETE                OFF -> residue in main file    ON -> none
+      UPDATE 12KB -> 0KB    OFF -> residue in main file    ON -> none
+      UPDATE 12KB -> 12KB   OFF -> none                    ON -> none
 
-    A row rewritten in place carries its new content into the main file at
-    the next checkpoint. A DELETED row's page goes to the freelist, and
-    without the pragma it goes there with the old content intact -- which is
-    precisely what retention does, continuously, to the rows that used to
-    hold unscrubbed keys.
+    The pragma is NOT only about DELETE, and the middle row is the one worth
+    remembering: a shrinking rewrite releases overflow pages, so the #251
+    backfill sweep needs it too. The bottom row -- a same-size rewrite
+    leaving nothing because the chain is rewritten in place -- is incidental
+    and flips as soon as the new size crosses a page boundary.
 
     The checkpoints are what make this deterministic rather than incidental:
     without the first one both writes live in the same WAL generation and the

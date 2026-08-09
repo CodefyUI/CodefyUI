@@ -2480,16 +2480,26 @@ class RunService:
         the next restart takes the key back out.
 
         What this does and does not reach, measured rather than assumed
-        (SQLite 3.50.4, real schema):
+        (SQLite 3.50.4, real schema, explicit checkpoints on both sides):
 
-        - The rows it rewrites are genuinely clean. An UPDATE carries the new
-          content into the main file at the next checkpoint, so the scrubbed
-          row does not leave its old bytes behind in a free page.
+        - The rows it rewrites come out clean, **because
+          ``PRAGMA secure_delete=ON`` is set** (see ``db.py``) -- NOT because
+          an UPDATE is self-cleaning. It is not. Blanking a secret shrinks
+          the JSON, and a shrinking rewrite of a large TEXT value releases
+          overflow pages; without the pragma those go to the freelist with
+          the old content intact, in the MAIN file::
+
+              12KB -> 0KB   secure_delete=OFF -> residue in main
+              12KB -> 0KB   secure_delete=ON  -> none
+
+          Whether a given scrub frees a page at all depends on where the new
+          size lands against a page boundary -- a same-size rewrite rewrites
+          the chain in place and happens to leave nothing either way. That is
+          incidental. Do not read this sweep as safe without the pragma.
         - Rows retention already PRUNED on an older build are beyond it.
-          Their pages were freed before ``PRAGMA secure_delete=ON`` shipped
-          (see ``db.py``), so they went to the freelist with the key intact
-          and stay that way until a ``VACUUM``. The row is gone, so there is
-          nothing here to rewrite.
+          Their pages were freed before the pragma shipped, so they went to
+          the freelist with the key intact and stay that way until a
+          ``VACUUM``. The row is gone, so there is nothing here to rewrite.
 
         That second case is why the docs still tell an operator who ran a
         secret-bearing graph on an earlier version to treat the key as

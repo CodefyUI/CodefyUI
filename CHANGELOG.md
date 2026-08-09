@@ -113,12 +113,14 @@ received — each links to the release it was published as.
   Startup also sweeps values written by older builds out of finished runs and
   logs how many it removed, and the connection now sets `PRAGMA
   secure_delete=ON` so a deleted page is zeroed instead of being recycled with
-  its contents intact. That second part matters more than it looks: retention
-  DELETEs old runs continuously, and measurement showed the residue comes from
-  DELETE, not from the sweep's UPDATE — a rewritten row carries its new
-  content into the file at the next checkpoint, but a freed page did not. Cost
-  is unmeasurable at this project's write volume (write throughput inside
-  noise; about 1 ms on a prune of 40 runs, 1k events and 4k metric rows).
+  its contents intact. That second part matters more than it looks, and it
+  covers both statements: retention DELETEs old runs continuously, and a
+  shrinking UPDATE — which is exactly what blanking a secret out of a stored
+  graph is — releases overflow pages, so the sweep above depends on the pragma
+  too. Without it, measurement put the old bytes in the main database file in
+  both cases. Cost is unmeasurable at this project's write volume (write
+  throughput inside noise; about 1 ms on a prune of 40 runs, 1k events and 4k
+  metric rows).
 
   **One window remains, and it is the reason to rotate.** Runs that retention
   had already pruned *before* you upgrade are beyond both fixes: the rows are

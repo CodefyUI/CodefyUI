@@ -105,19 +105,23 @@ class Database:
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
             # Zero freed pages instead of returning them to the freelist with
-            # their content intact (#251). What this actually protects is
-            # DELETE, not UPDATE, and the distinction is worth stating because
-            # it is the opposite of what it looks like:
+            # their content intact (#251). Measured on SQLite 3.50.4 against
+            # the real schema, explicit checkpoints on both sides, scanning
+            # main / -wal / -shm separately:
             #
-            #   insert -> checkpoint -> UPDATE -> checkpoint  ... measured: no
-            #     residue in the main file either way. The row is rewritten in
-            #     place, so the page carries the new content once checkpointed.
-            #   insert -> checkpoint -> DELETE -> checkpoint  ... measured:
-            #     residue WITHOUT this pragma, none with it.
+            #   DELETE                    OFF -> residue in main   ON -> none
+            #   UPDATE 12KB -> 0KB        OFF -> residue in main   ON -> none
+            #   UPDATE 12KB -> 12KB       OFF -> none              ON -> none
             #
-            # DELETE is what retention does, continuously, to exactly the rows
-            # that used to hold unscrubbed secrets — so without this every
-            # pruned run left its snapshot readable in a free page.
+            # BOTH statements need this, which is worth spelling out because
+            # the middle row is easy to get wrong. DELETE is the obvious one:
+            # it is what retention does, continuously, to exactly the rows
+            # that used to hold unscrubbed secrets. But a shrinking UPDATE
+            # releases overflow pages too, so the #251 backfill sweep depends
+            # on this pragma just as much. The last row -- a same-size rewrite
+            # leaving nothing behind because the chain is rewritten in place
+            # -- is incidental, not a guarantee: it flips as soon as the new
+            # size crosses a page boundary. Nothing here is self-cleaning.
             #
             # ON rather than FAST: FAST only zeroes content it can reach
             # without extra I/O and explicitly may leave data in freelist
