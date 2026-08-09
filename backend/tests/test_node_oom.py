@@ -10,6 +10,7 @@ state the next test inherits.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from app.core.cache import ExecutionCache
 from app.core.error_handling import (
@@ -19,6 +20,7 @@ from app.core.error_handling import (
     memory_digest,
     release_cached_memory,
 )
+from app.core.execution_context import ExecutionContext
 from app.core.graph_engine import execute_graph
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import registry
@@ -302,3 +304,98 @@ async def test_continue_mode_records_the_oom_and_carries_on():
     await execute_graph(nodes, edges, on_progress=observe,
                         error_mode="continue")
     assert ("n1", "error") in statuses
+
+
+# ── crossed with determinism (#193) ──────────────────────────────────────
+#
+# Both paths reach for PROCESS-GLOBAL state: OOM recovery calls
+# ``torch.cuda.empty_cache()``, and a deterministic run holds a refcounted
+# scope over ``torch.use_deterministic_algorithms``. Neither had a test
+# saying what happens when one unwinds through the other.
+
+
+@pytest.fixture
+def _determinism_restored():
+    """Give torch its flags back whatever the test does to them."""
+    previously = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(False)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previously, warn_only=warn_only)
+
+
+@pytest.mark.asyncio
+async def test_oom_recovery_runs_INSIDE_the_deterministic_scope(
+    _determinism_restored, monkeypatch,
+):
+    """Ordering, asserted from inside the recovery rather than after it.
+
+    The question a crossover test has to answer is not "did both happen"
+    but "which one was still in force while the other ran". Recovery that
+    fired AFTER the scope unwound would be touching the allocator with the
+    process's determinism setting already handed back — a different, and
+    much harder to reason about, ordering than the one the code intends.
+
+    ``release_cached_memory`` is the probe point because it is the last
+    thing the recovery does and the one that touches the allocator. It is
+    stubbed rather than allowed to run: on a CPU-only box it returns before
+    reaching ``empty_cache()`` at all (see its ``kind != "cuda"`` guard), so
+    letting it run would assert nothing while LOOKING like it asserted the
+    interaction. This test pins the ordering; it does not pretend to
+    exercise a real CUDA free.
+    """
+    from app.core import graph_engine as engine
+    from app.core.seeding import determinism_depth
+
+    seen: list[tuple[bool, int]] = []
+
+    def _probe(device: str = "") -> None:
+        seen.append((torch.are_deterministic_algorithms_enabled(),
+                     determinism_depth()))
+
+    monkeypatch.setattr(engine, "release_cached_memory", _probe)
+
+    _HungryNode.boom = _cuda_oom()
+    nodes, edges = _graph()
+    with pytest.raises(NodeOOMError):
+        await execute_graph(
+            nodes, edges,
+            context=ExecutionContext(device="cpu", deterministic=True))
+
+    assert seen, "OOM recovery never ran"
+    enabled, depth = seen[0]
+    assert enabled, "recovery ran after determinism was handed back"
+    assert depth == 1, f"expected to be inside exactly one scope, saw {depth}"
+
+
+@pytest.mark.asyncio
+async def test_an_oom_in_a_deterministic_run_still_unwinds_the_scope(
+    _determinism_restored,
+):
+    """And the NEXT run is unaffected — which is the whole point of #134.
+
+    An OOM leaves ``execute_graph`` by the same ``finally`` that owns the
+    scope's exit, so this is the ordinary path rather than a corner. It is
+    pinned because the two mechanisms are independent and nothing else says
+    they compose: a future recovery step that returned early, or unwound by
+    some other route, would strand the depth and weld determinism on for
+    the life of the process.
+    """
+    from app.core.seeding import determinism_depth
+
+    _HungryNode.boom = _cuda_oom()
+    nodes, edges = _graph()
+    with pytest.raises(NodeOOMError):
+        await execute_graph(
+            nodes, edges,
+            context=ExecutionContext(device="cpu", deterministic=True))
+
+    assert determinism_depth() == 0, "the OOM stranded the scope's depth"
+    assert not torch.are_deterministic_algorithms_enabled()
+
+    # The next run asked for nothing and must get nothing.
+    _HungryNode.boom = None
+    await execute_graph(nodes, edges, context=ExecutionContext(device="cpu"))
+    assert not torch.are_deterministic_algorithms_enabled()

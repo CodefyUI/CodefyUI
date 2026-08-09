@@ -314,3 +314,138 @@ def test_every_conditional_param_hides_exactly_where_it_does_not_apply():
         "a new always-visible param needs an explicit decision: every "
         "algorithm must accept it, or execute() must reject it where it "
         "does not (see weight_decay)")
+
+
+# ── the tables against the torch that is actually installed (#189) ────────
+
+
+def _accepting(param, node_default):
+    """Algorithms whose signature takes *param* AND defaults it to ours."""
+    import inspect
+
+    import torch.optim as optim
+
+    found = set()
+    for name in optimizer_node.OPTIMIZER_TYPES:
+        signature = inspect.signature(getattr(optim, name).__init__).parameters
+        if param in signature and signature[param].default == node_default:
+            found.add(name)
+    return found
+
+
+def test_the_applicability_tables_match_the_installed_torch_signatures():
+    """The declared sets ARE "accepts it, and agrees with our default".
+
+    #134 declares applicability instead of inferring it, and that stays the
+    right call: inferring it would forward ``eps`` to Adagrad, whose torch
+    default is 1e-10 against this node's 1e-8, silently retuning every
+    existing Adagrad graph on upgrade. What declaring costs is that the
+    table can quietly stop describing torch — a release that adds
+    ``momentum`` to another algorithm, or that changes a default, leaves the
+    set behind with nothing to say so.
+
+    This closes the "with nothing to say so" part, and only that: it asserts
+    the declaration, it does not derive it. A failure here is a decision to
+    make by hand, not a line to delete.
+    """
+    from app.core.param_values import parse_float_sequence
+
+    betas_default = parse_float_sequence(
+        optimizer_node.DEFAULT_BETAS, name="betas", length=2)
+
+    for param, node_default, declared in (
+        ("momentum", 0.0, optimizer_node._MOMENTUM_TYPES),
+        ("betas", betas_default, optimizer_node._BETAS_TYPES),
+        ("eps", optimizer_node.DEFAULT_EPS, optimizer_node._EPS_TYPES),
+        ("amsgrad", False, optimizer_node._AMSGRAD_TYPES),
+        ("nesterov", False, optimizer_node._SGD_ONLY),
+        ("dampening", 0.0, optimizer_node._SGD_ONLY),
+    ):
+        found = _accepting(param, node_default)
+        assert found == set(declared), (
+            f"the {param} table no longer matches this torch: it accepts-"
+            f"and-agrees for {sorted(found)}, the node declares "
+            f"{sorted(declared)}. Decide per algorithm — forwarding is only "
+            f"a no-op where torch's default equals ours (see eps/Adagrad "
+            f"for why that matters)")
+
+
+def test_adagrad_is_excluded_from_eps_because_its_default_differs():
+    """The one exclusion that is a JUDGEMENT rather than an absence.
+
+    Every other algorithm missing from a table is missing because torch has
+    no such knob. Adagrad has ``eps`` and is left out anyway, so a reader
+    checking the table against the signature would find a discrepancy and
+    "fix" it. Pinned here so the reason is executable rather than a comment.
+    """
+    import inspect
+
+    import torch.optim as optim
+
+    signature = inspect.signature(optim.Adagrad.__init__).parameters
+    assert "eps" in signature, "Adagrad stopped taking eps; revisit the table"
+    assert signature["eps"].default != optimizer_node.DEFAULT_EPS, (
+        "Adagrad's eps default now matches ours, so the reason it is "
+        "excluded from _EPS_TYPES has gone away — including it would now be "
+        "the no-op it was not before")
+    assert "Adagrad" not in optimizer_node._EPS_TYPES
+
+
+#: Every keyword each optimizer took when this was written (torch 2.13),
+#: minus ``self``/``params``. A snapshot, and deliberately a whole one --
+#: see the test below for why it is not narrowed to the knobs we expose.
+_TORCH_OPTIMIZER_KWARGS = {
+    "Adam": {"amsgrad", "betas", "capturable", "decoupled_weight_decay",
+             "differentiable", "eps", "foreach", "fused", "lr", "maximize",
+             "weight_decay"},
+    "SGD": {"dampening", "differentiable", "foreach", "fused", "lr",
+            "maximize", "momentum", "nesterov", "weight_decay"},
+    "AdamW": {"amsgrad", "betas", "capturable", "differentiable", "eps",
+              "foreach", "fused", "lr", "maximize", "weight_decay"},
+    "RMSprop": {"alpha", "capturable", "centered", "differentiable", "eps",
+                "foreach", "lr", "maximize", "momentum", "weight_decay"},
+    "Adagrad": {"differentiable", "eps", "foreach", "fused",
+                "initial_accumulator_value", "lr", "lr_decay", "maximize",
+                "weight_decay"},
+    "RAdam": {"betas", "capturable", "decoupled_weight_decay",
+              "differentiable", "eps", "foreach", "lr", "maximize",
+              "weight_decay"},
+    "NAdam": {"betas", "capturable", "decoupled_weight_decay",
+              "differentiable", "eps", "foreach", "lr", "maximize",
+              "momentum_decay", "weight_decay"},
+    "Rprop": {"capturable", "differentiable", "etas", "foreach", "lr",
+              "maximize", "step_sizes"},
+    "ASGD": {"alpha", "capturable", "differentiable", "foreach", "lambd",
+             "lr", "maximize", "t0", "weight_decay"},
+}
+
+
+def test_no_new_torch_optimizer_knob_arrives_unnoticed():
+    """A new hyperparameter must break something. This is the something.
+
+    Deliberately a snapshot of the WHOLE signature rather than of the knobs
+    the node exposes: the gap #189 names is a torch release ADDING one, and
+    a test that only looks at the params already declared cannot see a param
+    that is not declared yet.
+
+    It will therefore also fire for plumbing nobody wants on a node
+    (``fused``, ``capturable``). That is the intended cost — the fix is one
+    line in the dict above, written by someone who looked at what changed,
+    which is the entire point. A table that drifts for years in silence is
+    the alternative being rejected here.
+    """
+    import inspect
+
+    import torch.optim as optim
+
+    current = {}
+    for name in optimizer_node.OPTIMIZER_TYPES:
+        signature = inspect.signature(getattr(optim, name).__init__).parameters
+        current[name] = {k for k in signature if k not in ("self", "params")}
+
+    assert current == _TORCH_OPTIMIZER_KWARGS, (
+        "this torch's optimizer signatures differ from the recorded ones. "
+        "For each added keyword: expose it (a ParamDefinition plus an "
+        "applicability set) or record it above as reviewed-and-declined. Do "
+        "NOT start forwarding automatically — see the eps/Adagrad note at "
+        "the top of optimizer_node.py.")

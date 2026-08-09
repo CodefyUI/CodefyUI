@@ -48,6 +48,23 @@ earlier than strictly necessary -- and the alternative (a process-wide
 refcounted ledger of every storage every store has ever seen) buys accuracy
 nobody can observe at a cost everybody pays on every put.
 
+Which way it errs, stated once and honestly
+-------------------------------------------
+"Over-counting is the safe direction" is true of sharing and is NOT the
+direction of everything here, so it must not be read as a property of the
+measurement as a whole (#193). Three things make it UNDER-count, and
+under-counting is the direction that costs memory -- a value stays resident
+that the budget would otherwise have evicted:
+
+* :data:`MAX_WALK_DEPTH` stops the descent; payload below the cap measures 0.
+* :data:`MAX_WALK_ITEMS` stops the walk outright, mid-structure.
+* a measurement that raises returns 0 rather than a partial total.
+
+All three are deliberate -- a budget must not fail a run or become the slow
+part of one -- and all three are logged at debug level when they fire, so
+"why does the reported total look low" has an answer in the log rather than
+only in this docstring.
+
 Caveats, stated rather than hidden
 ----------------------------------
 * Sizes are measured ONCE, when a value is stored. A module that later grows
@@ -119,11 +136,15 @@ def value_bytes(value: Any) -> int:
     wrapper whose ``nbytes`` is a property that raises), so "no object in
     this repo triggers it" is not a guarantee about anything.
 
-    A measurement that gives up returns 0, not the partial total: the walk
-    is recursive, so the count lives in the frames the exception unwound.
-    Under-counting keeps a value that should have been evicted, which costs
-    memory; an exception loses a run. That is the trade being made, and it
-    is worth knowing which way it errs before trusting a budget.
+    A measurement that gives up returns 0, not the partial total: the
+    running count is :func:`_walk`'s local, and an exception leaves by the
+    one path that does not return it. (The walk is ITERATIVE -- an earlier
+    version of this paragraph blamed the recursion, which had already been
+    replaced by the stack above.) Under-counting keeps a value that should
+    have been evicted, which costs memory; an exception loses a run. That is
+    the trade being made, and it is worth knowing which way it errs before
+    trusting a budget -- see the module docstring for the other two ways it
+    errs the same way.
     """
     try:
         return _walk(value)
@@ -145,6 +166,12 @@ def _walk(value: Any) -> int:
     seen_storage: set[tuple] = set()
     stack: list[tuple[Any, int]] = [(value, 0)]
     items = 0
+    #: Containers the depth cap refused to descend into. Counted rather
+    #: than dropped in silence (#193): the items cap already says when it
+    #: truncates, and the depth cap under-counts by exactly the same
+    #: mechanism -- everything below it measures 0 -- so a total that looks
+    #: implausibly low should be answerable from the log either way.
+    undescended = 0
 
     while stack:
         obj, depth = stack.pop()
@@ -198,6 +225,10 @@ def _walk(value: Any) -> int:
             continue
 
         if depth >= MAX_WALK_DEPTH:
+            # Only a container loses anything by not being descended into;
+            # everything else down here measures 0 whether we look or not.
+            if isinstance(obj, (dict, list, tuple, set, frozenset)):
+                undescended += 1
             continue
         if isinstance(obj, dict):
             if id(obj) in visited:
@@ -215,6 +246,11 @@ def _walk(value: Any) -> int:
                 stack.append((item, depth + 1))
             continue
 
+    if undescended:
+        logger.debug(
+            "byte measurement did not descend past depth %d into %d "
+            "container(s); the total is a lower bound",
+            MAX_WALK_DEPTH, undescended)
     return total
 
 
