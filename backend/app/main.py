@@ -5,6 +5,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 # Windows reads MIME types from the registry, which other installers (VS, IIS,
 # antivirus, etc.) routinely clobber — `.js` often ends up as `text/plain`,
@@ -65,6 +66,7 @@ from .core.auth import (
     session_token,
     write_token_file,
 )
+from .core.body_limit import BodySizeLimitMiddleware, RequestBodyTooLarge
 from .core.cache import execution_cache_stats
 from .core.db import Database
 from .core.logging_config import setup_logging
@@ -370,10 +372,10 @@ app = FastAPI(title=settings.APP_NAME, version=get_version(), lifespan=lifespan)
 # Order matters: Starlette applies the *last-added* middleware *first*. We
 # want the request to flow as:
 #
-#   incoming → host_guard → auth_guard → CORS → route handler
+#   incoming → host_guard → auth_guard → body_limit → CORS → route handler
 #
 # Because middleware adds in reverse order, we add CORS first (innermost),
-# auth second, host third (outermost).
+# the body cap second, auth third, host fourth (outermost).
 
 # Innermost: CORS preflight + response headers.
 app.add_middleware(
@@ -384,6 +386,34 @@ app.add_middleware(
     allow_headers=["Content-Type", TOKEN_HEADER, "Authorization"],
     expose_headers=[],
 )
+
+# Request-body ceiling, counted as the bytes arrive (core#265, core#242).
+#
+# DO NOT MOVE THIS OUTSIDE THE TWO GUARDS BELOW. The position is not a matter
+# of taste and not merely about precedence — the cap stops working. Measured,
+# by relocating it and running the suite: 17 tests fail and an over-limit
+# request answers 400 "There was an error parsing the body" instead of 413.
+#
+# The reason is that auth_guard and host_guard are BaseHTTPMiddleware, which
+# runs the downstream app in a task group and pumps `receive` through its own
+# wrapper. An exception raised from an UPSTREAM `receive` does not survive that
+# plumbing as itself; it surfaces to FastAPI's body parser as a generic
+# failure, and FastAPI's `except Exception` rewrites it to a 400. Registered
+# here, the cap's `receive` is the one the route reads from directly, so
+# RequestBodyTooLarge reaches ExceptionMiddleware intact.
+#
+# Being inside the guards is also the behaviour we want on its own terms. An
+# oversized request with a bad Host still answers 421 and one with no session
+# token still answers 403, because both refuse without ever reading the body —
+# and a body nobody reads is never counted. A size failure never masks an auth
+# failure, and an unauthenticated caller is never handed a 413 that tells it
+# the route exists.
+#
+# INSIDE CORS, finally: the 413 is rendered by ExceptionMiddleware (innermost
+# of all), so it travels back out through CORSMiddleware and picks up the
+# Access-Control-Allow-Origin header a cross-origin caller needs in order to
+# read the status at all.
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.middleware("http")
@@ -434,6 +464,48 @@ async def host_guard(request: Request, call_next):
             content={"detail": "Misdirected Request (Host not allowed)"},
         )
     return await call_next(request)
+
+
+@app.exception_handler(RequestBodyTooLarge)
+async def body_too_large(request: Request, exc: RequestBodyTooLarge):
+    """Render the body cap's 413 in the shape the calling route promises.
+
+    One mechanism counts the bytes; this is the one place that decides how the
+    refusal *reads*. Two routes answer with the 9-key run envelope on every
+    single response, and that is not a local style choice — the per-app
+    OpenAPI document served at ``GET /api/apps/{slug}/openapi.json`` types its
+    ``default`` response as ``RunEnvelope``, so third-party clients generated
+    from it decode a 413 as an envelope. Everything else in the API answers
+    ``{"detail": ...}``, which is what the previous ``POST /api/runs`` cap
+    returned and what FastAPI returns for every other HTTPException.
+
+    Reached via Starlette's ``ExceptionMiddleware``: ``RequestBodyTooLarge``
+    is an ``HTTPException`` subclass, and handler lookup walks the MRO, so
+    this wins over the default HTTPException handler without displacing it
+    for any other status.
+    """
+    params = request.path_params
+    path = request.url.path
+    if path.startswith("/api/graph/run/"):
+        return routes_graph_run.error_response(
+            413,
+            run_id=uuid4().hex,
+            graph=params.get("name", ""),
+            code="payload_too_large",
+            message=exc.detail,
+        )
+    if path.startswith("/api/apps/") and path.endswith("/invoke"):
+        # version stays None: the cap fires before any version is resolved.
+        slug = params.get("slug", "")
+        return routes_graph_run.error_response(
+            413,
+            run_id=uuid4().hex,
+            graph=slug,
+            app=slug,
+            code="payload_too_large",
+            message=exc.detail,
+        )
+    return JSONResponse(status_code=413, content={"detail": exc.detail})
 
 
 # ── Routers ────────────────────────────────────────────────────────────

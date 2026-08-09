@@ -196,7 +196,8 @@ A ready-made graph for these exact calls ships in `examples/Usage_Example/Api-Fu
 
 ## 8. Limits and gotchas
 
-- 403 (missing/invalid token) and 421 (Host guard) arrive WITHOUT the envelope — they fire before the route.
+- 403 (missing/invalid token) and 421 (Host guard) arrive WITHOUT the envelope — they fire before the route. 413 keeps the envelope on this route and on `/invoke`.
+- The `MAX_RUN_BODY_BYTES` ceiling is not specific to `/run`: it applies to **every** endpoint except the four upload routes, which answer to `MAX_UPLOAD_SIZE` (default 500 MB) instead. So `POST /api/graph/save` with a 70 MB graph is a 413 too. It is counted as the bytes arrive rather than read off `Content-Length`, which means a chunked request — one that declares no length at all — is measured like any other.
 - This server never emits 504; a 504 always came from an intermediary.
 - `record_outputs=true` makes inputs and results readable by anyone on the LAN who learns the `run_id` (the GET outputs endpoint is auth-exempt; transport is plain HTTP). Published apps: run records are key-protected in SQLite; the inspector store is editor-only — invokes never write to it. To make a graph stable and key-protected: [publish it](./publish).
 - Do not put secrets in `default` values — `GET /contract` and `/load` are unauthenticated.

@@ -36,9 +36,17 @@ class Settings(BaseSettings):
     HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
+    # Largest FILE accepted by the four upload routes. The multipart body
+    # carrying it is bounded a shade higher (this plus an envelope allowance)
+    # by core.body_limit; the routes themselves enforce this exact number
+    # against the decoded file. See body_limit's module docstring.
     MAX_UPLOAD_SIZE: int = 500 * 1024 * 1024  # 500 MB
-    # Cap for POST /api/graph/run/{name} request bodies, checked against
-    # Content-Length before the body is read (-> 413 payload_too_large).
+    # Default request-body ceiling for EVERY route that is not an upload
+    # (-> 413). Enforced by core.body_limit, which counts bytes as they arrive
+    # on the ASGI receive channel, so it holds for chunked requests that
+    # declare no Content-Length as well. Until core#265 this was three
+    # hand-rolled Content-Length comparisons on three routes, each of which a
+    # chunked client walked straight past.
     # 64 MB comfortably covers a handful of base64 image inputs.
     # Env-overridable as CODEFYUI_MAX_RUN_BODY_BYTES.
     MAX_RUN_BODY_BYTES: int = 64 * 1024 * 1024  # 64 MB

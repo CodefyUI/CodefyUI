@@ -63,6 +63,14 @@ async def upload_data_file(file: UploadFile):
     files_dir.mkdir(parents=True, exist_ok=True)
     dest = _safe_path(files_dir, safe_name)
 
+    # This read used to be unbounded: an oversized upload was buffered in full
+    # and only then compared to the limit, and a request far larger still was
+    # read in full before being refused (core#242). core.body_limit now bounds
+    # the multipart BODY as it arrives, so the most this can buffer is
+    # MAX_UPLOAD_SIZE plus the envelope allowance.
+    #
+    # The check below stays: it measures the FILE, not the body, and it is the
+    # one that enforces the documented number exactly.
     content = await file.read()
     if len(content) > settings.MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large")

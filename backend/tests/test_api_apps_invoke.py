@@ -615,12 +615,20 @@ async def test_queue_timeout_expires_while_queued(
 async def test_invoke_413_body_cap_writes_no_row(
     test_client, app_db, api_key, monkeypatch,
 ):
-    """POST with Content-Length > MAX_RUN_BODY_BYTES returns 413 with no
-    runs row. The cap is checked against the header before the body is
-    read; the envelope has all 9 keys, error.code == "payload_too_large",
-    and version is None (pre-resolution failure)."""
-    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 10)
+    """POST over MAX_RUN_BODY_BYTES returns 413 with no runs row.
+
+    The envelope has all 9 keys, error.code == "payload_too_large", and
+    version is None (the cap fires before any version is resolved). Since
+    core#265 the cap is enforced by ``core.body_limit`` for every route rather
+    than by this one, but the envelope is unchanged — the per-app OpenAPI
+    document types the 413 as a RunEnvelope for generated clients.
+
+    Note the publish happens BEFORE the monkeypatch, which it did not have to
+    before: the setup calls ``/api/graph/save``, and a 10-byte ceiling now
+    applies to that route too. That is the coverage gap core#265 was about.
+    """
     await _publish(test_client, SLUG, _echo_graph())
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 10)
     key_headers = _bearer(api_key["token"])
 
     # Send a body larger than the tiny cap (10 bytes). The actual body
@@ -642,6 +650,36 @@ async def test_invoke_413_body_cap_writes_no_row(
     # No rows written for pre-resolution failures.
     rows = await _run_rows(app_db)
     assert len(rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_invoke_401_beats_the_body_cap(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """A bad key on an oversized body answers 401, not 413.
+
+    This route checks its key BEFORE it reads the body, on purpose, and the
+    body cap must not disturb that. The ordering is not hypothetical: the
+    obvious way to build a global cap — Starlette's own
+    RequestBodyLimitMiddleware — also wraps ``send`` and replaces whatever
+    response the app produced with a plain-text 413 whenever Content-Length
+    is over the limit, turning exactly this 401 into a 413. core.body_limit
+    refuses only what the application actually READS, which is what keeps
+    every route's own auth answer in front of it.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    monkeypatch.setattr("app.config.settings.MAX_RUN_BODY_BYTES", 10)
+
+    resp = await test_client.post(
+        f"/api/apps/{SLUG}/invoke",
+        json={"inputs": {"x": "far larger than ten bytes"}},
+        headers={"Authorization": "Bearer cdui_not_a_real_key"},
+    )
+    assert resp.status_code == 401, resp.text
+    body = resp.json()
+    assert set(body.keys()) == ENVELOPE_KEYS
+    assert body["error"]["code"] == "invalid_key"
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,32 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **Every request-body size cap could be walked past by chunking, and four
+  routes had no cap at all** ([#265], [#242]). Three routes capped their body
+  by comparing `Content-Length` to `MAX_RUN_BODY_BYTES`. A chunked request —
+  `Transfer-Encoding: chunked` — declares no `Content-Length`, so all three
+  checks were skipped in full by any client that chose to chunk. They were
+  advisory, not enforcing, on every route that had one.
+
+  Four more routes took a body with no cap at all (`POST /api/graph/save`,
+  `/validate`, `/export`, `/api/presets/create`), and the four upload routes
+  read the whole file into memory *before* comparing it to `MAX_UPLOAD_SIZE`,
+  so a request far larger than the limit was buffered in full and only then
+  refused.
+
+  All of it is replaced by one mechanism that counts bytes as they arrive on
+  the ASGI receive channel, so it holds whether or not a length was declared
+  and covers every route rather than the three that remembered to ask. Two
+  ceilings still apply and are resolved per path: `MAX_RUN_BODY_BYTES`
+  (64 MB) everywhere, `MAX_UPLOAD_SIZE` (500 MB) on the upload routes.
+
+  User-visible where it was not before: `POST /api/graph/save` with a 70 MB
+  graph is now a 413. The 413 on `/api/graph/run/{name}` and
+  `/api/apps/{slug}/invoke` keeps the 9-key envelope those routes promise, so
+  clients generated from the per-app OpenAPI document are unaffected.
+  WebSocket messages are unchanged — they are bounded by uvicorn's
+  `ws_max_size` (16 MB) at the transport.
+
 - **The second Run of a training graph did no training, and reported success**
   ([#253]). `TrainingLoop` inherited the default `cacheable = True`, and a
   cache hit replays a node's recorded outputs without calling it — so no
@@ -415,6 +441,8 @@ Release candidates before 1.0.0 are on the
 [#253]: https://github.com/CodefyUI/CodefyUI/issues/253
 [#254]: https://github.com/CodefyUI/CodefyUI/issues/254
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
+[#242]: https://github.com/CodefyUI/CodefyUI/issues/242
+[#265]: https://github.com/CodefyUI/CodefyUI/issues/265
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1

@@ -584,23 +584,13 @@ async def invoke_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 3. Body cap against Content-Length, before reading the body
-    #    (routes_graph_run step-2 pattern).
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            declared_bytes = int(content_length)
-        except ValueError:
-            declared_bytes = 0
-        if declared_bytes > settings.MAX_RUN_BODY_BYTES:
-            return error_response(
-                413, run_id=run_id, graph=slug, app=slug,
-                code="payload_too_large",
-                message=(
-                    f"request body is {declared_bytes} bytes "
-                    f"(max {settings.MAX_RUN_BODY_BYTES})"
-                ),
-            )
+    # 3. The body cap used to live here, comparing Content-Length against
+    #    MAX_RUN_BODY_BYTES. core.body_limit now counts the bytes as they
+    #    arrive, for every route, so a chunked body cannot walk past it
+    #    (core#265). It fires when step 5 reads the body — deliberately AFTER
+    #    the key check above, so a bad key still answers 401 rather than
+    #    having a size failure mask an auth failure. main.py's
+    #    RequestBodyTooLarge handler renders the 413 with this envelope.
 
     # 4. Resolve slug -> (app, active version, record_io) in ONE SELECT
     #    join — atomic against concurrent publish (the row shows either
