@@ -80,6 +80,78 @@ received — each links to the release it was published as.
   helper that mirrors `parseInt` — including on `"1e3"`, where the obvious
   `int(float(raw))` fix would have traded one divergence for another. Only
   reachable through hand-edited or externally-generated graph JSON.
+- **A graph with a non-numeric value on a bounded parameter crashed the
+  validator instead of being refused** ([#193]). `validate_graph` compared
+  every value straight against its declared `min_value`/`max_value`, so
+  `"abc" < 0.0` — or `null < 0.0` — raised a `TypeError` that escaped the
+  function entirely. `POST /api/graph/run` turns that function's *return
+  value* into its 409 `invalid_graph` response, so the client got a 500
+  naming nothing at all. Every parameter with a declared bound was reachable
+  this way, on every node, not just the training ones.
+
+  `null` is the case the canvas can produce by itself: clearing a numeric
+  input yields `NaN`, which `JSON.stringify` writes as `null` into the saved
+  graph. A non-comparable value is now reported as an ordinary validation
+  error naming the parameter.
+
+- **The execution WebSocket read `"deterministic": "false"` as a request for
+  deterministic kernels** ([#189]). The socket coerced the flag with
+  `bool()` while passing its sibling `seed` through untouched, so a client
+  bug became a silently different run rather than the error the canvas
+  already knows how to display. Both halves of the reproducibility pair now
+  follow the same rule, and a non-boolean is refused with a message saying
+  so.
+
+- **Determinism could stay applied after the run that asked for it had gone**
+  ([#190]). `execute_graph` enters the refcounted determinism scope by hand
+  and pairs it in a `finally`, and two statements sat outside that pairing:
+  creating the outbox pump task, and awaiting it during teardown. Either one
+  raising left the scope open, holding `torch.use_deterministic_algorithms`
+  at the failed run's setting and suppressing every later run's baseline
+  capture. Both are now inside the guard.
+
+  Scope, measured rather than assumed: on CPython the depth does come back
+  once the traceback is released, because finalising the suspended generator
+  runs the `finally` that was skipped. So this is bounded by whatever holds
+  the traceback — a stored exception, an unretrieved task — rather than
+  permanent, which is less severe than [#190] states. It is still a
+  correctness property resting on an interpreter detail nothing in the code
+  states, on a setting that is process-global.
+
+- **A failing wake-up on the run gate replaced the exception the run
+  actually failed with** ([#190]). `_RunExclusion._wake` guarded the one line
+  that cannot realistically fail and left the following `await` bare, and
+  both callers release inside an `@asynccontextmanager`'s `finally` — where a
+  raise substitutes itself for the body's exception. The hold was always
+  given back correctly; only the reported error was lost.
+
+### Changed
+
+- **`value_bytes` now says when it stops measuring** ([#193]). The
+  `MAX_WALK_ITEMS` cap already logged that its total was a lower bound;
+  `MAX_WALK_DEPTH` returned a smaller number in silence, which makes an
+  under-count indistinguishable from a genuinely small value. The module
+  docstring also claimed over-counting as *the* safe direction — true of
+  cross-measurement sharing, and not true of the three things that make the
+  walk under-count, which is the direction that costs memory.
+
+### Added
+
+- **The optimizer and loss applicability tables are now checked against the
+  installed torch** ([#189]). `#134` declares which algorithm accepts which
+  hyperparameter rather than inferring it from `inspect.signature`, because
+  inferring it would forward `eps` to Adagrad — whose torch default is 1e-10
+  against the Adam family's 1e-8 — and silently retune every existing Adagrad
+  graph. The cost of declaring is that the table can stop describing torch
+  without anything saying so. Two tests per node close that: one asserts each
+  declared set still equals "accepts it *and* agrees with our default", the
+  other fails when any new keyword appears in a torch signature. Neither
+  forwards anything automatically.
+
+- **OOM crossed with determinism** ([#193]). Both paths reach for
+  process-global state and their interaction had no test. Two now pin it: OOM
+  recovery runs *inside* the determinism scope, and an OOM unwinds that scope
+  rather than stranding it.
 
 ## [2.2.0] — 2026-08-10
 
@@ -563,6 +635,9 @@ Release candidates before 1.0.0 are on the
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
 [#196]: https://github.com/CodefyUI/CodefyUI/issues/196
 [#197]: https://github.com/CodefyUI/CodefyUI/issues/197
+[#189]: https://github.com/CodefyUI/CodefyUI/issues/189
+[#190]: https://github.com/CodefyUI/CodefyUI/issues/190
+[#193]: https://github.com/CodefyUI/CodefyUI/issues/193
 [#224]: https://github.com/CodefyUI/CodefyUI/issues/224
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main

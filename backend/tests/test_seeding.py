@@ -611,6 +611,138 @@ async def test_two_overlapping_runs_do_not_latch_determinism(
     assert determinism_depth() == 0
 
 
+# ── the engine's hand-entered scope must be unskippable (#190) ──────────
+#
+# ``execute_graph`` enters the scope with a bare ``__enter__`` and pairs it
+# in a ``finally``, which means the pairing is not the language's job and
+# every statement in between is a place it can be lost. Under refcounting a
+# lost exit does not cost one run its restore -- it strands the depth above
+# zero for the life of the PROCESS, which suppresses every later scope's
+# baseline capture as well.
+
+
+@pytest.fixture
+def _determinism_depth_isolated():
+    """Contain a leak so a FAILING test here does not poison the session.
+
+    The failure under test is exactly "the depth never comes back", and a
+    stranded depth would turn a dozen unrelated tests red for a reason none
+    of them names. The assertions still run first -- this only cleans up
+    after them.
+    """
+    import app.core.seeding as seeding
+
+    try:
+        yield
+    finally:
+        seeding._DETERMINISM_DEPTH = 0
+        seeding._DETERMINISM_BASELINE = None
+
+
+def _assert_scope_closed_before_the_exception_left(depth_at_raise: int) -> None:
+    """Both tests below assert INSIDE their ``except``, and here is why.
+
+    Measured while writing them: with the guard removed the depth really is
+    1 at the moment the exception is caught -- and 0 again as soon as the
+    ``except`` block ends. ``deterministic_scope`` is a generator-based
+    context manager, so once the traceback (which holds ``execute_graph``'s
+    frame, which holds the generator) is released, CPython's refcounting
+    finalises the suspended generator, which throws GeneratorExit at the
+    ``yield`` and runs the very ``finally`` that was skipped.
+
+    That is worth writing down, because it makes #190's severity claim --
+    "determinism is never restored again in that process" -- too strong for
+    CPython as it stands. What is true is narrower and still worth fixing:
+    the scope stays open for as long as anything holds the traceback (a
+    stored exception on a run row, a task that nobody retrieved, a
+    ``sys.last_value``), it depends on an interpreter detail no code here
+    states, and it evaporates on any implementation without prompt
+    refcounting.
+
+    So the property to pin is the one that does not depend on the garbage
+    collector: the scope was closed BEFORE the exception left the engine.
+    Asserting after ``pytest.raises`` would pass either way and prove
+    nothing -- it did, until this was measured.
+    """
+    assert depth_at_raise == 0, (
+        "the scope was still open when the exception left execute_graph; "
+        "it was closed later only because the traceback was released and "
+        "the generator got finalised")
+
+
+@pytest.mark.asyncio
+async def test_a_pump_that_cannot_be_started_still_gives_the_depth_back(
+    _determinism_probe, _determinism_depth_isolated, monkeypatch,
+):
+    """The pump task is created BETWEEN ``__enter__`` and the guarded body.
+
+    ``asyncio.create_task`` raises ``RuntimeError`` on a loop that is
+    closing, which is precisely when a server is being torn down and least
+    able to notice that determinism has been welded on.
+
+    Only the pump's own creation is failed -- matched on the task name --
+    so nothing else in the run is disturbed by the patch.
+    """
+    from app.core import graph_engine as engine
+
+    real_create_task = asyncio.create_task
+
+    def _fail_the_pump(coro, *args, name=None, **kwargs):
+        if name and name.startswith("outbox-pump"):
+            coro.close()  # or Python warns it was never awaited
+            raise RuntimeError("event loop is closed")
+        return real_create_task(coro, *args, name=name, **kwargs)
+
+    monkeypatch.setattr(engine.asyncio, "create_task", _fail_the_pump)
+
+    nodes, edges = _probe_graph()
+    try:
+        await execute_graph(
+            nodes, edges,
+            context=ExecutionContext(device="cpu", deterministic=True))
+    except RuntimeError as exc:
+        assert "event loop is closed" in str(exc)
+        _assert_scope_closed_before_the_exception_left(determinism_depth())
+    else:
+        pytest.fail("the pump was supposed to fail to start")
+
+    assert not torch.are_deterministic_algorithms_enabled()
+
+
+@pytest.mark.asyncio
+async def test_a_pump_that_dies_mid_run_still_gives_the_depth_back(
+    _determinism_probe, _determinism_depth_isolated,
+):
+    """``await pump_task`` re-raises whatever killed the pump.
+
+    ``_pump`` catches ``Exception`` around ``_deliver`` but NOT around its
+    own ``outbox.wait()``, and catches nothing at all above ``Exception``,
+    so this is narrow rather than closed. The exit used to be that await's
+    PEER statement, so anything coming back out of it went straight past.
+
+    Raising from ``wait`` is the honest injection point: it is the one line
+    of the pump with no handler over it.
+    """
+    from app.core.execution_context import EventOutbox
+
+    class _ExplodingOutbox(EventOutbox):
+        async def wait(self) -> None:
+            raise RuntimeError("pump died")
+
+    nodes, edges = _probe_graph()
+    context = ExecutionContext(device="cpu", deterministic=True,
+                               outbox=_ExplodingOutbox())
+    try:
+        await execute_graph(nodes, edges, context=context)
+    except RuntimeError as exc:
+        assert "pump died" in str(exc)
+        _assert_scope_closed_before_the_exception_left(determinism_depth())
+    else:
+        pytest.fail("the pump was supposed to die")
+
+    assert not torch.are_deterministic_algorithms_enabled()
+
+
 def test_deterministic_scope_restores_the_cublas_env_var():
     """The env var leaks into every subprocess spawned afterwards.
 

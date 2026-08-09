@@ -158,6 +158,41 @@ def test_validate_graph_param_above_max():
     assert any("above maximum" in e and "'p'" in e for e in errors)
 
 
+@pytest.mark.parametrize("value", ["abc", None, [1], {"a": 1}])
+def test_validate_graph_reports_an_uncomparable_param_instead_of_raising(value):
+    """A bounded param holding a non-number is an ERROR, not a crash (#193).
+
+    The range check compared straight against ``min_value``/``max_value``,
+    so ``"abc" < 0.0`` raised a TypeError that escaped ``validate_graph``
+    altogether — and the run route turns this function's RETURN VALUE into
+    its 409 ``invalid_graph`` envelope, so the client got a 500 naming
+    nothing. Every param with a declared bound was reachable this way, not
+    just the training ones.
+
+    ``None`` is in the list because it is the one the canvas can produce on
+    its own: clearing a numeric input yields NaN, which ``JSON.stringify``
+    writes as ``null`` into the saved graph.
+    """
+    nodes = [
+        {"id": "1", "type": "Dropout", "data": {"params": {"p": value}}},
+    ]
+    errors = validate_graph(nodes, [])
+    assert any("is not a number" in e and "'p'" in e for e in errors), errors
+
+
+def test_validate_graph_still_accepts_a_bool_on_a_bounded_param():
+    """bool is an int subclass and orders fine; it was never the problem.
+
+    Pinned so the fix above is not "reject anything that is not int|float",
+    which would newly reject graphs that validate today.
+    """
+    nodes = [
+        {"id": "1", "type": "Dropout", "data": {"params": {"p": True}}},
+    ]
+    errors = validate_graph(nodes, [])
+    assert not any("'p'" in e for e in errors), errors
+
+
 def test_validate_graph_param_within_range_no_error():
     """Dropout 'p' within [0.0, 1.0] should not produce a range error."""
     nodes = [

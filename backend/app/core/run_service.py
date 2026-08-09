@@ -1009,18 +1009,38 @@ class _RunExclusion:
         ``shield`` is what fixes it: the notification is its own task, so
         the cancel takes this await and leaves the task running. The
         CancelledError still propagates, as it must.
+
+        "Never let a failure here replace the exception on its way out" is
+        the rule, and it used to be enforced over the ``ensure_future`` line
+        alone (#190) — while the await nine lines below it, which is where
+        a failing notification actually SURFACES, was unguarded. Both call
+        sites are ``finally`` blocks of an ``@asynccontextmanager``, so a
+        raise out of here does not merely add noise: it substitutes itself
+        for whatever the run was already failing with, and the original is
+        gone.
+
+        Swallowing costs nothing that was not already lost. ``_notify_all``
+        failing means the waiters were not woken either way; the difference
+        is only whether the caller's own exception survives to be reported.
+        Logged at warning, because the one thing that can raise here is a
+        condition bound to another loop, which is a bug worth seeing.
         """
         try:
             notify = asyncio.ensure_future(self._notify_all())
         except RuntimeError:  # pragma: no cover - loop already gone
             # Nothing can be waiting without a loop to wait on, and the
-            # counters are already back. Never let a teardown-time failure
-            # here replace the exception on its way out.
+            # counters are already back.
             return
         self._wakes.add(notify)
         notify.add_done_callback(self._wakes.discard)
         notify.add_done_callback(_swallow_task_result)
-        await asyncio.shield(notify)
+        try:
+            await asyncio.shield(notify)
+        except Exception:  # noqa: BLE001 - see above; CancelledError is a
+            # BaseException and so still propagates, which is required:
+            # ``shield`` re-raises the cancel that landed on this await.
+            logger.warning("run gate: waking the waiters failed",
+                           exc_info=True)
 
     async def _notify_all(self) -> None:
         async with self._condition:

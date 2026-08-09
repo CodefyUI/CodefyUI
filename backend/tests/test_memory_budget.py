@@ -8,6 +8,8 @@ shares its parent's storage, and a payload that is not tensors at all.
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn as nn
 
@@ -138,6 +140,39 @@ def test_nesting_past_the_depth_cap_stops_rather_than_recursing():
     # No RecursionError, and the answer is a lower bound rather than a lie
     # about the shape of the data.
     assert value_bytes(payload) == 0
+
+
+def test_the_depth_cap_says_so_instead_of_truncating_in_silence(caplog):
+    """#193: the two caps must be equally audible.
+
+    The items cap already logged "the total is a lower bound" when it fired.
+    The depth cap returned a smaller number and said nothing, which makes an
+    under-count -- the direction that costs memory, since a value the budget
+    should have evicted stays resident -- indistinguishable from a genuinely
+    small value. This is the log that tells the two apart.
+    """
+    payload: object = torch.zeros(1000)
+    for _ in range(MAX_WALK_DEPTH + 10):
+        payload = [payload]
+
+    with caplog.at_level(logging.DEBUG, logger="app.core.memory_budget"):
+        assert value_bytes(payload) == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("lower bound" in m for m in messages), (
+        f"the depth cap truncated in silence: {messages}")
+
+
+def test_a_measurement_that_fits_says_nothing(caplog):
+    """The counterpart: no cap fired, so there is no log line to chase.
+
+    Without this, the assertion above passes just as well against a
+    ``logger.debug`` fired unconditionally on every cache write.
+    """
+    payload = [[torch.zeros(1000)], (torch.zeros(1000),)]
+    with caplog.at_level(logging.DEBUG, logger="app.core.memory_budget"):
+        assert value_bytes(payload) == 8000
+    messages = [r.getMessage() for r in caplog.records]
+    assert not [m for m in messages if "lower bound" in m], messages
 
 
 def test_a_tensor_on_the_meta_device_falls_back_to_the_element_formula():

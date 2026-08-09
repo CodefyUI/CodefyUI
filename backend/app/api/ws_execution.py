@@ -346,13 +346,21 @@ class _ExecutionSocket:
             "record_outputs": bool(data.get("record_outputs", False)),
             "error_mode": data.get("error_mode", "fail_fast"),
             "max_retries": data.get("max_retries", 0),
-            # Reproducibility (#134). Passed through UNVALIDATED on purpose:
-            # ``normalize_options`` owns the seed's type and range, and
-            # coercing here would turn a client bug ("seed": "42") into a
-            # silently different run instead of the RunSubmitError the
-            # canvas already knows how to show.
+            # Reproducibility (#134). BOTH passed through UNVALIDATED, and
+            # that pairing is the point (#189): ``normalize_options`` owns
+            # the type of each, and coercing here would turn a client bug
+            # ("seed": "42", "deterministic": "no") into a silently
+            # different run instead of the RunSubmitError the canvas
+            # already knows how to show. ``deterministic`` used to be
+            # ``bool(...)``-ed, which made every truthy string a request
+            # for deterministic kernels — including the string "false".
+            #
+            # The educational flags below stay coerced, deliberately: they
+            # are pre-v2 fields whose lenient handling (and whose
+            # non-service defaults) is the compatibility contract with the
+            # canvas, not a reproducibility guarantee.
             "seed": data.get("seed"),
-            "deterministic": bool(data.get("deterministic", False)),
+            "deterministic": data.get("deterministic", False),
             # Educational feature flags. The defaults below are the pre-v2
             # ones verbatim, including weights_persistent defaulting to
             # TRUE here (the canvas keeps its weights) where the service's
