@@ -17,13 +17,24 @@ This file covers, in order:
   3. the engine wiring end to end, via a synthetic node -- proven BEFORE
      touching any production node, so a mistake in a real node's path
      resolution cannot masquerade as a mechanism failure;
-  4. the eight production reader nodes #144 restores to ``cacheable =
+  4. the six production reader nodes #144 restores to ``cacheable =
      True`` (CSVReader, FileReader, ImageReader, ImageBatchReader,
-     ModelLoader, CheckpointLoader, Dataset, ImageFolderDataset), each
-     both unit-tested at the fingerprint level and, for a representative
-     few, proven end to end: run, change the input on disk, run again,
-     assert the new value (unchanged-file case proves caching came back;
-     changed-file case proves it never went stale).
+     Dataset, ImageFolderDataset), each both unit-tested at the
+     fingerprint level and, for a representative few, proven end to end:
+     run, change the input on disk, run again, assert the new value
+     (unchanged-file case proves caching came back; changed-file case
+     proves it never went stale).
+
+#144 originally restored EIGHT. ``ModelLoader`` and ``CheckpointLoader``
+were withdrawn again by #254 and are covered below under "withdrawn": the
+fingerprint correctly describes what those two READ, and says nothing
+about what they WRITE -- both mutate the model/optimizer they are handed,
+which a cache hit skips entirely. See
+``test_cache_live_handle_nodes.py`` for the measurement. That withdrawal
+is narrower than it looks: the engine refuses to cache a node with any
+non-cacheable upstream, and both of them take their model from a
+weight-owning node, so the hit #144 gave them was already unreachable in
+every shipped graph. The MECHANISM in this file is untouched.
 
 #145 (``GraphInput(type=image)`` serving stale pixels on a canvas run) rides
 the exact same mechanism proven here -- section 3's synthetic-node test is
@@ -42,7 +53,6 @@ from pathlib import Path
 
 import pytest
 
-from app.config import settings
 from app.core.cache import ExecutionCache
 from app.core.cache_fingerprint import (
     directory_fingerprint,
@@ -369,8 +379,6 @@ RESTORED_READER_NODES = [
     FileReaderNode,
     ImageReaderNode,
     ImageBatchReaderNode,
-    ModelLoaderNode,
-    CheckpointLoaderNode,
     DatasetNode,
     ImageFolderDatasetNode,
 ]
@@ -380,6 +388,14 @@ RESTORED_READER_NODES = [
 # describe "the remote revision changed" or "the credentials changed", so
 # these stay outside the #144 restoration -- see the node-level comments.
 STILL_NETWORK_BOUND_NODES = [KaggleDatasetNode, HuggingFaceDatasetNode]
+
+# Restored by #144, withdrawn again by #254. Both READ a file (which the
+# fingerprint describes correctly) and then WRITE into an object they were
+# handed -- ``load_state_dict`` is in-place -- which the fingerprint says
+# nothing about and a cache hit skips outright. Kept here as a named group
+# rather than deleted so that "these two are deliberately not on the list
+# above" is an assertion rather than an absence somebody re-adds.
+WITHDRAWN_BY_254_NODES = [ModelLoaderNode, CheckpointLoaderNode]
 
 
 def _reader_node_name(node_cls: type[BaseNode]) -> str:
@@ -395,6 +411,31 @@ def test_restored_reader_node_is_cacheable_again(node_cls: type[BaseNode]) -> No
     assert registry.get(node_cls.NODE_NAME) is node_cls, (
         f"the registry serves a different {node_cls.NODE_NAME} class than "
         "the one asserted above, so the engine may not see the fix"
+    )
+
+
+@pytest.mark.parametrize("node_cls", WITHDRAWN_BY_254_NODES, ids=_reader_node_name)
+def test_mutating_reader_nodes_are_not_cacheable_despite_the_fingerprint(
+    node_cls: type[BaseNode],
+) -> None:
+    """#254: a correct fingerprint over the READ does not license the hit.
+
+    Both of these load a file INTO an object the graph handed them, and a
+    cache hit returns the recorded outputs without calling ``execute`` at
+    all -- so the load does not happen while the node reports success. The
+    fingerprint hook is gone with the flag: the engine only ever calls it
+    for a cacheable node, so leaving it would be dead code that reads like
+    a live guarantee.
+    """
+    assert node_cls.cacheable is False, (
+        f"{node_cls.NODE_NAME} writes into the model/optimizer it is handed, "
+        "and a cache hit skips that write. A content fingerprint over the "
+        "file it reads cannot make the hit safe (#254)."
+    )
+    assert "cache_fingerprint" not in vars(node_cls), (
+        f"{node_cls.NODE_NAME} is not cacheable, so the engine never calls "
+        "its cache_fingerprint; an override here is dead code that reads "
+        "like a live guarantee."
     )
 
 
@@ -420,38 +461,6 @@ def test_file_reader_fingerprint_changes_on_edit(tmp_path):
     assert fp1 != fp2
 
 
-def test_model_loader_fingerprint_changes_on_resave(tmp_path):
-    import torch
-
-    settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    p = settings.MODELS_DIR / "_fp_test_144.pt"
-    try:
-        torch.save({"a": 1}, p)
-        fp1 = ModelLoaderNode.cache_fingerprint({"path": "_fp_test_144.pt"})
-        torch.save({"a": 1, "b": 2}, p)
-        fp2 = ModelLoaderNode.cache_fingerprint({"path": "_fp_test_144.pt"})
-        assert fp1 is not None
-        assert fp1 != fp2
-    finally:
-        p.unlink(missing_ok=True)
-
-
-def test_checkpoint_loader_fingerprint_changes_on_resave(tmp_path):
-    import torch
-
-    settings.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    p = settings.MODELS_DIR / "_fp_ckpt_144.pt"
-    try:
-        torch.save({"epoch": 1}, p)
-        fp1 = CheckpointLoaderNode.cache_fingerprint({"path": "_fp_ckpt_144.pt"})
-        torch.save({"epoch": 2}, p)
-        fp2 = CheckpointLoaderNode.cache_fingerprint({"path": "_fp_ckpt_144.pt"})
-        assert fp1 is not None
-        assert fp1 != fp2
-    finally:
-        p.unlink(missing_ok=True)
-
-
 def test_image_batch_reader_fingerprint_changes_when_a_matched_file_changes(tmp_path):
     (tmp_path / "a.png").write_bytes(b"aaa")
     (tmp_path / "b.png").write_bytes(b"bb")
@@ -465,9 +474,11 @@ def test_image_batch_reader_fingerprint_changes_when_a_matched_file_changes(tmp_
     assert fp1 != fp2
 
 
-def test_dataset_fingerprint_changes_when_a_file_under_data_dir_changes(tmp_path):
-    (tmp_path / "raw").mkdir()
-    f = tmp_path / "raw" / "batch1"
+def test_dataset_fingerprint_changes_when_one_of_its_own_files_changes(tmp_path):
+    """Scoped to ``MNIST/`` since #259 -- but still sensitive inside it."""
+    raw = tmp_path / "MNIST" / "raw"
+    raw.mkdir(parents=True)
+    f = raw / "train-images-idx3-ubyte"
     f.write_bytes(b"x" * 10)
     params = {"name": "MNIST", "split": "train", "data_dir": str(tmp_path)}
 

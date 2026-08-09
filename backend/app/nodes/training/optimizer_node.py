@@ -84,6 +84,21 @@ class OptimizerNode(BaseNode):
     CATEGORY = "Training"
     DESCRIPTION = "Create an optimizer for model parameters"
 
+    # #254. An optimizer is a live handle: it holds references to the
+    # model's parameters and accumulates state (momentum buffers, Adam's
+    # running averages, step counts) that ``TrainingLoop`` mutates in place
+    # every batch. The cache key describes how it was BUILT -- the
+    # algorithm and the hyperparameters -- and stops describing it the
+    # moment training starts, so a hit hands the next run an optimizer
+    # carrying the previous run's momentum.
+    #
+    # No graph in the registry can reach that hit today, because every node
+    # that hands out a model is now non-cacheable and the engine propagates
+    # that downstream. This flag is what keeps it unreachable when a plugin
+    # adds a cacheable model source -- and constructing an optimizer costs
+    # microseconds, so there is nothing on the other side of the scale.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

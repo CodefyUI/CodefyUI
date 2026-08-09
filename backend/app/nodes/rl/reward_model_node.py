@@ -54,6 +54,13 @@ class RewardModelNode(BaseNode):
         "Accepts [B, H] (one vector per item) or [B, T, H] (uses last token)."
     )
 
+    # #253/#254: a weight-owning module handed out by a node with no
+    # required input is a cache root nothing can invalidate, so a hit gives
+    # the next run the head the previous run already trained -- the seeded
+    # construction makes the FIRST build reproducible, not the object
+    # immune to training. See ``DQNNode`` for the full reasoning.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

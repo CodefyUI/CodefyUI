@@ -10,9 +10,20 @@ graph-facing wrapper around it.
 import logging
 from typing import Any
 
+from ...core.advisories import emit_advisory
 from ...core.node_base import BaseNode, DataType, ParamDefinition, ParamType, PortDefinition
 
 logger = logging.getLogger(__name__)
+
+#: Prefix on the canvas-log line this node's advisory carries. The Log tab
+#: has no warning severity (``LogEntry.type`` is info/error/success), so the
+#: marker in the text is the only thing distinguishing an advisory from a
+#: ``Print`` node's output -- same device ``TrainingLoop`` uses (#252).
+CHECKPOINT_NOTE_PREFIX = "[CheckpointLoader] "
+
+#: ``kind`` on the ``WarningSignal`` the same note is sent as, which is what
+#: a client would branch on. Stable token; the sentence is the detail.
+SCHEDULER_STATE_DISCARDED_KIND = "checkpoint_scheduler_state_discarded"
 
 
 class CheckpointSaverNode(BaseNode):
@@ -96,27 +107,29 @@ class CheckpointLoaderNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Load a training checkpoint to resume training (restores model + optimizer + LR schedule + epoch)"
 
-    # #144: cacheable again -- cache_fingerprint() below folds the resolved
-    # checkpoint file's (size, mtime, and for small files a content hash)
-    # into the cache key. Saving a newer checkpoint to the same path
-    # between runs is the whole point of resumable training; the
-    # fingerprint changes with the resave, so the cache correctly misses
-    # instead of restoring a stale epoch.
-    cacheable = True
-
-    @classmethod
-    def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
-        from ...core.cache_fingerprint import path_fingerprint
-        from ...core.checkpoints import resolve_checkpoint_path
-
-        path = str(params.get("path", "") or "")
-        if not path:
-            return None
-        try:
-            resolved = resolve_checkpoint_path(path)
-        except Exception:
-            return None
-        return path_fingerprint(resolved)
+    # #254. This node's product is a MUTATION of the model, optimizer and
+    # scheduler it was handed -- ``load_state_dict`` writes in place -- and
+    # a cache hit returns the recorded outputs without calling execute() at
+    # all, so on a hit the restore simply does not happen while the node
+    # reports success. Measured, fed by a cacheable model source and run
+    # three times against one ExecutionCache: 1 / 0 / 0 real execute()
+    # calls, and the model kept whatever weights the previous run's
+    # training had left on it instead of the checkpoint's.
+    #
+    # This DOES undo the ``cacheable = True`` #144 gave it, and that is a
+    # smaller loss than it sounds -- measured, not assumed. The engine
+    # refuses to cache any node with a non-cacheable upstream, and both of
+    # this node's required inputs trace back to a weight-owning model node,
+    # every one of which is non-cacheable (``StatefulModuleMixin``, and
+    # ``SequentialModel`` joined them in #253). So on the shipped shape
+    # (SequentialModel -> Optimizer -> CheckpointLoader) it measured
+    # 1 / 1 / 1 execute() calls across three runs BEFORE this change: the
+    # hit #144 re-enabled was already unreachable there. The only graphs
+    # where it WAS reachable are the ones where it is wrong. #144's
+    # fingerprint mechanism itself is untouched and still does its job for
+    # the reader nodes it was built for -- Dataset, CSVReader, ImageReader
+    # and the rest.
+    cacheable = False
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -250,6 +263,7 @@ class CheckpointLoaderNode(BaseNode):
         # checkpoint written before this key existed still loads (and so does a
         # newer checkpoint read by a graph that has no scheduler wired in).
         scheduler_state = checkpoint.get("scheduler_state_dict")
+        scheduler_note: str | None = None
         if lr_scheduler is not None and scheduler_state is not None:
             saved_class = checkpoint.get("scheduler_class")
             live_class = type(lr_scheduler).__name__
@@ -272,9 +286,37 @@ class CheckpointLoaderNode(BaseNode):
                 "instead.", p,
             )
         elif scheduler_state is not None:
-            logger.info(
-                "Checkpoint %s holds scheduler state but no scheduler is wired into "
-                "this loader; it will be ignored.", p,
+            # #149. This was a logger.info line, which is to say invisible to
+            # anyone watching the canvas -- and it is the branch that loses
+            # information the checkpoint actually contains. With no scheduler
+            # wired in there is nothing to restore the state INTO, so the
+            # schedule is instead reconstructed downstream by replaying
+            # ``start_epoch`` steps from ``base_lrs``. For a closed-form
+            # schedule (StepLR, CosineAnnealingLR, ...) that replay is exact,
+            # which is why this never showed up as a wrong number. For a
+            # metric-driven one it cannot be: measured on a
+            # ``ReduceLROnPlateau`` resumed from an 8-epoch checkpoint whose
+            # last 5 epochs were a plateau, the restored-state path came back
+            # with best=0.8 / num_bad_epochs=5 and this path with best=inf /
+            # num_bad_epochs=0 -- the decay that was one epoch away postponed
+            # indefinitely, silently.
+            scheduler_note = emit_advisory(
+                f"The checkpoint {p.name} stores the position of a "
+                f"{checkpoint.get('scheduler_class') or 'learning-rate'} "
+                f"schedule, but nothing is wired into this loader's "
+                f"lr_scheduler input, so that stored position is being "
+                f"discarded. Wire LRScheduler.scheduler into "
+                f"CheckpointLoader.lr_scheduler (and into "
+                f"CheckpointSaver.lr_scheduler when saving) to resume the "
+                f"schedule exactly. Without it TrainingLoop rebuilds the "
+                f"schedule by replaying start_epoch steps, which matches the "
+                f"original run for StepLR/CosineAnnealingLR and cannot for "
+                f"ReduceLROnPlateau, whose plateau history is not recoverable "
+                f"from an epoch number.",
+                kind=SCHEDULER_STATE_DISCARDED_KIND,
+                prefix=CHECKPOINT_NOTE_PREFIX,
+                context=context,
+                logger=logger,
             )
 
         epoch = checkpoint.get("epoch", 0)
@@ -282,7 +324,7 @@ class CheckpointLoaderNode(BaseNode):
 
         logger.info("Loaded checkpoint from %s (epoch=%d)", p, epoch)
 
-        return {
+        result: dict[str, Any] = {
             "model": model,
             "optimizer": optimizer,
             "epoch": epoch,
@@ -294,3 +336,9 @@ class CheckpointLoaderNode(BaseNode):
             # from a fresh loss scale".
             "grad_scaler_state": checkpoint.get("scaler_state_dict"),
         }
+        if scheduler_note is not None:
+            # ``__log__`` is the only result key the canvas Log tab renders,
+            # and dunder keys are filtered out of recorded outputs and port
+            # summaries, so this adds a log line and nothing else.
+            result["__log__"] = scheduler_note
+        return result

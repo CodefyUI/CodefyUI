@@ -35,6 +35,23 @@ class EvaluateModelNode(BaseNode):
         "I2-4: checking validation accuracy after training an MNIST MLP)."
     )
 
+    # #254. The accuracy is not the whole of what this node produces: it
+    # also writes one ``eval_accuracy`` point through ``context.log_metric``,
+    # and a cache hit returns the recorded outputs without calling
+    # execute(), so that point is never written -- the accuracy chart is
+    # empty on a run the user was told succeeded. Same rule as the writer
+    # nodes in #143: a node whose product is a side effect must not be
+    # replayed from its return value.
+    #
+    # The measurement is also stale in its own right on a hit. Accuracy is a
+    # function of the model's WEIGHTS; the cache key describes how the model
+    # was built, not what it currently is. Measured with a training loop
+    # mutating the same module in the same graph, three runs against one
+    # ExecutionCache: 1 / 0 / 0 real execute() calls, one eval_accuracy
+    # point logged across all three, and the module's true output moving
+    # under it every run.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

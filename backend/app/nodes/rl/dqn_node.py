@@ -8,6 +8,22 @@ class DQNNode(BaseNode):
     CATEGORY = "RL"
     DESCRIPTION = "Create a Deep Q-Network (simple MLP) for reinforcement learning"
 
+    # #253/#254. This is ``SequentialModel``'s shape exactly: it builds an
+    # ``nn.Module`` that owns trainable weights, it has no required input,
+    # and it was cacheable -- a root nothing could ever invalidate. Anything
+    # downstream that trains the network mutates it in place, and a cache
+    # hit then hands the next run the module the previous run already
+    # trained. #253 settled the rule ("a node that owns trainable
+    # parameters is not cacheable") and fixed ``SequentialModel``; the three
+    # RL constructors were the same omission one package over, and they are
+    # also the only nodes in the registry that made #254's cache hits
+    # reachable at all. No ``StatefulModuleMixin`` here: unlike
+    # ``SequentialModel`` these rebuild a fresh network from their params
+    # every run (``RewardModel`` from a declared seed), and giving them a
+    # weight-persistence story is a product decision this change does not
+    # need to make.
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

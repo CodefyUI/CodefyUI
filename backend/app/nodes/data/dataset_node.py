@@ -32,12 +32,14 @@ class DatasetNode(BaseNode):
         "augmentation; without one it applies ToTensor and Normalize(0.5)."
     )
 
-    # #144: cacheable again -- cache_fingerprint() below folds an aggregate
-    # fingerprint (file count, total size, latest mtime) of `data_dir`'s
-    # contents into the cache key, so files changing under it busts the
-    # cache instead of the key surviving unchanged because only the
-    # directory name is hashed. This is the headline case #144 names: a
-    # CIFAR10/MNIST-rooted graph no longer re-parses the dataset every run.
+    # #144: cacheable -- cache_fingerprint() below folds a per-file
+    # identity fingerprint of THIS dataset's own files into the cache key,
+    # so a change on disk busts the cache instead of the key surviving
+    # unchanged because only the directory name is hashed. This is the
+    # headline case #144 names: a CIFAR10/MNIST-rooted graph no longer
+    # re-parses the dataset every run. Scoped to the dataset's own
+    # directory rather than all of `data_dir` since #259 -- see
+    # `_owned_paths` for what that covers and why.
     cacheable = True
 
     @staticmethod
@@ -53,29 +55,104 @@ class DatasetNode(BaseNode):
         return data_dir
 
     @classmethod
+    def _owned_paths(cls, name: str, split: str, root: str) -> list[Any] | None:
+        """Where *name*'s files live under *root*, or None if unknown (#259).
+
+        Read off torchvision's OWN class attributes rather than a table of
+        directory names copied into this file, so a rename upstream is a
+        changed answer here rather than a fingerprint that quietly stops
+        covering anything:
+
+        * ``base_folder`` is a class attribute on ``CIFAR10``
+          (``cifar-10-batches-py``), ``CIFAR100`` and ``STL10``;
+        * the ``MNIST`` family (``MNIST``, ``FashionMNIST``) has no
+          ``base_folder`` -- both ``raw_folder`` and ``processed_folder``
+          are ``root/<class name>/...``, so the class name IS the
+          directory;
+        * ``SVHN`` puts one flat ``.mat`` per split directly in ``root``,
+          named by ``split_list[split][1]``.
+
+        Returns a list of paths (directories, files, or both). ``None``
+        means "no idea", and the caller falls back to walking the whole
+        tree -- over-invalidation costs a re-read, never a stale answer, so
+        an unrecognised name degrades to exactly the old behaviour.
+
+        Scoping is per DATASET, not per split, for the families whose two
+        splits share one directory: torchvision's MNIST loader requires all
+        four idx files to be present before it will read either split, so
+        splitting finer would fingerprint less than the loader actually
+        reads. ``SVHN`` is per split because it downloads only the split
+        asked for. #259's point is that an UNRELATED tree stored alongside
+        must stop busting this key, and either granularity achieves that.
+        """
+        from pathlib import Path
+
+        from torchvision import datasets
+
+        dataset_cls = getattr(datasets, name, None)
+        if dataset_cls is None:
+            return None
+        root_path = Path(root)
+
+        base_folder = getattr(dataset_cls, "base_folder", None)
+        if isinstance(base_folder, str) and base_folder:
+            return [root_path / base_folder]
+
+        if isinstance(dataset_cls, type) and issubclass(dataset_cls, datasets.MNIST):
+            return [root_path / dataset_cls.__name__]
+
+        split_list = getattr(dataset_cls, "split_list", None)
+        if isinstance(split_list, dict):
+            entry = split_list.get("train" if split == "train" else "test")
+            if entry:
+                return [root_path / str(entry[1])]
+
+        return None
+
+    @classmethod
     def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
-        # Known tradeoff, not a bug: in project mode every relative
-        # `data_dir` collapses to the same `PROJECT_DIR/assets/data` (see
-        # `_resolve_data_dir` above), so this walks that WHOLE shared tree
-        # rather than just the files this particular dataset/split owns --
-        # writing to an unrelated dataset stored alongside this one busts
-        # this node's cache too, and a large shared tree pays a full
-        # recursive stat on every run regardless of whether THIS dataset
-        # changed. Safe (over-invalidation costs a re-read, never serves a
-        # stale one) but works against #144's own performance goal in
-        # project mode specifically. Scoping the walk to just this
-        # dataset's own files would need replicating each torchvision
-        # dataset class's own on-disk layout (MNIST's `MNIST/raw/`,
-        # CIFAR10's `cifar-10-batches-py/`, ...), which is a real follow-up
-        # but out of scope for the fingerprint mechanism itself.
-        from ...core.cache_fingerprint import directory_fingerprint
+        # #259. This used to walk the whole of `data_dir` recursively, which
+        # is safe (over-invalidation costs a re-read, never serves a stale
+        # answer) and wrong in two directions: in project mode every
+        # relative `data_dir` collapses to the same
+        # `PROJECT_DIR/assets/data` (see `_resolve_data_dir`), so writing an
+        # unrelated dataset -- or a model file, which is where this actually
+        # bit -- busts this node's key, and a large shared tree pays a full
+        # recursive stat every run whether or not THIS dataset changed. That
+        # is squarely against #144's own performance goal.
+        #
+        # It also had a second, undocumented job: `ModelSaver` may only
+        # write under `MODELS_DIR`, which in the default layout sits INSIDE
+        # this tree, so the saver's write dirtied the dataset's key on every
+        # run and the resulting miss propagated down to `TrainingLoop`. That
+        # accident was the only thing keeping the shipped saver graphs off
+        # #253, which is why #259 was blocked on it. #253 is fixed at the
+        # source now (`TrainingLoop` and `SequentialModel` are non-cacheable),
+        # so the accident is no longer load-bearing -- pinned by
+        # `test_cache_dataset_fingerprint_scope.py`, which runs the shipped
+        # graphs three times against one cache and counts real execute()
+        # calls rather than trusting status.
+        from ...core.cache_fingerprint import directory_fingerprint, paths_fingerprint
 
         data_dir = str(params.get("data_dir", "./data") or "./data")
+        name = str(params.get("name", "MNIST") or "MNIST")
+        split = str(params.get("split", "train") or "train")
         try:
             resolved = cls._resolve_data_dir(data_dir)
+            owned = cls._owned_paths(name, split, resolved)
         except Exception:
+            # Includes a torchvision import failure. A fingerprint answers
+            # "did the input change", never "is the input valid"; the
+            # node's own execute() raises the real error.
             return None
-        return directory_fingerprint(resolved)
+        if owned is None:
+            return directory_fingerprint(resolved)
+        if len(owned) == 1 and owned[0].is_dir():
+            return directory_fingerprint(owned[0])
+        # A file list, or a directory that does not exist yet: both are
+        # fingerprinted by identity, and a path that starts or stops
+        # existing between runs still changes the answer.
+        return paths_fingerprint(owned)
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:

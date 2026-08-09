@@ -11,6 +11,25 @@ class InferenceNode(BaseNode):
     CATEGORY = "IO"
     DESCRIPTION = "Run inference (forward pass) on a trained model. Sets model to eval mode and disables gradients."
 
+    # #254. Two reasons, either one sufficient. (1) ``model.eval()`` is a
+    # permanent flip on a module this node was handed, and ``to_device``
+    # moves it; on a cache hit neither happens while the node reports
+    # success. (2) ``output`` is a function of the module's WEIGHTS, which
+    # the cache key does not describe -- it keys on how the module was
+    # BUILT. Measured with a training loop mutating the same module in the
+    # same graph, three runs against one ExecutionCache: 1 / 0 / 0 real
+    # execute() calls while the module's true output moved
+    # 0.0937 -> -0.0309 -> 0.2178. Runs 2 and 3 served run 1's answer for a
+    # network that no longer existed.
+    #
+    # It also hands the module onward on its ``model`` output, which is the
+    # line drawn in ``test_cache_live_handle_nodes.py``: a node that passes
+    # a live MODEL or OPTIMIZER on cannot be replayed. (``DecisionBoundary``
+    # also reads a model but does not hand one out; it is protected by the
+    # engine propagating its upstream's non-cacheability, and rendering a
+    # plot is the kind of thing the cache exists for.)
+    cacheable = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
