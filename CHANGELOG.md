@@ -161,6 +161,36 @@ received — each links to the release it was published as.
   raise substitutes itself for the body's exception. The hold was always
   given back correctly; only the reported error was lost.
 
+- **`ModelLoader` with `load_mode="full_model"` could not load anything, by
+  construction** ([#222]). The branch called `torch.load(...,
+  weights_only=True)` on a file that is by definition a pickled `nn.Module`,
+  and restricting the unpickler to tensors and a small allowlist is the
+  entire point of that flag — so the mode failed for every input it was
+  written to accept, and no test covered it, which is why the suite stayed
+  green. It is a dropdown entry that has never worked, not a broken main
+  path: `state_dict` is the default and no shipped example selects
+  `full_model`.
+
+  Fixed without weakening anything. `weights_only=True` stays on and is
+  widened, for that one call, to the `nn.Module` subclasses `torch.nn`
+  itself defines, via `torch.serialization.safe_globals`. A model made of
+  stock torch layers now round-trips through `ModelSaver(save_mode=
+  "full_model")` and back; a pickle naming `os.system` is still refused,
+  because `os.system` is not a torch layer. The allowlist is *derived* — a
+  walk over the loaded subclasses of `nn.Module`, filtered to the ones torch
+  defines — so there is no list to maintain and it tracks the installed
+  torch rather than the torch that was current when this was written.
+
+  The other half of [#222] was that the failure was unreadable: a
+  legitimate-looking option produced a raw unpickler traceback with no hint
+  that a safe default was involved. A file the allowlist does not cover now
+  names the class it stopped on, says that a full-model file is a pickle and
+  loading one runs it, and gives the two ways out — re-save as a
+  `state_dict`, or convert the file once outside CodefyUI. Anything built
+  from a class that is not torch's (a custom node's, a plugin's, an
+  attacker's) is refused rather than executed, which is the same line
+  `plugin_validator` already draws for third-party code.
+
 ### Changed
 
 - **`value_bytes` now says when it stops measuring** ([#193]). The
@@ -188,6 +218,30 @@ received — each links to the release it was published as.
   process-global state and their interaction had no test. Two now pin it: OOM
   recovery runs *inside* the determinism scope, and an OOM unwinds that scope
   rather than stranding it.
+
+### Internal
+
+- **A codegen test asserted randomness by sampling for it** ([#277]).
+  `test_no_seed_leaves_an_exported_run_on_torchs_own_entropy` ran the same
+  exported graph twice with `--no-seed` and required the two stdouts to
+  differ. That is probabilistic by construction, and on that graph the draw
+  was eight independent coin flips — `RandomHorizontalFlip(p=0.5)` over a
+  batch of eight — so a collision had probability 1/256 per run. It duly
+  collided on the 2.2.0 release PR, whose entire diff was three version
+  strings, and cost real time to establish that a version bump had not broken
+  the code generator. `--no-seed` itself was never broken.
+
+  The test now asserts the contract instead of sampling for it, against a
+  purpose-built two-node probe graph: the first node installs a sentinel
+  seed, the second reports `torch.initial_seed()`. Because the export
+  re-seeds before *every* node, the sentinel is overwritten exactly when
+  seeding is active and survives untouched exactly when it is not — so
+  `--no-seed` must report the sentinel and the baked seed must report
+  `derive_seed(4321, "probe")`. Both are equalities against values known
+  before either run, so the test passes on every run or fails on every run.
+  The seeded sibling above it is untouched: it compares two fixed outputs
+  from two different explicit seeds, which is the shape that was already
+  safe.
 
 ## [2.2.0] — 2026-08-10
 
@@ -675,6 +729,8 @@ Release candidates before 1.0.0 are on the
 [#190]: https://github.com/CodefyUI/CodefyUI/issues/190
 [#193]: https://github.com/CodefyUI/CodefyUI/issues/193
 [#224]: https://github.com/CodefyUI/CodefyUI/issues/224
+[#222]: https://github.com/CodefyUI/CodefyUI/issues/222
+[#277]: https://github.com/CodefyUI/CodefyUI/issues/277
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
