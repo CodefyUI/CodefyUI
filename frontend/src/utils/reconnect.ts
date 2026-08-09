@@ -207,7 +207,7 @@ export function redirectMouseDownToReconnectAnchor(
   // Scope the lookup to the handle's own canvas. Since #125 only the active
   // tab's canvas is mounted, so the several-hidden-canvases case this was
   // originally written for no longer arises. More than one ReactFlow instance
-  // can still be in the document at once (the SubgraphEditorModal mounts its own
+  // can still be in the document at once (the LayersEditorModal mounts its own
   // provider over the main canvas), and edge ids are only unique PER GRAPH
   // (graphs loaded from example files carry fixed ids). A document-wide query
   // could therefore match an identically-named edge in the other instance:

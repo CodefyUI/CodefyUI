@@ -67,7 +67,7 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
           ))}
           {paramEntries.length > 3 && (
             <div style={{ fontSize: '0.5625rem', color: '#555', textAlign: 'center' }}>
-              {t('subgraph.layerNode.moreParams', { count: paramEntries.length - 3 })}
+              {t('layersEditor.layerNode.moreParams', { count: paramEntries.length - 3 })}
             </div>
           )}
         </div>

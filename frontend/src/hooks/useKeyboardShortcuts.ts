@@ -136,7 +136,7 @@ export function useKeyboardShortcuts() {
         if (
           activeTab.nodeDetailNodeId ||
           activeTab.presetModalNodeId ||
-          activeTab.subgraphModalNodeId
+          activeTab.layersModalNodeId
         ) {
           return;
         }

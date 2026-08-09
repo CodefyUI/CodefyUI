@@ -141,7 +141,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   // Instant, never animated: animated viewport transitions run on
   // requestAnimationFrame, which Chrome throttles to zero in occluded or
   // background windows — the animation then never applies at all. The
-  // subgraph editor's post-layout fit and the Controls button are instant for
+  // layers editor's post-layout fit and the Controls button are instant for
   // the same reason.
   const fitToBounds = useCallback(
     (bounds: { x: number; y: number; width: number; height: number }) => {

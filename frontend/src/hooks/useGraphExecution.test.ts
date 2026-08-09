@@ -68,7 +68,7 @@ function makeTab(id: string, overrides: Partial<any> = {}): any {
     edges: [],
     selectedNodeId: null,
     presetModalNodeId: null,
-    subgraphModalNodeId: null,
+    layersModalNodeId: null,
     undoStack: [],
     redoStack: [],
     dirtyNodeIds: new Set<string>(),

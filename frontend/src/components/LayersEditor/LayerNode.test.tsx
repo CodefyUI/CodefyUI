@@ -66,7 +66,7 @@ describe('LayerNode', () => {
       }),
     );
     // 5 params -> 2 more
-    const expected = useI18n.getState().t('subgraph.layerNode.moreParams', { count: 2 });
+    const expected = useI18n.getState().t('layersEditor.layerNode.moreParams', { count: 2 });
     expect(screen.getByText(expected)).toBeTruthy();
     // Only first 3 keys are rendered as rows.
     expect(screen.getByText('a')).toBeTruthy();

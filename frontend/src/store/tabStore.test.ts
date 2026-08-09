@@ -414,7 +414,7 @@ describe('addPresetNode', () => {
   });
 });
 
-// ── updateNodeParams / updatePresetInternalParam / updateSubgraphLayers ───────
+// ── updateNodeParams / updatePresetInternalParam / updateNodeLayers ───────
 
 describe('param updates', () => {
   beforeEach(resetToSingleTab);
@@ -669,16 +669,16 @@ describe('param updates', () => {
     expect(activeTab().nodes[0].data.internalParams).toEqual({ innerX: { k: 7 } });
   });
 
-  it('updateSubgraphLayers writes the layers param onto the matching node', () => {
+  it('updateNodeLayers writes the layers param onto the matching node', () => {
     store().addNode(makeDef(), { x: 0, y: 0 });
     const id = activeTab().nodes[0].id;
-    store().updateSubgraphLayers(id, '[{"a":1}]');
+    store().updateNodeLayers(id, '[{"a":1}]');
     expect(activeTab().nodes[0].data.params.layers).toBe('[{"a":1}]');
   });
 
-  it('updateSubgraphLayers ignores non-matching node ids', () => {
+  it('updateNodeLayers ignores non-matching node ids', () => {
     store().addNode(makeDef(), { x: 0, y: 0 });
-    store().updateSubgraphLayers('nope', '[]');
+    store().updateNodeLayers('nope', '[]');
     expect(activeTab().nodes[0].data.params.layers).toBeUndefined();
   });
 });
@@ -763,10 +763,10 @@ describe('selection and modals', () => {
   });
 
   it('open/close subgraph modal', () => {
-    store().openSubgraphModal('s1');
-    expect(activeTab().subgraphModalNodeId).toBe('s1');
-    store().closeSubgraphModal();
-    expect(activeTab().subgraphModalNodeId).toBeNull();
+    store().openLayersModal('s1');
+    expect(activeTab().layersModalNodeId).toBe('s1');
+    store().closeLayersModal();
+    expect(activeTab().layersModalNodeId).toBeNull();
   });
 });
 
@@ -813,14 +813,14 @@ describe('clear', () => {
     store().addNode(makeDef(), { x: 0, y: 0 });
     store().setSelectedNodeId('x');
     store().openPresetModal('p');
-    store().openSubgraphModal('s');
+    store().openLayersModal('s');
     store().clear();
     const tab = activeTab();
     expect(tab.nodes).toHaveLength(0);
     expect(tab.edges).toHaveLength(0);
     expect(tab.selectedNodeId).toBeNull();
     expect(tab.presetModalNodeId).toBeNull();
-    expect(tab.subgraphModalNodeId).toBeNull();
+    expect(tab.layersModalNodeId).toBeNull();
     // addNode pushed one snapshot, clear() pushed a second.
     expect(tab.undoStack.length).toBe(2);
   });

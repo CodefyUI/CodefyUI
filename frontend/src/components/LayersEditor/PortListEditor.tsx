@@ -1,4 +1,4 @@
-// frontend/src/components/SubgraphEditor/PortListEditor.tsx
+// frontend/src/components/LayersEditor/PortListEditor.tsx
 import { useI18n } from '../../i18n';
 import { generateId } from '../../utils';
 import type { Node, Edge } from '@xyflow/react';
@@ -55,16 +55,16 @@ export function PortListEditor({ node, edges, onUpdatePorts, onRemoveEdges }: Pr
           borderBottom: '1px solid #333',
         }}
       >
-        {node.data.layerType} — {t('subgraph.port.list')}
+        {node.data.layerType} — {t('layersEditor.port.list')}
       </div>
       {ports.map((p) => (
         <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
           <input
             type="text"
             value={p.name}
-            placeholder={t('subgraph.port.namePlaceholder')}
+            placeholder={t('layersEditor.port.namePlaceholder')}
             onChange={(e) => setName(p.id, e.target.value)}
-            title={hasDuplicate(p.name) ? t('subgraph.port.duplicate') : undefined}
+            title={hasDuplicate(p.name) ? t('layersEditor.port.duplicate') : undefined}
             style={{
               flex: 1,
               padding: '5px 8px',
@@ -90,7 +90,7 @@ export function PortListEditor({ node, edges, onUpdatePorts, onRemoveEdges }: Pr
               opacity: ports.length === 1 ? 0.4 : 1,
             }}
           >
-            {t('subgraph.port.remove')}
+            {t('layersEditor.port.remove')}
           </button>
         </div>
       ))}
@@ -108,7 +108,7 @@ export function PortListEditor({ node, edges, onUpdatePorts, onRemoveEdges }: Pr
           width: '100%',
         }}
       >
-        {t('subgraph.port.add')}
+        {t('layersEditor.port.add')}
       </button>
     </div>
   );

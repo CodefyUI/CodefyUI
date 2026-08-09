@@ -8,7 +8,7 @@ import {
   flowToGraphJson,
   graphToFlow,
   emptyGraph,
-  autoLayoutSubgraph,
+  autoLayoutLayers,
   validateGraph,
   type GraphSpec,
   type LayerNodeData,
@@ -781,12 +781,12 @@ describe('emptyGraph', () => {
   });
 });
 
-// ── autoLayoutSubgraph ─────────────────────────────────────────────────────
+// ── autoLayoutLayers ─────────────────────────────────────────────────────
 
-describe('autoLayoutSubgraph', () => {
+describe('autoLayoutLayers', () => {
   it('returns the same array reference for an empty node list', () => {
     const nodes: Node<LayerNodeData>[] = [];
-    expect(autoLayoutSubgraph(nodes, [])).toBe(nodes);
+    expect(autoLayoutLayers(nodes, [])).toBe(nodes);
   });
 
   it('positions nodes using measured/explicit/default dimensions', () => {
@@ -799,7 +799,7 @@ describe('autoLayoutSubgraph', () => {
       flowNode('c', {}),
     ];
     const edges = [edge('e1', 'a', 'b'), edge('e2', 'b', 'c')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(3);
     // Layout assigns finite, non-identical positions down the chain.
     const ys = laid.map((n) => n.position.y);
@@ -810,7 +810,7 @@ describe('autoLayoutSubgraph', () => {
   it('ignores edges that reference ids not in the node set', () => {
     const nodes = [flowNode('a', {}), flowNode('b', {})];
     const edges = [edge('e1', 'a', 'b'), edge('ghost', 'a', 'zzz')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(2);
   });
 
@@ -821,7 +821,7 @@ describe('autoLayoutSubgraph', () => {
       flowNode(id, {}, { width: 160, height: 2000 });
     const nodes = [tall('t0'), tall('t1'), tall('t2'), tall('t3')];
     const edges = [edge('e0', 't0', 't1'), edge('e1', 't1', 't2'), edge('e2', 't2', 't3')];
-    const laid = autoLayoutSubgraph(nodes, edges);
+    const laid = autoLayoutLayers(nodes, edges);
     expect(laid).toHaveLength(4);
     // No horizontal wrapping: single column.
     const xs = new Set(laid.map((n) => n.position.x));
@@ -835,7 +835,7 @@ describe('autoLayoutSubgraph', () => {
       const edges = Array.from({ length: count - 1 }, (_, i) =>
         edge(`e${i}`, `n${i}`, `n${i + 1}`),
       );
-      return autoLayoutSubgraph(nodes, edges);
+      return autoLayoutLayers(nodes, edges);
     };
     expect(mk(30)).toHaveLength(30); // >25 bucket
     expect(mk(60)).toHaveLength(60); // >50 bucket

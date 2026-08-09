@@ -1,4 +1,4 @@
-// frontend/src/components/SubgraphEditor/InputNode.tsx
+// frontend/src/components/LayersEditor/InputNode.tsx
 import { memo } from 'react';
 import { Handle, Node, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';

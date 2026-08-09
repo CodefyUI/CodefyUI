@@ -130,7 +130,7 @@ function resetStores() {
         nodes: [],
         edges: [],
         outputSummaries: {},
-        subgraphModalNodeId: null,
+        layersModalNodeId: null,
       },
     ],
   }));
@@ -414,20 +414,20 @@ describe('BaseNode', () => {
 
   // ── SequentialModel branch ────────────────────────────────────────────────
 
-  it('renders SequentialModel layer count + hint and opens subgraph on dbl-click', () => {
+  it('renders SequentialModel layer count + hint and opens the layers editor on dbl-click', () => {
     const data = baseData({
       type: 'SequentialModel',
       params: { layers: JSON.stringify([{}, {}, {}]) },
     });
     const { container } = renderBody(data);
     expect(screen.getByText('3')).toBeTruthy();
-    expect(screen.getByText(useI18n.getState().t('subgraph.hint'))).toBeTruthy();
+    expect(screen.getByText(useI18n.getState().t('layersEditor.hint'))).toBeTruthy();
     // cursor: pointer for sequential models
     const node = container.querySelector('[class*="node"]') as HTMLElement;
     expect(node.style.cursor).toBe('pointer');
-    // Double-click opens the subgraph modal
+    // Double-click opens the layers editor
     fireEvent.click(node, { detail: 2 });
-    expect(useTabStore.getState().getActiveTab().subgraphModalNodeId).toBe('n1');
+    expect(useTabStore.getState().getActiveTab().layersModalNodeId).toBe('n1');
   });
 
   it('SequentialModel with invalid layers JSON falls back to count 0', () => {
@@ -449,13 +449,13 @@ describe('BaseNode', () => {
     const data = baseData({ type: 'SequentialModel', params: { layers: '[]' } });
     const { container } = renderBody(data);
     fireEvent.click(container.querySelector('[class*="node"]') as HTMLElement, { detail: 1 });
-    expect(useTabStore.getState().getActiveTab().subgraphModalNodeId).toBeNull();
+    expect(useTabStore.getState().getActiveTab().layersModalNodeId).toBeNull();
   });
 
   it('double-click on a non-sequential node does not open the modal', () => {
     const { container } = renderBody(baseData());
     fireEvent.click(container.querySelector('[class*="node"]') as HTMLElement, { detail: 2 });
-    expect(useTabStore.getState().getActiveTab().subgraphModalNodeId).toBeNull();
+    expect(useTabStore.getState().getActiveTab().layersModalNodeId).toBeNull();
     // Non-sequential nodes have no explicit cursor.
     const node = container.querySelector('[class*="node"]') as HTMLElement;
     expect(node.style.cursor).toBe('');

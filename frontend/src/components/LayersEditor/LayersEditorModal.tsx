@@ -36,7 +36,7 @@ import {
   emptyGraph,
   validateGraph,
   isMergeType,
-  autoLayoutSubgraph,
+  autoLayoutLayers,
   detectImportFormat,
   convertWorkflowToGraphSpec,
   type LayerNodeData as GraphLayerNodeData,
@@ -161,7 +161,7 @@ function LayerPaletteItem({ def }: { def: LayerDef }) {
   const [hovered, setHovered] = useState(false);
 
   const handleDragStart = (event: React.DragEvent) => {
-    event.dataTransfer.setData('application/subgraph-layer', def.type);
+    event.dataTransfer.setData('application/codefyui-layer', def.type);
     event.dataTransfer.effectAllowed = 'move';
   };
 
@@ -257,13 +257,13 @@ function ParamEditor({
             cursor: 'pointer',
           }}
         >
-          {t('subgraph.deleteLayer')}
+          {t('layersEditor.deleteLayer')}
         </button>
       </div>
 
       {(!def || def.params.length === 0) && (
         <div style={{ fontSize: '0.75rem', color: '#666', textAlign: 'center', padding: '8px 0' }}>
-          {t('subgraph.noParams')}
+          {t('layersEditor.noParams')}
         </div>
       )}
 
@@ -364,7 +364,7 @@ function SequentialModelSelector({
           fontSize: '0.9375rem',
           color: '#eee',
         }}>
-          {t('subgraph.import.selectModel')}
+          {t('layersEditor.import.selectModel')}
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
           {models.map((m, i) => (
@@ -409,7 +409,7 @@ function SequentialModelSelector({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.cancel')}
+            {t('layersEditor.cancel')}
           </button>
           <button type="button"
             onClick={() => onSelect(models[selectedIdx].layersJson)}
@@ -424,7 +424,7 @@ function SequentialModelSelector({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.import')}
+            {t('layersEditor.import')}
           </button>
         </div>
       </div>
@@ -444,7 +444,7 @@ const nodeTypes: NodeTypes = {
   outputNode: OutputNode,
 };
 
-function SubgraphFlowInner({
+function LayersFlowInner({
   initialLayersJson,
   onApply,
   onCancel,
@@ -582,7 +582,7 @@ function SubgraphFlowInner({
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
-      const layerType = event.dataTransfer.getData('application/subgraph-layer');
+      const layerType = event.dataTransfer.getData('application/codefyui-layer');
       if (!layerType) return;
 
       const position = screenToFlowPosition({
@@ -646,7 +646,7 @@ function SubgraphFlowInner({
   };
 
   const handleAutoLayout = useCallback(() => {
-    setNodes((prev) => autoLayoutSubgraph(prev, edges));
+    setNodes((prev) => autoLayoutLayers(prev, edges));
     setTimeout(() => fitView({ padding: 0.3 }), 50);
   }, [edges, fitView]);
 
@@ -672,7 +672,7 @@ function SubgraphFlowInner({
       try {
         loadGraphSpecIntoEditor(layersJson);
       } catch (err) {
-        useToastStore.getState().addToast(t('subgraph.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
       }
     },
     [loadGraphSpecIntoEditor, t],
@@ -701,7 +701,7 @@ function SubgraphFlowInner({
             /* v8 ignore start */
             if (newNodes.length === 0) throw new Error('No convertible layers found');
             /* v8 ignore stop */
-            setNodes(autoLayoutSubgraph(newNodes, newEdges));
+            setNodes(autoLayoutLayers(newNodes, newEdges));
             setEdges(newEdges);
             setSelectedNodeId(null);
             setTimeout(() => fitView({ padding: 0.3 }), 50);
@@ -718,10 +718,10 @@ function SubgraphFlowInner({
 
           case 'unknown':
           default:
-            throw new Error(t('subgraph.import.noContent'));
+            throw new Error(t('layersEditor.import.noContent'));
         }
       } catch (err) {
-        useToastStore.getState().addToast(t('subgraph.import.fail', { error: String(err) }), 'error');
+        useToastStore.getState().addToast(t('layersEditor.import.fail', { error: String(err) }), 'error');
       }
     };
     reader.readAsText(file);
@@ -744,7 +744,7 @@ function SubgraphFlowInner({
 
   // i18n category labels
   const getCategoryLabel = (category: string) => {
-    if (category === 'Merge') return t('subgraph.category.merge');
+    if (category === 'Merge') return t('layersEditor.category.merge');
     return category;
   };
 
@@ -795,7 +795,7 @@ function SubgraphFlowInner({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: '1.0625rem', fontWeight: 700, color: '#eee' }}>
-              {t('subgraph.title')}
+              {t('layersEditor.title')}
             </span>
             <span
               style={{
@@ -807,13 +807,13 @@ function SubgraphFlowInner({
                 fontWeight: 600,
               }}
             >
-              {t('subgraph.layerCount', { count: nodes.length })}
+              {t('layersEditor.layerCount', { count: nodes.length })}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button type="button"
               onClick={() => setSnapEnabled((v) => !v)}
-              title={t('subgraph.snapTitle')}
+              title={t('layersEditor.snapTitle')}
               style={{
                 padding: '5px 12px',
                 background: snapEnabled ? 'rgba(244,67,54,0.18)' : '#2a2a2a',
@@ -825,11 +825,11 @@ function SubgraphFlowInner({
                 fontWeight: 600,
               }}
             >
-              {snapEnabled ? t('subgraph.snapOn') : t('subgraph.snapOff')}
+              {snapEnabled ? t('layersEditor.snapOn') : t('layersEditor.snapOff')}
             </button>
             <button type="button"
               onClick={handleAutoLayout}
-              title={t('subgraph.autoLayoutTitle')}
+              title={t('layersEditor.autoLayoutTitle')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -840,11 +840,11 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.autoLayout')}
+              {t('layersEditor.autoLayout')}
             </button>
             <button type="button"
               onClick={handleImport}
-              title={t('subgraph.import.title')}
+              title={t('layersEditor.import.title')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -855,11 +855,11 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.import')}
+              {t('layersEditor.import')}
             </button>
             <button type="button"
               onClick={handleExport}
-              title={t('subgraph.export.title')}
+              title={t('layersEditor.export.title')}
               style={{
                 padding: '5px 12px',
                 background: '#2a2a2a',
@@ -870,7 +870,7 @@ function SubgraphFlowInner({
                 cursor: 'pointer',
               }}
             >
-              {t('subgraph.export')}
+              {t('layersEditor.export')}
             </button>
             <button type="button"
               onClick={onCancel}
@@ -913,11 +913,11 @@ function SubgraphFlowInner({
                   marginBottom: 6,
                 }}
               >
-                {t('subgraph.palette')}
+                {t('layersEditor.palette')}
               </div>
               <input
                 type="text"
-                placeholder={t('subgraph.searchLayers')}
+                placeholder={t('layersEditor.searchLayers')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 style={{
@@ -978,7 +978,7 @@ function SubgraphFlowInner({
                     padding: '20px',
                   }}
                 >
-                  {t('subgraph.empty')}
+                  {t('layersEditor.empty')}
                 </div>
               </div>
             )}
@@ -1047,7 +1047,7 @@ function SubgraphFlowInner({
                 flexShrink: 0,
               }}
             >
-              {t('subgraph.params')}
+              {t('layersEditor.params')}
             </div>
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {selectedNode ? (
@@ -1074,7 +1074,7 @@ function SubgraphFlowInner({
                     fontSize: '0.75rem',
                   }}
                 >
-                  {t('subgraph.noParams')}
+                  {t('layersEditor.noParams')}
                 </div>
               )}
             </div>
@@ -1104,7 +1104,7 @@ function SubgraphFlowInner({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.cancel')}
+            {t('layersEditor.cancel')}
           </button>
           <button type="button"
             onClick={handleApply}
@@ -1119,7 +1119,7 @@ function SubgraphFlowInner({
               cursor: 'pointer',
             }}
           >
-            {t('subgraph.apply')}
+            {t('layersEditor.apply')}
           </button>
         </div>
 
@@ -1147,12 +1147,12 @@ function SubgraphFlowInner({
 
 // ── Main Export ──
 
-export function SubgraphEditorModal() {
+export function LayersEditorModal() {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
-  const closeSubgraphModal = useTabStore((s) => s.closeSubgraphModal);
-  const updateSubgraphLayers = useTabStore((s) => s.updateSubgraphLayers);
+  const closeLayersModal = useTabStore((s) => s.closeLayersModal);
+  const updateNodeLayers = useTabStore((s) => s.updateNodeLayers);
 
-  const nodeId = activeTab.subgraphModalNodeId;
+  const nodeId = activeTab.layersModalNodeId;
   const node = activeTab.nodes.find((n) => n.id === nodeId);
 
   if (!nodeId || !node) return null;
@@ -1160,16 +1160,16 @@ export function SubgraphEditorModal() {
   const layersJson = (node.data.params?.layers as string) ?? '{}';
 
   const handleApply = (newLayersJson: string) => {
-    updateSubgraphLayers(nodeId, newLayersJson);
-    closeSubgraphModal();
+    updateNodeLayers(nodeId, newLayersJson);
+    closeLayersModal();
   };
 
   return (
     <ReactFlowProvider>
-      <SubgraphFlowInner
+      <LayersFlowInner
         initialLayersJson={layersJson}
         onApply={handleApply}
-        onCancel={closeSubgraphModal}
+        onCancel={closeLayersModal}
       />
     </ReactFlowProvider>
   );
