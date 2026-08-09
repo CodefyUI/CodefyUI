@@ -104,6 +104,36 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Zero freed pages instead of returning them to the freelist with
+            # their content intact (#251). What this actually protects is
+            # DELETE, not UPDATE, and the distinction is worth stating because
+            # it is the opposite of what it looks like:
+            #
+            #   insert -> checkpoint -> UPDATE -> checkpoint  ... measured: no
+            #     residue in the main file either way. The row is rewritten in
+            #     place, so the page carries the new content once checkpointed.
+            #   insert -> checkpoint -> DELETE -> checkpoint  ... measured:
+            #     residue WITHOUT this pragma, none with it.
+            #
+            # DELETE is what retention does, continuously, to exactly the rows
+            # that used to hold unscrubbed secrets — so without this every
+            # pruned run left its snapshot readable in a free page.
+            #
+            # ON rather than FAST: FAST only zeroes content it can reach
+            # without extra I/O and explicitly may leave data in freelist
+            # pages, and ON measured free here (write throughput inside noise;
+            # ~1ms on a prune of 40 runs / 1k events / 4k metric rows). There
+            # is no reason to buy the weaker guarantee.
+            #
+            # PER-CONNECTION, not stored in the file: a reopened connection
+            # reports 0 again (verified on SQLite 3.50.4). It therefore has to
+            # be set here, on the one place a connection is opened, and any
+            # future second connection site has to repeat it.
+            #
+            # Forward-only, and it does not reach the WAL. Pages freed before
+            # this shipped stay as they are until a VACUUM, and a just-freed
+            # page's old image can sit in `-wal` until the next checkpoint.
+            conn.execute("PRAGMA secure_delete=ON")
             self._apply_migrations(conn)
         except BaseException:
             conn.close()

@@ -2479,14 +2479,23 @@ class RunService:
         backstop — if any future path ever persists an unscrubbed snapshot,
         the next restart takes the key back out.
 
-        NOT a secure erase, and the difference matters for anyone who already
-        leaked a key. SQLite's UPDATE writes a new page and returns the old
-        one to the freelist without zeroing it, so the previous bytes can
-        survive in free pages and in the ``-wal`` sidecar until a ``VACUUM``.
-        This makes the value unreadable through the application; it does not
-        scrub the file. A key that was already written to a shared disk
-        should be treated as disclosed and rotated — which is what the
-        deployment docs tell the operator to do.
+        What this does and does not reach, measured rather than assumed
+        (SQLite 3.50.4, real schema):
+
+        - The rows it rewrites are genuinely clean. An UPDATE carries the new
+          content into the main file at the next checkpoint, so the scrubbed
+          row does not leave its old bytes behind in a free page.
+        - Rows retention already PRUNED on an older build are beyond it.
+          Their pages were freed before ``PRAGMA secure_delete=ON`` shipped
+          (see ``db.py``), so they went to the freelist with the key intact
+          and stay that way until a ``VACUUM``. The row is gone, so there is
+          nothing here to rewrite.
+
+        That second case is why the docs still tell an operator who ran a
+        secret-bearing graph on an earlier version to treat the key as
+        disclosed and rotate it. For anything written from here on there is
+        no such caveat: the value never reaches the row in the first place,
+        and a freed page is zeroed on the way out.
         """
         cleaned = 0
         for run_id, graph in await self.store.list_terminal_graph_snapshots():

@@ -80,16 +80,21 @@ Two consequences worth stating plainly:
   exported graph, or promoting a queued run on a restarted server all leave the
   field blank, and the node fails with its "requires an api key" error. That is
   the intended trade, not a bug.
-- **If you ran a graph containing a SECRET param before the run-history scrub
-  landed, treat that key as disclosed and rotate it.** Older builds wrote the
-  run's graph into the `exec_runs.graph_snapshot` column exactly as submitted,
-  and run history is pruned by COUNT (the newest 200), not by age -- so on a
-  quiet install the value never aged out. Upgrading sweeps those values out of
-  the rows at the next start and logs how many it removed. It does not
-  overwrite the bytes: SQLite releases the old page to its freelist without
-  zeroing it, so a copy can persist in the database file and its `-wal`
-  sidecar until a `VACUUM`. Rotating the key is the fix; the sweep only stops
-  it being read back. See the CHANGELOG entry for which release carries it.
+- **Anything you type from now on is fine.** The value never reaches the
+  database, and deleted database pages are zeroed rather than recycled with
+  their contents intact, so run history that ages out does not leave a
+  readable copy behind. No rotation needed, no cleanup step.
+- **If you ran a graph containing a SECRET param on an OLDER build, treat
+  that key as disclosed and rotate it.** Those builds wrote the run's graph
+  into the `exec_runs.graph_snapshot` column exactly as submitted, and run
+  history is pruned by COUNT (the newest 200), not by age -- so on a quiet
+  install the value never aged out. Upgrading sweeps the values out of the
+  runs it can still see, and logs how many it removed. What it cannot reach
+  is runs that were **already** pruned before you upgraded: their rows are
+  gone, and on the older build the freed pages kept their contents, so a copy
+  can remain in the database file until a `VACUUM`. Rotating the key is the
+  only complete fix for that window. See the CHANGELOG entry for which
+  release carries the change.
 
 ## If you need per-person attribution
 

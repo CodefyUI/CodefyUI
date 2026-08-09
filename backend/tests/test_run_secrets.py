@@ -498,15 +498,60 @@ async def test_startup_scrubs_secrets_left_by_an_older_version(
     # Idempotent: a second pass finds nothing left to do.
     assert await service.scrub_stored_secrets() == 0
 
-    # NOT asserted here, deliberately: that the bytes are gone from the FILE.
-    # An UPDATE writes a new page and releases the old one to the freelist
-    # without zeroing it, so the pre-fix value can linger in free pages and
-    # in the WAL until a VACUUM. The backfill removes the value from the row,
-    # which is what stops it being read back; it is not a secure erase, and
-    # `scrub_stored_secrets` says so. The at-rest guarantee this PR actually
-    # makes is the one above -- a key submitted AFTER the fix is never
-    # written in the first place, which is a byte-level property and is
-    # asserted as one.
+
+async def test_freed_pages_are_zeroed_so_pruning_leaves_no_residue(
+        store, service, db, db_path):
+    """Retention DELETEs a row; its bytes must not stay in a freed page.
+
+    The operation `PRAGMA secure_delete=ON` actually protects, and it is not
+    the one it looks like. Measured on SQLite 3.50.4 with the real schema:
+
+      insert -> checkpoint -> UPDATE -> checkpoint   no residue either way
+      insert -> checkpoint -> DELETE -> checkpoint   residue WITHOUT the
+                                                     pragma, none with it
+
+    A row rewritten in place carries its new content into the main file at
+    the next checkpoint. A DELETED row's page goes to the freelist, and
+    without the pragma it goes there with the old content intact -- which is
+    precisely what retention does, continuously, to the rows that used to
+    hold unscrubbed keys.
+
+    The checkpoints are what make this deterministic rather than incidental:
+    without the first one both writes live in the same WAL generation and the
+    main file never sees the secret at all, so the probe would pass for a
+    reason that has nothing to do with the pragma.
+    """
+    async def checkpoint() -> None:
+        await db.run(lambda c: c.execute("PRAGMA wal_checkpoint(TRUNCATE)"))
+
+    record = await store.create_run(
+        graph_snapshot=_secret_graph(), status=STATUS_QUEUED,
+        queue_key="cpu", provenance=RunProvenance(),
+    )
+    await store.mark_finished(record.id, STATUS_SUCCEEDED,
+                              expected=(STATUS_QUEUED,))
+    await checkpoint()
+    # Precondition: the secret really is in the main file, the way it would
+    # be on an install that has been running for days.
+    assert LIVE_KEY.encode() in db_path.read_bytes()
+
+    assert await store.prune(keep_last=0) == 1
+    await checkpoint()
+
+    assert LIVE_KEY.encode() not in db_path.read_bytes(), (
+        "a pruned run's snapshot is still readable in a freed page")
+
+
+async def test_the_connection_sets_secure_delete(db):
+    """It is PER-CONNECTION, not stored in the file.
+
+    A reopened connection reports 0 again, so this cannot be established once
+    at create time -- every place that opens a connection has to set it, and
+    right now `Database.connect` is the only one. This test is what fails if
+    a second connection site appears without it.
+    """
+    assert await db.run(
+        lambda c: c.execute("PRAGMA secure_delete").fetchone()[0]) == 1
 
 
 async def test_the_backfill_leaves_an_active_row_alone(store, service):

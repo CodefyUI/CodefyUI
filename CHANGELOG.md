@@ -111,10 +111,21 @@ received — each links to the release it was published as.
   how long the values are kept.
 
   Startup also sweeps values written by older builds out of finished runs and
-  logs how many it removed. **That sweep is not a secure erase** — SQLite
-  releases the old page to its freelist without zeroing it, so a copy can
-  persist in the file and its `-wal` sidecar until a `VACUUM`. If you ran a
-  graph carrying a SECRET param on an earlier version, rotate that key.
+  logs how many it removed, and the connection now sets `PRAGMA
+  secure_delete=ON` so a deleted page is zeroed instead of being recycled with
+  its contents intact. That second part matters more than it looks: retention
+  DELETEs old runs continuously, and measurement showed the residue comes from
+  DELETE, not from the sweep's UPDATE — a rewritten row carries its new
+  content into the file at the next checkpoint, but a freed page did not. Cost
+  is unmeasurable at this project's write volume (write throughput inside
+  noise; about 1 ms on a prune of 40 runs, 1k events and 4k metric rows).
+
+  **One window remains, and it is the reason to rotate.** Runs that retention
+  had already pruned *before* you upgrade are beyond both fixes: the rows are
+  gone, so the sweep cannot reach them, and on the old build their freed pages
+  kept the key until a `VACUUM`. If you ran a graph carrying a SECRET param on
+  an earlier version, rotate that key. For anything written from here on there
+  is no such caveat.
 
 - **Documented that ambient credentials are instance-wide** ([#251]). A new
   [Shared Instances](https://docs.codefyui.com/usage/shared-instances) page
