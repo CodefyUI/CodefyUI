@@ -70,6 +70,16 @@ function widgetContainer(pluginId: string, widgetId: string): HTMLElement {
  * every tab and button. The sweep below is the belt to that braces: it drops
  * anything left registered for a plugin whose cleanup threw or was never
  * tracked, so one misbehaving plugin cannot strand a tab in the dock.
+ *
+ * Every step is isolated, including the sweep. A belt that can itself abort is
+ * not a belt: an exception out of one plugin's sweep used to propagate through
+ * this loop, skipping every LATER plugin's sweep and the widget-stack clear
+ * below it. That never bit because the tracked cleanups had already emptied
+ * the registries by the time the sweep ran — so the second line of defence was
+ * only ever correct by accident, and would have failed in exactly the case it
+ * exists for. The registries are exception-safe on their own now (see
+ * `detachElement` in `panels.ts`); this catch is what keeps that true when a
+ * registry's own `notify()` reaches a host subscriber that throws.
  */
 function teardownPlugins(pluginIds: string[] = []): void {
   for (const fn of cleanups) {
@@ -81,8 +91,16 @@ function teardownPlugins(pluginIds: string[] = []): void {
   }
   cleanups = [];
   for (const id of pluginIds) {
-    removePluginPanelsFor(id);
-    removePluginToolbarButtonsFor(id);
+    try {
+      removePluginPanelsFor(id);
+    } catch (err) {
+      console.warn(`[plugins] panel sweep for '${id}' failed:`, err);
+    }
+    try {
+      removePluginToolbarButtonsFor(id);
+    } catch (err) {
+      console.warn(`[plugins] toolbar sweep for '${id}' failed:`, err);
+    }
   }
   if (stackEl) {
     while (stackEl.firstChild) stackEl.removeChild(stackEl.firstChild);

@@ -47,6 +47,32 @@ describe('plugin toolbar button registry', () => {
     expect(getPluginToolbarButtons()).toHaveLength(0);
   });
 
+  it('a disposer from a superseded registration leaves the live button alone', () => {
+    const undoFirst = registerPluginToolbarButton('a', {
+      id: 'one', ...OPTS, tooltip: 'First',
+    });
+    registerPluginToolbarButton('a', { id: 'one', ...OPTS, tooltip: 'Second' });
+
+    undoFirst();
+
+    const buttons = getPluginToolbarButtons();
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].tooltip).toBe('Second');
+    // The by-id remover is unchanged: it still takes down whoever holds the id.
+    removePluginToolbarButton('a', 'one');
+    expect(getPluginToolbarButtons()).toHaveLength(0);
+  });
+
+  it('a superseded disposer notifies nobody, since it changed nothing', () => {
+    const undoFirst = registerPluginToolbarButton('a', { id: 'one', ...OPTS });
+    registerPluginToolbarButton('a', { id: 'one', ...OPTS });
+    const seen = vi.fn();
+    const off = subscribePluginToolbarButtons(seen);
+    undoFirst();
+    off();
+    expect(seen).not.toHaveBeenCalled();
+  });
+
   it('removePluginToolbarButtonsFor drops only that plugin', () => {
     registerPluginToolbarButton('keep', { id: 'x', ...OPTS });
     registerPluginToolbarButton('drop', { id: 'x', ...OPTS });

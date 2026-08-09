@@ -103,6 +103,39 @@ describe('plugin panel registry', () => {
     expect(getPluginPanels()).toBe(getPluginPanels());
   });
 
+  it('publishes the removal even when the element refuses to detach', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const el = registerPluginPanel('p', { id: 'x', title: 'X' });
+    // The one way in: a plugin shadowing `remove` on the element it was
+    // handed. The Map is emptied before the DOM call, so a throw escaping
+    // here would strand the published snapshot holding a panel the registry
+    // no longer has -- a dock tab whose `getPluginPanel` is undefined.
+    el.remove = () => { throw new Error('plugin shadowed remove'); };
+    const seen = vi.fn();
+    subscribePluginPanels(seen);
+
+    expect(() => removePluginPanel('p', 'x')).not.toThrow();
+    expect(getPluginPanel('p:x')).toBeUndefined();
+    expect(getPluginPanels()).toHaveLength(0);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('removePluginPanelsFor finishes the sweep past a panel that will not detach', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = registerPluginPanel('drop', { id: 'a', title: 'A' });
+    registerPluginPanel('drop', { id: 'b', title: 'B' });
+    const kept = registerPluginPanel('keep', { id: 'c', title: 'C' });
+    document.body.append(kept);
+    first.remove = () => { throw new Error('plugin shadowed remove'); };
+
+    expect(() => removePluginPanelsFor('drop')).not.toThrow();
+    // Both of the plugin's panels are gone, not just the one before the throw.
+    expect(getPluginPanels().map((p) => p.key)).toEqual(['keep:c']);
+    expect(kept.isConnected).toBe(true);
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('does not notify when removePluginPanelsFor matches nothing', () => {
     registerPluginPanel('p', { id: 'x', title: 'X' });
     const seen = vi.fn();

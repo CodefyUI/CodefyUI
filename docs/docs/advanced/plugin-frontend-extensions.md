@@ -174,6 +174,8 @@ Buttons land in one group at the right of the toolbar, in registration order. Th
 
 If `onClick` throws, the editor logs it and carries on; the toolbar is not affected.
 
+Re-adding an id replaces the button. The remove function you get back belongs to that one registration, so if you have since replaced the button, calling the older remove function does nothing rather than taking the replacement down with it. When you mean "remove whatever is under this id", call `removeToolbarButton(id)`. Buttons are removed automatically when your plugin is unloaded or hot-reloaded.
+
 ### `api.graph` — graph read and write
 
 | Method | Signature | Description |
