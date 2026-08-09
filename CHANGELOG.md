@@ -22,6 +22,27 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [2.2.0] — 2026-08-10
+
+The release that makes a re-run mean something.
+
+The headline is a correctness bug nobody had noticed: **a second Run of a
+shipped training example did no training at all, and reported success.**
+Measured on `plugins/foundations/examples/C2-5/MLP-MNIST-Training`, counting
+real `TrainingLoop.execute()` calls across three runs against one cache: `1`,
+`0`, `0`. Four of the six shipped graphs that train were affected, two of them
+teaching-plugin examples students open in class. It stayed invisible because a
+preset reported `completed` whether its contents ran or came from cache — both
+halves of that are fixed here.
+
+The rest divides into three: the same cache-correctness family (a hit must not
+skip a side effect, a mutation, or a file write), a security pass driven by
+CodefyUI now being evaluated for shared company servers rather than one
+student's laptop, and the quality gates that stop the next round of this being
+found by hand.
+
 ### Fixed
 
 - **Every request-body size cap could be walked past by chunking, and four
@@ -444,6 +465,7 @@ Release candidates before 1.0.0 are on the
 [#242]: https://github.com/CodefyUI/CodefyUI/issues/242
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
 [@oyea0801]: https://github.com/oyea0801
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
+[2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
