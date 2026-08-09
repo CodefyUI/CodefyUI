@@ -11,10 +11,12 @@ Both were reachable, and neither needed a hostile plugin:
   ``PROJECT_DIR`` is ``None``, so ``config.py``'s project derivation never
   runs and ``MODELS_DIR`` stays ``backend/data/models`` -- one level below
   ``codefyui.db``. ``path="../codefyui.db"`` typed into a ``CheckpointSaver``
-  (or ``ModelSaver``, or ``ImageWriter``) resolved to the live database and
-  passed the guard, because the database is inside the data directory. The
-  issue's own mitigation ("the installed layout is narrower, ``MODELS_DIR``
-  is ``assets/models``") describes project mode only.
+  or a ``ModelSaver`` resolved to the live database and passed the guard,
+  because the database is inside the data directory. The issue's own
+  mitigation ("the installed layout is narrower, ``MODELS_DIR`` is
+  ``assets/models``") describes project mode only. ``ImageWriter``, which
+  the issue also named, turns out NOT to have been reachable -- see
+  ``test_the_image_writer_node_refuses_to_name_the_database``.
 * **Delete.** ``kind`` is a free-text column and
   ``ExecutionContext.log_artifact`` -- reachable from the plugin API --
   writes both the kind and the path, so a row claiming ``kind="checkpoint"``
@@ -181,15 +183,61 @@ def test_the_model_saver_node_cannot_overwrite_the_database(default_layout):
     assert default_layout.db.read_bytes() == DB_BYTES
 
 
-def test_the_image_writer_node_cannot_overwrite_the_database(default_layout):
-    """ImageWriter resolves a relative path one level deeper than the
-    others (``<data>/output``), so the traversal that reaches the database
-    is shorter -- the guard has to be about the RESOLVED path, not the
-    number of ``..`` segments."""
+def test_the_image_writer_node_refuses_to_name_the_database(default_layout):
+    """ImageWriter never actually reached the database, and this test does
+    not claim it did.
+
+    It forces the extension to match the format parameter, so
+    ``path="../codefyui.db"`` was silently rewritten to ``codefyui.png``
+    and written beside the database rather than over it -- verified against
+    the pre-fix logic, and it holds for every value of ``format``,
+    including one no dropdown offers. The issue this closes asserted the
+    database was reachable "as a checkpoint or image target"; the image
+    half of that is wrong.
+
+    What was real for this node is the same over-broad containment rule:
+    any file under the data root that happens to end in an image extension
+    (a user's own dataset images, say) was a valid target. It goes through
+    the shared rule for that reason, and refusing the database outright is
+    then a free consequence -- worth having, because "silently wrote
+    codefyui.png" only stops being a database write for as long as nobody
+    edits the extension-forcing logic."""
     with pytest.raises(ValueError, match="CodefyUI's own storage"):
         ImageWriterNode().execute({"image": torch.zeros(3, 4, 4)},
                                   {"path": "../codefyui.db"})
     assert default_layout.db.read_bytes() == DB_BYTES
+    assert not (default_layout.data / "codefyui.png").exists()
+
+
+def test_forcing_an_extension_cannot_land_on_the_database(tmp_path, monkeypatch):
+    """The two writers that rewrite the file extension AFTER validating
+    re-validate the rewritten path, because otherwise the path checked is
+    not the path written.
+
+    Reachable rather than theoretical: ``DB_PATH`` is env-overridable
+    (``CODEFYUI_DB_PATH``), so a deployment can name the database anything
+    -- including something whose extension is the one a writer forces. Here
+    the parameter names an innocuous file, and it is the rewrite that turns
+    it into the database."""
+    data = tmp_path / "data"
+    (data / "models").mkdir(parents=True)
+    monkeypatch.setattr(settings, "MODELS_DIR", data / "models")
+
+    monkeypatch.setattr(settings, "DB_PATH", data / "models" / "store.safetensors")
+    (data / "models" / "store.safetensors").write_bytes(DB_BYTES)
+    model, _ = _model_and_opt()
+    with pytest.raises(ValueError, match="CodefyUI's own storage"):
+        ModelSaverNode().execute({"model": model},
+                                 {"path": "store.pt", "format": "safetensors"})
+    assert (data / "models" / "store.safetensors").read_bytes() == DB_BYTES
+
+    monkeypatch.setattr(settings, "DB_PATH", data / "output" / "store.png")
+    (data / "output").mkdir()
+    (data / "output" / "store.png").write_bytes(DB_BYTES)
+    with pytest.raises(ValueError, match="CodefyUI's own storage"):
+        ImageWriterNode().execute({"image": torch.zeros(3, 4, 4)},
+                                  {"path": "store.jpg", "format": "PNG"})
+    assert (data / "output" / "store.png").read_bytes() == DB_BYTES
 
 
 def test_an_absolute_path_to_the_database_is_refused_too(default_layout):

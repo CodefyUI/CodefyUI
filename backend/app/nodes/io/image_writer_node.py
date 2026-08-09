@@ -63,14 +63,16 @@ class ImageWriterNode(BaseNode):
         # with ModelSaver and the checkpoint writers (#224). A relative path
         # lands under <data>/output rather than MODELS_DIR, which is why the
         # base is passed rather than assumed.
+        #
+        # This node was never able to reach the database (the forced
+        # extension below rewrote the name first); what it could overwrite
+        # was any file under the data root ending in an image extension.
         p = resolve_data_path(path, base=settings.MODELS_DIR.parent / "output")
 
-        # Ensure correct extension. Done BEFORE the directory is created and
-        # re-validated afterwards: the path that gets written must be the
-        # path that was checked, not one derived from it. ``with_suffix``
-        # cannot currently escape the data root (it only rewrites the final
-        # suffix), but "cannot currently" is not a property worth relying on
-        # in the one place that turns a parameter into a file write.
+        # Ensure correct extension, then re-validate: the path written must
+        # be the path checked. Not theoretical -- DB_PATH is env-overridable,
+        # so a database named `store.png` is reachable by asking for
+        # `store.jpg` with format=PNG and letting the rewrite do the rest.
         ext_map = {"PNG": ".png", "JPEG": ".jpg", "BMP": ".bmp", "TIFF": ".tiff"}
         expected_ext = ext_map.get(fmt, ".png")
         if p.suffix.lower() != expected_ext:

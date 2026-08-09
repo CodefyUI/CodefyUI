@@ -24,15 +24,25 @@ run database: with the default ``cdui start`` and no ``--project``,
 ``PROJECT_DIR`` is ``None``, the project-mode derivation in ``config.py``
 never runs, and ``MODELS_DIR`` falls back to ``backend/data/models`` --
 whose parent is the directory holding ``codefyui.db``. So
-``path="../codefyui.db"`` on a ``CheckpointSaver`` (or ``ImageWriter``,
-which resolves relative paths one level deeper under ``<data>/output``)
-resolved to the live database and a training run would have written a
-``.pt`` payload straight over it. No mislabelled artifact row and no
-plugin required -- just a path typed into a node parameter.
+``path="../codefyui.db"`` on a ``CheckpointSaver`` or a ``ModelSaver``
+resolved to the live database and a training run wrote a ``.pt`` payload
+straight over it. No mislabelled artifact row and no plugin required --
+just a path typed into a node parameter.
 
 The issue this comes from argued the installed layout was narrower than
 dev because ``MODELS_DIR`` is ``<project>/assets/models``. That is true in
 project mode and only in project mode, which is not the default.
+
+``ImageWriter`` is here for consistency, not because it was reachable the
+same way: it forces the file extension to match its ``format`` parameter,
+so ``../codefyui.db`` was rewritten to ``codefyui.png`` and written BESIDE
+the database rather than over it. What it could do was overwrite any file
+under the data root ending in an image extension, which is the same
+over-broad containment rule and reason enough to share one definition of
+it. Both writers that rewrite an extension re-validate afterwards, so the
+path written is the path checked -- ``DB_PATH`` is env-overridable, and a
+database named ``store.safetensors`` would otherwise be reachable through
+exactly that rewrite.
 
 What is protected, and what deliberately is not
 -----------------------------------------------

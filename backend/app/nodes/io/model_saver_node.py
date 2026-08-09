@@ -77,6 +77,9 @@ class ModelSaverNode(BaseNode):
                 raise ValueError("safetensors format only supports state_dict mode, not full_model")
             if p.suffix not in (".safetensors",):
                 # Re-validated: the path written must be the path checked.
+                # DB_PATH is env-overridable, so a database named
+                # `store.safetensors` is reachable by asking for `store.pt`
+                # and letting this rewrite land on it (#224).
                 p = resolve_data_path(p.with_suffix(".safetensors"),
                                       base=settings.MODELS_DIR)
 

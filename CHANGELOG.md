@@ -32,11 +32,15 @@ received — each links to the release it was published as.
   *Write.* With the default `cdui start` and no `--project`, `PROJECT_DIR` is
   `None`, the project-mode derivation never runs, and `MODELS_DIR` stays
   `backend/data/models` — one level below `codefyui.db`. So `../codefyui.db`
-  as a `CheckpointSaver`, `ModelSaver` or `ImageWriter` path resolved to the
-  live database and passed the guard, and a training run wrote a `.pt` payload
-  over it. No plugin and no mislabelled row required. Project mode was never
-  affected: there `MODELS_DIR` is `<project>/assets/models` and the database,
-  which stays install-global, is outside the data root entirely.
+  as a `CheckpointSaver` or `ModelSaver` path resolved to the live database
+  and passed the guard, and a training run wrote a `.pt` payload over it. No
+  plugin and no mislabelled row required. Project mode was never affected:
+  there `MODELS_DIR` is `<project>/assets/models` and the database, which
+  stays install-global, is outside the data root entirely. `ImageWriter`
+  shares the same rule but was not reachable this way — it forces the file
+  extension to match its `format`, so `../codefyui.db` was rewritten to
+  `codefyui.png` and landed beside the database; what it could overwrite was
+  any file under the data root ending in an image extension.
 
   *Delete.* `RunStore.prune` unlinks the file of every pruned artifact row
   whose `kind` is `checkpoint`. `kind` is a free-text column and the plugin
