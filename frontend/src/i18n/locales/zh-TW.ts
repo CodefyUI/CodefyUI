@@ -67,6 +67,9 @@ const zhTW: Record<TranslationKey, string> = {
   'connection.lost': '連線中斷 — 嘗試重新連線中…',
   'connection.restored': '已重新連線',
   'connection.failed': '無法重新連線至執行伺服器',
+  'connection.tooLarge':
+    '圖太大，無法傳送 — 伺服器拒收這則訊息並關閉了連線。請簡化圖，'
+    + '或調高伺服器的 WebSocket 訊息上限（CODEFYUI_WS_MAX_MESSAGE_BYTES）。',
 
   // Node Palette
   'palette.title': '節點',

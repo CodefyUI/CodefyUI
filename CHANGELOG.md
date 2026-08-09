@@ -24,6 +24,34 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **A published app's OpenAPI document advertised `http://` even when it was
+  fetched over HTTPS** ([#275]). `servers[].url` was built with a literal
+  scheme, which was true of the deployment CodefyUI was written for — one
+  machine, loopback, no TLS — and stopped being true the moment the documented
+  way to deploy it became a reverse proxy terminating HTTPS. A browser blocks
+  the resulting call as mixed content, so Swagger UI's "Try it out" failed, and
+  a generated client got the wrong base URL. The scheme now comes from the
+  request, which uvicorn rewrites from `X-Forwarded-Proto` when it is run with
+  `--proxy-headers` (reachable since [#272]). The header is deliberately *not*
+  read by the application: doing so would let any client forge the URL a
+  published app advertises to every integrator who fetches the document.
+
+- **The canvas WebSocket refused graphs the HTTP routes accept, and said so
+  only by hanging up** ([#274]). `WS /ws/execution` was never uncapped —
+  uvicorn's `ws_max_size` bounded it, enforced while fragments are assembled —
+  but that 16 MB was an inherited library default: nothing in this repository
+  chose it, no launch path passed it, no document mentioned it, and it was four
+  times *stricter* than the 64 MB `MAX_RUN_BODY_BYTES` the HTTP paths use, so a
+  graph between the two was accepted by `POST /api/graph/run/{name}` and
+  refused by the socket the editor actually uses. There is now a
+  `WS_MAX_MESSAGE_BYTES` setting that defaults to `MAX_RUN_BODY_BYTES` — one
+  graph ceiling, both transports — which `cdui start` and `cdui dev` hand to
+  uvicorn as `--ws-max-size`. The refusal is also legible now: the close frame
+  always carried code 1009 and a reason, and the editor threw both away and ran
+  its generic reconnect, so "your graph is too large" reached the user as
+  "Connection lost" followed by "Connection restored" and an unexplained
+  failure on the next Run click. It now says the graph was too large.
+
 - **A `Map` body ran with no execution context, so augmentation inside one was
   silently unseeded** ([#196]). The loop called `instance.execute(inputs,
   params)` directly — the last node-execute call site in the repository that
@@ -639,6 +667,9 @@ Release candidates before 1.0.0 are on the
 [#190]: https://github.com/CodefyUI/CodefyUI/issues/190
 [#193]: https://github.com/CodefyUI/CodefyUI/issues/193
 [#224]: https://github.com/CodefyUI/CodefyUI/issues/224
+[#272]: https://github.com/CodefyUI/CodefyUI/pull/272
+[#274]: https://github.com/CodefyUI/CodefyUI/issues/274
+[#275]: https://github.com/CodefyUI/CodefyUI/issues/275
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

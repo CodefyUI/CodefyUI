@@ -68,6 +68,10 @@ const en = {
   'connection.lost': 'Connection lost — reconnecting…',
   'connection.restored': 'Connection restored',
   'connection.failed': 'Could not reconnect to the execution server',
+  'connection.tooLarge':
+    'Graph too large to send — the server refused the message and closed the '
+    + 'connection. Simplify the graph, or raise the server’s WebSocket '
+    + 'message limit (CODEFYUI_WS_MAX_MESSAGE_BYTES).',
 
   // Node Palette
   'palette.title': 'Nodes',

@@ -1355,13 +1355,59 @@ def _split_forwarded_args(argv: list) -> "tuple[list, list]":
     return list(argv[:cut]), list(argv[cut + 1:])
 
 
-# uvicorn flags that `cdui start` owns and must not receive twice. Both are
-# mirrored into three places that would silently disagree with the real bind:
-# CODEFYUI_HOST/PORT in the child env (which is what app.core.auth builds the
-# Host whitelist from), SERVER_ADDRFILE (what `cdui status` and `cdui stop`
-# report), and the health poll below. A forwarded copy wins on uvicorn's
-# argparse and desyncs all three, so refuse it and name the real flag.
-_UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port")
+# uvicorn flags that `cdui start` owns and must not receive twice. --host and
+# --port are mirrored into three places that would silently disagree with the
+# real bind: CODEFYUI_HOST/PORT in the child env (which is what app.core.auth
+# builds the Host whitelist from), SERVER_ADDRFILE (what `cdui status` and
+# `cdui stop` report), and the health poll below. --ws-max-size is mirrored
+# into settings.WS_MAX_MESSAGE_BYTES, which is the number the docs quote and
+# the number the editor's "graph too large" message is about. A forwarded copy
+# wins on uvicorn's argparse and desyncs whichever set it belongs to, so refuse
+# it and name the real knob.
+_UVICORN_FLAGS_CDUI_OWNS = ("--host", "--port", "--ws-max-size")
+
+# Owned flag -> the remedy to name when it is forwarded after `--`. A refusal
+# that does not point at the knob that DOES work is just a dead end.
+# --host/--port have cdui flags of their own; --ws-max-size is configured by
+# environment like every other app setting.
+_UVICORN_FLAG_ALTERNATIVE = {
+    "--host": "使用 cdui start --host。",
+    "--port": "使用 cdui start --port。",
+    "--ws-max-size": "改設環境變數 CODEFYUI_WS_MAX_MESSAGE_BYTES。",
+}
+_UVICORN_FLAG_ALTERNATIVE_EN = {
+    "--host": "use `cdui start --host` instead.",
+    "--port": "use `cdui start --port` instead.",
+    "--ws-max-size": "set CODEFYUI_WS_MAX_MESSAGE_BYTES instead.",
+}
+
+# Mirrors app.config.Settings.WS_MAX_MESSAGE_BYTES, including its fallback to
+# MAX_RUN_BODY_BYTES. Duplicated rather than imported because dev.py runs on a
+# bare interpreter before the venv exists and must never import the backend.
+# `backend/tests/test_ws_max_size.py` fails if the two ever disagree.
+_WS_MAX_MESSAGE_BYTES_DEFAULT = 64 * 1024 * 1024  # 64 MB
+
+
+def _ws_max_size() -> int:
+    """The WS frame ceiling to hand uvicorn, mirroring Settings' precedence.
+
+    CODEFYUI_WS_MAX_MESSAGE_BYTES wins; otherwise the WS cap follows
+    CODEFYUI_MAX_RUN_BODY_BYTES so one graph ceiling covers both transports;
+    otherwise the shared default. A malformed or non-positive value is
+    ignored HERE and left to pydantic to reject in the child, so the two
+    layers cannot disagree about what counts as valid (core#274).
+    """
+    for var in ("CODEFYUI_WS_MAX_MESSAGE_BYTES", "CODEFYUI_MAX_RUN_BODY_BYTES"):
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return _WS_MAX_MESSAGE_BYTES_DEFAULT
 
 
 def _reject_owned_uvicorn_flags(extra: list) -> None:
@@ -1370,20 +1416,35 @@ def _reject_owned_uvicorn_flags(extra: list) -> None:
         name = a.split("=", 1)[0]
         if name in _UVICORN_FLAGS_CDUI_OWNS:
             err(
-                f"{name} 不能透過 -- 轉發給 uvicorn，請直接用 cdui start {name}。",
+                f"{name} 不能透過 -- 轉發給 uvicorn，"
+                f"{_UVICORN_FLAG_ALTERNATIVE[name]}",
                 f"{name} cannot be forwarded to uvicorn after `--`; "
-                f"use `cdui start {name}` instead.",
+                f"{_UVICORN_FLAG_ALTERNATIVE_EN[name]}",
             )
-            print(
-                t(
-                    "  cdui 會把綁定位址寫進 server.addr 與子行程環境變數，"
-                    "轉發的複本會讓 cdui status / cdui stop 與實際綁定不一致。",
-                    "  cdui records the bind address in server.addr and in the "
-                    "child environment; a forwarded copy would desync it from "
-                    "`cdui status` and `cdui stop`.",
-                ),
-                file=sys.stderr,
-            )
+            if name == "--ws-max-size":
+                print(
+                    t(
+                        "  cdui 會用 CODEFYUI_WS_MAX_MESSAGE_BYTES 推導這個旗標，"
+                        "轉發的複本會讓實際上限與文件、以及編輯器的「圖太大」"
+                        "訊息不一致。",
+                        "  cdui derives this flag from "
+                        "CODEFYUI_WS_MAX_MESSAGE_BYTES; a forwarded copy would "
+                        "desync the real ceiling from the documented one and "
+                        "from the editor's \"graph too large\" message.",
+                    ),
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    t(
+                        "  cdui 會把綁定位址寫進 server.addr 與子行程環境變數，"
+                        "轉發的複本會讓 cdui status / cdui stop 與實際綁定不一致。",
+                        "  cdui records the bind address in server.addr and in "
+                        "the child environment; a forwarded copy would desync "
+                        "it from `cdui status` and `cdui stop`.",
+                    ),
+                    file=sys.stderr,
+                )
             sys.exit(2)
 
 
@@ -1613,8 +1674,12 @@ def start() -> None:
     os.environ["CODEFYUI_PORT"] = str(port)
     uvicorn = _require_venv_tool("uvicorn")
     # Extras go last so `app.main:app` keeps its position — the process
-    # matchers in `cdui stop` key on it.
-    cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port), *uvicorn_extra]
+    # matchers in `cdui stop` key on it. --ws-max-size is passed explicitly
+    # because uvicorn's own default (16 MB) is stricter than this project's
+    # body ceiling, so the canvas socket would otherwise refuse graphs the
+    # HTTP routes accept (core#274).
+    cmd = [uvicorn, "app.main:app", "--host", host, "--port", str(port),
+           "--ws-max-size", str(_ws_max_size()), *uvicorn_extra]
     SERVER_ADDRFILE.parent.mkdir(parents=True, exist_ok=True)
     SERVER_ADDRFILE.write_text(f"{host}:{port}")
 
@@ -2104,7 +2169,10 @@ def dev() -> None:
         _activate_project(project)
 
     uvicorn = _require_venv_tool("uvicorn")
-    backend_cmd = [uvicorn, "app.main:app", "--reload"]
+    # Same WS ceiling as `cdui start` — a limit that only holds in production
+    # is a limit developers discover from a bug report (core#274).
+    backend_cmd = [uvicorn, "app.main:app", "--reload",
+                   "--ws-max-size", str(_ws_max_size())]
     frontend_cmd = ["pnpm", "dev"]
 
     shell = sys.platform == "win32"

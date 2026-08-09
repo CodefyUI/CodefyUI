@@ -120,6 +120,27 @@ def _argv(monkeypatch, *args):
     monkeypatch.setattr(sys, "argv", ["cdui", "start", *args])
 
 
+def _base_cmd(host: str = "127.0.0.1", port: str = "8000") -> list:
+    """The uvicorn command every start path begins with, before the tail.
+
+    ``--ws-max-size`` is spelled from the launcher's own helper rather than
+    pinned to a literal here (core#274): the value is derived from the
+    environment, and `test_ws_max_size.py` is what asserts the helper agrees
+    with `settings.WS_MAX_MESSAGE_BYTES`. Pinning the number in seven places
+    would only test that a constant is a constant.
+    """
+    return [
+        "/fake/uvicorn",
+        "app.main:app",
+        "--host",
+        host,
+        "--port",
+        port,
+        "--ws-max-size",
+        str(dev._ws_max_size()),
+    ]
+
+
 # ── _split_forwarded_args ─────────────────────────────────────────────────
 
 
@@ -195,13 +216,7 @@ def test_a_value_that_merely_looks_like_a_bind_flag_is_not_refused():
 def test_daemon_path_appends_the_forwarded_args(started, monkeypatch):
     _argv(monkeypatch, "--", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1")
     dev.start()
-    assert started["popen"] == [
-        "/fake/uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
+    assert started["popen"] == _base_cmd() + [
         "--proxy-headers",
         "--forwarded-allow-ips",
         "127.0.0.1",
@@ -215,29 +230,13 @@ def test_foreground_path_appends_the_forwarded_args(started, monkeypatch):
     _argv(monkeypatch, "-f", "--", "--root-path", "/codefyui")
     dev.start()
     assert started["popen"] is None
-    assert started["run"] == [
-        "/fake/uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
-        "--root-path",
-        "/codefyui",
-    ]
+    assert started["run"] == _base_cmd() + ["--root-path", "/codefyui"]
 
 
 def test_without_a_separator_the_command_is_unchanged(started, monkeypatch):
     _argv(monkeypatch, "--host", "0.0.0.0", "--port", "8080")
     dev.start()
-    assert started["popen"] == [
-        "/fake/uvicorn",
-        "app.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
-    ]
+    assert started["popen"] == _base_cmd("0.0.0.0", "8080")
 
 
 def test_app_target_stays_at_index_one(started, monkeypatch):
@@ -287,15 +286,7 @@ def test_the_separator_never_becomes_a_flag_value(started, monkeypatch):
     _argv(monkeypatch, "--host", "--", "--proxy-headers")
     dev.start()
     assert dev.SERVER_ADDRFILE.read_text() == "127.0.0.1:8000"
-    assert started["popen"] == [
-        "/fake/uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
-        "--proxy-headers",
-    ]
+    assert started["popen"] == _base_cmd() + ["--proxy-headers"]
 
 
 def test_a_forwarded_foreground_flag_does_not_daemonize_differently(started, monkeypatch):
@@ -303,15 +294,7 @@ def test_a_forwarded_foreground_flag_does_not_daemonize_differently(started, mon
     _argv(monkeypatch, "--", "-f")
     dev.start()
     assert started["run"] is None, "`-f` after `--` must not select the foreground path"
-    assert started["popen"] == [
-        "/fake/uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000",
-        "-f",
-    ]
+    assert started["popen"] == _base_cmd() + ["-f"]
 
 
 def test_a_forwarded_project_flag_is_not_activated(started, monkeypatch):
