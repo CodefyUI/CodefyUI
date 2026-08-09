@@ -150,6 +150,7 @@ const zhTW: Record<TranslationKey, string> = {
   'node.running': '執行中...',
   'node.completed': '已完成',
   'node.cached': '已快取',
+  'node.skipped': '已跳過',
   'node.error': '錯誤：{error}',
   'node.bypassed': '略過',
   'node.bypassed.title': '已略過：這個節點不會執行，輸入會直接傳給下游',

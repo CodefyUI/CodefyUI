@@ -384,6 +384,11 @@
   background: var(--status-cached);
 }
 
+.statusSkipped {
+  color: var(--status-skipped);
+  text-align: center;
+}
+
 /* ── Progress bar (training) ── */
 .progressContainer {
   width: 100%;

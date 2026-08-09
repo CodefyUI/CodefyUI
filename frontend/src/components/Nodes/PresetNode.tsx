@@ -69,13 +69,23 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
         ? STATUS_COLORS.completed
         : data.executionStatus === 'error'
           ? STATUS_COLORS.error
-          : data.executionStatus === 'cached'
+          : // core#260: a preset settles 'cached' when EVERY internal node
+            // was a cache hit. Reached far more often than it looks — the
+            // engine used to roll that case up to 'completed', so a preset
+            // that did nothing looked exactly like one that trained.
+            data.executionStatus === 'cached'
             ? STATUS_COLORS.cached
             : // core#122: a preset settles 'interrupted' when any internal
               // node stopped early — it never rolls up to 'completed'.
               data.executionStatus === 'interrupted'
               ? STATUS_COLORS.interrupted
-              : 'transparent';
+              : // core#260: and 'skipped' when every internal was passed
+                // over because something upstream failed. Without this
+                // branch that preset renders identically to one that was
+                // never reached at all.
+                data.executionStatus === 'skipped'
+                ? STATUS_COLORS.skipped
+                : 'transparent';
 
   const borderColor = selected
     ? 'var(--text-primary)'
@@ -231,6 +241,13 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
       {data.executionStatus === 'cached' && (
         <div className={`${styles.statusBase} ${styles.statusCached}`}>
           {t('node.cached')}
+        </div>
+      )}
+
+      {/* Status footer — skipped */}
+      {data.executionStatus === 'skipped' && (
+        <div className={`${styles.statusBase} ${styles.statusSkipped}`}>
+          {t('node.skipped')}
         </div>
       )}
     </div>

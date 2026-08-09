@@ -143,3 +143,8 @@
   color: var(--status-cached);
   text-align: center;
 }
+
+.statusSkipped {
+  color: var(--status-skipped);
+  text-align: center;
+}

@@ -56,6 +56,19 @@ For those weight-owning nodes, what a second **Run** does with the weights is yo
 
 Opting out **propagates downstream**: every node fed by one of these re-executes too, because a cache key records only the *keys* of upstream nodes, not their actual outputs. A cached downstream node would otherwise hand back a stale result computed from data that has since changed.
 
+### What a preset or subgraph box reports
+
+A preset node and a subgraph instance are single boxes on the canvas standing for several nodes underneath, so they report one status for the lot. Which one depends on what those inner nodes actually did:
+
+| The box shows | It means |
+| --- | --- |
+| `Completed` | At least one node inside really executed. A box that was half cache hits still counts as work done. |
+| `Cached` | **Every** node inside was a cache hit. Nothing ran — the outputs you see are the ones the previous run produced. |
+| `Skipped` | Every node inside was passed over because something feeding the box failed. |
+| `Error` / `Interrupted` | A node inside failed, or stopped early. Either settles the whole box immediately. |
+
+The `Cached` case is the one worth knowing about: a preset holding a `TrainingLoop` that reports `Cached` did **not** train this run. Before this was distinguished the box said `Completed` either way, so "did my change actually re-run anything?" had no answer at the preset level. If you want it to genuinely re-run, change something it depends on, or clear the cache.
+
 ## Reproducible runs (seed)
 
 By default a run draws its randomness from whatever entropy PyTorch picks, so two runs of the same graph give slightly different weights, a different shuffle order, and therefore a different loss curve. Set a **Random seed** in **Settings → Training** to make a run repeatable.

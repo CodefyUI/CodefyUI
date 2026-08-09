@@ -342,6 +342,9 @@ describe('BaseNode', () => {
     // its own branch it falls through to 'transparent' and looks exactly
     // like a node that never ran.
     ['interrupted', STATUS_COLORS.interrupted],
+    // core#260: passed over because something upstream failed. A preset can
+    // settle here too, so both node cards must agree on how it looks.
+    ['skipped', STATUS_COLORS.skipped],
   ] as const)('uses the %s status border when unselected', (status, hex) => {
     const data = baseData({
       executionStatus: status,
@@ -402,6 +405,11 @@ describe('BaseNode', () => {
   it('renders the cached footer', () => {
     renderBody(baseData({ executionStatus: 'cached' }));
     expect(screen.getByText('Cached')).toBeTruthy();
+  });
+
+  it('renders the skipped footer', () => {
+    renderBody(baseData({ executionStatus: 'skipped' }));
+    expect(screen.getByText('Skipped')).toBeTruthy();
   });
 
   // ── SequentialModel branch ────────────────────────────────────────────────
