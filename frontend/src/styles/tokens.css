@@ -309,8 +309,8 @@
    The light hues are not hand-picked. Each is its dark counterpart converted
    to OKLCH, hue held fixed, chroma pushed to the sRGB gamut edge, and
    lightness lowered until it clears the bar on a white card. Hue drift is at
-   most 1.8 degrees, so a green category stays the same green a reader knows
-   from the app. The two exceptions are marked: Classical and RL are 3.71
+   most 1.8 degrees of CIE Lab hue angle, so a green category stays the same
+   green a reader knows from the app. Two are marked: Classical and RL are 3.71
    CIEDE2000 apart in the dark palette — its closest pair by a wide margin —
    and splitting them on lightness costs nothing on paper.
 

@@ -54,8 +54,8 @@ export const CATEGORY_VARS: Record<string, string> = {
  * needs from them as the card's title text (core#227). Each value below is its
  * counterpart above converted to OKLCH, hue held, chroma pushed to the gamut
  * edge and lightness lowered until it clears the bar — so the hue a reader
- * knows from the app survives (at most 1.3 degrees of drift) while the
- * measurement changes.
+ * knows from the app survives while the measurement changes. Drift is at most
+ * 1.8 degrees of CIE Lab hue angle, which is what the contrast gate measures.
  *
  * Mirrors the `--diagram-light-*` tokens; `theme.test.ts` asserts the match,
  * and `scripts/check-contrast.mjs` re-derives every measurement above.
