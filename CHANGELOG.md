@@ -60,6 +60,78 @@ received — each links to the release it was published as.
   `updateNodeLayers`) and the 34 layers-editor i18n keys (`layersEditor.*`,
   out of the `subgraph.*` namespace nesting also occupies) move with it. No
   behaviour change. (#199)
+- **A graph with a non-numeric value on a bounded parameter crashed the
+  validator instead of being refused** ([#193]). `validate_graph` compared
+  every value straight against its declared `min_value`/`max_value`, so
+  `"abc" < 0.0` — or `null < 0.0` — raised a `TypeError` that escaped the
+  function entirely. `POST /api/graph/run` turns that function's *return
+  value* into its 409 `invalid_graph` response, so the client got a 500
+  naming nothing at all. Every parameter with a declared bound was reachable
+  this way, on every node, not just the training ones.
+
+  `null` is the case the canvas can produce by itself: clearing a numeric
+  input yields `NaN`, which `JSON.stringify` writes as `null` into the saved
+  graph. A non-comparable value is now reported as an ordinary validation
+  error naming the parameter.
+
+- **The execution WebSocket read `"deterministic": "false"` as a request for
+  deterministic kernels** ([#189]). The socket coerced the flag with
+  `bool()` while passing its sibling `seed` through untouched, so a client
+  bug became a silently different run rather than the error the canvas
+  already knows how to display. Both halves of the reproducibility pair now
+  follow the same rule, and a non-boolean is refused with a message saying
+  so.
+
+- **Determinism could stay applied after the run that asked for it had gone**
+  ([#190]). `execute_graph` enters the refcounted determinism scope by hand
+  and pairs it in a `finally`, and two statements sat outside that pairing:
+  creating the outbox pump task, and awaiting it during teardown. Either one
+  raising left the scope open, holding `torch.use_deterministic_algorithms`
+  at the failed run's setting and suppressing every later run's baseline
+  capture. Both are now inside the guard.
+
+  Scope, measured rather than assumed: on CPython the depth does come back
+  once the traceback is released, because finalising the suspended generator
+  runs the `finally` that was skipped. So this is bounded by whatever holds
+  the traceback — a stored exception, an unretrieved task — rather than
+  permanent, which is less severe than [#190] states. It is still a
+  correctness property resting on an interpreter detail nothing in the code
+  states, on a setting that is process-global.
+
+- **A failing wake-up on the run gate replaced the exception the run
+  actually failed with** ([#190]). `_RunExclusion._wake` guarded the one line
+  that cannot realistically fail and left the following `await` bare, and
+  both callers release inside an `@asynccontextmanager`'s `finally` — where a
+  raise substitutes itself for the body's exception. The hold was always
+  given back correctly; only the reported error was lost.
+
+### Changed
+
+- **`value_bytes` now says when it stops measuring** ([#193]). The
+  `MAX_WALK_ITEMS` cap already logged that its total was a lower bound;
+  `MAX_WALK_DEPTH` returned a smaller number in silence, which makes an
+  under-count indistinguishable from a genuinely small value. The module
+  docstring also claimed over-counting as *the* safe direction — true of
+  cross-measurement sharing, and not true of the three things that make the
+  walk under-count, which is the direction that costs memory.
+
+### Added
+
+- **The optimizer and loss applicability tables are now checked against the
+  installed torch** ([#189]). `#134` declares which algorithm accepts which
+  hyperparameter rather than inferring it from `inspect.signature`, because
+  inferring it would forward `eps` to Adagrad — whose torch default is 1e-10
+  against the Adam family's 1e-8 — and silently retune every existing Adagrad
+  graph. The cost of declaring is that the table can stop describing torch
+  without anything saying so. Two tests per node close that: one asserts each
+  declared set still equals "accepts it *and* agrees with our default", the
+  other fails when any new keyword appears in a torch signature. Neither
+  forwards anything automatically.
+
+- **OOM crossed with determinism** ([#193]). Both paths reach for
+  process-global state and their interaction had no test. Two now pin it: OOM
+  recovery runs *inside* the determinism scope, and an OOM unwinds that scope
+  rather than stranding it.
 
 ## [2.2.0] — 2026-08-10
 
@@ -81,6 +153,46 @@ student's laptop, and the quality gates that stop the next round of this being
 found by hand.
 
 ### Fixed
+
+- **A path typed into a node parameter could overwrite the run database, and
+  an unattended prune could delete a file it never wrote** ([#224]). One
+  write-scoped rule — "stay inside the project data directory" — guarded both
+  directions, and on a default install the database is inside that directory.
+
+  *Write.* With the default `cdui start` and no `--project`, `PROJECT_DIR` is
+  `None`, the project-mode derivation never runs, and `MODELS_DIR` stays
+  `backend/data/models` — one level below `codefyui.db`. So `../codefyui.db`
+  as a `CheckpointSaver` or `ModelSaver` path resolved to the live database
+  and passed the guard, and a training run wrote a `.pt` payload over it. No
+  plugin and no mislabelled row required. Project mode was never affected:
+  there `MODELS_DIR` is `<project>/assets/models` and the database, which
+  stays install-global, is outside the data root entirely. `ImageWriter`
+  shares the same rule but was not reachable this way — it forces the file
+  extension to match its `format`, so `../codefyui.db` was rewritten to
+  `codefyui.png` and landed beside the database; what it could overwrite was
+  any file under the data root ending in an image extension.
+
+  *Delete.* `RunStore.prune` unlinks the file of every pruned artifact row
+  whose `kind` is `checkpoint`. `kind` is a free-text column and the plugin
+  API can log artifacts, so a row claiming `kind="checkpoint"` with a path
+  pointing at anything else under the data root had that file removed by a
+  background sweep, with no user action and no confirmation.
+
+  Both now have their own rule, because they ask different questions. Writes
+  stay permissive — the data directory is a node's to write into — minus
+  CodefyUI's own storage: the database and its SQLite `-wal` / `-shm` /
+  `-journal` sidecars, derived from `DB_PATH` at call time and compared with
+  case folding so a differently-cased spelling cannot slip past on Windows.
+  Deletes no longer trust the row at all: retention removes a file only where
+  it can prove it wrote it — a generated checkpoint filename under
+  `MODELS_DIR/interrupted/` or `MODELS_DIR/periodic/`, the only two places
+  the interrupt and periodic writers put anything. Everything else is skipped
+  and logged, and the row still goes either way.
+
+  Nothing about ordinary use changes: checkpoints, saved models and written
+  images work exactly as before in both modes, including to arbitrary
+  sub-directories under the data root. A `CheckpointSaver` file the user named
+  themselves was never touched by retention before and still is not.
 
 - **Every request-body size cap could be walked past by chunking, and four
   routes had no cap at all** ([#265], [#242]). Three routes capped their body
@@ -501,6 +613,10 @@ Release candidates before 1.0.0 are on the
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [#242]: https://github.com/CodefyUI/CodefyUI/issues/242
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
+[#189]: https://github.com/CodefyUI/CodefyUI/issues/189
+[#190]: https://github.com/CodefyUI/CodefyUI/issues/190
+[#193]: https://github.com/CodefyUI/CodefyUI/issues/193
+[#224]: https://github.com/CodefyUI/CodefyUI/issues/224
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

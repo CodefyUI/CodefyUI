@@ -197,10 +197,12 @@ class CheckpointLoaderNode(BaseNode):
         # project data directory.
         try:
             p = resolve_checkpoint_path(path)
-        except ValueError:
-            raise ValueError(
-                "Checkpoint file path must be within the project data directory"
-            ) from None
+        except ValueError as exc:
+            # The reason is carried through rather than flattened to the
+            # containment message: since #224 there are two ways to fail
+            # this rule (outside the data directory, or naming CodefyUI's
+            # own storage) and they need different fixes from the user.
+            raise ValueError(f"Checkpoint file path rejected: {exc}") from None
 
         if not p.exists():
             raise FileNotFoundError(f"Checkpoint file not found: {p}")

@@ -185,6 +185,36 @@ async def test_ws_execute_rejects_a_non_integer_seed():
 
 
 @pytest.mark.asyncio
+async def test_ws_execute_rejects_a_non_boolean_deterministic():
+    """#189: the reproducibility pair follows ONE rule, not two.
+
+    ``deterministic`` used to be coerced with ``bool()`` while its sibling
+    ``seed`` was passed through, so ``"deterministic": "false"`` — a
+    perfectly ordinary client bug — asked for deterministic kernels and
+    said nothing about it. A run's reproducibility settings are exactly the
+    ones where a silent reinterpretation is worst: the user gets a number
+    they cannot reproduce and no reason why.
+
+    The string below is chosen to be TRUTHY under ``bool()`` and to mean
+    the opposite of what it would have been read as.
+    """
+    async with AsyncClient(
+        transport=ASGIWebSocketTransport(app=app),
+        base_url=_BASE_URL,
+    ) as client:
+        async with aconnect_ws(_WS_PATH_WITH_TOKEN, client) as ws:
+            await ws.send_text(json.dumps({
+                "action": "execute",
+                "deterministic": "false",
+                "nodes": [{"id": "start", "type": "Start", "data": {"params": {}}}],
+                "edges": [],
+            }))
+            msg = json.loads(await ws.receive_text())
+            assert msg["type"] == "execution_error"
+            assert "deterministic" in msg["error"]
+
+
+@pytest.mark.asyncio
 async def test_ws_unknown_action():
     """Unknown actions should return an error message."""
     async with AsyncClient(
