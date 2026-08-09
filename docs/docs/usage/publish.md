@@ -155,3 +155,5 @@ Understand what a LAN bind exposes -- plainly:
 - Transport is plain HTTP -- no TLS in v1.
 - CORS settings change nothing about this: the exposure is same-origin, and the `Authorization` CORS header exists only so future cross-origin JS callers can be preflighted -- it is not a mitigation.
 - Editor-scoped LAN hardening (loopback-gated bootstrap; published-surface-only on non-loopback Hosts) is a named follow-up, not in v1.
+
+The credentials half of the same story is [Shared Instances](./shared-instances): an instance has ONE identity, so the ChatGPT sign-in, the LLM keys in `.env` and the Kaggle credentials are shared by everyone who can reach the port, with no record of who spent what.

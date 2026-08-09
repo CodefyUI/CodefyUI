@@ -104,6 +104,40 @@ class Database:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Zero freed pages instead of returning them to the freelist with
+            # their content intact (#251). Measured on SQLite 3.50.4 against
+            # the real schema, explicit checkpoints on both sides, scanning
+            # main / -wal / -shm separately:
+            #
+            #   DELETE                    OFF -> residue in main   ON -> none
+            #   UPDATE 12KB -> 0KB        OFF -> residue in main   ON -> none
+            #   UPDATE 12KB -> 12KB       OFF -> none              ON -> none
+            #
+            # BOTH statements need this, which is worth spelling out because
+            # the middle row is easy to get wrong. DELETE is the obvious one:
+            # it is what retention does, continuously, to exactly the rows
+            # that used to hold unscrubbed secrets. But a shrinking UPDATE
+            # releases overflow pages too, so the #251 backfill sweep depends
+            # on this pragma just as much. The last row -- a same-size rewrite
+            # leaving nothing behind because the chain is rewritten in place
+            # -- is incidental, not a guarantee: it flips as soon as the new
+            # size crosses a page boundary. Nothing here is self-cleaning.
+            #
+            # ON rather than FAST: FAST only zeroes content it can reach
+            # without extra I/O and explicitly may leave data in freelist
+            # pages, and ON measured free here (write throughput inside noise;
+            # ~1ms on a prune of 40 runs / 1k events / 4k metric rows). There
+            # is no reason to buy the weaker guarantee.
+            #
+            # PER-CONNECTION, not stored in the file: a reopened connection
+            # reports 0 again (verified on SQLite 3.50.4). It therefore has to
+            # be set here, on the one place a connection is opened, and any
+            # future second connection site has to repeat it.
+            #
+            # Forward-only, and it does not reach the WAL. Pages freed before
+            # this shipped stay as they are until a VACUUM, and a just-freed
+            # page's old image can sit in `-wal` until the next checkpoint.
+            conn.execute("PRAGMA secure_delete=ON")
             self._apply_migrations(conn)
         except BaseException:
             conn.close()

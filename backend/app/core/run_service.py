@@ -85,6 +85,25 @@ is the deliberate trade — the FIFO exists so unattended work is orderly,
 not so a device is exclusive.
 
 
+Secrets (#251)
+--------------
+``exec_runs.graph_snapshot`` stores a SCRUBBED graph. SECRET-typed param
+values are lifted out before the insert -- the same promise save, export,
+publish and codegen already made -- and held in ``_run_secrets``, keyed by
+run id, until ``_load_graph`` puts them back at promotion. A queued run
+therefore executes with the key its submitter typed while the shared
+database file never contains one.
+
+Why memory is the right place for them, and not a hedge: the queue is
+memory too. ``_pending``/``_pending_by_id`` do not survive a restart and
+``recover_interrupted`` retires every ``queued`` row a dead process left, so
+a snapshot can only ever be read back by the process that wrote it. The
+vault's lifetime is exactly the window in which it can be needed. Encrypting
+the column instead would need key material this project does not have (the
+session token rotates every boot, by design), and refusing to queue a
+secret-bearing graph would be a behaviour change that buys nothing this
+does not.
+
 Ids
 ---
 ONE id per run: ``RunStore``'s ``uuid4().hex``. It is the ``exec_runs.id``,
@@ -138,6 +157,11 @@ from .run_store import (
     MetricPoint,
     RunStore,
     json_safe,
+)
+from .secret_params import (
+    SecretVault,
+    restore_graph_secrets,
+    split_graph_secrets,
 )
 from .seeding import MAX_SEED as SEEDING_MAX_SEED
 from .seeding import seed_rngs
@@ -1266,6 +1290,27 @@ class RunService:
         # object is the dict key, so holding it here also keeps it alive for
         # as long as the entry exists.
         self._interactive_sessions: dict[Any, str] = {}
+        # ── SECRET params (#251) ─────────────────────────────────────────
+        # ``run_id -> {address: value}`` for the secrets scrubbed out of a
+        # run's stored snapshot. Process memory, never persisted: this is
+        # the half that must not reach the shared database file.
+        #
+        # An in-memory store is safe here for one specific reason -- the
+        # queue it shadows is in memory too. ``_pending``/``_pending_by_id``
+        # do not survive a restart, and ``recover_interrupted`` retires every
+        # ``queued`` row a dead process left behind, so a snapshot can only
+        # ever be read back by the SAME process that wrote it. The vault's
+        # lifetime is therefore exactly the lifetime over which it can be
+        # needed; nothing is lost by not persisting it, because nothing
+        # resumes. If queued runs ever DO start surviving a restart, this
+        # becomes the wrong answer and the test named for that premise in
+        # test_run_secrets.py is what fails first.
+        #
+        # It is bounded by the queue: an entry is added on submit and
+        # removed on exactly one of two exhaustive paths -- ``_drive``'s
+        # ``finally`` for a run that started, ``_retire_waiting`` for one
+        # that never did.
+        self._run_secrets: dict[str, SecretVault] = {}
         self._shutting_down = False
 
     # ── introspection ─────────────────────────────────────────────────────
@@ -1276,6 +1321,15 @@ class RunService:
 
     def is_active(self, run_id: str) -> bool:
         return run_id in self._runs
+
+    def pending_secret_count(self) -> int:
+        """How many runs this process is holding SECRET params for (#251).
+
+        A COUNT, never the values — this exists so tests can pin that the
+        vault drains, and a diagnostic that returned the keys themselves
+        would be a new way to leak them.
+        """
+        return len(self._run_secrets)
 
     def execution_id(self, run_id: str) -> str | None:
         """The ``ExecutionContext.execution_id`` of a live run (== its id)."""
@@ -1367,8 +1421,12 @@ class RunService:
                 normalized_graph, normalized_options, normalized_name,
                 queue_key, session)
 
+        # SECRET params never reach the row (#251). The stored copy is
+        # scrubbed and the real values are held in memory until promotion
+        # re-injects them; see ``self._run_secrets`` for why that is safe.
+        stored_graph, secrets = split_graph_secrets(normalized_graph)
         record = await self.store.create_run(
-            graph_snapshot=normalized_graph,
+            graph_snapshot=stored_graph,
             options=normalized_options,
             name=normalized_name,
             status=STATUS_QUEUED,
@@ -1382,6 +1440,13 @@ class RunService:
             # queue that has already been drained and wait for a pump that
             # will never run again.
             raise RunServiceUnavailable(SHUTDOWN_AFTER_PERSIST)
+        # After the shutdown re-check, before the run can possibly be
+        # promoted: the next three statements do not await, and ``_pump`` is
+        # what starts a run, so the vault is populated by the time anything
+        # can read the scrubbed snapshot back. Registering it above the
+        # re-check would strand an entry on the raise.
+        if secrets:
+            self._run_secrets[record.id] = secrets
         # Enqueue THEN pump, always — even when the device is idle and the
         # run will start on the very next statement. A fast path that started
         # an empty-queue submit directly would be a second admission rule to
@@ -1416,8 +1481,13 @@ class RunService:
         """
         self._admit_interactive(session)
         try:
+            # Scrubbed on the way in, exactly like the queued lane (#251) --
+            # but with no vault entry, because this lane never reads its
+            # snapshot back. ``_start`` gets the LIVE graph, so the row is
+            # write-only and the key in it would be pure retained liability.
+            stored_graph, _secrets = split_graph_secrets(graph)
             record = await self.store.create_run(
-                graph_snapshot=graph, options=options, name=name,
+                graph_snapshot=stored_graph, options=options, name=name,
                 status=STATUS_QUEUED, queue_key=queue_key,
             )
             return self._start(record.id, graph, options,
@@ -1749,6 +1819,11 @@ class RunService:
         finally:
             active.close()
             self._runs.pop(run_id, None)
+            # One of the vault's two exhaustive drop points (#251): every run
+            # that STARTED passes through here, including the hard-cancelled
+            # ones that skip ``_finalize`` entirely. Before
+            # ``_release_admission``, which pumps the next run.
+            self._run_secrets.pop(run_id, None)
             self._release_admission(active)
 
     @staticmethod
@@ -1783,6 +1858,13 @@ class RunService:
         snapshot.setdefault("edges", [])
         snapshot.setdefault("presets", [])
         snapshot.setdefault("subgraphs", [])
+        # Put the SECRET params back (#251). The row was stored scrubbed, so
+        # this is the step that makes a queued run execute with the key its
+        # submitter typed. A run whose vault entry is gone -- an orphan row
+        # from a previous boot, a graph submitted before this existed --
+        # simply runs with the blank the snapshot carries and fails the way
+        # a missing key already fails.
+        restore_graph_secrets(snapshot, self._run_secrets.get(active.run_id))
         return snapshot
 
     async def _begin(self, active: _ActiveRun) -> bool:
@@ -2329,6 +2411,11 @@ class RunService:
         quiet is indistinguishable from a run that is simply slow.
         Manufacturing a start event to pair with it would be the actual lie.
         """
+        # The vault's other drop point (#251), and the reason it lives here
+        # rather than in each caller: this is the one function BOTH cancel
+        # and shutdown route a never-started run through, so a run that
+        # leaves the queue without reaching ``_drive`` cannot keep its key.
+        self._run_secrets.pop(entry.run_id, None)
         landed = await self.store.mark_finished(
             entry.run_id, status, expected=(STATUS_QUEUED,))
         if not landed:
@@ -2368,6 +2455,73 @@ class RunService:
                 "marked %d run(s) interrupted (they did not survive a "
                 "restart)", count)
         return count
+
+    async def scrub_stored_secrets(self) -> int:
+        """Remove SECRET values an older build persisted. Returns rows changed.
+
+        A startup sweep, and the part of #251 that addresses the leak that
+        already happened. Scrubbing on write only protects runs submitted
+        from here on; retention is count-based with no age component, so a
+        key written by a previous version sits in the shared database until
+        200 further runs push its row out — which on a quiet install is
+        never.
+
+        FINISHED rows only (see ``list_terminal_graph_snapshots``). An active
+        row may be one this process is about to promote and re-inject into,
+        and blanking it would break the very run the vault exists to serve.
+        After ``recover_interrupted`` there are none, which is why
+        ``main.py`` orders it second; the guard is what makes the method safe
+        to call anywhere regardless.
+
+        Idempotent and cheap on the steady state: a row is only rewritten
+        when the scrub actually finds something, so once swept, every later
+        boot reads the rows and writes nothing. That standing sweep is also a
+        backstop — if any future path ever persists an unscrubbed snapshot,
+        the next restart takes the key back out.
+
+        What this does and does not reach, measured rather than assumed
+        (SQLite 3.50.4, real schema, explicit checkpoints on both sides):
+
+        - The rows it rewrites come out clean, **because
+          ``PRAGMA secure_delete=ON`` is set** (see ``db.py``) -- NOT because
+          an UPDATE is self-cleaning. It is not. Blanking a secret shrinks
+          the JSON, and a shrinking rewrite of a large TEXT value releases
+          overflow pages; without the pragma those go to the freelist with
+          the old content intact, in the MAIN file::
+
+              12KB -> 0KB   secure_delete=OFF -> residue in main
+              12KB -> 0KB   secure_delete=ON  -> none
+
+          Whether a given scrub frees a page at all depends on where the new
+          size lands against a page boundary -- a same-size rewrite rewrites
+          the chain in place and happens to leave nothing either way. That is
+          incidental. Do not read this sweep as safe without the pragma.
+        - Rows retention already PRUNED on an older build are beyond it.
+          Their pages were freed before the pragma shipped, so they went to
+          the freelist with the key intact and stay that way until a
+          ``VACUUM``. The row is gone, so there is nothing here to rewrite.
+
+        That second case is why the docs still tell an operator who ran a
+        secret-bearing graph on an earlier version to treat the key as
+        disclosed and rotate it. For anything written from here on there is
+        no such caveat: the value never reaches the row in the first place,
+        and a freed page is zeroed on the way out.
+        """
+        cleaned = 0
+        for run_id, graph in await self.store.list_terminal_graph_snapshots():
+            scrubbed, secrets = split_graph_secrets(graph)
+            if not secrets:
+                continue
+            # ``scrubbed`` is a copy; ``secrets`` is discarded unread. The
+            # values are on their way out, not into memory.
+            if await self.store.replace_graph_snapshot(run_id, scrubbed):
+                cleaned += 1
+        if cleaned:
+            logger.warning(
+                "removed stored SECRET parameter values from %d run "
+                "snapshot(s) written before they were scrubbed on write",
+                cleaned)
+        return cleaned
 
     async def prune_retention(self) -> int:
         """Apply the keep-last-N retention policy. ``None`` disables it."""
@@ -2428,20 +2582,29 @@ class RunService:
             if entry.stop_reason is None:
                 entry.stop_reason = STOP_REASON_INTERRUPTED
             entry.context.cancel()
-        tasks = [entry.task for entry in active if entry.task is not None]
-        if not tasks:
-            return
-        logger.info("shutdown: draining %d in-flight run(s)", len(tasks))
-        _done, pending = await asyncio.wait(tasks,
-                                            timeout=self._shutdown_grace_s)
-        if pending:
-            logger.warning(
-                "shutdown: %d run(s) did not stop within %.1fs; cancelling "
-                "(they will be marked interrupted on the next start)",
-                len(pending), self._shutdown_grace_s)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            tasks = [entry.task for entry in active if entry.task is not None]
+            if not tasks:
+                return
+            logger.info("shutdown: draining %d in-flight run(s)", len(tasks))
+            _done, pending = await asyncio.wait(tasks,
+                                                timeout=self._shutdown_grace_s)
+            if pending:
+                logger.warning(
+                    "shutdown: %d run(s) did not stop within %.1fs; cancelling "
+                    "(they will be marked interrupted on the next start)",
+                    len(pending), self._shutdown_grace_s)
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            # Belt and braces (#251). ``_retire_queue`` above dropped every
+            # waiting run's secrets and each drained task dropped its own, so
+            # this should already be empty — but "should" is not a property a
+            # credential store gets to rely on, and a service object that
+            # outlives its shutdown (tests, an embedded host) must not still
+            # be holding keys.
+            self._run_secrets.clear()
 
     async def _retire_queue(self) -> int:
         """File every waiting run ``interrupted``. Returns how many.
