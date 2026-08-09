@@ -62,6 +62,92 @@ const lstar = (colour) => {
   return y <= 216 / 24389 ? (y * 24389) / 27 : Math.cbrt(y) * 116 - 16;
 };
 
+/** CIE Lab (D65). Needed for CIEDE2000 below; L* alone cannot tell two hues
+ *  of equal lightness apart, which is exactly the failure mode a categorical
+ *  palette has — fourteen colours that all clear 3:1 on white but look alike
+ *  is a different bug, not a fix. */
+const lab = (colour) => {
+  const [r, g, b] = toRgb(colour).map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  const xyz = [
+    0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
+    0.2126729 * r + 0.7151522 * g + 0.072175 * b,
+    0.0193339 * r + 0.119192 * g + 0.9503041 * b,
+  ];
+  const wp = [0.95047, 1.0, 1.08883];
+  const f = (t) => (t > 216 / 24389 ? Math.cbrt(t) : ((t * 24389) / 27 + 16) / 116);
+  const [fx, fy, fz] = xyz.map((v, i) => f(v / wp[i]));
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+};
+
+/** CIEDE2000 perceptual colour difference. ~1.0 is the just-noticeable
+ *  difference; a categorical palette wants its closest pair well above that.
+ *  Sanity-checked below against two pairs from the Sharma et al. reference
+ *  data set. */
+const deltaE2000Lab = ([L1, a1, b1], [L2, a2, b2]) => {
+  const deg = (x) => (x * 180) / Math.PI;
+  const rad = (x) => (x * Math.PI) / 180;
+  const C1 = Math.hypot(a1, b1);
+  const C2 = Math.hypot(a2, b2);
+  const Cb = (C1 + C2) / 2;
+  const G = 0.5 * (1 - Math.sqrt(Cb ** 7 / (Cb ** 7 + 25 ** 7)));
+  const a1p = (1 + G) * a1;
+  const a2p = (1 + G) * a2;
+  const C1p = Math.hypot(a1p, b1);
+  const C2p = Math.hypot(a2p, b2);
+  const h1p = (deg(Math.atan2(b1, a1p)) + 360) % 360;
+  const h2p = (deg(Math.atan2(b2, a2p)) + 360) % 360;
+  const dLp = L2 - L1;
+  const dCp = C2p - C1p;
+  let dhp = 0;
+  if (C1p * C2p !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin(rad(dhp) / 2);
+  const Lbp = (L1 + L2) / 2;
+  const Cbp = (C1p + C2p) / 2;
+  let hbp;
+  if (C1p * C2p === 0) hbp = h1p + h2p;
+  else if (Math.abs(h1p - h2p) <= 180) hbp = (h1p + h2p) / 2;
+  else hbp = h1p + h2p < 360 ? (h1p + h2p + 360) / 2 : (h1p + h2p - 360) / 2;
+  const T =
+    1 -
+    0.17 * Math.cos(rad(hbp - 30)) +
+    0.24 * Math.cos(rad(2 * hbp)) +
+    0.32 * Math.cos(rad(3 * hbp + 6)) -
+    0.2 * Math.cos(rad(4 * hbp - 63));
+  const Rc = 2 * Math.sqrt(Cbp ** 7 / (Cbp ** 7 + 25 ** 7));
+  const Sl = 1 + (0.015 * (Lbp - 50) ** 2) / Math.sqrt(20 + (Lbp - 50) ** 2);
+  const Sc = 1 + 0.045 * Cbp;
+  const Sh = 1 + 0.015 * Cbp * T;
+  const Rt = -Math.sin(rad(60 * Math.exp(-(((hbp - 275) / 25) ** 2)))) * Rc;
+  return Math.sqrt(
+    (dLp / Sl) ** 2 + (dCp / Sc) ** 2 + (dHp / Sh) ** 2 + Rt * (dCp / Sc) * (dHp / Sh)
+  );
+};
+const deltaE2000 = (a, b) => deltaE2000Lab(lab(a), lab(b));
+
+/** Smallest CIEDE2000 distance between any two members of a palette, with the
+ *  pair that produced it — that pair is the one a reader has to tell apart. */
+const closestPair = (entries) => {
+  let min = Infinity;
+  let pair = ['', ''];
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const d = deltaE2000(entries[i][1], entries[j][1]);
+      if (d < min) {
+        min = d;
+        pair = [entries[i][0], entries[j][0]];
+      }
+    }
+  }
+  return { min, pair };
+};
+
 /** Alpha-composite `fg` over `bg`, both as rgb triples. */
 const overlay = (fg, alpha, bg) =>
   fg.map((v, i) => v * alpha + bg[i] * (1 - alpha));
@@ -78,10 +164,36 @@ const selfTests = [
   ['#767676 on #ffffff', contrast('#767676', '#ffffff'), 4.54, 0.01],
   ['#000000 on #ffffff', contrast('#000000', '#ffffff'), 21.0, 0.001],
   ['#ffffff on #ffffff', contrast('#ffffff', '#ffffff'), 1.0, 0.001],
+  // CIEDE2000 against the Sharma/Wu/Dalal reference pairs. Pair 1 is the one
+  // that exercises the hue-rotation term, which is the part of the formula
+  // everyone gets wrong; pair 4 is a constructed unit distance.
+  [
+    'dE00 Sharma pair 1',
+    deltaE2000Lab([50, 2.6772, -79.7751], [50, 0, -82.7485]),
+    2.0425,
+    0.0001,
+  ],
+  [
+    'dE00 Sharma pair 2',
+    deltaE2000Lab([50, 3.1571, -77.2803], [50, 0, -82.7485]),
+    2.8615,
+    0.0001,
+  ],
+  [
+    'dE00 Sharma pair 4',
+    deltaE2000Lab([50, -1.3802, -84.2814], [50, 0, -82.7485]),
+    1.0,
+    0.0001,
+  ],
+  ['dE00 of a colour with itself', deltaE2000('#4caf50', '#4caf50'), 0, 1e-9],
+  // Lab of pure white is (100, 0, 0) — proves the sRGB -> Lab leg, which the
+  // reference pairs above skip because they start in Lab.
+  ['L* of #ffffff via lab()', lab('#ffffff')[0], 100, 0.001],
+  ['L* of #000000 via lab()', lab('#000000')[0], 0, 0.001],
 ];
 for (const [name, got, want, tol] of selfTests) {
   if (Math.abs(got - want) > tol) {
-    console.error(`contrast maths is wrong: ${name} = ${got.toFixed(3)}, expected ${want}`);
+    console.error(`colour maths is wrong: ${name} = ${got.toFixed(4)}, expected ${want}`);
     process.exit(2);
   }
 }
@@ -265,6 +377,148 @@ for (const role of ['--code-text', '--code-comment', '--code-gutter']) {
 for (const glow of ['--glow-running', '--glow-accent']) {
   if (!/rgba\([^)]*,\s*0?\.\d+\s*\)/.test(t(glow))) {
     failures.push(`${glow} must use a translucent rgba() colour, got: ${t(glow)}`);
+  }
+}
+
+/* ---------- 11. The SVG diagram export ----------
+
+   Everything above gates the app. `utils/exportDiagram.ts` renders the same
+   graph as a standalone SVG in a second theme, and the default is the *light*
+   one — the version that ends up in a student's report or a slide deck. That
+   path had no gate at all, which is how seven of the fourteen category hues
+   came to be drawn as a card border on white at 2.15:1 to 3.00:1, and all
+   fourteen as the card's title text below 4.5:1 (core#227).
+
+   Adding a second palette without extending this script would just move the
+   unchecked colour decision one layer down, so the export's palettes are
+   declared in tokens.css and re-derived here like everything else. The theme
+   names and roles below must stay in step with DIAGRAM_THEMES; theme.test.ts
+   is what holds the TypeScript mirror to these same tokens. */
+
+const DIAGRAM_CATEGORIES = [
+  'cnn', 'rnn', 'transformer', 'llm', 'diffusion', 'classical', 'rl',
+  'data', 'training', 'io', 'dataflow', 'utility', 'normalization', 'tensorops',
+];
+const DIAGRAM_TYPES = [
+  'tensor', 'model', 'dataset', 'dataloader', 'optimizer', 'loss-fn',
+  'scalar', 'string', 'image', 'list', 'transform', 'any',
+];
+
+/* Each theme names where its palettes come from. The dark export reuses the
+   app's hues (already tuned for a dark surface); the light export has its own,
+   because a hue legible on a near-black canvas is not legible on paper. */
+const DIAGRAM_THEMES = [
+  {
+    name: 'light',
+    page: '--diagram-light-page',
+    card: '--diagram-light-card',
+    ink: '--diagram-light-ink',
+    wire: '--diagram-light-wire',
+    preset: '--diagram-light-preset',
+    start: '--diagram-light-start',
+    startFill: '--diagram-light-start-fill',
+    category: (slug) => `--diagram-light-${slug}`,
+    type: (slug) => `--diagram-light-type-${slug}`,
+    // The light palette is a fresh design, so it is held to a real floor.
+    minSeparation: 8,
+  },
+  {
+    name: 'dark',
+    page: '--diagram-dark-page',
+    card: '--diagram-dark-card',
+    ink: '--diagram-dark-ink',
+    wire: '--diagram-dark-wire',
+    preset: '--diagram-dark-preset',
+    start: '--diagram-dark-start',
+    startFill: '--diagram-dark-start-fill',
+    category: (slug) => `--cat-${slug}`,
+    type: (slug) => `--type-${slug}`,
+    // The canvas palette's closest pair is --cat-classical / --cat-rl at 3.71
+    // dE00 — two ambers that were already hard to tell apart before any of
+    // this, and repainting the whole app to part them is a separate change.
+    // The floor records that state so it cannot get worse; it is NOT a licence
+    // to relax the light one.
+    minSeparation: 3.5,
+  },
+];
+
+for (const theme of DIAGRAM_THEMES) {
+  const page = t(theme.page);
+  const card = t(theme.card);
+  const label = `diagram/${theme.name}`;
+
+  // Port labels are ordinary text on the card.
+  check(`${label}: ink on the card`, contrast(t(theme.ink), card), 4.5);
+
+  const accents = [
+    ...DIAGRAM_CATEGORIES.map((slug) => [slug, theme.category(slug), card]),
+    ['preset', theme.preset, card],
+    // The Start card has its own fill, so its accent is measured against that
+    // rather than the ordinary card.
+    ['start', theme.start, t(theme.startFill)],
+  ];
+  for (const [role, token, behind] of accents) {
+    // Two roles, two bars: the hue outlines the card (1.4.11, a graphic that
+    // identifies an object) *and* is painted as the card's title (1.4.3, text).
+    check(`${label}: ${role} as a card border`, contrast(t(token), behind), 3);
+    check(`${label}: ${role} as the card title`, contrast(t(token), behind), 4.5);
+  }
+  // A Start card is a filled box, so its fill has to hold the border's other
+  // side and be told apart from an ordinary card.
+  check(`${label}: start accent against the page`, contrast(t(theme.start), page), 3);
+  if (deltaE2000(t(theme.startFill), card) < 5) {
+    failures.push(
+      `${label}: the Start card fill is only ${deltaE2000(t(theme.startFill), card).toFixed(1)} ` +
+        `dE00 from an ordinary card (needs 5) — the entry point stops standing out`
+    );
+  }
+
+  // Wires are drawn on the page, under the cards. An edge is a graphic that
+  // says two nodes are connected, so it needs 3:1 whatever hue it wears.
+  check(`${label}: neutral wire on the page`, contrast(t(theme.wire), page), 3);
+  for (const slug of DIAGRAM_TYPES) {
+    check(`${label}: ${slug} wire on the page`, contrast(t(theme.type(slug)), page), 3);
+  }
+
+  // Fourteen hues that all clear 3:1 on white but look alike is a different
+  // failure, so measure them against each other too.
+  const cats = closestPair(
+    DIAGRAM_CATEGORIES.map((slug) => [slug, t(theme.category(slug))])
+  );
+  if (cats.min < theme.minSeparation) {
+    failures.push(
+      `${label}: categories ${cats.pair.join(' and ')} are only ${cats.min.toFixed(2)} dE00 ` +
+        `apart (needs ${theme.minSeparation}) — they are the pair a reader has to tell apart`
+    );
+  }
+  checked += 1;
+  const types = closestPair(DIAGRAM_TYPES.map((slug) => [slug, t(theme.type(slug))]));
+  if (types.min < 5) {
+    failures.push(
+      `${label}: wire types ${types.pair.join(' and ')} are only ${types.min.toFixed(2)} dE00 apart (needs 5)`
+    );
+  }
+  checked += 1;
+}
+
+/* 11b. A light category hue is a restatement of its dark counterpart for a
+        white page, not a new colour: same hue, lower lightness. If someone
+        "fixes" a contrast failure by rotating a hue instead of darkening it,
+        the export stops agreeing with the app a reader is looking at, and the
+        colour coding silently means two different things in two places. */
+for (const slug of DIAGRAM_CATEGORIES) {
+  const [, da, db] = lab(t(`--cat-${slug}`));
+  const [, la, lb] = lab(t(`--diagram-light-${slug}`));
+  const drift = Math.abs(
+    ((Math.atan2(lb, la) - Math.atan2(db, da)) * 180) / Math.PI
+  );
+  const wrapped = drift > 180 ? 360 - drift : drift;
+  checked += 1;
+  if (wrapped > 12) {
+    failures.push(
+      `--diagram-light-${slug} sits ${wrapped.toFixed(1)} degrees of hue from --cat-${slug} ` +
+        `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
+    );
   }
 }
 

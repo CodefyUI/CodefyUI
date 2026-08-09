@@ -46,6 +46,154 @@ export const CATEGORY_VARS: Record<string, string> = {
 };
 
 /**
+ * The same fourteen categories, darkened for a white page.
+ *
+ * `CATEGORY_COLORS` is tuned for the app's near-black canvas; on the white
+ * card the SVG exporter draws by default, those hues measured 2.15:1 to
+ * 3.09:1 as a border and every one of them failed the 4.5:1 the exporter also
+ * needs from them as the card's title text (core#227). Each value below is its
+ * counterpart above converted to OKLCH, hue held, chroma pushed to the gamut
+ * edge and lightness lowered until it clears the bar — so the hue a reader
+ * knows from the app survives (at most 1.3 degrees of drift) while the
+ * measurement changes.
+ *
+ * Mirrors the `--diagram-light-*` tokens; `theme.test.ts` asserts the match,
+ * and `scripts/check-contrast.mjs` re-derives every measurement above.
+ */
+export const CATEGORY_COLORS_ON_LIGHT: Record<string, string> = {
+  CNN: '#1a8626',
+  RNN: '#0077c8',
+  Transformer: '#9f58ab',
+  LLM: '#7f61cc',
+  Diffusion: '#c93d86',
+  Classical: '#7e4e00',
+  RL: '#a96300',
+  Data: '#018091',
+  Training: '#d14039',
+  IO: '#866f66',
+  'Data Flow': '#ad4900',
+  Utility: '#617782',
+  Normalization: '#008278',
+  'Tensor Operations': '#6570ad',
+};
+
+/** `--diagram-light-*` variable name for each category. */
+export const CATEGORY_LIGHT_VARS: Record<string, string> = {
+  CNN: '--diagram-light-cnn',
+  RNN: '--diagram-light-rnn',
+  Transformer: '--diagram-light-transformer',
+  LLM: '--diagram-light-llm',
+  Diffusion: '--diagram-light-diffusion',
+  Classical: '--diagram-light-classical',
+  RL: '--diagram-light-rl',
+  Data: '--diagram-light-data',
+  Training: '--diagram-light-training',
+  IO: '--diagram-light-io',
+  'Data Flow': '--diagram-light-dataflow',
+  Utility: '--diagram-light-utility',
+  Normalization: '--diagram-light-normalization',
+  'Tensor Operations': '--diagram-light-tensorops',
+};
+
+/**
+ * Port/wire hues darkened for a white page, same derivation as
+ * `CATEGORY_COLORS_ON_LIGHT`. A wire has to be visible as a line before its
+ * colour can mean anything, and LIST measured 1.51:1 on white. Held to the
+ * 3:1 graphic bar rather than 4.5:1 — the hue is never drawn as text, and the
+ * type it stands for is spelled out in bold beside both of its ports. Five of
+ * the twelve already cleared 3:1 and keep their canvas value.
+ *
+ * Keyed by the same uppercase data-type names as `DATA_TYPE_COLORS`.
+ */
+export const DATA_TYPE_COLORS_ON_LIGHT: Record<string, string> = {
+  TENSOR: '#40a445',
+  MODEL: '#2095f2',
+  DATASET: '#d27c00',
+  DATALOADER: '#9c27b0',
+  OPTIMIZER: '#f44336',
+  LOSS_FN: '#e91e63',
+  SCALAR: '#029fb3',
+  STRING: '#6aa01f',
+  IMAGE: '#ff5722',
+  LIST: '#8d9800',
+  TRANSFORM: '#b78901',
+  ANY: '#919191',
+};
+
+/** `--diagram-light-type-*` variable name for each data type. */
+export const DATA_TYPE_LIGHT_VARS: Record<string, string> = {
+  TENSOR: '--diagram-light-type-tensor',
+  MODEL: '--diagram-light-type-model',
+  DATASET: '--diagram-light-type-dataset',
+  DATALOADER: '--diagram-light-type-dataloader',
+  OPTIMIZER: '--diagram-light-type-optimizer',
+  LOSS_FN: '--diagram-light-type-loss-fn',
+  SCALAR: '--diagram-light-type-scalar',
+  STRING: '--diagram-light-type-string',
+  IMAGE: '--diagram-light-type-image',
+  LIST: '--diagram-light-type-list',
+  TRANSFORM: '--diagram-light-type-transform',
+  ANY: '--diagram-light-type-any',
+};
+
+/** `--type-*` variable name for each data type (the canvas / dark values). */
+export const DATA_TYPE_VARS: Record<string, string> = {
+  TENSOR: '--type-tensor',
+  MODEL: '--type-model',
+  DATASET: '--type-dataset',
+  DATALOADER: '--type-dataloader',
+  OPTIMIZER: '--type-optimizer',
+  LOSS_FN: '--type-loss-fn',
+  SCALAR: '--type-scalar',
+  STRING: '--type-string',
+  IMAGE: '--type-image',
+  LIST: '--type-list',
+  TRANSFORM: '--type-transform',
+  ANY: '--type-any',
+};
+
+/**
+ * Non-category chrome for each SVG export theme — the page, the card it draws
+ * nodes on, the ink for port labels, the default wire, and the two nodes that
+ * carry a brand rather than a category (preset gold, Start green).
+ *
+ * Mirrors the `--diagram-light-*` / `--diagram-dark-*` tokens. `exportDiagram`
+ * assembles these into `DIAGRAM_THEMES`; they live here so `theme.test.ts` can
+ * hold every one of them against `tokens.css`.
+ */
+export const DIAGRAM_CHROME = {
+  light: {
+    page: '#ffffff',
+    card: '#ffffff',
+    ink: '#0f172a',
+    wire: '#64748b',
+    preset: '#956e00',
+    start: '#00712f',
+    startFill: '#dcfce7',
+  },
+  dark: {
+    page: '#0a0a0a',
+    card: '#1e1e1e',
+    ink: '#e5e7eb',
+    wire: '#888888',
+    preset: '#d4a017',
+    start: '#22c55e',
+    startFill: '#1f3c2a',
+  },
+} as const;
+
+/** `--diagram-<theme>-<role>` variable name for each entry of {@link DIAGRAM_CHROME}. */
+export const DIAGRAM_CHROME_VARS: Record<keyof typeof DIAGRAM_CHROME.light, string> = {
+  page: 'page',
+  card: 'card',
+  ink: 'ink',
+  wire: 'wire',
+  preset: 'preset',
+  start: 'start',
+  startFill: 'start-fill',
+};
+
+/**
  * How much of a category hue is mixed into `--surface-raised` to produce a
  * node's header fill.
  *

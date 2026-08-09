@@ -5,6 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   CATEGORY_COLORS,
   CATEGORY_VARS,
+  CATEGORY_COLORS_ON_LIGHT,
+  CATEGORY_LIGHT_VARS,
+  DATA_TYPE_COLORS_ON_LIGHT,
+  DATA_TYPE_LIGHT_VARS,
+  DATA_TYPE_VARS,
+  DIAGRAM_CHROME,
+  DIAGRAM_CHROME_VARS,
   TOKEN_COLORS,
   getTokenColor,
   DIFFICULTY_COLORS,
@@ -17,6 +24,7 @@ import {
   SURFACE_RAISED,
   mixColor,
 } from './theme';
+import { DATA_TYPE_COLORS } from '../utils';
 
 /**
  * `tokens.css` is the source of truth for colour; the maps in `theme.ts` are a
@@ -112,6 +120,84 @@ describe('tokens.css / theme.ts agreement', () => {
   it('has no orphaned category variable on either side', () => {
     const declared = [...cssTokens.keys()].filter((k) => k.startsWith('--cat-')).sort();
     expect(declared).toEqual(Object.values(CATEGORY_VARS).sort());
+  });
+
+  // Hex case differs by history: tokens.css is lowercase throughout, while
+  // DATA_TYPE_COLORS predates it and is uppercase. Same colour either way.
+  const sameColour = (a: string, b: string) => expect(a.toLowerCase()).toBe(b.toLowerCase());
+
+  it.each(Object.keys(DATA_TYPE_COLORS))('data type %s matches its CSS variable', (name) => {
+    sameColour(DATA_TYPE_COLORS[name], cssVar(DATA_TYPE_VARS[name]));
+  });
+
+  it('has no orphaned data-type variable on either side', () => {
+    const declared = [...cssTokens.keys()].filter((k) => k.startsWith('--type-')).sort();
+    expect(declared).toEqual(Object.values(DATA_TYPE_VARS).sort());
+    expect(Object.keys(DATA_TYPE_VARS).sort()).toEqual(Object.keys(DATA_TYPE_COLORS).sort());
+  });
+});
+
+/**
+ * The SVG export's light theme (core#227). It is a second palette, so it is
+ * exactly the kind of thing that drifts from the token layer — these hold it
+ * in place, and `scripts/check-contrast.mjs` proves the tokens themselves are
+ * legible. Between the two, neither a bad value nor a stale copy can ship.
+ */
+describe('tokens.css / diagram export palette agreement', () => {
+  it('covers every node category', () => {
+    expect(Object.keys(CATEGORY_COLORS_ON_LIGHT).sort()).toEqual(
+      Object.keys(CATEGORY_COLORS).sort(),
+    );
+    expect(Object.keys(CATEGORY_LIGHT_VARS).sort()).toEqual(
+      Object.keys(CATEGORY_COLORS).sort(),
+    );
+  });
+
+  it.each(Object.keys(CATEGORY_COLORS_ON_LIGHT))(
+    'light category %s matches its CSS variable',
+    (name) => {
+      expect(CATEGORY_COLORS_ON_LIGHT[name]).toBe(cssVar(CATEGORY_LIGHT_VARS[name]));
+    },
+  );
+
+  it('covers every data type', () => {
+    expect(Object.keys(DATA_TYPE_COLORS_ON_LIGHT).sort()).toEqual(
+      Object.keys(DATA_TYPE_COLORS).sort(),
+    );
+    expect(Object.keys(DATA_TYPE_LIGHT_VARS).sort()).toEqual(
+      Object.keys(DATA_TYPE_COLORS).sort(),
+    );
+  });
+
+  it.each(Object.keys(DATA_TYPE_COLORS_ON_LIGHT))(
+    'light data type %s matches its CSS variable',
+    (name) => {
+      expect(DATA_TYPE_COLORS_ON_LIGHT[name]).toBe(cssVar(DATA_TYPE_LIGHT_VARS[name]));
+    },
+  );
+
+  it.each(
+    (['light', 'dark'] as const).flatMap((theme) =>
+      (Object.keys(DIAGRAM_CHROME_VARS) as (keyof typeof DIAGRAM_CHROME.light)[]).map(
+        (role) => [theme, role] as const,
+      ),
+    ),
+  )('%s diagram chrome %s matches its CSS variable', (theme, role) => {
+    expect(DIAGRAM_CHROME[theme][role]).toBe(
+      cssVar(`--diagram-${theme}-${DIAGRAM_CHROME_VARS[role]}`),
+    );
+  });
+
+  it('has no orphaned diagram variable on either side', () => {
+    const declared = [...cssTokens.keys()].filter((k) => k.startsWith('--diagram-')).sort();
+    const mirrored = [
+      ...Object.values(CATEGORY_LIGHT_VARS),
+      ...Object.values(DATA_TYPE_LIGHT_VARS),
+      ...(['light', 'dark'] as const).flatMap((theme) =>
+        Object.values(DIAGRAM_CHROME_VARS).map((role) => `--diagram-${theme}-${role}`),
+      ),
+    ].sort();
+    expect(declared).toEqual(mirrored);
   });
 });
 

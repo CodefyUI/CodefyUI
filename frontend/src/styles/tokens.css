@@ -272,6 +272,114 @@
   --status-interrupted: #ff8f00;
   /* `idle` was #444 — 1.86:1, an indicator you could not see. A neutral
      that still reads as "nothing is happening" but is actually visible. */
+
+  /* Port / wire data types. What a port dot and the wire leaving it are
+     painted with, so the colour says what flows along the connection. These
+     were the last semantic palette still living only as hex literals in
+     TypeScript (`utils/index.ts` DATA_TYPE_COLORS); the values are unchanged,
+     they simply have a home in the token layer now so the contrast gate can
+     see them. `theme.test.ts` asserts the TS mirror still matches. */
+  --type-tensor: #4caf50;
+  --type-model: #2196f3;
+  --type-dataset: #ff9800;
+  --type-dataloader: #9c27b0;
+  --type-optimizer: #f44336;
+  --type-loss-fn: #e91e63;
+  --type-scalar: #00bcd4;
+  --type-string: #8bc34a;
+  --type-image: #ff5722;
+  --type-list: #cddc39;
+  --type-transform: #ffc107;
+  --type-any: #9e9e9e;
+}
+
+/* --------------------------------------------------------
+   Diagram export — the second theme.
+
+   `utils/exportDiagram.ts` renders a graph as a standalone SVG in one of two
+   themes, and **light is the default**: it is the version that goes into a
+   report or a slide deck. Everything above this block is tuned for the app's
+   near-black canvas, and a hue that reads on #0f1319 does not read on white —
+   the fourteen category hues measured 2.15:1 to 3.09:1 as a card border on a
+   white card, seven of them under the 3:1 that WCAG 1.4.11 asks of a border
+   that identifies an object, and *all* fourteen under the 4.5:1 the same hue
+   needs as the card's title text. So the light theme gets its own palette
+   rather than borrowing the dark one (core#227).
+
+   The light hues are not hand-picked. Each is its dark counterpart converted
+   to OKLCH, hue held fixed, chroma pushed to the sRGB gamut edge, and
+   lightness lowered until it clears the bar on a white card. Hue drift is at
+   most 1.8 degrees, so a green category stays the same green a reader knows
+   from the app. The two exceptions are marked: Classical and RL are 3.71
+   CIEDE2000 apart in the dark palette — its closest pair by a wide margin —
+   and splitting them on lightness costs nothing on paper.
+
+   Nothing in CSS references these; they are consumed by the SVG exporter
+   through the `styles/theme.ts` mirror, because an exported file is
+   standalone and has no `var()` to resolve. They live here so there is still
+   one place colour is decided, and so `scripts/check-contrast.mjs` gates the
+   export the same way it gates the app.
+   -------------------------------------------------------- */
+:root {
+  /* Dark theme chrome. The category and data-type hues above are already
+     tuned for a dark surface, so the dark export reuses them as-is. */
+  --diagram-dark-page: #0a0a0a;
+  --diagram-dark-card: #1e1e1e;
+  --diagram-dark-ink: #e5e7eb; /* 13.47:1 on the card */
+  --diagram-dark-wire: #888888; /*  5.58:1 on the page */
+  --diagram-dark-preset: #d4a017; /*  7.02:1 on the card */
+  --diagram-dark-start: #22c55e; /*  7.32:1 on the card */
+  /* The Start card used to be filled #dcfce7 in *both* themes — a pale green
+     box in a near-black diagram, with its title at 3.00:1 on it. This is the
+     same construction as a node header: the trigger green tinted into the
+     card at --node-header-tint. */
+  --diagram-dark-start-fill: #1f3c2a; /* --diagram-dark-start on it: 5.30:1 */
+
+  /* Light theme chrome. */
+  --diagram-light-page: #ffffff;
+  --diagram-light-card: #ffffff;
+  --diagram-light-ink: #0f172a; /* 17.85:1 on the card */
+  --diagram-light-wire: #64748b; /*  4.76:1 on the page — was #94a3b8, 2.56:1 */
+  --diagram-light-preset: #956e00; /*  4.66:1 on the card — was #d4a017, 2.38:1 */
+  --diagram-light-start: #00712f; /*  6.17:1 on the card — was #16a34a, 3.30:1 */
+  --diagram-light-start-fill: #dcfce7; /* --diagram-light-start on it: 5.62:1 */
+
+  /* Light category hues. Each clears 4.5:1 on the white card, which covers
+     both roles the hue plays there: the card border (1.4.11, 3:1) and the
+     card title, which is drawn in the same colour (1.4.3, 4.5:1). */
+  --diagram-light-cnn: #1a8626; /* 4.69 */
+  --diagram-light-rnn: #0077c8; /* 4.70 */
+  --diagram-light-transformer: #9f58ab; /* 4.71 */
+  --diagram-light-llm: #7f61cc; /* 4.68 */
+  --diagram-light-diffusion: #c93d86; /* 4.67 */
+  --diagram-light-classical: #7e4e00; /* 7.05 — darkened past the bar to part it from RL */
+  --diagram-light-rl: #a96300; /* 4.70 */
+  --diagram-light-data: #018091; /* 4.67 */
+  --diagram-light-training: #d14039; /* 4.66 */
+  --diagram-light-io: #866f66; /* 4.69 */
+  --diagram-light-dataflow: #ad4900; /* 5.63 — likewise parted from RL */
+  --diagram-light-utility: #617782; /* 4.70 */
+  --diagram-light-normalization: #008278; /* 4.70 */
+  --diagram-light-tensorops: #6570ad; /* 4.69 */
+
+  /* Light data-type hues. These paint the wires, and a wire has to be visible
+     as a line before its colour can mean anything — LIST measured 1.51:1 and
+     TRANSFORM 1.63:1 on white, i.e. an edge you could not see. Held to 3:1
+     (1.4.11) rather than 4.5:1: the hue is never text, and the type it stands
+     for is already spelled out in bold next to both of its ports. Five of the
+     twelve already cleared the bar and keep their canvas value. */
+  --diagram-light-type-tensor: #40a445; /* 3.18 */
+  --diagram-light-type-model: #2095f2; /* 3.16 */
+  --diagram-light-type-dataset: #d27c00; /* 3.17 */
+  --diagram-light-type-dataloader: #9c27b0; /* 6.30 — unchanged */
+  --diagram-light-type-optimizer: #f44336; /* 3.68 — unchanged */
+  --diagram-light-type-loss-fn: #e91e63; /* 4.35 — unchanged */
+  --diagram-light-type-scalar: #029fb3; /* 3.18 */
+  --diagram-light-type-string: #6aa01f; /* 3.15 */
+  --diagram-light-type-image: #ff5722; /* 3.16 — unchanged */
+  --diagram-light-type-list: #8d9800; /* 3.17 */
+  --diagram-light-type-transform: #b78901; /* 3.19 */
+  --diagram-light-type-any: #919191; /* 3.15 — unchanged */
 }
 
 /* How strongly a category hue is tinted into --surface-raised to make a

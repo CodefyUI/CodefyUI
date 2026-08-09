@@ -1,8 +1,13 @@
 import dagre from '@dagrejs/dagre';
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, PortDefinition } from '../types';
-import { CATEGORY_COLORS, FLOW_COLORS, PRESET_GOLD } from '../styles/theme';
-import { getPortColor, resolveDynamicInputs, resolveDynamicOutputs } from './index';
+import {
+  CATEGORY_COLORS,
+  CATEGORY_COLORS_ON_LIGHT,
+  DATA_TYPE_COLORS_ON_LIGHT,
+  DIAGRAM_CHROME,
+} from '../styles/theme';
+import { DATA_TYPE_COLORS, resolveDynamicInputs, resolveDynamicOutputs } from './index';
 
 /**
  * Render the active tab's graph as a standalone, self-contained SVG showing
@@ -38,27 +43,83 @@ const FONT_FAMILY =
 // Labels longer than these are truncated with an ellipsis so cards stay tidy.
 const MAX_LABEL_CHARS = 28;
 const MAX_PORT_CHARS = 24;
-const PRESET_COLOR = PRESET_GOLD; // reusable-subgraph accent
-const FALLBACK_NODE_COLOR = '#607D8B';
-// Start/entry node accent (border, title, trigger edges). Sourced from the
-// shared palette rather than restated, since an exported SVG is standalone
-// and cannot resolve `var(--flow-trigger-deep)`.
-const START_COLOR = FLOW_COLORS.triggerDeep;
-const START_FILL = '#dcfce7'; // Start node light-green background
 
 export type DiagramThemeName = 'light' | 'dark';
 
+/**
+ * Everything the renderer needs to paint one theme. A theme owns its own
+ * category and data-type palettes rather than sharing the app's, because the
+ * app's are tuned for a near-black canvas: on the white card the light theme
+ * draws by default, the fourteen category hues measured 2.15:1 to 3.09:1 as a
+ * border and all fourteen were under the 4.5:1 they need as the card's title
+ * text, which is painted in the same colour (core#227).
+ *
+ * Every value comes from `styles/theme.ts`, which mirrors `styles/tokens.css`.
+ * Nothing here is a literal: an exported SVG is standalone and cannot resolve
+ * `var()`, but that is a reason to mirror the token layer, not to fork it.
+ */
 interface DiagramTheme {
+  /** Page behind the whole diagram. */
   background: string;
+  /** Fill of an ordinary node card. */
   nodeFill: string;
+  /** Port-label ink on the card. */
   nodeText: string;
+  /** Neutral wire, used when an edge's data type is unknown. */
   edgeStroke: string;
+  /** Card border and title, by node category. */
+  categoryColors: Record<string, string>;
+  /** Port dots and data-carrying wires, by data type (uppercase keys). */
+  typeColors: Record<string, string>;
+  /** A node whose category is unknown, or which has no definition at all. */
+  fallbackColor: string;
+  /** Reusable-subgraph (preset) accent. */
+  presetColor: string;
+  /** Start/entry node accent: border, title and trigger edges. */
+  startColor: string;
+  /** Start/entry node card fill. */
+  startFill: string;
 }
 
 export const DIAGRAM_THEMES: Record<DiagramThemeName, DiagramTheme> = {
-  light: { background: '#ffffff', nodeFill: '#ffffff', nodeText: '#0f172a', edgeStroke: '#94a3b8' },
-  dark: { background: '#0a0a0a', nodeFill: '#1e1e1e', nodeText: '#e5e7eb', edgeStroke: '#888888' },
+  light: {
+    background: DIAGRAM_CHROME.light.page,
+    nodeFill: DIAGRAM_CHROME.light.card,
+    nodeText: DIAGRAM_CHROME.light.ink,
+    edgeStroke: DIAGRAM_CHROME.light.wire,
+    categoryColors: CATEGORY_COLORS_ON_LIGHT,
+    typeColors: DATA_TYPE_COLORS_ON_LIGHT,
+    // An uncategorised node reads as plumbing, so it wears the Utility hue —
+    // the same substitution the in-app fallbacks make. This used to be a bare
+    // '#607D8B' literal, the pre-token Utility value, in both themes at once.
+    fallbackColor: CATEGORY_COLORS_ON_LIGHT.Utility,
+    presetColor: DIAGRAM_CHROME.light.preset,
+    startColor: DIAGRAM_CHROME.light.start,
+    startFill: DIAGRAM_CHROME.light.startFill,
+  },
+  dark: {
+    background: DIAGRAM_CHROME.dark.page,
+    nodeFill: DIAGRAM_CHROME.dark.card,
+    nodeText: DIAGRAM_CHROME.dark.ink,
+    edgeStroke: DIAGRAM_CHROME.dark.wire,
+    categoryColors: CATEGORY_COLORS,
+    typeColors: DATA_TYPE_COLORS,
+    fallbackColor: CATEGORY_COLORS.Utility,
+    presetColor: DIAGRAM_CHROME.dark.preset,
+    startColor: DIAGRAM_CHROME.dark.start,
+    startFill: DIAGRAM_CHROME.dark.startFill,
+  },
 };
+
+/**
+ * Canvas stroke hex -> the data type it stands for. Edges arrive carrying the
+ * colour the *canvas* painted them, which is a dark-theme value; the exporter
+ * has to recover what the colour meant before it can re-say it in the theme
+ * being exported. Built once, theme-independent.
+ */
+const TYPE_BY_CANVAS_STROKE = new Map<string, string>(
+  Object.entries(DATA_TYPE_COLORS).map(([type, hex]) => [hex.toLowerCase(), type]),
+);
 
 export interface GraphToSvgOptions {
   /** Visual theme of the exported diagram. Defaults to `light` (document-friendly). */
@@ -113,11 +174,16 @@ function isStartNode(node: Node<NodeData>): boolean {
 }
 
 /** Border/title color: Start green, else preset gold, else category color, else neutral. */
-function nodeColor(node: Node<NodeData>): string {
-  if (isStartNode(node)) return START_COLOR;
-  if (node.data.isPreset) return PRESET_COLOR;
+function nodeColor(node: Node<NodeData>, theme: DiagramTheme): string {
+  if (isStartNode(node)) return theme.startColor;
+  if (node.data.isPreset) return theme.presetColor;
   const category = node.data.definition?.category;
-  return (category && CATEGORY_COLORS[category]) || FALLBACK_NODE_COLOR;
+  return (category && theme.categoryColors[category]) || theme.fallbackColor;
+}
+
+/** Port-dot / wire color for a data type, in this theme's palette. */
+function portColor(dataType: string, theme: DiagramTheme): string {
+  return theme.typeColors[dataType.toUpperCase()] ?? theme.typeColors.ANY;
 }
 
 /** Display title for a node, truncated with an ellipsis when overly long. */
@@ -149,9 +215,30 @@ function portTspans(p: PortDefinition): string {
   return `<tspan>${esc(name)} : </tspan><tspan font-weight="700">${esc(type)}</tspan>`;
 }
 
-function edgeColor(edge: Edge, theme: DiagramTheme, preserve: boolean): string {
+/**
+ * Stroke for one edge, in the theme being exported.
+ *
+ * When colours are preserved the edge is painted in the theme's hue for the
+ * data type it carries — read from the source port when the handle resolves,
+ * otherwise recovered from the canvas stroke the edge arrived with. A stroke
+ * that maps to no known type falls back to the theme's neutral wire rather
+ * than being copied through: an unrecognised colour is by definition one whose
+ * contrast against this theme's page has not been verified, and an edge that
+ * cannot be seen conveys nothing at all (LIST measured 1.51:1 on white).
+ */
+function edgeColor(
+  edge: Edge,
+  theme: DiagramTheme,
+  preserve: boolean,
+  dataType?: string,
+): string {
+  if (!preserve) return theme.edgeStroke;
+  if (dataType) return portColor(dataType, theme);
   const stroke = edge.style?.stroke;
-  if (preserve && typeof stroke === 'string') return stroke;
+  if (typeof stroke === 'string') {
+    const recovered = TYPE_BY_CANVAS_STROKE.get(stroke.toLowerCase());
+    if (recovered) return portColor(recovered, theme);
+  }
   return theme.edgeStroke;
 }
 
@@ -161,7 +248,7 @@ function colorId(color: string): string {
 }
 
 /** Build a sized card descriptor for a node from its content. */
-function buildEntry(node: Node<NodeData>): Entry {
+function buildEntry(node: Node<NodeData>, theme: DiagramTheme): Entry {
   const def = node.data.definition;
   const isStart = isStartNode(node);
   // A Start node is a pure entry marker: just a green box with an outgoing
@@ -186,7 +273,7 @@ function buildEntry(node: Node<NodeData>): Entry {
     y: node.position.y,
     w,
     h,
-    color: nodeColor(node),
+    color: nodeColor(node, theme),
     label,
     isStart,
     inputs,
@@ -240,7 +327,7 @@ export function graphToSvg(
   const entries = new Map<string, Entry>();
   for (const n of nodes) {
     if (n.type === 'noteNode') continue;
-    entries.set(n.id, buildEntry(n));
+    entries.set(n.id, buildEntry(n, theme));
   }
 
   // Spread the cards out cleanly unless the caller wants the canvas positions.
@@ -281,11 +368,15 @@ export function graphToSvg(
     // at the target's top-left corner rather than an input port, and are drawn
     // in the Start green.
     const isTrigger = e.targetHandle === '__trigger' || e.sourceHandle === 'trigger';
-    const color = isTrigger ? START_COLOR : edgeColor(e, theme, preserveEdgeColors);
-    markerColors.set(colorId(color), color);
 
     // Outputs sit below the inputs, so an output's row is offset by the input count.
     const outIdx = e.sourceHandle ? s.outputs.findIndex((p) => p.name === e.sourceHandle) : -1;
+    const sourcePort = outIdx >= 0 ? s.outputs[outIdx] : undefined;
+    const color = isTrigger
+      ? theme.startColor
+      : edgeColor(e, theme, preserveEdgeColors, sourcePort?.data_type);
+    markerColors.set(colorId(color), color);
+
     const sx = s.x + s.w;
     const sy = outIdx >= 0 ? portRowY(s, s.inputs.length + outIdx) : s.y + s.h / 2;
 
@@ -356,7 +447,7 @@ function renderCard(e: Entry, theme: DiagramTheme): string {
   // Card surface (light green for Start) + accent-colored border.
   parts.push(
     `<rect x="${r2(e.x)}" y="${r2(e.y)}" width="${r2(e.w)}" height="${r2(e.h)}" ` +
-      `rx="8" ry="8" fill="${e.isStart ? START_FILL : theme.nodeFill}" ` +
+      `rx="8" ry="8" fill="${e.isStart ? theme.startFill : theme.nodeFill}" ` +
       `stroke="${esc(e.color)}" stroke-width="1.5" />`,
   );
 
@@ -378,7 +469,7 @@ function renderCard(e: Entry, theme: DiagramTheme): string {
     e.inputs.forEach((p, i) => {
       const cy = portRowY(e, i);
       parts.push(
-        `<circle cx="${r2(e.x + PAD_H)}" cy="${r2(cy)}" r="${DOT_R}" fill="${esc(getPortColor(p.data_type))}" />` +
+        `<circle cx="${r2(e.x + PAD_H)}" cy="${r2(cy)}" r="${DOT_R}" fill="${esc(portColor(p.data_type, theme))}" />` +
           `<text x="${r2(e.x + PAD_H + DOT_SPACE - 4)}" y="${r2(cy)}" text-anchor="start" ` +
           `dominant-baseline="central" font-family="${FONT_FAMILY}" font-size="${PORT_FS}" ` +
           `fill="${theme.nodeText}">${portTspans(p)}</text>`,
@@ -394,7 +485,7 @@ function renderCard(e: Entry, theme: DiagramTheme): string {
     e.outputs.forEach((p, j) => {
       const cy = portRowY(e, e.inputs.length + j);
       parts.push(
-        `<circle cx="${r2(e.x + e.w - PAD_H)}" cy="${r2(cy)}" r="${DOT_R}" fill="${esc(getPortColor(p.data_type))}" />` +
+        `<circle cx="${r2(e.x + e.w - PAD_H)}" cy="${r2(cy)}" r="${DOT_R}" fill="${esc(portColor(p.data_type, theme))}" />` +
           `<text x="${r2(e.x + e.w - PAD_H - DOT_SPACE + 4)}" y="${r2(cy)}" text-anchor="end" ` +
           `dominant-baseline="central" font-family="${FONT_FAMILY}" font-size="${PORT_FS}" ` +
           `fill="${theme.nodeText}">${portTspans(p)}</text>`,
