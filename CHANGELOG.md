@@ -561,12 +561,9 @@ Release candidates before 1.0.0 are on the
 [#259]: https://github.com/CodefyUI/CodefyUI/issues/259
 [#242]: https://github.com/CodefyUI/CodefyUI/issues/242
 [#265]: https://github.com/CodefyUI/CodefyUI/issues/265
-<<<<<<< HEAD
 [#196]: https://github.com/CodefyUI/CodefyUI/issues/196
 [#197]: https://github.com/CodefyUI/CodefyUI/issues/197
-=======
 [#224]: https://github.com/CodefyUI/CodefyUI/issues/224
->>>>>>> origin/main
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
