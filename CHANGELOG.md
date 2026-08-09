@@ -24,6 +24,62 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **An unhandled `/api` path answered `405 Method Not Allowed` on every real
+  installation, and `404` in CI** ([#285]). The catch-all that serves the built
+  frontend is registered only when `frontend/dist/index.html` exists, and it
+  accepts `GET` on any path. Starlette does not stop at the first route whose
+  *path* matches: a route matched by path but missed by method is recorded as a
+  partial match, and a partial match with no full match anywhere is answered
+  405. So `DELETE /api/files/../../etc/passwd` — which no API route can match,
+  because `{filename}` does not span `/` — reached the SPA handler, matched it
+  by path, missed it by method, and came back "the resource exists, your verb
+  is wrong". Both halves of that were false. The exclusion now lives in the
+  route's *pattern* rather than in the handler body, where it could never have
+  helped: the 405 is produced by the router, before any handler runs.
+  Wrong-method requests to real endpoints still answer 405, which is why this
+  is a lookahead on the catch-all and not an all-methods `/api` 404 route in
+  front of it.
+
+  The reason nobody saw it is the more interesting half. Four traversal
+  assertions in `test_api_data_files.py` had been deterministically red for
+  anyone who had run `pnpm build` and green in CI for as long as the catch-all
+  has existed, because CI's checkout has no `frontend/dist` — so CI was testing
+  the *less* representative environment, the no-Node release path having made a
+  built `dist` universal for real users. A new `pytest (built frontend)` job
+  runs the whole backend suite against a real `pnpm build`, with a step that
+  fails if the SPA routes are not registered so the job cannot quietly decay
+  into a fifth copy of the matrix; the existing matrix keeps covering the
+  dist-absent state, which is what `cdui dev` runs. A sweep of the full suite
+  in both states found those four and nothing else. Three SPA cache-header
+  tests that had been skipped in CI since they were written now run there too.
+
+- **`ModelSaver(save_mode="full_model")` died with a raw pickle error on any
+  graph using Reshape, SelectIndex or a transformer block** ([#283]). Those
+  layers — and four more with the same defect: TransformerDecoder, LSTM, GRU,
+  MultiHeadAttention — were built from classes defined *inside a function*, and
+  pickle stores a class by name, so there was nothing to write. The mode failed
+  by construction on exactly these layers with `AttributeError: Can't pickle
+  local object 'Reshape.__new__.<locals>.Mod'`, which names an internal and
+  offers no way out — the same complaint [#222] made about the loader. The
+  closure turned out to be incidental: each already took its configuration
+  through `__init__` arguments, and the nesting only kept `import torch` off
+  the node module's import path. They are now ordinary module-scope classes in
+  `app.nodes.utility.sequential_modules`, imported inside the builder so the
+  lazy-torch property is unchanged, and their attribute names are unchanged so
+  existing `state_dict` checkpoints still load. What is still unpicklable — a
+  custom node or plugin that builds its module in a function — is refused
+  *before* the write, naming the class and pointing at `state_dict`, instead of
+  leaving a half-written file.
+
+  Saving is only half a round trip, and [#222]'s loader accepts `torch.nn`'s own
+  classes only, so a full-model file containing CodefyUI's classes still will
+  not come back through `ModelLoader` — including `GraphModelModule`, which
+  every layer-editor model is. That was previously unreachable (nothing got as
+  far as saving one); it is now reachable, so the saver says so at save time
+  rather than letting the user discover it one node later. The file is valid
+  and `torch.load(..., weights_only=False)` reads it outside CodefyUI;
+  `state_dict` remains the round trip that works.
+
 - **A published app's OpenAPI document advertised `http://` even when it was
   fetched over HTTPS** ([#275]). `servers[].url` was built with a literal
   scheme, which was true of the deployment CodefyUI was written for — one
@@ -763,6 +819,8 @@ Release candidates before 1.0.0 are on the
 [#275]: https://github.com/CodefyUI/CodefyUI/issues/275
 [#222]: https://github.com/CodefyUI/CodefyUI/issues/222
 [#277]: https://github.com/CodefyUI/CodefyUI/issues/277
+[#283]: https://github.com/CodefyUI/CodefyUI/issues/283
+[#285]: https://github.com/CodefyUI/CodefyUI/issues/285
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

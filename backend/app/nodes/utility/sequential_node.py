@@ -34,153 +34,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ── Sequential-compatible wrappers for complex modules ─────────
-
-class _Reshape:
-    """Reshape tensor (excluding batch dim) inside nn.Sequential."""
-
-    def __init__(self, shape: str):
-        import torch.nn as nn
-
-        self._module = type(
-            "_ReshapeModule",
-            (nn.Module,),
-            {
-                "__init__": lambda self_, s=shape: (
-                    nn.Module.__init__(self_),
-                    setattr(self_, "_shape", [int(d) for d in s.split(",")]),
-                )[0],
-                "forward": lambda self_, x: x.view(x.size(0), *self_._shape),
-            },
-        )(shape)
-
-    def __new__(cls, shape: str):  # noqa: D102
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, s: str):
-                super().__init__()
-                self._shape = [int(d) for d in s.split(",")]
-
-            def forward(self, x):
-                return x.view(x.size(0), *self._shape)
-
-        return Mod(shape)
-
-
-class _SelectIndex:
-    """Select a single index along a dimension (e.g. CLS token)."""
-
-    def __new__(cls, dim: int = 1, index: int = 0):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, d: int, i: int):
-                super().__init__()
-                self._dim = d
-                self._index = i
-
-            def forward(self, x):
-                return x.select(self._dim, self._index)
-
-        return Mod(dim, index)
-
-
-class _TransformerEncoderBlock:
-    """Wrap nn.TransformerEncoder for nn.Sequential compatibility."""
-
-    def __new__(cls, d_model: int, nhead: int, num_layers: int = 1, dim_feedforward: int = 2048):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, dm, nh, nl, dff):
-                super().__init__()
-                layer = nn.TransformerEncoderLayer(d_model=dm, nhead=nh, dim_feedforward=dff, batch_first=True)
-                self.encoder = nn.TransformerEncoder(layer, num_layers=nl)
-
-            def forward(self, x):
-                return self.encoder(x)
-
-        return Mod(d_model, nhead, num_layers, dim_feedforward)
-
-
-class _TransformerDecoderBlock:
-    """Wrap nn.TransformerDecoder in self-attention mode for nn.Sequential."""
-
-    def __new__(cls, d_model: int, nhead: int, num_layers: int = 1, dim_feedforward: int = 2048):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, dm, nh, nl, dff):
-                super().__init__()
-                layer = nn.TransformerDecoderLayer(d_model=dm, nhead=nh, dim_feedforward=dff, batch_first=True)
-                self.decoder = nn.TransformerDecoder(layer, num_layers=nl)
-
-            def forward(self, x):
-                return self.decoder(x, x)
-
-        return Mod(d_model, nhead, num_layers, dim_feedforward)
-
-
-class _LSTMBlock:
-    """Wrap nn.LSTM — returns only the output tensor (drops hidden state)."""
-
-    def __new__(cls, **kwargs):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, kw):
-                super().__init__()
-                self.lstm = nn.LSTM(**kw)
-
-            def forward(self, x):
-                out, _ = self.lstm(x)
-                return out
-
-        return Mod(kwargs)
-
-
-class _GRUBlock:
-    """Wrap nn.GRU — returns only the output tensor (drops hidden state)."""
-
-    def __new__(cls, **kwargs):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, kw):
-                super().__init__()
-                self.gru = nn.GRU(**kw)
-
-            def forward(self, x):
-                out, _ = self.gru(x)
-                return out
-
-        return Mod(kwargs)
-
-
-class _MultiHeadAttentionBlock:
-    """Wrap nn.MultiheadAttention in self-attention mode for nn.Sequential."""
-
-    def __new__(cls, embed_dim: int, num_heads: int):
-        import torch.nn as nn
-
-        class Mod(nn.Module):
-            def __init__(self, ed, nh):
-                super().__init__()
-                self.attn = nn.MultiheadAttention(embed_dim=ed, num_heads=nh, batch_first=True)
-
-            def forward(self, x):
-                out, _ = self.attn(x, x, x)
-                return out
-
-        return Mod(embed_dim, num_heads)
-
-
 # ── Supported layer builders ────────────────────────────────────
 
 def _build_layer(cfg: dict) -> "torch.nn.Module":
     """Convert a single layer dict into an nn.Module."""
     import torch.nn as nn
+
+    # The Sequential-compatible wrappers live in their own module so they are
+    # ordinary module-scope classes that pickle can name -- they used to be
+    # defined inside this function's callers and could not be saved at all
+    # (#283). Imported here, not at the top of the file, because that module
+    # imports torch eagerly and the node registry imports THIS file just to
+    # read node metadata.
+    from .sequential_modules import (
+        GRUBlock,
+        LSTMBlock,
+        MultiHeadAttentionBlock,
+        Reshape,
+        SelectIndex,
+        TransformerDecoderBlock,
+        TransformerEncoderBlock,
+    )
 
     t = cfg.get("type", "")
     p = {k: v for k, v in cfg.items() if k != "type"}
@@ -205,13 +79,13 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
 
     # Sequential-compatible wrappers for complex modules
     wrappers: dict[str, type] = {
-        "Reshape": _Reshape,
-        "SelectIndex": _SelectIndex,
-        "TransformerEncoder": _TransformerEncoderBlock,
-        "TransformerDecoder": _TransformerDecoderBlock,
-        "LSTM": _LSTMBlock,
-        "GRU": _GRUBlock,
-        "MultiHeadAttention": _MultiHeadAttentionBlock,
+        "Reshape": Reshape,
+        "SelectIndex": SelectIndex,
+        "TransformerEncoder": TransformerEncoderBlock,
+        "TransformerDecoder": TransformerDecoderBlock,
+        "LSTM": LSTMBlock,
+        "GRU": GRUBlock,
+        "MultiHeadAttention": MultiHeadAttentionBlock,
     }
 
     # Activation functions

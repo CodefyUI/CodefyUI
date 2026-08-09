@@ -47,8 +47,15 @@ def torch_nn_layer_globals() -> list[type]:
     an arbitrary object's ``__torch_function__``), so it is left out and its
     absence is reported by name. The visible cost is that a
     ``TransformerEncoderLayer`` stores its activation as ``F.relu`` and so
-    does not load; CodefyUI's own transformer block is built from a
-    function-local class and cannot be ``torch.save``d in the first place.
+    does not load.
+
+    The same boundary excludes CodefyUI's OWN module classes -- the layer
+    editor's ``GraphModelModule`` and the wrappers in
+    ``nodes.utility.sequential_modules``. #283 made those saveable (they were
+    function-local classes and could not be pickled at all); it did not make
+    them loadable here, and widening the allowlist to cover them is a
+    separate decision about a separate trust boundary. ``ModelSaver`` says so
+    at save time rather than letting a user discover it one node later.
     """
     global _LAYER_GLOBALS
     if _LAYER_GLOBALS is not None:
