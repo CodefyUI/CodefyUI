@@ -1980,23 +1980,116 @@ async def test_an_exported_seeded_graph_reproduces_the_engine(tmp_path: Path):
         "not reaching the transform")
 
 
-def test_no_seed_leaves_an_exported_run_on_torchs_own_entropy(tmp_path: Path):
-    """``--no-seed`` means what "no seed" means everywhere else."""
-    from app.core.codegen import generate_python
+#: A seed value nothing in the run produces on its own. The probe graph
+#: installs it as torch's seed and the test asks whether it SURVIVED, so it
+#: only has to be distinguishable from ``derive_seed(4321, "probe")`` -- and
+#: the test asserts that separation rather than assuming it.
+_SEED_SENTINEL = 987_654_321
 
-    nodes, edges = _augmenting_graph(_asymmetric_fixture(tmp_path))
-    script = generate_python(nodes, edges, name="aug", seed=4321)
-    first = tmp_path / "a"
-    first.mkdir()
-    second = tmp_path / "b"
-    second.mkdir()
-    runs = [
-        _run_exported_script(script, path, "--device", "cpu", "--no-seed")
-        for path in (first, second)
+
+def _seed_probe_graph() -> tuple[list[dict], list[dict]]:
+    """Start -> install a sentinel seed -> report torch's seed -> Print.
+
+    Two script nodes rather than one, and that is the whole mechanism: the
+    export re-seeds before EVERY node (``codegen._call``), so a sentinel
+    installed by the first node is overwritten before the second one runs
+    exactly when seeding is active, and survives untouched exactly when it
+    is not. Reading ``torch.initial_seed()`` from the second node therefore
+    reports which of the two happened, as a value rather than as a sample.
+
+    The data edge between them is there for the ordering, not the value; the
+    probe ignores what it is handed.
+    """
+    def script(node_id: str, code: str, **extra) -> dict:
+        return {
+            "id": node_id,
+            "type": "PythonScript",
+            "position": {"x": 0, "y": 0},
+            "data": {"params": {
+                "code": code,
+                "input_ports": 1,
+                "output_ports": 1,
+                "input_types": "ANY",
+                "output_types": "ANY",
+                **extra,
+            }},
+        }
+
+    nodes = [
+        {"id": "start", "type": "Start", "position": {"x": 0, "y": 0},
+         "data": {"params": {}}},
+        script("sentinel", (
+            "import torch\n"
+            "\n"
+            "\n"
+            "def run(inputs, params):\n"
+            f"    torch.manual_seed({_SEED_SENTINEL})\n"
+            "    return {'out1': 0}\n"
+        )),
+        script("probe", (
+            "import torch\n"
+            "\n"
+            "\n"
+            "def run(inputs, params):\n"
+            "    return {'out1': torch.initial_seed()}\n"
+        )),
+        {"id": "print", "type": "Print", "position": {"x": 0, "y": 0},
+         "data": {"params": {"label": "seed"}}},
     ]
-    for completed in runs:
-        assert completed.returncode == 0, completed.stderr
-    assert runs[0].stdout != runs[1].stdout
+    edges = [
+        {"id": "t1", "source": "start", "target": "sentinel",
+         "sourceHandle": "trigger", "targetHandle": "", "type": "trigger"},
+        {"id": "e1", "source": "sentinel", "target": "probe",
+         "sourceHandle": "out1", "targetHandle": "in1", "type": "data"},
+        {"id": "e2", "source": "probe", "target": "print",
+         "sourceHandle": "out1", "targetHandle": "value", "type": "data"},
+    ]
+    return nodes, edges
+
+
+def test_no_seed_leaves_an_exported_run_on_torchs_own_entropy(tmp_path: Path):
+    """``--no-seed`` means what "no seed" means everywhere else.
+
+    Asserted as two equalities against values known BEFORE either run, which
+    is the point of #277. The assertion this replaced ran the same graph
+    twice with ``--no-seed`` and required the two outputs to differ -- a bet
+    that two independent draws would not collide, and on that graph the draw
+    was eight independent coin flips (``RandomHorizontalFlip(p=0.5)`` over a
+    batch of eight), so the collision it eventually hit on the 2.2.0 release
+    PR had probability 1/256 per run. Nothing here samples: with ``--no-seed``
+    the probe must report exactly the sentinel the node before it installed,
+    and with the baked seed it must report exactly ``derive_seed(4321,
+    "probe")``. Both sides are fixed values, so this test either passes on
+    every run or fails on every run.
+    """
+    from app.core.codegen import generate_python
+    from app.core.seeding import derive_seed
+
+    seeded_expectation = derive_seed(4321, "probe")
+    # Otherwise a run that seeded and a run that did not would report the
+    # same number and both assertions below would hold vacuously.
+    assert seeded_expectation != _SEED_SENTINEL
+
+    nodes, edges = _seed_probe_graph()
+    script = generate_python(nodes, edges, name="seed probe", seed=4321)
+
+    unseeded_dir = tmp_path / "unseeded"
+    unseeded_dir.mkdir()
+    unseeded = _run_exported_script(
+        script, unseeded_dir, "--device", "cpu", "--no-seed")
+    assert unseeded.returncode == 0, unseeded.stderr
+
+    seeded_dir = tmp_path / "seeded"
+    seeded_dir.mkdir()
+    seeded = _run_exported_script(script, seeded_dir, "--device", "cpu")
+    assert seeded.returncode == 0, seeded.stderr
+
+    assert f"[seed] {_SEED_SENTINEL}" in unseeded.stdout, (
+        "--no-seed re-seeded the run: the sentinel installed by the previous "
+        f"node did not survive to the probe. stdout: {unseeded.stdout!r}")
+    assert f"[seed] {seeded_expectation}" in seeded.stdout, (
+        "the baked GRAPH_SEED did not reach the node: the probe should report "
+        f"derive_seed(4321, 'probe'). stdout: {seeded.stdout!r}")
 
 
 @pytest.mark.asyncio

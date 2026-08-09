@@ -562,7 +562,8 @@ const zhTW: NodeTranslations = {
     description: '從 .pt/.pth/.safetensors 檔案載入模型權重，或載入完整的已儲存模型',
     params: {
       path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
-      load_mode: '載入模式：state_dict（需要模型輸入）或完整模型',
+      load_mode:
+        '載入模式：state_dict（需要模型輸入）或 full_model 完整模型。full_model 會重建存檔中的模組本身，並且在 torch 的受限解序列化器下讀取，因此只接受由標準 torch.nn 層組成的模型，其餘一律拒絕',
       device: '載入權重的裝置',
       strict: '是否嚴格要求 state_dict 中的鍵值匹配（僅 state_dict 模式）',
     },
