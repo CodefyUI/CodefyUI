@@ -147,7 +147,10 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ['bash', 'python', 'json', 'powershell', 'toml'],
+      // `nginx` and `ini` are for the reverse-proxy deployment page: an
+      // nginx site file and a systemd unit. Without them both render as
+      // plain unhighlighted text.
+      additionalLanguages: ['bash', 'python', 'json', 'powershell', 'toml', 'nginx', 'ini'],
     },
   } satisfies Preset.ThemeConfig,
 };

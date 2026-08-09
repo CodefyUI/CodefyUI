@@ -63,6 +63,10 @@ Both `install.sh`/`install.ps1` and `cdui install` (after the first install) acc
 
 See the full list of launcher commands in **[CLI Commands](./cli-commands)**.
 
+## Installing on a server for a team
+
+The steps above install a personal instance on `127.0.0.1`. If several people are going to share one machine, read **[Deployment Behind a Reverse Proxy](/usage/deployment)** first: CodefyUI has no user accounts, so authentication and TLS both come from a proxy in front of it, and the proxy's hostname has to be added to `CODEFYUI_EXTRA_ALLOWED_HOSTS` or every request — including the page itself — is rejected with `421` and the browser shows a blank screen.
+
 ## Verify it works
 
 ```bash

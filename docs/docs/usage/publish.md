@@ -157,3 +157,5 @@ Understand what a LAN bind exposes -- plainly:
 - Editor-scoped LAN hardening (loopback-gated bootstrap; published-surface-only on non-loopback Hosts) is a named follow-up, not in v1.
 
 The credentials half of the same story is [Shared Instances](./shared-instances): an instance has ONE identity, so the ChatGPT sign-in, the LLM keys in `.env` and the Kaggle credentials are shared by everyone who can reach the port, with no record of who spent what.
+
+If what you actually want is a shared server with real sign-in, do not bind the LAN at all: bind loopback and put a reverse proxy in front, which is the only way to get authentication and TLS in front of an instance today. [Deployment Behind a Reverse Proxy](./deployment) has the whole shape, with a tested nginx site and systemd unit.

@@ -45,6 +45,25 @@ cdui stop       # stop the background server
 cdui start -f   # run attached instead (Ctrl+C to stop)
 ```
 
+## `cdui start` flags
+
+| Flag | Description |
+|------|-------------|
+| `--foreground`, `-f` | Run attached instead of daemonizing. Required when a supervisor such as systemd owns the process. |
+| `--host <addr>` | Bind address (default `127.0.0.1`). `0.0.0.0` or a LAN IP lets other machines connect — anyone who can reach the port controls the instance, so only on a trusted network. See [Publish](/usage/publish). |
+| `--port <n>` | Port (default `8000`). |
+| `--project <dir>` | Use a project directory containing `codefyui.project.toml` — see [Project Directories](/usage/project-directories). |
+| `--` | Everything after a bare `--` is forwarded to uvicorn verbatim, e.g. `cdui start -- --proxy-headers --root-path /x`. `cdui start` reads its own flags only from the part before the separator, so the two sets cannot collide. `--host` and `--port` are refused there (exit code 2) because `cdui` records the bind address itself — use `cdui start --host` instead. |
+
+```bash
+# Behind a reverse proxy: bind loopback, trust the proxy's forwarded headers.
+cdui start --host 127.0.0.1 --port 8000 -- --proxy-headers --forwarded-allow-ips 127.0.0.1
+```
+
+:::warning A proxy also needs its hostname whitelisted
+The server answers `421` to any `Host` it does not recognise, including on the page itself, so a proxy in front of it produces a blank browser page until you set `CODEFYUI_EXTRA_ALLOWED_HOSTS` to the public name. Full instructions in **[Deployment Behind a Reverse Proxy](/usage/deployment)**.
+:::
+
 ## Running a graph without the server
 
 You don't need the web UI to execute a graph — see **[CLI Graph Runner](/usage/cli-runner)**:
