@@ -128,13 +128,30 @@ export function useNodeContextMenuItems(
     // and the message is thousands of characters long. Naming a handful is
     // enough to be recognisable -- every blocker is added to the selection
     // below regardless, which is how the user actually acts on this.
-    const named = failure.blockers.slice(0, MAX_NAMED_BLOCKERS).map((id) => {
+    const shown = failure.blockers.slice(0, MAX_NAMED_BLOCKERS);
+    const shorten = (id: string) => {
       // Falls back to the id: a node with no label at all is still better
       // named by something than by nothing.
       const label = String(labelById.get(id) || id);
       return label.length > MAX_BLOCKER_LABEL
         ? `${label.slice(0, MAX_BLOCKER_LABEL - 1)}…`
         : label;
+    };
+    // A label is a node TYPE unless the user renamed it, so two blockers of
+    // the same type read as "Conv, Conv" and name neither (core#200 item 1).
+    // Only the repeated ones get a suffix -- tagging a coordinate onto every
+    // name would cost more than it buys in the common case where the labels
+    // already differ. Canvas position, not an ordinal: an index says which
+    // entry of a list you are reading, a position says where to look.
+    const seen = new Map<string, number>();
+    for (const id of shown) seen.set(shorten(id), (seen.get(shorten(id)) ?? 0) + 1);
+    const positionById = new Map(nodes.map((n) => [n.id, n.position]));
+    const named = shown.map((id) => {
+      const label = shorten(id);
+      if ((seen.get(label) ?? 0) < 2) return label;
+      const at = positionById.get(id);
+      if (!at) return label;
+      return `${label} (${Math.round(at.x)}, ${Math.round(at.y)})`;
     });
     const overflow = failure.blockers.length - named.length;
     if (overflow > 0) {

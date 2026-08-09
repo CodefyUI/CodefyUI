@@ -599,6 +599,56 @@ describe('collapse refusal names nodes the user can recognise (MAJOR 8)', () => 
     await act(async () => { await collapse.action(); });
     expect(prompt).not.toHaveBeenCalled();
   });
+
+  // ── core#200 item 1 ──────────────────────────────────────────────────────
+  //
+  // A label is the node TYPE unless the user renamed it, so two blockers of
+  // the same type read as "Conv, Conv" and name neither of them.
+
+  /** a -> b1 -> d and a -> b2 -> d, with only a and d selected: b1 and b2 are
+   *  both blockers and both called "Conv". */
+  function seedTwoSameNamedBlockers() {
+    const at = (n: Node<NodeData>, x: number, y: number) => ({
+      ...n, position: { x, y },
+    });
+    const store = useTabStore.getState();
+    store.setNodes([
+      { ...makeNamedNode('a', 'Start'), selected: true },
+      at(makeNamedNode('b1', 'Conv'), 120.4, 340.6),
+      at(makeNamedNode('b2', 'Conv'), 480, 200),
+      { ...makeNamedNode('d', 'End'), selected: true },
+    ]);
+    store.setEdges([
+      { id: 'e1', source: 'a', target: 'b1' },
+      { id: 'e2', source: 'b1', target: 'd' },
+      { id: 'e3', source: 'a', target: 'b2' },
+      { id: 'e4', source: 'b2', target: 'd' },
+    ]);
+  }
+
+  it('tells two same-named blockers apart by their canvas position', async () => {
+    seedTwoSameNamedBlockers();
+    const collapse = collapseItem('a');
+    await act(async () => { await collapse.action(); });
+
+    const message = useToastStore.getState().toasts[0].message;
+    // Rounded: a position is a place to look, not a measurement.
+    expect(message).toContain('Conv (120, 341)');
+    expect(message).toContain('Conv (480, 200)');
+    // And not the bare, ambiguous form.
+    expect(message).not.toContain('Conv, Conv');
+  });
+
+  it('leaves an unambiguous label alone', async () => {
+    // Only one blocker, so there is nothing to disambiguate and the suffix
+    // would be noise.
+    seedNonConvex();
+    const collapse = collapseItem('3f2b1a44-9c1b-4a2f-9b6e-2d0f1a4c8e11');
+    await act(async () => { await collapse.action(); });
+    const message = useToastStore.getState().toasts[0].message;
+    expect(message).toContain('Bottleneck');
+    expect(message).not.toContain('Bottleneck (');
+  });
 });
 
 describe('collapse asks for a name (NIT 21)', () => {

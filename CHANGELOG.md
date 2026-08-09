@@ -22,7 +22,44 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **The layers editor had its own colour scheme, and it was the old one.** The
+  modal that edits a `SequentialModel`'s layers carried a layer-type palette in
+  two hand-synced copies, on the pre-lift Material tones the rest of the app
+  moved off when they were measured too dark to read on a dark surface. The app
+  therefore had two purples, two blues, two reds and two blue-greys, and which
+  one you saw depended on whether a modal was open. There is now one table, in
+  `tokens.css` as its own `--layer-*` group, and the contrast gate checks it —
+  393 colour relationships across 186 tokens, up from 337 across 175. Adding
+  the gate found a real failure it then fixed: a layer node's header was the
+  raw hue with a white title on it, 2.16:1 to 3.09:1 on all seven hues, and is
+  now built the way a canvas node's header is. (#228)
+- The non-convex collapse refusal now tells two same-named blockers apart by
+  their canvas position — a message reading `Conv, Conv` named neither of them.
+  (#200)
+- A plugin's `onGraphChanged` now fires when only the subgraph definitions
+  change. Renaming a block, or editing its insides and stepping back out, moved
+  bytes that `graph.getGraph()` reports while telling a watching plugin
+  nothing. (#200)
+- The publish pre-flight now scans portable preset definitions. A SECRET-typed
+  value baked into `presets[].nodes[].params` — the third and last place a
+  graph file can carry a node — published cleanly, while the identical value
+  one level up was refused. (#200)
+- A node whose `"type"` is explicitly `null` no longer crashes the secret
+  walkers with an `AttributeError`. Reachable only through the publish gate,
+  which reads a file straight off disk with no validation; it failed closed
+  (a 500, nothing written or leaked). (#200)
+
+### Changed
+
+- `components/SubgraphEditor/` is now `components/LayersEditor/`. It never
+  edited a nested graph — it edits one node's `layers` param — and since real
+  graph nesting landed, two unrelated features had been reading as one. The
+  store surface (`layersModalNodeId`, `openLayersModal`, `closeLayersModal`,
+  `updateNodeLayers`) and the 34 layers-editor i18n keys (`layersEditor.*`,
+  out of the `subgraph.*` namespace nesting also occupies) move with it. No
+  behaviour change. (#199)
 
 ## [2.2.0] — 2026-08-10
 
