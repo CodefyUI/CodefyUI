@@ -1,0 +1,339 @@
+{
+  "name": "Train a VLA on PushWorld",
+  "description": "Needs a GPU and about an hour: behavior-clone a 3.3M-parameter vision-language-action policy from 2,400 DART-noised scripted demonstrations, then evaluate it closed-loop (measured 0.97 success at execute_k=2) and write the rollout video. Flip VLARollout.instruction_mode to swapped to watch success collapse to 0.03 - proof the policy reads the instruction. Full recipe and the ablation playbook are in README.md beside this graph.",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -420,
+        "y": 260
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "env",
+      "type": "PushWorldEnv",
+      "position": {
+        "x": -140,
+        "y": 120
+      },
+      "data": {
+        "params": {
+          "image_size": 96,
+          "n_distractors": 1,
+          "max_steps": 60
+        }
+      }
+    },
+    {
+      "id": "demos",
+      "type": "PushWorldDemos",
+      "position": {
+        "x": 180,
+        "y": 120
+      },
+      "data": {
+        "params": {
+          "episodes": 2400,
+          "chunk": 8,
+          "demo_noise": 0.5,
+          "holdout_episodes": 150,
+          "video_episodes": 3,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "VLAModel",
+      "position": {
+        "x": -140,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "head_type": "regression",
+          "d_model": 192,
+          "n_layers": 4,
+          "n_heads": 6,
+          "expert_layers": 2,
+          "chunk": 8,
+          "image_size": 96
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 520,
+        "y": 40
+      },
+      "data": {
+        "params": {
+          "batch_size": 256,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-val",
+      "type": "DataLoader",
+      "position": {
+        "x": 520,
+        "y": 240
+      },
+      "data": {
+        "params": {
+          "batch_size": 256,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 180,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.001,
+          "weight_decay": 0.01
+        }
+      }
+    },
+    {
+      "id": "lrs",
+      "type": "LRScheduler",
+      "position": {
+        "x": 520,
+        "y": 480
+      },
+      "data": {
+        "params": {
+          "type": "warmup_cosine",
+          "warmup_steps": 300,
+          "total_steps": 26840
+        }
+      }
+    },
+    {
+      "id": "loop",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 860,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "epochs": 110,
+          "scheduler_step": "optimizer_step",
+          "log_interval": 20
+        }
+      }
+    },
+    {
+      "id": "rollout",
+      "type": "VLARollout",
+      "position": {
+        "x": 1220,
+        "y": 120
+      },
+      "data": {
+        "params": {
+          "episodes": 30,
+          "execute_k": 2,
+          "max_steps": 120,
+          "instruction_mode": "normal",
+          "record_episodes": 3
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "VLAActionEval",
+      "position": {
+        "x": 1220,
+        "y": 420
+      },
+      "data": {
+        "params": {
+          "max_samples": 2048
+        }
+      }
+    },
+    {
+      "id": "vw-rollout",
+      "type": "VideoWrite",
+      "position": {
+        "x": 1540,
+        "y": 120
+      },
+      "data": {
+        "params": {
+          "filename": "vla/rollout",
+          "format": "auto",
+          "fps": 12.0,
+          "resize": 192
+        }
+      }
+    },
+    {
+      "id": "vw-demo",
+      "type": "VideoWrite",
+      "position": {
+        "x": 520,
+        "y": -160
+      },
+      "data": {
+        "params": {
+          "filename": "vla/expert-demo",
+          "format": "auto",
+          "fps": 12.0,
+          "resize": 192
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-env",
+      "source": "start",
+      "target": "env",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-env-env-demos-env",
+      "source": "env",
+      "sourceHandle": "env",
+      "target": "demos",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e-env-env-rollout-env",
+      "source": "env",
+      "sourceHandle": "env",
+      "target": "rollout",
+      "targetHandle": "env"
+    },
+    {
+      "id": "e-demos-dataset-dl-train-dataset",
+      "source": "demos",
+      "sourceHandle": "dataset",
+      "target": "dl-train",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-demos-holdout-dl-val-dataset",
+      "source": "demos",
+      "sourceHandle": "holdout",
+      "target": "dl-val",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-demos-holdout-eval-dataset",
+      "source": "demos",
+      "sourceHandle": "holdout",
+      "target": "eval",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-demos-demo_video-vw-demo-frames",
+      "source": "demos",
+      "sourceHandle": "demo_video",
+      "target": "vw-demo",
+      "targetHandle": "frames"
+    },
+    {
+      "id": "e-model-model-opt-model",
+      "source": "model",
+      "sourceHandle": "model",
+      "target": "opt",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-model-model-loop-model",
+      "source": "model",
+      "sourceHandle": "model",
+      "target": "loop",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-model-loss_fn-loop-loss_fn",
+      "source": "model",
+      "sourceHandle": "loss_fn",
+      "target": "loop",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e-opt-optimizer-lrs-optimizer",
+      "source": "opt",
+      "sourceHandle": "optimizer",
+      "target": "lrs",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-opt-optimizer-loop-optimizer",
+      "source": "opt",
+      "sourceHandle": "optimizer",
+      "target": "loop",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-lrs-scheduler-loop-lr_scheduler",
+      "source": "lrs",
+      "sourceHandle": "scheduler",
+      "target": "loop",
+      "targetHandle": "lr_scheduler"
+    },
+    {
+      "id": "e-dl-train-dataloader-loop-dataloader",
+      "source": "dl-train",
+      "sourceHandle": "dataloader",
+      "target": "loop",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e-dl-val-dataloader-loop-val_dataloader",
+      "source": "dl-val",
+      "sourceHandle": "dataloader",
+      "target": "loop",
+      "targetHandle": "val_dataloader"
+    },
+    {
+      "id": "e-loop-model-rollout-model",
+      "source": "loop",
+      "sourceHandle": "model",
+      "target": "rollout",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-loop-model-eval-model",
+      "source": "loop",
+      "sourceHandle": "model",
+      "target": "eval",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-rollout-frames-vw-rollout-frames",
+      "source": "rollout",
+      "sourceHandle": "frames",
+      "target": "vw-rollout",
+      "targetHandle": "frames"
+    }
+  ]
+}
