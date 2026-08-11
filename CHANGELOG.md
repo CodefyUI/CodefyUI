@@ -53,6 +53,21 @@ received — each links to the release it was published as.
   lockfile written before this field loads unchanged; only built-in packs are
   tombstoned, since they are the only ones sync could ever put back uninvited.
 
+- **Plugin apiVersion 4: `api.graph.getView()` — a plugin can now tell which
+  level of the graph the user is looking at** ([#200] item 7). A graph nests, and
+  entering a block swaps its insides onto the one canvas. `getGraph()` has always
+  flattened that and answered with the whole graph; `applyOperations()` has always
+  written to the canvas in front of the user. Both are defensible, but a plugin
+  had no way to tell the two apart, so a batch issued while a block happened to be
+  open landed inside the block — `clear_graph` emptied the block instead of the
+  graph — and nothing in the API said so. `getView()` returns `{ depth, path,
+  atTopLevel }`, read-only and live, so a plugin can refuse, warn, or wait
+  instead of writing blind, and the write rule is now documented API rather than
+  an accident. Purely additive: nothing about where writes land changed, no
+  installed plugin needs a line, and `apiVersion` is how you feature-check
+  (`api.apiVersion >= 4`). The apiVersion 3 contract is now frozen under test
+  too, the same way v2 already was.
+
 ### Fixed
 
 - **An unhandled `/api` path answered `405 Method Not Allowed` on every real
@@ -986,6 +1001,7 @@ Release candidates before 1.0.0 are on the
 [#288]: https://github.com/CodefyUI/CodefyUI/issues/288
 [#292]: https://github.com/CodefyUI/CodefyUI/issues/292
 [#175]: https://github.com/CodefyUI/CodefyUI/issues/175
+[#200]: https://github.com/CodefyUI/CodefyUI/issues/200
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

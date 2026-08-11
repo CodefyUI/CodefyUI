@@ -89,6 +89,38 @@ export interface SerializedGraph {
   [key: string]: unknown;
 }
 
+/* ── view context (read-only) — requires apiVersion >= 4 ─────────────────── */
+
+/** One opened block on the path from the graph to the canvas the user sees. */
+export interface GraphViewLevel {
+  /** The block definition's id — stable, and what `getGraph()` refers to it by. */
+  subgraphId: string;
+  /** The block's name, exactly as the editor's breadcrumb bar shows it. */
+  name: string;
+}
+
+/**
+ * Where the user is looking right now, from `api.graph.getView()`.
+ *
+ * A CodefyUI graph nests: a block (subgraph) has its own canvas, and the user
+ * can step inside one, then inside another. The editor shows this as the
+ * "Main > Encoder > Attention" bar above the canvas; `getView()` is the same
+ * information, for a plugin.
+ *
+ * Read-only, and read live — a fresh answer each call. There is no way to
+ * navigate the user somewhere through the plugin API, deliberately: moving
+ * somebody's editor under them is not something a plugin should be able to do
+ * quietly.
+ */
+export interface GraphView {
+  /** 0 at the top level, 1 inside a block, 2 inside a block inside a block. */
+  depth: number;
+  /** The opened blocks, outermost first. Empty at the top level. */
+  path: GraphViewLevel[];
+  /** `depth === 0`, named so the check a plugin usually wants reads plainly. */
+  atTopLevel: boolean;
+}
+
 export interface NodeRenderContext {
   node: {
     id: string;
@@ -312,12 +344,59 @@ export interface CodefyUIPluginAPI {
     addToolbarButton(opts: PluginToolbarButtonOptions): () => void;
     removeToolbarButton(id: string): void;
   };
+  /**
+   * The graph.
+   *
+   * Read and write are not aimed at the same place while the user is inside a
+   * block, and that difference is documented on each member below. `getView()`
+   * — apiVersion 4 — is how you find out where the user is before you write.
+   */
   graph: {
+    /**
+     * The WHOLE graph, always: nodes and edges at the top level, plus the block
+     * definitions under `subgraphs`.
+     *
+     * Never affected by where the user is standing — the editor flattens its
+     * open sub-canvases into the answer first, exactly as Save and Run do. So a
+     * plugin reading the graph sees the same bytes the user would get by saving
+     * the file, whether or not a block is open on screen.
+     */
     getGraph(): SerializedGraph;
     getNodeDefinitions(): NodeDefinition[];
-    /** Synchronous — returns the result directly, committed as one undo step. */
+    /**
+     * Synchronous — returns the result directly, committed as one undo step.
+     *
+     * **A batch applies to the canvas the user has open, which is not always
+     * the top level.** Entering a block replaces the canvas with that block's
+     * insides, so ops applied then land inside the block: `add_node` adds a
+     * node to the block, and `clear_graph` empties the block rather than the
+     * graph. Node ids from `getGraph()` — which always answers with the top
+     * level — will not be found there, and those ops fail with an error in
+     * their `results` entry.
+     *
+     * This is the editor's long-standing behaviour and it is not changing
+     * silently; it is written down here so you can code against it. If your
+     * plugin composes a read with a write, call `getView()` between the two and
+     * handle `atTopLevel === false` — refuse with a toast, wait for the user to
+     * step out, or scope your edit to what makes sense inside a block. Writing
+     * anyway is not corruption, but it lands somewhere the user is not looking.
+     */
     applyOperations(ops: GraphOp[]): ApplyResult;
+    /**
+     * Called after the graph changes — including when the user steps into or
+     * out of a block, since that swaps the canvas. Re-read `getView()` from the
+     * callback if you track which level the user is on.
+     */
     onGraphChanged(cb: () => void): () => void;
+    /**
+     * Where the user is looking — requires apiVersion >= 4.
+     *
+     * Read-only. It exists so a plugin can tell "the user is inside a block"
+     * from "the user is on the graph" before it writes; see `applyOperations`.
+     * On an older editor this member is `undefined`, so feature-check with
+     * `api.apiVersion >= 4` (or `typeof api.graph.getView === 'function'`).
+     */
+    getView(): GraphView;
   };
   /** Custom node renderers — requires apiVersion >= 2. */
   nodes: {

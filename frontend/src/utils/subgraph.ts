@@ -33,6 +33,41 @@ export function isSubgraphInstance(node: Node<NodeData> | undefined): boolean {
   return !!node && subgraphIdOf(node.data?.type) !== null;
 }
 
+/** One opened block on the trail from a graph's top level to the canvas on screen. */
+export interface SubgraphPathEntry {
+  subgraphId: string;
+  /** The block's name; its id when the definition has gone missing. */
+  name: string;
+}
+
+/**
+ * The trail of opened blocks, outermost first, named the way a human reads it.
+ *
+ * One derivation, two consumers: the breadcrumb bar the user reads
+ * (`components/Canvas/SubgraphBreadcrumb`) and the view a plugin reads
+ * (`api.graph.getView`, core#200 item 7). They have to agree -- a plugin that
+ * warns "you are inside Encoder" while the bar above the canvas says "Decoder"
+ * is worse than a plugin that says nothing -- and the only way to guarantee
+ * that is to let one function answer both.
+ *
+ * Names come from the LIVE definition list rather than from the list each frame
+ * captured on entry, so a rename shows up immediately; the frame's copy exists
+ * for undo, not for display. Falling back to the id keeps the answer non-empty
+ * for a definition that has gone missing (the case `exitSubgraph` guards), and
+ * that fallback is what the breadcrumb has always shown.
+ */
+export function subgraphViewPath(
+  stack: readonly { subgraphId: string }[] | undefined,
+  subgraphs: readonly SubgraphDefinition[] | undefined,
+): SubgraphPathEntry[] {
+  return (stack ?? []).map((frame) => ({
+    subgraphId: frame.subgraphId,
+    name:
+      (subgraphs ?? []).find((d) => d.id === frame.subgraphId)?.name
+      || frame.subgraphId,
+  }));
+}
+
 /**
  * An untrusted `subgraphs` list, coerced to the shape every consumer assumes.
  *

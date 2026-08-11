@@ -11,18 +11,19 @@ A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the 
 :::note Availability
 Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
 
-Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 1.5.0 and later). Feature-check before you use them — see [API versions](#api-versions).
+Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 1.5.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later). Feature-check before you use them — see [API versions](#api-versions).
 :::
 
 ## API versions
 
-`api.apiVersion` is a number that only ever grows, and every release so far has been **purely additive**: nothing that worked at an older version has been removed or changed shape. A plugin written for apiVersion 2 keeps working on an apiVersion 3 editor with no changes at all.
+`api.apiVersion` is a number that only ever grows, and every release so far has been **purely additive**: nothing that worked at an older version has been removed or changed shape. A plugin written for apiVersion 2 keeps working on an apiVersion 4 editor with no changes at all.
 
 | `apiVersion` | CodefyUI | Added |
 |--------------|----------|-------|
 | 1 | 1.3.0 | `ui.addFloatingWidget`, `ui.toast`, `graph.*`, `http.fetch`, `storage.*` |
 | 2 | 1.3.0 | `nodes.registerRenderer` |
 | 3 | 1.5.0 | `ui.addPanel` / `removePanel`, `ui.addToolbarButton` / `removeToolbarButton`, `events.onExecution`, `runs.*` |
+| 4 | 2.3.0 | `graph.getView` — which level of the graph the user is looking at |
 
 Check it before reaching for anything newer than the version you require, and degrade rather than throw:
 
@@ -180,10 +181,11 @@ Re-adding an id replaces the button. The remove function you get back belongs to
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `getGraph` | `() => GraphSnapshot` | Return a deep copy of the current graph state (nodes, edges, params). |
+| `getGraph` | `() => GraphSnapshot` | Return a deep copy of the **whole** graph state (nodes, edges, params, plus block definitions under `subgraphs`) — always the top level, whatever the user has open. |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | Return the full node palette: types, port schemas, param schemas. |
-| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**. |
-| `onGraphChanged` | `(callback: (snapshot: GraphSnapshot) => void) => () => void` | Subscribe to graph changes. Returns an unsubscribe function. |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | Apply a batch of graph operations **synchronously** (returns the result directly — not a Promise). The whole batch is committed as a **single undo snapshot**, and it applies to the canvas the user has open — see [Which level the user is looking at](#which-level-the-user-is-looking-at). |
+| `onGraphChanged` | `(callback: () => void) => () => void` | Subscribe to graph changes — including the user stepping into or out of a block. The callback takes no arguments; call `getGraph()` from it. Returns an unsubscribe function. |
+| `getView` | `() => GraphView` | **apiVersion 4.** Read-only: which level of the graph the user is looking at. |
 
 #### GraphOp table
 
@@ -218,6 +220,48 @@ interface ApplyResult {
 ```
 
 **Batch semantics:** All ops in a single `applyOperations` call form one undo snapshot — pressing Ctrl+Z after an AI edit undoes the entire batch at once. Ops are applied in order; a failing op is skipped and reported in its `results` entry (`ok: false` plus an `error`), while the remaining ops continue. A `ref` alias created by an earlier `add_node` in the same batch is available to later ops, and is echoed back in `refs`.
+
+#### Which level the user is looking at
+
+Requires `api.apiVersion >= 4`.
+
+A CodefyUI graph nests. A **block** (subgraph) has a canvas of its own, and the user can step inside one — the bar above the canvas then reads `Main > Encoder`. There is only ever one canvas: stepping inside *swaps* the block's insides onto it, which is exactly why every editing tool works the same inside a block as outside it.
+
+For a plugin that has one consequence, and it decides where your edits land:
+
+- **`getGraph()` always answers with the whole graph.** The editor folds whatever is open back in before serializing, the same way Save and Run do, so you read the same bytes the user would get by saving the file.
+- **`applyOperations()` writes to the canvas the user has open.** Inside a block, `add_node` adds a node *to that block*, and `clear_graph` empties *the block* rather than the graph. Node ids you read from `getGraph()` do not exist there, so ops naming them come back `ok: false` with an error.
+
+So a plugin that reads, reasons, then writes can be right about the graph and still write somewhere the user is not looking. `getView()` is how you tell the two situations apart first:
+
+```ts
+interface GraphViewLevel {
+  subgraphId: string;  // the block definition's id, as getGraph() refers to it
+  name: string;        // the block's name, as the breadcrumb bar shows it
+}
+
+interface GraphView {
+  depth: number;           // 0 at the top level, 1 inside a block, 2 inside a block inside a block
+  path: GraphViewLevel[];  // the open blocks, outermost first; empty at the top level
+  atTopLevel: boolean;     // depth === 0, for the check you usually want
+}
+```
+
+```js
+const view = api.graph.getView();
+if (!view.atTopLevel) {
+  const inside = view.path[view.path.length - 1].name;
+  api.ui.toast(`Step out of "${inside}" first — an edit now would land inside that block.`, "warning");
+  return;
+}
+api.graph.applyOperations(ops);
+```
+
+Refusing is not the only honest answer — waiting, or scoping the edit to something that makes sense inside a block, are both fine. The point is that the choice is now yours to make instead of a coin flip.
+
+The view is **read-only**, and read live: each call is a fresh answer, and there is deliberately no way to navigate somebody's editor from a plugin. `onGraphChanged` fires when the user steps into or out of a block (the canvas changed, after all), so a panel that displays where it would write can re-read `getView()` from that callback.
+
+Where a write lands is the editor's long-standing behaviour, now written down rather than changed. A later revision may let an op name its target level explicitly; it will do that by adding something, not by quietly redirecting the writes that installed plugins already make.
 
 ### `api.nodes` — custom node renderers
 

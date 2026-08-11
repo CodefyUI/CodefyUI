@@ -15,6 +15,7 @@ import {
   type RunInfo, type RunListPage, type RunMetrics, type RunStatus,
 } from '../api/rest';
 import type { NodeDefinition } from '../types';
+import { subgraphViewPath } from '../utils/subgraph';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 import {
@@ -44,8 +45,46 @@ export interface RunListOptions {
   offset?: number;
 }
 
+/** One opened block on the path from the graph to the canvas the user sees. */
+export interface GraphViewLevel {
+  subgraphId: string;
+  /** The block's name, exactly as the breadcrumb bar shows it. */
+  name: string;
+}
+
+/**
+ * Where the user is looking, as `api.graph.getView()` answers (core#200 item 7).
+ *
+ * READ-ONLY, and read live: nothing here can be set through the plugin API, and
+ * the object is a fresh snapshot of the moment it was asked for.
+ */
+export interface GraphView {
+  /** 0 at the top level, 1 inside a block, 2 inside a block inside a block. */
+  depth: number;
+  /** The opened blocks, outermost first. Empty at the top level. */
+  path: GraphViewLevel[];
+  /** `depth === 0`, named so the common check reads as a sentence. */
+  atTopLevel: boolean;
+}
+
+/**
+ * The current view context, derived from the active tab's editing stack.
+ *
+ * Optional-chained through the tab because a plugin may call this at any time,
+ * including from an activation that runs before the editor has restored its
+ * tabs -- and "no tab" is honestly reported as the top level rather than as a
+ * thrown error inside third-party code.
+ */
+export function currentGraphView(): GraphView {
+  const tab = useTabStore.getState().getActiveTab() as
+    | ReturnType<ReturnType<typeof useTabStore.getState>['getActiveTab']>
+    | undefined;
+  const path = subgraphViewPath(tab?.subgraphStack, tab?.subgraphs);
+  return { depth: path.length, path, atTopLevel: path.length === 0 };
+}
+
 export interface CodefyUIPluginAPI {
-  apiVersion: 3;
+  apiVersion: 4;
   pluginId: string;
   ui: {
     addFloatingWidget(opts: { id: string }): HTMLElement;
@@ -58,10 +97,15 @@ export interface CodefyUIPluginAPI {
     removeToolbarButton(id: string): void;
   };
   graph: {
+    /** Always the WHOLE graph, from the top level down. See `getView`. */
     getGraph(): SerializedGraph;
     getNodeDefinitions(): NodeDefinition[];
+    /** Applies to the canvas the user has open, which is not always the top
+     * level. See `getView` before writing. */
     applyOperations(ops: GraphOp[]): ApplyResult;
     onGraphChanged(cb: () => void): () => void;
+    /** Read-only: which level of the graph the user is looking at (#200 item 7). */
+    getView(): GraphView;
   };
   nodes: {
     /** Register a custom renderer for a node type's card body. Returns an unregister fn. */
@@ -86,6 +130,27 @@ export interface CodefyUIPluginAPI {
   };
 }
 
+/**
+ * Apply a plugin's batch to the canvas the user has open.
+ *
+ * `tab.nodes` / `tab.edges` are the canvas in FRONT OF THE USER, which while a
+ * block is open are the block's insides rather than the graph -- so a batch
+ * applied then lands inside the block, and `clear_graph` empties the block
+ * instead of the graph (core#200 item 7).
+ *
+ * That is deliberately left as it stands (maintainer decision, 2026-08-12).
+ * Changing where a write lands would silently redirect every installed plugin's
+ * edits, and both answers are defensible; what was missing was any way for a
+ * plugin to KNOW. So the gradual step is `api.graph.getView()` -- read-only
+ * view context, above -- letting a plugin refuse, warn, or ask instead of
+ * writing blind. A future revision can add an explicit write target on top of
+ * it without having moved anybody's writes in the meantime.
+ *
+ * Note the asymmetry this leaves, and why `getView` matters: `getGraph()`
+ * flushes and answers with the whole graph, so a plugin that reads, reasons and
+ * writes can compute node ids that exist at the top level and apply them to a
+ * canvas where they do not.
+ */
 export function commitGraphOperations(ops: GraphOp[]): ApplyResult {
   const store = useTabStore.getState();
   const tab = store.getActiveTab();
@@ -140,7 +205,11 @@ export function buildPluginAPI(
 ): CodefyUIPluginAPI {
   const ns = (key: string) => `plugin:${pluginId}:${key}`;
   return {
-    apiVersion: 3,
+    // Bumped for `graph.getView` (#200 item 7). The number is the only way a
+    // plugin can tell a host that has the new member from one that does not:
+    // on a 1.5-era editor `api.graph.getView` is simply `undefined`, and the
+    // documented feature check is `api.apiVersion >= 4`.
+    apiVersion: 4,
     pluginId,
     ui: {
       addFloatingWidget: ({ id }) => getWidgetContainer(id),
@@ -165,6 +234,7 @@ export function buildPluginAPI(
       getGraph: () => useTabStore.getState().getSerializedGraph(),
       getNodeDefinitions: () => useNodeDefStore.getState().definitions,
       applyOperations: (ops) => commitGraphOperations(ops),
+      getView: () => currentGraphView(),
       onGraphChanged: (cb) => {
         // Track the unsubscribe so the host can tear it down on a dev
         // hot-reload — otherwise re-activation would stack subscriptions.
