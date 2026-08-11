@@ -335,10 +335,14 @@ received — each links to the release it was published as.
   A new example, **Train a Causal LM on TinyStories**
   (`examples/LLM/TrainCausalLM-TinyStories`), wires the whole chain up at bf16
   with an effective batch of 32 sequences, then scores a held-out split and
-  writes a sample. Its gallery card quotes the parameter count, the effective
-  batch and both token budgets, and a test asserts each of those is still the
-  value in the graph — every one of them is a relationship between two nodes,
-  which is exactly what graph validation cannot see.
+  writes a sample. It ships with a `README.md` carrying the recipe, both token
+  budgets and the memory levers, because the card cannot: the canvas gallery
+  truncates a description at 80 characters and shows no tooltip, so the card
+  leads with the only two facts that decide whether the graph can run at all —
+  a 16 GB GPU, and one first-run download. A test asserts those two survive
+  that truncation, and a second asserts every number the README quotes is
+  still derivable from the graph's params — each of them is a relationship
+  between two nodes, which is exactly what graph validation cannot see.
 
 - **The optimizer and loss applicability tables are now checked against the
   installed torch** ([#189]). `#134` declares which algorithm accepts which

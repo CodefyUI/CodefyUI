@@ -16,7 +16,7 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例圖。你�
 
 這個 repository 在磁碟上也依主題把範例分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `Others/`。
 
-除了 **Train a Causal LM on TinyStories** 之外，所有列出的範例都可以離線直接執行。那一個範例第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張放得下 203,668,480 參數模型的 GPU；token 預算與記憶體開關都寫在它自己的說明卡上。兩份下載都會被快取，之後再跑就同樣是離線的。
+除了 **Train a Causal LM on TinyStories** 之外，所有列出的範例都可以離線直接執行。那一個範例第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張放得下 203,668,480 參數模型的 GPU。它的說明卡開頭就會先講這兩個前提條件；完整的訓練配方、token 預算與記憶體開關則放在圖旁邊的 `README.md`（`examples/LLM/TrainCausalLM-TinyStories/`）。兩份下載都會被快取，之後再跑就同樣是離線的。
 
 ## 載入範例
 

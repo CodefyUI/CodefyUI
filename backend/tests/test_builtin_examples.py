@@ -22,9 +22,13 @@ against a generated image folder instead of the 170 MB download. See
 ``test_resnet18_cifar10_baseline_short_epoch``.
 
 The TinyStories LM pretraining example (#292) gets the same treatment for the
-same reason, minus the execution: its description quotes a parameter count, an
-effective batch size and two token budgets, and every one of those is a fact
-about *other* nodes' params that ``validate_graph`` is blind to. See
+same reason, minus the execution: its README quotes a parameter count, an
+effective batch size, two token budgets and a step count, and every one of
+those is a fact about *other* nodes' params that ``validate_graph`` is blind
+to. It is also the only builtin needing the network and a 16 GB GPU, and the
+canvas gallery card truncates a description at 80 characters with no tooltip --
+so where the warning sits in the string is itself an invariant. See
+``test_tinystories_lm_example_warns_inside_the_card_truncation`` and
 ``test_tinystories_lm_example_still_describes_itself``.
 """
 
@@ -349,9 +353,11 @@ def test_resnet18_cifar10_baseline_short_epoch(tmp_path, monkeypatch):
     assert (tmp_path / "models" / "smoke.pt").is_file()
 
 
-# ── TinyStories LM pretraining: the description is the graph (#292) ─────────
+# ── TinyStories LM pretraining: the prose is the graph (#292) ───────────────
 
-_LM_EXAMPLE = _EXAMPLES_ROOT / "LLM" / "TrainCausalLM-TinyStories" / "graph.json"
+_LM_DIR = _EXAMPLES_ROOT / "LLM" / "TrainCausalLM-TinyStories"
+_LM_EXAMPLE = _LM_DIR / "graph.json"
+_LM_README = _LM_DIR / "README.md"
 
 #: What the example's own prose claims, and where each claim comes from.
 #:
@@ -359,7 +365,7 @@ _LM_EXAMPLE = _EXAMPLES_ROOT / "LLM" / "TrainCausalLM-TinyStories" / "graph.json
 #: them can be checked by looking at any single node: the model's context
 #: length has to match the dataset's block length, the effective batch is a
 #: product of two nodes' params, and the parameter count is a fact about the
-#: model node quoted in a string on the graph.
+#: model node quoted in prose beside the graph.
 _LM_SEQ_LEN = 1024
 _LM_MICRO_BATCH = 8
 _LM_ACCUMULATE = 4
@@ -375,18 +381,63 @@ _LM_VAL_TOKEN_BUDGET = 2_000_000
 #: this graph fails here.
 _LM_PARAM_COUNT = 203_668_480
 
+#: ``EmptyCanvasOverlay.tsx`` renders an example card's description as
+#: ``description.slice(0, 80) + '...'`` with no ``title`` attribute. The
+#: empty-canvas gallery is the surface a user reads BEFORE pressing Run, and it
+#: is the only one that shows a description without being hovered (the sidebar
+#: ``TemplatesTab`` puts the full text in a tooltip), so anything past this
+#: many characters is not a warning -- it is a footnote nobody sees.
+_CARD_VISIBLE_CHARS = 80
+
+#: What must be legible in those 80 characters: the two things that decide
+#: whether a user CAN run this graph at all. Everything else is in README.md.
+_LM_CARD_REQUIREMENTS = ("16 GB GPU", "download")
+
+
+def test_tinystories_lm_example_warns_inside_the_card_truncation():
+    """The requirements survive the gallery card's 80-character cut.
+
+    This example is the only builtin that needs the network and a 16 GB GPU,
+    and a requirement that appears at character 900 of a 1,100-character
+    description is a requirement the canvas card silently drops. Asserted
+    against the truncated string rather than the whole one, because the whole
+    one is not what anybody reads.
+    """
+    payload = json.loads(_LM_EXAMPLE.read_text(encoding="utf-8"))
+    description = payload["description"]
+    visible = description[:_CARD_VISIBLE_CHARS]
+
+    for requirement in _LM_CARD_REQUIREMENTS:
+        assert requirement in visible, (
+            f"{requirement!r} is not inside the {_CARD_VISIBLE_CHARS} "
+            f"characters the canvas gallery card shows. The card renders "
+            f"{visible!r} and nothing more -- move the requirement to the "
+            f"front of the description, not into README.md.")
+
+    # A tooltip-length description is still worth keeping short: the sidebar
+    # shows it in full as a `title`, and a native tooltip of several hundred
+    # characters is its own kind of unreadable. Generous ceiling, not a style
+    # rule -- the point is that the detail lives in README.md.
+    assert len(description) <= 500, (
+        f"the description is {len(description)} characters; the recipe belongs "
+        f"in {_LM_README.name}, not on the card")
+
+    assert _LM_README.is_file(), (
+        f"{_LM_README} is missing -- the card's last sentence points at it, and "
+        f"the docs pages point at it instead of at the card")
+
 
 def test_tinystories_lm_example_still_describes_itself():
-    """Every number the example's description quotes is still in its params.
+    """Every number the example's README quotes is still in its params.
 
-    The gallery card is the only place a user reads before pressing Run, and
-    the numbers on it are the ones that decide whether the run fits in their
-    GPU and finishes today. A graph whose card has drifted from its params is
-    worse than one with no card.
+    The README is where the recipe lives, because the card cannot hold it (see
+    the test above). That makes the README the file most able to rot silently:
+    nothing executes it, and every figure in it is a fact about two nodes at
+    once. So each one is derived here from the params and required to appear.
     """
     payload = json.loads(_LM_EXAMPLE.read_text(encoding="utf-8"))
     by_id = {n["id"]: n for n in payload["nodes"]}
-    description = payload["description"]
+    readme = _LM_README.read_text(encoding="utf-8")
 
     def params(node_id: str) -> dict:
         assert node_id in by_id, f"{node_id} is missing from the LM example"
@@ -403,8 +454,8 @@ def test_tinystories_lm_example_still_describes_itself():
             f"model.{name} is {model_params[name]!r}, not the declared default "
             f"{declared[name]!r} -- the example no longer builds the "
             f"{_LM_PARAM_COUNT:,}-parameter reference shape it advertises")
-    assert f"{_LM_PARAM_COUNT:,}" in description, (
-        f"the description no longer quotes {_LM_PARAM_COUNT:,} parameters")
+    assert f"{_LM_PARAM_COUNT:,} parameters" in readme, (
+        f"the README no longer quotes {_LM_PARAM_COUNT:,} parameters")
 
     # A block longer than the model's positions is rejected at runtime rather
     # than truncated (CausalLMModel), so this equality is the difference
@@ -413,16 +464,16 @@ def test_tinystories_lm_example_still_describes_itself():
         assert params(packer)["seq_len"] == _LM_SEQ_LEN, packer
     assert model_params["max_seq_len"] == _LM_SEQ_LEN
 
-    # The effective batch is a product of two nodes, and the description
-    # states both it and the token count it implies.
+    # The effective batch is a product of two nodes, and the README states
+    # both it and the token count it implies.
     loader, loop = params("dl-train"), params("train")
     assert loader["batch_size"] == _LM_MICRO_BATCH
     assert loop["accumulate_steps"] == _LM_ACCUMULATE
     effective = _LM_MICRO_BATCH * _LM_ACCUMULATE
-    assert f"an effective batch of {effective} sequences" in description
-    assert f"{effective * _LM_SEQ_LEN:,} tokens per optimizer step" in description
+    assert f"effective batch {effective}" in readme
+    assert f"{effective * _LM_SEQ_LEN:,} tokens per optimizer step" in readme
 
-    # The recipe the description quotes.
+    # The recipe the README tabulates.
     assert loop["precision"] == "bf16"
     assert loop["epochs"] == 1
     assert loop["grad_clip_norm"] == 1.0
@@ -432,15 +483,35 @@ def test_tinystories_lm_example_still_describes_itself():
     assert optimizer["weight_decay"] == 0.1
     # The one value here that is not the Optimizer node's default: 0.999 is
     # the vision-training beta2, and LM pretraining has used 0.95 since GPT-2.
-    # Quoted on the card precisely because it is a deviation.
+    # The README calls the deviation out, and this holds it to that.
     assert optimizer["betas"] == "0.9, 0.95"
-    assert "betas 0.9, 0.95" in description
+    assert "betas 0.9, 0.95" in readme
 
     # The two budgets that decide how long "one epoch" takes.
     assert params("pack-train")["max_tokens"] == _LM_TRAIN_TOKEN_BUDGET
     assert params("pack-val")["max_tokens"] == _LM_VAL_TOKEN_BUDGET
-    assert f"{_LM_TRAIN_TOKEN_BUDGET:,} training" in description
-    assert f"{_LM_VAL_TOKEN_BUDGET:,} validation tokens" in description
+    assert f"**{_LM_TRAIN_TOKEN_BUDGET:,}** tokens" in readme
+    assert f"**{_LM_VAL_TOKEN_BUDGET:,}** for validation" in readme
+
+    # The chain the README walks through, and the sentence on the card: how
+    # many steps "one epoch" actually is. Derived rather than transcribed, so
+    # editing seq_len, either budget, batch_size or accumulate_steps fails
+    # here until the prose is updated with it.
+    blocks = (_LM_TRAIN_TOKEN_BUDGET - 1) // _LM_SEQ_LEN
+    assert loader["drop_last"] is True, (
+        "drop_last is what makes the micro-batch count below a clean floor")
+    micro_batches = blocks // _LM_MICRO_BATCH
+    optimizer_steps = micro_batches // _LM_ACCUMULATE
+    for number in (blocks, micro_batches, optimizer_steps):
+        assert f"**{number:,}**" in readme, (
+            f"the README's budget table does not derive {number:,}")
+    description = payload["description"]
+    assert f"{micro_batches:,} micro-batches" in description
+    assert f"about {optimizer_steps:,} optimizer steps" in description
+    # Validation is scored whole, so its block count is quoted too.
+    val_blocks = (_LM_VAL_TOKEN_BUDGET - 1) // _LM_SEQ_LEN
+    assert params("ppl")["max_batches"] == 0
+    assert f"{val_blocks:,} blocks" in readme
 
 
 def test_tinystories_lm_example_scores_a_split_it_did_not_train_on():
