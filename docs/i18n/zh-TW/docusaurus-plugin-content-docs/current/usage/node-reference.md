@@ -40,6 +40,7 @@ CodefyUI 內建 **128 個節點**，涵蓋 **15 大類別**。已安裝的 [外�
 - **`EmbeddingScatter`**（LLM）— 把 embedding 投影到 2D（PCA / t-SNE），畫成可縮放的散佈圖。
 - **`AttentionHeatmap`**（LLM）— 把 attention 矩陣渲染成影像。
 - **語言模型鏈**（LLM）— 七個節點，讓你直接在畫布上從零開始預訓練一個 GPT 式的 decoder：`TextCorpusDataset`（從 Hugging Face Hub 或本機 `.txt` 讀入原始文字列）→ `LMTokenizedDataset`（把它們打包成固定長度的下一個 token 預測區塊）→ `DataLoader` → `TrainingLoop`，模型用 `CausalLMModel`、損失函數用 `LMCrossEntropyLoss`，並由 `LMTokenizer` 提供同一個 tokenizer 物件給每個需要它的節點。訓練完成後，`PerplexityEvaluate` 在保留下來的驗證集上評分，`TextGenerate` 則從訓練好的權重採樣文字。`CausalLMModel` 的預設值描述的是一個 203,668,480 參數的模型；把 `d_model` 與 `n_layers` 調小，就能得到一堂課內筆電也訓練得完的規模。**Train a Causal LM on TinyStories** 範例把整條鏈都接好了 — 見[範例集](./examples-gallery)。
+- **`ModelSaver` / `ModelLoader`**（IO）— 寫出與讀回模型檔。兩者都有 `state_dict` 模式（只存張量；預設值，也是唯一對檔案沒有附加條件的模式）與 `full_model` 模式（pickle 過的模組本身，在受限解序列化器下讀取，而該解序列化器只接受 torch 與 CodefyUI 自己的層類別，其餘一律拒絕）。該選哪一個、以及一個 `full_model` 檔要能載入需要什麼條件：見[儲存與載入模型](./model-files)。
 - **`Switch`**（資料流）— 條件式路由，讓只有一條分支會執行。
 
 ## 連接埠資料型別
