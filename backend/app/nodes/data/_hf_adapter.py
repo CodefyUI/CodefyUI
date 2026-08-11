@@ -1,9 +1,9 @@
 """Internal helper: wraps a HuggingFace `datasets.Dataset` as a torch Dataset.
 
 This is a private module (leading underscore). It is reusable from any
-HuggingFace-backed node — currently `HuggingFaceDatasetNode`, and a future
-`HuggingFaceTextDataset` node could share the same shape with a different
-column convention.
+HuggingFace-backed node — `HuggingFaceDatasetNode` for image classification,
+and `TextCorpusDatasetNode` (#290) for the text variant this module's docstring
+used to anticipate: same shape, one column instead of two, and no transform.
 """
 
 from __future__ import annotations
@@ -11,39 +11,6 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from torch.utils.data import Dataset
-
-
-class HFTorchTextDataset(Dataset):
-    """Adapt a HuggingFace `datasets.Dataset` to rows of raw text.
-
-    The text sibling of `HFTorchImageDataset` (the docstring above always
-    promised one): `__getitem__` returns one python string, which is what
-    the LM packing node consumes. No transform hook — text preprocessing
-    belongs to the tokenizer.
-    """
-
-    def __init__(self, hf_dataset: Any, text_column: str) -> None:
-        self._ds = hf_dataset
-        self._text_col = text_column
-
-    def __len__(self) -> int:
-        return len(self._ds)
-
-    def __getitem__(self, idx: int) -> str:
-        return str(self._ds[idx][self._text_col])
-
-
-class LocalTextListDataset(Dataset):
-    """A list of strings as a Dataset — the local-file corpus shape."""
-
-    def __init__(self, rows: list[str]) -> None:
-        self._rows = rows
-
-    def __len__(self) -> int:
-        return len(self._rows)
-
-    def __getitem__(self, idx: int) -> str:
-        return self._rows[idx]
 
 
 class HFTorchImageDataset(Dataset):
@@ -76,3 +43,35 @@ class HFTorchImageDataset(Dataset):
         if self.transform is not None:
             image = self.transform(image)
         return image, label
+
+
+class HFTorchTextDataset(Dataset):
+    """One text column of a HuggingFace `datasets.Dataset`, as raw strings (#290).
+
+    `__getitem__` returns a `str`, NOT a `(data, target)` pair — the rows are a
+    corpus, not supervised examples, so this cannot be handed to `DataLoader`
+    directly. `LMTokenizedDataset` is what turns it into training pairs.
+
+    No `transform` attribute, deliberately: the image variant has one because
+    torchvision's convention is that `TransformNode` may replace it at any
+    time, and there is no equivalent for text — tokenization is a node of its
+    own with its own cache.
+    """
+
+    def __init__(self, hf_dataset: Any, text_column: str) -> None:
+        self._ds = hf_dataset
+        self._text_col = text_column
+
+    def __len__(self) -> int:
+        return len(self._ds)
+
+    def __getitem__(self, idx: int) -> str:
+        value = self._ds[idx][self._text_col]
+        if isinstance(value, str):
+            return value
+        # A real corpus column is nullable, and `str(None)` would inject the
+        # literal word "None" into the training stream. Anything else
+        # (a number, a nested field) is stringified rather than refused: the
+        # row is data the user pointed at, and failing the whole load over one
+        # odd cell is worse than tokenizing its text form.
+        return "" if value is None else str(value)

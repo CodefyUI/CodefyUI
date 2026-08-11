@@ -758,34 +758,6 @@ const zhTW: NodeTranslations = {
       show_special_tokens: '是否輸出 tokenizer 的特殊 token（BOS/EOS/CLS/SEP/...）。',
     },
   },
-  CausalLMModel: {
-    description:
-      '建立一個可訓練的 GPT-style decoder-only transformer 語言模型。輸出真正的 MODEL（input_ids (B,T) int64 → logits (B,T,vocab)），可直接接 Optimizer / TrainingLoop / CheckpointSaver，另輸出精確的可訓練參數量讓圖能證明模型大小。因果遮罩在模型內部；搭配 LMCrossEntropyLoss 與打包好的 LM 資料使用。預設形狀約 2.02 億參數（d_model 1024、12 層、gpt2 詞彙表、共享嵌入）。',
-    params: {
-      vocab_size: '詞彙表大小（50257 = tiktoken gpt2；請與 LM tokenizer 的 encoding 保持一致）。',
-      d_model: '嵌入／殘差流寬度。',
-      n_layers: 'Transformer 區塊層數。',
-      n_heads: '注意力頭數（d_model 必須能被 n_heads 整除）。',
-      d_ff: '前饋隱藏層寬度（通常是 d_model 的 4 倍）。',
-      max_seq_len: '模型接受的最大序列長度。',
-      dropout: '注意力／MLP／嵌入的 dropout（單一 epoch 的 LM 預訓練通常設 0）。',
-      positional: '位置編碼：learned 可學習嵌入、sinusoidal 固定正弦、rope 旋轉位置編碼（RoPE）。',
-      norm: '正規化層（兩種都用 pre-norm 區塊）。',
-      activation: '前饋層的激活函數。',
-      tie_embeddings: '讓輸出層與 token 嵌入矩陣共享權重（省下 vocab×d_model 個參數）。',
-      gradient_checkpointing: '反向傳播時重算激活值，用計算換記憶體。',
-      init_std: '權重初始化的標準差（殘差投影會再除以 sqrt(2×n_layers)）。',
-      seed: '初始化種子 — 相同種子建出完全相同的權重。',
-    },
-  },
-  LMCrossEntropyLoss: {
-    description:
-      '語言模型用的 next-token cross-entropy：內部自動攤平，接受 logits (B,T,vocab) 對 targets (B,T) — 正是 CausalLMModel 與打包 LM 資料產出的形狀。支援 ignore_index 與 label smoothing。LM 訓練請用這顆，而不是通用 Loss 節點的 CrossEntropyLoss。',
-    params: {
-      ignore_index: '目標值等於此數的位置不計損失（padding 慣例）。',
-      label_smoothing: '標籤平滑係數（0 = 關閉）。',
-    },
-  },
   WordVector: {
     description:
       '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
@@ -795,61 +767,6 @@ const zhTW: NodeTranslations = {
       words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
       normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
       keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
-    },
-  },
-  LMTokenizer: {
-    description:
-      '產生一個可重複使用的 tokenizer 物件（tiktoken BPE）給 LM 訓練管線：LMTokenizedDataset 用它編碼並打包語料，文字生成用它編碼 prompt／解碼輸出。輸出物件提供 encode / encode_batch / decode、eos_id 與 vocab_size。gpt2 = 詞彙表 50257、eos <|endoftext|>（50256），與 CausalLMModel 的預設 vocab_size 一致。',
-    params: {
-      encoding: 'tiktoken 編碼。gpt2 = 50257 個 token（GPT-2 詞彙表）；cl100k／o200k 是 GPT-4 世代的較大詞彙表。第一次使用會下載一次，之後離線可用。',
-    },
-  },
-  TextCorpusDataset: {
-    description:
-      '把文字語料載成「每列一段原始文字」的資料集 — 來源可以是 HuggingFace Hub 的文字資料集（如 roneneldan/TinyStories、wikitext）或本機文字檔（一行一筆）。接 LMTokenizedDataset 編碼打包後就是 LM 訓練資料。',
-    params: {
-      source: '語料來源。',
-      dataset_name: 'HuggingFace Hub repo id（例如 roneneldan/TinyStories、wikitext）。',
-      subset: '多設定資料集的 config 名稱（留空 = 無；wikitext 需要如 wikitext-103-raw-v1）。',
-      split: '切分：train／validation／test，或 HF 切片語法（train[:10000]）。',
-      text_column: '存放文字的欄位名稱。',
-      local_file: '本機文字檔，一行一筆（空行略過）。',
-      max_rows: '只保留前 N 列（0 = 全部）— 試跑預算的便宜開關。',
-      cache_dir: '覆寫 HuggingFace 快取目錄（留空 = HF 預設）。',
-    },
-  },
-  LMTokenizedDataset: {
-    description:
-      '把文字語料編碼並打包成固定長度的 next-token 訓練塊 — 標準 LM 預訓練資料形狀。列與列之間接 EOS、整條 token 流切成 seq_len+1 的塊，輸出 (input_ids, labels) 配對（labels 右移一格）。接 TextCorpusDataset + LMTokenizer 進來，輸出接 DataLoader → TrainingLoop。打包結果以內容指紋為鍵快取在磁碟，重跑不再重新編碼。',
-    params: {
-      seq_len: '每塊的 token 長度（不可超過模型的 max_seq_len）。',
-      append_eos: '文件之間插入 tokenizer 的 EOS，讓模型學到文件邊界。',
-      max_tokens: '打包流最多 N 個 token（0 = 全部）— 試跑預算開關。',
-      cache: '把打包好的塊快取到資料目錄的 lm_token_cache/。',
-      cache_dir: '覆寫快取目錄（相對路徑解析在資料目錄內）。',
-    },
-  },
-  PerplexityEvaluate: {
-    description:
-      '在打包好的 (input_ids, labels) 驗證資料上評估 causal LM：輸出 token 加權的平均 cross-entropy（val_loss）與 perplexity = exp(val_loss)。標籤為 -100 的位置不計入。接 TrainingLoop.model 與驗證用的 LMTokenizedDataset；perplexity 是逐 token 指標，只在相同資料集與 tokenizer 下可比較。',
-    params: {
-      batch_size: '評估批次大小（只影響速度／記憶體，結果相同）。',
-      max_batches: '最多評估 N 個批次（0 = 整個資料集）。',
-      device: '評估用的裝置（auto 跟隨全域裝置）。',
-      precision: '前向的 autocast 精度。bf16 在 Ampere+ 省一半激活記憶體，是 LM 評估預設；裝置不支援會退回 fp32 並註明。要發表的數字請用 fp32。',
-    },
-  },
-  TextGenerate: {
-    description:
-      '用訓練好的 causal LM 自迴歸生成文字：以 LMTokenizer 編碼 prompt、逐 token 取樣（temperature / top-k / top-p，種子化可重現）、遇 EOS 或 max_new_tokens 停止並解碼。畫布上訓練成果最直觀的質性驗證。',
-    params: {
-      prompt: '沒有接 prompt 輸入時使用的提示文字。',
-      max_new_tokens: '最多生成的 token 數。',
-      temperature: '取樣溫度（0 = greedy argmax）。',
-      top_k: '取樣前只保留機率最高的 k 個 token（0 = 關閉）。',
-      top_p: 'Nucleus 取樣：保留累積機率達 p 的最小 token 集合（1 = 關閉）。',
-      seed: '取樣種子 — 相同種子與權重會重現相同文字。',
-      device: '前向運算的裝置。',
     },
   },
   EmbeddingScatter: {
@@ -890,6 +807,97 @@ const zhTW: NodeTranslations = {
     params: {
       head_index: '若權重是 per-head 形式（[H,seq,seq] 或 [B,H,seq,seq]），可指定顯示哪一個 head。-1 代表保留全部 head 並排顯示。',
       colormap: '熱圖視覺化用的色階（僅前端使用，後端會忽略）。',
+    },
+  },
+  CausalLMModel: {
+    description:
+      '一個真的可以訓練的 GPT 風格 decoder-only transformer。輸出一個 MODEL，把 token ids（batch, seq_len）對應到下一個 token 的 logits（batch, seq_len, vocab_size）— 跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值大約是 204M（2 億）參數的模型；把 d_model 與 n_layers 調小，才能在一堂課的時間內用筆電訓練完。',
+    params: {
+      vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量。',
+      d_model: 'residual stream 的寬度：每個 token 穿過整個網路時所攜帶的向量大小。必須能被 n_heads 整除。',
+      n_layers: '堆疊幾層 transformer block。深度決定了模型能做幾步推理，成本隨層數線性增加。',
+      n_heads: '每一層的寬度要切給幾個 attention head。head 越多、同時追蹤的關係越多，但每個 head 的子空間就越窄（寬度為 d_model / n_heads）。',
+      d_ff: '每個 block 內部 MLP 的隱藏層寬度，慣例是 d_model 的 4 倍。模型有三分之二的參數住在這裡。',
+      max_seq_len: '模型有位置資訊可用的最長序列長度（單位：token）。超過長度的批次會直接報錯而不是截斷；生成時會以這個大小滑動視窗。',
+      tie_embeddings: '讓輸入的 embedding 與輸出的 head 共用同一個矩陣。小模型的標準作法：可以省下 vocab_size x d_model 個參數，而且通常還會更好。',
+      positional: '模型如何知道一個 token 在什麼位置。learned = 每個位置一個訓練出來的向量（GPT-2）；sinusoidal = 固定的 sin/cos 表（Vaswani et al.）；rope = 依位置旋轉 query 與 key（Llama），對更長的文字外推得最好。',
+      norm: '每個 sub-layer 前面的正規化層。rmsnorm 少了減平均與 bias — 稍微便宜一點，也是現代開源模型的選擇。',
+      activation: 'MLP 的非線性函數。gelu 是 transformer 的預設；silu（又叫 swish）是 Llama 的選擇；relu 最便宜。',
+      dropout: '訓練時被歸零的 activation 比例（0 = 關閉）。大語料預訓練通常關著；在小資料集上微調時再調高。',
+      gradient_checkpointing: '反向傳播時重新計算每個 block，而不是把 activation 存下來：記憶體省很多，時間多花約 30%。當一個 batch 塞不進顯卡時再打開。',
+      init_std: '權重初始化所用常態分布的標準差。0.02 是 GPT-2 的值；寫回 residual stream 的那幾個投影層還會再除以 sqrt(2 x n_layers)。',
+      seed: '權重初始化的隨機種子。同樣的種子會得到同樣的起始模型，兩次跑的差別就只有你改掉的部分。',
+    },
+  },
+  LMCrossEntropyLoss: {
+    description:
+      '專為語言模型調整形狀的 cross-entropy：把（batch, seq_len, vocab_size）的 logits 與（batch, seq_len）的 token ids 攤平後對齊，回傳所有位置的平均損失。搭配 CausalLMModel 接到 TrainingLoop 的 loss_fn。',
+    params: {
+      ignore_index: '這個 target id 不會產生任何損失與梯度。可以用在 padding，或指令資料中屬於提示（prompt）的那一半。-100 是各家工具共通的慣例。',
+      label_smoothing: '把一小部分機率質量分給其他 token，讓「答對但過度自信」也要付一點代價（0 = 關閉，0.1 是常見值）。',
+    },
+  },
+  LMTokenizer: {
+    description:
+      'tokenizer 本身，以一個可重複使用的物件輸出：接到 LMTokenizedDataset 可以把文字語料切成訓練用的區塊，接到生成節點則能讓它們使用與訓練時相同的 token ids。gpt2 的 50257 個 token 是最常見的起點。每種編碼只會下載一次 BPE 對照表，之後就能離線使用。',
+    params: {
+      encoding:
+        '要使用哪一套 BPE 詞彙表。gpt2（50257 個 token）訓練成本最低；cl100k_base（GPT-3.5/4）與 o200k_base（GPT-4o）能用同樣的 token 數塞進更多文字，但輸出層也要寬得多。',
+    },
+  },
+  TextCorpusDataset: {
+    description:
+      '把文字語料以「一列一段原始文字」的形式載入 — 可以是 HuggingFace Hub 上的資料集，也可以是你自己上傳的 .txt 檔。這是語言模型訓練的原料，所以還沒有標籤（target）：請接到 LMTokenizedDataset（不要直接接 DataLoader），由它把文字切成「預測下一個 token」的訓練區塊。',
+    params: {
+      source: '文字的來源：HuggingFace Hub 上已發布的資料集，或這台機器上的 .txt 檔。',
+      dataset_name:
+        'HuggingFace Hub 的 repo id。TinyStories 大約有 200 萬篇簡單的兒童故事 — 小到訓練得動，也淺到可以直接用肉眼判斷輸出好不好。',
+      subset: '多組態（multi-config）資料集要用的組態名稱，例如 wikitext-103-raw-v1（留空 = 該資料集的預設組態）。',
+      split: '要載入哪一個 split：train/test/validation，或 HF 的切片語法（例如 train[:5000]）。',
+      text_column: '存放文件文字的欄位名稱。慣例是 text；若填錯，錯誤訊息會列出實際有哪些欄位。',
+      cache_dir: '覆寫 HuggingFace 下載快取的位置（留空 = HF 預設，通常是 ~/.cache/huggingface）。',
+      local_path:
+        '要讀取的文字檔。可以從下拉選單挑選已上傳的檔案，或直接輸入路徑（絕對路徑，或相對於後端工作目錄；在專案模式下相對路徑會相對於專案目錄解析）。',
+      split_lines:
+        '把每一行當成一份獨立文件，而不是把整個檔案讀成一份。每行一句／一筆的檔案請打開；散文請關著，因為換段落並不代表換文件。',
+      max_rows:
+        '最多保留幾份文件（0 = 全部）。Hub 來源會把它轉成 split 切片，所以其餘資料根本不會下載 — 這是在大語料上試跑整張圖最快的方式。',
+    },
+  },
+  LMTokenizedDataset: {
+    description:
+      '把文字列轉成固定長度的訓練區塊：先把每份文件 tokenize，用 end-of-text token 串接起來，再把整條 token 流切成 (input_ids, labels) 配對，其中 labels 就是 input_ids 往左位移一格 — 這就是「預測下一個 token」。輸出接到 DataLoader。打包好的 token 會存到磁碟快取，所以只有第一次執行需要付 tokenize 的時間。',
+    params: {
+      seq_len:
+        '每個訓練區塊有幾個 token — 也就是模型學習時看到的上下文長度。不能超過模型的 max_seq_len。越長，attention 的記憶體成本以平方成長。',
+      append_eos:
+        '在每份文件後面加上 end-of-text token。建議保持開啟：少了它，模型會學到一個故事會直接接到下一個故事，生成時也永遠不會停。',
+      max_tokens: '取到這麼多 token 就停（0 = 整份語料）。這是讓一個 epoch 能在一堂課內跑完最快的手段。',
+      cache: '把打包好的 token 存到磁碟，語料與設定沒變時就直接重用。若你正在原地編輯語料檔，請關掉。',
+      cache_dir: '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。',
+    },
+  },
+  PerplexityEvaluate: {
+    description:
+      '在沒看過的文字上為訓練好的語言模型打分。它會跑完整個資料集，把每一個計分位置的 cross-entropy 平均起來，再回報 $\\mathrm{perplexity} = \\exp(\\text{val\\_loss})$ — 大致可以讀成「模型在每一步大約是在幾個機率相當的 token 之間猶豫」，所以在 50257 個 token 的詞彙表上亂猜就是 50257。這個平均值是「每個 token」的，而且綁定這份資料集與這套 tokenizer，因此只有用同樣方式量出來的數字才能互相比較。',
+    params: {
+      batch_size: '一次計分幾個區塊。它不會改變結果 — 平均是以 token 數加權，而不是以批次數加權 — 只影響速度與記憶體。',
+      max_batches: '跑到這麼多批次就停（0 = 整份資料集）。適合上課時快速估一下；實際量了多少可以看 `tokens` 輸出。',
+      device: '在哪個裝置上計分（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上量測）。',
+      precision: '前向傳播使用的混合精度。在 Ampere 之後的顯卡上，bf16 大約可以省下一半的 activation 記憶體，長上下文往往得靠它才量得動；損失本身仍然以 fp32 累加。裝置若無法支援所選精度，會退回 fp32 並在 log 中說明。',
+    },
+  },
+  TextGenerate: {
+    description:
+      '用訓練好的語言模型接續一段提示文字，一個 token 一個 token 地生成，並且邊生成邊串流出來。temperature、top_k、top_p 這三個旋鈕決定寫出來的東西有多敢冒險：temperature 設 0 時每次都取機率最高的 token（安全但容易重複），調高則是拿連貫性換多樣性。遇到 end-of-text token 或達到 max_new_tokens 就停。',
+    params: {
+      prompt: '要接續的文字。當沒有 `prompt` 輸入連線時使用此欄位。提示文字的風格越接近訓練資料，小模型的表現越好。',
+      max_new_tokens: '最多生成幾個 token。每一個都要對「目前已經寫出來的全部內容」重新跑一次前向傳播，所以這是決定本節點要跑多久的旋鈕。',
+      temperature: '取樣前先把分數除以這個值：小於 1 會讓分布更尖銳，大於 1 會更平坦。0 = greedy，永遠取單一最可能的 token，結果可重現但容易繞圈打轉。',
+      top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。這是避免某個五萬分之一的 token 把整句話帶偏的手段。',
+      top_p: 'Nucleus 取樣：從機率最高的 token 開始累加，直到總和達到 p，就只從這些 token 取樣（1 = 關閉）。與 top_k 不同的是這個切點會自動調整 — 模型有把握時就窄，沒把握時就寬。',
+      seed: '取樣所用的隨機種子。同樣的種子加上同樣的模型，在任何裝置上都會得到同樣的文字，所以比較兩個 temperature 時，差異就只來自 temperature。',
+      device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
     },
   },
 

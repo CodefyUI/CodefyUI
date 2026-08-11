@@ -1,19 +1,39 @@
-"""LMTokenizerNode — 給訓練管線用的、可重複使用的 tokenizer 物件。
+"""LMTokenizer node (#290) -- one reusable tokenizer object for the LM stack.
 
-示範用的 `Tokenizer` 節點把一句話切給你看（輸出 LIST）；訓練管線需要的是
-「一個可以帶著走的 tokenizer」：LMTokenizedDataset 用它把整個語料編碼打包、
-文字生成節點用它編碼 prompt／解碼輸出。這顆輸出一個輕量 handle（契約：
-``encode`` / ``encode_batch`` / ``decode`` / ``eos_id`` / ``vocab_size`` /
-``encoding_name``），底層是 tiktoken 的 BPE。
+``Tokenizer`` already turns a string into tokens, but it returns the RESULT of
+tokenizing one piece of text. Training a language model needs the tokenizer
+ITSELF: ``LMTokenizedDataset`` calls it once per corpus row, and Task 3's
+``TextGenerate`` / ``Perplexity`` call it again at generation time. So this node
+outputs a small object with four members and nothing else:
 
-輸出的 port 型別是 ``ANY``（和 ``LRScheduler.scheduler`` 一樣的先例）：新增
-DataType 需要配套的前端 edge 驗證／顏色變更，v1 先不動核心型別系統，契約
-寫在描述裡。
+======================  ====================================================
+``encode(text)``        ``list[int]`` -- the token ids of *text*
+``decode(ids)``         ``str`` -- ids back to text
+``eos_id``              ``int`` -- the end-of-document token
+``vocab_size``          ``int`` -- how many ids exist
+======================  ====================================================
+
+That is a DUCK-TYPED contract on a ``DataType.ANY`` port, not a new wire type
+(see the ``lr_scheduler`` ports for the same precedent): a ``TOKENIZER`` type
+would cost five frontend files and two CSS blocks to teach the canvas a colour,
+and buy nothing the four members above do not already pin. Every consumer
+checks the four members and names this node in its error message.
+
+**Why the eos id is derived rather than tabulated.** gpt2 numbers
+``<|endoftext|>`` 50256 and cl100k_base numbers the same literal 100257. A
+per-family table of those numbers is a table that goes stale the first time
+tiktoken adds an encoding, so the id comes from the encoding's own
+``eot_token``.
+
+**Offline behaviour.** tiktoken downloads each encoding's BPE ranks once and
+caches them on disk (``TIKTOKEN_CACHE_DIR``), so the first use of an encoding
+needs the network and every later one does not. A failure to load is reported
+as exactly that rather than as an opaque ``ConnectionError``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from ...core.node_base import (
     BaseNode,
@@ -22,82 +42,75 @@ from ...core.node_base import (
     ParamType,
     PortDefinition,
 )
+from .tokenizer_node import _load_encoder
 
-#: tiktoken encodings this node serves. gpt2 (50257, eos <|endoftext|> = 50256)
-#: matches CausalLMModel's default vocab_size.
-LM_TOKENIZER_ENCODINGS = ["gpt2", "p50k_base", "cl100k_base", "o200k_base"]
+#: The tiktoken BPE encodings this node offers, ordered small vocab first.
+#: A strict subset of ``tokenizer_node.TIKTOKEN_FAMILIES`` -- the shared
+#: ``_load_encoder`` also serves HuggingFace ``tokenizers`` objects, whose
+#: ``encode`` returns an Encoding rather than ids and which have no
+#: ``eot_token``, so passing this param straight through would hand the graph
+#: an object that fails the contract above at the first ``encode``.
+LM_ENCODINGS = ["gpt2", "p50k_base", "cl100k_base", "o200k_base"]
 
 
-class LMTokenizerHandle:
-    """Reusable tokenizer facade over one tiktoken encoding.
+class TiktokenLMTokenizer:
+    """The four-member tokenizer contract, backed by one tiktoken encoding.
 
-    Module-scope and pickle-friendly: state is just the encoding NAME; the
-    actual encoder is reloaded lazily after unpickling, so a graph value
-    that ends up inside a full_model pickle (#283) or a spawned DataLoader
-    worker never tries to serialize the tiktoken internals.
+    Module scope, not a closure inside the node, so ``torch.save`` and the
+    Python export can name the class (#283).
+
+    ``name`` is the fifth, OPTIONAL member: ``LMTokenizedDataset`` folds it
+    into its disk-cache key so the same corpus tokenized by gpt2 and by
+    cl100k_base cannot collide. It is not part of the contract consumers may
+    require, only of the one they may read.
     """
 
-    def __init__(self, encoding_name: str) -> None:
-        self.encoding_name = encoding_name
-        self._enc: Any = None
+    __slots__ = ("name", "vocab_size", "eos_id", "_encoder")
 
-    # -- pickling ----------------------------------------------------------
-    def __getstate__(self) -> dict[str, Any]:
-        return {"encoding_name": self.encoding_name}
+    def __init__(self, name: str, encoder: Any) -> None:
+        self.name = name
+        self._encoder = encoder
+        self.vocab_size = int(encoder.n_vocab)
+        self.eos_id = int(encoder.eot_token)
 
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        self.encoding_name = state["encoding_name"]
-        self._enc = None
+    def __repr__(self) -> str:
+        return (f"TiktokenLMTokenizer(name={self.name!r}, "
+                f"vocab_size={self.vocab_size}, eos_id={self.eos_id})")
 
-    # -- encoder -----------------------------------------------------------
-    def _encoder(self) -> Any:
-        if self._enc is None:
-            import tiktoken
-
-            self._enc = tiktoken.get_encoding(self.encoding_name)
-        return self._enc
-
-    # -- contract ----------------------------------------------------------
     def encode(self, text: str) -> list[int]:
-        # encode_ordinary: special-token literals in the corpus are data,
-        # not control tokens.
-        return list(self._encoder().encode_ordinary(text))
+        """Token ids of *text*. Never raises on the text's content.
 
-    def encode_batch(self, texts: list[str], num_threads: int = 8) -> list[list[int]]:
-        encoded = self._encoder().encode_ordinary_batch(texts, num_threads=num_threads)
-        return [list(ids) for ids in encoded]
+        ``disallowed_special=()`` mirrors ``TokenizerNode``: tiktoken's default
+        RAISES when the input contains a special-token literal such as
+        ``<|endoftext|>``, and a corpus row is arbitrary text that may well
+        contain one. Encoding it as ordinary characters is the only reading
+        that lets a real corpus through.
+        """
+        return list(self._encoder.encode(text, disallowed_special=()))
 
-    def decode(self, ids: list[int]) -> str:
-        return self._encoder().decode(list(ids))
-
-    @property
-    def eos_id(self) -> int:
-        return int(self._encoder().eot_token)
-
-    @property
-    def vocab_size(self) -> int:
-        return int(self._encoder().n_vocab)
-
-    def __repr__(self) -> str:  # keeps node-output summaries readable
-        return f"LMTokenizerHandle({self.encoding_name!r})"
+    def decode(self, ids: Iterable[int]) -> str:
+        """*ids* back to text. ``list()`` because tiktoken wants a sequence and
+        callers legitimately hold a tensor slice or a generator."""
+        return self._encoder.decode([int(i) for i in ids])
 
 
 class LMTokenizerNode(BaseNode):
     NODE_NAME = "LMTokenizer"
     CATEGORY = "LLM"
     DESCRIPTION = (
-        "Produce a reusable tokenizer object (tiktoken BPE) for the LM "
-        "training pipeline: LMTokenizedDataset uses it to encode and pack a "
-        "corpus, and text generation uses it to encode prompts and decode "
-        "output. The tokenizer output exposes encode/encode_batch/decode, "
-        "eos_id and vocab_size. gpt2 = vocab 50257 with eos <|endoftext|> "
-        "(50256), matching CausalLMModel's default vocab_size."
+        "The tokenizer itself, as a reusable object: wire it into "
+        "LMTokenizedDataset to turn a text corpus into training blocks, and "
+        "into the generation nodes so they speak the same token ids the model "
+        "was trained on. gpt2's 50257-token vocabulary is the usual starting "
+        "point. Each encoding downloads its BPE table once, then works "
+        "offline."
     )
 
-    # tiktoken downloads and caches its BPE ranks on first use of an
-    # encoding — external state the cache key cannot see (same reasoning as
-    # HuggingFaceDataset). After that first fetch everything is offline.
-    cacheable = False
+    # Cacheable, and correctly so: the output is a stateless wrapper around a
+    # process-wide encoder, built from one param. Nothing downstream mutates
+    # it -- the four members are read, never written -- so replaying the
+    # recorded handle describes it exactly. See ``BaseNode.cacheable`` for the
+    # four shapes that are not.
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -109,12 +122,19 @@ class LMTokenizerNode(BaseNode):
             PortDefinition(
                 name="tokenizer",
                 data_type=DataType.ANY,
-                description="Tokenizer handle: encode(text)->ids, encode_batch, decode(ids)->text, eos_id, vocab_size",
+                description=(
+                    "The tokenizer object: encode(text) -> list[int], "
+                    "decode(ids) -> str, plus eos_id and vocab_size. Wire it "
+                    "to LMTokenizedDataset and to the generation nodes."
+                ),
             ),
             PortDefinition(
                 name="vocab_size",
                 data_type=DataType.SCALAR,
-                description="Vocabulary size of the chosen encoding (wire into CausalLMModel.vocab_size checks)",
+                description=(
+                    "How many distinct token ids this encoding has. Set "
+                    "CausalLMModel's vocab_size to the same number."
+                ),
             ),
         ]
 
@@ -125,36 +145,40 @@ class LMTokenizerNode(BaseNode):
                 name="encoding",
                 param_type=ParamType.SELECT,
                 default="gpt2",
-                options=list(LM_TOKENIZER_ENCODINGS),
+                options=list(LM_ENCODINGS),
                 description=(
-                    "tiktoken encoding. gpt2 = 50257 tokens (GPT-2 vocabulary); "
-                    "cl100k/o200k are the larger GPT-4-era vocabularies. "
-                    "Downloaded once, then cached offline."
+                    "Which BPE vocabulary to use. gpt2 (50257 tokens) is the "
+                    "cheapest to train against; cl100k_base (GPT-3.5/4) and "
+                    "o200k_base (GPT-4o) pack more text into the same number "
+                    "of tokens but need a much wider output layer."
                 ),
             ),
         ]
 
     def execute(
-        self,
-        inputs: dict[str, Any],
-        params: dict[str, Any],
-        progress_callback: Any | None = None,
-        *,
-        context: Any = None,
+        self, inputs: dict[str, Any], params: dict[str, Any],
     ) -> dict[str, Any]:
-        encoding = str(params.get("encoding", "gpt2"))
-        if encoding not in LM_TOKENIZER_ENCODINGS:
+        encoding = str(params.get("encoding", "gpt2") or "gpt2")
+        if encoding not in LM_ENCODINGS:
             raise ValueError(
-                f"Unknown tokenizer encoding {encoding!r}; expected one of "
-                f"{LM_TOKENIZER_ENCODINGS}"
-            )
-        handle = LMTokenizerHandle(encoding)
+                f"LMTokenizer: unknown encoding {encoding!r}; set the "
+                f"`encoding` param to one of {LM_ENCODINGS}.")
+
         try:
-            vocab_size = handle.vocab_size
-        except Exception as error:  # first-use download failed / offline
+            _kind, encoder = _load_encoder(encoding)
+        except Exception as exc:  # noqa: BLE001 - re-raised with the fix
+            # Everything reaching here is a load failure, and the useful thing
+            # to say is the same in every case: the BPE table is not on this
+            # machine yet and fetching it needs the network. Naming the cache
+            # directory matters for the air-gapped classroom case -- a table
+            # copied in from another machine works.
             raise RuntimeError(
-                f"Could not load tiktoken encoding {encoding!r}. The first "
-                "use of an encoding downloads its BPE ranks once; check "
-                "network access, then retry."
-            ) from error
-        return {"tokenizer": handle, "vocab_size": int(vocab_size)}
+                f"LMTokenizer could not load the {encoding!r} BPE table: "
+                f"{type(exc).__name__}: {exc}. tiktoken downloads it on first "
+                f"use, so this machine is offline (or behind a proxy) and has "
+                f"no cached copy. Run the node once with network access, or "
+                f"point TIKTOKEN_CACHE_DIR at a directory holding the table."
+            ) from exc
+
+        tokenizer = TiktokenLMTokenizer(encoding, encoder)
+        return {"tokenizer": tokenizer, "vocab_size": tokenizer.vocab_size}

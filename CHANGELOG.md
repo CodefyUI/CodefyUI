@@ -299,6 +299,51 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **A language model can now be pretrained on the canvas** ([#289], [#290],
+  [#291]). Seven LLM nodes close the gap epic [#292] named: the catalog could
+  describe a transformer but had no path from raw text to trained weights, so
+  the only way to train a decoder was to leave CodefyUI.
+
+  `CausalLMModel` is a pre-LN GPT-style decoder — learned/sinusoidal/RoPE
+  positions, LayerNorm or RMSNorm, optional weight tying and gradient
+  checkpointing — whose forward is `input_ids (B, T) -> logits (B, T, V)`, so
+  `Optimizer`, `TrainingLoop`, `CheckpointSaver` and `ModelSaver` need to know
+  nothing about language models. Its defaults build 203,668,480 parameters.
+  `LMCrossEntropyLoss` flattens the batch and time axes before
+  `F.cross_entropy` — deliberately *not* a subclass of `nn.CrossEntropyLoss`,
+  because `TrainingLoop`'s classification gate would then have run
+  `argmax(dim=1)` over the time axis and reported a meaningless accuracy that
+  early stopping can be asked to monitor.
+
+  Data comes in through `TextCorpusDataset` (text rows from the Hugging Face
+  Hub or a local `.txt`) and `LMTokenizedDataset`, which concatenates every
+  document into one token stream and cuts fixed-length blocks whose labels are
+  the inputs shifted by one — no padding, and a disk cache keyed on everything
+  that changes the stream, because tokenising a real corpus is minutes that
+  produce the same bytes every time. `LMTokenizer` supplies one tokenizer
+  object to every node that needs one, over a duck-typed `ANY` port
+  (`encode`/`decode`/`eos_id`/`vocab_size`) rather than a new wire type.
+
+  `PerplexityEvaluate` answers the question `EvaluateModel` cannot: a language
+  model is wrong most of the time and should be, so it is scored on the
+  probability it put on the token that actually came next. The mean is
+  token-weighted, so the number does not move when `batch_size` does.
+  `TextGenerate` samples text with temperature / top-k / top-p, slides the
+  context window past `max_seq_len`, and draws on the CPU so one seed gives
+  the same text on a laptop and on a GPU box.
+
+  A new example, **Train a Causal LM on TinyStories**
+  (`examples/LLM/TrainCausalLM-TinyStories`), wires the whole chain up at bf16
+  with an effective batch of 32 sequences, then scores a held-out split and
+  writes a sample. It ships with a `README.md` carrying the recipe, both token
+  budgets and the memory levers, because the card cannot: the canvas gallery
+  truncates a description at 80 characters and shows no tooltip, so the card
+  leads with the only two facts that decide whether the graph can run at all —
+  a 16 GB GPU, and one first-run download. A test asserts those two survive
+  that truncation, and a second asserts every number the README quotes is
+  still derivable from the graph's params — each of them is a relationship
+  between two nodes, which is exactly what graph validation cannot see.
+
 - **The optimizer and loss applicability tables are now checked against the
   installed torch** ([#189]). `#134` declares which algorithm accepts which
   hyperparameter rather than inferring it from `inspect.signature`, because
@@ -865,6 +910,10 @@ Release candidates before 1.0.0 are on the
 [#186]: https://github.com/CodefyUI/CodefyUI/issues/186
 [#283]: https://github.com/CodefyUI/CodefyUI/issues/283
 [#285]: https://github.com/CodefyUI/CodefyUI/issues/285
+[#289]: https://github.com/CodefyUI/CodefyUI/issues/289
+[#290]: https://github.com/CodefyUI/CodefyUI/issues/290
+[#291]: https://github.com/CodefyUI/CodefyUI/issues/291
+[#292]: https://github.com/CodefyUI/CodefyUI/issues/292
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

@@ -1,20 +1,31 @@
-"""LMCrossEntropyLossNode — 語言模型用的 next-token cross-entropy。
+"""LMCrossEntropyLoss node (#289) -- cross-entropy for next-token prediction.
 
-`Loss` 節點給的 ``nn.CrossEntropyLoss`` 期望 logits ``(N, C)`` 或
-``(N, C, d1, ...)``，但 causal LM 的 forward 吐 ``(B, T, vocab)``、標籤是
-``(B, T)`` — 形狀直接餵會炸。這顆輸出一個會自己攤平的 LOSS_FN：
-``loss(logits (B,T,V), targets (B,T)) = mean CE over B*T``，含 ``ignore_index``
-與 label smoothing，接上既有 TrainingLoop（含它的 val-loss 路徑與 bf16
-autocast）就能訓練語言模型。
+The generic ``Loss`` node's ``CrossEntropyLoss`` expects ``[B, C]`` logits
+against ``[B]`` class indices. A language model produces ``[B, T, V]`` -- a
+whole sequence of independent classification problems -- so every LM
+implementation flattens the batch and time axes together before calling
+cross-entropy. This node is that flatten, packaged so nobody has to remember
+to do it.
 
-損失類別本身住在 ``_lm_modules.py``（module-scope、可被 full_model pickle，
-#283），這裡只在 ``execute`` 內延遲 import，讓 registry 掃描不用付 torch 的
-啟動成本。
+**Why it is a plain nn.Module and not a subclass of nn.CrossEntropyLoss.**
+``TrainingLoop`` decides whether to compute ``val_accuracy`` with
+``isinstance(loss_fn, (nn.CrossEntropyLoss, nn.NLLLoss))``
+(``training_loop_node.py``), and that branch then runs
+``outputs.argmax(dim=1)`` against the targets. On ``[B, T, V]`` logits
+``dim=1`` is the TIME axis, so a subclass would have produced a silent,
+meaningless accuracy number on every LM run -- and early stopping can be
+asked to monitor it. Composing ``F.cross_entropy`` inside an ordinary module
+keeps that gate closed, which is the honest answer: token-level accuracy is
+not what this loss measures, and perplexity (Task 3's Perplexity node) is.
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 from ...core.node_base import (
     BaseNode,
@@ -24,17 +35,88 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+#: torch's own ignore_index default, repeated so "unchanged" is checkable --
+#: and the value ``loss_node.py`` already uses, so a padding label written for
+#: one works in the other.
+DEFAULT_IGNORE_INDEX = -100
+
+
+class LMCrossEntropyLoss(nn.Module):
+    """Mean cross-entropy over every position of every sequence.
+
+    ``forward(logits (B, T, V), targets (B, T)) -> scalar``. The reshape to
+    ``(B*T, V)`` / ``(B*T,)`` is the whole trick: cross-entropy does not care
+    that the rows came from the same sentence, so a sequence of predictions is
+    just a bigger batch of one-of-V decisions.
+
+    Module scope, not a closure inside the node, so ``torch.save`` and the
+    Python export can name the class (#283).
+    """
+
+    def __init__(
+        self,
+        ignore_index: int = DEFAULT_IGNORE_INDEX,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.ignore_index = int(ignore_index)
+        self.label_smoothing = float(label_smoothing)
+
+    def extra_repr(self) -> str:
+        return (f"ignore_index={self.ignore_index}, "
+                f"label_smoothing={self.label_smoothing}")
+
+    def forward(
+        self, logits: torch.Tensor, targets: torch.Tensor,
+    ) -> torch.Tensor:
+        if logits.dim() != 3:
+            raise ValueError(
+                f"LMCrossEntropyLoss expects logits shaped (batch, seq_len, "
+                f"vocab_size), got {tuple(logits.shape)}. This loss is for "
+                f"language models; use the Loss node for a plain classifier.")
+        if targets.dim() != 2:
+            raise ValueError(
+                f"LMCrossEntropyLoss expects targets shaped (batch, "
+                f"seq_len), got {tuple(targets.shape)} -- one token id per "
+                f"position, not a one-hot vector.")
+        if targets.shape != logits.shape[:2]:
+            raise ValueError(
+                f"LMCrossEntropyLoss: logits are "
+                f"{tuple(logits.shape[:2])} (batch, seq_len) but targets are "
+                f"{tuple(targets.shape)}. The dataset must yield labels the "
+                f"same length as the input ids.")
+        if targets.is_floating_point():
+            raise ValueError(
+                f"LMCrossEntropyLoss expects integer target token ids, got "
+                f"dtype {targets.dtype}. Cast the labels to int64.")
+
+        vocab_size = logits.shape[-1]
+        # ``reshape`` rather than ``view``: the logits arriving from an
+        # attention stack are frequently non-contiguous, and ``view`` would
+        # fail on exactly the tensors this loss exists to consume.
+        return F.cross_entropy(
+            logits.reshape(-1, vocab_size),
+            targets.reshape(-1).long(),
+            ignore_index=self.ignore_index,
+            label_smoothing=self.label_smoothing,
+        )
+
 
 class LMCrossEntropyLossNode(BaseNode):
     NODE_NAME = "LMCrossEntropyLoss"
     CATEGORY = "LLM"
     DESCRIPTION = (
-        "Next-token cross-entropy loss for language models: accepts logits "
-        "(B,T,vocab) against targets (B,T) by flattening internally — the "
-        "shapes CausalLMModel and LMTokenizedDataset produce. Supports "
-        "ignore_index and label smoothing. Use this instead of the generic "
-        "Loss node's CrossEntropyLoss for LM training."
+        "Cross-entropy shaped for language models: it flattens (batch, "
+        "seq_len, vocab_size) logits against (batch, seq_len) token ids and "
+        "returns the mean loss over every position. Wire it into "
+        "TrainingLoop's loss_fn alongside a CausalLMModel."
     )
+
+    # Cacheable, and correctly so: the output is a small immutable function
+    # object built from two numbers. Nothing downstream mutates it (the two
+    # attributes are read, never written), so replaying the recorded handle
+    # describes it exactly -- the same reasoning that leaves ``Loss``
+    # cacheable. See ``BaseNode.cacheable`` for the four shapes that are not.
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
@@ -46,7 +128,11 @@ class LMCrossEntropyLossNode(BaseNode):
             PortDefinition(
                 name="loss_fn",
                 data_type=DataType.LOSS_FN,
-                description="Callable loss(logits (B,T,V) or (N,V), targets) -> scalar mean CE",
+                description=(
+                    "Loss module: forward(logits (batch, seq_len, "
+                    "vocab_size), targets (batch, seq_len)) -> scalar mean "
+                    "cross-entropy."
+                ),
             ),
         ]
 
@@ -56,8 +142,13 @@ class LMCrossEntropyLossNode(BaseNode):
             ParamDefinition(
                 name="ignore_index",
                 param_type=ParamType.INT,
-                default=-100,
-                description="Target positions with this value contribute no loss (padding convention)",
+                default=DEFAULT_IGNORE_INDEX,
+                description=(
+                    "Target id that contributes no loss and no gradient. "
+                    "Use it for padding, or for the prompt half of an "
+                    "instruction example. -100 is the convention every "
+                    "toolkit shares."
+                ),
             ),
             ParamDefinition(
                 name="label_smoothing",
@@ -65,23 +156,43 @@ class LMCrossEntropyLossNode(BaseNode):
                 default=0.0,
                 min_value=0.0,
                 max_value=0.3,
-                advanced=True,
-                description="Label smoothing factor (0 = off)",
+                description=(
+                    "Spread a little probability mass over the other tokens "
+                    "so an over-confident correct answer still costs "
+                    "something (0 = disabled, 0.1 is a common value)."
+                ),
             ),
         ]
 
     def execute(
-        self,
-        inputs: dict[str, Any],
-        params: dict[str, Any],
-        progress_callback: Any | None = None,
-        *,
-        context: Any = None,
+        self, inputs: dict[str, Any], params: dict[str, Any],
     ) -> dict[str, Any]:
-        from ._lm_modules import LMCrossEntropy
+        ignore_index = params.get("ignore_index", DEFAULT_IGNORE_INDEX)
+        try:
+            ignore_index = int(
+                DEFAULT_IGNORE_INDEX if ignore_index is None else ignore_index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"LMCrossEntropyLoss: ignore_index must be a whole number, "
+                f"got {params.get('ignore_index')!r}."
+            ) from exc
 
-        loss_fn = LMCrossEntropy(
-            ignore_index=int(params.get("ignore_index", -100)),
-            label_smoothing=float(params.get("label_smoothing", 0.0)),
-        )
-        return {"loss_fn": loss_fn}
+        raw_smoothing = params.get("label_smoothing", 0.0)
+        if raw_smoothing is None or raw_smoothing == "":
+            raw_smoothing = 0.0
+        try:
+            smoothing = float(raw_smoothing)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"LMCrossEntropyLoss: label_smoothing must be a number, got "
+                f"{params.get('label_smoothing')!r}."
+            ) from exc
+        # Clamped to F.cross_entropy's own domain rather than to the 0.3 the
+        # editor offers: above 1.0 torch raises, and the reading of a
+        # hand-written 0.5 is clear enough to honour.
+        smoothing = min(1.0, max(0.0, smoothing))
+
+        return {
+            "loss_fn": LMCrossEntropyLoss(
+                ignore_index=ignore_index, label_smoothing=smoothing),
+        }

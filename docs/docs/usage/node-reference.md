@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 121 nodes across 15 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 128 nodes across 15 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **121 built-in nodes** across **15 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **128 built-in nodes** across **15 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This list is the source of truth at the time of writing, but the backend is authoritative: the live palette and `GET /api/nodes` always reflect exactly what your install has. Use the in-app search (double-click the canvas) to find a node fast.
@@ -26,7 +26,7 @@ This list is the source of truth at the time of writing, but the backend is auth
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding, PythonScript, ScatterPlot2D, DecisionBoundary | 10 |
 | **Normalization** | BatchNorm1d, LayerNorm, GroupNorm, InstanceNorm2d | 4 |
 | **Tensor Operations** | Add, MatMul, Mean, Multiply, ScalarMultiply, Permute, Softmax, Argmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze | 13 |
-| **LLM** | LLMChat, Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding | 8 |
+| **LLM** | LLMChat, Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding, CausalLMModel, LMCrossEntropyLoss, LMTokenizer, TextCorpusDataset, LMTokenizedDataset, PerplexityEvaluate, TextGenerate | 15 |
 | **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, RandomForestClassifier, SVMClassifier, MLPClassifier, Accuracy | 8 |
 | **Diffusion** | Upsample, TimestepEmbedding, Lerp, GaussianNoise, DDPMSampler, DiffusionUNet, DiffusionTrainingLoop | 7 |
 
@@ -39,6 +39,7 @@ This list is the source of truth at the time of writing, but the backend is auth
 - **`TrainingLoop`** (Training) — drives training and emits the live loss chart in the Results panel. Its Advanced section holds the memory levers (`precision`, `accumulate_steps`); see [Training Memory](/advanced/training-memory).
 - **`EmbeddingScatter`** (LLM) — projects embeddings to 2D (PCA / t-SNE) for a zoomable scatter plot.
 - **`AttentionHeatmap`** (LLM) — renders attention matrices as images.
+- **The language-model chain** (LLM) — seven nodes that pretrain a GPT-style decoder from scratch on the canvas: `TextCorpusDataset` (raw text rows from the Hugging Face Hub or a local `.txt`) → `LMTokenizedDataset` (packs them into fixed-length next-token blocks) → `DataLoader` → `TrainingLoop`, with `CausalLMModel` as the model, `LMCrossEntropyLoss` as the loss, and `LMTokenizer` supplying one tokenizer object to every node that needs one. Afterwards `PerplexityEvaluate` scores a held-out split and `TextGenerate` samples text from the trained weights. `CausalLMModel`'s defaults describe a 203,668,480-parameter model; shrink `d_model` and `n_layers` for something a laptop can train in a lesson. The **Train a Causal LM on TinyStories** example wires the whole chain up — see [Examples Gallery](./examples-gallery).
 - **`Switch`** (Data Flow) — conditional routing so only one branch executes.
 
 ## Port data types

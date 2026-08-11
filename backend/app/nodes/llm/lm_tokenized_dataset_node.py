@@ -1,20 +1,57 @@
-"""LMTokenizedDatasetNode — 把文字語料編碼、串接、切成固定長度的訓練塊。
+"""LMTokenizedDataset node (#290) -- text rows into packed next-token blocks.
 
-標準的 LM 預訓練資料形狀：每列文字 → token ids（每列後面接一個 EOS）→
-全部串成一條長流 → 切成 ``seq_len + 1`` 的塊；訓練時 ``input = 塊[:-1]``、
-``labels = 塊[1:]``（右移一格的 next-token 目標）。輸出的 DATASET 直接接
-既有 `DataLoader`（預設 collate 疊成 ``(B, seq_len)`` int64 批次）餵給
-TrainingLoop。
+The node that turns a corpus into something ``TrainingLoop`` can train on. It
+does the one transformation every LM training script does, and does it where a
+learner can see the arithmetic:
 
-編碼上億 token 要花好幾分鐘 CPU，所以打包結果會以內容指紋為鍵存進資料根目錄
-的 ``lm_token_cache/``；同一份語料＋同一組參數的重跑（以及實驗的重複執行）
-直接從磁碟載回，不再重新編碼。
+1. **Tokenize and concatenate.** Every document's ids are appended to ONE flat
+   stream, with ``tokenizer.eos_id`` after each so the model learns where
+   documents end. No padding anywhere -- padding wastes compute on tokens that
+   teach nothing, and a packed stream has none.
+2. **Cut fixed-length blocks.** Block ``i`` is ``stream[i*seq_len : i*seq_len +
+   seq_len + 1]``: ``seq_len + 1`` tokens, of which the first ``seq_len`` are
+   the inputs and the last ``seq_len`` are the labels. That one-token overlap IS
+   next-token prediction -- ``labels[t]`` is the token that followed
+   ``inputs[t]``.
+3. **Drop the remainder.** ``num_blocks = (len(stream) - 1) // seq_len``. The
+   tail that cannot fill a block is discarded rather than padded, which is why
+   every sample is exactly ``seq_len`` long -- ``DataLoader`` collates with
+   torch's ``default_collate`` and never gets a ``collate_fn`` from the
+   DataLoader node, so a ragged sample would fail to batch.
+
+Each ``__getitem__`` returns ``(input_ids int64[seq_len], labels
+int64[seq_len])`` -- the 2-tuple ``TrainingLoop`` unpacks, so the LM chain needs
+no special case anywhere in the training stack.
+
+**The disk cache.** Tokenizing a real corpus takes minutes and produces the
+same stream every time, so the packed tensor is written under
+``<data>/cache/lm_blocks/<key>.pt`` and reloaded on the next run. The key is a
+sha256 over the corpus fingerprint, the tokenizer's identity, ``seq_len``,
+``append_eos`` and ``max_tokens`` -- every input that changes the stream. This
+is the node's OWN cache and has nothing to do with ``ExecutionCache``: see
+``cacheable`` below for why that one cannot help here.
 """
 
 from __future__ import annotations
 
+import array
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+import torch
+from torch.utils.data import Dataset
+
+from ...core.loop_control import (
+    EVENT_BATCH,
+    ProgressThrottle,
+    interrupted_result,
+    stop_checker,
+)
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -23,27 +60,279 @@ from ...core.node_base import (
     PortDefinition,
 )
 
-#: Rows per encode_batch call — small enough to stay responsive to Stop,
-#: large enough that tiktoken's thread pool is fed.
-_CHUNK_ROWS = 512
+logger = logging.getLogger(__name__)
+
+#: Where the packed streams live, relative to the data root.
+CACHE_SUBDIR = ("cache", "lm_blocks")
+
+#: At or below this many rows the corpus fingerprint hashes EVERY row; above it,
+#: only the length plus the first/middle/last row (see
+#: :func:`_corpus_fingerprint`). 10k rows of prose is a few megabytes to hash --
+#: milliseconds, against the minutes of tokenization a hit skips -- so the whole
+#: teaching-scale range gets the exact fingerprint and only corpora big enough
+#: for the hash to cost real time fall back to the sample.
+FULL_HASH_MAX_ROWS = 10_000
+
+#: The members an object on the ``tokenizer`` port must have. Checked all at
+#: once, before any work happens, rather than one ``hasattr`` per use site, so
+#: the error names everything that is missing in one message.
+TOKENIZER_MEMBERS = ("encode", "decode", "eos_id", "vocab_size")
+
+
+class PackedTokenBlocks(Dataset):
+    """Fixed-length next-token training blocks over one flat token stream.
+
+    Holds the whole stream as a single 1-D int64 tensor and slices it per
+    ``__getitem__``. The slices are VIEWS, so a block costs no copy and no
+    allocation -- the copy happens once, in ``default_collate``, when a batch is
+    stacked.
+
+    Module scope, not a closure inside the node, so ``torch.save`` and a
+    DataLoader worker process can name the class (#283).
+    """
+
+    def __init__(self, tokens: torch.Tensor, seq_len: int) -> None:
+        self.tokens = tokens
+        self.seq_len = seq_len
+        # ``- 1`` because the very last token can only ever be a LABEL: a block
+        # needs seq_len inputs AND the token after the last one.
+        self.num_blocks = max(0, (int(tokens.numel()) - 1) // seq_len)
+
+    def __len__(self) -> int:
+        return self.num_blocks
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        index = int(idx)
+        if index < 0:
+            index += self.num_blocks
+        if not 0 <= index < self.num_blocks:
+            # IndexError, not ValueError: it is what a sampler and a bare
+            # ``for block in dataset`` both expect at the end.
+            raise IndexError(
+                f"block {idx} is out of range for {self.num_blocks} blocks")
+        start = index * self.seq_len
+        window = self.tokens[start : start + self.seq_len + 1]
+        return window[:-1], window[1:]
+
+
+def _dataset_length(dataset: Any) -> int:
+    """``len(dataset)``, or a ValueError naming what to wire instead.
+
+    A map-style dataset is a hard requirement, not a convenience: the corpus
+    fingerprint indexes rows to build the cache key, so an iterable-only
+    dataset could be tokenized but never cached, and it could only be consumed
+    once. Refusing is clearer than half-working.
+    """
+    try:
+        return int(len(dataset))
+    except Exception as exc:  # noqa: BLE001 - any failure means "no length"
+        raise ValueError(
+            "LMTokenizedDataset needs a dataset with a length (a map-style "
+            "dataset of text rows). Wire TextCorpusDataset into the `dataset` "
+            "input; a streaming/iterable dataset cannot be packed."
+        ) from exc
+
+
+def _check_tokenizer(tokenizer: Any) -> None:
+    """Enforce the duck-typed tokenizer contract, naming the fix."""
+    if tokenizer is None:
+        raise ValueError(
+            "LMTokenizedDataset has no tokenizer. Wire an LMTokenizer node "
+            "into the `tokenizer` input.")
+    missing = [name for name in TOKENIZER_MEMBERS if not hasattr(tokenizer, name)]
+    if not missing and not callable(getattr(tokenizer, "encode")):
+        missing = ["encode"]
+    if missing:
+        raise ValueError(
+            f"LMTokenizedDataset: the object on the `tokenizer` input is "
+            f"missing {missing} -- a tokenizer here must provide "
+            f"encode(text) -> list[int], decode(ids) -> str, eos_id and "
+            f"vocab_size. Wire an LMTokenizer node into that input.")
+
+
+def _corpus_fingerprint(dataset: Any, total_rows: int) -> dict[str, Any]:
+    """What the cache key knows about the corpus itself.
+
+    Exact for anything up to :data:`FULL_HASH_MAX_ROWS` rows: every row is
+    hashed, so an edited corpus always gets a new key. Above that, the
+    fingerprint is the row COUNT plus the first, middle and last row -- which
+    can miss an edit in the middle of a large corpus. That is a real hole and
+    the reason ``cache`` is a parameter: a user who edits a multi-million-row
+    corpus in place turns caching off (or changes ``cache_dir``) for one run.
+    The alternative -- hashing gigabytes of text on every run -- would cost
+    close to what the tokenization pass this cache exists to skip costs.
+
+    Rows are separated by a NUL byte in the hash so ["ab", "c"] and ["a", "bc"]
+    fingerprint differently; without it the concatenation is identical.
+    """
+    digest = hashlib.sha256()
+    if total_rows <= FULL_HASH_MAX_ROWS:
+        indices = range(total_rows)
+        sampled = False
+    else:
+        indices = (0, total_rows // 2, total_rows - 1)
+        sampled = True
+    for index in indices:
+        digest.update(str(dataset[index]).encode("utf-8", "replace"))
+        digest.update(b"\x00")
+    return {"rows": total_rows, "sampled": sampled, "hash": digest.hexdigest()}
+
+
+def _tokenizer_identity(tokenizer: Any) -> str:
+    """A string that changes when the token ids would.
+
+    ``LMTokenizer`` publishes ``name`` (the tiktoken encoding), which is
+    exactly right. Anything else falls back to its class name and vocabulary
+    size -- enough to keep two different tokenizer classes apart, and NOT
+    enough to notice a hand-written tokenizer that changes its mapping while
+    keeping both. Turn ``cache`` off while iterating on a custom tokenizer.
+    """
+    name = getattr(tokenizer, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    return f"{type(tokenizer).__name__}:{int(tokenizer.vocab_size)}"
+
+
+def _cache_key(
+    corpus: dict[str, Any],
+    tokenizer_identity: str,
+    seq_len: int,
+    append_eos: bool,
+    max_tokens: int,
+) -> str:
+    """sha256 over everything that decides the packed stream.
+
+    ``sort_keys`` so the digest does not depend on dict insertion order, which
+    would silently invalidate every cached file the day a key is reordered.
+    """
+    payload = json.dumps(
+        {
+            "corpus": corpus,
+            "tokenizer": tokenizer_identity,
+            "seq_len": seq_len,
+            "append_eos": append_eos,
+            "max_tokens": max_tokens,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _cache_dir(params: dict[str, Any]) -> Path:
+    """Where the ``.pt`` files go: ``<data>/cache/lm_blocks``, or a subdirectory.
+
+    A ``cache_dir`` value runs through ``resolve_data_path``, the one rule
+    (#224) for every node that turns a parameter into a filesystem write: a
+    relative path nests under the default, and the result must stay inside the
+    data directory and must not name CodefyUI's own storage.
+    """
+    from ...core.data_paths import data_root, resolve_data_path
+
+    base = data_root().joinpath(*CACHE_SUBDIR)
+    raw = str(params.get("cache_dir", "") or "").strip()
+    if not raw:
+        return base
+    return resolve_data_path(raw, base=base)
+
+
+def _load_cached(path: Path) -> torch.Tensor | None:
+    """The cached stream, or None when there is not a usable one.
+
+    ``weights_only=True`` because this file is data, not code: a ``.pt`` that
+    someone dropped into the cache directory must not be able to execute
+    anything on load. Anything unreadable, truncated or of the wrong shape is
+    treated as a MISS and rebuilt -- a corrupt cache file (a killed process
+    mid-write on a filesystem where the atomic rename did not hold, a partial
+    copy) must cost a re-tokenization, never a failed run.
+    """
+    if not path.is_file():
+        return None
+    try:
+        payload = torch.load(path, weights_only=True)
+        tokens = payload["tokens"] if isinstance(payload, dict) else payload
+        if (isinstance(tokens, torch.Tensor) and tokens.dim() == 1
+                and tokens.dtype == torch.int64):
+            return tokens
+        logger.warning(
+            "LMTokenizedDataset ignoring cache file %s: not a 1-D int64 "
+            "tensor", path)
+    except Exception:  # noqa: BLE001 - see the docstring
+        logger.warning(
+            "LMTokenizedDataset could not read cache file %s; re-tokenizing",
+            path, exc_info=True)
+    return None
+
+
+def _save_cached(path: Path, tokens: torch.Tensor) -> None:
+    """Write the stream where the next run will find it. Never raises.
+
+    Staged through a sibling temp file and ``os.replace``d into place, the same
+    way ``core.checkpoints`` writes: a reader must see either the previous file
+    or the whole new one, never a half-written stream that would load as a
+    truncated corpus. A cache write that fails is worth a warning and nothing
+    more -- the node has already produced its real output.
+    """
+    staged = path.with_name(f"{path.name}.{uuid4().hex[:8]}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"tokens": tokens}, str(staged))
+        os.replace(staged, path)
+    except Exception:  # noqa: BLE001 - see the docstring
+        staged.unlink(missing_ok=True)
+        logger.warning(
+            "LMTokenizedDataset could not write its block cache to %s; the "
+            "dataset is fine, the next run just has to tokenize again",
+            path, exc_info=True)
+    except BaseException:
+        # A KeyboardInterrupt or a cancellation is NOT a failed cache write and
+        # must keep propagating; the staged file still has to go, which is the
+        # only reason this clause exists.
+        staged.unlink(missing_ok=True)
+        raise
+
+
+def _positive_int(params: dict[str, Any], name: str, default: int) -> int:
+    """A size param, floored at 1 -- never clamped to the declared range.
+
+    Same reasoning as ``CausalLMModel._positive_int``: ``min_value`` on the
+    :class:`ParamDefinition` is the editor's guard rail for a corpus somebody
+    intends to train on, and enforcing it here would silently rewrite the
+    deliberately tiny configurations that lessons and this file's tests are
+    made of (``seq_len=4`` quietly becoming 16).
+    """
+    raw = params.get(name, default)
+    if raw is None or raw == "":
+        raw = default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"LMTokenizedDataset: {name} must be a whole number, got {raw!r}."
+        ) from exc
+    return max(1, value)
 
 
 class LMTokenizedDatasetNode(BaseNode):
     NODE_NAME = "LMTokenizedDataset"
     CATEGORY = "LLM"
     DESCRIPTION = (
-        "Tokenize a text corpus and pack it into fixed-length next-token "
-        "blocks — the standard LM pretraining layout. Joins rows with EOS, "
-        "cuts the stream into seq_len+1 blocks, and yields (input_ids, "
-        "labels) pairs where labels are inputs shifted by one. Wire "
-        "TextCorpusDataset + LMTokenizer in, and the output DATASET into "
-        "DataLoader -> TrainingLoop. Packed blocks are disk-cached by "
-        "content fingerprint so reruns skip retokenization."
+        "Turn text rows into fixed-length training blocks: tokenize every "
+        "document, join them with the end-of-text token, and cut the stream "
+        "into (input_ids, labels) pairs where the labels are the inputs "
+        "shifted one token to the left -- next-token prediction. Wire the "
+        "output into DataLoader. The packed tokens are cached on disk, so only "
+        "the first run pays for tokenization."
     )
 
-    # Writes the packed-block cache file — a side effect the return value
-    # does not carry (rule 3 of the cacheable contract), and its input is a
-    # live DATASET handle a fingerprint cannot describe.
+    # The inputs are LIVE handles -- a dataset object and a tokenizer object --
+    # whose contents no cache key can describe: the params say seq_len, not
+    # what the corpus contains, so an ExecutionCache hit would serve run 1's
+    # blocks after the user pointed TextCorpusDataset at a different file. The
+    # node therefore owns a disk cache with its own key, which CAN look at the
+    # corpus (see _corpus_fingerprint) -- and writing that file is itself a
+    # side effect the return value does not carry, reason 3 in
+    # ``BaseNode.cacheable``.
     cacheable = False
 
     @classmethod
@@ -52,12 +341,19 @@ class LMTokenizedDatasetNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="Rows of raw text (TextCorpusDataset output)",
+                description=(
+                    "Rows of raw text, one string per document -- the output "
+                    "of TextCorpusDataset."
+                ),
             ),
             PortDefinition(
                 name="tokenizer",
                 data_type=DataType.ANY,
-                description="Tokenizer handle from LMTokenizer (encode_batch / eos_id)",
+                description=(
+                    "Tokenizer object providing encode(text) -> list[int], "
+                    "decode(ids) -> str, eos_id and vocab_size. Wire an "
+                    "LMTokenizer node here."
+                ),
             ),
         ]
 
@@ -67,17 +363,27 @@ class LMTokenizedDatasetNode(BaseNode):
             PortDefinition(
                 name="dataset",
                 data_type=DataType.DATASET,
-                description="Packed blocks yielding (input_ids int64[seq_len], labels int64[seq_len])",
+                description=(
+                    "Training blocks: each sample is (input_ids int64"
+                    "[seq_len], labels int64[seq_len]) with labels shifted one "
+                    "token left. Wire it into DataLoader."
+                ),
             ),
             PortDefinition(
                 name="total_tokens",
                 data_type=DataType.SCALAR,
-                description="Tokens in the packed stream (after any max_tokens cap)",
+                description=(
+                    "Tokens in the packed stream, end-of-text tokens included. "
+                    "This is the number people mean by 'trained on N tokens'."
+                ),
             ),
             PortDefinition(
                 name="num_blocks",
                 data_type=DataType.SCALAR,
-                description="Number of seq_len-sized training blocks",
+                description=(
+                    "How many training blocks the stream yielded: "
+                    "(total_tokens - 1) // seq_len, remainder dropped."
+                ),
             ),
         ]
 
@@ -90,33 +396,51 @@ class LMTokenizedDatasetNode(BaseNode):
                 default=1024,
                 min_value=16,
                 max_value=8192,
-                description="Block length in tokens (must not exceed the model's max_seq_len)",
+                description=(
+                    "Tokens per training block -- the context length the model "
+                    "learns over. Must not exceed the model's max_seq_len. "
+                    "Longer costs memory quadratically in attention."
+                ),
             ),
             ParamDefinition(
                 name="append_eos",
                 param_type=ParamType.BOOL,
                 default=True,
-                description="Append the tokenizer's EOS between documents so the model learns document boundaries",
+                description=(
+                    "Put the end-of-text token after every document. Leave it "
+                    "on: without it the model learns that one story flows "
+                    "straight into the next, and generation never stops."
+                ),
             ),
             ParamDefinition(
                 name="max_tokens",
                 param_type=ParamType.INT,
                 default=0,
                 min_value=0,
-                description="Cap the packed stream at N tokens (0 = all) — budget knob for pilot runs",
+                description=(
+                    "Stop after this many tokens (0 = the whole corpus). The "
+                    "quickest way to make one epoch finish in a lesson."
+                ),
             ),
             ParamDefinition(
                 name="cache",
                 param_type=ParamType.BOOL,
                 default=True,
-                description="Cache packed blocks on disk (lm_token_cache/ under the data directory)",
-                advanced=True,
+                description=(
+                    "Save the packed tokens to disk and reuse them when the "
+                    "corpus and settings are unchanged. Turn it off while "
+                    "editing a corpus in place."
+                ),
             ),
             ParamDefinition(
                 name="cache_dir",
                 param_type=ParamType.STRING,
                 default="",
-                description="Override the cache directory (relative paths resolve inside the data directory)",
+                description=(
+                    "Subdirectory for the cached token files (empty = the "
+                    "shared cache under the data directory)."
+                ),
+                visible_when={"cache": True},
                 advanced=True,
             ),
         ]
@@ -129,152 +453,131 @@ class LMTokenizedDatasetNode(BaseNode):
         *,
         context: Any = None,
     ) -> dict[str, Any]:
-        import hashlib
-        import json
-
-        import torch
-
-        from ...core.data_paths import data_root, resolve_data_path
-        from ...core.loop_control import (
-            ProgressThrottle,
-            interrupted_result,
-            stop_checker,
-        )
-        from ._lm_data import PackedLMDataset
-
-        corpus = inputs.get("dataset")
+        dataset = inputs.get("dataset")
         tokenizer = inputs.get("tokenizer")
-        if corpus is None:
-            raise ValueError("LMTokenizedDataset requires a `dataset` input (raw text rows).")
-        if tokenizer is None or not hasattr(tokenizer, "encode") or not hasattr(tokenizer, "eos_id"):
-            raise ValueError(
-                "LMTokenizedDataset requires a `tokenizer` input from the "
-                "LMTokenizer node (an object with encode/encode_batch/eos_id)."
-            )
+        _check_tokenizer(tokenizer)
+        total_rows = _dataset_length(dataset)
 
-        seq_len = max(16, min(8192, int(params.get("seq_len", 1024))))
+        seq_len = _positive_int(params, "seq_len", 1024)
         append_eos = bool(params.get("append_eos", True))
+        # ``or 0`` is safe for both of these because 0 IS the disabled value.
         max_tokens = max(0, int(params.get("max_tokens", 0) or 0))
         use_cache = bool(params.get("cache", True))
-        cache_dir_param = str(params.get("cache_dir", "") or "")
 
-        num_rows = len(corpus)
-        if num_rows == 0:
-            raise RuntimeError("The text corpus has no rows to tokenize.")
-
-        # ── content fingerprint ─────────────────────────────────────────
-        # The corpus is a live handle, so the fingerprint samples it:
-        # row count plus hashes of the first/last rows. A same-name corpus
-        # with edited middle rows in between CAN alias — the cache doc
-        # states this, and `cache=false` opts out entirely.
-        encoding_name = str(getattr(tokenizer, "encoding_name", type(tokenizer).__name__))
-        sample_indices = list(range(min(3, num_rows))) + [
-            index for index in (num_rows - 2, num_rows - 1) if index >= 3
-        ]
-        samples = [
-            hashlib.sha1(str(corpus[index]).encode("utf-8", "replace")).hexdigest()[:16]
-            for index in sample_indices
-        ]
-        fingerprint = hashlib.sha256(json.dumps({
-            "v": 1,
-            "encoding": encoding_name,
-            "seq_len": seq_len,
-            "append_eos": append_eos,
-            "max_tokens": max_tokens,
-            "num_rows": num_rows,
-            "samples": samples,
-        }, sort_keys=True).encode("utf-8")).hexdigest()[:24]
-
-        cache_path = None
+        cache_path: Path | None = None
         if use_cache:
-            base = data_root() / "lm_token_cache"
-            target = cache_dir_param or "."
-            cache_base = resolve_data_path(target, base=base)
-            cache_path = cache_base / f"lmpack-{fingerprint}.pt"
-            if cache_path.is_file():
-                payload = torch.load(cache_path, map_location="cpu", weights_only=True)
-                blocks = payload["blocks"]
-                total_tokens = int(payload["total_tokens"])
-                dataset = PackedLMDataset(blocks)
-                if progress_callback:
-                    progress_callback({
-                        "event": "cache_hit",
-                        "num_blocks": len(dataset),
-                        "total_tokens": total_tokens,
-                    })
-                return {
-                    "dataset": dataset,
-                    "total_tokens": total_tokens,
-                    "num_blocks": len(dataset),
-                }
+            cache_path = _cache_dir(params) / "{}.pt".format(_cache_key(
+                _corpus_fingerprint(dataset, total_rows),
+                _tokenizer_identity(tokenizer),
+                seq_len, append_eos, max_tokens))
+            cached = _load_cached(cache_path)
+            if cached is not None:
+                logger.info(
+                    "LMTokenizedDataset reused %d cached tokens from %s",
+                    cached.numel(), cache_path)
+                return self._result(cached, seq_len, cached=True)
 
-        # ── tokenize + pack ─────────────────────────────────────────────
-        should_stop = stop_checker(context)
-        throttle = ProgressThrottle(progress_callback)
-        eos = [int(tokenizer.eos_id)] if append_eos else []
-        pieces: list[torch.Tensor] = []
-        total_tokens = 0
-        rows_done = 0
-        stopped_at_row: int | None = None
+        tokens, rows_done, stopped = self._tokenize(
+            dataset, tokenizer, total_rows,
+            append_eos=append_eos, max_tokens=max_tokens,
+            progress_callback=progress_callback, context=context)
 
-        for start in range(0, num_rows, _CHUNK_ROWS):
-            if should_stop():
-                stopped_at_row = start
-                break
-            stop = min(start + _CHUNK_ROWS, num_rows)
-            texts = [str(corpus[index]) for index in range(start, stop)]
-            if hasattr(tokenizer, "encode_batch"):
-                encoded = tokenizer.encode_batch(texts)
-            else:
-                encoded = [tokenizer.encode(text) for text in texts]
-            flat: list[int] = []
-            for ids in encoded:
-                flat.extend(ids)
-                flat.extend(eos)
-            if flat:
-                pieces.append(torch.tensor(flat, dtype=torch.int32))
-                total_tokens += len(flat)
-            rows_done = stop
-            throttle.emit({
-                "event": "tokenize",
-                "rows": rows_done,
-                "total_rows": num_rows,
-                "tokens": total_tokens,
-            })
-            if max_tokens and total_tokens >= max_tokens:
-                break
+        if stopped:
+            # A stopped node returns what it has and says so -- never raises
+            # (``core.loop_control``). And nothing is cached: the key describes
+            # the WHOLE corpus, so a partial stream stored under it would serve
+            # a truncated dataset to every later run of the same graph.
+            result = self._result(tokens, seq_len, cached=False)
+            result.update(interrupted_result(rows=rows_done))
+            return result
 
-        if stopped_at_row is not None:
-            return {
-                "dataset": None,
-                "total_tokens": total_tokens,
-                "num_blocks": 0,
-                **interrupted_result(row=stopped_at_row),
-            }
-
-        stream = torch.cat(pieces) if pieces else torch.empty(0, dtype=torch.int32)
-        if max_tokens:
-            stream = stream[:max_tokens]
-        total_tokens = int(stream.numel())
-        block = seq_len + 1
-        usable = (total_tokens // block) * block
-        if usable == 0:
-            raise RuntimeError(
-                f"Corpus too small: {total_tokens} tokens cannot fill one "
-                f"block of seq_len+1 = {block}. Lower seq_len or provide "
-                "more text."
-            )
-        blocks = stream[:usable].view(-1, block).clone()
-        dataset = PackedLMDataset(blocks)
+        if (tokens.numel() - 1) // seq_len < 1:
+            raise ValueError(
+                f"LMTokenizedDataset: the packed stream is {tokens.numel()} "
+                f"tokens, and one training block needs seq_len + 1 = "
+                f"{seq_len + 1}. Lower seq_len, or point TextCorpusDataset at "
+                f"more text (check max_rows and max_tokens are not capping it).")
 
         if cache_path is not None:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = cache_path.with_suffix(".tmp")
-            torch.save({"blocks": blocks, "total_tokens": total_tokens}, temp_path)
-            temp_path.replace(cache_path)
+            _save_cached(cache_path, tokens)
+        return self._result(tokens, seq_len, cached=False)
 
+    @staticmethod
+    def _tokenize(
+        dataset: Any,
+        tokenizer: Any,
+        total_rows: int,
+        *,
+        append_eos: bool,
+        max_tokens: int,
+        progress_callback: Any | None,
+        context: Any,
+    ) -> tuple[torch.Tensor, int, bool]:
+        """Encode every row into one flat stream. Returns (tokens, rows, stopped).
+
+        The stream accumulates in an ``array('q')`` rather than a Python list:
+        a list of 100M ids costs ~4 GB of boxed integers where the array costs
+        the 800 MB the ids themselves are, and ``torch.frombuffer`` then adopts
+        that buffer with no copy at all.
+        """
+        should_stop = stop_checker(context)
+        throttle = ProgressThrottle(progress_callback)
+        eos_id = int(tokenizer.eos_id)
+
+        stream = array.array("q")
+        rows_done = 0
+        stopped = False
+        for index in range(total_rows):
+            if should_stop():
+                stopped = True
+                break
+            text = dataset[index]
+            stream.extend(tokenizer.encode(
+                text if isinstance(text, str) else str(text)))
+            if append_eos:
+                stream.append(eos_id)
+            rows_done += 1
+            if max_tokens and len(stream) >= max_tokens:
+                # Break rather than tokenize the rest and throw it away: the
+                # point of the cap is the time it saves.
+                break
+            throttle.emit({
+                # EVENT_BATCH marks this as LIVENESS, not measurement:
+                # ``run_service.scalar_metrics`` mines every top-level number
+                # of an unlabelled progress payload into a chart series, and a
+                # "rows" series throttled by wall clock would be a chart of how
+                # fast the machine is. Tokenization has no metrics worth
+                # plotting -- the numbers it produces are outputs, not curves.
+                "event": EVENT_BATCH,
+                "rows": rows_done,
+                "total_rows": total_rows,
+                "tokens": len(stream),
+            })
+
+        if max_tokens:
+            del stream[max_tokens:]
+        if not len(stream):
+            return torch.empty(0, dtype=torch.int64), rows_done, stopped
+        # No copy: the tensor adopts the array's buffer and holds a reference
+        # to it, and nothing mutates the array after this point.
+        return torch.frombuffer(stream, dtype=torch.int64), rows_done, stopped
+
+    @staticmethod
+    def _result(
+        tokens: torch.Tensor, seq_len: int, *, cached: bool,
+    ) -> dict[str, Any]:
+        blocks = PackedTokenBlocks(tokens, seq_len)
+        total_tokens = int(tokens.numel())
+        note = (
+            f"{total_tokens:,} tokens packed into {blocks.num_blocks:,} blocks "
+            f"of {seq_len}"
+            f"{' (loaded from the block cache)' if cached else ''}."
+        )
+        # ``__log__`` is the one result key the canvas Log tab renders, and
+        # dunder keys are filtered out of recorded outputs and port summaries.
         return {
-            "dataset": dataset,
+            "dataset": blocks,
             "total_tokens": total_tokens,
-            "num_blocks": len(dataset),
+            "num_blocks": blocks.num_blocks,
+            "__log__": note,
         }

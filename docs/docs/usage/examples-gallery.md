@@ -13,13 +13,15 @@ The gallery is organized into ordered sections:
 | Section | Contents |
 |---------|----------|
 | **Quick Start** | The three pinned starters: **Train CNN on MNIST**, **Inference CNN on MNIST**, and **Api-Function** (graph-as-a-function demo). |
-| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
+| **Advanced Examples** | Every other runnable builtin example — LLM (Word Embedding Analogy with the offline `demo-16d` backend, and **Train a Causal LM on TinyStories**), Diffusion (Forward Process, Toy Sampling, Mini U-Net), Classical ML (Iris KNN, tabular pipeline), Transformer (MoE routing), RNN, RL (RLHF reward + KL), and the remaining trainers (GPT-Mini, ResNet-CIFAR10, and the measured **ResNet-18 / CIFAR-10 baseline** — see [Reproducing Baselines](./reproducing-baselines)). |
 | **Plugin Examples** | Examples shipped by installed [plugins](/advanced/plugins) (and any unrecognized categories). Only shown when present. |
 | **Model Architectures** | 15 classic architecture walkthroughs, always listed last: ResNet, ConvNeXt, EfficientNet, UNet, ViT, SwinTransformer, BERT, GPT, LLaMA, DiT, LSTM TimeSeries, BiGRU SpeechRecognition, Seq2Seq Attention, DQN Atari, PPO Robotics. |
 
 On disk the examples are grouped by topic folder: `Classical/`, `Diffusion/`, `LLM/`, `Model_Architecture/`, `RL/`, `RNN/`, `Transformer/`, and `Usage_Example/`.
 
-Every listed example runs offline out of the box. The two RL architecture graphs (**DQN Atari**, **PPO Robotics**) feed their networks from a synthetic observation tensor (`TensorCreate`, `randn`) instead of a live gym environment, so no `ale-py`/`mujoco` install is needed — swap in an `EnvWrapper` node to drive them from a real environment.
+Every listed example runs offline out of the box, with one exception: **Train a Causal LM on TinyStories** downloads the TinyStories corpus from the Hugging Face Hub and the gpt2 BPE ranks on its first run, and needs a GPU with headroom for a 203,668,480-parameter model. Its card leads with both requirements; the full recipe, the token budgets and the memory levers are in the `README.md` beside the graph, at `examples/LLM/TrainCausalLM-TinyStories/`. Both downloads are cached, so later runs are offline too.
+
+The two RL architecture graphs (**DQN Atari**, **PPO Robotics**) feed their networks from a synthetic observation tensor (`TensorCreate`, `randn`) instead of a live gym environment, so no `ale-py`/`mujoco` install is needed — swap in an `EnvWrapper` node to drive them from a real environment.
 
 ## Loading an example
 
