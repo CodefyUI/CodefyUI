@@ -149,6 +149,8 @@ pip install tensorboard
 
 Two things it deliberately does not do. It writes nothing when the run has nowhere to record the artifact row (an exported script, the CLI contract runner), because a directory nothing references is litter no cleanup can find. And a non-finite value is dropped rather than written, because a NaN poisons the y-axis auto-scaling of every other series in the same chart — your run's own metric store still keeps it.
 
+**The logs live as long as the run does.** When a run drops out of the keep-last window (`CODEFYUI_RUN_RETENTION_KEEP_LAST`, 200 finished runs by default — see [Run Queue](./run-queue.md)), its row goes and its `tb/` directory goes with it. That is what keeps `runs/` from growing for the life of the install, one directory per training node per run. So if a curve is worth keeping past a couple of hundred runs, copy the directory somewhere else — or raise the limit.
+
 ## Exporting metrics as CSV
 
 Every run's metrics are downloadable as CSV, from two places in the **Runs** panel: the **CSV** button on each run row, and **Download CSV** beside the chart when a run is open. Both produce the same file, one row per point, with the series name, step and value.

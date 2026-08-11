@@ -96,6 +96,13 @@ RUN_STATUSES: frozenset[str] = ACTIVE_STATUSES | TERMINAL_STATUSES
 ARTIFACT_KIND_CHECKPOINT = "checkpoint"
 ARTIFACT_KIND_EXPORT = "export"
 ARTIFACT_KIND_IMAGE = "image"
+#: The one kind whose ``path`` is a DIRECTORY. Same string as
+#: ``core.tensorboard.ARTIFACT_KIND``, spelled rather than imported so this
+#: list stays readable and ``core.tensorboard`` stays a deferred import
+#: inside ``prune`` (as ``core.checkpoints`` already is -- storage does not
+#: pull in the instrumentation modules to start up). ``test_run_store``'s
+#: ``test_the_two_spellings_of_the_tensorboard_kind_agree`` pins them equal.
+ARTIFACT_KIND_TENSORBOARD = "tensorboard"
 
 _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
@@ -1116,11 +1123,35 @@ class RunStore:
         method unlinked anything at all. ``succeeded``/``failed``/
         ``cancelled`` runs are unaffected.
 
-        Scoped to ``kind == "checkpoint"`` only. Other artifact kinds
-        (``export``, ``image``, a plugin's own) are an open vocabulary this
-        store does not otherwise own the lifecycle of, and at least one
-        (``tensorboard``) is a DIRECTORY, not a file -- widening this beyond
-        checkpoints is a deliberately separate decision.
+        **TensorBoard directories go too (#196).** That deliberately
+        separate decision is now taken: ``tensorboard``-kind rows are swept
+        as well, by the same window, in the same transaction, through the
+        same prove-we-wrote-it guard (``tensorboard.remove_logdir``, which
+        accepts only a directory inside what ``tensorboard.run_logdir``
+        builds for THAT row's run). It is the second kind whose file this
+        store does own the lifecycle of, for the same "no row, no file"
+        reason: ``open_run_writer`` refuses to create the directory at all
+        unless the run can record the row that indexes it, so a row removed
+        without its directory leaves litter nothing can find. Before this,
+        ``<data root>/runs/*/tb/`` grew for the life of the install -- one
+        directory per training node per run, invisible because a default
+        install ``.gitignore``s the data root.
+
+        Two differences from the checkpoint sweep, both forced by what a log
+        directory IS:
+
+        * It is a TREE, so the delete is ``shutil.rmtree`` and the guard has
+          to be correspondingly stricter -- see :func:`tensorboard.owned_logdir`.
+        * The ``interrupted`` exemption does NOT apply. That exemption exists
+          to protect a resume point (see above); event files resume nothing,
+          and exempting them would leave exactly the unreferenced directories
+          this change removes, for precisely the runs a crashed server
+          produces. Same window, same count, no new setting: retention is
+          still only ``RUN_RETENTION_KEEP_LAST``.
+
+        Still nothing for the other kinds (``export``, ``image``, a plugin's
+        own): they name files the USER asked for by path, which this store
+        never owned -- exactly as :meth:`delete_run` reasons.
 
         **And ``kind == "checkpoint"`` is not on its own enough to delete
         anything (#224).** ``kind`` is a free-text column, and
@@ -1144,7 +1175,9 @@ class RunStore:
         )
         params = (*active, keep_last)
 
-        def _prune(conn: sqlite3.Connection) -> tuple[int, list[str]]:
+        def _prune(
+            conn: sqlite3.Connection,
+        ) -> tuple[int, list[str], list[tuple[str, str]]]:
             with transaction(conn):
                 # Excludes STATUS_INTERRUPTED so its checkpoint file is
                 # never collected for unlinking -- see the docstring's
@@ -1158,12 +1191,24 @@ class RunStore:
                         (ARTIFACT_KIND_CHECKPOINT, *params, STATUS_INTERRUPTED),
                     ).fetchall()
                 ]
+                # No interrupted exemption here (#196), and ``run_id`` comes
+                # along because the ownership guard needs it: the directory
+                # a row may name is the one THIS run's writer would have
+                # built, not any directory of the right shape.
+                doomed_logdirs = [
+                    (row["run_id"], row["path"]) for row in conn.execute(
+                        "SELECT run_id, path FROM exec_run_artifacts WHERE "
+                        "kind = ? AND run_id IN (SELECT id FROM exec_runs "
+                        f"WHERE {where_clause})",
+                        (ARTIFACT_KIND_TENSORBOARD, *params),
+                    ).fetchall()
+                ]
                 deleted = conn.execute(
                     f"DELETE FROM exec_runs WHERE {where_clause}", params,
                 ).rowcount
-                return deleted, doomed_paths
+                return deleted, doomed_paths, doomed_logdirs
 
-        deleted, doomed_paths = await self.db.run(_prune)
+        deleted, doomed_paths, doomed_logdirs = await self.db.run(_prune)
         if doomed_paths:
             from .checkpoints import unlink_checkpoint
 
@@ -1185,5 +1230,30 @@ class RunStore:
                     "run retention: %d checkpoint file(s) were already "
                     "gone or could not be removed (see prior warnings, if "
                     "any, for which)", missing,
+                )
+        if doomed_logdirs:
+            from .tensorboard import remove_logdir
+
+            def _remove_all(rows: list[tuple[str, str]]) -> list[str]:
+                """Blocking; dispatched off the event loop, same as the
+                checkpoint unlink above and for the same reason -- a tree
+                walk over a network or cloud-synced data directory is not
+                free. Returns the directories actually removed."""
+                return [path for run_id, path in rows
+                        if remove_logdir(run_id, path)]
+
+            removed_dirs = await asyncio.to_thread(_remove_all, doomed_logdirs)
+            if removed_dirs:
+                logger.info(
+                    "run retention: removed %d TensorBoard directory(ies) "
+                    "belonging to pruned runs: %s",
+                    len(removed_dirs), ", ".join(removed_dirs),
+                )
+            missing_dirs = len(doomed_logdirs) - len(removed_dirs)
+            if missing_dirs:
+                logger.info(
+                    "run retention: %d TensorBoard directory(ies) were "
+                    "already gone or could not be removed (see prior "
+                    "warnings, if any, for which)", missing_dirs,
                 )
         return deleted

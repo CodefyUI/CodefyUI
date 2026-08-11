@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import socket
 import struct
 import time
@@ -346,7 +347,115 @@ def run_logdir(run_id: str, node_id: str = "") -> Path:
 #: the only core artifact kind whose ``path`` is a DIRECTORY -- that is what
 #: ``tensorboard --logdir`` takes, and pointing it at one event file inside
 #: would hide the sibling nodes' curves.
+#:
+#: ``run_store.ARTIFACT_KIND_TENSORBOARD`` is the same string, spelled where
+#: the other kinds are listed; ``test_the_two_spellings_of_the_tensorboard_
+#: kind_agree`` keeps the two from drifting.
 ARTIFACT_KIND = "tensorboard"
+
+
+def owned_logdir(run_id: str, path: str | Path) -> Path | None:
+    """Resolve *path* iff it is *run_id*'s own log directory (#196).
+
+    The DELETE rule for directories, and the exact analogue of
+    ``checkpoints.owned_checkpoint_path``: a row is a CLAIM, not evidence.
+    ``kind`` is a free-text column and ``ExecutionContext.log_artifact`` --
+    which the plugin API reaches -- writes both the kind and the path, so a
+    row labelled ``tensorboard`` pointing at an arbitrary directory would,
+    without this, hand an unattended sweep a ``shutil.rmtree`` of it. A
+    whole TREE, not one file, which is what makes getting this wrong worse
+    here than it was for checkpoints in #224.
+
+    The proof is that the path is inside what :func:`run_logdir` builds for
+    THIS run -- ``<data root>/runs/<run_id>/tb`` -- derived by calling that
+    function rather than by re-spelling the layout, so a future move of the
+    directory cannot leave the guard behind pointing at the old place. The
+    run id is checked too, not just the shape: retention already knows which
+    run each row belongs to, and a row cannot then nominate a DIFFERENT
+    run's directory for deletion.
+
+    Refusals, all returning ``None`` for the caller to log (never raising --
+    one odd row must not fail a whole prune):
+
+    * a symlink, checked BEFORE ``resolve()``. A link OUT of the area is
+      already refused by the containment rule below, exactly as in #224 --
+      this covers the other half, a link whose target is inside it, where
+      the delete would otherwise resolve THROUGH the link and remove a
+      directory no row ever named, leaving the recorded path dangling.
+    * anything that leaves the run's own ``tb`` directory after
+      ``resolve()``, which covers ``..`` escapes and any other route out.
+
+    A relative path is joined onto that same directory before any of this,
+    so it is judged against the place it would have been WRITTEN rather
+    than against whatever the server's working directory happens to be.
+    """
+    root = run_logdir(run_id)
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    if candidate.is_symlink():
+        return None
+    resolved = candidate.resolve()
+    # Both sides resolved: the data root itself is quite often a symlink (a
+    # second disk for datasets), and comparing a resolved path against an
+    # unresolved prefix would refuse every legitimate directory there.
+    if not resolved.is_relative_to(root.resolve()):
+        return None
+    return resolved
+
+
+def _remove_empty_parents(leaf: Path, ceiling: Path) -> None:
+    """``rmdir`` *leaf*'s now-empty ancestors, stopping below *ceiling*.
+
+    Without this, sweeping ``runs/<id>/tb/<node>`` leaves ``runs/<id>/tb/``
+    and ``runs/<id>/`` behind -- empty, but one pair per run forever, which
+    is the same unbounded growth in directory entries that this sweep exists
+    to stop, just cheaper per run. ``rmdir`` on a non-empty directory raises,
+    which is exactly the wanted behaviour: a sibling node's logs that are
+    still referenced by a row stop the walk immediately.
+    """
+    parent = leaf.parent
+    while parent != ceiling and parent.is_relative_to(ceiling):
+        try:
+            parent.rmdir()
+        except OSError:
+            return
+        parent = parent.parent
+
+
+def remove_logdir(run_id: str, path: str | Path) -> bool:
+    """Best-effort delete of a log directory whose only row is gone (#196).
+
+    The directory counterpart of ``checkpoints.unlink_checkpoint``, called
+    from the same place (``RunStore.prune``) under the same rules: the sweep
+    is unattended -- after every run finishes and at every server startup --
+    so a locked handle, a directory removed by hand, or a permissions error
+    is logged and swallowed rather than failing the whole prune. Never
+    raises.
+
+    Removes only what :func:`owned_logdir` proves is this run's own logs.
+    Returns True when a directory was actually removed.
+    """
+    resolved = owned_logdir(run_id, path)
+    if resolved is None:
+        logger.warning(
+            "retention: not deleting artifact path %r -- it is not a "
+            "TensorBoard directory this server wrote for run %s (expected "
+            "one under %s)", str(path), run_id, run_logdir(run_id))
+        return False
+    if not resolved.is_dir():
+        # Already gone, or a FILE inside the run's own tb directory (an
+        # event file, say, from a row that named one). Nothing to sweep
+        # either way, and rmtree on a file raises NotADirectoryError.
+        return False
+    try:
+        shutil.rmtree(resolved)
+    except OSError:
+        logger.warning("retention: could not delete TensorBoard directory %s",
+                       resolved, exc_info=True)
+        return False
+    _remove_empty_parents(resolved, run_logdir(run_id).parent.parent.resolve())
+    return True
 
 
 def open_run_writer(context: Any) -> EventFileWriter | None:
