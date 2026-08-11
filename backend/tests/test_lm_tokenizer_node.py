@@ -1,8 +1,17 @@
 """Tests for LMTokenizerNode (#290).
 
-Network-free: ``gpt2``'s BPE files are already in tiktoken's on-disk cache in
-this environment (``test_tokenizer_node.py`` exercises the same loader), and
-the one test that needs a load FAILURE monkeypatches the loader rather than
+**These load tiktoken for real, and they are the suite's first use of
+``gpt2``.** ``test_tokenizer_node.py`` exercises the same loader but only ever
+asks for ``cl100k_base`` and ``o200k_base``, so nothing before these tests
+populates the gpt2 entry: on a cold machine the first run here downloads that
+encoding's BPE ranks. tiktoken then caches them on disk
+(``TIKTOKEN_CACHE_DIR``) and every later run is offline.
+
+That follows the precedent rather than departing from it -- ``Tokenizer``'s
+tests do real loads with no ``skipif`` guarding them, because a mocked BPE
+table would assert nothing about the ids downstream nodes actually see, and
+these tests exist to pin ``vocab_size == 50257`` and the derived ``eos_id``.
+The one test that needs a load FAILURE monkeypatches the loader rather than
 going offline for real.
 """
 

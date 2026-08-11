@@ -140,19 +140,27 @@ the checkpoint is the final model.
 
 ## Continuous integration
 
-Two tests in `backend/tests/test_builtin_examples.py` guard this example, plus
+Three tests in `backend/tests/test_builtin_examples.py` guard this example, plus
 the two suite-wide sweeps that pick it up by glob
 (`test_builtin_graph_executes` validates it structurally and skips execution
 because it downloads and trains; `test_codegen.py` checks it still exports to
 compilable Python).
 
-`test_tinystories_lm_example_still_describes_itself` asserts that the
-requirements above still fit inside the **80 characters** the canvas gallery
-card shows — it truncates there and offers no tooltip, so anything past it is
-invisible on the surface a user reads before pressing Run — and that every
-number *this file* quotes is still derivable from the graph's params: the
-reference shape, the effective batch, the tokens per optimizer step, both
-budgets, and the block / micro-batch / optimizer-step chain above.
+`test_tinystories_lm_example_warns_inside_the_card_truncation` asserts the
+requirements at the top of this file still fit inside the **80 characters** the
+canvas gallery card shows. It truncates there and offers no tooltip, so
+anything past it is invisible on the surface a user reads before pressing Run —
+which makes *where* the warning sits in the description an invariant, not a
+style preference. The same test caps the description's length and requires this
+README to exist, since the card's last sentence points at it.
+
+`test_tinystories_lm_example_still_describes_itself` asserts that every number
+*this file* quotes is still derivable from the graph's params: the reference
+shape, the effective batch, the tokens per optimizer step, both token budgets,
+and the block / micro-batch / optimizer-step chain above. Those are computed
+from `max_tokens`, `seq_len`, `batch_size`, `accumulate_steps` and `drop_last`
+rather than transcribed, so editing any of the five fails the test until this
+file is updated with it.
 
 `test_tinystories_lm_example_scores_a_split_it_did_not_train_on` asserts the
 perplexity node reads blocks packed from the `validation` split while the
