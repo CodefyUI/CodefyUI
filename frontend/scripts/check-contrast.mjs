@@ -548,8 +548,8 @@ for (const theme of DIAGRAM_THEMES) {
         the export stops agreeing with the app a reader is looking at, and the
         colour coding silently means two different things in two places. */
 for (const slug of DIAGRAM_CATEGORIES) {
-  const [, da, db] = lab(t(`--cat-${slug}`));
-  const [, la, lb] = lab(t(`--diagram-light-${slug}`));
+  const [dL, da, db] = lab(t(`--cat-${slug}`));
+  const [lL, la, lb] = lab(t(`--diagram-light-${slug}`));
   const drift = Math.abs(
     ((Math.atan2(lb, la) - Math.atan2(db, da)) * 180) / Math.PI
   );
@@ -561,11 +561,18 @@ for (const slug of DIAGRAM_CATEGORIES) {
         `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
     );
   }
+  checked += 1;
+  if (lL > dL + 0.5) {
+    failures.push(
+      `--diagram-light-${slug} (L* ${lL.toFixed(1)}) is lighter than --cat-${slug} (L* ${dL.toFixed(1)}) — ` +
+        `the light export must be darkened for a white page, not lightened`
+    );
+  }
 }
 
 for (const slug of DIAGRAM_TYPES) {
-  const [, da, db] = lab(t(`--type-${slug}`));
-  const [, la, lb] = lab(t(`--diagram-light-type-${slug}`));
+  const [dL, da, db] = lab(t(`--type-${slug}`));
+  const [lL, la, lb] = lab(t(`--diagram-light-type-${slug}`));
   const drift = Math.abs(
     ((Math.atan2(lb, la) - Math.atan2(db, da)) * 180) / Math.PI
   );
@@ -575,6 +582,13 @@ for (const slug of DIAGRAM_TYPES) {
     failures.push(
       `--diagram-light-type-${slug} sits ${wrapped.toFixed(1)} degrees of hue from --type-${slug} ` +
         `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
+    );
+  }
+  checked += 1;
+  if (lL > dL + 0.5) {
+    failures.push(
+      `--diagram-light-type-${slug} (L* ${lL.toFixed(1)}) is lighter than --type-${slug} (L* ${dL.toFixed(1)}) — ` +
+        `the light export must be darkened for a white page, not lightened`
     );
   }
 }
