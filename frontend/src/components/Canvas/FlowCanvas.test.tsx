@@ -171,6 +171,18 @@ describe('FlowCanvas rendering', () => {
     expect(captured.rf.snapToGrid).toBe(true);
     expect(captured.rf.deleteKeyCode).toBe('Delete');
   });
+
+  it('asks React Flow to render only the visible elements', () => {
+    // The 300-node drag budget rests on this one flag (#162) and nothing
+    // else in the app reads it, so losing it would cost frames back with
+    // every other test still green. jsdom cannot show the flag WORKING on
+    // nodes — it measures them all as zero-sized, which makes every node
+    // count as visible however far off-screen it sits (measured: 300 of 300
+    // still render with culling on) — so this asserts the wiring, and the
+    // PR's browser pass covers the behaviour.
+    renderCanvas();
+    expect(captured.rf.onlyRenderVisibleElements).toBe(true);
+  });
 });
 
 // ── minimapNodeColor ────────────────────────────────────────────────────────

@@ -118,6 +118,18 @@ export function isBypassable(
   return !NON_BYPASSABLE_GRAPH_TYPES.has(node.data?.type ?? '');
 }
 
+/**
+ * Wire / port colour per data type.
+ *
+ * KEY ORDER MIRRORS the backend `DataType` enum in
+ * `backend/app/core/node_base.py` (#197 item 4) — minus TRIGGER, which is
+ * control flow and never a data port, so the canvas has no colour for it.
+ * The order is not decoration: `SELECTABLE_DATA_TYPES` below is
+ * `Object.keys` of this map and drives the PythonScript per-port type
+ * dropdown, so a reader comparing the dropdown with the enum sees the same
+ * sequence. Add a type in the position the enum puts it in; `index.test.ts`
+ * pins the order against a transcription of the enum.
+ */
 export const DATA_TYPE_COLORS: Record<string, string> = {
   TENSOR: '#4CAF50',
   MODEL: '#2196F3',
@@ -129,10 +141,30 @@ export const DATA_TYPE_COLORS: Record<string, string> = {
   STRING: '#8BC34A',
   IMAGE: '#FF5722',
   LIST: '#CDDC39',
-  // Sits next to DATASET's orange on purpose: a transform chain is what
-  // feeds a dataset, and the two are read together.
-  TRANSFORM: '#FFC107',
   ANY: '#9E9E9E',
+  // Kept in the amber family next to DATASET's orange on purpose — a
+  // transform chain is what feeds a dataset, and the two are read together —
+  // but LIGHTER than the old '#FFC107' (#197 item 5). Those two ambers meet
+  // at every train_transform / eval_transform port, and 14.5 dE00 apart is
+  // close for a pair that is always drawn touching. Worse, most of that
+  // distance was on the red-green axis: simulate deuteranopia and the old
+  // amber fell to 6.1 dE00 from DATASET and 2.5 from LIST — the closest pair
+  // in the whole type palette for a dichromat.
+  //
+  // '#FFE082' is Material Amber 200: the same hue (91 degrees in Lab against
+  // the old 83 and DATASET's 68), sitting ~18 L* above DATASET instead of
+  // ~9.5. That reads as 21.9 dE00 in normal vision and 12.6 simulated
+  // deuteran / 16.6 protan, and TRANSFORM stops being any dichromat's
+  // closest pair. Lightness is the axis every viewer keeps, which is why the
+  // fix is a lighter amber rather than a different hue. (The palette's own
+  // closest pair is unchanged at 8.2 dE00, OPTIMIZER/IMAGE; the contrast
+  // gate's floor for this palette is 5.)
+  //
+  // The light-export twin (`--diagram-light-type-transform`, #b78901) does
+  // NOT follow it lighter: that palette is drawn on white and is held to
+  // 3:1 there, which any lighter amber fails. It stays the same hue as this
+  // one, darkened, exactly as the light palette is meant to be.
+  TRANSFORM: '#FFE082',
 };
 
 export function getPortColor(dataType: string): string {
