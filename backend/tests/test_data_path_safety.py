@@ -533,6 +533,84 @@ async def test_prune_does_not_follow_a_symlinked_logdir(
     assert link.is_symlink(), "the link itself is not retention's to remove"
 
 
+@pytest.mark.parametrize("linked", ["tb", "run"])
+async def test_prune_does_not_follow_a_symlink_planted_above_the_leaf(
+    store, default_layout, linked,
+):
+    """The intermediate components, which the leaf check cannot see.
+
+    Plant a link at ``runs/<id>/tb`` (or at ``runs/<id>``) BEFORE the writer
+    runs -- anything that can log a row can do this, since a plugin knows
+    its own ``context.execution_id`` -- then log a row naming an ordinary
+    child of it. The child is not a symlink, so the leaf check passes; the
+    child resolves INTO the link's target, so a guard that resolved the
+    whole expected prefix as well would have compared two paths that had
+    both moved to the target and let the ``rmtree`` run there.
+
+    ``_expected_logdir_root`` keeps ``<run_id>/tb`` literal for exactly
+    this, which is the same split ``owned_checkpoint_path`` makes for
+    ``periodic/``."""
+    victim = default_layout.data / "datasets"
+    # Shaped so the row's path lands on something real either way: the link
+    # stands in for tb/ itself, or for the whole per-run directory.
+    inner = victim / "loop1" if linked == "tb" else victim / "tb" / "loop1"
+    inner.mkdir(parents=True)
+    (inner / "train.bin").write_bytes(b"the user's data")
+
+    run = await _make_run(store)
+    tb_dir = run_logdir(run.id)                     # runs/<id>/tb
+    link = tb_dir if linked == "tb" else tb_dir.parent
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(victim, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    named = tb_dir / "loop1"                        # an ordinary child
+    assert not named.is_symlink(), "the leaf check must not be what saves this"
+    await store.add_artifact(run.id, "tensorboard", str(named))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert (inner / "train.bin").exists(), (
+        f"a symlink at runs/<id>{'/tb' if linked == 'tb' else ''} redirected "
+        "an unattended rmtree out of the one directory retention owns"
+    )
+
+
+async def test_prune_still_deletes_logs_under_a_symlinked_runs_root(
+    store, default_layout,
+):
+    """The acceptance case the strictness must not cost: ``runs/`` itself on
+    a second disk (event files are small but numerous, and moving the whole
+    data root is the documented way to do that) is an ordinary layout. The
+    SHARED ancestor is resolved for this reason -- only ``<run_id>/tb``
+    stays literal."""
+    elsewhere = default_layout.data.parent / "second-disk"
+    elsewhere.mkdir()
+    try:
+        (default_layout.data / "runs").symlink_to(elsewhere,
+                                                  target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    run = await _make_run(store)
+    logdir = run_logdir(run.id, "loop1")
+    logdir.mkdir(parents=True)
+    (logdir / "events.out.tfevents.1.host.1.0").write_bytes(b"events")
+    real = elsewhere / logdir.parent.parent.name / "tb" / "loop1"
+    assert real.exists(), "the fixture is not writing through the link"
+
+    await store.add_artifact(run.id, "tensorboard", str(logdir))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not real.exists(), (
+        "a symlinked runs/ root is a supported layout, and retention "
+        "stopped cleaning up inside it"
+    )
+
+
 def test_owned_logdir_refuses_a_link_that_points_back_inside(default_layout):
     """The half of the symlink rule containment cannot cover: a link whose
     target is inside the run's own ``tb`` passes every path check, and

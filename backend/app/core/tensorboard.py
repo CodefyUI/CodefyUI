@@ -354,6 +354,30 @@ def run_logdir(run_id: str, node_id: str = "") -> Path:
 ARTIFACT_KIND = "tensorboard"
 
 
+def _expected_logdir_root(run_id: str) -> Path:
+    """The prefix a row's path must be under: ``runs/<run_id>/tb``, with
+    the SHARED ``runs/`` ancestor resolved and the two owned components
+    left literal.
+
+    Both halves matter, and #224's ``owned_checkpoint_path`` splits the
+    same way (it resolves ``MODELS_DIR`` but keeps ``periodic/`` /
+    ``interrupted/`` literal):
+
+    * The ancestor is resolved because a data root, or a ``runs/`` on a
+      second disk for large event files, is a perfectly ordinary symlinked
+      layout -- comparing a resolved candidate against an unresolved prefix
+      would refuse every legitimate directory there.
+    * ``<run_id>/tb`` stays literal because those two components are the
+      only thing that makes the directory OURS. Resolving them would let a
+      symlink planted at either one redirect the comparison and the
+      ``rmtree`` to the same foreign place, so containment would pass while
+      the delete happened somewhere else entirely -- a check that moves
+      wherever the attacker moves it is not a check.
+    """
+    root = run_logdir(run_id)
+    return root.parent.parent.resolve() / root.parent.name / root.name
+
+
 def owned_logdir(run_id: str, path: str | Path) -> Path | None:
     """Resolve *path* iff it is *run_id*'s own log directory (#196).
 
@@ -374,32 +398,37 @@ def owned_logdir(run_id: str, path: str | Path) -> Path | None:
     run each row belongs to, and a row cannot then nominate a DIFFERENT
     run's directory for deletion.
 
-    Refusals, all returning ``None`` for the caller to log (never raising --
-    one odd row must not fail a whole prune):
+    Two checks, and it takes both. Either returns ``None`` for the caller to
+    log (never raises -- one odd row must not fail a whole prune):
 
-    * a symlink, checked BEFORE ``resolve()``. A link OUT of the area is
-      already refused by the containment rule below, exactly as in #224 --
-      this covers the other half, a link whose target is inside it, where
-      the delete would otherwise resolve THROUGH the link and remove a
-      directory no row ever named, leaving the recorded path dangling.
-    * anything that leaves the run's own ``tb`` directory after
-      ``resolve()``, which covers ``..`` escapes and any other route out.
+    * **The final component must not be a symlink.** Only the leaf; the
+      intermediate ones are handled by the prefix instead (below). This one
+      is what stops the delete resolving THROUGH a link whose target is
+      INSIDE the owned area -- containment would pass, and the ``rmtree``
+      would take a directory no row ever named while leaving the recorded
+      path dangling.
+    * **The resolved path must sit under** :func:`_expected_logdir_root`,
+      i.e. under ``<resolved runs root>/<run_id>/tb`` -- see that function
+      for why exactly ``<run_id>/tb`` is compared UNRESOLVED. That is what
+      refuses a ``..`` escape, another run's directory, anything outside the
+      data root, and -- because those two components stay literal -- a
+      symlink planted at ``runs/<run_id>`` or ``runs/<run_id>/tb`` by
+      something that ran before the writer did. Such a link redirects the
+      candidate's ``resolve()`` out of the expected prefix, and cannot
+      redirect the prefix with it.
 
-    A relative path is joined onto that same directory before any of this,
-    so it is judged against the place it would have been WRITTEN rather
-    than against whatever the server's working directory happens to be.
+    A relative path is joined onto that same prefix before any of this, so
+    it is judged against the place it would have been WRITTEN rather than
+    against whatever the server's working directory happens to be.
     """
-    root = run_logdir(run_id)
+    expected = _expected_logdir_root(run_id)
     candidate = Path(path)
     if not candidate.is_absolute():
-        candidate = root / candidate
+        candidate = expected / candidate
     if candidate.is_symlink():
         return None
     resolved = candidate.resolve()
-    # Both sides resolved: the data root itself is quite often a symlink (a
-    # second disk for datasets), and comparing a resolved path against an
-    # unresolved prefix would refuse every legitimate directory there.
-    if not resolved.is_relative_to(root.resolve()):
+    if not resolved.is_relative_to(expected):
         return None
     return resolved
 
@@ -436,12 +465,13 @@ def remove_logdir(run_id: str, path: str | Path) -> bool:
     Removes only what :func:`owned_logdir` proves is this run's own logs.
     Returns True when a directory was actually removed.
     """
+    expected = _expected_logdir_root(run_id)
     resolved = owned_logdir(run_id, path)
     if resolved is None:
         logger.warning(
             "retention: not deleting artifact path %r -- it is not a "
             "TensorBoard directory this server wrote for run %s (expected "
-            "one under %s)", str(path), run_id, run_logdir(run_id))
+            "one under %s)", str(path), run_id, expected)
         return False
     if not resolved.is_dir():
         # Already gone, or a FILE inside the run's own tb directory (an
@@ -454,7 +484,11 @@ def remove_logdir(run_id: str, path: str | Path) -> bool:
         logger.warning("retention: could not delete TensorBoard directory %s",
                        resolved, exc_info=True)
         return False
-    _remove_empty_parents(resolved, run_logdir(run_id).parent.parent.resolve())
+    # Ceiling is the shared runs/ root: the per-run directory and its tb/
+    # are ours to tidy away, everything above them is not. Taken from
+    # ``expected`` so the walk uses the same resolved-ancestor spelling the
+    # guard just approved, never a second, differently-resolved path.
+    _remove_empty_parents(resolved, expected.parent.parent)
     return True
 
 
