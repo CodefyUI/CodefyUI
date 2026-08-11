@@ -837,6 +837,46 @@ const zhTW: NodeTranslations = {
       label_smoothing: '把一小部分機率質量分給其他 token，讓「答對但過度自信」也要付一點代價（0 = 關閉，0.1 是常見值）。',
     },
   },
+  LMTokenizer: {
+    description:
+      'tokenizer 本身，以一個可重複使用的物件輸出：接到 LMTokenizedDataset 可以把文字語料切成訓練用的區塊，接到生成節點則能讓它們使用與訓練時相同的 token ids。gpt2 的 50257 個 token 是最常見的起點。每種編碼只會下載一次 BPE 對照表，之後就能離線使用。',
+    params: {
+      encoding:
+        '要使用哪一套 BPE 詞彙表。gpt2（50257 個 token）訓練成本最低；cl100k_base（GPT-3.5/4）與 o200k_base（GPT-4o）能用同樣的 token 數塞進更多文字，但輸出層也要寬得多。',
+    },
+  },
+  TextCorpusDataset: {
+    description:
+      '把文字語料以「一列一段原始文字」的形式載入 — 可以是 HuggingFace Hub 上的資料集，也可以是你自己上傳的 .txt 檔。這是語言模型訓練的原料，所以還沒有標籤（target）：請接到 LMTokenizedDataset（不要直接接 DataLoader），由它把文字切成「預測下一個 token」的訓練區塊。',
+    params: {
+      source: '文字的來源：HuggingFace Hub 上已發布的資料集，或這台機器上的 .txt 檔。',
+      dataset_name:
+        'HuggingFace Hub 的 repo id。TinyStories 大約有 200 萬篇簡單的兒童故事 — 小到訓練得動，也淺到可以直接用肉眼判斷輸出好不好。',
+      subset: '多組態（multi-config）資料集要用的組態名稱，例如 wikitext-103-raw-v1（留空 = 該資料集的預設組態）。',
+      split: '要載入哪一個 split：train/test/validation，或 HF 的切片語法（例如 train[:5000]）。',
+      text_column: '存放文件文字的欄位名稱。慣例是 text；若填錯，錯誤訊息會列出實際有哪些欄位。',
+      cache_dir: '覆寫 HuggingFace 下載快取的位置（留空 = HF 預設，通常是 ~/.cache/huggingface）。',
+      local_path:
+        '要讀取的文字檔。可以從下拉選單挑選已上傳的檔案，或直接輸入路徑（絕對路徑，或相對於後端工作目錄；在專案模式下相對路徑會相對於專案目錄解析）。',
+      split_lines:
+        '把每一行當成一份獨立文件，而不是把整個檔案讀成一份。每行一句／一筆的檔案請打開；散文請關著，因為換段落並不代表換文件。',
+      max_rows:
+        '最多保留幾份文件（0 = 全部）。Hub 來源會把它轉成 split 切片，所以其餘資料根本不會下載 — 這是在大語料上試跑整張圖最快的方式。',
+    },
+  },
+  LMTokenizedDataset: {
+    description:
+      '把文字列轉成固定長度的訓練區塊：先把每份文件 tokenize，用 end-of-text token 串接起來，再把整條 token 流切成 (input_ids, labels) 配對，其中 labels 就是 input_ids 往左位移一格 — 這就是「預測下一個 token」。輸出接到 DataLoader。打包好的 token 會存到磁碟快取，所以只有第一次執行需要付 tokenize 的時間。',
+    params: {
+      seq_len:
+        '每個訓練區塊有幾個 token — 也就是模型學習時看到的上下文長度。不能超過模型的 max_seq_len。越長，attention 的記憶體成本以平方成長。',
+      append_eos:
+        '在每份文件後面加上 end-of-text token。建議保持開啟：少了它，模型會學到一個故事會直接接到下一個故事，生成時也永遠不會停。',
+      max_tokens: '取到這麼多 token 就停（0 = 整份語料）。這是讓一個 epoch 能在一堂課內跑完最快的手段。',
+      cache: '把打包好的 token 存到磁碟，語料與設定沒變時就直接重用。若你正在原地編輯語料檔，請關掉。',
+      cache_dir: '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
