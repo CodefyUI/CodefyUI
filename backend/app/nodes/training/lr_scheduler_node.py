@@ -47,7 +47,23 @@ class LRSchedulerNode(BaseNode):
                 param_type=ParamType.SELECT,
                 default="StepLR",
                 description="Scheduler type",
-                options=["StepLR", "CosineAnnealingLR", "ExponentialLR", "ReduceLROnPlateau", "CosineAnnealingWarmRestarts", "MultiStepLR", "OneCycleLR"],
+                options=["StepLR", "CosineAnnealingLR", "ExponentialLR", "ReduceLROnPlateau", "CosineAnnealingWarmRestarts", "MultiStepLR", "OneCycleLR", "warmup_cosine", "warmup_linear", "constant_with_warmup"],
+            ),
+            ParamDefinition(
+                name="warmup_steps",
+                param_type=ParamType.INT,
+                default=100,
+                min_value=1,
+                description=(
+                    "warmup_cosine / warmup_linear / constant_with_warmup: "
+                    "steps of linear LR ramp from ~0 to the optimizer's LR "
+                    "before the decay phase. Denominated in SCHEDULER steps "
+                    "— pair with TrainingLoop's scheduler_step="
+                    "optimizer_step and set total_steps to the run's "
+                    "max_steps so 'warm up for 100 steps then anneal over "
+                    "1500' means exactly that (#297)."
+                ),
+                visible_when={"type": ["warmup_cosine", "warmup_linear", "constant_with_warmup"]},
             ),
             ParamDefinition(
                 name="step_size",
@@ -127,6 +143,33 @@ class LRSchedulerNode(BaseNode):
                 max_lr=params.get("max_lr", 0.01),
                 total_steps=params.get("total_steps", 1000),
             )
+        elif sched_type in ("warmup_cosine", "warmup_linear", "constant_with_warmup"):
+            # The standard LM pretraining shapes (#297): a linear ramp from
+            # ~0 to the optimizer's LR over warmup_steps, then cosine decay,
+            # linear decay to ~0, or a constant hold — all denominated in
+            # scheduler STEPS over total_steps. Meant for TrainingLoop's
+            # scheduler_step=optimizer_step; at the default per-epoch
+            # stepping these traverse one point per epoch like everything
+            # else here.
+            warmup = max(1, int(params.get("warmup_steps", 100) or 100))
+            total = max(warmup + 1, int(params.get("total_steps", 1000) or 1000))
+            remainder = total - warmup
+            # start_factor cannot be exactly 0 (torch rejects it); 1e-8 of
+            # the base LR is indistinguishable from cold.
+            ramp = lr_scheduler.LinearLR(
+                optimizer, start_factor=1e-8, end_factor=1.0,
+                total_iters=warmup)
+            if sched_type == "warmup_cosine":
+                decay = lr_scheduler.CosineAnnealingLR(optimizer, T_max=remainder)
+            elif sched_type == "warmup_linear":
+                decay = lr_scheduler.LinearLR(
+                    optimizer, start_factor=1.0, end_factor=1e-8,
+                    total_iters=remainder)
+            else:  # constant_with_warmup
+                decay = lr_scheduler.ConstantLR(
+                    optimizer, factor=1.0, total_iters=0)
+            sched = lr_scheduler.SequentialLR(
+                optimizer, schedulers=[ramp, decay], milestones=[warmup])
         else:
             raise ValueError(f"Unsupported scheduler type: {sched_type}")
 
