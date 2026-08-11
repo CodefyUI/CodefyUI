@@ -769,6 +769,38 @@ const zhTW: NodeTranslations = {
       keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
     },
   },
+  LMTokenizer: {
+    description:
+      '產生一個可重複使用的 tokenizer 物件（tiktoken BPE）給 LM 訓練管線：LMTokenizedDataset 用它編碼並打包語料，文字生成用它編碼 prompt／解碼輸出。輸出物件提供 encode / encode_batch / decode、eos_id 與 vocab_size。gpt2 = 詞彙表 50257、eos <|endoftext|>（50256），與 CausalLMModel 的預設 vocab_size 一致。',
+    params: {
+      encoding: 'tiktoken 編碼。gpt2 = 50257 個 token（GPT-2 詞彙表）；cl100k／o200k 是 GPT-4 世代的較大詞彙表。第一次使用會下載一次，之後離線可用。',
+    },
+  },
+  TextCorpusDataset: {
+    description:
+      '把文字語料載成「每列一段原始文字」的資料集 — 來源可以是 HuggingFace Hub 的文字資料集（如 roneneldan/TinyStories、wikitext）或本機文字檔（一行一筆）。接 LMTokenizedDataset 編碼打包後就是 LM 訓練資料。',
+    params: {
+      source: '語料來源。',
+      dataset_name: 'HuggingFace Hub repo id（例如 roneneldan/TinyStories、wikitext）。',
+      subset: '多設定資料集的 config 名稱（留空 = 無；wikitext 需要如 wikitext-103-raw-v1）。',
+      split: '切分：train／validation／test，或 HF 切片語法（train[:10000]）。',
+      text_column: '存放文字的欄位名稱。',
+      local_file: '本機文字檔，一行一筆（空行略過）。',
+      max_rows: '只保留前 N 列（0 = 全部）— 試跑預算的便宜開關。',
+      cache_dir: '覆寫 HuggingFace 快取目錄（留空 = HF 預設）。',
+    },
+  },
+  LMTokenizedDataset: {
+    description:
+      '把文字語料編碼並打包成固定長度的 next-token 訓練塊 — 標準 LM 預訓練資料形狀。列與列之間接 EOS、整條 token 流切成 seq_len+1 的塊，輸出 (input_ids, labels) 配對（labels 右移一格）。接 TextCorpusDataset + LMTokenizer 進來，輸出接 DataLoader → TrainingLoop。打包結果以內容指紋為鍵快取在磁碟，重跑不再重新編碼。',
+    params: {
+      seq_len: '每塊的 token 長度（不可超過模型的 max_seq_len）。',
+      append_eos: '文件之間插入 tokenizer 的 EOS，讓模型學到文件邊界。',
+      max_tokens: '打包流最多 N 個 token（0 = 全部）— 試跑預算開關。',
+      cache: '把打包好的塊快取到資料目錄的 lm_token_cache/。',
+      cache_dir: '覆寫快取目錄（相對路徑解析在資料目錄內）。',
+    },
+  },
   EmbeddingScatter: {
     description:
       '把高維嵌入投影到 2D 來「看見」嵌入空間的幾何結構。語意相近的字會聚成一群。PCA 是線性、決定性、快；t-SNE 是非線性、會更好保留局部鄰域結構，但每次跑出來的版面都略有不同。',
