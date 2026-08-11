@@ -9,12 +9,13 @@ description: 安裝教育節點的外掛包，並學習如何撰寫與發布你�
 教育（「Edu」）節點以可安裝的**外掛包**形式提供，**依方向**組織，因此每一個都對應到一個動手實作的教科書模組，並在你逐步學習時累進安裝。
 
 ```bash
-cdui plugin install foundations deep rl   # full textbook companion
+cdui plugin sync                           # 安裝所有你還沒決定過的內建外掛包
+cdui plugin install foundations deep rl   # 或者一個一個挑
 cdui plugin list
 cdui plugin info deep                      # manifest, lessons covered, node names
 cdui plugin search attention               # query the catalog
 cdui plugin install foo/bar                # third-party pack from GitHub
-cdui plugin uninstall deep
+cdui plugin uninstall deep                 # 會被記住：sync 不會再把它裝回來
 ```
 
 ## 有哪些可用的外掛包
@@ -37,6 +38,19 @@ cdui plugin uninstall deep
 - 位於 `<USER_DATA>/plugins/installed.json` 的 lockfile 會記錄每一次安裝——包含你授權了哪些能力——因此 `cdui start` 會在下次啟動時重新探索它們。
 
 外掛節點會加上命名空間，以避免衝突並讓圖能自我說明——內建節點使用像 `Conv2d` 這樣的裸名稱，而外掛節點則會像 `foundations:Edu-KNN` 這樣加上限定。
+
+### 升級後補上新外掛包——`cdui plugin sync`
+
+真正啟用一個外掛包的是 lockfile，而升級並不會去寫它。所以當某個版本**新增**了內建外掛包時，它的檔案會隨升級落到你的磁碟上，卻沒有任何東西去載入它：那些節點同時處於「可以安裝」與「完全看不到」的狀態。`cdui plugin sync` 就是這個補課動作——它會安裝所有你還沒做過決定的內建外掛包，動手前先確認一次，並且逐一回報結果，所以某個外掛包的 `python_deps` 在學校網路下載不下來時，不會把其他外掛包一起拖垮。
+
+```bash
+cdui plugin sync --dry-run   # 只告訴我還有哪些沒裝
+cdui plugin sync             # 全部安裝（確認一次）
+cdui plugin sync --yes        # 不詢問——腳本、CI、教室映像檔
+cdui plugin sync --prune      # 順手清掉已不再發行的外掛 lockfile 項目
+```
+
+有兩件事它刻意不做。它不會在啟動時自動執行，`cdui update` 也不會主動問你要不要跑：因為某個版本剛好帶了某段程式碼就替你啟用它，是一個關於同意的決定，不是升級的細節。它也絕不會把你移除過的外掛包裝回來——`cdui plugin uninstall` 會把這次移除記錄在 lockfile 裡（`plugins` 旁邊的 `removed` 對應表），讓「我從沒見過這個外掛包」與「我把這個外掛包丟掉了」不再是同一個狀態。`cdui start` 與 `cdui plugin list` 也因為同樣的理由，不會再提起你移除過的外掛包。想反悔就用名稱重新安裝：`cdui plugin install stats` 會清掉那筆記錄，sync 之後也會重新把它算進去。
 
 ## 安全性——三個層級
 

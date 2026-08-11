@@ -1,4 +1,4 @@
-"""``cdui plugin <subcommand>`` — install, list, uninstall CodefyUI plugin packs.
+"""``cdui plugin <subcommand>`` — install, sync, list, uninstall CodefyUI plugin packs.
 
 Two install sources, one command::
 
@@ -6,6 +6,7 @@ Two install sources, one command::
     cdui plugin install foo/bar                         # GitHub short form, default branch
     cdui plugin install foo/bar@v1.2.3                  # GitHub, tagged release
     cdui plugin install https://github.com/foo/bar      # full URL
+    cdui plugin sync                                    # every built-in pack you have not decided about
 
 Built-in catalog packs (kind=builtin in plugins/registry.json) are
 activated in place — discovery walks ``<REPO>/plugins/<id>/`` directly,
@@ -43,9 +44,12 @@ else:
 
 from app.core.plugin_loader import (
     MANIFEST_FILENAME,
+    clear_removed,
     load_lockfile,
+    mark_removed,
     plugins_builtin_root,
     plugins_user_root,
+    removed_ids,
     save_lockfile,
 )
 from app.core.plugin_validator import PluginValidationError, validate_python_source
@@ -200,24 +204,41 @@ def load_catalog() -> dict[str, Any]:
         return {"schema": 1, "plugins": {}}
 
 
+def builtin_catalog_packs() -> dict[str, dict[str, Any]]:
+    """The ``kind = "builtin"`` half of the catalog — packs that ship in-repo."""
+    return {
+        pack_id: entry
+        for pack_id, entry in load_catalog().get("plugins", {}).items()
+        if isinstance(entry, dict) and entry.get("kind") == "builtin"
+    }
+
+
 def available_builtin_packs() -> list[tuple[str, str]]:
-    """Built-in packs shipped on disk that this install has never installed.
+    """Built-in packs shipped on disk that this install has made no decision about.
 
     A release can add a pack (``stats`` did), and its files land on disk with
     the update — but the server only loads what the lockfile records, and
     nothing re-syncs it. So the pack is fully installable and completely
     invisible: the nodes never appear, and no message anywhere says why.
 
+    "No decision" is the operative phrase (#175): a pack the user uninstalled
+    is subtracted too. Before uninstall left a tombstone, the entry was simply
+    popped, so a removed pack was indistinguishable from one this install had
+    never seen — which is why the notices used to nag about a pack the user had
+    already thrown away, once per start, forever.
+
     Returns ``(id, display name)`` pairs, sorted, so callers can name them.
     """
     try:
-        catalog = load_catalog().get("plugins", {})
-        installed = load_lockfile().get("plugins", {})
+        catalog = builtin_catalog_packs()
+        lockfile = load_lockfile()
+        installed = lockfile.get("plugins", {})
+        tombstoned = removed_ids(lockfile)
     except Exception:  # never let discoverability break a caller
         return []
     out: list[tuple[str, str]] = []
     for pack_id, entry in catalog.items():
-        if entry.get("kind") != "builtin" or pack_id in installed:
+        if pack_id in installed or pack_id in tombstoned:
             continue
         out.append((pack_id, str(entry.get("name") or pack_id)))
     return sorted(out)
@@ -1028,6 +1049,17 @@ def _install_catalog(plugin_id: str, args, lockfile) -> int:
         if rc != 0:
             return rc
 
+    # Installing a pack by name is how you undo having uninstalled it, so the
+    # tombstone goes with it (#175). Said out loud rather than silently, because
+    # the state it clears is invisible: nothing else would tell the user that
+    # `cdui plugin sync` has started counting this pack again.
+    if clear_removed(lockfile, plugin_id):
+        info(
+            f"已清除先前的移除記錄（cdui plugin sync 之後會把 {plugin_id} 一併納入）",
+            f"Cleared the earlier uninstall record — `cdui plugin sync` counts "
+            f"{plugin_id} again from now on",
+        )
+
     lockfile.setdefault("plugins", {})[plugin_id] = {
         "source_kind": "builtin",
         "source": plugin_id,
@@ -1244,8 +1276,14 @@ def _print_available_builtins() -> None:
     width = max(len(pid) for pid, _ in available) + 2
     for pack_id, name in available:
         print(f"  {BOLD}{pack_id.ljust(width)}{RESET}{name}")
-    ids = " ".join(pid for pid, _ in available)
-    info(f"安裝：cdui plugin install {ids}", f"Install with: cdui plugin install {ids}")
+    # One verb instead of a hand-typed id list (#175): the list grows with every
+    # release, and copying five ids off a terminal is exactly the step people
+    # skip — after which the nodes are missing and nothing says why.
+    info(
+        "全部安裝：cdui plugin sync（單獨安裝：cdui plugin install <id>）",
+        "Install them all with: cdui plugin sync  "
+        "(or one at a time: cdui plugin install <id>)",
+    )
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -1288,6 +1326,232 @@ def cmd_list(args: argparse.Namespace) -> int:
                 f"  {DIM}{plugin_id.ljust(width)}{name}  [disabled]  {'  '.join(bits)}{RESET}"
             )
     _print_available_builtins()
+    return 0
+
+
+# ── sync (#175) ────────────────────────────────────────────────────────────
+
+def _prune_stale_lockfile_keys(lockfile: dict[str, Any]) -> list[tuple[str, str]]:
+    """Drop lockfile keys for built-in packs that no longer exist.
+
+    ``install_plugin_finder`` skips an entry whose manifest is missing without
+    a word (plugin_loader.py), which is right for discovery and useless for the
+    user: a pack a release dropped lingers in the lockfile forever as an entry
+    that loads nothing and explains nothing. Dead tombstones go the same way —
+    remembering that someone removed a pack that no longer ships is not a
+    decision worth keeping.
+
+    Only ``builtin`` entries are pruned. Their files ship with the release, so
+    "not on disk" is final; a ``local`` link points at the author's own checkout,
+    which can be missing today and back tomorrow, and a ``github_url`` pack's
+    directory is user data this command has no business deleting behind a flag
+    named ``--prune``.
+
+    Returns ``(id, reason)`` pairs. The caller saves and reports.
+    """
+    catalog = builtin_catalog_packs()
+    builtin_root = plugins_builtin_root()
+    dropped: list[tuple[str, str]] = []
+
+    for plugin_id, entry in sorted(lockfile.get("plugins", {}).items()):
+        if not isinstance(entry, dict) or entry.get("source_kind") != "builtin":
+            continue
+        if plugin_id not in catalog:
+            dropped.append((plugin_id, t("已不在內建型錄中", "no longer in the catalog")))
+        elif not (builtin_root / plugin_id / MANIFEST_FILENAME).exists():
+            dropped.append((plugin_id, t("磁碟上找不到 manifest", "no manifest on disk")))
+    for plugin_id, _reason in dropped:
+        lockfile["plugins"].pop(plugin_id, None)
+
+    for plugin_id in sorted(removed_ids(lockfile)):
+        if plugin_id not in catalog:
+            clear_removed(lockfile, plugin_id)
+            dropped.append(
+                (plugin_id, t("移除記錄已無對應外掛", "removal record for a pack that is gone"))
+            )
+    return dropped
+
+
+#: Sentinel for "there was no way to ask" — no terminal, or stdin closed
+#: under one. Distinct from a plain ``False``, which is a human answering no:
+#: a decision is a success (exit 0) and an unanswerable question is not
+#: (exit 1), and conflating them made `cdui plugin sync </dev/null` print
+#: "pass --yes" and then exit 0 as though it had done what was asked.
+SYNC_UNANSWERABLE = None
+
+
+def _confirm_sync(count: int) -> bool | None:
+    """Ask once before installing ``count`` packs.
+
+    ``True`` proceed, ``False`` the user said no, :data:`SYNC_UNANSWERABLE`
+    nobody could be asked.
+
+    Fails closed with no terminal, like :func:`capability_gate`: a sync in a CI
+    job or behind a pipe must not block on an ``input()`` nobody will answer,
+    and must not silently decide yes on the user's behalf either — installing
+    code someone did not ask for is the exact thing #175 refused to automate.
+    On Windows the prompt is reachable at all only because ``dev.py`` re-execs
+    the venv interpreter through ``subprocess.run`` (see ``_reexec``); with
+    ``os.execv`` the console was orphaned and every prompt read EOF.
+    """
+    def _no_terminal() -> None:
+        err(
+            "沒有終端可確認。要直接安裝請加 --yes，只想看清單請用 --dry-run。",
+            "No terminal to confirm at. Pass --yes to install, "
+            "or --dry-run to just see the list.",
+        )
+
+    if not _stdin_is_interactive():
+        _no_terminal()
+        return SYNC_UNANSWERABLE
+    prompt = t(f"要安裝以上 {count} 個外掛嗎？", f"Install these {count} pack(s)?")
+    try:
+        answer = input(f"  {prompt} [y/N]: ").strip().lower()
+    except EOFError:
+        # ``isatty()`` said yes and stdin was closed anyway — `sync < /dev/null`
+        # on Windows does exactly this. Same fail-closed answer as the branch
+        # above, and the same exit code, because the question was never asked.
+        print()
+        _no_terminal()
+        return SYNC_UNANSWERABLE
+    if answer not in ("y", "yes"):
+        warn("已取消（未安裝任何東西）", "Cancelled (nothing was installed)")
+        return False
+    return True
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Install every built-in pack this install has not yet decided about.
+
+    The gap this closes (#175): built-in packs ship on disk with an update, but
+    only a lockfile entry activates them and nothing re-syncs it — so a pack a
+    release added is installable and invisible at the same time, and the only
+    cure was typing an id list nobody knew existed. Two shapes were rejected on
+    the way here, both for the same reason: activating packs at startup, and
+    prompting during `cdui update`, would install code the user never asked for
+    because a release shipped it. That is a consent decision, and this command
+    is where it is given — once, deliberately, for everything pending.
+
+    A pack the user uninstalled is not pending: uninstall leaves a tombstone
+    (see :func:`cmd_uninstall`) and sync names it as skipped rather than
+    quietly re-installing it. Per-pack exit codes, so one pack whose
+    ``python_deps`` cannot be downloaded on a school network does not decide
+    the fate of the other four.
+    """
+    section("同步內建外掛", "Syncing built-in packs")
+    lockfile = load_lockfile()
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    if getattr(args, "prune", False):
+        # The in-memory prune happens either way so the pending list below is a
+        # faithful preview, but under --dry-run nothing is saved: a flag whose
+        # whole promise is "changes nothing" must not quietly edit the lockfile
+        # because a second flag was also passed.
+        pruned = _prune_stale_lockfile_keys(lockfile)
+        if not pruned:
+            info("沒有需要清除的 lockfile 項目", "Nothing stale to prune")
+        elif dry_run:
+            for plugin_id, reason in pruned:
+                info(
+                    f"--dry-run：會清除 lockfile 項目 {plugin_id}（{reason}）",
+                    f"--dry-run: would prune lockfile entry '{plugin_id}' ({reason})",
+                )
+        else:
+            save_lockfile(lockfile)
+            for plugin_id, reason in pruned:
+                ok(
+                    f"已清除 lockfile 項目 {plugin_id}（{reason}）",
+                    f"Pruned lockfile entry '{plugin_id}' ({reason})",
+                )
+
+    catalog = builtin_catalog_packs()
+    installed = lockfile.get("plugins", {})
+    tombstoned = removed_ids(lockfile)
+
+    pending = sorted(
+        (pack_id, str(entry.get("name") or pack_id))
+        for pack_id, entry in catalog.items()
+        if pack_id not in installed and pack_id not in tombstoned
+    )
+    skipped = sorted(
+        pack_id for pack_id in catalog
+        if pack_id in tombstoned and pack_id not in installed
+    )
+    if skipped:
+        info(
+            f"略過你先前移除的外掛：{', '.join(skipped)}"
+            f"（要裝回請執行 cdui plugin install <id>）",
+            f"Skipping packs you removed: {', '.join(skipped)} "
+            f"(bring one back with `cdui plugin install <id>`)",
+        )
+
+    if not pending:
+        ok(
+            "每個內建外掛都已有決定，沒有要同步的項目",
+            "Every built-in pack is accounted for — nothing to sync",
+        )
+        return 0
+
+    width = max(len(pack_id) for pack_id, _ in pending) + 2
+    for pack_id, name in pending:
+        print(f"  {BOLD}{pack_id.ljust(width)}{RESET}{name}")
+
+    if dry_run:
+        info(
+            f"--dry-run：以上 {len(pending)} 個都不會安裝",
+            f"--dry-run: none of these {len(pending)} pack(s) were installed",
+        )
+        return 0
+
+    if not getattr(args, "yes", False):
+        answer = _confirm_sync(len(pending))
+        if answer is SYNC_UNANSWERABLE:
+            # Nothing was installed and the message named --yes: that is a
+            # failure to carry out the command, and scripts have to see it.
+            return 1
+        if not answer:
+            # "No" is a complete answer, not an error.
+            return 0
+
+    done: list[str] = []
+    failed: list[str] = []
+    for pack_id, _name in pending:
+        # Re-read per pack: _install_catalog saves the lockfile object it is
+        # handed, so carrying one copy across the loop would write the state
+        # from before the previous pack straight back over it.
+        lockfile = load_lockfile()
+        rc = _install_catalog(
+            pack_id,
+            argparse.Namespace(
+                force=False,
+                no_confirm=True,
+                trust_author=False,
+                accept_capabilities=False,
+                prior_capabilities=[],
+            ),
+            lockfile,
+        )
+        if rc == 0:
+            done.append(pack_id)
+            continue
+        failed.append(pack_id)
+        warn(
+            f"{pack_id} 安裝失敗，繼續處理其餘外掛",
+            f"{pack_id} failed — continuing with the rest",
+        )
+
+    if failed:
+        err(
+            f"完成：成功 {len(done)} 個，失敗 {len(failed)} 個"
+            f"（{', '.join(failed)}）。修正原因後可再執行 cdui plugin sync。",
+            f"Done: {len(done)} installed, {len(failed)} failed "
+            f"({', '.join(failed)}). Re-run `cdui plugin sync` once the cause is fixed.",
+        )
+        return 1
+    ok(
+        f"完成：已安裝 {len(done)} 個內建外掛",
+        f"Done: installed {len(done)} built-in pack(s)",
+    )
     return 0
 
 
@@ -1359,6 +1623,19 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 return 1
 
     lockfile["plugins"].pop(plugin_id, None)
+
+    # Remember the decision instead of merely forgetting the pack (#175).
+    # Popping the entry made "never installed" and "removed on purpose" the
+    # same state, so `cdui plugin sync` would have to either re-install what the
+    # user just threw away or nag about it forever. Only built-in packs are
+    # tombstoned: they are the only ones sync can put back uninvited, and a
+    # tombstone nothing reads is dead data the user would still have to explain.
+    is_builtin = (
+        entry.get("source_kind") == "builtin"
+        or plugin_id in builtin_catalog_packs()
+    )
+    if is_builtin:
+        mark_removed(lockfile, plugin_id, source_kind=entry.get("source_kind"))
     save_lockfile(lockfile)
 
     if _backend_reload():
@@ -1367,6 +1644,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         info("伺服器未運行", "Server not running")
 
     ok(f"已移除 {plugin_id}", f"Removed {plugin_id}")
+    if is_builtin:
+        info(
+            f"cdui plugin sync 不會再把 {plugin_id} 裝回來；"
+            f"要拿回它請執行 cdui plugin install {plugin_id}",
+            f"`cdui plugin sync` will not bring {plugin_id} back. When you want "
+            f"it again, run `cdui plugin install {plugin_id}`.",
+        )
     return 0
 
 
@@ -2017,10 +2301,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_inst.set_defaults(_func=cmd_install)
 
+    p_sync = sub.add_parser(
+        "sync",
+        help=(
+            "Install every built-in pack this install has not decided about yet "
+            "(packs you uninstalled stay uninstalled)"
+        ),
+    )
+    p_sync.add_argument("--dry-run", action="store_true",
+                        help="list what would be installed and change nothing")
+    p_sync.add_argument("--yes", "-y", action="store_true",
+                        help="install without the confirmation prompt (required with no terminal)")
+    p_sync.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "also drop lockfile entries for built-in packs that no longer ship, "
+            "which discovery otherwise skips in silence"
+        ),
+    )
+    p_sync.set_defaults(_func=cmd_sync)
+
     p_list = sub.add_parser("list", help="List installed plugins")
     p_list.set_defaults(_func=cmd_list)
 
-    p_un = sub.add_parser("uninstall", help="Remove an installed plugin")
+    p_un = sub.add_parser(
+        "uninstall",
+        help=(
+            "Remove an installed plugin. A built-in pack is also remembered as "
+            "removed, so `cdui plugin sync` leaves it alone until you install it "
+            "by name again"
+        ),
+    )
     p_un.add_argument("plugin_id")
     p_un.set_defaults(_func=cmd_uninstall)
 

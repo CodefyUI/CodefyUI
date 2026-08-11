@@ -9,12 +9,13 @@ description: Install plugin packs of educational nodes, and learn how to write a
 Educational ("Edu") nodes ship as installable **plugin packs**, organised **by direction** so each maps onto a hands-on textbook module and installs cumulatively as you progress.
 
 ```bash
-cdui plugin install foundations deep rl   # full textbook companion
+cdui plugin sync                           # install every built-in pack you have not decided about
+cdui plugin install foundations deep rl   # or pick them one by one
 cdui plugin list
 cdui plugin info deep                      # manifest, lessons covered, node names
 cdui plugin search attention               # query the catalog
 cdui plugin install foo/bar                # third-party pack from GitHub
-cdui plugin uninstall deep
+cdui plugin uninstall deep                 # remembered: sync will not re-add it
 ```
 
 ## What's available
@@ -37,6 +38,19 @@ Each Edu node decomposes a single lesson concept into a chain of named steps tha
 - A lockfile at `<USER_DATA>/plugins/installed.json` records every install — including which capabilities you granted — so `cdui start` rediscovers them on the next launch.
 
 Plugin nodes are namespaced to avoid collisions and to self-document graphs — built-in nodes use a bare name like `Conv2d`, while plugin nodes are qualified like `foundations:Edu-KNN`.
+
+### Catching up after an update — `cdui plugin sync`
+
+The lockfile is what activates a pack, and an update does not write it. So when a release **adds** a built-in pack, its files land on your disk and nothing loads them: the nodes are installable and invisible at the same time. `cdui plugin sync` is the catch-up — it installs every built-in pack this install has not made a decision about, asks once before doing it, and reports per pack so one pack whose `python_deps` cannot be downloaded on a school network does not take the others down with it.
+
+```bash
+cdui plugin sync --dry-run   # just tell me what is pending
+cdui plugin sync             # install it all (one confirmation)
+cdui plugin sync --yes        # no prompt — scripts, CI, classroom images
+cdui plugin sync --prune      # also drop lockfile entries for packs that no longer ship
+```
+
+Two things it deliberately does **not** do. It does not run at startup, and `cdui update` does not offer to run it: activating code you never asked for because a release shipped it is a consent decision, not an update detail. And it never re-adds a pack you uninstalled — `cdui plugin uninstall` records the removal in the lockfile (a `removed` map beside `plugins`), so "I have never seen this pack" and "I threw this pack away" stop being the same state. `cdui start` and `cdui plugin list` stop mentioning a removed pack for the same reason. To undo a removal, install the pack by name: `cdui plugin install stats` clears the record and sync counts it again.
 
 ## Security — three tiers
 

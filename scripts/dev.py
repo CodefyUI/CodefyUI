@@ -75,10 +75,13 @@
                 pack 預設不會安裝，需要時逐一裝即可。範例：
                     python scripts/dev.py plugin install deep
                     python scripts/dev.py plugin install owner/repo@main
+                    python scripts/dev.py plugin sync --dry-run  # 列出尚未決定的內建包
+                    python scripts/dev.py plugin sync            # 全部安裝（會先確認）
                     python scripts/dev.py plugin list
                     python scripts/dev.py plugin enable deep     # 啟用
                     python scripts/dev.py plugin disable deep    # 停用（檔案保留）
                     python scripts/dev.py plugin uninstall deep  # 從 lockfile 移除
+                                                                # （sync 之後不會再裝回）
 
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
@@ -1493,7 +1496,10 @@ def _print_uninstalled_builtin_packs() -> None:
 
     This is discoverability only. Nothing is enabled on the user's behalf —
     running code someone did not ask for because a release shipped it is a
-    consent decision, not a startup detail, so the pack still installs by hand.
+    consent decision, not a startup detail, so the pack still installs by hand
+    (`cdui plugin sync`, one verb for all of them, #175). A pack the user
+    uninstalled is not listed: `available_builtin_packs` subtracts the
+    uninstall tombstones, so this notice stops nagging once you have said no.
 
     `cdui start` has already hopped into the venv (`_SKIP_VENV_EXEC` excludes
     it), so scripts/plugins.py's `app.core.*` imports resolve here. Guarded
@@ -1510,15 +1516,17 @@ def _print_uninstalled_builtin_packs() -> None:
         return
     if not available:
         return
-    ids = " ".join(pack_id for pack_id, _ in available)
     names = ", ".join(f"{pack_id} ({name})" for pack_id, name in available)
     print(t(
         f"    有尚未安裝的內建外掛：{names}",
         f"    Built-in packs available but not installed: {names}",
     ))
+    # One verb, not the id list this used to print (#175). The list grows with
+    # every release, and retyping it is the step people skip — after which the
+    # chapter's nodes are missing and this notice was the only warning.
     print(t(
-        f"    安裝：cdui plugin install {ids}",
-        f"    Install with: cdui plugin install {ids}",
+        "    安裝：cdui plugin sync",
+        "    Install them with: cdui plugin sync",
     ))
 
 
