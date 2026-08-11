@@ -111,6 +111,49 @@ const minimapNodeColor = (node: any) => {
 };
 
 
+/*
+ * ONLY-RENDER-VISIBLE — why `onlyRenderVisibleElements` is set below (#162).
+ *
+ * After #125 a 300-node drag still cost 49.3ms p95 against a 32ms budget, and
+ * the residue was React Flow re-rendering all 300 node components on every
+ * pointermove, including the ones nobody can see.
+ *
+ * WHERE IT PAYS, and where it does not. The saving is proportional to how much
+ * of the graph is off-screen, so it is zero at the zoom `fitView` picks: a
+ * fitted graph is on-screen BY CONSTRUCTION, every node passes the visibility
+ * test, and the flag only adds the per-frame `getNodesInside` sweep. It pays at
+ * the zoom someone actually works at — reading node titles and dragging wires,
+ * where most of a large graph is outside the viewport. So a measurement taken
+ * right after fit-view will show nothing; that is the geometry, not a broken
+ * flag.
+ *
+ * WHY IT IS SAFE. Culling could lose things that are supposed to survive going
+ * off-screen. Checked against @xyflow/react 12.10.1's own selectors rather than
+ * assumed:
+ *   - MiniMap draws from `s.nodes` (MiniMapNodes' `selectorNodeIds`), not from
+ *     the visible set, so it stays complete.
+ *   - An edge is kept while the box spanning its two endpoints overlaps the
+ *     viewport at all (`isEdgeVisible`), so a wire with one endpoint
+ *     off-screen still draws.
+ *   - Box selection runs `getNodesInside` over the whole `nodeLookup`, and a
+ *     node being dragged is force-rendered (`isVisible || node.dragging`), so
+ *     selection and drag do not depend on a node having been rendered.
+ *   - A node is force-rendered until it has been measured
+ *     (`!node.internals.handleBounds`), so every node is laid out once and its
+ *     size is known to layout and to the minimap even if it is never looked at.
+ *
+ * WHAT A UNIT TEST CANNOT SEE. jsdom gives an unmeasured node zero area, and
+ * zero area passes the visibility test, so all 300 nodes still render there
+ * with this flag on. Edges are the opposite — unmeasured endpoints make every
+ * edge test as off-screen — so the perf harness's drag-frame improvement is the
+ * edge half under a condition no browser reaches. It is an upper bound, not a
+ * prediction; the browser pass is what settles the #162 number.
+ *
+ * ONE KNOWN COST. A card that leaves the viewport unmounts, so state local to
+ * it resets on the way back (the viz nodes' expanded toggle). NoteNode's
+ * mid-edit text is the one case where that could lose data, and NoteNode
+ * commits on unmount for exactly this reason — see the comment there.
+ */
 export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const activeTabId = useTabStore((s) => s.activeTabId);
@@ -634,34 +677,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
-          // Render only what the viewport can show (#162). After #125 a
-          // 300-node drag still cost 49.3ms p95 against a 32ms budget, and the
-          // residue was React Flow re-rendering all 300 node components on
-          // every pointermove — including the ones nobody can see.
-          //
-          // The obvious worry is that culling loses things that are supposed
-          // to survive going off-screen. Verified against @xyflow/react
-          // 12.10.1's own selectors before turning it on:
-          //   - MiniMap draws from `s.nodes` (MiniMapNodes' `selectorNodeIds`),
-          //     not from the visible set, so it stays complete.
-          //   - An edge is kept when the box spanning its two endpoints
-          //     overlaps the viewport at all (`isEdgeVisible`), so a wire with
-          //     one endpoint off-screen still draws.
-          //   - Box selection runs `getNodesInside` over the whole
-          //     `nodeLookup`, and a node being dragged is force-rendered
-          //     (`isVisible || node.dragging`), so selection and drag do not
-          //     depend on a node having been rendered.
-          //   - A node is also force-rendered until it has been measured
-          //     (`!node.internals.handleBounds`), so every node is laid out
-          //     once and its size is known to layout and to the minimap even
-          //     if it is never looked at.
-          // The e2e pass on the PR is what confirms all four in a real
-          // browser, because jsdom cannot: an unmeasured node has zero area,
-          // and zero area passes the visibility test, so all 300 nodes render
-          // there with this flag on. What DOES change in jsdom is the edges —
-          // unmeasured endpoints make every edge test as off-screen — so the
-          // perf harness's drag-frame improvement is the edge half only and
-          // is an upper bound, not a prediction of the browser number.
+          // Skip the node components the viewport cannot show (#162). See
+          // ONLY-RENDER-VISIBLE above the component for why this is safe and
+          // where it does and does not pay.
           onlyRenderVisibleElements
           minZoom={CANVAS_MIN_ZOOM}
           proOptions={proOptions}

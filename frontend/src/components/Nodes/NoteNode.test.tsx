@@ -157,6 +157,54 @@ describe('NoteNode', () => {
     expect(lastUpdate?.updates).toEqual({ noteContent: '' });
   });
 
+  it('commits the draft when the card unmounts mid-edit', () => {
+    // The canvas culls off-screen cards since #162, and a wheel zoom can carry
+    // a note out of the viewport with no pointer press to blur it first. An
+    // unmount is not a blur, so without this the typed text is simply gone.
+    const { container, unmount } = renderNote(noteData());
+    const note = container.querySelector('[class*="note"]') as HTMLElement;
+    const content = container.querySelector('[class*="textContent"]') as HTMLElement;
+    fireEvent.doubleClick(note);
+    content.innerText = 'half-written thought';
+    fireEvent.input(content);
+    unmount();
+    expect(lastUpdate).toEqual({
+      id: 'note1',
+      updates: { noteContent: 'half-written thought' },
+    });
+  });
+
+  it('writes nothing on unmount when the note was not being edited', () => {
+    const { container, unmount } = renderNote(noteData({ noteContent: 'untouched' }));
+    // Typing is impossible without entering edit mode, so an unmount here must
+    // not touch the store at all -- committing on every cull would churn the
+    // store (and the autosave behind it) once per card that scrolls away.
+    expect(container.querySelector('[class*="textContent"]')).toBeTruthy();
+    unmount();
+    expect(lastUpdate).toBeNull();
+  });
+
+  it('writes nothing on unmount when edit mode was entered but nothing typed', () => {
+    const { container, unmount } = renderNote(noteData({ noteContent: 'untouched' }));
+    fireEvent.doubleClick(container.querySelector('[class*="note"]') as HTMLElement);
+    unmount();
+    expect(lastUpdate).toBeNull();
+  });
+
+  it('does not re-commit on unmount after a blur has already saved', () => {
+    const { container, unmount } = renderNote(noteData());
+    const note = container.querySelector('[class*="note"]') as HTMLElement;
+    const content = container.querySelector('[class*="textContent"]') as HTMLElement;
+    fireEvent.doubleClick(note);
+    content.innerText = 'saved by blur';
+    fireEvent.input(content);
+    fireEvent.blur(content);
+    expect(lastUpdate).toEqual({ id: 'note1', updates: { noteContent: 'saved by blur' } });
+    lastUpdate = null;
+    unmount();
+    expect(lastUpdate).toBeNull();
+  });
+
   it('Escape while editing exits edit mode and blurs', () => {
     const { container } = renderNote(noteData());
     const note = container.querySelector('[class*="note"]') as HTMLElement;

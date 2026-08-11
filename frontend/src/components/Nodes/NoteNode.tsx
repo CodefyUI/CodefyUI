@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { type NodeProps } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { useTabStore } from '../../store/tabStore';
@@ -40,6 +40,37 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Unmount-while-editing rescue (#162) ──
+  //
+  // Typed text lives in the contentEditable DOM and reaches the store only via
+  // handleBlur. Until #162 that was enough: every way a mounted note could
+  // disappear started with a pointer press somewhere else, and a press blurs
+  // the note first. Turning on `onlyRenderVisibleElements` created the first
+  // press-free path — `zoomOnScroll` is on, so a wheel or pinch zoom can carry
+  // a focused note out of the viewport, and React Flow then unmounts the card.
+  // An unmount is not a blur, so the text would be gone with nothing to undo.
+  //
+  // The draft is mirrored into a ref on every input rather than read off the
+  // DOM at cleanup time, because React detaches `contentRef` before a passive
+  // effect cleanup runs — reading `contentRef.current` there is reliably null.
+  // `commitRef` holds the LATEST render's closure so the cleanup can have an
+  // empty dependency list and therefore run only at unmount, never between
+  // renders.
+  const draftRef = useRef<string | null>(null);
+  const commitRef = useRef<() => void>(() => {});
+  commitRef.current = () => {
+    // `editing` false means blur already committed; a null draft means nothing
+    // was typed in this edit, and writing then would only churn the store.
+    if (!editing || draftRef.current === null) return;
+    updateNoteData(id, { noteContent: draftRef.current });
+    draftRef.current = null;
+  };
+  useEffect(() => () => commitRef.current(), []);
+
+  const handleInput = useCallback(() => {
+    draftRef.current = contentRef.current?.innerText ?? '';
+  }, []);
+
   const noteColor = data.noteColor ?? '#3d3d1a';
   const noteKind = data.noteKind ?? 'text';
   const isBound = !!data.boundToNodeId;
@@ -50,6 +81,9 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
     if (noteKind === 'text') {
       e.stopPropagation();
       setEditing(true);
+      // Start each edit with no draft, so an unmount can only ever write text
+      // that was typed during THIS edit.
+      draftRef.current = null;
       // Focus the content div after React re-renders
       requestAnimationFrame(() => {
         contentRef.current?.focus();
@@ -69,6 +103,7 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
   const handleBlur = useCallback(() => {
     setEditing(false);
     const text = contentRef.current?.innerText ?? '';
+    draftRef.current = null;
     updateNoteData(id, { noteContent: text });
   }, [id, updateNoteData]);
 
@@ -120,6 +155,7 @@ function NoteNodeInner({ id, data, selected }: NodeProps & { data: NodeData }) {
           className={styles.textContent}
           contentEditable={editing}
           suppressContentEditableWarning
+          onInput={handleInput}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
           data-placeholder={t('note.placeholder')}
