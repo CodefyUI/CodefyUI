@@ -167,6 +167,15 @@ describe('graph.getView', () => {
     expect(api.graph.getView()).toEqual({ depth: 0, path: [], atTopLevel: true });
   });
 
+  it('answers the top level rather than throwing when there is no tab', () => {
+    // A plugin can call this whenever it likes, including from an activation
+    // that runs before the editor has restored its tabs. Throwing inside
+    // third-party code over a state the host owns would be the host's bug.
+    const api = freshApi();
+    useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
+    expect(api.graph.getView()).toEqual({ depth: 0, path: [], atTopLevel: true });
+  });
+
   it('is a fresh object each call, so nothing a plugin keeps goes stale silently', () => {
     const api = freshApi();
     const instanceId = seedOneBlock();

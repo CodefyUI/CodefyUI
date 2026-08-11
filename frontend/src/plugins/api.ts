@@ -76,9 +76,11 @@ export interface GraphView {
  * thrown error inside third-party code.
  */
 export function currentGraphView(): GraphView {
-  const tab = useTabStore.getState().getActiveTab() as
-    | ReturnType<ReturnType<typeof useTabStore.getState>['getActiveTab']>
-    | undefined;
+  // `getTab` rather than `getActiveTab`: the latter is typed as always
+  // returning a tab (it asserts the lookup with `!`), so asking it would mean
+  // casting the answer back to something that can be missing.
+  const { activeTabId, getTab } = useTabStore.getState();
+  const tab = getTab(activeTabId);
   const path = subgraphViewPath(tab?.subgraphStack, tab?.subgraphs);
   return { depth: path.length, path, atTopLevel: path.length === 0 };
 }
