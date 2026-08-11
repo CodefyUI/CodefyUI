@@ -758,6 +758,34 @@ const zhTW: NodeTranslations = {
       show_special_tokens: '是否輸出 tokenizer 的特殊 token（BOS/EOS/CLS/SEP/...）。',
     },
   },
+  CausalLMModel: {
+    description:
+      '建立一個可訓練的 GPT-style decoder-only transformer 語言模型。輸出真正的 MODEL（input_ids (B,T) int64 → logits (B,T,vocab)），可直接接 Optimizer / TrainingLoop / CheckpointSaver，另輸出精確的可訓練參數量讓圖能證明模型大小。因果遮罩在模型內部；搭配 LMCrossEntropyLoss 與打包好的 LM 資料使用。預設形狀約 2.02 億參數（d_model 1024、12 層、gpt2 詞彙表、共享嵌入）。',
+    params: {
+      vocab_size: '詞彙表大小（50257 = tiktoken gpt2；請與 LM tokenizer 的 encoding 保持一致）。',
+      d_model: '嵌入／殘差流寬度。',
+      n_layers: 'Transformer 區塊層數。',
+      n_heads: '注意力頭數（d_model 必須能被 n_heads 整除）。',
+      d_ff: '前饋隱藏層寬度（通常是 d_model 的 4 倍）。',
+      max_seq_len: '模型接受的最大序列長度。',
+      dropout: '注意力／MLP／嵌入的 dropout（單一 epoch 的 LM 預訓練通常設 0）。',
+      positional: '位置編碼：learned 可學習嵌入、sinusoidal 固定正弦、rope 旋轉位置編碼（RoPE）。',
+      norm: '正規化層（兩種都用 pre-norm 區塊）。',
+      activation: '前饋層的激活函數。',
+      tie_embeddings: '讓輸出層與 token 嵌入矩陣共享權重（省下 vocab×d_model 個參數）。',
+      gradient_checkpointing: '反向傳播時重算激活值，用計算換記憶體。',
+      init_std: '權重初始化的標準差（殘差投影會再除以 sqrt(2×n_layers)）。',
+      seed: '初始化種子 — 相同種子建出完全相同的權重。',
+    },
+  },
+  LMCrossEntropyLoss: {
+    description:
+      '語言模型用的 next-token cross-entropy：內部自動攤平，接受 logits (B,T,vocab) 對 targets (B,T) — 正是 CausalLMModel 與打包 LM 資料產出的形狀。支援 ignore_index 與 label smoothing。LM 訓練請用這顆，而不是通用 Loss 節點的 CrossEntropyLoss。',
+    params: {
+      ignore_index: '目標值等於此數的位置不計損失（padding 慣例）。',
+      label_smoothing: '標籤平滑係數（0 = 關閉）。',
+    },
+  },
   WordVector: {
     description:
       '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
