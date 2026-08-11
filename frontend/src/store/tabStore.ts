@@ -147,6 +147,30 @@ interface UndoSnapshot {
    * whose definition had been taken away.
    */
   subgraphs: SubgraphDefinition[];
+  /**
+   * Teaching Inspector overlays (#200 item 2).
+   *
+   * Same argument as `subgraphs`, one field later: every action that takes a
+   * node off the canvas ALSO prunes the segments naming it -- `deleteNode`,
+   * `collapseSelectionToSubgraph`, `expandSubgraphInstance` -- because a
+   * segment whose head or tail is gone can never resolve a path. A frame
+   * without this field made that pruning one-way: undo put the node back and
+   * left the overlay deleted, with nothing on screen to say a step had only
+   * half happened. Since `segmentGroups` is persisted through save, the loss
+   * then reached the file.
+   *
+   * `activeSegment` travels with the list because it points INTO it. Restoring
+   * the groups alone brings the bubble back unfocused; restoring the highlight
+   * alone leaves it naming a group that is not there. Every other site that
+   * writes one writes both (`removeSegmentGroup`, `loadGraphDocument`, the two
+   * subgraph actions), and a frame is no different.
+   *
+   * Cheap to carry, which is why it fits the shallow-snapshot budget
+   * documented above `pushUndoSnapshot`: a group is three strings, so fifty
+   * frames of overlays cost less than one node's params.
+   */
+  segmentGroups: SegmentGroup[];
+  activeSegment: SegmentGroup | null;
 }
 
 /**
@@ -175,6 +199,21 @@ interface SubgraphFrame {
    * leaving without editing manages to push nothing at all.
    */
   subgraphs: SubgraphDefinition[];
+  /**
+   * The overlays as they stood on ENTRY (#200 item 2), for the same reason as
+   * the list above: the exit frame describes the pre-entry state, and it now
+   * carries overlays too.
+   *
+   * They are not per-level -- `enterSubgraph` leaves `segmentGroups` alone, so
+   * a top-level overlay is simply not renderable while a block is open -- but
+   * the actions inside a block still prune them: a `deleteNode` in there drops
+   * any segment naming that inner node. That delete's own undo entry lives in
+   * the inner stack, which is discarded on the way out, so without these two
+   * fields the exit frame was the last chance to get the overlay back and did
+   * not take it.
+   */
+  segmentGroups: SegmentGroup[];
+  activeSegment: SegmentGroup | null;
 }
 
 const MAX_UNDO = 50;
@@ -691,6 +730,31 @@ export function flushSubgraphEditing(tab: TabState): TabState {
 }
 
 /**
+ * The undo frame for a state that can produce one (#200 item 2).
+ *
+ * Takes anything structurally shaped like a frame, which is both producers:
+ * a `TabState` (what `pushUndoSnapshot`, `undo` and `redo` capture) and a
+ * `SubgraphFrame` (what the state was on entry to a block).
+ *
+ * One builder rather than the four near-copies those sites each kept. The
+ * frame grew two fields in #200 item 2, and a producer that copies four of
+ * five fields is exactly the half-restored step that item was filed about --
+ * so there is now one place that can forget one, and it is typed.
+ */
+function undoFrameOf(state: UndoSnapshot): UndoSnapshot {
+  return {
+    nodes: [...state.nodes],
+    edges: [...state.edges],
+    subgraphs: [...state.subgraphs],
+    segmentGroups: [...state.segmentGroups],
+    // Not copied, unlike the arrays: a SegmentGroup is replaced wholesale on
+    // every edit and never written through, so the reference IS the value --
+    // the same property that lets the arrays above be shallow.
+    activeSegment: state.activeSegment,
+  };
+}
+
+/**
  * The undo/redo stacks to restore when a sub-canvas closes (core#137 review).
  *
  * Leaving a block puts the OUTER history back -- an undo inside a block must
@@ -720,11 +784,7 @@ function closeFrameHistory(
   if (sameSubgraphs(frame.subgraphs, nextSubgraphs)) {
     return { undoStack: frame.undoStack, redoStack: frame.redoStack };
   }
-  const snapshot: UndoSnapshot = {
-    nodes: [...frame.nodes],
-    edges: [...frame.edges],
-    subgraphs: [...frame.subgraphs],
-  };
+  const snapshot = undoFrameOf(frame);
   return {
     undoStack: [...frame.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
     // Same reason `pushUndoSnapshot` clears it: the redo entries describe a
@@ -2061,9 +2121,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   //
   // Undo is deliberately untouched, matching what all three readers did
   // before: opening a document pushes no snapshot and clears no stack.
-  // Making an open its own undo frame needs `UndoSnapshot` to carry
-  // `segmentGroups`/`description` first -- #200 item 2, which is its own
-  // change because it alters the shape of every frame in the store.
+  // #200 item 2 has since put `segmentGroups`/`activeSegment` in every frame,
+  // so an open is closer to being undoable than it was -- but not there yet:
+  // a frame still carries no `description`, no `readOnly` and no tab name, and
+  // an undo that restored the previous graph's nodes under the new graph's
+  // description would be a worse lie than not offering the step at all.
   loadGraphDocument: (doc) => {
     // Computed here, not by the caller: a reader that forgets the gate is
     // exactly the bug this action closes, and `formatVersion` is untrusted
@@ -2262,6 +2324,10 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       redoStack: tab.redoStack,
       selectedNodeId: tab.selectedNodeId,
       subgraphs: tab.subgraphs,
+      // Captured, not swapped: the overlays stay visible to the store while a
+      // block is open (#200 item 2). This is only what the exit frame needs.
+      segmentGroups: tab.segmentGroups,
+      activeSegment: tab.activeSegment,
     };
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
@@ -2710,12 +2776,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // snapshot's array to being the live one and a copy costs a pointer memcpy.
 
   pushUndoSnapshot: () => {
-    const tab = get().getActiveTab();
-    const snapshot: UndoSnapshot = {
-      nodes: [...tab.nodes],
-      edges: [...tab.edges],
-      subgraphs: [...tab.subgraphs],
-    };
+    const snapshot = undoFrameOf(get().getActiveTab());
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
         undoStack: [...t.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
@@ -2724,20 +2785,20 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     });
   },
 
+  // Both consumers SPREAD the frame rather than listing its fields (#200
+  // item 2): every field of an `UndoSnapshot` is a field of a `TabState` with
+  // the same name and type, so `...prev` applies exactly what was captured and
+  // a future sixth field is restored the moment it is captured -- instead of
+  // being carried in every frame and quietly ignored here, which is the shape
+  // of the bug item 2 describes.
   undo: () => {
     const tab = get().getActiveTab();
     if (tab.undoStack.length === 0) return;
-    const current: UndoSnapshot = {
-      nodes: [...tab.nodes],
-      edges: [...tab.edges],
-      subgraphs: [...tab.subgraphs],
-    };
+    const current = undoFrameOf(tab);
     const prev = tab.undoStack[tab.undoStack.length - 1];
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
-        nodes: prev.nodes,
-        edges: prev.edges,
-        subgraphs: prev.subgraphs,
+        ...prev,
         undoStack: t.undoStack.slice(0, -1),
         redoStack: [...t.redoStack, current],
       })),
@@ -2747,17 +2808,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   redo: () => {
     const tab = get().getActiveTab();
     if (tab.redoStack.length === 0) return;
-    const current: UndoSnapshot = {
-      nodes: [...tab.nodes],
-      edges: [...tab.edges],
-      subgraphs: [...tab.subgraphs],
-    };
+    const current = undoFrameOf(tab);
     const next = tab.redoStack[tab.redoStack.length - 1];
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
-        nodes: next.nodes,
-        edges: next.edges,
-        subgraphs: next.subgraphs,
+        ...next,
         redoStack: t.redoStack.slice(0, -1),
         undoStack: [...t.undoStack, current],
       })),
@@ -3037,26 +3092,46 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       return { tabs: updateTab(state.tabs, tabId, () => ({ lastRunCursor: cursor })) };
     }),
 
+  // No snapshot: focusing a segment is a change of VIEW, like selecting a
+  // node, and the canvas has never spent an undo step on one (#200 item 2).
+  // The highlight still travels inside every frame, because the two actions
+  // below need it restored alongside the list it points into -- so a Ctrl+Z
+  // that reverses a create or a delete also puts the focus back where the
+  // user had it, rather than leaving a bubble pointing at nothing.
   setActiveSegment: (segment) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({ activeSegment: segment })),
     }),
 
-  addSegmentGroup: (segment) =>
+  // Creating and removing an overlay ARE undoable steps (#200 item 2). Both
+  // are single deliberate clicks -- Settings > Compare Segment, and the x on
+  // the bubble -- and `segmentGroups` is persisted through save, so a mis-click
+  // on the x used to be an unrecoverable edit to the graph document with no
+  // way back short of reloading the file.
+  addSegmentGroup: (segment) => {
+    get().pushUndoSnapshot();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         segmentGroups: [...tab.segmentGroups.filter((s) => s.id !== segment.id), segment],
       })),
-    }),
+    });
+  },
 
-  removeSegmentGroup: (id) =>
+  removeSegmentGroup: (id) => {
+    get().pushUndoSnapshot();
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         segmentGroups: tab.segmentGroups.filter((s) => s.id !== id),
         activeSegment: tab.activeSegment?.id === id ? null : tab.activeSegment,
       })),
-    }),
+    });
+  },
 
+  // The bulk setter stays snapshot-free: it installs a whole document's
+  // overlays, and opening a document is deliberately not an undo step (see
+  // `loadGraphDocument`). A snapshot here would offer to undo "the graph you
+  // just opened" back to the one before it, which the frame cannot deliver --
+  // it carries no description, no file binding and no read-only flag.
   setSegmentGroups: (segments) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({

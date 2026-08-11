@@ -20,6 +20,8 @@ CodefyUI can be used as an **interactive lesson** — students see the exact ten
 
 :::note
 Captured data lives in per-session RAM (LRU, last 20 runs). Segment markers are saved with the graph JSON.
+
+Creating or clearing a marker is an undoable step: **Ctrl+Z** brings back a marker you removed by mistake — or one that a **Collapse to block** / **Delete node** swallowed — together with the focus it had.
 :::
 
 ## Settings popover toggles

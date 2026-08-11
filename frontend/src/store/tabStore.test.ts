@@ -1736,6 +1736,149 @@ describe('undo / redo', () => {
   });
 });
 
+// ── undo carries the Teaching Inspector overlays (#200 item 2) ───────────────
+// A frame used to hold nodes/edges/subgraphs only, so every action that
+// removes a node ALSO pruned the segments naming it and undo brought the node
+// back without the overlay.
+
+describe('undo / redo and the segment overlays', () => {
+  beforeEach(resetToSingleTab);
+
+  const segA = { id: 'gA', headNodeId: 'a', tailNodeId: 'b' };
+  const segB = { id: 'gB', headNodeId: 'b', tailNodeId: 'c' };
+
+  /** Two wired nodes a -> b, so a segment over them is meaningful. */
+  function seedPair() {
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'Add', params: {} } },
+      { id: 'b', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'Add', params: {} } },
+    ] as any);
+  }
+
+  it('the frame shape is exactly the five fields undo knows how to put back', () => {
+    store().pushUndoSnapshot();
+    expect(Object.keys(activeTab().undoStack[0]).sort()).toEqual([
+      'activeSegment',
+      'edges',
+      'nodes',
+      'segmentGroups',
+      'subgraphs',
+    ]);
+  });
+
+  it('undo restores a deleted segment group and the highlight it carried', () => {
+    store().addSegmentGroup(segA);
+    store().setActiveSegment(segA);
+    store().removeSegmentGroup('gA');
+    expect(activeTab().segmentGroups).toEqual([]);
+    expect(activeTab().activeSegment).toBeNull();
+
+    store().undo();
+    expect(activeTab().segmentGroups).toEqual([segA]);
+    // The bubble comes back FOCUSED: activeSegment points into the list, so
+    // restoring one without the other is either an unfocused overlay or a
+    // dangling highlight.
+    expect(activeTab().activeSegment).toEqual(segA);
+  });
+
+  it('redo removes the segment group again', () => {
+    store().addSegmentGroup(segA);
+    store().setActiveSegment(segA);
+    store().removeSegmentGroup('gA');
+    store().undo();
+    store().redo();
+    expect(activeTab().segmentGroups).toEqual([]);
+    expect(activeTab().activeSegment).toBeNull();
+  });
+
+  it('undo of a create takes the overlay and its highlight away', () => {
+    store().addSegmentGroup(segA);
+    store().setActiveSegment(segA);
+    store().undo();
+    expect(activeTab().segmentGroups).toEqual([]);
+    expect(activeTab().activeSegment).toBeNull();
+  });
+
+  it('undo of a delete brings back the segment the delete pruned', () => {
+    seedPair();
+    store().addSegmentGroup(segA);
+    store().setActiveSegment(segA);
+    store().deleteNode('a');
+    expect(activeTab().segmentGroups).toEqual([]);
+
+    store().undo();
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['a', 'b']);
+    expect(activeTab().segmentGroups).toEqual([segA]);
+    expect(activeTab().activeSegment).toEqual(segA);
+  });
+
+  it('leaves the overlays alone when the undo is about something else', () => {
+    seedPair();
+    store().addSegmentGroup(segA);
+    store().setActiveSegment(segA);
+    // A node move: its own frame, taken with the overlay already in place.
+    store().pushUndoSnapshot();
+    store().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 400, y: 0 }, data: { label: 'A', type: 'Add', params: {} } },
+      { id: 'b', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'Add', params: {} } },
+    ] as any);
+
+    store().undo();
+    expect(activeTab().nodes[0].position.x).toBe(0);
+    expect(activeTab().segmentGroups).toEqual([segA]);
+    expect(activeTab().activeSegment).toEqual(segA);
+  });
+
+  it('applies every field the frame carries, so a sixth one cannot be half-added', () => {
+    // Generic on purpose: a future field added to the snapshot but forgotten
+    // in `undo`/`redo` fails here rather than going missing in the UI.
+    store().setSegmentGroups([segA, segB]);
+    store().setActiveSegment(segB);
+    seedPair();
+    store().setEdges([{ id: 'e', source: 'a', target: 'b' }] as any);
+    store().pushUndoSnapshot();
+    const frame = activeTab().undoStack[activeTab().undoStack.length - 1];
+
+    store().setNodes([]);
+    store().setEdges([]);
+    store().setSubgraphs([]);
+    store().setSegmentGroups([]);
+    store().setActiveSegment(null);
+    store().undo();
+
+    const restored = activeTab() as unknown as Record<string, unknown>;
+    for (const [field, value] of Object.entries(frame)) {
+      expect(restored[field]).toEqual(value);
+    }
+  });
+
+  it('redo applies every field the frame carries too', () => {
+    store().setSegmentGroups([segA]);
+    store().setActiveSegment(segA);
+    seedPair();
+    store().pushUndoSnapshot();
+    store().setSegmentGroups([segB]);
+    store().setActiveSegment(segB);
+    store().setNodes([]);
+    store().undo();
+    const frame = activeTab().redoStack[activeTab().redoStack.length - 1];
+
+    store().redo();
+    const restored = activeTab() as unknown as Record<string, unknown>;
+    for (const [field, value] of Object.entries(frame)) {
+      expect(restored[field]).toEqual(value);
+    }
+  });
+
+  it('does not make a bulk setSegmentGroups its own undo step', () => {
+    // The programmatic setter: document installs and tests use it, and an
+    // open is deliberately not undoable (see `loadGraphDocument`).
+    const depth = activeTab().undoStack.length;
+    store().setSegmentGroups([segA]);
+    expect(activeTab().undoStack.length).toBe(depth);
+  });
+});
+
 // ── clipboard: copy / paste ──────────────────────────────────────────────────
 
 describe('clipboard', () => {

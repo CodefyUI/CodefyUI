@@ -642,6 +642,72 @@ describe('collapse drops references to the nodes it swallowed', () => {
   });
 });
 
+// ── #200 item 2: the overlays a subgraph action dropped come back ────────
+
+describe('undo restores the segments a subgraph action dropped', () => {
+  it('undo of a collapse puts the swallowed segment back, focused', () => {
+    seedChain();
+    const inside = { id: 's-inside', headNodeId: 'b', tailNodeId: 'c' };
+    store().setSegmentGroups([inside]);
+    store().setActiveSegment(inside);
+
+    select('b', 'c');
+    expect(store().collapseSelectionToSubgraph('Block').ok).toBe(true);
+    expect(tab().segmentGroups).toEqual([]);
+
+    // The collapse is ONE undo step and the overlay travels in its frame, so
+    // the segment is back with the graph rather than gone for good.
+    store().undo();
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-inside']);
+    expect(tab().activeSegment?.id).toBe('s-inside');
+    // ...and redo drops it again, in step with the collapse it belongs to.
+    store().redo();
+    expect(tab().segmentGroups).toEqual([]);
+    expect(tab().activeSegment).toBeNull();
+  });
+
+  it('undo of an expand puts the segment through the instance back', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const through = { id: 's-through', headNodeId: 'a', tailNodeId: instanceId };
+    store().setSegmentGroups([through]);
+    store().setActiveSegment(through);
+
+    expect(store().expandSubgraphInstance(instanceId)).toBe(true);
+    expect(tab().segmentGroups).toEqual([]);
+
+    store().undo();
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-through']);
+    expect(tab().activeSegment?.id).toBe('s-through');
+  });
+
+  it('undo of a block VISIT restores a segment deleted inside the block', () => {
+    // The one path with no snapshot of its own: an undo taken inside a block
+    // stays inside it, and the inner stack is thrown away on the way out. The
+    // single frame the exit pushes describes the state on ENTRY -- so the
+    // overlays it carries have to be the pre-entry ones, exactly as its
+    // `subgraphs` already were.
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const inner = { id: 's-inner', headNodeId: 'b', tailNodeId: 'c' };
+    store().setSegmentGroups([inner]);
+    store().setActiveSegment(inner);
+
+    store().enterSubgraph(instanceId);
+    store().deleteNode('b'); // prunes the segment naming it
+    expect(tab().segmentGroups).toEqual([]);
+    store().exitSubgraph();
+
+    store().undo();
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-inner']);
+    expect(tab().activeSegment?.id).toBe('s-inner');
+  });
+});
+
 // ── Review MINOR 17: readOnly covers mutations, never navigation ─────────
 
 function makeReadOnly() {

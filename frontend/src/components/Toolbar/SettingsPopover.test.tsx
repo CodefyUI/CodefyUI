@@ -70,6 +70,14 @@ function baseTab() {
     graphId: 'graph-xyz',
     activeSegment: null as any,
     segmentGroups: [] as any[],
+    // Creating and clearing a segment are undo steps since #200 item 2, so
+    // the double needs the fields an undo frame is built from and pushed onto.
+    // Left as real empty arrays rather than guarded inside the store: a tab
+    // missing its stacks is a broken double, not a state the app can reach.
+    subgraphs: [] as any[],
+    subgraphStack: [] as any[],
+    undoStack: [] as any[],
+    redoStack: [] as any[],
     // core#134. `null` is the real default; the popover must also survive a
     // tab persisted before #134, which carries neither key.
     seed: null as number | null,
@@ -323,6 +331,9 @@ describe('SettingsPopover', () => {
     expect(tab.segmentGroups[0]).toMatchObject({ headNodeId: 'n1', tailNodeId: 'n2' });
     expect(tab.activeSegment).not.toBeNull();
     expect(onClose).toHaveBeenCalled();
+    // ONE undo step for the click, not two: the handler also focuses the new
+    // segment, and focusing is a change of view (#200 item 2).
+    expect(tab.undoStack).toHaveLength(1);
   });
 
   it('creating a segment uses the other branch when the first node is already leftmost', () => {
@@ -374,6 +385,11 @@ describe('SettingsPopover', () => {
     const tab = useTabStore.getState().tabs[0];
     expect(tab.segmentGroups).toHaveLength(0);
     expect(tab.activeSegment).toBeNull();
+    // Recoverable: the frame the clear pushed carries the overlay and the
+    // highlight, so Ctrl+Z brings both back (#200 item 2).
+    expect(tab.undoStack).toHaveLength(1);
+    expect(tab.undoStack[0].segmentGroups).toEqual([seg]);
+    expect(tab.undoStack[0].activeSegment).toEqual(seg);
   });
 
   it('compare button is disabled (and its handler unreachable) with exactly one selected node', () => {
