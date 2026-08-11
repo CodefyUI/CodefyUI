@@ -48,6 +48,7 @@ from .api import (
     routes_images,
     routes_keys,
     routes_llm,
+    routes_media,
     routes_models,
     routes_nodes,
     routes_plugin_frontend,
@@ -521,6 +522,7 @@ app.include_router(routes_plugins.router)
 app.include_router(routes_plugin_frontend.router)
 app.include_router(routes_models.router)
 app.include_router(routes_images.router)
+app.include_router(routes_media.router)
 app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)

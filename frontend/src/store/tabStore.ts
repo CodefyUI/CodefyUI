@@ -43,7 +43,7 @@ import { useProjectStore } from './projectStore';
  * render, so a later node pack can add its own kind; unknown kinds are
  * ignored by the panel rather than rendered wrong.
  */
-export type LogKind = 'text' | 'image' | 'progress' | 'chart';
+export type LogKind = 'text' | 'image' | 'progress' | 'chart' | 'video';
 
 /** Base64 media payload of a `kind: 'image'` entry. */
 export interface LogImagePayload {
@@ -52,6 +52,27 @@ export interface LogImagePayload {
   encoding: string;
   data: string;
   /** Output port the image came from, when the backend named one. */
+  port?: string;
+}
+
+/**
+ * Reference payload of a `kind: 'video'` entry (#310). Never the bytes —
+ * one node_status event is capped at 128 KB, so the backend writes the
+ * file under its media dir and ships where to find it; `url` is served by
+ * `/api/media` with a real Content-Type (GETs are unauthenticated reads).
+ */
+export interface LogVideoPayload {
+  /** POSIX-style path relative to the backend's media directory. */
+  path: string;
+  /** Same-origin URL a <video>/<img> element can point at directly. */
+  url: string;
+  format: string;
+  fps?: number;
+  frames?: number;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  /** Output port the clip came from, when the backend named one. */
   port?: string;
 }
 
@@ -111,6 +132,8 @@ export interface LogEntry {
   progress?: Record<string, any>;
   /** Set when `kind === 'chart'` (#130) — the spec to draw. */
   chart?: LogChartPayload;
+  /** Set when `kind === 'video'` (#310) — the clip reference to play. */
+  video?: LogVideoPayload;
 }
 
 interface UndoSnapshot {

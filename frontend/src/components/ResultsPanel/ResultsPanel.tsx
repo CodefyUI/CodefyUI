@@ -402,6 +402,25 @@ export function ResultsPanel() {
                     )}
                     {entry.kind === 'chart' && entry.chart?.kind ? (
                       <ChartView chart={entry.chart} className={styles.logChart} />
+                    ) : entry.kind === 'video' && entry.video?.url ? (
+                      // #310: same-origin reference served by /api/media with
+                      // a real Content-Type. A gif is an animated image, not
+                      // a <video> source — browsers refuse it there.
+                      entry.video.format === 'gif' ? (
+                        <img
+                          src={entry.video.url}
+                          alt="output clip"
+                          className={styles.logVideo}
+                        />
+                      ) : (
+                        <video
+                          src={entry.video.url}
+                          controls
+                          loop
+                          preload="metadata"
+                          className={styles.logVideo}
+                        />
+                      )
                     ) : entry.kind === 'image' && entry.image?.data ? (
                       <img
                         src={`data:image/${entry.image.format};base64,${entry.image.data}`}
