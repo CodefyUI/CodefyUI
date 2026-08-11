@@ -13,6 +13,39 @@ from typing import Any, Callable
 from torch.utils.data import Dataset
 
 
+class HFTorchTextDataset(Dataset):
+    """Adapt a HuggingFace `datasets.Dataset` to rows of raw text.
+
+    The text sibling of `HFTorchImageDataset` (the docstring above always
+    promised one): `__getitem__` returns one python string, which is what
+    the LM packing node consumes. No transform hook — text preprocessing
+    belongs to the tokenizer.
+    """
+
+    def __init__(self, hf_dataset: Any, text_column: str) -> None:
+        self._ds = hf_dataset
+        self._text_col = text_column
+
+    def __len__(self) -> int:
+        return len(self._ds)
+
+    def __getitem__(self, idx: int) -> str:
+        return str(self._ds[idx][self._text_col])
+
+
+class LocalTextListDataset(Dataset):
+    """A list of strings as a Dataset — the local-file corpus shape."""
+
+    def __init__(self, rows: list[str]) -> None:
+        self._rows = rows
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, idx: int) -> str:
+        return self._rows[idx]
+
+
 class HFTorchImageDataset(Dataset):
     """Adapt a HuggingFace `datasets.Dataset` to the torchvision Dataset convention.
 
