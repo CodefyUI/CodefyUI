@@ -829,6 +829,29 @@ const zhTW: NodeTranslations = {
       cache_dir: '覆寫快取目錄（相對路徑解析在資料目錄內）。',
     },
   },
+  PerplexityEvaluate: {
+    description:
+      '在打包好的 (input_ids, labels) 驗證資料上評估 causal LM：輸出 token 加權的平均 cross-entropy（val_loss）與 perplexity = exp(val_loss)。標籤為 -100 的位置不計入。接 TrainingLoop.model 與驗證用的 LMTokenizedDataset；perplexity 是逐 token 指標，只在相同資料集與 tokenizer 下可比較。',
+    params: {
+      batch_size: '評估批次大小（只影響速度／記憶體，結果相同）。',
+      max_batches: '最多評估 N 個批次（0 = 整個資料集）。',
+      device: '評估用的裝置（auto 跟隨全域裝置）。',
+      precision: '前向的 autocast 精度。bf16 在 Ampere+ 省一半激活記憶體，是 LM 評估預設；裝置不支援會退回 fp32 並註明。要發表的數字請用 fp32。',
+    },
+  },
+  TextGenerate: {
+    description:
+      '用訓練好的 causal LM 自迴歸生成文字：以 LMTokenizer 編碼 prompt、逐 token 取樣（temperature / top-k / top-p，種子化可重現）、遇 EOS 或 max_new_tokens 停止並解碼。畫布上訓練成果最直觀的質性驗證。',
+    params: {
+      prompt: '沒有接 prompt 輸入時使用的提示文字。',
+      max_new_tokens: '最多生成的 token 數。',
+      temperature: '取樣溫度（0 = greedy argmax）。',
+      top_k: '取樣前只保留機率最高的 k 個 token（0 = 關閉）。',
+      top_p: 'Nucleus 取樣：保留累積機率達 p 的最小 token 集合（1 = 關閉）。',
+      seed: '取樣種子 — 相同種子與權重會重現相同文字。',
+      device: '前向運算的裝置。',
+    },
+  },
   EmbeddingScatter: {
     description:
       '把高維嵌入投影到 2D 來「看見」嵌入空間的幾何結構。語意相近的字會聚成一群。PCA 是線性、決定性、快；t-SNE 是非線性、會更好保留局部鄰域結構，但每次跑出來的版面都略有不同。',
