@@ -236,20 +236,38 @@ def _completed_optimizer_steps(
     position is ``start_epoch x steps per epoch`` by construction of the loop
     itself.
 
-    Where it can drift from the interrupted run's ACTUAL step count, all of
-    them shared with the epoch clock's own assumption that one completed
-    epoch is one scheduler step:
+    Where it can drift from the interrupted run's ACTUAL step count. The
+    first two are shared with the epoch clock's own assumption that one
+    completed epoch is one scheduler step; the third is the step clock's
+    alone:
 
     * an earlier leg over a different dataset size or ``accumulate_steps``;
     * fp16, where an overflowing gradient skips the step (and so the
       scheduler step) -- this counts every window as applied, an upper bound;
-    * an earlier leg that ``max_steps`` cut off mid-epoch. That epoch is not
-      counted in ``start_epoch`` (see ``completed_epochs``), the resumed run
-      re-runs it from its first batch, and this count is deliberately what
-      the START of that epoch is worth -- not what the truncated leg spent.
+    * an earlier leg that ``max_steps`` cut off mid-epoch, which makes this
+      an OVER-count. That epoch IS counted in ``start_epoch``: the budget
+      breaks the batch loop and skips the tail window, but ``stopped_at`` is
+      None, so the epoch-level bookkeeping runs and ``epoch_losses`` gets its
+      average (see the ``max_steps`` comment in the batch loop and
+      ``completed_epochs``) -- a partial epoch that trained has a real loss
+      to show. The resumed run therefore does NOT re-run it, while it spent
+      fewer than ``steps per epoch`` optimizer steps. Measured on 24 samples
+      at batch_size 6 (4 batches/epoch), ``epochs=5``, ``max_steps=6``:
+      ``total_steps`` 6 and ``last_epoch`` 2, so a resume at ``start_epoch=2``
+      derives 8 against a real 6. The EPOCH clock is exact across the same
+      truncation, because the per-epoch ``lr_scheduler.step()`` runs for the
+      truncated epoch too -- one epoch, one step, however short the epoch was.
 
-    Any of those is a reason to store the scheduler's state instead of
-    replaying it, which is what the advisory on the decline path says.
+    Derive-and-caveat is still the right call for all three: a truncation is
+    undetectable from what a resumed run can read (nothing in the checkpoint
+    or the ports says how many steps any earlier leg spent -- that is the
+    whole premise above), so the alternatives are this bounded, documented
+    approximation or refusing every per-step resume that does not carry
+    scheduler state. Being a few steps into the wrong part of a 1500-step
+    schedule is the failure #316 is about; being ``per_epoch - k`` steps ahead
+    on one epoch's worth is not. The advisory on the decline path names
+    ``scheduler_state_dict`` as the route that is exact regardless, which is
+    also the answer for a run that chains ``max_steps`` legs.
     """
     try:
         epochs_done = int(start_epoch)
