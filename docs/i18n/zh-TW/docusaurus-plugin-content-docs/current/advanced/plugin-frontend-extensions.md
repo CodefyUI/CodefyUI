@@ -11,18 +11,19 @@ description: 隨外掛包附上一個 JavaScript bundle，讓外掛能新增 UI 
 :::note 可用性
 前端擴充功能自 CodefyUI **1.3.0** 起內建。請執行 `cdui --version` 確認；若顯示更舊的版本，請執行 `cdui update`。
 
-停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 1.5.0 起）。使用前請先檢查版本——參見 [API 版本](#api-版本)。
+停靠面板、工具列按鈕、執行事件與 runs 門面需要 **apiVersion 3**（CodefyUI 2.0.0 起）；`graph.getView` 需要 **apiVersion 4**（撰寫此文時尚未發布——2.2.0 之後的下一個版本）。使用前請先檢查版本——參見 [API 版本](#api-版本)。 {/* stamp-on-release */}
 :::
 
 ## API 版本
 
-`api.apiVersion` 是一個只增不減的數字，而目前每一次改版都是**純粹新增**：舊版能用的東西，沒有被移除過，也沒有被改過形狀。為 apiVersion 2 撰寫的外掛，在 apiVersion 3 的編輯器上不必改任何一行就能繼續運作。
+`api.apiVersion` 是一個只增不減的數字，而目前每一次改版都是**純粹新增**：舊版能用的東西，沒有被移除過，也沒有被改過形狀。為 apiVersion 2 撰寫的外掛，在 apiVersion 4 的編輯器上不必改任何一行就能繼續運作。
 
 | `apiVersion` | CodefyUI | 新增內容 |
 |--------------|----------|----------|
 | 1 | 1.3.0 | `ui.addFloatingWidget`、`ui.toast`、`graph.*`、`http.fetch`、`storage.*` |
 | 2 | 1.3.0 | `nodes.registerRenderer` |
-| 3 | 1.5.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
+| 3 | 2.0.0 | `ui.addPanel` / `removePanel`、`ui.addToolbarButton` / `removeToolbarButton`、`events.onExecution`、`runs.*` |
+| 4 | *下一個版本（尚未發布）* {/* stamp-on-release */} | `graph.getView`——使用者正在看圖表的哪一層 |
 
 在使用比你所要求的版本更新的功能之前先檢查它，而且是降級處理，不是直接拋錯：
 
@@ -180,10 +181,11 @@ const remove = api.ui.addToolbarButton({
 
 | 方法 | 簽名 | 說明 |
 |------|------|------|
-| `getGraph` | `() => GraphSnapshot` | 回傳目前圖表狀態（節點、邊、參數）的深層副本。 |
+| `getGraph` | `() => GraphSnapshot` | 回傳**整張**圖表狀態（節點、邊、參數，以及 `subgraphs` 底下的區塊定義）的深層副本——不論使用者當下打開哪一層，讀到的永遠是最上層。 |
 | `getNodeDefinitions` | `() => NodeDefinition[]` | 回傳完整的節點面板：型別、連接埠 schema、參數 schema。 |
-| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次以**單一撤銷快照**的形式提交。 |
-| `onGraphChanged` | `(callback: (snapshot: GraphSnapshot) => void) => () => void` | 訂閱圖表變更事件。回傳一個取消訂閱函式。 |
+| `applyOperations` | `(ops: GraphOp[]) => ApplyResult` | **同步**套用一批圖表操作（直接回傳結果，非 Promise）。整個批次以**單一撤銷快照**的形式提交，而且會寫進使用者當下打開的那張畫布——參見[使用者正在看哪一層](#使用者正在看哪一層)。 |
+| `onGraphChanged` | `(callback: () => void) => () => void` | 訂閱圖表變更事件，包含使用者走進或走出一個區塊。回呼不帶任何參數；需要內容時請在回呼裡呼叫 `getGraph()`。回傳一個取消訂閱函式。 |
+| `getView` | `() => GraphView` | **apiVersion 4。** 唯讀：使用者正在看圖表的哪一層。 |
 
 #### GraphOp 表
 
@@ -218,6 +220,48 @@ interface ApplyResult {
 ```
 
 **批次語義：** 單次 `applyOperations` 呼叫中的所有操作形成一個撤銷快照——在 AI 編輯後按 Ctrl+Z 會一次撤銷整個批次。操作依序套用；失敗的操作會被跳過並回報於其 `results` 條目（`ok: false` 加上 `error`），其餘操作仍會繼續。同一批次中先前 `add_node` 建立的 `ref` 別名可供後續操作使用，並會回傳於 `refs`。
+
+#### 使用者正在看哪一層
+
+需要 `api.apiVersion >= 4`。
+
+CodefyUI 的圖表是可以嵌套的。一個**區塊**（subgraph）有它自己的畫布，使用者可以走進去——畫布上方那條列就會顯示成 `Main > Encoder`。而且從頭到尾只有一張畫布：走進區塊是把區塊的內容**換**到那張畫布上，這也正是為什麼每個編輯工具在區塊裡和在區塊外的行為完全一樣。
+
+對外掛來說，這件事有一個後果，而且它決定了你的編輯會落在哪裡：
+
+- **`getGraph()` 讀到的永遠是整張圖。** 編輯器會先把打開的層折回去再序列化，跟存檔與執行走的是同一條路，所以你讀到的位元組，和使用者按存檔會得到的檔案一致。
+- **`applyOperations()` 寫進的是使用者當下打開的那張畫布。** 在區塊裡面，`add_node` 是把節點加進*那個區塊*，`clear_graph` 清空的是*那個區塊*而不是整張圖。你從 `getGraph()` 讀到的節點 id 在那裡並不存在，所以指名它們的操作會回傳 `ok: false` 與一段錯誤說明。
+
+也就是說，一個先讀、再推理、然後寫的外掛，可以對整張圖的判斷完全正確，卻把結果寫到使用者根本沒在看的地方。`getView()` 就是讓你在寫之前先分辨這兩種處境：
+
+```ts
+interface GraphViewLevel {
+  subgraphId: string;  // 區塊定義的 id，與 getGraph() 中指涉它的方式相同
+  name: string;        // 區塊的名稱，與畫布上方麵包屑顯示的一致
+}
+
+interface GraphView {
+  depth: number;           // 最上層是 0，在一個區塊裡是 1，在區塊裡的區塊裡是 2
+  path: GraphViewLevel[];  // 已打開的區塊，由外而內；在最上層時為空陣列
+  atTopLevel: boolean;     // depth === 0，也就是你通常真正想做的那個判斷
+}
+```
+
+```js
+const view = api.graph.getView();
+if (!view.atTopLevel) {
+  const inside = view.path[view.path.length - 1].name;
+  api.ui.toast(`請先離開「${inside}」——現在編輯會寫進那個區塊裡面。`, "warning");
+  return;
+}
+api.graph.applyOperations(ops);
+```
+
+拒絕並不是唯一誠實的答案——等使用者走出來，或是把編輯縮小到在區塊裡也說得通的範圍，都同樣可以。重點是這個選擇現在由你來做，而不是丟一次硬幣。
+
+這個 view 是**唯讀**的，而且是即時讀取：每次呼叫都是當下的新答案；而且我們刻意沒有提供任何讓外掛帶著使用者跳到別層的方法。使用者走進或走出區塊時 `onGraphChanged` 會觸發（畢竟畫布真的換了），所以想顯示「我會寫到哪裡」的面板，可以在那個回呼裡重新讀一次 `getView()`。
+
+寫入會落在哪一層，是編輯器一直以來的行為，這次是把它寫下來，而不是把它改掉。未來的改版可能會讓操作自己指名目標層級；那也會是用「新增一個東西」的方式做到，而不是悄悄改寫既有外掛已經在做的那些寫入。
 
 ### `api.nodes` — 自訂 node 渲染
 

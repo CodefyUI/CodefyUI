@@ -56,8 +56,12 @@ afterEach(() => {
 });
 
 describe('meta', () => {
-  it('reports apiVersion 3', () => {
-    expect(freshApi().apiVersion).toBe(3);
+  it('reports at least apiVersion 3', () => {
+    // The documented v3 feature check is `api.apiVersion >= 3`, so that is
+    // what this asserts. It was `toBe(3)` until apiVersion 4 (#200 item 7)
+    // added `graph.getView`; pinning the number here would have made every
+    // later additive release fail in the file that tests the release before it.
+    expect(freshApi().apiVersion).toBeGreaterThanOrEqual(3);
   });
 });
 

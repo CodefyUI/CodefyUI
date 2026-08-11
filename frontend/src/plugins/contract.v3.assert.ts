@@ -1,33 +1,44 @@
 /**
- * CodefyUI plugin frontend API — the CANONICAL, self-contained type contract.
+ * Frozen snapshot of the apiVersion 3 contract, and a compile-time proof that
+ * the host still satisfies it.
  *
- * This is the single source of truth for the public plugin surface. It has NO
- * imports, so it drops verbatim into any plugin's `ui/src/sdk/types.ts`:
+ * apiVersion 4 (#200 item 7) adds `graph.getView` and nothing else, and the
+ * claim that it adds nothing else is worth exactly as much as the guard behind
+ * it -- which is the same argument `contract.v2.assert.ts` makes one version
+ * down. v2 does not cover the v3-only surface (panels, toolbar buttons,
+ * execution events, the runs facade), so without this file the members added in
+ * 2.0.0 had nothing frozen watching them: `contract.assert.ts` compares the host
+ * against the CURRENT contract, and a change that edits both drifts silently.
  *
- *   - `scripts/sync_plugin_sdk.py` copies it into the `cdui plugin new` scaffold
- *     payload (`scripts/templates/plugin/ui/src/sdk/types.ts`); a backend test
- *     (`tests/test_plugin_dx.py`) fails if that copy drifts.
- *   - The clone-and-own template `CodefyUI-Plugin-Official/ui/src/sdk/types.ts`
- *     is refreshed from this file too.
+ * Every plugin scaffolded by `cdui plugin new` since 2.0.0 vendored the contract
+ * below as its own `ui/src/sdk/types.ts` and declares
+ * `activate(api: CodefyUIPluginAPI)` against it. Those plugins keep working
+ * exactly as long as the host's real API object stays ASSIGNABLE to the
+ * interface below, which is what this file asserts.
  *
- * `contract.assert.ts` (next to this file) statically asserts that the host's
- * real implementation types (`./api`, `./ops`, `../types`, `./nodeRenderers`)
- * stay structurally compatible with the declarations here, so `tsc -b` fails the
- * moment the host drifts from the published contract. A future hardening step
- * could have the host import these types directly to make drift impossible
- * rather than merely detected.
+ * The body is `contract.ts` as it stood at apiVersion 3, verbatim. It is a
+ * historical record: DO NOT edit it to make a change compile. If a change makes
+ * this file fail, that change is breaking for every installed v3 plugin and
+ * needs an apiVersion bump and a migration note, not a patched snapshot.
  */
+import type { CodefyUIPluginAPI as HostApi } from './api';
 
-export type ToastType = 'success' | 'error' | 'info' | 'warning';
+/** Compile error unless the argument resolves to exactly `true`. */
+type Expect<T extends true> = T;
+type Extends<A, B> = A extends B ? true : false;
 
-export interface PortDefinition {
+/* ── BEGIN frozen apiVersion 3 contract ─────────────────────────────── */
+
+type ToastType = 'success' | 'error' | 'info' | 'warning';
+
+interface PortDefinition {
   name: string;
   data_type: string;
   description: string;
   optional: boolean;
 }
 
-export interface ParamDefinition {
+interface ParamDefinition {
   name: string;
   param_type:
     | 'int' | 'float' | 'string' | 'bool'
@@ -44,7 +55,7 @@ export interface ParamDefinition {
   advanced?: boolean;
 }
 
-export interface NodeDefinition {
+interface NodeDefinition {
   node_name: string;
   category: string;
   description: string;
@@ -54,7 +65,7 @@ export interface NodeDefinition {
 }
 
 /** A batch operation accepted by `api.graph.applyOperations`. Field names are exact. */
-export type GraphOp =
+type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
       params?: Record<string, unknown>; position?: { x: number; y: number } }
   | { op: 'connect'; source: string; source_handle: string;
@@ -66,28 +77,28 @@ export type GraphOp =
   | { op: 'clear_graph' }
   | { op: 'auto_layout' };
 
-export interface OpResult {
+interface OpResult {
   index: number;
   ok: boolean;
   error?: string;
   node_id?: string;
 }
 
-export interface ApplyResult {
+interface ApplyResult {
   results: OpResult[];
   refs: Record<string, string>;
   node_count: number;
   edge_count: number;
 }
 
-export interface SerializedGraphNode {
+interface SerializedGraphNode {
   id: string;
   type: string;
   position: { x: number; y: number };
   data: { params: Record<string, unknown>; [key: string]: unknown };
 }
 
-export interface SerializedGraphEdge {
+interface SerializedGraphEdge {
   id: string;
   source: string;
   target: string;
@@ -95,7 +106,7 @@ export interface SerializedGraphEdge {
   targetHandle: string;
 }
 
-export interface SerializedGraph {
+interface SerializedGraph {
   nodes: SerializedGraphNode[];
   edges: SerializedGraphEdge[];
   presets?: unknown[];
@@ -105,39 +116,7 @@ export interface SerializedGraph {
   [key: string]: unknown;
 }
 
-/* ── view context (read-only) — requires apiVersion >= 4 ─────────────────── */
-
-/** One opened block on the path from the graph to the canvas the user sees. */
-export interface GraphViewLevel {
-  /** The block definition's id — stable, and what `getGraph()` refers to it by. */
-  subgraphId: string;
-  /** The block's name, exactly as the editor's breadcrumb bar shows it. */
-  name: string;
-}
-
-/**
- * Where the user is looking right now, from `api.graph.getView()`.
- *
- * A CodefyUI graph nests: a block (subgraph) has its own canvas, and the user
- * can step inside one, then inside another. The editor shows this as the
- * "Main > Encoder > Attention" bar above the canvas; `getView()` is the same
- * information, for a plugin.
- *
- * Read-only, and read live — a fresh answer each call. There is no way to
- * navigate the user somewhere through the plugin API, deliberately: moving
- * somebody's editor under them is not something a plugin should be able to do
- * quietly.
- */
-export interface GraphView {
-  /** 0 at the top level, 1 inside a block, 2 inside a block inside a block. */
-  depth: number;
-  /** The opened blocks, outermost first. Empty at the top level. */
-  path: GraphViewLevel[];
-  /** `depth === 0`, named so the check a plugin usually wants reads plainly. */
-  atTopLevel: boolean;
-}
-
-export interface NodeRenderContext {
+interface NodeRenderContext {
   node: {
     id: string;
     type: string;
@@ -151,7 +130,7 @@ export interface NodeRenderContext {
  * adapts a React component to this shape; the host calls mount once, update on
  * param changes, and unmount when the node is removed.
  */
-export interface PluginNodeRenderer {
+interface PluginNodeRenderer {
   mount(container: HTMLElement, ctx: NodeRenderContext): void;
   update?(container: HTMLElement, ctx: NodeRenderContext): void;
   unmount?(container: HTMLElement): void;
@@ -160,9 +139,9 @@ export interface PluginNodeRenderer {
 /* ── panels, toolbar buttons — requires apiVersion >= 3 ─────────────────── */
 
 /** Where a panel lives: a tab in the bottom dock, or a right-hand section. */
-export type PluginPanelDock = 'bottom' | 'right';
+type PluginPanelDock = 'bottom' | 'right';
 
-export interface PluginPanelOptions {
+interface PluginPanelOptions {
   /** Unique within your plugin. The host namespaces it with your plugin id. */
   id: string;
   /** Tab label (bottom dock) or section heading (right dock). */
@@ -180,7 +159,7 @@ export interface PluginPanelOptions {
   onHide?: () => void;
 }
 
-export interface PluginToolbarButtonOptions {
+interface PluginToolbarButtonOptions {
   /** Unique within your plugin. */
   id: string;
   /** Short glyph — the toolbar has room for a glyph, not a sentence. */
@@ -199,7 +178,7 @@ export interface PluginToolbarButtonOptions {
  * `metric` event below, and `runs.metrics()` further down. One type for one
  * concept is the whole reason a dashboard can share a fold between them.
  */
-export interface RunMetricPoint {
+interface RunMetricPoint {
   node_id: string | null;
   name: string;
   step: number;
@@ -217,7 +196,7 @@ export interface RunMetricPoint {
 }
 
 /** Terminal state of a run. */
-export type ExecutionFinishStatus =
+type ExecutionFinishStatus =
   | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 
 /**
@@ -255,7 +234,7 @@ export type ExecutionFinishStatus =
  * Events and their `points` are frozen: they are shared between every
  * subscriber, so one plugin cannot mutate what another receives.
  */
-export type ExecutionEvent =
+type ExecutionEvent =
   | { type: 'run_started'; run_id: string; cursor: number; seq: number }
   | {
       type: 'node_status'; run_id: string; cursor: number; seq: number;
@@ -272,12 +251,12 @@ export type ExecutionEvent =
 
 /* ── runs (read-only) — requires apiVersion >= 3 ────────────────────────── */
 
-export type RunStatus =
+type RunStatus =
   | 'queued' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'interrupted';
 
 /** One row of the run history. Timestamps are ISO-8601 UTC with a `Z`. */
-export interface RunSummary {
+interface RunSummary {
   id: string;
   name: string | null;
   status: RunStatus;
@@ -299,12 +278,12 @@ export interface RunSummary {
   active: boolean;
 }
 
-export interface RunInfo extends RunSummary {
+interface RunInfo extends RunSummary {
   /** Highest event cursor issued so far — where a follower should resume. */
   last_cursor: number;
 }
 
-export interface RunListPage {
+interface RunListPage {
   runs: RunSummary[];
   /** Unpaged count for the active filter, so a table can size itself. */
   total: number;
@@ -312,13 +291,13 @@ export interface RunListPage {
   offset: number;
 }
 
-export interface RunListOptions {
+interface RunListOptions {
   status?: readonly RunStatus[];
   limit?: number;
   offset?: number;
 }
 
-export interface RunMetrics {
+interface RunMetrics {
   run_id: string;
   /** Every series name in the run, so a legend needs no scan of the points. */
   names: string[];
@@ -326,7 +305,7 @@ export interface RunMetrics {
 }
 
 /** The object the editor hands every plugin frontend at activation. */
-export interface CodefyUIPluginAPI {
+interface CodefyUIPluginAPI {
   apiVersion: number;
   pluginId: string;
   ui: {
@@ -360,59 +339,12 @@ export interface CodefyUIPluginAPI {
     addToolbarButton(opts: PluginToolbarButtonOptions): () => void;
     removeToolbarButton(id: string): void;
   };
-  /**
-   * The graph.
-   *
-   * Read and write are not aimed at the same place while the user is inside a
-   * block, and that difference is documented on each member below. `getView()`
-   * — apiVersion 4 — is how you find out where the user is before you write.
-   */
   graph: {
-    /**
-     * The WHOLE graph, always: nodes and edges at the top level, plus the block
-     * definitions under `subgraphs`.
-     *
-     * Never affected by where the user is standing — the editor flattens its
-     * open sub-canvases into the answer first, exactly as Save and Run do. So a
-     * plugin reading the graph sees the same bytes the user would get by saving
-     * the file, whether or not a block is open on screen.
-     */
     getGraph(): SerializedGraph;
     getNodeDefinitions(): NodeDefinition[];
-    /**
-     * Synchronous — returns the result directly, committed as one undo step.
-     *
-     * **A batch applies to the canvas the user has open, which is not always
-     * the top level.** Entering a block replaces the canvas with that block's
-     * insides, so ops applied then land inside the block: `add_node` adds a
-     * node to the block, and `clear_graph` empties the block rather than the
-     * graph. Node ids from `getGraph()` — which always answers with the top
-     * level — will not be found there, and those ops fail with an error in
-     * their `results` entry.
-     *
-     * This is the editor's long-standing behaviour and it is not changing
-     * silently; it is written down here so you can code against it. If your
-     * plugin composes a read with a write, call `getView()` between the two and
-     * handle `atTopLevel === false` — refuse with a toast, wait for the user to
-     * step out, or scope your edit to what makes sense inside a block. Writing
-     * anyway is not corruption, but it lands somewhere the user is not looking.
-     */
+    /** Synchronous — returns the result directly, committed as one undo step. */
     applyOperations(ops: GraphOp[]): ApplyResult;
-    /**
-     * Called after the graph changes — including when the user steps into or
-     * out of a block, since that swaps the canvas. Re-read `getView()` from the
-     * callback if you track which level the user is on.
-     */
     onGraphChanged(cb: () => void): () => void;
-    /**
-     * Where the user is looking — requires apiVersion >= 4.
-     *
-     * Read-only. It exists so a plugin can tell "the user is inside a block"
-     * from "the user is on the graph" before it writes; see `applyOperations`.
-     * On an older editor this member is `undefined`, so feature-check with
-     * `api.apiVersion >= 4` (or `typeof api.graph.getView === 'function'`).
-     */
-    getView(): GraphView;
   };
   /** Custom node renderers — requires apiVersion >= 2. */
   nodes: {
@@ -457,4 +389,21 @@ export interface CodefyUIPluginAPI {
 }
 
 /** The default-export contract: the editor calls this once with the API. */
-export type ActivateFn = (api: CodefyUIPluginAPI) => void;
+type ActivateFn = (api: CodefyUIPluginAPI) => void;
+
+/* ── END frozen apiVersion 3 contract ───────────────────────────────── */
+
+/**
+ * The host's real API object still satisfies the v3 interface -- every member a
+ * v3 plugin can reach is present, with a compatible type.
+ */
+export type _V3SurfaceIntact = Expect<Extends<HostApi, CodefyUIPluginAPI>>;
+
+/**
+ * ...so a v3 plugin's exported `activate` is still callable with what the host
+ * hands it, which is the thing that actually has to keep working. (Parameters
+ * are contravariant, so this direction models the real call.)
+ */
+export type _V3ActivateStillCallable = Expect<
+  Extends<ActivateFn, (api: HostApi) => void>
+>;

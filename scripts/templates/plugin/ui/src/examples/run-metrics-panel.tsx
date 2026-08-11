@@ -157,7 +157,7 @@ function RunMetricsPanel() {
 /** Add the panel as a tab in the editor's bottom dock. */
 export function mountRunMetricsPanel(api: CodefyUIPluginAPI): void {
   if (api.apiVersion < 3) {
-    api.ui.toast('This panel needs CodefyUI 1.5 or newer', 'warning');
+    api.ui.toast('This panel needs CodefyUI 2.0 or newer', 'warning');
     return;
   }
   mountPanel(

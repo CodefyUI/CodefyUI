@@ -148,7 +148,11 @@ describe('storage surface', () => {
 describe('meta', () => {
   it('exposes apiVersion and pluginId', () => {
     const api = freshApi();
-    expect(api.apiVersion).toBe(3);
+    // A floor, not an exact number: this file predates the versions that
+    // followed, and what it is really asserting is that `apiVersion` is
+    // present and has not gone BACKWARDS. The exact value is pinned once, in
+    // the test file for the version that set it.
+    expect(api.apiVersion).toBeGreaterThanOrEqual(3);
     expect(api.pluginId).toBe('test-plugin');
   });
 });

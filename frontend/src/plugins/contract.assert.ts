@@ -12,6 +12,8 @@ import type { GraphOp as HGraphOp, OpResult as HOpResult } from './ops';
 import type {
   ApplyResult as HApplyResult,
   CodefyUIPluginAPI as HApi,
+  GraphView as HGraphView,
+  GraphViewLevel as HGraphViewLevel,
   RunListOptions as HRunListOptions,
 } from './api';
 import type {
@@ -43,6 +45,8 @@ import type {
   ExecutionEvent as CExecutionEvent,
   ExecutionFinishStatus as CFinishStatus,
   GraphOp as CGraphOp,
+  GraphView as CGraphView,
+  GraphViewLevel as CGraphViewLevel,
   NodeDefinition as CNodeDef,
   OpResult as COpResult,
   ParamDefinition as CParamDef,
@@ -92,10 +96,18 @@ export type _RunListOptions = Expect<Mutual<HRunListOptions, CRunListOptions>>;
 export type _RunMetricPoint = Expect<Mutual<HRunMetricPoint, CRunMetricPoint>>;
 export type _RunMetrics = Expect<Mutual<HRunMetrics, CRunMetrics>>;
 
+// ── apiVersion 4 additions (#200 item 7) ──────────────────────────────────
+export type _GraphViewLevel = Expect<Mutual<HGraphViewLevel, CGraphViewLevel>>;
+export type _GraphView = Expect<Mutual<HGraphView, CGraphView>>;
+
 // ── API surface: same top-level sections; apiVersion is intentionally widened
-// from the host's literal `3` to `number` so plugins can defensively check it. ──
+// from the host's literal `4` to `number` so plugins can defensively check it. ──
 export type _ApiKeys = Expect<Mutual<keyof HApi, keyof CApi>>;
 export type _ApiVersion = Expect<Extends<HApi['apiVersion'], CApi['apiVersion']>>;
 export type _UiKeys = Expect<Mutual<keyof HApi['ui'], keyof CApi['ui']>>;
+// `graph` was the one section with no key check of its own, which is how a
+// member could have been published on the host and never reach the contract
+// plugins read (#200 item 7 added the first new member since).
+export type _GraphKeys = Expect<Mutual<keyof HApi['graph'], keyof CApi['graph']>>;
 export type _EventsKeys = Expect<Mutual<keyof HApi['events'], keyof CApi['events']>>;
 export type _RunsKeys = Expect<Mutual<keyof HApi['runs'], keyof CApi['runs']>>;

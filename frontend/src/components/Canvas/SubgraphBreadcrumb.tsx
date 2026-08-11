@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { useTabStore } from '../../store/tabStore';
+import { subgraphViewPath } from '../../utils/subgraph';
 import styles from './SubgraphBreadcrumb.module.css';
 
 /**
@@ -25,10 +26,10 @@ export function SubgraphBreadcrumb() {
   const stack = tab?.subgraphStack ?? [];
   if (!tab || stack.length === 0) return null;
 
-  const names = stack.map((frame) => {
-    const definition = tab.subgraphs.find((d) => d.id === frame.subgraphId);
-    return definition?.name || frame.subgraphId;
-  });
+  // Shared with `api.graph.getView` (core#200 item 7): a plugin that warns the
+  // user about the block they are standing in must name the same block this bar
+  // names, so both read one derivation instead of two that can drift.
+  const names = subgraphViewPath(stack, tab.subgraphs).map((level) => level.name);
   const currentId = stack[stack.length - 1].subgraphId;
   // Renaming is a MUTATION, so it follows the same readOnly rule the store
   // applies to `renameSubgraph`: offering the input on a graph whose rename
