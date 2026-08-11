@@ -140,6 +140,64 @@ def is_enabled(entry: dict[str, Any]) -> bool:
     return bool(entry.get("enabled", True))
 
 
+def removed_ids(lockfile: dict[str, Any]) -> set[str]:
+    """Pack ids the user uninstalled on purpose — the #175 "tombstones".
+
+    ``cdui plugin uninstall`` used to only pop the entry, which made "this
+    install has never heard of the pack" and "the user threw it away"
+    the same state — and those are the only two states a catch-up command has
+    to tell apart. So the removal is recorded in a top-level ``removed`` map
+    rather than as a retained ``plugins`` entry: everything that walks
+    ``plugins`` (discovery, the plugin list API, presets, examples) keeps its
+    exact meaning, and an uninstalled pack cannot come back to life through a
+    field one of those readers forgets to check.
+
+    A missing or malformed field reads as "no tombstones", so a lockfile
+    written before #175 loads unchanged — the same legacy-tolerant default as
+    :func:`is_enabled`.
+    """
+    removed = lockfile.get("removed")
+    if not isinstance(removed, dict):
+        return set()
+    return set(removed)
+
+
+def mark_removed(
+    lockfile: dict[str, Any],
+    plugin_id: str,
+    *,
+    source_kind: str | None = None,
+) -> None:
+    """Record ``plugin_id`` as deliberately removed. The caller saves."""
+    removed = lockfile.get("removed")
+    if not isinstance(removed, dict):
+        removed = {}
+        lockfile["removed"] = removed
+    entry: dict[str, Any] = {"removed_at": now_iso()}
+    if source_kind:
+        entry["source_kind"] = source_kind
+    removed[plugin_id] = entry
+
+
+def clear_removed(lockfile: dict[str, Any], plugin_id: str) -> bool:
+    """Forget a tombstone; returns whether there was one. The caller saves.
+
+    Installing a pack by name is the undo for having uninstalled it, so the
+    record of the removal has to go with it — otherwise ``sync`` would keep
+    skipping a pack that is now installed, and a later uninstall/install cycle
+    would read as "still removed".
+    """
+    removed = lockfile.get("removed")
+    if not isinstance(removed, dict) or plugin_id not in removed:
+        return False
+    del removed[plugin_id]
+    if not removed:
+        # Don't leave an empty map behind: a lockfile that records no removals
+        # should look exactly like one written before this field existed.
+        lockfile.pop("removed", None)
+    return True
+
+
 def frontend_entry_rel(manifest: dict[str, Any]) -> str | None:
     """Validated ``[frontend].entry`` path from a plugin manifest, or ``None``.
 

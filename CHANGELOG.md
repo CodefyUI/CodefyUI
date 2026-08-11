@@ -22,6 +22,37 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **`cdui plugin sync` — one command to catch up on built-in packs, and an
+  uninstall that is finally remembered** ([#175]). A built-in pack is activated
+  by a lockfile entry, and an update never writes one. So a release that *adds*
+  a pack — `stats` did — puts its files on every machine and loads them on
+  none: the nodes are installable and invisible at the same time, a class
+  follows the update instructions, the new chapter's palette is empty, and the
+  only cure was typing an id list nobody knew existed. `cdui plugin sync`
+  installs every built-in pack this install has made no decision about, with
+  `--dry-run` to just list them, `--yes` for scripts and classroom images, and
+  `--prune` to drop lockfile entries for packs that no longer ship (which
+  discovery had been skipping in silence). Failures are per pack: one pack whose
+  `python_deps` will not download on a school network reports and the rest still
+  install, because a batch that aborts on the first failure is a batch nobody
+  can use offline.
+
+  Two shapes were rejected on the way here, and the reason is the same one:
+  syncing at startup, and prompting during `cdui update`, both activate code the
+  user never asked for because a release shipped it. That is a consent decision,
+  so it stays a verb they type. Which exposed the real bug — `uninstall` popped
+  the lockfile entry outright, making "this install has never heard of the pack"
+  and "the user threw it away" the same state, and those are precisely the two
+  states a catch-up command has to tell apart. Uninstalling a built-in pack now
+  leaves a **tombstone** (a `removed` map beside `plugins`, so every existing
+  reader of `plugins` keeps its exact meaning), `sync` names it as skipped
+  rather than re-installing it, the `cdui start` and `cdui plugin list` notices
+  stop nagging about it, and installing the pack by name clears the record. A
+  lockfile written before this field loads unchanged; only built-in packs are
+  tombstoned, since they are the only ones sync could ever put back uninvited.
+
 ### Fixed
 
 - **An unhandled `/api` path answered `405 Method Not Allowed` on every real
@@ -954,6 +985,7 @@ Release candidates before 1.0.0 are on the
 [#291]: https://github.com/CodefyUI/CodefyUI/issues/291
 [#288]: https://github.com/CodefyUI/CodefyUI/issues/288
 [#292]: https://github.com/CodefyUI/CodefyUI/issues/292
+[#175]: https://github.com/CodefyUI/CodefyUI/issues/175
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0

@@ -28,10 +28,11 @@ description: The cdui launcher commands — install, start, status, dev, build, 
 | Command | Description |
 |---------|-------------|
 | `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `foundations`, `owner/repo[@ref]`, or a full GitHub URL). |
-| `cdui plugin list` | List installed plugin packs. |
+| `cdui plugin sync` | Install every **built-in** pack this install has not decided about yet — the one command to run after an update that shipped a new pack. Asks for confirmation once (`--yes` skips it, and is required when there is no terminal); `--dry-run` only lists; `--prune` also drops lockfile entries for built-in packs that no longer ship. Packs you uninstalled are left alone. |
+| `cdui plugin list` | List installed plugin packs, plus any built-in pack still waiting for a decision. |
 | `cdui plugin info <id>` | Show a pack's manifest, lessons covered, and node names. |
 | `cdui plugin search <query>` | Query the plugin catalog. |
-| `cdui plugin uninstall <id>` | Remove an installed plugin pack. |
+| `cdui plugin uninstall <id>` | Remove an installed plugin pack. For a built-in pack the removal is remembered, so `cdui plugin sync` will not bring it back; `cdui plugin install <id>` undoes that. |
 
 See **[Plugins](/advanced/plugins)** for the full plugin workflow.
 

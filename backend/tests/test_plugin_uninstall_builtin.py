@@ -7,6 +7,12 @@ file copy. Uninstall should:
     1. Remove the lockfile entry (deactivation).
     2. **Leave the repo directory intact** — it's checked-in code, not user
        data, and a follow-up ``install`` must be able to re-activate it.
+    3. **Record that the removal happened** (#175) — a tombstone in the
+       lockfile's ``removed`` map. Popping the entry alone made "this install
+       never heard of the pack" and "the user threw it away" the same state,
+       and those are precisely the two states ``cdui plugin sync`` has to tell
+       apart. The tombstone lives beside ``plugins`` rather than inside it so
+       every existing reader of ``plugins`` keeps its exact meaning.
 
 A regression here would either (a) refuse to uninstall builtins as "you
 can't remove what you didn't download", or (b) accidentally try to
@@ -102,3 +108,87 @@ def test_uninstall_does_not_touch_other_builtins(isolated_lockfile):
     # And every repo dir still in place.
     for pid in ("foundations", "deep", "rl"):
         assert (plugin_loader.plugins_builtin_root() / pid).is_dir()
+
+
+# ── the uninstall tombstone (#175, option E) ─────────────────────────────────
+
+def test_uninstall_records_the_removal(isolated_lockfile, capsys):
+    assert plugin_cli.main(["install", "rl", "--no-confirm"]) == 0
+    assert plugin_cli.main(["uninstall", "rl"]) == 0
+
+    data = _read_lockfile(isolated_lockfile)
+    assert "rl" not in data["plugins"]          # gone from the active set
+    assert plugin_loader.removed_ids(data) == {"rl"}  # but the decision is kept
+    entry = data["removed"]["rl"]
+    assert entry["source_kind"] == "builtin"
+    assert entry["removed_at"]                 # when, so the record is auditable
+
+    # And the user is told what the tombstone means, since nothing else shows it.
+    out = capsys.readouterr().out
+    assert "cdui plugin sync" in out or "cdui plugin sync" in out.lower()
+    assert "cdui plugin install rl" in out
+
+
+def test_a_reinstall_clears_the_tombstone(isolated_lockfile):
+    assert plugin_cli.main(["install", "rl", "--no-confirm"]) == 0
+    assert plugin_cli.main(["uninstall", "rl"]) == 0
+    assert plugin_cli.main(["install", "rl", "--no-confirm"]) == 0
+
+    data = _read_lockfile(isolated_lockfile)
+    assert "rl" in data["plugins"]
+    # Cleared entirely, not left as an empty map: a lockfile that records no
+    # removals should look exactly like one written before this field existed.
+    assert plugin_loader.removed_ids(data) == set()
+    assert "removed" not in data
+
+
+def test_a_tombstone_records_only_the_pack_that_was_removed(isolated_lockfile):
+    for pid in ("foundations", "deep", "rl"):
+        assert plugin_cli.main(["install", pid, "--no-confirm"]) == 0
+    assert plugin_cli.main(["uninstall", "deep"]) == 0
+
+    data = _read_lockfile(isolated_lockfile)
+    assert plugin_loader.removed_ids(data) == {"deep"}
+    assert set(data["plugins"]) == {"foundations", "rl"}
+
+
+def test_unlinking_a_local_plugin_leaves_no_tombstone(isolated_lockfile, tmp_path):
+    """Only built-in packs need one — nothing re-adds a local link uninvited."""
+    work = tmp_path / "work" / "my-local-pack"
+    (work / "nodes").mkdir(parents=True)
+    (work / "nodes" / "__init__.py").write_text("", encoding="utf-8")
+    (work / "cdui.plugin.toml").write_text(
+        '[plugin]\nid = "my-local-pack"\nname = "Local"\n'
+        'version = "0.1.0"\nschema_version = 1\n',
+        encoding="utf-8",
+    )
+    assert plugin_cli.main(["link", str(work)]) == 0
+    assert plugin_cli.main(["uninstall", "my-local-pack"]) == 0
+
+    data = _read_lockfile(isolated_lockfile)
+    assert "my-local-pack" not in data["plugins"]
+    assert plugin_loader.removed_ids(data) == set()
+
+
+def test_a_pre_175_lockfile_loads_and_gains_a_tombstone_in_place(isolated_lockfile):
+    """Backward compat: a lockfile with no ``removed`` key at all is untouched
+    until something is actually removed, and every other field survives."""
+    lockfile_dir = isolated_lockfile / "plugins"
+    lockfile_dir.mkdir(parents=True, exist_ok=True)
+    legacy = {
+        "schema": 1,
+        "plugins": {
+            "rl": {"source_kind": "builtin", "source": "rl"},  # no `enabled` either
+        },
+    }
+    (lockfile_dir / "installed.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+    loaded = plugin_loader.load_lockfile()
+    assert loaded == legacy                      # read back verbatim
+    assert plugin_loader.removed_ids(loaded) == set()
+    assert plugin_loader.is_enabled(loaded["plugins"]["rl"]) is True
+
+    assert plugin_cli.main(["uninstall", "rl"]) == 0
+    data = _read_lockfile(isolated_lockfile)
+    assert data["schema"] == 1
+    assert plugin_loader.removed_ids(data) == {"rl"}

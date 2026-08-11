@@ -28,10 +28,11 @@ description: cdui 啟動器指令 —— install、start、status、dev、build�
 | 指令 | 說明 |
 |------|------|
 | `cdui plugin install <name\|url>` | 安裝一個外掛包（型錄名稱如 `foundations`、`owner/repo[@ref]`，或完整的 GitHub URL）。 |
-| `cdui plugin list` | 列出已安裝的外掛包。 |
+| `cdui plugin sync` | 安裝所有你還沒做過決定的**內建**外掛包——升級後多了新外掛包時，只要跑這一個指令。會先確認一次（`--yes` 可略過確認；沒有終端時必須加）；`--dry-run` 只列出清單；`--prune` 會順手清掉已不再隨版本發行的內建外掛 lockfile 項目。你自己移除過的外掛包不會被裝回來。 |
+| `cdui plugin list` | 列出已安裝的外掛包，以及還在等你決定的內建外掛包。 |
 | `cdui plugin info <id>` | 顯示某個外掛包的 manifest、涵蓋的課程與節點名稱。 |
 | `cdui plugin search <query>` | 查詢外掛型錄。 |
-| `cdui plugin uninstall <id>` | 移除一個已安裝的外掛包。 |
+| `cdui plugin uninstall <id>` | 移除一個已安裝的外掛包。若是內建外掛包，這個移除會被記住，`cdui plugin sync` 不會再把它裝回來；要拿回它就執行 `cdui plugin install <id>`。 |
 
 完整的外掛工作流程請見 **[外掛](/advanced/plugins)**。
 
