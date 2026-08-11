@@ -76,6 +76,19 @@ describe('HealthSection', () => {
     expect(hint).toHaveTextContent(/for the weight cache that means training time/);
   });
 
+  it('treats a configured budget of 0 as unbounded, not as an exhausted ceiling', async () => {
+    // Every store reads a falsy max as "no cap" (run_output_store.py:93,
+    // node_state_store.py:149, cache.py:140/156), and the MAX_MB env vars are
+    // unvalidated ints, so 0 is reachable. "1.5 GB of 0 B" would say
+    // catastrophically over budget when it means the opposite.
+    mockedFetchHealth.mockResolvedValue(
+      healthBody({ caches: { run_output_store: { runs: 3, bytes: 1536, max_bytes: 0 } } }),
+    );
+    render(<HealthSection />);
+    expect(await screen.findByText('1.5 KB')).toBeInTheDocument();
+    expect(screen.queryByText(/of 0 B/)).not.toBeInTheDocument();
+  });
+
   it('shows a store with no reported budget as a bare size', async () => {
     mockedFetchHealth.mockResolvedValue(
       healthBody({ caches: { run_output_store: { runs: 1, bytes: 4096 } } }),

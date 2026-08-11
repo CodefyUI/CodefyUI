@@ -39,6 +39,23 @@ function pick(usage: CacheUsage, ...keys: string[]): number | undefined {
 }
 
 /**
+ * The store's configured ceiling, or undefined when it has none.
+ *
+ * Zero is NOT an exhausted budget: every store reads a falsy max as "no cap"
+ * -- `if not self._max_bytes: return` (run_output_store.py:93), `while
+ * (self._max_bytes and ...)` (node_state_store.py:149, cache.py:140/156) -- and
+ * `CODEFYUI_RUN_OUTPUT_STORE_MAX_MB` is a documented env var declared as a
+ * plain `int` with no lower bound, so a user can genuinely configure it. Read
+ * as a budget it would print "1.5 GB of 0 B", which says catastrophically over
+ * the limit when it means the exact opposite. Unbounded falls through to the
+ * bare-size rendering instead.
+ */
+function pickBudget(usage: CacheUsage): number | undefined {
+  const value = pick(usage, 'max_bytes', 'max_bytes_each');
+  return value !== undefined && value > 0 ? value : undefined;
+}
+
+/**
  * The "This Server" section of the settings popover (#193 item 2).
  *
  * `/api/health` has reported the version, the registry counts and per-store
@@ -145,7 +162,7 @@ export function HealthSection() {
                 {caches.map(([name, usage]) => {
                   const labelKey = CACHE_LABEL_KEYS[name];
                   const used = formatBytes(pick(usage, 'bytes') ?? 0);
-                  const budget = pick(usage, 'max_bytes', 'max_bytes_each');
+                  const budget = pickBudget(usage);
                   return (
                     <li key={name} className={styles.cacheRow}>
                       <span className={styles.cacheName}>{labelKey ? t(labelKey) : name}</span>
