@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { useTabStore } from './tabStore';
+import { useTabStore, tabHasContent, tabNodeCount } from './tabStore';
 import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
 import type { NodeDefinition, PresetDefinition } from '../types';
@@ -2924,5 +2924,100 @@ describe('seed and deterministic', () => {
     expect(store().getActiveTab().deterministic).toBe(true);
     store().toggleDeterministic();
     expect(store().getActiveTab().deterministic).toBe(false);
+  });
+});
+
+// ── tabHasContent / tabNodeCount (#331) ─────────────────────────────────────
+
+describe('tabHasContent / tabNodeCount (#331)', () => {
+  beforeEach(() => {
+    resetToSingleTab();
+  });
+
+  it('a brand-new tab has no content (its close x may skip the confirm)', () => {
+    const tab = activeTab();
+    expect(tabNodeCount(tab)).toBe(0);
+    expect(tabHasContent(tab)).toBe(false);
+  });
+
+  it('one dropped node is content', () => {
+    store().addNode(makeDef(), { x: 0, y: 0 });
+    const tab = activeTab();
+    expect(tabNodeCount(tab)).toBe(1);
+    expect(tabHasContent(tab)).toBe(true);
+  });
+
+  it('counts the nodes stashed in the subgraph editing stack, not just the visible canvas', () => {
+    // Standing inside an empty block leaves `tab.nodes` empty while the whole
+    // graph waits in a stack frame -- the case a naive nodes.length check
+    // would wave through as "empty tab, close it".
+    store().addNode(makeDef(), { x: 0, y: 0 });
+    store().addNode(makeDef({ node_name: 'Model' }), { x: 100, y: 0 });
+    const outer = activeTab().nodes;
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              nodes: [],
+              edges: [],
+              subgraphStack: [
+                {
+                  subgraphId: 'sg1',
+                  nodes: outer,
+                  edges: [],
+                  undoStack: [],
+                  redoStack: [],
+                  selectedNodeId: null,
+                  subgraphs: [],
+                  segmentGroups: [],
+                  activeSegment: null,
+                },
+              ],
+            }
+          : t,
+      ),
+    });
+    const tab = useTabStore.getState().tabs[0];
+    expect(tab.nodes).toHaveLength(0);
+    expect(tabNodeCount(tab)).toBe(2);
+    expect(tabHasContent(tab)).toBe(true);
+  });
+
+  it('a leftover block definition with no nodes still counts as content', () => {
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              nodes: [],
+              edges: [],
+              subgraphs: [
+                {
+                  id: 'sg1',
+                  name: 'Block',
+                  description: '',
+                  nodes: [],
+                  edges: [],
+                  interface: { inputs: [], outputs: [], triggerTargets: [] },
+                },
+              ],
+            }
+          : t,
+      ),
+    });
+    const tab = useTabStore.getState().tabs[0];
+    expect(tabNodeCount(tab)).toBe(0);
+    expect(tabHasContent(tab)).toBe(true);
+  });
+
+  it('tolerates a tab record built before these fields existed', () => {
+    // Called from the tab bar on whatever the store holds; a record missing
+    // `subgraphStack` must read as empty rather than throw on the close path.
+    expect(
+      tabHasContent({ nodes: [], edges: [] } as unknown as Parameters<typeof tabHasContent>[0]),
+    ).toBe(false);
   });
 });
