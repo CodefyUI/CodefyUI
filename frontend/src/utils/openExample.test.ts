@@ -72,6 +72,82 @@ describe('openExample', () => {
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['keep']);
     expect(useToastStore.getState().toasts[0].message).toBe('Failed to load example');
   });
+
+  // -- #200 item 4: the two fields this reader used to drop --
+
+  it('carries the example description onto the tab', async () => {
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')], edges: [], description: 'What this template teaches',
+    });
+
+    await openExample('x');
+
+    expect(activeTab().description).toBe('What this template teaches');
+  });
+
+  it('clears the previous graph description for an example that ships none', async () => {
+    // `description` is persisted through save, so the leftover was not just
+    // cosmetic: it got written to disk as the new graph's description.
+    store().setDescription('the graph that was here before');
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+
+    await openExample('x');
+
+    expect(activeTab().description).toBe('');
+  });
+
+  it('opens an example written by a newer CodefyUI read-only, and says so', async () => {
+    // The gate must fail CLOSED. This path used to skip it entirely, so a
+    // plugin-shipped template from a newer build opened fully editable and
+    // the next save silently down-converted it.
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')], edges: [], format_version: 999,
+    });
+
+    await expect(openExample('x')).resolves.toBe(true);
+
+    expect(activeTab().readOnly).toBe(true);
+    expect(
+      useToastStore.getState().toasts.some(
+        (t) => t.type === 'warning' && t.message.includes('v999'),
+      ),
+    ).toBe(true);
+  });
+
+  it('opening a current-format example into a read-only tab makes it editable again', async () => {
+    store().setTabReadOnly(true);
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [], format_version: 1 });
+
+    await openExample('x');
+
+    expect(activeTab().readOnly).toBe(false);
+    expect(useToastStore.getState().toasts.some((t) => t.type === 'warning')).toBe(false);
+  });
+
+  it('an example with no format_version opens editable', async () => {
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+    await openExample('x');
+    expect(activeTab().readOnly).toBe(false);
+  });
+
+  it('installs the whole example in ONE store update', async () => {
+    // #200 item 8: the ordering contract between setNodes and setSubgraphs
+    // is enforced by construction now -- there is no intermediate state in
+    // which the tab holds the new nodes and the old definitions.
+    mockedRest.loadExample.mockResolvedValue(exampleWithBlock());
+    let emissions = 0;
+    const unsubscribe = useTabStore.subscribe(() => {
+      emissions += 1;
+    });
+
+    await openExample('x');
+    unsubscribe();
+
+    expect(emissions).toBe(1);
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['plain', 'inst']);
+    expect(activeTab().subgraphs.map((d) => d.id)).toEqual(['blk']);
+    expect(activeTab().name).toBe('Blocky');
+  });
 });
 
 describe('openExampleInNewTab', () => {

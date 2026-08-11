@@ -11,7 +11,6 @@ import { subgraphIdOf } from '../../utils/subgraph';
 import { graphToSvg, svgToPngBlob } from '../../utils/exportDiagram';
 import { confirm, prompt } from '../../utils/dialog';
 import { saveActiveGraph } from '../../utils/saveActiveGraph';
-import { isFormatTooNew } from '../../utils/formatVersion';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { useToastStore } from '../../store/toastStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -208,7 +207,9 @@ function LoadSubMenuPanel({
 
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
-  const { clear, getSerializedGraph, setNodes, setEdges, setDescription, setCurrentGraphFile, setSegmentGroups, setSubgraphs } = useTabStore();
+  // `loadGraphDocument` replaced the five setters both graph readers below
+  // used to call in sequence (#200 items 4 and 8).
+  const { clear, getSerializedGraph, setCurrentGraphFile, loadGraphDocument } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   const { reload, fetchDefinitions } = useNodeDefStore();
@@ -303,21 +304,27 @@ export function Toolbar() {
         // Missing/incomplete layout (project mode): dagre-lay-out ALL nodes
         // directly -- NOT via applyLayout, which pushes an undo snapshot and a
         // toast -- then deterministically place unbound notes. The next save
-        // persists the computed layout (spec 6.3).
-        if (graphData.layout_missing) {
-          const laid = stackUnboundNotes(
-            autoLayout(resolvedNodes, resolvedEdges, 'all'),
-          ) as FlowNode<NodeData>[];
-          setNodes(laid);
-        } else {
-          setNodes(resolvedNodes);
-        }
-        setEdges(resolvedEdges);
-        setSubgraphs(loadedSubgraphs);
-        setDescription(typeof graphData.description === 'string' ? graphData.description : '');
-        setSegmentGroups(Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : []);
-        const tooNew = isFormatTooNew(graphData.format_version);
-        useTabStore.getState().setTabReadOnly(tooNew);
+        // persists the computed layout (spec 6.3). Laid out BEFORE the
+        // install, so the graph reaches the canvas already positioned.
+        const laidOutNodes = graphData.layout_missing
+          ? (stackUnboundNotes(
+              autoLayout(resolvedNodes, resolvedEdges, 'all'),
+            ) as FlowNode<NodeData>[])
+          : resolvedNodes;
+        // One call, not six (#200 items 4 and 8): the whole document lands in
+        // a single store update, so no subscriber sees the new nodes beside
+        // the old definitions, and the read-only gate is now the action's own
+        // return value rather than a line each reader has to remember --
+        // which is what the third reader of a document, `openExample`, did
+        // not.
+        const tooNew = loadGraphDocument({
+          nodes: laidOutNodes,
+          edges: resolvedEdges,
+          subgraphs: loadedSubgraphs,
+          segmentGroups: Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : [],
+          description: typeof graphData.description === 'string' ? graphData.description : '',
+          formatVersion: graphData.format_version,
+        });
         if (tooNew) {
           addToast(t('project.readOnly.loadNotice', { version: graphData.format_version }), 'warning');
         }
@@ -333,7 +340,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [loadGraphDocument, setCurrentGraphFile, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -360,17 +367,20 @@ export function Toolbar() {
           const importedSubgraphs = Array.isArray(data.subgraphs) ? data.subgraphs : [];
           const resolvedNodes = resolveSerializedNodes(rawNodes, store.definitions, mergedPresets, importedSubgraphs);
           const resolvedEdges = resolveSerializedEdges(edges, resolvedNodes);
-          setNodes(resolvedNodes);
-          setEdges(resolvedEdges);
-          setSubgraphs(importedSubgraphs);
-          setDescription(typeof data.description === 'string' ? data.description : '');
-          setSegmentGroups(Array.isArray(data.segmentGroups) ? data.segmentGroups : []);
-          // Same format-version gate as handleLoadGraph (ID8 fast-follow):
-          // importing a newer-format file must open it read-only too, and
-          // importing an ordinary file into a previously read-only tab must
-          // clear the stale flag -- called unconditionally either way.
-          const tooNew = isFormatTooNew(data.format_version);
-          useTabStore.getState().setTabReadOnly(tooNew);
+          // Same one-call install as handleLoadGraph (#200 items 4 and 8),
+          // which is the point: the format-version gate (ID8 fast-follow)
+          // now runs inside it, so importing a newer-format file opens it
+          // read-only and importing an ordinary file into a previously
+          // read-only tab clears the stale flag -- neither is a line a
+          // reader of a document can forget to write any more.
+          const tooNew = loadGraphDocument({
+            nodes: resolvedNodes,
+            edges: resolvedEdges,
+            subgraphs: importedSubgraphs,
+            segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
+            description: typeof data.description === 'string' ? data.description : '',
+            formatVersion: data.format_version,
+          });
           if (tooNew) {
             addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
           }
@@ -387,7 +397,7 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [setNodes, setEdges, setSubgraphs, setDescription, setSegmentGroups, setCurrentGraphFile, t, addToast],
+    [loadGraphDocument, setCurrentGraphFile, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {
