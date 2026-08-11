@@ -577,7 +577,7 @@ const zhTW: Record<TranslationKey, string> = {
   'project.save.crossProjectRefused': '此圖屬於另一個專案（{origin}），無法儲存到目前開啟的專案。',
 
   // format_version 讀取政策（ID8）：比目前版本更新的圖只會以唯讀開啟，載入時絕不阻擋。
-  // 第三句是唯獨無法用「唯讀」回應的情況（#200 項目 10）：把較新格式的範本「合併」
+  // 第三句是唯一無法用「唯讀」回應的情況（#200 項目 10）：把較新格式的範本「合併」
   // 進可編輯的圖時，沒有一份文件可以標成唯讀，所以那條路徑直接拒絕合併，並說明兩種做法。
   'project.readOnly.loadNotice': '以唯讀開啟：此圖使用比目前版本更新的格式（v{version}）。',
   'project.readOnly.saveBlocked': '儲存已停用：此圖由較新版本的 CodefyUI 寫入，請更新 CodefyUI 後再編輯。',
