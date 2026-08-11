@@ -164,7 +164,130 @@ def _prepare_optimizer(optimizer: Any, model: Any) -> tuple[Any, str]:
     return optimizer_cls(model.parameters(), **optimizer_kwargs), "rebuilt"
 
 
-def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int) -> bool:
+def _is_plateau(lr_scheduler: Any) -> bool:
+    """Is this the one metric-driven schedule torch ships?
+
+    ``ReduceLROnPlateau`` is special in three separate places -- it cannot be
+    replayed on resume (no loss history), it is stepped WITH a metric, and it
+    stays per-epoch even under ``scheduler_step=optimizer_step`` (#297). One
+    predicate for all three, so a future torch rename cannot fix two of them
+    and leave the third silently believing a plateau schedule is an ordinary
+    one.
+    """
+    import torch.optim.lr_scheduler as sched_module
+
+    return isinstance(lr_scheduler, sched_module.ReduceLROnPlateau)
+
+
+def _steps_per_epoch(batches_per_epoch: Any, accumulate_steps: Any) -> int | None:
+    """Optimizer steps one epoch over this loader takes, or ``None``.
+
+    The one conversion between the two clocks this node runs on, shared by
+    the schedule-length budget (#308, :func:`_optimizer_step_budget`) and the
+    resume replay (#316, :func:`_completed_optimizer_steps`). Shared because
+    two copies that disagreed would be invisible: the advisory would measure
+    a schedule against one number while the replay positioned it with
+    another.
+
+    CEILING division rather than floor: the loop applies an epoch's short
+    tail accumulation window as a step of its own (see the "tail of a partial
+    accumulation window" comment) rather than carrying it into the next
+    epoch, so 5 batches at ``accumulate_steps=2`` is 3 steps, not 2.
+
+    ``None`` means "no countable batches": ``len(dataloader)`` does not exist
+    for an ``IterableDataset`` or a hand-rolled generator, is not a number
+    for something odd wired into the port, and an empty loader takes no steps
+    at all.
+    """
+    if batches_per_epoch is None:
+        return None
+    try:
+        batches = int(batches_per_epoch)
+        accumulate = max(1, int(accumulate_steps))
+    except (TypeError, ValueError):
+        return None
+    if batches < 1:
+        return None
+    return -(-batches // accumulate)
+
+
+def _completed_optimizer_steps(
+    *,
+    start_epoch: Any,
+    batches_per_epoch: Any,
+    accumulate_steps: Any,
+) -> int | None:
+    """Optimizer steps a run has behind it at the START of ``start_epoch``.
+
+    #316: the number a per-step schedule has to be replayed by on resume,
+    and it is DERIVED rather than read back, because nothing stores it. A
+    checkpoint carries ``epoch`` and no step count at all (see
+    ``core.checkpoints``' payload table), and the run's own step total lives
+    in ``metrics["total_steps"]`` -- an output with no port back into a
+    resumed ``TrainingLoop``. So there are exactly two honest options: derive
+    the count from what IS known, or decline. This function is the first;
+    :func:`_prepare_scheduler` does the second when this returns ``None``.
+
+    Deriving it is exact for the thing the replay has to reproduce. The
+    fast-forward's job is to put the scheduler where a straight run stands at
+    the START of epoch ``start_epoch`` -- that is what the epoch clock's
+    ``start_epoch`` steps mean -- and under ``scheduler_step=optimizer_step``
+    the loop steps the scheduler once per applied optimizer step, so that
+    position is ``start_epoch x steps per epoch`` by construction of the loop
+    itself.
+
+    Where it can drift from the interrupted run's ACTUAL step count. The
+    first two are shared with the epoch clock's own assumption that one
+    completed epoch is one scheduler step; the third is the step clock's
+    alone:
+
+    * an earlier leg over a different dataset size or ``accumulate_steps``;
+    * fp16, where an overflowing gradient skips the step (and so the
+      scheduler step) -- this counts every window as applied, an upper bound;
+    * an earlier leg that ``max_steps`` cut off mid-epoch, which makes this
+      an OVER-count. That epoch IS counted in ``start_epoch``: the budget
+      breaks the batch loop and skips the tail window, but ``stopped_at`` is
+      None, so the epoch-level bookkeeping runs and ``epoch_losses`` gets its
+      average (see the ``max_steps`` comment in the batch loop and
+      ``completed_epochs``) -- a partial epoch that trained has a real loss
+      to show. The resumed run therefore does NOT re-run it, while it spent
+      fewer than ``steps per epoch`` optimizer steps. Measured on 24 samples
+      at batch_size 6 (4 batches/epoch), ``epochs=5``, ``max_steps=6``:
+      ``total_steps`` 6 and ``last_epoch`` 2, so a resume at ``start_epoch=2``
+      derives 8 against a real 6. The EPOCH clock is exact across the same
+      truncation, because the per-epoch ``lr_scheduler.step()`` runs for the
+      truncated epoch too -- one epoch, one step, however short the epoch was.
+
+    Derive-and-caveat is still the right call for all three: a truncation is
+    undetectable from what a resumed run can read (nothing in the checkpoint
+    or the ports says how many steps any earlier leg spent -- that is the
+    whole premise above), so the alternatives are this bounded, documented
+    approximation or refusing every per-step resume that does not carry
+    scheduler state. Being a few steps into the wrong part of a 1500-step
+    schedule is the failure #316 is about; being ``per_epoch - k`` steps ahead
+    on one epoch's worth is not. The advisory on the decline path names
+    ``scheduler_state_dict`` as the route that is exact regardless, which is
+    also the answer for a run that chains ``max_steps`` legs.
+    """
+    try:
+        epochs_done = int(start_epoch)
+    except (TypeError, ValueError):
+        return None
+    if epochs_done < 0:
+        return None
+    per_epoch = _steps_per_epoch(batches_per_epoch, accumulate_steps)
+    if per_epoch is None:
+        return None
+    return epochs_done * per_epoch
+
+
+def _fast_forward_scheduler(
+    lr_scheduler: Any,
+    optimizer: Any,
+    start_epoch: int,
+    *,
+    replay_steps: int | None = None,
+) -> bool:
     """Advance a never-stepped scheduler to where epoch ``start_epoch`` begins.
 
     #118 asked for ``last_epoch=start_epoch - 1`` at construction time. The
@@ -187,6 +310,18 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
     The replay performs exactly the same float operations in the same order as
     the straight run, so the resumed LR trajectory is bit-identical to it.
 
+    **How many steps (#316).** ``start_epoch`` of them by default, which is
+    right for as long as the loop also steps the scheduler once per epoch.
+    ``replay_steps`` is the per-step clock's count (#303's
+    ``scheduler_step=optimizer_step``, derived by
+    :func:`_completed_optimizer_steps`): under that mode the loop advances the
+    scheduler once per optimizer step, so replaying ``start_epoch`` times left
+    a schedule denominated in thousands of steps a handful of steps in --
+    resuming a ``warmup_cosine(total_steps=1500)`` after 1000 steps put the
+    learning rate back in the warmup ramp, rising, for a run two thirds
+    finished. Nothing warned, because from the scheduler's point of view a
+    replay is a replay.
+
     Returns True when the scheduler was advanced. ``ReduceLROnPlateau`` is
     metric-driven and cannot be replayed without the original loss history, so
     it is left alone with a warning. A scheduler that raises mid-replay is
@@ -196,9 +331,7 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
     import re
     import warnings
 
-    import torch.optim.lr_scheduler as sched_module
-
-    if isinstance(lr_scheduler, sched_module.ReduceLROnPlateau):
+    if _is_plateau(lr_scheduler):
         logger.warning(
             "ReduceLROnPlateau is driven by the validation metric and cannot be "
             "replayed from start_epoch=%d. Wire the scheduler through "
@@ -206,6 +339,12 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
             start_epoch,
         )
         return False
+
+    # Counted in epochs or in optimizer steps, and the log lines below have to
+    # say which -- "replaying epoch 900 of 1000" for a 10-epoch run would be
+    # the same category of quiet nonsense this fix removes.
+    replay = start_epoch if replay_steps is None else replay_steps
+    unit = "epoch" if replay_steps is None else "optimizer step"
 
     base_lrs = getattr(lr_scheduler, "base_lrs", None)
     if base_lrs and len(base_lrs) == len(optimizer.param_groups):
@@ -228,15 +367,15 @@ def _fast_forward_scheduler(lr_scheduler: Any, optimizer: Any, start_epoch: int)
             warnings.filterwarnings(
                 "ignore", message=re.escape(prefix), category=UserWarning
             )
-        for completed in range(start_epoch):
+        for completed in range(replay):
             try:
                 lr_scheduler.step()
             except Exception:  # noqa: BLE001 - a broken schedule must not fail the run
                 logger.warning(
-                    "%s raised while replaying epoch %d of %d; leaving it at "
+                    "%s raised while replaying %s %d of %d; leaving it at "
                     "last_epoch=%s and training on. Wire the scheduler through "
                     "CheckpointSaver/CheckpointLoader to restore it exactly.",
-                    type(lr_scheduler).__name__, completed + 1, start_epoch,
+                    type(lr_scheduler).__name__, unit, completed + 1, replay,
                     getattr(lr_scheduler, "last_epoch", "?"),
                     exc_info=True,
                 )
@@ -250,11 +389,19 @@ def _prepare_scheduler(
     start_epoch: int,
     optimizer_mode: str,
     context: Any = None,
+    *,
+    per_step: bool = False,
+    completed_steps: int | None = None,
 ) -> tuple[Any, str | None]:
     """Attach the scheduler to ``optimizer`` and position it at ``start_epoch``.
 
     Returns ``(scheduler, note)``, where *note* is a user-visible advisory
     (#149) or ``None``; the caller stacks it into the node's ``__log__``.
+
+    *per_step* is the caller's ``scheduler_step=optimizer_step`` (#303) and
+    *completed_steps* the optimizer steps behind this resume, or ``None`` when
+    that count is not recoverable -- see :func:`_completed_optimizer_steps` and
+    case 2 below.
 
     Three situations, in order of preference:
 
@@ -284,6 +431,26 @@ def _prepare_scheduler(
     line. It is an advisory rather than an error because training on a
     reset schedule is still training, and refusing to run is too
     aggressive for a teaching tool -- the same call #244 made.
+
+    **Case 2's other clock (#316).** The replay is only correct if it counts
+    in the same unit the loop steps the scheduler in. Under *per_step* that
+    unit is the optimizer step, so the replay is *completed_steps* long. When
+    that count is ``None`` -- no countable batches, so epochs cannot be
+    converted into steps -- this REFUSES to replay rather than falling back to
+    the epoch count: a step-denominated schedule advanced by a per-epoch
+    number is not approximately right, it is a learning rate from the wrong
+    end of the schedule, and it looks exactly like a successful resume. The
+    refusal takes the same advisory as the failures above (same ``kind``: same
+    problem, same fix) and leaves the schedule at its start, which is at least
+    a position the user can recognise. ``ReduceLROnPlateau`` is not affected
+    either way -- it stays per-epoch in both modes (#297) and cannot be
+    replayed at all, so it keeps its own note.
+
+    Case 1 reads the same clock, for the same reason: a restored per-step
+    schedule stands at a STEP count (``last_epoch=1000`` for a run resuming at
+    epoch 10), and checking that against an epoch index accused the one resume
+    route that is always exact of holding an inconsistent checkpoint, on every
+    per-step run.
     """
     if lr_scheduler is None:
         return None, None
@@ -299,9 +466,37 @@ def _prepare_scheduler(
         else:
             logger.info("Re-pointed %s at the optimizer being trained", name)
 
+    # Which number a restored ``last_epoch`` is supposed to equal. #316: under
+    # per_step it counts optimizer steps, so comparing it against an EPOCH
+    # index accused every correctly-configured per-step resume (last_epoch=1000
+    # at start_epoch=10) of holding a checkpoint written at two different
+    # times. ``None`` means the two are not comparable at all -- no batch count
+    # to convert epochs with -- and silence beats a confident wrong reading
+    # (#308's rule).
+    per_step_clock = per_step and not _is_plateau(lr_scheduler)
+    expected_position = completed_steps if per_step_clock else start_epoch
+
     last_epoch = getattr(lr_scheduler, "last_epoch", 0)
     if last_epoch > 0:
-        if last_epoch != start_epoch:
+        if expected_position is None:
+            logger.info(
+                "%s resumes at last_epoch=%d (restored state); this run has no "
+                "batch count, so there is no step figure to check that against.",
+                name, last_epoch,
+            )
+        elif last_epoch == expected_position:
+            logger.info("%s resumes at last_epoch=%d (restored state)", name, last_epoch)
+        elif per_step_clock:
+            logger.warning(
+                "%s is at last_epoch=%d but this per-step run resumes at epoch "
+                "%d, which is %s. The learning rate will follow the scheduler, "
+                "not start_epoch. This usually means the checkpoint's scheduler "
+                "state and its epoch were written at different times, or that "
+                "the earlier leg ran a different number of batches per epoch.",
+                name, last_epoch, start_epoch,
+                _plural(expected_position, "optimizer step"),
+            )
+        else:
             # The desync this issue exists to eliminate: the schedule and the
             # epoch counter disagree about where the run is. Trust the
             # scheduler's own state (it is the only faithful record for a
@@ -313,11 +508,49 @@ def _prepare_scheduler(
                 "written at different times.",
                 name, last_epoch, start_epoch,
             )
-        else:
-            logger.info("%s resumes at last_epoch=%d (restored state)", name, last_epoch)
     elif start_epoch > 0:
-        if _fast_forward_scheduler(lr_scheduler, optimizer, start_epoch):
-            logger.info("Fast-forwarded %s to last_epoch=%d", name, lr_scheduler.last_epoch)
+        # How many steps to replay, and can that be known? A plateau schedule
+        # is not on the step clock (``per_step_clock`` above), and the
+        # fast-forward declines for it regardless, so it keeps the epoch-worded
+        # note below rather than being handed this one.
+        replay_steps = None
+        if per_step_clock:
+            if completed_steps is None:
+                return lr_scheduler, emit_advisory(
+                    f"{name} advances once per OPTIMIZER STEP in this run "
+                    f"(TrainingLoop.scheduler_step=optimizer_step), and this "
+                    f"resumed run cannot tell how many optimizer steps the "
+                    f"earlier epochs took -- the dataloader has no length (an "
+                    f"IterableDataset or a generator), so epochs cannot be "
+                    f"converted into steps. Rather than replay "
+                    f"{_plural(start_epoch, 'step')} -- one per completed "
+                    f"EPOCH, which for a step-denominated schedule is a "
+                    f"learning rate from entirely the wrong part of the "
+                    f"curve -- the schedule is "
+                    f"left at its beginning while the epoch counter continues "
+                    f"from {start_epoch}. Wire the scheduler through "
+                    f"CheckpointSaver.lr_scheduler AND "
+                    f"CheckpointLoader.lr_scheduler so its exact position is "
+                    f"stored and restored instead of derived; that route needs "
+                    f"no batch count and is exact in either mode.",
+                    kind=SCHEDULE_RESUME_WARNING_KIND,
+                    prefix=SCHEDULE_NOTE_PREFIX,
+                    context=context,
+                    logger=logger,
+                )
+            replay_steps = completed_steps
+
+        if _fast_forward_scheduler(
+                lr_scheduler, optimizer, start_epoch, replay_steps=replay_steps):
+            if replay_steps is None:
+                logger.info("Fast-forwarded %s to last_epoch=%d", name, lr_scheduler.last_epoch)
+            else:
+                logger.info(
+                    "Fast-forwarded %s by %s (epoch %d of a per-step run) to "
+                    "last_epoch=%d", name,
+                    _plural(replay_steps, "optimizer step"), start_epoch,
+                    lr_scheduler.last_epoch,
+                )
         else:
             return lr_scheduler, emit_advisory(
                 f"{name} could not be repositioned to epoch {start_epoch}, so "
@@ -475,38 +708,36 @@ def _optimizer_step_budget(
     * ``max_steps`` is a CAP, not a promise. A run whose epochs run out
       first takes fewer steps than it, so it is only the budget when it
       actually binds.
-    * the epoch-derived count is ``epochs x steps per epoch``, and steps per
-      epoch is a CEILING division by ``accumulate_steps`` rather than a
-      floor: the loop applies an epoch's short tail window as a step of its
-      own (see the "tail of a partial accumulation window" comment) rather
-      than carrying it into the next epoch.
+    * the epoch-derived count is ``epochs x steps per epoch``; the
+      conversion, including why it rounds up, is
+      :func:`_steps_per_epoch`.
     * ``len(dataloader)`` does not exist for an ``IterableDataset`` or a
       hand-rolled generator, which is the unknowable case.
 
     Absolute, like the epoch-mode comparison: ``epochs`` is the whole run's
     target and a schedule is meant to span the whole run, so a resumed leg
-    is measured against the total rather than against what is left. (A
-    per-step schedule on a RESUMED run is repositioned by
-    ``_fast_forward_scheduler``, which replays one step per completed epoch
-    -- residue of #303 that this advisory cannot fix and does not try to.)
+    is measured against the total rather than against what is left -- which
+    is consistent with where ``_fast_forward_scheduler`` puts a resumed
+    per-step schedule, now that it replays the step clock rather than the
+    epoch clock (#316).
     """
     try:
         epochs = int(epochs)
         start_epoch = max(0, int(start_epoch))
         accumulate_steps = max(1, int(accumulate_steps))
         max_steps = max(0, int(max_steps))
-        batches = None if batches_per_epoch is None else int(batches_per_epoch)
     except (TypeError, ValueError):
         return None
     if epochs < 1:
         return None
 
-    if batches is not None:
-        if batches < 1:
-            # An empty loader takes no steps at all; there is no schedule
-            # length that "fits" that, and the run has bigger problems.
+    if batches_per_epoch is not None:
+        per_epoch = _steps_per_epoch(batches_per_epoch, accumulate_steps)
+        if per_epoch is None:
+            # A length that is present but unusable: an empty loader, or
+            # something odd wired into the port. No schedule length "fits" a
+            # run that takes no steps, and the run has bigger problems.
             return None
-        per_epoch = -(-batches // accumulate_steps)
         if max_steps and max_steps < (epochs - start_epoch) * per_epoch:
             # The budget binds before the epochs run out, so the run ends
             # there: the whole run's step count is what earlier legs already
@@ -1506,17 +1737,35 @@ class TrainingLoopNode(BaseNode):
         optimizer, optimizer_mode = _prepare_optimizer(optimizer, model)
         # ``resume_note`` (#149) fires only on a resumed run whose schedule
         # could not be put back where it was -- see _prepare_scheduler.
+        #
+        # #316: the fast-forward has to replay the clock the loop will step,
+        # so a per-step run hands it the optimizer steps the earlier epochs
+        # took. Nothing stores that number (a checkpoint carries ``epoch``
+        # and no step count), so it is derived from this run's own batch
+        # count -- and is None when there is no batch count to derive it
+        # from, which _prepare_scheduler turns into a refusal rather than a
+        # quietly wrong replay.
+        completed_steps = (
+            _completed_optimizer_steps(
+                start_epoch=start_epoch,
+                batches_per_epoch=total_batches,
+                accumulate_steps=accumulate_steps,
+            )
+            if scheduler_per_step else None
+        )
         lr_scheduler, resume_note = _prepare_scheduler(
-            lr_scheduler, optimizer, start_epoch, optimizer_mode, context)
+            lr_scheduler, optimizer, start_epoch, optimizer_mode, context,
+            per_step=scheduler_per_step, completed_steps=completed_steps)
 
         # #205 / #244: does the schedule's length agree with this run's? The
         # comparison is only possible HERE -- LRScheduler cannot see the
         # TrainingLoop it feeds (nothing on ExecutionContext exposes the
         # graph) and validate_graph has no non-fatal channel to say it in.
         # Checked against the ABSOLUTE ``epochs``, not ``epochs -
-        # start_epoch``: a resumed scheduler is fast-forwarded to
-        # ``start_epoch`` by _prepare_scheduler, so the schedule still spans
-        # the whole run.
+        # start_epoch``: a resumed scheduler is fast-forwarded to where the
+        # run already stands by _prepare_scheduler -- ``start_epoch`` on the
+        # epoch clock, ``completed_steps`` on the per-step one (#316) -- so
+        # the schedule still spans the whole run.
         #
         # #308: WHICH length depends on ``scheduler_step``. Per-epoch
         # stepping compares against ``epochs``; ``optimizer_step`` (#303)
@@ -1706,9 +1955,7 @@ class TrainingLoopNode(BaseNode):
             optimizer.zero_grad()
             return applied, grad_norm_value
 
-        import torch.optim.lr_scheduler as _sched_module
-        scheduler_is_plateau = isinstance(
-            lr_scheduler, _sched_module.ReduceLROnPlateau)
+        scheduler_is_plateau = _is_plateau(lr_scheduler)
 
         def after_optimizer_step(grad_norm_value: float | None) -> None:
             """#297/#298 per-optimizer-step work.

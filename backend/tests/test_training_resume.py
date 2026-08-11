@@ -27,6 +27,7 @@ from app.config import settings
 from app.nodes.io.checkpoint_node import CheckpointLoaderNode, CheckpointSaverNode
 from app.nodes.training.training_loop_node import (
     TrainingLoopNode,
+    _completed_optimizer_steps,
     _fast_forward_scheduler,
     _prepare_optimizer,
     _sync_optimizer_state_device,
@@ -83,7 +84,7 @@ def _optimizer(kind: str, model: nn.Module):
     raise AssertionError(f"unknown optimizer kind {kind!r}")
 
 
-def _train(model, optimizer, loader, params, **inputs):
+def _train(model, optimizer, loader, params, *, context=None, **inputs):
     return TrainingLoopNode().execute(
         {
             "model": model,
@@ -93,6 +94,7 @@ def _train(model, optimizer, loader, params, **inputs):
             **inputs,
         },
         {"device": "cpu", **params},
+        context=context,
     )
 
 
@@ -1225,3 +1227,325 @@ def test_resume_from_a_periodic_checkpoint_matches_the_straight_run(periodic_dir
         straight["losses"][SPLIT_EPOCH:].tolist(), rel=1e-5, abs=1e-7
     )
     _assert_same_weights(straight["model"], second["model"])
+
+
+# ---------------------------------------------------------------------------
+# Which clock the fast-forward replays (#316)
+#
+# The replay above steps the scheduler once per completed EPOCH, which is
+# exactly right while the loop also steps it once per epoch. #303 added
+# ``scheduler_step=optimizer_step``, and the replay went on counting epochs:
+# a per-step schedule resumed after 1000 optimizer steps was fast-forwarded
+# by a handful of steps and then trained on a learning rate from the wrong
+# end of the schedule, with nothing said anywhere.
+# ---------------------------------------------------------------------------
+
+#: 24 samples at batch_size 6 (``_loader``) is 4 batches, so a per-step run
+#: takes 4 optimizer steps per epoch and a 3-epoch resume owes the schedule
+#: 12 steps rather than 3.
+STEPS_PER_EPOCH = 4
+PER_STEP = {"scheduler_step": "optimizer_step"}
+
+
+def _per_step_cosine(optimizer):
+    """A cosine denominated in this run's optimizer steps, not its epochs."""
+    import torch.optim.lr_scheduler as sched_module
+
+    return sched_module.CosineAnnealingLR(
+        optimizer, T_max=SCHED_EPOCHS * STEPS_PER_EPOCH)
+
+
+def _resume_warnings(context):
+    from app.core.execution_context import WarningSignal
+
+    signals, _dropped = context.outbox.drain()
+    return [s for s in signals if isinstance(s, WarningSignal)]
+
+
+def _unmeasurable_loader():
+    """A loader with no ``len()`` -- an ``IterableDataset``, 2 batches/epoch.
+
+    The case where the completed step count is NOT recoverable: epochs
+    cannot be converted into optimizer steps without a batch count.
+    """
+    class _Stream(torch.utils.data.IterableDataset):
+        def __iter__(self):
+            gen = torch.Generator().manual_seed(4321)
+            for _ in range(4):
+                yield (torch.randn(IN_FEATURES, generator=gen),
+                       torch.randint(0, OUT_CLASSES, (1,), generator=gen).squeeze())
+
+    loader = torch.utils.data.DataLoader(_Stream(), batch_size=2)
+    with pytest.raises(TypeError):
+        len(loader)
+    return loader
+
+
+def test_a_per_step_resume_replays_optimizer_steps_not_epochs() -> None:
+    """The headline #316 regression, end to end through the node.
+
+    A per-step run of SCHED_EPOCHS epochs takes SCHED_EPOCHS x
+    STEPS_PER_EPOCH scheduler steps, so the resumed leg's learning-rate
+    trajectory can only match the straight run's if the fast-forward
+    replayed SCHED_SPLIT x STEPS_PER_EPOCH of them. Before the fix it
+    replayed SCHED_SPLIT, leaving the cosine near the top of its curve
+    while the straight run was already half way down it.
+    """
+    loader = _loader()
+
+    straight_model = _model()
+    straight_opt = _optimizer("sgd_momentum", straight_model)
+    straight = _train(
+        straight_model, straight_opt, loader,
+        {"epochs": SCHED_EPOCHS, **PER_STEP},
+        lr_scheduler=_per_step_cosine(straight_opt),
+    )
+
+    resumed_model = _model()
+    resumed_opt = _optimizer("sgd_momentum", resumed_model)
+    resumed_sched = _per_step_cosine(resumed_opt)
+    second = _train(
+        resumed_model, resumed_opt, loader,
+        {"epochs": SCHED_EPOCHS, **PER_STEP},
+        lr_scheduler=resumed_sched, start_epoch=SCHED_SPLIT,
+    )
+
+    assert resumed_sched.last_epoch == SCHED_EPOCHS * STEPS_PER_EPOCH, (
+        "the schedule should end where a straight per-step run ends"
+    )
+    assert second["metrics"]["lr_history"] == pytest.approx(
+        straight["metrics"]["lr_history"][SCHED_SPLIT:], rel=1e-9
+    )
+
+
+def test_the_per_step_fast_forward_lands_on_a_freshly_stepped_scheduler() -> None:
+    """The replay is measured against the only reference there is: the same
+    scheduler stepped the same number of times from scratch."""
+    reference_model = _model()
+    reference_opt = _optimizer("sgd_momentum", reference_model)
+    reference = _per_step_cosine(reference_opt)
+    for _ in range(SCHED_SPLIT * STEPS_PER_EPOCH):
+        reference_opt.step()
+        reference.step()
+
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _per_step_cosine(optimizer)
+    assert _fast_forward_scheduler(
+        scheduler, optimizer, SCHED_SPLIT,
+        replay_steps=SCHED_SPLIT * STEPS_PER_EPOCH) is True
+
+    assert scheduler.last_epoch == reference.last_epoch
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(
+        reference_opt.param_groups[0]["lr"], rel=1e-12)
+
+
+def test_the_issues_own_example_lands_deep_in_the_anneal() -> None:
+    """#316's numbers: warmup_cosine(total_steps=1500) resumed after 1000
+    optimizer steps. Replaying epochs instead leaves it in the WARMUP, at a
+    rising learning rate, for a run that is two thirds finished.
+    """
+    from app.nodes.training.lr_scheduler_node import LRSchedulerNode
+    from app.nodes.training.training_loop_node import _prepare_scheduler
+
+    warmup_steps, total_steps = 100, 1500
+    completed = _completed_optimizer_steps(
+        start_epoch=10, batches_per_epoch=100, accumulate_steps=1)
+    assert completed == 1000, "10 epochs of 100 batches is 1000 steps"
+
+    def build():
+        model = _model()
+        optimizer = _optimizer("sgd_momentum", model)
+        scheduler = LRSchedulerNode().execute(
+            {"optimizer": optimizer},
+            {"type": "warmup_cosine", "warmup_steps": warmup_steps,
+             "total_steps": total_steps},
+        )["scheduler"]
+        return optimizer, scheduler
+
+    optimizer, scheduler = build()
+    # The LR the schedule ramps UP to and then anneals away from -- not the
+    # live ``lr``, which the warmup's first step has already pulled to
+    # nearly zero by the time the scheduler exists.
+    peak_lr = optimizer.param_groups[0]["initial_lr"]
+    _prepare_scheduler(scheduler, optimizer, 10, "reused", None,
+                       per_step=True, completed_steps=completed)
+    per_step_lr = optimizer.param_groups[0]["lr"]
+
+    epoch_optimizer, epoch_scheduler = build()
+    _prepare_scheduler(epoch_scheduler, epoch_optimizer, 10, "reused", None)
+    epoch_clock_lr = epoch_optimizer.param_groups[0]["lr"]
+
+    assert scheduler.last_epoch == completed
+    assert epoch_scheduler.last_epoch == 10
+
+    # Two thirds down the cosine: past the ramp, and DESCENDING.
+    assert 0.1 * peak_lr < per_step_lr < 0.5 * peak_lr, per_step_lr
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] < per_step_lr
+
+    # The epoch clock leaves the same resume 10 steps into a 100-step warmup
+    # ramp: barely off the floor, and RISING. Same checkpoint, same schedule,
+    # opposite end of the curve -- and nothing about it looked wrong.
+    assert epoch_clock_lr < 0.15 * peak_lr, epoch_clock_lr
+    epoch_optimizer.step()
+    epoch_scheduler.step()
+    assert epoch_optimizer.param_groups[0]["lr"] > epoch_clock_lr
+
+
+def test_a_per_step_resume_with_no_countable_batches_refuses_and_says_so(
+) -> None:
+    """(b): when the step count is NOT recoverable, replaying epochs anyway
+    is the silently-wrong behaviour this issue is about. Refuse, and name
+    the resume route that always works."""
+    from app.core.execution_context import ExecutionContext
+    from app.nodes.training.training_loop_node import (
+        SCHEDULE_NOTE_PREFIX,
+        SCHEDULE_RESUME_WARNING_KIND,
+    )
+
+    loader = _unmeasurable_loader()
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _per_step_cosine(optimizer)
+    context = ExecutionContext()
+
+    result = TrainingLoopNode().execute(
+        {"model": model, "dataloader": loader, "optimizer": optimizer,
+         "loss_fn": nn.CrossEntropyLoss(), "lr_scheduler": scheduler,
+         "start_epoch": 1},
+        {"epochs": 3, "device": "cpu", **PER_STEP},
+        context=context,
+    )
+
+    # 2 epochs of 2 batches: the only steps the schedule ever took are the
+    # ones this leg actually ran. Nothing was replayed -- least of all the
+    # single epoch-step that would have looked like progress.
+    assert scheduler.last_epoch == 4
+    assert result["metrics"]["total_epochs_run"] == 2
+
+    warnings = _resume_warnings(context)
+    assert len(warnings) == 1, warnings
+    assert warnings[0].kind == SCHEDULE_RESUME_WARNING_KIND
+    assert "optimizer step" in warnings[0].detail
+    assert "CheckpointSaver.lr_scheduler" in warnings[0].detail
+    assert result["__log__"].startswith(SCHEDULE_NOTE_PREFIX)
+
+
+def test_an_epoch_mode_resume_still_replays_one_step_per_epoch() -> None:
+    """The historical clock, unchanged: one step per completed epoch, and
+    nothing to advise about."""
+    from app.core.execution_context import ExecutionContext
+
+    loader = _loader()
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = _scheduler("CosineAnnealingLR", optimizer)
+    context = ExecutionContext()
+
+    result = _train(
+        model, optimizer, loader, {"epochs": SCHED_EPOCHS},
+        lr_scheduler=scheduler, start_epoch=SCHED_SPLIT, context=context,
+    )
+
+    assert scheduler.last_epoch == SCHED_EPOCHS
+    assert _resume_warnings(context) == []
+    assert "__log__" not in result
+
+
+def test_a_plateau_resume_keeps_its_metric_driven_advisory_in_per_step_mode(
+) -> None:
+    """ReduceLROnPlateau stays per-epoch in BOTH modes (#297), so the clock
+    question never arises for it -- the advisory it gets must still be the
+    one about its plateau history, not the per-step one."""
+    import torch.optim.lr_scheduler as sched_module
+
+    from app.core.execution_context import ExecutionContext
+    from app.nodes.training.training_loop_node import (
+        SCHEDULE_RESUME_WARNING_KIND,
+    )
+
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+    scheduler = sched_module.ReduceLROnPlateau(optimizer, factor=0.5, patience=0)
+    context = ExecutionContext()
+
+    _train(
+        model, optimizer, _loader(), {"epochs": 4, **PER_STEP},
+        lr_scheduler=scheduler, start_epoch=2, context=context,
+    )
+
+    warnings = _resume_warnings(context)
+    assert len(warnings) == 1, warnings
+    assert warnings[0].kind == SCHEDULE_RESUME_WARNING_KIND
+    assert "ReduceLROnPlateau" in warnings[0].detail
+    assert "plateau history" in warnings[0].detail
+
+
+def test_restored_per_step_state_is_checked_against_the_step_count(caplog) -> None:
+    """The state-restore path reads the same clock (#316).
+
+    A per-step schedule saved through ``CheckpointSaver.lr_scheduler`` comes
+    back at ``last_epoch=<steps>``, which is never the epoch index -- so
+    comparing the two accused the one resume route that IS exact of holding a
+    checkpoint written at two different times, on every per-step run.
+    """
+    import logging
+
+    loader = _loader()
+
+    def resume_with(last_epoch: int, **kwargs):
+        model = _model()
+        optimizer = _optimizer("sgd_momentum", model)
+        scheduler = _per_step_cosine(optimizer)
+        for _ in range(last_epoch):
+            optimizer.step()
+            scheduler.step()
+        with caplog.at_level(
+                logging.WARNING,
+                logger="app.nodes.training.training_loop_node"):
+            caplog.clear()
+            _train(model, optimizer, loader,
+                   {"epochs": SCHED_EPOCHS, **kwargs},
+                   lr_scheduler=scheduler, start_epoch=SCHED_SPLIT)
+        return [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING]
+
+    # Exactly where SCHED_SPLIT epochs of this loader leave a per-step run:
+    # nothing to report.
+    assert resume_with(SCHED_SPLIT * STEPS_PER_EPOCH, **PER_STEP) == []
+
+    # A genuine desync, still reported -- in the unit the schedule counts in.
+    desynced = resume_with(SCHED_SPLIT * STEPS_PER_EPOCH + 3, **PER_STEP)
+    assert any("optimizer step" in m for m in desynced), desynced
+
+    # And the epoch clock keeps its own reading: 12 steps is not epoch 3.
+    epoch_mode = resume_with(SCHED_SPLIT * STEPS_PER_EPOCH)
+    assert any("last_epoch=12" in m and "epoch 3" in m for m in epoch_mode), (
+        epoch_mode)
+
+
+@pytest.mark.parametrize("start_epoch, batches, accumulate, expected", [
+    # The plain case: 3 epochs of 4 batches is 12 optimizer steps.
+    (3, 4, 1, 12),
+    # Accumulation divides by CEILING, because the loop applies an epoch's
+    # short tail window as a step of its own: 5 batches at accumulate 2 is
+    # 3 steps per epoch, not 2.
+    (2, 5, 2, 6),
+    (1, 4, 4, 1),
+    # Nothing completed means nothing to replay.
+    (0, 4, 1, 0),
+    # Not recoverable: no len() on the loader, an empty loader, a length
+    # that is not a number, a nonsense epoch index.
+    (3, None, 1, None),
+    (3, 0, 1, None),
+    (3, "four", 1, None),
+    (-1, 4, 1, None),
+])
+def test_completed_optimizer_steps_only_answers_when_it_can(
+    start_epoch, batches, accumulate, expected
+) -> None:
+    assert _completed_optimizer_steps(
+        start_epoch=start_epoch, batches_per_epoch=batches,
+        accumulate_steps=accumulate) == expected
