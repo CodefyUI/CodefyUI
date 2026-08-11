@@ -996,6 +996,36 @@ const zhTW: NodeTranslations = {
     },
   },
 
+  // ── VLA ──
+  PushWorldEnv: {
+    description:
+      '語言條件式 2D 推物環境（PushT 精神、純 torch）：一個白色 agent、' +
+      '彩色圓盤 puck 與彩色圓環目標，指令指定哪個 puck 要推到哪個目標。' +
+      '有干擾物時單靠畫面無法判斷目標，策略必須讀懂指令。' +
+      '把 env 接給 PushWorldDemos 與 VLARollout',
+    params: {
+      image_size: '渲染畫面邊長（像素，正方形）；96 對齊 PushT 慣例',
+      n_distractors: '目標 puck 之外的干擾 puck 數；0 時語言只是裝飾，≥1 時指令是唯一的目標線索',
+      max_steps: '單回合步數上限；腳本專家平均約 23 步，VLARollout 評估時可另設預算',
+    },
+  },
+  PushWorldDemos: {
+    description:
+      '用腳本專家滾 PushWorld 回合，產出行為複製樣本' +
+      '（(影像, 指令位元組, 動作區塊), 動作區塊）、' +
+      '一份獨立種子的驗證切分，與可接 VideoWrite 的示範影片張量。' +
+      'demo_noise 是 DART 式擾動：執行帶噪動作、標註保留專家動作，' +
+      '這正是閉環控制需要的回復資料',
+    params: {
+      episodes: '訓練回合數（每回合約 25 個樣本；600 回合約 1.5 萬樣本、約 0.4 GB）',
+      chunk: '每個樣本的動作數（動作區塊長度 H，須與 VLAModel 的 chunk 一致）；超過回合結尾時重複最後一個動作',
+      demo_noise: 'DART 擾動強度：每步以 1/2 機率對執行動作加 N(0, noise)，標註仍為專家動作；實測關掉會讓閉環成功率崩潰（4% vs 24%）',
+      holdout_episodes: '驗證回合數（獨立種子流，與訓練集永不重疊；0 = 空）',
+      video_episodes: '錄進 demo_video 的回合數（0 = 不錄）',
+      seed: '基礎種子；同種子同參數可完全重現資料集',
+    },
+  },
+
   // ── Custom ──
   AddScalar: {
     description: '將純量值加到張量上（自訂節點範例）',
