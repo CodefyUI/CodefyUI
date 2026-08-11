@@ -64,8 +64,12 @@ one warmup-floor step changes nothing measurable), flip the mode, and run.
   as a single parameter.
 - `head_type` (VLAModel): regression vs flow_matching on identical data.
 - `vision_stem` (VLAModel, advanced): `conv` vs the classic ViT `patchify`
-  — the "early convolutions help transformers see" effect is the
-  difference between this policy and a ~2x worse one.
+  — and a lesson in controlled comparisons: a two-arm study at a 1,200-
+  episode / 45-epoch budget (same data, same seed) measured patchify AHEAD
+  (0.85 vs 0.45 success), the OPPOSITE of the paper the knob cites and of
+  our own earlier confounded notes. The 0.97 reference above rode the conv
+  stem at the full budget; a FLOP-matched comparison there is an open
+  experiment this knob exists to run.
 - `demo_noise` (PushWorldDemos): 0 turns DART off and closed-loop success
   collapses; the param text quotes the measurement.
 - Wire the study through `run_graph_experiments` /
