@@ -116,8 +116,12 @@ export const DATA_TYPE_COLORS_ON_LIGHT: Record<string, string> = {
   STRING: '#6aa01f',
   IMAGE: '#ff5722',
   LIST: '#8d9800',
-  TRANSFORM: '#b78901',
   ANY: '#919191',
+  // Deliberately NOT lightened alongside the canvas TRANSFORM (#197 item 5).
+  // This palette is drawn on a white page and held to 3:1 there; a lighter
+  // amber measures 2.6:1 or worse. Same hue as the canvas value (83 vs 91
+  // degrees in Lab), darkened — which is what a light-export colour is.
+  TRANSFORM: '#b78901',
 };
 
 /** `--diagram-light-type-*` variable name for each data type. */
@@ -132,8 +136,8 @@ export const DATA_TYPE_LIGHT_VARS: Record<string, string> = {
   STRING: '--diagram-light-type-string',
   IMAGE: '--diagram-light-type-image',
   LIST: '--diagram-light-type-list',
-  TRANSFORM: '--diagram-light-type-transform',
   ANY: '--diagram-light-type-any',
+  TRANSFORM: '--diagram-light-type-transform',
 };
 
 /**
@@ -192,8 +196,8 @@ export const DATA_TYPE_VARS: Record<string, string> = {
   STRING: '--type-string',
   IMAGE: '--type-image',
   LIST: '--type-list',
-  TRANSFORM: '--type-transform',
   ANY: '--type-any',
+  TRANSFORM: '--type-transform',
 };
 
 /**

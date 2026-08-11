@@ -289,8 +289,14 @@
   --type-string: #8bc34a;
   --type-image: #ff5722;
   --type-list: #cddc39;
-  --type-transform: #ffc107;
   --type-any: #9e9e9e;
+  /* Was #ffc107: 14.5 dE00 from --type-dataset, which those two wear at every
+     transform port where they are drawn touching, and only 6.1 once
+     deuteranopia removes the axis carrying most of it (#197 item 5).
+     Lightened inside the amber family rather than rotated to a new hue, so
+     the separation lands on lightness — the axis every viewer keeps:
+     21.9 dE00 normal vision, 12.6 simulated deuteran. */
+  --type-transform: #ffe082;
 
   /* Layer types, for the layers editor (`components/LayersEditor`, core#228).
 
@@ -416,8 +422,10 @@
   --diagram-light-type-string: #6aa01f; /* 3.15 */
   --diagram-light-type-image: #ff5722; /* 3.16 — unchanged */
   --diagram-light-type-list: #8d9800; /* 3.17 */
-  --diagram-light-type-transform: #b78901; /* 3.19 */
   --diagram-light-type-any: #919191; /* 3.15 — unchanged */
+  /* Keeps its value while the canvas --type-transform lightens (#197 item 5):
+     3:1 on a white page is the floor here, and every lighter amber misses it. */
+  --diagram-light-type-transform: #b78901; /* 3.19 */
 }
 
 /* How strongly a category hue is tinted into --surface-raised to make a

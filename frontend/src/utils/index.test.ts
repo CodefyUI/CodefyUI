@@ -135,6 +135,28 @@ describe('getPortColor', () => {
     expect(getPortColor('UNKNOWN_TYPE')).toBe(DATA_TYPE_COLORS['ANY']);
   });
 
+  it('keeps TRANSFORM and DATASET apart on the canvas', () => {
+    // These two meet at every train_transform / eval_transform port, and as
+    // two neighbouring Material ambers ('#FFC107' vs '#FF9800') they sat
+    // 14.5 dE00 apart in normal vision but only 6.1 under simulated
+    // deuteranopia, because most of the separation lived on the red-green
+    // axis (#197 item 5). The fix was a LIGHTER amber, so this asserts the
+    // lightness gap rather than the literal hex: a future edit may retune the
+    // value, but pulling TRANSFORM back down next to DATASET would undo the
+    // whole point. 12 L* is a floor, not the target — the shipped pair is
+    // ~18 apart, where the old one was ~9.5.
+    const lstar = (hex: string) => {
+      const [r, g, b] = [0, 2, 4].map((i) => {
+        const c = parseInt(hex.slice(1 + i, 3 + i), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return y <= 216 / 24389 ? (y * 24389) / 27 : Math.cbrt(y) * 116 - 16;
+    };
+    const gap = lstar(DATA_TYPE_COLORS['TRANSFORM']) - lstar(DATA_TYPE_COLORS['DATASET']);
+    expect(gap).toBeGreaterThan(12);
+  });
+
   it('gives TRANSFORM a colour of its own', () => {
     // Without an entry it would silently fall back to ANY grey, and every
     // transform-chain edge on the canvas would look like an untyped one.
@@ -194,6 +216,39 @@ describe('isValidConnection', () => {
   it('returns false for a source type absent from the compatibility map', () => {
     // SCALAR exists; but an unknown like "FOO" is not a key → `compatible` undefined.
     expect(isValidConnection('FOO', 'BAR')).toBe(false);
+  });
+});
+
+describe('SELECTABLE_DATA_TYPES', () => {
+  it('lists the types in the backend DataType declaration order', () => {
+    // Transcribed by hand from `backend/app/core/node_base.py`'s `DataType`
+    // enum — the frontend cannot read Python at test time, so this list is
+    // the mirror and this test is what keeps it honest. TRIGGER is the one
+    // member with no entry here: it is control flow, never a data port, so
+    // the canvas has no colour for it and the per-port select must not offer
+    // it. Adding a DataType means adding it HERE in the enum's position too
+    // (#197 item 4); a mismatch shows up as this test failing, not as a
+    // dropdown that quietly disagrees with the backend.
+    expect(SELECTABLE_DATA_TYPES).toEqual([
+      'TENSOR',
+      'MODEL',
+      'DATASET',
+      'DATALOADER',
+      'OPTIMIZER',
+      'LOSS_FN',
+      'SCALAR',
+      'STRING',
+      'IMAGE',
+      'LIST',
+      'ANY',
+      'TRANSFORM',
+    ]);
+  });
+
+  it('offers no TRIGGER entry', () => {
+    // Membership is the part that must not change while the order does.
+    expect(SELECTABLE_DATA_TYPES).not.toContain('TRIGGER');
+    expect(SELECTABLE_DATA_TYPES).toEqual(Object.keys(DATA_TYPE_COLORS));
   });
 });
 

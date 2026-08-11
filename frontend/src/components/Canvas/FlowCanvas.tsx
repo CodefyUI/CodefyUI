@@ -634,6 +634,35 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
+          // Render only what the viewport can show (#162). After #125 a
+          // 300-node drag still cost 49.3ms p95 against a 32ms budget, and the
+          // residue was React Flow re-rendering all 300 node components on
+          // every pointermove — including the ones nobody can see.
+          //
+          // The obvious worry is that culling loses things that are supposed
+          // to survive going off-screen. Verified against @xyflow/react
+          // 12.10.1's own selectors before turning it on:
+          //   - MiniMap draws from `s.nodes` (MiniMapNodes' `selectorNodeIds`),
+          //     not from the visible set, so it stays complete.
+          //   - An edge is kept when the box spanning its two endpoints
+          //     overlaps the viewport at all (`isEdgeVisible`), so a wire with
+          //     one endpoint off-screen still draws.
+          //   - Box selection runs `getNodesInside` over the whole
+          //     `nodeLookup`, and a node being dragged is force-rendered
+          //     (`isVisible || node.dragging`), so selection and drag do not
+          //     depend on a node having been rendered.
+          //   - A node is also force-rendered until it has been measured
+          //     (`!node.internals.handleBounds`), so every node is laid out
+          //     once and its size is known to layout and to the minimap even
+          //     if it is never looked at.
+          // The e2e pass on the PR is what confirms all four in a real
+          // browser, because jsdom cannot: an unmeasured node has zero area,
+          // and zero area passes the visibility test, so all 300 nodes render
+          // there with this flag on. What DOES change in jsdom is the edges —
+          // unmeasured endpoints make every edge test as off-screen — so the
+          // perf harness's drag-frame improvement is the edge half only and
+          // is an upper bound, not a prediction of the browser number.
+          onlyRenderVisibleElements
           minZoom={CANVAS_MIN_ZOOM}
           proOptions={proOptions}
           deleteKeyCode="Delete"
