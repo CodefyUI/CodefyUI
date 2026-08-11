@@ -62,6 +62,10 @@ export function HealthSection() {
   // fetch (different error handling, a missed cancel, etc.).
   const [attempt, setAttempt] = useState(0);
 
+  // StrictMode's double mount does issue this twice in dev; the first pass is
+  // cancelled by its own cleanup, so only the second writes state. Not worth a
+  // ref guard: two idempotent GETs of a status endpoint cost nothing, and the
+  // guard would be a second code path to keep correct.
   useEffect(() => {
     let cancelled = false;
     setBusy(true);
