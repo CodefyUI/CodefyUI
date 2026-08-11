@@ -29,9 +29,18 @@ A full-model file is a **pickle**, and unpickling is not reading data: a pickle 
 Instead, `ModelLoader` widens the restricted unpickler by exactly two sets of names, for the duration of that one load:
 
 1. **`torch.nn`'s own layer classes.** Derived by walking the loaded subclasses of `nn.Module` and keeping the ones torch defines, so it tracks whatever torch you installed rather than a list written down here.
-2. **CodefyUI's own module classes** — `GraphModelModule` (which every layer-editor model is), the `SequentialModel` wrappers (`Reshape`, `SelectIndex`, the LSTM/GRU/attention/transformer blocks), `CausalLMModule` and the blocks it is built from, the diffusion U-Net, the VLA policy, and the rest. A curated list of exact classes, each read to confirm that reconstructing it only restores attributes and never runs anything.
+2. **CodefyUI's own module classes** — `GraphModelModule` (which every layer-editor model is), the `SequentialModel` wrappers (`Reshape`, `SelectIndex`, the LSTM/GRU/attention/transformer blocks), `CausalLMModule` and the blocks it is built from, the diffusion U-Net, the VLA policy, and the rest. A curated list of exact classes, each audited against the rule below.
 
 Everything else is refused with a message naming what it stopped on. A pickle that names `os.system` does not load, because `os.system` is on neither list.
+
+### What "audited" means, exactly
+
+Admitting a class by name lets a file do two things with it, and both have to be harmless:
+
+- **Restore its attributes.** So an admitted class must not define `__reduce__`, `__setstate__` or `__getnewargs__` — anything that turns restoring an attribute into running something.
+- **Call its constructor with arguments the file chose.** torch's restricted unpickler runs `func(*args)` for any allowed name, so `cls(...)` is reachable. An admitted constructor must therefore touch no files, no network and no global state (a local `torch.Generator` is fine; `torch.manual_seed` is not). Bad arguments raising an error is acceptable — that is a failed load, not a compromised one.
+
+The second half has always been true of torch's own classes too: admitting `nn.Linear` admits `nn.Linear(...)` on file-chosen sizes. It is worth stating because the CodefyUI list is one a human maintains, and a test enforces the mechanically checkable parts of both halves on every run.
 
 :::note What this means in practice
 A `full_model` file CodefyUI wrote **loads back into CodefyUI**. A `full_model` file containing a class from a [custom node](/advanced/custom-nodes), a [plugin](/advanced/plugins), or somebody's own script **does not** — that code has not been through review, and admitting it is the line CodefyUI does not cross. `ModelSaver` tells you which of the two you just wrote, in its **Log** tab, at save time rather than one node later.

@@ -29,9 +29,18 @@ description: ModelSaver 寫出什麼、ModelLoader 又願意讀回什麼 —— 
 取而代之的是，`ModelLoader` 只在那一次載入期間，把受限解序列化器放寬到剛好兩組名稱：
 
 1. **`torch.nn` 自己的層類別。** 用走訪 `nn.Module` 已載入子類別的方式推導出來，只留下 torch 自己定義的那些，所以它跟著你安裝的 torch 版本走，而不是跟著這裡寫死的一份清單走。
-2. **CodefyUI 自己的模組類別** —— `GraphModelModule`（每一個層編輯器模型都是它）、`SequentialModel` 的包裝類別（`Reshape`、`SelectIndex`，以及 LSTM／GRU／注意力／transformer 區塊）、`CausalLMModule` 與構成它的那些區塊、diffusion U-Net、VLA 策略網路，還有其餘幾個。這是一份精選的、逐一列名的類別清單，每一個都經過閱讀確認：重建它只會還原屬性，不會執行任何東西。
+2. **CodefyUI 自己的模組類別** —— `GraphModelModule`（每一個層編輯器模型都是它）、`SequentialModel` 的包裝類別（`Reshape`、`SelectIndex`，以及 LSTM／GRU／注意力／transformer 區塊）、`CausalLMModule` 與構成它的那些區塊、diffusion U-Net、VLA 策略網路，還有其餘幾個。這是一份精選的、逐一列名的類別清單，每一個都依照下面那條規則審核過。
 
 其他一切都會被拒絕，並附上一則指名它停在哪裡的訊息。一個指名 `os.system` 的 pickle 載不進來，因為 `os.system` 不在上面任何一組裡。
+
+### 「審核過」到底是什麼意思
+
+把一個類別列名放行之後，檔案可以對它做兩件事，而這兩件事都必須是無害的：
+
+- **還原它的屬性。** 所以被放行的類別不能定義 `__reduce__`、`__setstate__` 或 `__getnewargs__` —— 任何會把「還原一個屬性」變成「執行某段程式」的東西都不行。
+- **用檔案自己挑的參數呼叫它的建構子。** torch 的受限解序列化器對任何被允許的名稱都會執行 `func(*args)`，所以 `cls(...)` 是可以被觸發的。因此被放行的建構子不能碰檔案、不能碰網路、也不能碰全域狀態（用區域的 `torch.Generator` 沒問題，`torch.manual_seed` 不行）。參數亂給導致丟出錯誤是可以接受的 —— 那是一次失敗的載入，不是一次被入侵的載入。
+
+第二點對 torch 自己的類別一直都成立：放行 `nn.Linear` 就等於放行「用檔案挑的尺寸呼叫 `nn.Linear(...)`」。之所以值得寫出來，是因為 CodefyUI 這份清單是由人維護的；而這兩點裡可以用機械方式檢查的部分，每次跑測試都會被驗證。
 
 :::note 實際上這代表什麼
 CodefyUI 寫出的 `full_model` 檔**可以在 CodefyUI 裡載回來**。但含有[自訂節點](/advanced/custom-nodes)、[外掛](/advanced/plugins)或別人自己腳本裡類別的 `full_model` 檔**不行** —— 那些程式碼沒有經過審查，而放寬到它們是 CodefyUI 不跨越的那條線。`ModelSaver` 會在存檔當下就在它的 **Log** 分頁告訴你剛剛寫出的是哪一種，而不是讓你晚一個節點才發現。

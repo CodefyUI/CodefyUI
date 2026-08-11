@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+import textwrap
 from contextlib import contextmanager
+from typing import Any
 
 import pytest
 import torch
@@ -839,6 +842,47 @@ def test_the_note_names_a_refused_function_not_only_a_refused_class():
             )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [{"w": torch.zeros(2)}, 5, [torch.zeros(2)], None],
+    ids=["dict", "int", "list", "None"],
+)
+def test_a_non_module_on_the_model_port_still_gets_a_note(payload):
+    """The note path must survive an input that is not an ``nn.Module``.
+
+    ``ModelSaver.model`` is a MODEL port, and ``type_system`` lets an ANY-typed
+    output into one -- ``CheckpointLoader.grad_scaler_state`` emits
+    dict-or-None, and PythonScript / Switch / Reduce / GraphInput can pass
+    anything at all. So a dict, an int or a None genuinely arrives here.
+
+    The #288 function-attribute walk originally reached for ``vars(module)``,
+    which raises ``TypeError`` on every one of these -- replacing the note with
+    a traceback, before a ``torch.save`` that would have succeeded, where the
+    pre-#288 code returned a warning and wrote a valid file. Found in review.
+    """
+    from app.nodes.io.model_saver_node import _reload_note
+
+    level, text = _reload_note(payload)
+    assert level == "warning"
+    assert type(payload).__name__ in text
+
+
+def test_saving_a_non_module_writes_the_file_and_warns():
+    """The same regression at the node's edge rather than the helper's.
+
+    A dict of tensors is a legitimate thing to hand ``full_model``: it pickles
+    fine, so the node's job is to write it and say it will not come back
+    through ``ModelLoader`` -- not to raise.
+    """
+    with _saved("_full_model_bare_dict.pt") as path:
+        res = ModelSaverNode().execute(
+            {"model": {"w": torch.zeros(2)}},
+            {"path": path, "save_mode": "full_model", "format": "pytorch"},
+        )
+        assert (settings.MODELS_DIR / path).exists()
+        assert "cannot be read back" in res.get("__log__", "")
+
+
 def test_the_allowlist_is_exact_not_a_module_prefix():
     """A class the list does not name is refused even from a listed module.
 
@@ -883,41 +927,184 @@ def test_the_allowlist_is_exact_not_a_module_prefix():
         del sequential_modules._ImpostorBlock
 
 
-def test_every_admitted_class_is_attribute_restore_only():
+#: Bare builtin calls a reachable constructor must not make.
+FORBIDDEN_BARE_CALLS = frozenset({
+    "open", "eval", "exec", "compile", "__import__", "input", "breakpoint",
+})
+
+#: Any call rooted at one of these modules -- ``os.anything``, ``socket.anything``.
+FORBIDDEN_CALL_ROOTS = frozenset({
+    "os", "subprocess", "shutil", "socket", "requests", "urllib", "pickle",
+    "shlex", "webbrowser", "ctypes", "importlib",
+})
+
+#: Specific dotted calls. ``torch.manual_seed`` is here and
+#: ``<generator>.manual_seed`` deliberately is not: seeding a LOCAL
+#: ``torch.Generator`` from file-chosen bytes is the harmless case (it only
+#: changes tensors the constructor is about to overwrite), while reseeding the
+#: global RNG would reach every other node in the run.
+FORBIDDEN_DOTTED_CALLS = frozenset({
+    "os.system", "torch.manual_seed", "torch.load", "torch.save",
+    "torch.use_deterministic_algorithms", "pathlib.Path", "Path",
+})
+
+#: Prefixes for families of dotted calls (``torch.set_default_dtype``, ...).
+FORBIDDEN_DOTTED_PREFIXES = ("torch.set_",)
+
+
+def _dotted_callee(node: Any) -> str | None:
+    """``foo.bar.baz`` for an attribute chain rooted at a plain name, else None.
+
+    A call on something that is not a simple name chain -- ``self.layers[i]()``,
+    ``build()()`` -- returns None and is not judged here. That is a deliberate
+    limit of a static check, and the reason the docstring below still records a
+    hand audit.
+    """
+    import ast
+
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _forbidden_calls_reachable_from_constructor(cls: type) -> list[str]:
+    """Dangerous calls in *cls*'s source, or in a helper its source reaches.
+
+    Walked as an AST rather than grepped as text, because text is wrong twice
+    over: ``_init_module_weights``'s DOCSTRING contains the words
+    ``torch.manual_seed`` (explaining why it does not call it), and
+    ``module.eval()`` -- torch's train/eval switch -- reads as a call to
+    ``eval`` under any word-boundary regex. Both were false positives on the
+    first attempt at this test.
+
+    The class body alone is also not the whole constructor: ``CausalLMModule``
+    delegates to ``_make_norm`` / ``_sinusoidal_table`` /
+    ``_init_module_weights``. And the whole owning MODULE is the other wrong
+    answer -- these files also hold the node classes, two of which legitimately
+    call ``torch.manual_seed`` where the unpickler cannot reach it. So: the
+    class, then every module-level function or class its source names, to a
+    fixed point.
+    """
+    import ast
+    import inspect
+
+    module = sys.modules[cls.__module__]
+    found: set[str] = set()
+    seen: set[str] = set()
+    pending: list[Any] = [cls]
+
+    while pending:
+        obj = pending.pop()
+        name = getattr(obj, "__qualname__", None)
+        if name is None or name in seen:
+            continue
+        seen.add(name)
+        try:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(obj)))
+        except (OSError, TypeError, SyntaxError):  # pragma: no cover
+            continue
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                callee = node.func
+                if isinstance(callee, ast.Name) and callee.id in FORBIDDEN_BARE_CALLS:
+                    found.add(callee.id)
+                    continue
+                dotted = _dotted_callee(callee)
+                if dotted is None:
+                    continue
+                if (
+                    dotted in FORBIDDEN_DOTTED_CALLS
+                    or dotted.split(".")[0] in FORBIDDEN_CALL_ROOTS
+                    or dotted.startswith(FORBIDDEN_DOTTED_PREFIXES)
+                ):
+                    found.add(dotted)
+            elif isinstance(node, ast.Name):
+                # Follow the module-level helpers this source names.
+                candidate = getattr(module, node.id, None)
+                if (
+                    candidate is not None
+                    and getattr(candidate, "__qualname__", None) is not None
+                    and getattr(candidate, "__module__", None) == cls.__module__
+                ):
+                    pending.append(candidate)
+
+    return sorted(found)
+
+
+def test_every_admitted_class_is_safe_to_reconstruct():
     """The admission rule, re-derived instead of trusted to the comment.
 
-    ``safe_globals`` admits a class by name and then lets the unpickler build
-    it from file-controlled state: ``cls.__new__(cls)`` and a ``__dict__``
-    update. That is safe only while restoring an attribute is ALL that happens.
-    A ``__setstate__`` or a ``__reduce__`` added to any admitted class would
-    turn a name on the allowlist into a code path -- exactly the objection #288
-    weighed -- and would do so in a file nobody reviewing that class would
-    think to open. Hence a test rather than a comment.
+    The rule has two halves and this checks what is mechanically checkable in
+    each. Renamed from ``..._is_attribute_restore_only`` in review of #288,
+    because that name recorded a rule that was only half right.
 
-    ``nn.Module``'s own ``__setstate__`` is excluded from the search: it is
-    torch's, it back-fills defaults on an old checkpoint, and it is already
-    trusted by the #222 half of the allowlist.
+    **Half one: no pickle hooks.** A ``__setstate__`` or ``__reduce__`` on an
+    admitted class turns a name on the allowlist into a code path, in a file
+    nobody reviewing that class would think to open.
+
+    **Half two: the constructor is reachable.** torch's restricted unpickler
+    implements REDUCE as ``result = func(*args)`` for user-allowed globals
+    (``torch/_weights_only_unpickler.py``, around :415), so a crafted file can
+    call an admitted ``cls(...)`` with arguments it chose -- this is NOT only
+    ``__new__`` plus a ``__dict__`` update. The same has always been true of
+    the torch half (#222): admitting ``nn.Linear`` admits ``nn.Linear(...)``.
+    What is checkable is that no admitted constructor, and no module-level
+    helper it reaches, calls anything on the filesystem / network / process or
+    mutates global state -- see
+    :func:`_forbidden_calls_reachable_from_constructor`.
+
+    What NO test can prove is that running these constructors on nonsense
+    arguments is merely useless rather than harmful (nor can a static walk see
+    through a call on something that is not a plain name chain). That was
+    hand-audited on 2026-08-12 across all 24 classes: each builds torch layers
+    from numbers, so a hostile argument produces a raised exception or a large
+    allocation -- a failed load, not a compromised one.
+
+    ``nn.Module``'s own ``__setstate__`` is excluded from the hook search: it is
+    torch's, it back-fills defaults on an old checkpoint, and the #222 half of
+    the allowlist already trusts it.
     """
     from app.nodes.io.model_loader_node import codefyui_module_globals
 
     hooks = ("__reduce__", "__reduce_ex__", "__setstate__", "__getstate__",
              "__getnewargs__", "__getnewargs_ex__", "__new__")
 
-    offenders = {}
+    hook_offenders = {}
+    call_offenders = {}
     for cls in codefyui_module_globals():
+        name = f"{cls.__module__}.{cls.__qualname__}"
         own = [
             base for base in cls.__mro__
             if (getattr(base, "__module__", "") or "").startswith("app.")
         ]
         found = sorted({h for base in own for h in hooks if h in base.__dict__})
         if found:
-            offenders[f"{cls.__module__}.{cls.__qualname__}"] = found
+            hook_offenders[name] = found
 
-    assert not offenders, (
+        hits = _forbidden_calls_reachable_from_constructor(cls)
+        if hits:
+            call_offenders[name] = hits
+
+    assert not hook_offenders, (
         f"These classes are on the full_model allowlist and define pickle "
         f"hooks, so the unpickler would run them on file-controlled state: "
-        f"{offenders}. Either remove the hook or remove the class from "
+        f"{hook_offenders}. Either remove the hook or remove the class from "
         f"_CODEFYUI_MODULE_CLASSES -- read the comment above it first (#288)."
+    )
+    assert not call_offenders, (
+        f"These classes are on the full_model allowlist and their constructors "
+        f"(or a helper those reach) contain a call a hostile file must not be "
+        f"able to trigger: {call_offenders}. A crafted checkpoint can call an "
+        f"admitted class with arguments of its choosing, so a constructor that "
+        f"touches the filesystem, the network, or global state is not "
+        f"admissible. Move the call out of the constructor, or remove the "
+        f"class from _CODEFYUI_MODULE_CLASSES (#288)."
     )
 
 

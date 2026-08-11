@@ -116,7 +116,17 @@ def _refused_function_attributes(model: Any, allowed: set[type]) -> list[str]:
 
     refused: list[str] = []
     for module in candidates:
-        for value in vars(module).values():
+        # ``getattr(..., "__dict__")`` rather than ``vars()``: this walk does
+        # NOT only see nn.Modules. ``ModelSaver.model`` is a MODEL port, and
+        # ``type_system`` lets an ANY-typed output into one, so a dict, an int
+        # or a None genuinely arrives here -- ``CheckpointLoader``'s
+        # ``grad_scaler_state`` emits dict-or-None, and PythonScript / Switch /
+        # Reduce / GraphInput can pass anything. ``vars(5)`` raises TypeError,
+        # which would replace the note this function exists to write with a
+        # traceback, BEFORE the torch.save that would have succeeded. Found in
+        # review of #288; the pre-#288 walk read only ``type(module)`` and so
+        # never touched an instance dict.
+        for value in (getattr(module, "__dict__", None) or {}).values():
             if isinstance(value, type):
                 if value in allowed:
                     continue

@@ -110,17 +110,42 @@ def torch_nn_layer_globals() -> list[type]:
 # ``weights_only=True`` stays on, and #222's detonating payload still detonates
 # nothing, because ``os.system`` is not on this list either.
 #
-# THE ADMISSION RULE, which is the whole safety argument. ``safe_globals``
-# admits a class by name and then lets the unpickler build it from
-# file-controlled state -- ``cls.__new__(cls)`` and a ``__dict__`` update. A
-# class is admissible only when that is ALL that happens: no ``__reduce__``, no
-# ``__setstate__``, no ``__getnewargs__``, nothing that turns restoring an
-# attribute into running something. Every class below was read against that
-# rule, with the result recorded next to it, and
-# ``test_every_admitted_class_is_attribute_restore_only`` re-derives the same
-# check on every test run -- a future edit that gives one of these a
-# ``__setstate__`` would otherwise silently turn a name on this list into a
-# code path, which is precisely the failure mode #288 weighed.
+# THE ADMISSION RULE, which is the whole safety argument. It has TWO halves,
+# and an earlier draft of this comment stated only the first -- corrected in
+# review of #288, because a future auditor following the wrong rule would admit
+# the wrong class.
+#
+#   1. Reconstruction must only restore attributes. No ``__reduce__``, no
+#      ``__setstate__``, no ``__getnewargs__`` -- nothing that turns restoring
+#      an attribute into running something.
+#
+#   2. The CONSTRUCTOR must be safe to run with arbitrary, file-chosen
+#      arguments. Read torch's ``_weights_only_unpickler``: the REDUCE opcode
+#      does ``result = func(*args)`` for anything in the user-allowed globals
+#      (torch 2.11, ``_weights_only_unpickler.py`` around :415). So admitting a
+#      class does NOT only admit ``cls.__new__(cls)`` plus a ``__dict__``
+#      update -- a crafted file can call ``cls(...)`` with values it chose.
+#      Admissible therefore means: no filesystem, network or process side
+#      effects, no mutation of global state (``torch.manual_seed`` and friends
+#      -- a local ``torch.Generator`` is fine, which is what the seeded
+#      constructors here use), no dynamic code (``eval`` / ``exec`` /
+#      ``__import__``). Bad arguments raising, or allocating a large tensor,
+#      is acceptable: that is a failed load, not a compromised one.
+#
+# Note that half 2 was ALREADY true of the torch half of the allowlist (#222) --
+# admitting ``nn.Linear`` admits ``nn.Linear(...)`` on file-chosen sizes. It is
+# not something #288 introduced; it is something #288's comment has to state,
+# because this is now a list a human maintains.
+#
+# Every class below was audited against both halves, with the result recorded
+# next to it. ``test_every_admitted_class_is_safe_to_reconstruct`` re-derives
+# what is mechanically checkable -- the absence of pickle hooks, and the
+# absence of the dangerous-call list from each class's constructor and the
+# module-level helpers it reaches -- so a future edit that adds a
+# ``__setstate__``, or an ``open()`` to one of these constructors, fails rather
+# than quietly turning a name on this list into a code path. The part no test
+# can prove (that running the constructor on nonsense arguments is merely
+# useless) was hand-audited on 2026-08-12.
 #
 # EXACT IDENTITIES, never a module prefix. ``app.custom_nodes.*`` is code the
 # user uploaded and ``cdui_plugins.*`` is code they installed; neither has been
@@ -177,14 +202,20 @@ _CODEFYUI_MODULE_CLASSES: tuple[tuple[str, str], ...] = (
     ("app.nodes.vla.vla_model_node", "_ExpertBlock"),
 
     # The diffusion U-Net and the two modules it composes. Audited: ints and
-    # torch submodules; the seeded init happens in ``__init__``, which the
-    # unpickler does not call. No pickle hooks.
+    # torch submodules. Their ``__init__`` seeds weights, and the unpickler CAN
+    # reach it (rule 2 above), so that was checked rather than assumed: each
+    # seeds a LOCAL ``torch.Generator`` and never ``torch.manual_seed``, so a
+    # file-chosen seed changes only the tensor it then overwrites. No pickle
+    # hooks.
     ("app.nodes.diffusion.diffusion_unet_node", "_DiffusionUNetModule"),
     ("app.nodes.diffusion._resblock_module", "_ResBlockModule"),
     ("app.nodes.diffusion.timestep_embedding_node", "_TimestepMLP"),
 
-    # Transformer MoE, the seeded RNN cell, the RLHF reward head. Audited:
-    # ints and torch submodules only. No pickle hooks.
+    # Transformer MoE, the seeded RNN cell, the RLHF reward head. Audited: ints
+    # and torch submodules only; ``_SeededRNNCell``'s constructor is reachable
+    # with a file-chosen seed and uses a local ``torch.Generator`` (the
+    # ``torch.manual_seed`` calls in these two modules are in the NODES, which
+    # the unpickler cannot reach). No pickle hooks.
     ("app.nodes.transformer.moe_layer_node", "_MoELayer"),
     ("app.nodes.transformer.moe_layer_node", "_ExpertFFN"),
     ("app.nodes.rnn.rnn_cell_node", "_SeededRNNCell"),

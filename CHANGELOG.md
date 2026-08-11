@@ -160,13 +160,19 @@ received — each links to the release it was published as.
   uploaded; an `app.` prefix would have admitted it). `weights_only=True` stays
   on and #222's detonating-payload test still passes.
 
-  The admission rule is that reconstructing the class must only restore
-  attributes — no `__reduce__`, no `__setstate__`, nothing the unpickler runs on
-  file-controlled state. All 24 of CodefyUI's `nn.Module` classes were audited
-  against it, the result is recorded per class next to the list, and two tests
-  keep it honest: one re-derives the no-pickle-hooks property on every run, the
-  other fails when a new `nn.Module` is added to `app.nodes` and not audited, so
-  the list cannot rot back into the trap.
+  The admission rule has two halves, because admitting a class by name lets a
+  file both restore its attributes AND call its constructor: torch's restricted
+  unpickler runs `func(*args)` for any allowed name, so `cls(...)` is reachable
+  with file-chosen arguments — which was already true of `torch.nn`'s classes
+  under [#222]. So an admissible class defines no `__reduce__` / `__setstate__` /
+  `__getnewargs__`, *and* has a constructor that touches no files, no network
+  and no global state (a local `torch.Generator` is fine; `torch.manual_seed` is
+  not). All 24 of CodefyUI's `nn.Module` classes were audited against both
+  halves, the result is recorded per class next to the list, and two tests keep
+  it honest: one re-derives what is mechanically checkable in each half (no
+  pickle hooks; no dangerous call in the constructor or the module-level helpers
+  it reaches), the other fails when a new `nn.Module` is added to `app.nodes`
+  and not audited, so the list cannot rot back into the trap.
 
   Two edges remain, both stated at save time and in the new
   [Saving and Loading Models](https://docs.codefyui.com/usage/model-files) page:

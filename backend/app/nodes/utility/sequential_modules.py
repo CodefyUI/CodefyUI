@@ -40,11 +40,15 @@ way and closed the loop: all seven classes here are named in
 module-scope is what makes that possible at all -- an allowlist admits a class
 by NAME, and a function-local class has none.
 
-Which means the audit recorded next to that list applies to this file: a
-``__reduce__`` or a ``__setstate__`` added to any class here would turn a name
-on an allowlist into a code path. There is a test in
-``test_model_saver_loader_node.py`` that fails if one appears -- read the
-comment above ``_CODEFYUI_MODULE_CLASSES`` before adding either.
+Which means the audit recorded next to that list applies to this file, and it
+has two halves. A ``__reduce__`` or a ``__setstate__`` added to any class here
+would turn a name on an allowlist into a code path. And because torch's
+restricted unpickler implements REDUCE as ``func(*args)`` for an allowed global,
+a crafted file can call these CONSTRUCTORS with arguments it chose -- so an
+``__init__`` here must stay free of filesystem, network and global-state effects
+(the ``shape`` string ``Reshape`` parses is file-controlled). A test in
+``test_model_saver_loader_node.py`` fails if either half breaks; read the
+comment above ``_CODEFYUI_MODULE_CLASSES`` before changing an ``__init__``.
 
 Attribute names are load-bearing: they are the ``state_dict`` key prefixes
 (``encoder.``, ``lstm.``, ``attn.`` ...). Renaming one silently invalidates
