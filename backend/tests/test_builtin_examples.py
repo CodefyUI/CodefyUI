@@ -20,6 +20,12 @@ is an opaque JSON string that ``validate_graph`` cannot see into. The
 short-epoch test at the bottom of this file executes that graph for real,
 against a generated image folder instead of the 170 MB download. See
 ``test_resnet18_cifar10_baseline_short_epoch``.
+
+The TinyStories LM pretraining example (#292) gets the same treatment for the
+same reason, minus the execution: its description quotes a parameter count, an
+effective batch size and two token budgets, and every one of those is a fact
+about *other* nodes' params that ``validate_graph`` is blind to. See
+``test_tinystories_lm_example_still_describes_itself``.
 """
 
 from __future__ import annotations
@@ -61,6 +67,11 @@ _SLOW_NODE_TYPES = {
     "HuggingFaceDataset",
     "KaggleDataset",
     "Inference",
+    # Pulls a corpus off the Hugging Face Hub, and tokenising it is minutes of
+    # CPU even once it is local. Listed even though the one graph using it also
+    # trains — so an LLM example that only prepares data cannot start
+    # downloading in CI by being added.
+    "TextCorpusDataset",
 }
 
 
@@ -336,3 +347,136 @@ def test_resnet18_cifar10_baseline_short_epoch(tmp_path, monkeypatch):
 
     # The checkpoint landed where CheckpointSaver said it would.
     assert (tmp_path / "models" / "smoke.pt").is_file()
+
+
+# ── TinyStories LM pretraining: the description is the graph (#292) ─────────
+
+_LM_EXAMPLE = _EXAMPLES_ROOT / "LLM" / "TrainCausalLM-TinyStories" / "graph.json"
+
+#: What the example's own prose claims, and where each claim comes from.
+#:
+#: Every one of these is a relationship BETWEEN nodes, which is why none of
+#: them can be checked by looking at any single node: the model's context
+#: length has to match the dataset's block length, the effective batch is a
+#: product of two nodes' params, and the parameter count is a fact about the
+#: model node quoted in a string on the graph.
+_LM_SEQ_LEN = 1024
+_LM_MICRO_BATCH = 8
+_LM_ACCUMULATE = 4
+_LM_TRAIN_TOKEN_BUDGET = 20_000_000
+_LM_VAL_TOKEN_BUDGET = 2_000_000
+
+#: The reference shape epic #292 sizes its run against.
+#: ``test_causal_lm_model_node.py::
+#: test_the_advertised_default_size_matches_the_declared_defaults`` is what
+#: ties this number to the node's declared defaults, term by term. Here it is
+#: only checked that the graph still USES those defaults and still quotes the
+#: same figure -- so a change to the architecture fails there, and a change to
+#: this graph fails here.
+_LM_PARAM_COUNT = 203_668_480
+
+
+def test_tinystories_lm_example_still_describes_itself():
+    """Every number the example's description quotes is still in its params.
+
+    The gallery card is the only place a user reads before pressing Run, and
+    the numbers on it are the ones that decide whether the run fits in their
+    GPU and finishes today. A graph whose card has drifted from its params is
+    worse than one with no card.
+    """
+    payload = json.loads(_LM_EXAMPLE.read_text(encoding="utf-8"))
+    by_id = {n["id"]: n for n in payload["nodes"]}
+    description = payload["description"]
+
+    def params(node_id: str) -> dict:
+        assert node_id in by_id, f"{node_id} is missing from the LM example"
+        return by_id[node_id]["data"]["params"]
+
+    # The model is the epic's reference shape, unmodified.
+    from app.nodes.llm.causal_lm_model_node import CausalLMModelNode
+
+    declared = {p.name: p.default for p in CausalLMModelNode.define_params()}
+    model_params = params("model")
+    for name in ("vocab_size", "d_model", "n_layers", "n_heads", "d_ff",
+                 "max_seq_len", "tie_embeddings", "positional", "norm"):
+        assert model_params[name] == declared[name], (
+            f"model.{name} is {model_params[name]!r}, not the declared default "
+            f"{declared[name]!r} -- the example no longer builds the "
+            f"{_LM_PARAM_COUNT:,}-parameter reference shape it advertises")
+    assert f"{_LM_PARAM_COUNT:,}" in description, (
+        f"the description no longer quotes {_LM_PARAM_COUNT:,} parameters")
+
+    # A block longer than the model's positions is rejected at runtime rather
+    # than truncated (CausalLMModel), so this equality is the difference
+    # between a run and a ValueError on the first batch.
+    for packer in ("pack-train", "pack-val"):
+        assert params(packer)["seq_len"] == _LM_SEQ_LEN, packer
+    assert model_params["max_seq_len"] == _LM_SEQ_LEN
+
+    # The effective batch is a product of two nodes, and the description
+    # states both it and the token count it implies.
+    loader, loop = params("dl-train"), params("train")
+    assert loader["batch_size"] == _LM_MICRO_BATCH
+    assert loop["accumulate_steps"] == _LM_ACCUMULATE
+    effective = _LM_MICRO_BATCH * _LM_ACCUMULATE
+    assert f"an effective batch of {effective} sequences" in description
+    assert f"{effective * _LM_SEQ_LEN:,} tokens per optimizer step" in description
+
+    # The recipe the description quotes.
+    assert loop["precision"] == "bf16"
+    assert loop["epochs"] == 1
+    assert loop["grad_clip_norm"] == 1.0
+    optimizer = params("opt")
+    assert optimizer["type"] == "AdamW"
+    assert optimizer["lr"] == 3e-4
+    assert optimizer["weight_decay"] == 0.1
+    # The one value here that is not the Optimizer node's default: 0.999 is
+    # the vision-training beta2, and LM pretraining has used 0.95 since GPT-2.
+    # Quoted on the card precisely because it is a deviation.
+    assert optimizer["betas"] == "0.9, 0.95"
+    assert "betas 0.9, 0.95" in description
+
+    # The two budgets that decide how long "one epoch" takes.
+    assert params("pack-train")["max_tokens"] == _LM_TRAIN_TOKEN_BUDGET
+    assert params("pack-val")["max_tokens"] == _LM_VAL_TOKEN_BUDGET
+    assert f"{_LM_TRAIN_TOKEN_BUDGET:,} training" in description
+    assert f"{_LM_VAL_TOKEN_BUDGET:,} validation tokens" in description
+
+
+def test_tinystories_lm_example_scores_a_split_it_did_not_train_on():
+    """No leakage, and one tokenizer for the whole graph.
+
+    Both are invisible to ``validate_graph``: a perplexity node pointed at the
+    training blocks type-checks perfectly and reports a meaningless number,
+    and a second tokenizer with a different encoding would give the same
+    integer two different meanings without any port disagreeing.
+    """
+    payload = json.loads(_LM_EXAMPLE.read_text(encoding="utf-8"))
+    nodes, edges = payload["nodes"], payload["edges"]
+    by_id = {n["id"]: n for n in nodes}
+
+    def split_behind(packer_id: str) -> str:
+        corpus = _data_source(edges, packer_id, "dataset")
+        return by_id[corpus]["data"]["params"]["split"]
+
+    train_blocks = _data_source(edges, "dl-train", "dataset")
+    eval_blocks = _data_source(edges, "ppl", "dataset")
+    assert train_blocks != eval_blocks, (
+        "PerplexityEvaluate reads the blocks the DataLoader trains on")
+    assert split_behind(train_blocks) == "train", split_behind(train_blocks)
+    assert split_behind(eval_blocks) == "validation", split_behind(eval_blocks)
+
+    # One LMTokenizer feeds both packers and the generator, so the ids the
+    # model trained on are the ids it is scored and sampled with.
+    tokenizer_consumers = {
+        (e["target"], e.get("targetHandle"))
+        for e in edges
+        if e.get("type", "data") == "data" and e["source"] == "tok"
+    }
+    assert tokenizer_consumers == {
+        ("pack-train", "tokenizer"),
+        ("pack-val", "tokenizer"),
+        ("gen", "tokenizer"),
+    }, tokenizer_consumers
+    assert [n for n in nodes if n["type"] == "LMTokenizer"] == [by_id["tok"]], (
+        "the example has more than one LMTokenizer")
