@@ -877,6 +877,29 @@ const zhTW: NodeTranslations = {
       cache_dir: '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。',
     },
   },
+  PerplexityEvaluate: {
+    description:
+      '在沒看過的文字上為訓練好的語言模型打分。它會跑完整個資料集，把每一個計分位置的 cross-entropy 平均起來，再回報 $\\mathrm{perplexity} = \\exp(\\text{val\\_loss})$ — 大致可以讀成「模型在每一步大約是在幾個機率相當的 token 之間猶豫」，所以在 50257 個 token 的詞彙表上亂猜就是 50257。這個平均值是「每個 token」的，而且綁定這份資料集與這套 tokenizer，因此只有用同樣方式量出來的數字才能互相比較。',
+    params: {
+      batch_size: '一次計分幾個區塊。它不會改變結果 — 平均是以 token 數加權，而不是以批次數加權 — 只影響速度與記憶體。',
+      max_batches: '跑到這麼多批次就停（0 = 整份資料集）。適合上課時快速估一下；實際量了多少可以看 `tokens` 輸出。',
+      device: '在哪個裝置上計分（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上量測）。',
+      precision: '前向傳播使用的混合精度。在 Ampere 之後的顯卡上，bf16 大約可以省下一半的 activation 記憶體，長上下文往往得靠它才量得動；損失本身仍然以 fp32 累加。裝置若無法支援所選精度，會退回 fp32 並在 log 中說明。',
+    },
+  },
+  TextGenerate: {
+    description:
+      '用訓練好的語言模型接續一段提示文字，一個 token 一個 token 地生成，並且邊生成邊串流出來。temperature、top_k、top_p 這三個旋鈕決定寫出來的東西有多敢冒險：temperature 設 0 時每次都取機率最高的 token（安全但容易重複），調高則是拿連貫性換多樣性。遇到 end-of-text token 或達到 max_new_tokens 就停。',
+    params: {
+      prompt: '要接續的文字。當沒有 `prompt` 輸入連線時使用此欄位。提示文字的風格越接近訓練資料，小模型的表現越好。',
+      max_new_tokens: '最多生成幾個 token。每一個都要對「目前已經寫出來的全部內容」重新跑一次前向傳播，所以這是決定本節點要跑多久的旋鈕。',
+      temperature: '取樣前先把分數除以這個值：小於 1 會讓分布更尖銳，大於 1 會更平坦。0 = greedy，永遠取單一最可能的 token，結果可重現但容易繞圈打轉。',
+      top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。這是避免某個五萬分之一的 token 把整句話帶偏的手段。',
+      top_p: 'Nucleus 取樣：從機率最高的 token 開始累加，直到總和達到 p，就只從這些 token 取樣（1 = 關閉）。與 top_k 不同的是這個切點會自動調整 — 模型有把握時就窄，沒把握時就寬。',
+      seed: '取樣所用的隨機種子。同樣的種子加上同樣的模型，在任何裝置上都會得到同樣的文字，所以比較兩個 temperature 時，差異就只來自 temperature。',
+      device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
