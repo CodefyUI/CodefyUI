@@ -809,6 +809,34 @@ const zhTW: NodeTranslations = {
       colormap: '熱圖視覺化用的色階（僅前端使用，後端會忽略）。',
     },
   },
+  CausalLMModel: {
+    description:
+      '一個真的可以訓練的 GPT 風格 decoder-only transformer。輸出一個 MODEL，把 token ids（batch, seq_len）對應到下一個 token 的 logits（batch, seq_len, vocab_size）— 跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值大約是 3.5 億參數的模型；把 d_model 與 n_layers 調小，才能在一堂課的時間內用筆電訓練完。',
+    params: {
+      vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量。',
+      d_model: 'residual stream 的寬度：每個 token 穿過整個網路時所攜帶的向量大小。必須能被 n_heads 整除。',
+      n_layers: '堆疊幾層 transformer block。深度決定了模型能做幾步推理，成本隨層數線性增加。',
+      n_heads: '每一層的寬度要切給幾個 attention head。head 越多、同時追蹤的關係越多，但每個 head 的子空間就越窄（寬度為 d_model / n_heads）。',
+      d_ff: '每個 block 內部 MLP 的隱藏層寬度，慣例是 d_model 的 4 倍。模型有三分之二的參數住在這裡。',
+      max_seq_len: '模型有位置資訊可用的最長序列長度（單位：token）。超過長度的批次會直接報錯而不是截斷；生成時會以這個大小滑動視窗。',
+      tie_embeddings: '讓輸入的 embedding 與輸出的 head 共用同一個矩陣。小模型的標準作法：可以省下 vocab_size x d_model 個參數，而且通常還會更好。',
+      positional: '模型如何知道一個 token 在什麼位置。learned = 每個位置一個訓練出來的向量（GPT-2）；sinusoidal = 固定的 sin/cos 表（Vaswani et al.）；rope = 依位置旋轉 query 與 key（Llama），對更長的文字外推得最好。',
+      norm: '每個 sub-layer 前面的正規化層。rmsnorm 少了減平均與 bias — 稍微便宜一點，也是現代開源模型的選擇。',
+      activation: 'MLP 的非線性函數。gelu 是 transformer 的預設；silu（又叫 swish）是 Llama 的選擇；relu 最便宜。',
+      dropout: '訓練時被歸零的 activation 比例（0 = 關閉）。大語料預訓練通常關著；在小資料集上微調時再調高。',
+      gradient_checkpointing: '反向傳播時重新計算每個 block，而不是把 activation 存下來：記憶體省很多，時間多花約 30%。當一個 batch 塞不進顯卡時再打開。',
+      init_std: '權重初始化所用常態分布的標準差。0.02 是 GPT-2 的值；寫回 residual stream 的那幾個投影層還會再除以 sqrt(2 x n_layers)。',
+      seed: '權重初始化的隨機種子。同樣的種子會得到同樣的起始模型，兩次跑的差別就只有你改掉的部分。',
+    },
+  },
+  LMCrossEntropyLoss: {
+    description:
+      '專為語言模型調整形狀的 cross-entropy：把（batch, seq_len, vocab_size）的 logits 與（batch, seq_len）的 token ids 攤平後對齊，回傳所有位置的平均損失。搭配 CausalLMModel 接到 TrainingLoop 的 loss_fn。',
+    params: {
+      ignore_index: '這個 target id 不會產生任何損失與梯度。可以用在 padding，或指令資料中屬於提示（prompt）的那一半。-100 是各家工具共通的慣例。',
+      label_smoothing: '把一小部分機率質量分給其他 token，讓「答對但過度自信」也要付一點代價（0 = 關閉，0.1 是常見值）。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
