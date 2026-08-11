@@ -142,12 +142,29 @@ const minimapNodeColor = (node: any) => {
  *     (`!node.internals.handleBounds`), so every node is laid out once and its
  *     size is known to layout and to the minimap even if it is never looked at.
  *
- * WHAT A UNIT TEST CANNOT SEE. jsdom gives an unmeasured node zero area, and
- * zero area passes the visibility test, so all 300 nodes still render there
- * with this flag on. Edges are the opposite — unmeasured endpoints make every
- * edge test as off-screen — so the perf harness's drag-frame improvement is the
- * edge half under a condition no browser reaches. It is an upper bound, not a
- * prediction; the browser pass is what settles the #162 number.
+ * CULLING STARTS ONLY AFTER THE FIRST FRAME, and this is the part that fools a
+ * measurement. A node is force-rendered until React Flow has measured it, and
+ * measurement arrives through a ResizeObserver — which Chrome delivers only
+ * when the tab gets a rendering opportunity. A hidden, occluded or throttled
+ * tab gets none: `requestAnimationFrame` never fires, no node is ever
+ * measured, and EVERY node stays mounted with the flag set and correct.
+ * Verified in the built app: 320 nodes / 318 mounted before the first frame,
+ * 320 measured and 39 mounted after one. So count mounted nodes only in a
+ * foreground tab (or force a paint first) — a count taken in a background tab
+ * says nothing about culling.
+ *
+ * WHAT A UNIT TEST CANNOT SEE. jsdom is the same story permanently: it gives
+ * an unmeasured node zero area, and zero area passes the visibility test, so
+ * all 300 nodes still render there. Edges are the opposite — unmeasured
+ * endpoints make every edge test as off-screen — so the perf harness's
+ * drag-frame improvement is the edge half under a condition no browser
+ * reaches. It is an upper bound, not a prediction; the browser pass is what
+ * settles the #162 number.
+ *
+ * The store side of the same mechanism is load-bearing: `onNodesChange` must
+ * keep applying `dimensions` changes, or `measured` never reaches our nodes,
+ * @xyflow drops `handleBounds` on the next commit and every node becomes
+ * force-rendered again. `tabStore.test.ts` pins that.
  *
  * ONE KNOWN COST. A card that leaves the viewport unmounts, so state local to
  * it resets on the way back (the viz nodes' expanded toggle). NoteNode's

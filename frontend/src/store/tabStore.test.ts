@@ -1220,6 +1220,31 @@ describe('onNodesChange', () => {
     expect(activeTab().undoStack.length).toBe(0);
   });
 
+  it('lets a dimensions change write `measured` back onto the node', () => {
+    // This is what keeps viewport culling alive (#162), and it is easy to
+    // break without noticing. React Flow measures a node once and reports the
+    // size here as a `dimensions` change; `applyNodeChanges` copies it into
+    // `node.measured`. On the NEXT commit, @xyflow's `adoptUserNodes` rebuilds
+    // its internal node from ours and calls `parseHandles`, which keeps the
+    // measured handle positions only when the node we hand back still carries
+    // `measured` (`@xyflow/system` `parseHandles`: `return !userNode.measured
+    // ? undefined : internalNode?.internals.handleBounds`).
+    //
+    // Lose `measured` here and every commit resets `handleBounds` to
+    // undefined, which makes `getNodesInside` treat the node as
+    // `forceInitialRender` and render it wherever it is — culling silently
+    // stops working, with the flag still set and every other test green. A
+    // filtered `onNodesChange` that dropped change types it "does not care
+    // about" is exactly how that would happen.
+    store().setNodes([
+      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
+    ] as any);
+    store().onNodesChange([
+      { id: 'n1', type: 'dimensions', dimensions: { width: 240, height: 96 } } as never,
+    ]);
+    expect(activeTab().nodes[0].measured).toEqual({ width: 240, height: 96 });
+  });
+
   it('snapshots and removes nodes on a remove change', () => {
     store().setNodes([
       { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
