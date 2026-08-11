@@ -45,7 +45,13 @@ export interface RunListOptions {
   offset?: number;
 }
 
-/** One opened block on the path from the graph to the canvas the user sees. */
+/**
+ * One opened block on the path from the graph to the canvas the user sees.
+ *
+ * Structurally the `SubgraphPathEntry` the shared derivation returns; declared
+ * separately because the published contract (`contract.ts`) has to declare it
+ * with no imports, and `contract.assert.ts` proves the two stay identical.
+ */
 export interface GraphViewLevel {
   subgraphId: string;
   /** The block's name, exactly as the breadcrumb bar shows it. */
@@ -102,8 +108,10 @@ export interface CodefyUIPluginAPI {
     /** Always the WHOLE graph, from the top level down. See `getView`. */
     getGraph(): SerializedGraph;
     getNodeDefinitions(): NodeDefinition[];
-    /** Applies to the canvas the user has open, which is not always the top
-     * level. See `getView` before writing. */
+    /**
+     * Applies to the canvas the user has open, which is not always the top
+     * level. See `getView` -- and `commitGraphOperations` below for why.
+     */
     applyOperations(ops: GraphOp[]): ApplyResult;
     onGraphChanged(cb: () => void): () => void;
     /** Read-only: which level of the graph the user is looking at (#200 item 7). */
@@ -236,7 +244,6 @@ export function buildPluginAPI(
       getGraph: () => useTabStore.getState().getSerializedGraph(),
       getNodeDefinitions: () => useNodeDefStore.getState().definitions,
       applyOperations: (ops) => commitGraphOperations(ops),
-      getView: () => currentGraphView(),
       onGraphChanged: (cb) => {
         // Track the unsubscribe so the host can tear it down on a dev
         // hot-reload — otherwise re-activation would stack subscriptions.
@@ -244,6 +251,7 @@ export function buildPluginAPI(
         trackCleanup?.(unsubscribe);
         return unsubscribe;
       },
+      getView: () => currentGraphView(),
     },
     nodes: {
       registerRenderer: (nodeType, renderer) => {
