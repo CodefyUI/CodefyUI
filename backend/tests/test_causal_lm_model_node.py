@@ -759,3 +759,88 @@ def test_bf16_accumulation_and_clipping_train_on_cuda():
     losses = result["losses"]
     assert torch.isfinite(losses).all()
     assert float(losses[-1]) < float(losses[0])
+
+
+# ── #299: GQA / qk-norm / bias research knobs ───────────────────────────────
+
+
+def test_default_n_kv_heads_keeps_the_pre_299_layout_and_count():
+    fused = _build()["model"]
+    explicit = _build(n_kv_heads=0)["model"]
+    assert _build()["param_count"] == _build(n_kv_heads=0)["param_count"]
+    # The MHA path keeps the fused qkv projection byte-for-byte.
+    assert fused.blocks[0].attn.qkv is not None
+    for a, b in zip(fused.parameters(), explicit.parameters()):
+        assert torch.equal(a, b)
+
+
+def test_gqa_param_count_matches_analytic_delta():
+    mha = _build()["param_count"]
+    gqa = _build(n_kv_heads=2)["param_count"]
+    d = TINY["d_model"]
+    head_dim = d // TINY["n_heads"]
+    # Fused qkv (3d*d + 3d) becomes q (d*d + d) + kv (2*kvh*hd*d + 2*kvh*hd).
+    per_block_delta = (3 * d * d + 3 * d) - (
+        (d * d + d) + (2 * 2 * head_dim * d + 2 * 2 * head_dim))
+    assert mha - gqa == TINY["n_layers"] * per_block_delta
+
+
+def test_gqa_and_mqa_forward_backward_and_causality():
+    for kv_heads in (2, 1):
+        model = _build(n_kv_heads=kv_heads, positional="rope")["model"]
+        ids = torch.randint(0, TINY["vocab_size"], (2, 12))
+        logits = model(ids)
+        assert logits.shape == (2, 12, TINY["vocab_size"])
+        logits.sum().backward()
+        # Causality: perturbing the future must not change the past.
+        model.eval()
+        base = torch.randint(0, TINY["vocab_size"], (1, 10))
+        changed = base.clone()
+        changed[0, 6:] = (changed[0, 6:] + 1) % TINY["vocab_size"]
+        with torch.no_grad():
+            assert torch.allclose(
+                model(base)[0, :6], model(changed)[0, :6], atol=1e-5)
+
+
+def test_invalid_n_kv_heads_names_both_params():
+    with pytest.raises(ValueError, match=r"n_kv_heads=3.*n_heads=4"):
+        _build(n_kv_heads=3)
+
+
+def test_qk_norm_adds_per_head_gains_and_trains():
+    plain = _build()["param_count"]
+    normed_result = _build(qk_norm=True)
+    head_dim = TINY["d_model"] // TINY["n_heads"]
+    assert normed_result["param_count"] - plain == (
+        TINY["n_layers"] * 2 * head_dim)
+    model = normed_result["model"]
+    ids = torch.randint(0, TINY["vocab_size"], (2, 8))
+    model(ids).sum().backward()
+    assert model.blocks[0].attn.q_norm.weight.grad is not None
+
+
+def test_bias_false_removes_attention_and_mlp_biases():
+    model = _build(bias=False)["model"]
+    for name, _ in model.named_parameters():
+        assert not (
+            name.endswith(".bias")
+            and (".attn." in name or ".mlp." in name)
+        ), f"unexpected bias parameter: {name}"
+    # Analytic: per block the fused qkv (3d) + out_proj (d) + fc1 (d_ff)
+    # + fc2 (d) biases disappear.
+    d, ff = TINY["d_model"], TINY["d_ff"]
+    expected_delta = TINY["n_layers"] * (3 * d + d + ff + d)
+    assert _build()["param_count"] - _build(bias=False)["param_count"] == expected_delta
+
+
+def test_knobs_are_seed_deterministic():
+    kwargs = {"n_kv_heads": 2, "qk_norm": True, "bias": False}
+    first = _build(**kwargs)["model"]
+    second = _build(**kwargs)["model"]
+    for a, b in zip(first.parameters(), second.parameters()):
+        assert torch.equal(a, b)
+
+
+def test_new_knobs_are_structural_params():
+    for name in ("n_kv_heads", "qk_norm", "bias"):
+        assert name in CausalLMModelNode.structural_params
