@@ -32,17 +32,37 @@ you:
    silently — the frontend claiming one version while the backend claims
    another — so check all three before tagging.
 
-3. **Stamp any "unreleased" version placeholder in the docs.**
-   `git grep -n "unreleased" docs/` — a docs page that promises a feature "from
-   the next release" has to name the release once there is one. Today that is the
-   plugin `apiVersion` table in
-   `docs/docs/advanced/plugin-frontend-extensions.md` (and its zh-TW twin), whose
-   rightmost column says which CodefyUI version shipped each `apiVersion`; a new
-   row lands as *next release (unreleased)* because the number does not exist
-   when the PR is written. **Both locales.** This is a real failure, not a
-   hypothetical: the apiVersion 3 row said "1.5.0" for three releases — a version
-   that was never tagged — because it was written before 2.0.0 was the number,
-   and nothing ever came back to correct it.
+3. **Stamp every docs placeholder that is waiting for this version number.**
+
+   ```bash
+   git grep -n "stamp-on-release" docs/
+   ```
+
+   A docs page that promises a feature "from the next release" has to name the
+   release once there is one, so every such spot carries the marker
+   `{/* stamp-on-release */}` — an **MDX** comment, which renders to nothing at
+   all (verified: the string does not appear in the built HTML of either locale).
+   Replace the placeholder with the version you are tagging and delete the marker
+   with it.
+
+   > Use `{/* ... */}`, not `<!-- ... -->`. Docusaurus compiles these `.md` pages
+   > as MDX, where an HTML comment is a syntax error — `pnpm build` in `docs/`
+   > fails with "MDX compilation failed" rather than quietly ignoring it.
+
+   The marker is ASCII **on purpose**: the placeholder text itself is
+   translated (`*next release (unreleased)*` in `docs/docs/`,
+   `*下一個版本（尚未發布）*` in `docs/i18n/zh-TW/`), so grepping for the English
+   words finds the English row and silently walks past the Chinese one — which
+   reproduces the bug in the locale nobody proofreads. One marker, both locales,
+   one command. Add it to any new placeholder you write, in every locale.
+
+   Today the marker sits on the plugin `apiVersion` table and its availability
+   note (`docs/.../advanced/plugin-frontend-extensions.md` + the zh-TW twin),
+   whose version column says which CodefyUI release shipped each `apiVersion`;
+   a new row lands as a placeholder because the number does not exist when the
+   PR is written. That is not hypothetical: the apiVersion 3 row said "1.5.0"
+   from 2.0.0 through 2.2.0 — a version never tagged — because it was written
+   before 2.0.0 was the number, and nothing brought anyone back to it.
 
 Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.
