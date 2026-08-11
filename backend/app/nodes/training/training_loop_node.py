@@ -355,22 +355,332 @@ SCHEDULE_WARNING_KIND = "lr_schedule_mismatch"
 #: fixes, and a client that branches on ``kind`` needs to tell them apart.
 SCHEDULE_RESUME_WARNING_KIND = "lr_schedule_resume_lost"
 
-#: The fact every one of the notes below is a consequence of.
+#: The fact every one of the notes below is a consequence of, at the default
+#: ``scheduler_step=epoch``.
 _PER_EPOCH = (
     "TrainingLoop steps the scheduler once per EPOCH, so this parameter "
     "counts epochs, not batches"
 )
 
+#: Its ``scheduler_step=optimizer_step`` twin (#308). #303 added that mode and
+#: every note below went on saying "epochs" regardless, which told a correctly
+#: configured per-step run to break itself.
+_PER_STEP = (
+    "TrainingLoop.scheduler_step=optimizer_step advances the scheduler once "
+    "per OPTIMIZER STEP, so this parameter counts optimizer steps, not epochs"
+)
 
-def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
+
+def _plural(count: int, noun: str) -> str:
+    """``"1 optimizer step"`` / ``"6 optimizer steps"``."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+class _Clock:
+    """Which clock a schedule's length is measured against (#308).
+
+    The advisory below asks one question -- "does this schedule's length
+    agree with this run's?" -- and until #303 there was only one possible
+    answer to "how long is the run": ``TrainingLoop.epochs``. With
+    ``scheduler_step=optimizer_step`` the same schedule is measured against
+    the run's OPTIMIZER-STEP budget instead, and every number, unit and
+    correction in every note has to change with it. Passing a clock rather
+    than duplicating the branches keeps the two modes from drifting into
+    saying different things about the same trap -- and keeps the epoch-mode
+    wording byte-identical to what #205/#244/#252 shipped, which the tests
+    in ``test_lr_schedule_length.py`` pin.
+    """
+
+    __slots__ = ("budget", "per_step")
+
+    def __init__(self, budget: int, *, per_step: bool) -> None:
+        #: How many times the loop will step the scheduler over the run.
+        self.budget = budget
+        self.per_step = per_step
+
+    @property
+    def unit(self) -> str:
+        return "optimizer step" if self.per_step else "epoch"
+
+    @property
+    def units(self) -> str:
+        return "optimizer steps" if self.per_step else "epochs"
+
+    @property
+    def caveat(self) -> str:
+        return _PER_STEP if self.per_step else _PER_EPOCH
+
+    @property
+    def budget_phrase(self) -> str:
+        """How a note names the run's length.
+
+        ``TrainingLoop.epochs=20`` is a parameter the user can go and look
+        at; a step budget is derived (see :func:`_optimizer_step_budget`),
+        so it is stated as a fact about the run instead of as a field name.
+        """
+        if self.per_step:
+            return f"this run takes {_plural(self.budget, self.unit)}"
+        return f"TrainingLoop.epochs={self.budget}"
+
+    @property
+    def budget_name(self) -> str:
+        """The budget as a thing to be smaller or larger than."""
+        return "the step budget" if self.per_step else "epochs"
+
+    def at(self, position: int) -> str:
+        """Where in the run *position* falls, in this clock's words."""
+        if self.per_step:
+            return f"at optimizer step {position}"
+        return f"at the end of epoch {position}"
+
+    @property
+    def total_steps_unit(self) -> str:
+        """Why ``total_steps`` is the number this clock says it is.
+
+        ``OneCycleLR``'s own documentation counts optimizer steps, so in
+        per-step mode the node's parameter finally means what the upstream
+        docs mean -- and saying so is the fastest way to unlearn the
+        epoch-mode rule.
+        """
+        if self.per_step:
+            return (
+                "that is this run's optimizer-step budget (max_steps when "
+                "set, otherwise epochs x steps per epoch), which is exactly "
+                "what OneCycleLR's own documentation means by a step"
+            )
+        return (
+            "it is an epoch count here, not the batch count OneCycleLR's own "
+            "documentation means by a step"
+        )
+
+
+def _optimizer_step_budget(
+    *,
+    epochs: Any,
+    start_epoch: Any,
+    batches_per_epoch: Any,
+    accumulate_steps: Any,
+    max_steps: Any,
+) -> int | None:
+    """How many optimizer steps this run will take in total, or ``None``.
+
+    #308: the number a per-step schedule has to agree with. ``None`` means
+    "not knowable before the run", and the caller must then emit NO advisory
+    -- a guess here would nag exactly the users whose configuration the
+    check cannot see, which is the failure #308 is about in a new costume.
+
+    Derived rather than read off a parameter, because there is no single
+    parameter that holds it:
+
+    * ``max_steps`` is a CAP, not a promise. A run whose epochs run out
+      first takes fewer steps than it, so it is only the budget when it
+      actually binds.
+    * the epoch-derived count is ``epochs x steps per epoch``, and steps per
+      epoch is a CEILING division by ``accumulate_steps`` rather than a
+      floor: the loop applies an epoch's short tail window as a step of its
+      own (see the "tail of a partial accumulation window" comment) rather
+      than carrying it into the next epoch.
+    * ``len(dataloader)`` does not exist for an ``IterableDataset`` or a
+      hand-rolled generator, which is the unknowable case.
+
+    Absolute, like the epoch-mode comparison: ``epochs`` is the whole run's
+    target and a schedule is meant to span the whole run, so a resumed leg
+    is measured against the total rather than against what is left. (A
+    per-step schedule on a RESUMED run is repositioned by
+    ``_fast_forward_scheduler``, which replays one step per completed epoch
+    -- residue of #303 that this advisory cannot fix and does not try to.)
+    """
+    try:
+        epochs = int(epochs)
+        start_epoch = max(0, int(start_epoch))
+        accumulate_steps = max(1, int(accumulate_steps))
+        max_steps = max(0, int(max_steps))
+        batches = None if batches_per_epoch is None else int(batches_per_epoch)
+    except (TypeError, ValueError):
+        return None
+    if epochs < 1:
+        return None
+
+    if batches is not None:
+        if batches < 1:
+            # An empty loader takes no steps at all; there is no schedule
+            # length that "fits" that, and the run has bigger problems.
+            return None
+        per_epoch = -(-batches // accumulate_steps)
+        if max_steps and max_steps < (epochs - start_epoch) * per_epoch:
+            # The budget binds before the epochs run out, so the run ends
+            # there: the whole run's step count is what earlier legs already
+            # spent plus this call's budget.
+            return start_epoch * per_epoch + max_steps
+        return epochs * per_epoch
+
+    # No ``len()``: the steps per epoch are unknowable, so the only budget
+    # left is a declared one -- and only on a fresh run, where this call's
+    # budget IS the whole run's. Everything else declines.
+    if max_steps and start_epoch == 0:
+        return max_steps
+    return None
+
+
+def _sequential_tail_length(tail: Any) -> int | None:
+    """The declared length of a ``SequentialLR``'s last phase, or ``None``.
+
+    Only the three the warmup families (#297) actually compose are read.
+    Anything else -- an ``ExponentialLR`` tail, a plugin's own scheduler --
+    has no declared length to add, so the composed total is not recoverable
+    and the caller must decline rather than invent one.
+    """
+    import torch.optim.lr_scheduler as sched_module
+
+    if isinstance(tail, sched_module.CosineAnnealingLR):
+        value = getattr(tail, "T_max", None)
+    elif isinstance(tail, (sched_module.LinearLR, sched_module.ConstantLR)):
+        # ``ConstantLR(total_iters=0)`` is constant_with_warmup's hold: a
+        # legitimate zero, hence ``< 0`` below rather than ``< 1``.
+        value = getattr(tail, "total_iters", None)
+    else:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _sequential_span(lr_scheduler: Any) -> tuple[int, int, Any] | None:
+    """``(ramp_end, total, tail)`` of a warmup schedule, or ``None``.
+
+    #308's third fix. The ``warmup_*`` families (#297/#303) compose a
+    ``SequentialLR``, which matched NONE of the ``isinstance`` branches in
+    :func:`_schedule_length_note` -- so the one family whose whole point is
+    a step-denominated total was the one family never length-checked, in
+    either mode.
+
+    The composed total is recoverable from the object, which is what lets
+    this keep the "read off the scheduler, not the node's params" rule the
+    rest of the check follows: ``_milestones[-1]`` is where the tail takes
+    over, and the tail carries its own length. Measured on torch 2.11 for
+    all three families ``LRScheduler`` builds at warmup=3, total=10:
+    warmup_cosine 3 + CosineAnnealingLR(T_max=7), warmup_linear 3 +
+    LinearLR(total_iters=7), constant_with_warmup 3 +
+    ConstantLR(total_iters=0).
+
+    Both attributes are private, so anything unexpected -- a torch rename,
+    a hand-built ``SequentialLR`` of schedulers that declare no length --
+    returns ``None`` and the check says nothing.
+    """
+    schedulers = getattr(lr_scheduler, "_schedulers", None)
+    milestones = getattr(lr_scheduler, "_milestones", None)
+    if not schedulers or not milestones:
+        return None
+    try:
+        ramp_end = max(int(m) for m in milestones)
+    except (TypeError, ValueError):
+        return None
+    if ramp_end < 1:
+        return None
+    tail_length = _sequential_tail_length(schedulers[-1])
+    if tail_length is None:
+        return None
+    return ramp_end, ramp_end + tail_length, schedulers[-1]
+
+
+def _sequential_note(lr_scheduler: Any, clock: _Clock) -> str | None:
+    """The warmup families' half of :func:`_schedule_length_note` (#308)."""
+    import torch.optim.lr_scheduler as sched_module
+
+    span = _sequential_span(lr_scheduler)
+    if span is None:
+        return None
+    ramp_end, total, tail = span
+    tail_name = type(tail).__name__
+    shape = f"{ramp_end} of ramp then {total - ramp_end} of {tail_name}"
+
+    # The ramp not finishing is reported first and on its own: it subsumes
+    # "total longer than the run" (the total is never below the ramp), and
+    # it is the worse of the two -- a run that ends mid-warmup never trains
+    # at the learning rate the user set at all, so the LR they tuned is not
+    # the LR that ran.
+    if ramp_end >= clock.budget:
+        if clock.per_step:
+            fix = (
+                f"Lower LRScheduler.warmup_steps well below {clock.budget}; a "
+                f"few percent of the run is the usual choice."
+            )
+        else:
+            # An epoch budget is small enough that "a few percent of it" is
+            # usually below warmup_steps' minimum of 1, so the honest fix in
+            # this mode is the mode itself: warmup_steps is denominated in
+            # optimizer steps (#297) and only means what it says there.
+            fix = (
+                f"Either lower LRScheduler.warmup_steps below {clock.budget}, "
+                f"or set TrainingLoop.scheduler_step to optimizer_step -- "
+                f"these families are denominated in optimizer steps (#297), "
+                f"which is the unit warmup_steps was written for."
+            )
+        return (
+            f"This warmup schedule ramps the learning rate up over "
+            f"{_plural(ramp_end, clock.unit)} but {clock.budget_phrase} "
+            f"({clock.caveat}) -- the ramp never finishes, so the run never "
+            f"trains at the learning rate set on the Optimizer node (it "
+            f"stops around {100.0 * clock.budget / ramp_end:.0f}% of the way "
+            f"up). {fix}"
+        )
+
+    if total == ramp_end:
+        # constant_with_warmup: its tail is ConstantLR(total_iters=0), which
+        # holds the learning rate for as long as it is stepped. There is no
+        # cycle length to disagree with the run's -- a longer run is simply
+        # a longer hold -- so past the ramp there is nothing to say.
+        return None
+
+    if total == clock.budget:
+        return None
+
+    if total > clock.budget:
+        return (
+            f"This warmup schedule spans {_plural(total, clock.unit)} "
+            f"({shape}) but {clock.budget_phrase} ({clock.caveat}) -- the run "
+            f"traverses only {100.0 * clock.budget / total:.1f}% of it, so "
+            f"the decay never finishes and the low-learning-rate phase the "
+            f"schedule exists for never happens. Set LRScheduler.total_steps "
+            f"to {clock.budget}."
+        )
+
+    overrun = clock.budget - total
+    if isinstance(tail, sched_module.CosineAnnealingLR):
+        consequence = (
+            f"past the end of the cosine the curve turns back UP, so the "
+            f"last {_plural(overrun, clock.unit)} train at a RISING learning "
+            f"rate"
+        )
+    else:
+        consequence = (
+            f"{tail_name} is already finished and simply holds its final "
+            f"value, so the last {_plural(overrun, clock.unit)} train at "
+            f"that value -- effectively zero for warmup_linear, which is "
+            f"compute spent without learning"
+        )
+    return (
+        f"This warmup schedule spans {_plural(total, clock.unit)} ({shape}) "
+        f"but {clock.budget_phrase} ({clock.caveat}) -- {consequence}. Set "
+        f"LRScheduler.total_steps to {clock.budget}."
+    )
+
+
+def _schedule_length_note(
+    lr_scheduler: Any,
+    epochs: int,
+    *,
+    per_step: bool = False,
+    step_budget: int | None = None,
+) -> str | None:
     """One sentence about a schedule that does not fit this run, or ``None``.
 
-    Every scheduler ``LRScheduler`` builds is stepped once per EPOCH by the
-    loop below, while PyTorch's own documentation counts optimizer steps for
-    several of the same parameters. The two units are off by
-    ``len(dataloader)``, and nothing anywhere reconciles them -- so a
-    schedule can be entirely wrong for a run without a single thing going
-    red. That is the whole of #205 and #244:
+    At the default ``scheduler_step=epoch`` every scheduler ``LRScheduler``
+    builds is stepped once per EPOCH by the loop below, while PyTorch's own
+    documentation counts optimizer steps for several of the same parameters.
+    The two units are off by ``len(dataloader)``, and nothing anywhere
+    reconciles them -- so a schedule can be entirely wrong for a run without
+    a single thing going red. That is the whole of #205 and #244:
 
     * ``CosineAnnealingLR.T_max`` larger than ``epochs`` stops the run
       partway down the cosine (the LR never reaches its minimum); smaller
@@ -401,6 +711,17 @@ def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
     params, so the check also covers a scheduler restored from a checkpoint,
     built by a plugin node, or subclassed -- and so it describes what will
     actually run rather than what was typed.
+
+    **Which clock (#308).** With ``per_step`` (the caller's
+    ``scheduler_step=optimizer_step``, #303) the scheduler advances once per
+    optimizer step, so every length here is a step count and the run's length
+    is ``step_budget`` -- see :func:`_optimizer_step_budget`. A ``per_step``
+    call with no budget says NOTHING: the budget is unknowable before the run
+    (an ``IterableDataset`` with no ``max_steps``) and #308 is precisely a
+    report of confident wrong advice being worse than silence. Before this,
+    the advisory ignored the mode and told the exact configuration #303
+    recommends -- ``OneCycleLR`` with ``total_steps = max_steps`` -- to set
+    ``total_steps`` to the epoch count instead, on every run.
     """
     import torch.optim.lr_scheduler as sched_module
 
@@ -413,6 +734,19 @@ def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
     if epochs < 1:
         return None
 
+    if per_step:
+        if step_budget is None:
+            return None
+        try:
+            budget = int(step_budget)
+        except (TypeError, ValueError):
+            return None
+        if budget < 1:
+            return None
+        clock = _Clock(budget, per_step=True)
+    else:
+        clock = _Clock(epochs, per_step=False)
+
     def _count(attr: str) -> int | None:
         """*attr* as a plain positive int, or None if it is anything else.
 
@@ -424,65 +758,70 @@ def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
             return None
         return value
 
-    # Checked before CosineAnnealingLR only for the reader's sake: the two
-    # are siblings under LRScheduler, not parent and child, so the order
-    # cannot actually matter.
+    # Checked first because it is the one family whose length lives in a
+    # composed object rather than in an attribute of its own; the rest are
+    # siblings under LRScheduler, so their order cannot matter.
+    if isinstance(lr_scheduler, sched_module.SequentialLR):
+        return _sequential_note(lr_scheduler, clock)
+
     if isinstance(lr_scheduler, sched_module.CosineAnnealingWarmRestarts):
         t_0 = _count("T_0")
-        if t_0 is not None and t_0 >= epochs:
+        if t_0 is not None and t_0 >= clock.budget:
             return (
-                f"CosineAnnealingWarmRestarts restarts every T_0={t_0} epochs "
-                f"but TrainingLoop.epochs={epochs}, so no restart will ever "
-                f"happen and this run is a single cosine decay with extra "
-                f"steps. Warm restarts need T_0 SMALLER than epochs -- note "
-                f"this is the opposite of CosineAnnealingLR, where equality "
-                f"is the right setting. T_0 comes from LRScheduler.T_max."
+                f"CosineAnnealingWarmRestarts restarts every T_0={t_0} "
+                f"{clock.units} but {clock.budget_phrase}, so no restart will "
+                f"ever happen and this run is a single cosine decay with "
+                f"extra steps. Warm restarts need T_0 SMALLER than "
+                f"{clock.budget_name} -- note this is the opposite of "
+                f"CosineAnnealingLR, where equality is the right setting. "
+                f"T_0 comes from LRScheduler.T_max."
             )
         return None
 
     if isinstance(lr_scheduler, sched_module.CosineAnnealingLR):
         t_max = _count("T_max")
-        if t_max is None or t_max == epochs:
+        if t_max is None or t_max == clock.budget:
             return None
-        if t_max > epochs:
+        if t_max > clock.budget:
             consequence = (
-                f"the run covers only {epochs} of the {t_max} epochs the "
-                f"cosine needs, so the learning rate never reaches its minimum"
+                f"the run covers only {clock.budget} of the {t_max} "
+                f"{clock.units} the cosine needs, so the learning rate never "
+                f"reaches its minimum"
             )
         else:
             consequence = (
                 f"past T_max the cosine turns back UP, so the last "
-                f"{epochs - t_max} epoch(s) train at a RISING learning rate"
+                f"{clock.budget - t_max} {clock.unit}(s) train at a RISING "
+                f"learning rate"
             )
         return (
-            f"CosineAnnealingLR anneals over T_max={t_max} epochs but "
-            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- {consequence}. "
-            f"Set LRScheduler.T_max to {epochs} unless the mismatch is "
+            f"CosineAnnealingLR anneals over T_max={t_max} {clock.units} but "
+            f"{clock.budget_phrase} ({clock.caveat}) -- {consequence}. "
+            f"Set LRScheduler.T_max to {clock.budget} unless the mismatch is "
             f"deliberate; nothing will fail either way, the accuracy is just "
             f"quietly worse."
         )
 
     if isinstance(lr_scheduler, sched_module.OneCycleLR):
         total = _count("total_steps")
-        if total is None or total == epochs:
+        if total is None or total == clock.budget:
             return None
-        if total > epochs:
-            percent = 100.0 * epochs / total
+        if total > clock.budget:
+            percent = 100.0 * clock.budget / total
             return (
                 f"OneCycleLR spans total_steps={total} but "
-                f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- this run "
+                f"{clock.budget_phrase} ({clock.caveat}) -- this run "
                 f"traverses only {percent:.1f}% of the one-cycle schedule, so "
                 f"the learning rate warms up and NEVER anneals, which is the "
                 f"whole point of one-cycle. Set LRScheduler.total_steps to "
-                f"{epochs}: it is an epoch count here, not the batch count "
-                f"OneCycleLR's own documentation means by a step."
+                f"{clock.budget}: {clock.total_steps_unit}."
             )
         return (
             f"OneCycleLR spans total_steps={total} but "
-            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- it will raise "
-            f"\"Tried to step {total + 1} times\" at the end of epoch "
-            f"{total + 1} and take the run down with it. Set "
-            f"LRScheduler.total_steps to {epochs}."
+            f"{clock.budget_phrase} ({clock.caveat}) -- it will raise "
+            f"\"Tried to step {total + 1} times\" {clock.at(total + 1)} and "
+            f"take the run down with it. Set LRScheduler.total_steps to "
+            f"{clock.budget}."
         )
 
     # The remaining two are not cycle lengths but periods, and only the
@@ -497,35 +836,41 @@ def _schedule_length_note(lr_scheduler: Any, epochs: int) -> str | None:
             first = min(int(m) for m in milestones)
         except (TypeError, ValueError):
             return None
-        if first < epochs:
+        if first < clock.budget:
             return None
         return (
-            f"MultiStepLR's earliest milestone is epoch {first} but "
-            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- no drop will "
+            f"MultiStepLR's earliest milestone is {clock.unit} {first} but "
+            f"{clock.budget_phrase} ({clock.caveat}) -- no drop will "
             f"ever happen and the run trains at a constant learning rate. "
-            f"Lower LRScheduler.step_size below {epochs}; the milestones are "
-            f"1x, 2x, 3x and 4x that value."
+            f"Lower LRScheduler.step_size below {clock.budget}; the "
+            f"milestones are 1x, 2x, 3x and 4x that value."
         )
 
     if isinstance(lr_scheduler, sched_module.StepLR):
         step_size = _count("step_size")
-        if step_size is None or step_size < epochs:
+        if step_size is None or step_size < clock.budget:
             return None
         return (
-            f"StepLR drops the learning rate every {step_size} epochs but "
-            f"TrainingLoop.epochs={epochs} ({_PER_EPOCH}) -- the drop never "
+            f"StepLR drops the learning rate every {step_size} {clock.units} "
+            f"but {clock.budget_phrase} ({clock.caveat}) -- the drop never "
             f"happens and the run trains at a constant learning rate. Lower "
-            f"LRScheduler.step_size below {epochs}, or drop the scheduler."
+            f"LRScheduler.step_size below {clock.budget}, or drop the "
+            f"scheduler."
         )
 
-    # ExponentialLR decays every epoch (no length to disagree about) and
-    # ReduceLROnPlateau is metric-driven, so neither can be checked against
-    # an epoch count at all.
+    # ExponentialLR decays on every step it is given (no length to disagree
+    # about) and ReduceLROnPlateau is metric-driven, so neither can be
+    # checked against a run length at all, in either mode.
     return None
 
 
 def _report_schedule_length(
-    lr_scheduler: Any, epochs: int, context: Any
+    lr_scheduler: Any,
+    epochs: int,
+    context: Any,
+    *,
+    per_step: bool = False,
+    step_budget: int | None = None,
 ) -> str | None:
     """Emit :func:`_schedule_length_note` everywhere it can be seen.
 
@@ -539,7 +884,8 @@ def _report_schedule_length(
     Never raises: an advisory must not be able to fail the run it is about.
     """
     try:
-        note = _schedule_length_note(lr_scheduler, epochs)
+        note = _schedule_length_note(
+            lr_scheduler, epochs, per_step=per_step, step_budget=step_budget)
     except Exception:  # noqa: BLE001 - a note is never worth an exception
         logger.debug("could not check the LR schedule's length", exc_info=True)
         return None
@@ -737,6 +1083,20 @@ class TrainingLoopNode(BaseNode):
     def define_outputs(cls) -> list[PortDefinition]:
         return [
             PortDefinition(name="model", data_type=DataType.MODEL, description="Trained model (best if early stopping)"),
+            PortDefinition(
+                name="optimizer",
+                data_type=DataType.OPTIMIZER,
+                description=(
+                    "The optimizer this run actually trained with. Wire it "
+                    "to CheckpointSaver.optimizer so the save path is a "
+                    "visible edge rather than an assumption (#148): it is "
+                    "the same object as the input port whenever that one was "
+                    "usable, and a REBUILT one when it was not (an optimizer "
+                    "whose parameters did not line up with the model), which "
+                    "is the case where wiring CheckpointSaver from the "
+                    "Optimizer node instead stores state that never trained."
+                ),
+            ),
             PortDefinition(name="losses", data_type=DataType.TENSOR, description="Training loss per epoch"),
             PortDefinition(name="val_losses", data_type=DataType.TENSOR, description="Validation loss per epoch (empty if no val_dataloader)"),
             PortDefinition(name="metrics", data_type=DataType.ANY, description="Training metrics dict (final_loss, best_epoch, lr_history, etc.)"),
@@ -887,7 +1247,11 @@ class TrainingLoopNode(BaseNode):
                     "schedules (warmup_cosine, OneCycleLR with total_steps = "
                     "max_steps) need in a step-budgeted run. "
                     "ReduceLROnPlateau is metric-driven and stays per-epoch "
-                    "in either mode."
+                    "in either mode. This also decides what every length on "
+                    "the LRScheduler node means (T_max, total_steps, "
+                    "step_size) and which clock the schedule-length advisory "
+                    "measures them against: epochs here, this run's "
+                    "optimizer-step budget there (#308)."
                 ),
                 advanced=True,
             ),
@@ -1153,7 +1517,28 @@ class TrainingLoopNode(BaseNode):
         # start_epoch``: a resumed scheduler is fast-forwarded to
         # ``start_epoch`` by _prepare_scheduler, so the schedule still spans
         # the whole run.
-        schedule_note = _report_schedule_length(lr_scheduler, epochs, context)
+        #
+        # #308: WHICH length depends on ``scheduler_step``. Per-epoch
+        # stepping compares against ``epochs``; ``optimizer_step`` (#303)
+        # advances the scheduler once per optimizer step, so it must compare
+        # against this run's step budget instead -- otherwise the check tells
+        # the exact configuration #303's own description recommends
+        # (OneCycleLR with total_steps = max_steps) to set total_steps to the
+        # epoch count, every single run. A budget of None means "not knowable
+        # before the run" and produces no advisory at all.
+        step_budget = (
+            _optimizer_step_budget(
+                epochs=epochs,
+                start_epoch=start_epoch,
+                batches_per_epoch=total_batches,
+                accumulate_steps=accumulate_steps,
+                max_steps=max_steps,
+            )
+            if scheduler_per_step else None
+        )
+        schedule_note = _report_schedule_length(
+            lr_scheduler, epochs, context,
+            per_step=scheduler_per_step, step_budget=step_budget)
 
         if start_epoch >= epochs:
             logger.warning(
@@ -1918,6 +2303,16 @@ class TrainingLoopNode(BaseNode):
 
         result: dict[str, Any] = {
             "model": model,
+            # #148: the optimizer _prepare_optimizer settled on, which is NOT
+            # always the one on the input port -- the ``rebuilt`` branch
+            # constructs a fresh one and the input object never trains. Until
+            # this port existed, CheckpointSaver could only be fed from the
+            # Optimizer node, so the save was correct only because the other
+            # two branches mutate that object in place AND because the
+            # train.model -> save.model edge happened to order the two nodes.
+            # Returned on every path, interrupted runs included: an interrupt
+            # checkpoint is exactly when the optimizer state matters.
+            "optimizer": optimizer,
             "losses": losses_tensor,
             "val_losses": val_losses_tensor,
             "metrics": metrics,

@@ -39,6 +39,33 @@ def test_node_metadata():
     assert "metrics" in out_names
 
 
+def test_the_optimizer_passthrough_is_declared_as_an_optimizer_port():
+    """#148: the save path's dependency has to be a typed, drawable edge."""
+    from app.core.node_base import DataType
+
+    ports = {p.name: p for p in TrainingLoopNode.define_outputs()}
+    assert "optimizer" in ports, "CheckpointSaver has nothing to wire from"
+    assert ports["optimizer"].data_type == DataType.OPTIMIZER
+    assert not ports["optimizer"].optional
+
+
+def test_the_optimizer_passthrough_is_returned_by_a_plain_run():
+    """Declared and returned -- a declared port with no key is a dead edge."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    res = TrainingLoopNode().execute(
+        {
+            "model": model,
+            "dataloader": _make_loader(_make_dataset()),
+            "optimizer": optimizer,
+            "loss_fn": nn.CrossEntropyLoss(),
+        },
+        {"epochs": 1, "device": "cpu"},
+    )
+    assert res["optimizer"] is optimizer
+
+
 def test_basic_training_returns_losses_per_epoch():
     torch.manual_seed(0)
     model = nn.Linear(4, 2)

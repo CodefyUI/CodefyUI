@@ -398,6 +398,142 @@ def test_optimizer_is_rebuilt_for_a_different_model() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The optimizer passthrough output (#148)
+#
+# Before this port existed, CheckpointSaver could only be fed from the
+# Optimizer node, and the saved state was right only because
+# _prepare_optimizer usually mutates that same object in place and because
+# the train.model -> save.model edge happens to force train to run first.
+# Two assumptions, neither visible on the canvas, and the `rebuilt` branch
+# breaks the first one outright.
+# ---------------------------------------------------------------------------
+
+
+def test_the_optimizer_output_carries_the_object_that_was_reused() -> None:
+    model = _model()
+    optimizer = _optimizer("sgd_momentum", model)
+
+    result = _train(model, optimizer, _loader(), {"epochs": 1})
+
+    assert result["optimizer"] is optimizer
+    assert optimizer.state, "the run should have left state on it"
+
+
+def test_the_optimizer_output_carries_the_object_that_was_rebound() -> None:
+    """Rebinding mutates in place, so the output is the same object -- but
+    now that is an assertion instead of an assumption."""
+    model = _model()
+    optimizer = _optimizer("adam", model)
+    _train(model, optimizer, _loader(), {"epochs": 1})
+
+    replacement = _model()
+    replacement.load_state_dict(model.state_dict())
+    result = _train(replacement, optimizer, _loader(), {"epochs": 1})
+
+    assert result["optimizer"] is optimizer
+    assert set(optimizer.state) == set(replacement.parameters())
+
+
+def test_the_optimizer_output_carries_the_REBUILT_object_not_the_input() -> None:
+    """#148's actual correctness hole.
+
+    In the ``rebuilt`` branch the optimizer that trains is a NEW object, so
+    a CheckpointSaver wired from the Optimizer node stores an optimizer that
+    never saw this model -- silently, with a valid-looking checkpoint. The
+    passthrough is the only way to reach the real one.
+    """
+    other = nn.Linear(IN_FEATURES, OUT_CLASSES + 5)
+    stale = torch.optim.SGD(other.parameters(), lr=0.1, momentum=0.9)
+
+    model = _model()
+    result = _train(model, stale, _loader(), {"epochs": 1})
+    trained = result["optimizer"]
+
+    assert trained is not stale
+    assert type(trained) is type(stale)
+    tracked = [p for g in trained.param_groups for p in g["params"]]
+    assert all(a is b for a, b in zip(tracked, model.parameters()))
+    # The one that trained has momentum for THIS model; the input has none.
+    assert trained.state and set(trained.state) <= set(model.parameters())
+    assert not stale.state
+
+
+def test_the_optimizer_output_round_trips_a_checkpoint(ckpt_path: str) -> None:
+    """The wiring #148 asks for, end to end: train -> save -> load.
+
+    Uses the ``rebuilt`` branch on purpose, because that is the case where
+    saving the graph's Optimizer node instead would store the wrong state.
+    """
+    from app.nodes.io.checkpoint_node import CheckpointLoaderNode, CheckpointSaverNode
+
+    other = nn.Linear(IN_FEATURES, OUT_CLASSES + 5)
+    stale = torch.optim.SGD(other.parameters(), lr=0.1, momentum=0.9)
+    model = _model()
+    result = _train(model, stale, _loader(), {"epochs": 2})
+    trained = result["optimizer"]
+    saved = [s["momentum_buffer"].clone() for s in trained.state.values()]
+    assert saved and all(b.abs().sum() > 0 for b in saved)
+
+    CheckpointSaverNode().execute(
+        {
+            "model": result["model"],
+            "optimizer": trained,
+            "losses": result["losses"],
+        },
+        {"path": ckpt_path, "epoch": 2},
+    )
+
+    fresh_model = _model()
+    fresh_optimizer = torch.optim.SGD(
+        fresh_model.parameters(), lr=0.1, momentum=0.9)
+    restored = CheckpointLoaderNode().execute(
+        {"model": fresh_model, "optimizer": fresh_optimizer},
+        {"path": ckpt_path, "device": "cpu"},
+    )
+
+    assert restored["epoch"] == 2
+    reloaded = [s["momentum_buffer"]
+                for s in restored["optimizer"].state.values()]
+    assert len(reloaded) == len(saved)
+    for before, after in zip(saved, reloaded):
+        assert torch.allclose(before, after, **TOL)
+
+
+def test_the_optimizer_output_wires_to_checkpoint_saver() -> None:
+    """The port type-checks through the real validator, which is the only
+    thing that proves a user could actually draw this edge (#148)."""
+    from app.core.graph_engine import validate_graph
+
+    nodes = [
+        {"id": "start", "type": "Start", "data": {"params": {}}},
+        {"id": "data", "type": "SyntheticShapes", "data": {"params": {}}},
+        {"id": "loader", "type": "DataLoader", "data": {"params": {"batch_size": 8}}},
+        {"id": "model", "type": "SequentialModel", "data": {"params": {}}},
+        {"id": "opt", "type": "Optimizer", "data": {"params": {"type": "Adam"}}},
+        {"id": "loss", "type": "Loss", "data": {"params": {}}},
+        {"id": "train", "type": "TrainingLoop", "data": {"params": {"epochs": 4}}},
+        {"id": "save", "type": "CheckpointSaver", "data": {"params": {"path": "run.pt", "epoch": 4}}},
+    ]
+    edges = [
+        {"id": "t1", "source": "start", "target": "data", "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "t2", "source": "start", "target": "model", "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "t3", "source": "start", "target": "loss", "sourceHandle": "trigger", "type": "trigger"},
+        {"id": "e1", "source": "data", "sourceHandle": "dataset", "target": "loader", "targetHandle": "dataset"},
+        {"id": "e2", "source": "model", "sourceHandle": "model", "target": "opt", "targetHandle": "model"},
+        {"id": "e3", "source": "model", "sourceHandle": "model", "target": "train", "targetHandle": "model"},
+        {"id": "e4", "source": "opt", "sourceHandle": "optimizer", "target": "train", "targetHandle": "optimizer"},
+        {"id": "e5", "source": "loader", "sourceHandle": "dataloader", "target": "train", "targetHandle": "dataloader"},
+        {"id": "e6", "source": "loss", "sourceHandle": "loss_fn", "target": "train", "targetHandle": "loss_fn"},
+        {"id": "e7", "source": "train", "sourceHandle": "model", "target": "save", "targetHandle": "model"},
+        # The point of the test: the save path's optimizer now comes from the
+        # node that trained it, not from the node that constructed it.
+        {"id": "e8", "source": "train", "sourceHandle": "optimizer", "target": "save", "targetHandle": "optimizer"},
+    ]
+
+    assert validate_graph(nodes, edges) == []
+
+
+# ---------------------------------------------------------------------------
 # LR schedule continuation
 # ---------------------------------------------------------------------------
 

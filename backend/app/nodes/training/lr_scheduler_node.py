@@ -61,7 +61,11 @@ class LRSchedulerNode(BaseNode):
                     "— pair with TrainingLoop's scheduler_step="
                     "optimizer_step and set total_steps to the run's "
                     "max_steps so 'warm up for 100 steps then anneal over "
-                    "1500' means exactly that (#297)."
+                    "1500' means exactly that (#297). At the default "
+                    "scheduler_step=epoch a scheduler step is one EPOCH, so "
+                    "the default 100 would still be ramping long after a "
+                    "5-epoch run ended and the run would never train at the "
+                    "LR you set (#308)."
                 ),
                 visible_when={"type": ["warmup_cosine", "warmup_linear", "constant_with_warmup"]},
             ),
@@ -70,9 +74,13 @@ class LRSchedulerNode(BaseNode):
                 param_type=ParamType.INT,
                 default=10,
                 description=(
-                    "StepLR: epochs between each LR drop. MultiStepLR: drops at "
-                    "1x, 2x, 3x and 4x this value. TrainingLoop steps the "
-                    "scheduler once per EPOCH, so this counts epochs, not batches."
+                    "StepLR: how long between each LR drop. MultiStepLR: "
+                    "drops at 1x, 2x, 3x and 4x this value. The unit follows "
+                    "TrainingLoop.scheduler_step (#308): EPOCHS at the "
+                    "default `epoch` (not batches), OPTIMIZER STEPS at "
+                    "`optimizer_step`. Either way it has to be smaller than "
+                    "the run's length in that same unit, or the first drop "
+                    "never arrives and the whole run trains at a constant LR."
                 ),
             ),
             ParamDefinition(
@@ -89,16 +97,22 @@ class LRSchedulerNode(BaseNode):
                 param_type=ParamType.INT,
                 default=50,
                 description=(
-                    "CosineAnnealingLR: length of one cosine cycle, in epochs. "
-                    "Normally set this EQUAL to TrainingLoop.epochs — the "
-                    "scheduler steps once per epoch, so a smaller value ends the "
-                    "run mid-cycle at a high LR and a larger one stops partway "
-                    "down the curve, typically costing a few points of accuracy "
-                    "with nothing to show that the schedule was the cause. "
-                    "Deliberately NOT enforced: a truncated schedule is a valid "
-                    "choice. CosineAnnealingWarmRestarts reuses this value as "
-                    "`T_0`, the length of the FIRST restart cycle, where equality "
-                    "with epochs would mean no restart ever happens."
+                    "CosineAnnealingLR: length of one cosine cycle. The unit "
+                    "follows TrainingLoop.scheduler_step (#308): at the "
+                    "default `epoch` it is EPOCHS, so set it EQUAL to "
+                    "TrainingLoop.epochs; at `optimizer_step` it is OPTIMIZER "
+                    "STEPS, so set it to the run's step budget instead "
+                    "(max_steps when set, otherwise epochs x batches per "
+                    "epoch / accumulate_steps). Either way a smaller value "
+                    "ends the cycle early and the cosine turns back UP, so "
+                    "the tail of the run trains at a RISING LR; a larger one "
+                    "stops partway down the curve at a still-high LR. Both "
+                    "typically cost a few points of accuracy with nothing to "
+                    "show that the schedule was the cause. Deliberately NOT "
+                    "enforced: a truncated schedule is a valid choice. "
+                    "CosineAnnealingWarmRestarts reuses this value as `T_0`, "
+                    "the length of the FIRST restart cycle, where equality "
+                    "with the run's length would mean no restart ever happens."
                 ),
             ),
             ParamDefinition(name="max_lr", param_type=ParamType.FLOAT, default=0.01, description="Max learning rate for OneCycleLR"),
@@ -107,13 +121,20 @@ class LRSchedulerNode(BaseNode):
                 param_type=ParamType.INT,
                 default=1000,
                 description=(
-                    "OneCycleLR: length of the one-cycle schedule. TrainingLoop "
-                    "steps the scheduler once per EPOCH, so set this to "
-                    "TrainingLoop.epochs — NOT to the number of batches, which is "
-                    "what OneCycleLR's own documentation means by a step. The "
-                    "default of 1000 is far larger than any usual epoch count, so "
-                    "leaving it alone traverses only the beginning of the cycle: "
-                    "the LR warms up slightly and never anneals."
+                    "OneCycleLR: length of the one-cycle schedule. The "
+                    "warmup_* families use it as their TOTAL length too "
+                    "(warmup ramp + decay). The unit follows "
+                    "TrainingLoop.scheduler_step (#308): at the default "
+                    "`epoch` it is an EPOCH count, so set it to "
+                    "TrainingLoop.epochs — NOT to the number of batches, "
+                    "which is what OneCycleLR's own documentation means by a "
+                    "step. At `optimizer_step` it IS that step count, so set "
+                    "it to the run's step budget: max_steps when set, "
+                    "otherwise epochs x batches per epoch / accumulate_steps. "
+                    "The default of 1000 is far larger than any usual epoch "
+                    "count, so leaving it alone in epoch mode traverses only "
+                    "the beginning of the cycle: the LR warms up slightly and "
+                    "never anneals."
                 ),
             ),
         ]
