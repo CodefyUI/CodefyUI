@@ -1,0 +1,127 @@
+name: Bug report
+description: Something in CodefyUI is broken.
+title: "fix: <short summary of the problem>"
+labels:
+  - type:bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The single most useful thing you can attach
+        is the graph JSON — most bug reports here turn into "please attach
+        your graph" as the first reply, which wastes a round trip. Export it
+        from the canvas toolbar (匯出 / Export) before you start filling this
+        in, then drag the file into the field below.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        Describe the bug plainly. Include exact error text if the console or
+        server.log showed one — do not paraphrase it.
+        （請具體描述問題，錯誤訊息請照原文貼上，不要用自己的話重述。）
+      placeholder: |
+        Example: clicking Run on a graph with a LRScheduler node crashes the
+        backend with "AttributeError: 'NoneType' object has no attribute
+        'step'".
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered steps, starting from a fresh graph if possible. If it only
+        reproduces on a specific graph, that graph is what the field below is
+        for.
+      placeholder: |
+        1. Open CodefyUI and load the attached graph
+        2. Set TrainingLoop.epochs to 5
+        3. Click Run
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: graph-json
+    attributes:
+      label: Graph JSON
+      description: >-
+        Paste the exported graph JSON here, or drag-and-drop the exported
+        .json file to attach it. Export it from the canvas toolbar's 匯出
+        (Export) button. Without this, a maintainer usually cannot reproduce
+        the bug at all — please do not skip this field even if you think the
+        problem is "obvious".
+        （請從畫布工具列的「匯出」按鈕匯出圖檔並貼上或附加，這是重現問題最重要的資訊。）
+      placeholder: |
+        Paste JSON here, or drag the exported .json file onto this box.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: CodefyUI version
+      description: >-
+        Run `cdui --version` (or `./cdui --version` on Linux/macOS,
+        `.\cdui.cmd --version` on Windows). If that is unavailable, check
+        frontend/dist/build-info.json instead.
+      placeholder: e.g. 1.4.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-flavor
+    attributes:
+      label: Install flavor
+      description: How is CodefyUI installed on your machine?
+      options:
+        - "uv only, no Node (cdui start, prebuilt frontend-dist.tar.gz)"
+        - "Dev install with pnpm (cdui install --dev, cdui dev)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: os-python
+    attributes:
+      label: OS and Python version
+      description: >-
+        e.g. "Windows 11, Python 3.11" or "Ubuntu 24.04, Python 3.12". Run
+        `python --version` inside the backend virtualenv if unsure.
+      placeholder: Windows 11, Python 3.11
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        If `cdui start` is running the server, the backend log is at
+        `.codefyui_dev/server.log` in the repo/install directory. Paste the
+        last 30-50 lines around the failure, not the whole file. Browser
+        console output is also useful for frontend bugs.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I attached the graph JSON above, or explained why none applies.
+          required: true

@@ -1,0 +1,13 @@
+# Keep the blank issue option. A lot of the house issues in this repo are
+# free-form technical write-ups (root-cause analysis, a residue found while
+# fixing something else) that don't fit either structured form below —
+# templates are here to guide outsiders, not to gate people who already know
+# what they're reporting.
+blank_issues_enabled: true
+contact_links:
+  - name: Contributing guide
+    url: https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md
+    about: Dev setup, DCO sign-off, PR conventions — read this before your first PR.
+  - name: Documentation
+    url: https://docs.codefyui.com
+    about: Getting-started, architecture tour, and node reference.

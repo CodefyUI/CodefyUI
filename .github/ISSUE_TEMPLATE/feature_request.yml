@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a new capability or improvement.
+title: "feat: <short summary of the capability>"
+labels:
+  - type:feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lead with the problem, not the solution. "I want a Foo node" is
+        harder to evaluate than "I cannot do X, here is who runs into it, and
+        here is why the existing nodes don't cover it" — the second gives a
+        maintainer enough to design a better fix than the one you had in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What can't you do today
+      description: >-
+        Describe the concrete task you were trying to accomplish and where
+        CodefyUI stopped you. Prefer a real graph or workflow over an
+        abstract description.
+        （請描述你實際想完成的工作，以及目前 CodefyUI 卡在哪一步。）
+    validations:
+      required: true
+
+  - type: textarea
+    id: who-hits-it
+    attributes:
+      label: Who runs into this
+      description: >-
+        A student working through a specific chapter, an instructor building
+        a demo, someone integrating a plugin, etc. This is what separates a
+        niche request from one worth prioritizing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-shape
+    attributes:
+      label: Proposed shape (optional)
+      description: >-
+        If you have an idea of what the fix could look like — a new node, a
+        new parameter, a UI change — sketch it here. It is fine to leave this
+        blank; the problem statement above matters more.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried (optional)
+      description: >-
+        Any existing node combination or manual step that partially covers
+        this. Helps a reviewer see exactly what gap remains.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
