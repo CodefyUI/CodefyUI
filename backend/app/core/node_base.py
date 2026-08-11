@@ -82,6 +82,21 @@ MEDIA_IMAGE = "image"
 # payload keys.
 MEDIA_CHART = "chart"
 
+# ``MEDIA_VIDEO`` contract (#310): the port's value is a small REFERENCE dict,
+# never the bytes. Video cannot ride the event stream the way MEDIA_IMAGE
+# does -- one ``node_status`` event is capped at
+# ``RUN_EVENT_PAYLOAD_CAP_BYTES`` (128 KB), two orders of magnitude under a
+# clip -- so the file lives under ``settings.MEDIA_DIR`` and the event carries
+# where to find it:
+#
+#   {"path": str,     # required: POSIX-style path RELATIVE to MEDIA_DIR
+#    "url": str,      # required: "/api/media/<path>", served with a real
+#                     #   Content-Type so <video>/<img> can play it inline
+#    "format": "mp4" | "gif" | "webm",                # required
+#    "fps": float, "frames": int,                     # optional metadata the
+#    "width": int, "height": int, "bytes": int}       #   client shows as-is
+MEDIA_VIDEO = "video"
+
 
 @dataclass
 class PortDefinition:

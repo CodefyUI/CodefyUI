@@ -224,6 +224,11 @@ class Settings(BaseSettings):
     # Uploads for DATA_FILE params (CSVReader et al). Separate from IMAGES_DIR
     # so each kind keeps its own extension whitelist and its own dropdown.
     DATA_FILES_DIR: Path = Path(__file__).parent.parent / "data" / "files"
+    # Run-produced playable media (VideoWrite et al, #310). Separate from
+    # IMAGES_DIR because that directory is an UPLOAD store with a delete
+    # endpoint, while this one is node OUTPUT served inline by /api/media;
+    # keeping them apart means neither route can touch the other's files.
+    MEDIA_DIR: Path = Path(__file__).parent.parent / "data" / "media"
     EXAMPLES_DIR: Path = Path(__file__).parent.parent.parent / "examples"
 
     # ── Project directory (spec 7.1) ───────────────────────────────────
@@ -295,6 +300,10 @@ class Settings(BaseSettings):
             self.IMAGES_DIR = assets / "images"
         if "MODELS_DIR" not in explicit:
             self.MODELS_DIR = assets / "models"
+        if "MEDIA_DIR" not in explicit:
+            # Under assets/ like images/models, so it stays inside
+            # data_paths.data_root() (MODELS_DIR.parent) in project mode too.
+            self.MEDIA_DIR = assets / "media"
         return self
 
     @property

@@ -222,6 +222,17 @@
   margin-bottom: var(--sp-1);
 }
 
+/* Log video output (#310) — taller than .logImage because a clip carries
+   playback controls, and 160px leaves them unusable. */
+.logVideo {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-base);
+  margin-top: var(--sp-1);
+  margin-bottom: var(--sp-1);
+}
+
 /* Chart output entry (#130). The card brings its own frame, so this only has
    to keep it from stretching the log row. */
 .logChart {

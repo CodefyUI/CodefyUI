@@ -30,11 +30,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 from ..config import settings
-from .node_base import MEDIA_CHART, MEDIA_IMAGE
+from .node_base import MEDIA_CHART, MEDIA_IMAGE, MEDIA_VIDEO
 from .node_registry import registry
 
 logger = logging.getLogger(__name__)
@@ -210,12 +210,47 @@ def _object_payload(value: Any) -> dict[str, Any] | None:
     return value
 
 
+#: Keys of a MEDIA_VIDEO reference the wire forwards. A closed list rather
+#: than passthrough so a node cannot smuggle an oversized payload (or the
+#: bytes themselves) through a port declared as a reference.
+_VIDEO_REFERENCE_KEYS = ("path", "url", "format", "fps", "frames", "width",
+                         "height", "bytes")
+
+
+def _video_payload(value: Any) -> dict[str, Any] | None:
+    """Validate a MEDIA_VIDEO reference dict, or skip it.
+
+    The contract (see node_base) is a pointer to a file under MEDIA_DIR, so
+    the two things worth refusing here are a non-reference value and a path
+    that is not relative — an absolute path in the event stream would leak
+    the server's filesystem layout to every attached client and could never
+    be fetched through ``/api/media`` anyway.
+    """
+    if not isinstance(value, dict):
+        return None
+    path = value.get("path")
+    fmt = value.get("format")
+    if not isinstance(path, str) or not path or not isinstance(fmt, str):
+        return None
+    # Judged under BOTH path flavours, because the native Path is
+    # platform-shaped in both directions: on Windows "/leak/a.mp4" has no
+    # drive and counts as relative; on POSIX "C:/leak/a.mp4" is one odd
+    # filename that is_absolute() waves through. A reference must be
+    # relative and descend-only on every platform.
+    posix, windows = PurePosixPath(path), PureWindowsPath(path)
+    if (posix.is_absolute() or windows.is_absolute() or windows.drive
+            or ".." in posix.parts or ".." in windows.parts):
+        return None
+    return {key: value[key] for key in _VIDEO_REFERENCE_KEYS if key in value}
+
+
 #: Per-kind envelope builders. A kind absent from this map falls back to
 #: :func:`_object_payload`, which is why adding a kind needs no entry here
 #: unless its payload needs a container the node's raw value does not have.
 _MEDIA_PAYLOADS: dict[str, Callable[[Any], dict[str, Any] | None]] = {
     MEDIA_IMAGE: _image_payload,
     MEDIA_CHART: _object_payload,
+    MEDIA_VIDEO: _video_payload,
 }
 
 #: Keys an entry dict already uses for its own bookkeeping. Since an entry

@@ -102,9 +102,22 @@ def execute(self, inputs, params, progress_callback=None, *, context=None):
 
 Every number in a spec must be a finite, plain Python `float` or `int`: run events are serialised with `allow_nan=False`, and a `numpy.float32` is not JSON-serialisable at all. Keep specs small — a `node_status` payload over 128 KB is replaced by an elision marker. The full per-kind payload reference lives in the [stats pack's README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md), which is the reference implementation.
 
+## Emitting a playable video
+
+`media=MEDIA_VIDEO` is the third built-in kind, and it works by **reference**: a clip cannot ride the event stream (one `node_status` event is capped at 128 KB), so the file lives under `settings.MEDIA_DIR` and the port's value is a small dict pointing at it. `/api/media/<path>` serves the file inline with a real `Content-Type`, so the editor's `<video>`/`<img>` elements play it directly:
+
+```python
+{"path": "rollouts/run1.mp4",          # POSIX-style, RELATIVE to MEDIA_DIR
+ "url": "/api/media/rollouts/run1.mp4",
+ "format": "mp4",                       # mp4 | gif | webm
+ "fps": 10.0, "frames": 240, "width": 96, "height": 96, "bytes": 81234}
+```
+
+Don't hand-build these — write frames through the `VideoWrite` node (or call `core.video_io` from your node), which owns the encoding (mp4 via an `ffmpeg` binary on PATH, gif via Pillow with no dependency at all), the path containment, and the reference shape. An absolute `path` is refused at the wire.
+
 ### Your own media kind
 
-Neither kind is special-cased. The resolver keys on whatever string a port declares, and any port value that is a non-empty dict is shipped through untouched, so a pack declaring `media="waveform"` already arrives in the browser as `{"output_kind": "waveform", ...}`. Only *rendering* it needs a frontend change; an editor that does not know a kind ignores it rather than breaking.
+No kind is special-cased. The resolver keys on whatever string a port declares, and any port value that is a non-empty dict is shipped through untouched, so a pack declaring `media="waveform"` already arrives in the browser as `{"output_kind": "waveform", ...}`. Only *rendering* it needs a frontend change; an editor that does not know a kind ignores it rather than breaking.
 
 :::tip
 Need to package existing nodes rather than write new behavior? Use a **[preset](./presets)**. Want to share nodes with others as an installable bundle? Build a **[plugin pack](./plugins)**.

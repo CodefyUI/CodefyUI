@@ -537,6 +537,28 @@ const zhTW: NodeTranslations = {
       format: '影像格式',
     },
   },
+  VideoWrite: {
+    description:
+      '將幀張量 (T,C,H,W) 或 (T,H,W,C) 編碼為可播放影片並寫入媒體目錄——' +
+      'PATH 上有 ffmpeg 時輸出 mp4，否則以 Pillow 輸出 gif（零相依），' +
+      '並發出可在編輯器內嵌播放的參照',
+    params: {
+      filename: '媒體目錄下的檔名（可含子資料夾）；副檔名依格式決定，同名會覆寫',
+      format: 'auto：PATH 上有 ffmpeg 則 mp4，否則 gif。gif 永遠可用；mp4 需要安裝 ffmpeg',
+      fps: '播放幀率（每秒幀數）',
+      resize: '輸出高度（像素），等比縮放、最近鄰（0 = 原始大小）；96px 的研究畫面放大 2-3 倍較易觀看',
+    },
+  },
+  VideoLoad: {
+    description:
+      '解碼影片檔（mp4/webm 走 ffmpeg，gif 走 Pillow）為幀張量 (T,3,H,W)、' +
+      '值域 [0,1]，並輸出 fps 與幀數；相對路徑以媒體目錄為基準（VideoWrite 的輸出位置）',
+    params: {
+      path: '影片檔案：絕對路徑，或相對於媒體目錄',
+      max_frames: '最多解碼幀數（0 = 全部）；未設上限的長片會整段載入記憶體',
+      stride: '每 N 幀取 1 幀（fps 輸出會等比例下降）',
+    },
+  },
   ImageBatchReader: {
     description: '從目錄讀取所有影像，堆疊為批次張量 (N, C, H, W)',
     params: {

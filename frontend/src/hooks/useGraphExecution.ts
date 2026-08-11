@@ -199,6 +199,21 @@ export function useGraphExecution() {
           });
         }
 
+        // #310: a video entry is a REFERENCE (path/url/format) to a file the
+        // backend wrote under its media dir — never bytes. No legacy
+        // fallback — the kind postdates the flat-field era entirely.
+        for (const entry of ofKind('video')) {
+          const payload = entry.video;
+          if (!payload?.url || !payload?.format) continue;
+          store.addTabLog(tabId, {
+            nodeId: data.node_id,
+            message: '',
+            kind: 'video',
+            video: { ...payload, ...(entry.port ? { port: entry.port } : {}) },
+            type: 'info',
+          });
+        }
+
         // #130: a chart entry carries a spec the client draws itself. No
         // legacy fallback — the kind postdates the flat-field era entirely.
         for (const entry of ofKind('chart')) {
