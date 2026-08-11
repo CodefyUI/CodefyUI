@@ -1,0 +1,472 @@
+{
+  "name": "Train a Causal LM on TinyStories",
+  "description": "Needs a 16 GB GPU and one first-run download: pretrain a 204M-parameter GPT-style decoder on TinyStories from scratch, then score it and read what it wrote. One epoch is 2,441 micro-batches at bf16, about 610 optimizer steps -- under an hour, because the corpus is capped. Full recipe, token budgets and memory levers are in README.md beside this graph.",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -360,
+        "y": 560
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "source": "huggingface",
+          "dataset_name": "roneneldan/TinyStories",
+          "subset": "",
+          "split": "train",
+          "text_column": "text",
+          "split_lines": false,
+          "max_rows": 0
+        }
+      }
+    },
+    {
+      "id": "tok",
+      "type": "LMTokenizer",
+      "position": {
+        "x": 0,
+        "y": 560
+      },
+      "data": {
+        "params": {
+          "encoding": "gpt2"
+        }
+      }
+    },
+    {
+      "id": "ds-val",
+      "type": "TextCorpusDataset",
+      "position": {
+        "x": 0,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "source": "huggingface",
+          "dataset_name": "roneneldan/TinyStories",
+          "subset": "",
+          "split": "validation",
+          "text_column": "text",
+          "split_lines": false,
+          "max_rows": 0
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "CausalLMModel",
+      "position": {
+        "x": 0,
+        "y": 1320
+      },
+      "data": {
+        "params": {
+          "vocab_size": 50257,
+          "d_model": 1024,
+          "n_layers": 12,
+          "n_heads": 16,
+          "d_ff": 4096,
+          "max_seq_len": 1024,
+          "tie_embeddings": true,
+          "positional": "learned",
+          "norm": "layernorm",
+          "activation": "gelu",
+          "dropout": 0.0,
+          "gradient_checkpointing": false,
+          "init_std": 0.02,
+          "seed": 0
+        }
+      }
+    },
+    {
+      "id": "pack-train",
+      "type": "LMTokenizedDataset",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "seq_len": 1024,
+          "append_eos": true,
+          "max_tokens": 20000000,
+          "cache": true,
+          "cache_dir": ""
+        }
+      }
+    },
+    {
+      "id": "pack-val",
+      "type": "LMTokenizedDataset",
+      "position": {
+        "x": 360,
+        "y": 760
+      },
+      "data": {
+        "params": {
+          "seq_len": 1024,
+          "append_eos": true,
+          "max_tokens": 2000000,
+          "cache": true,
+          "cache_dir": ""
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 360,
+        "y": 1320
+      },
+      "data": {
+        "params": {
+          "type": "AdamW",
+          "lr": 0.0003,
+          "weight_decay": 0.1,
+          "betas": "0.9, 0.95",
+          "eps": 1e-08,
+          "amsgrad": false
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "shuffle": true,
+          "num_workers": 0,
+          "pin_memory": true,
+          "drop_last": true,
+          "persistent_workers": false,
+          "prefetch_factor": 2
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "LMCrossEntropyLoss",
+      "position": {
+        "x": 720,
+        "y": 1320
+      },
+      "data": {
+        "params": {
+          "ignore_index": -100,
+          "label_smoothing": 0.0
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1080,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "epochs": 1,
+          "device": "auto",
+          "early_stopping_patience": 0,
+          "monitor": "val_loss",
+          "checkpoint_every": 0,
+          "grad_clip_norm": 1.0,
+          "batch_metrics": true,
+          "precision": "bf16",
+          "accumulate_steps": 4,
+          "max_steps": 0,
+          "log_interval": 10,
+          "deterministic": false,
+          "tensorboard": false
+        }
+      }
+    },
+    {
+      "id": "ppl",
+      "type": "PerplexityEvaluate",
+      "position": {
+        "x": 1440,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "batch_size": 8,
+          "max_batches": 0,
+          "device": "auto",
+          "precision": "bf16"
+        }
+      }
+    },
+    {
+      "id": "gen",
+      "type": "TextGenerate",
+      "position": {
+        "x": 1440,
+        "y": 460
+      },
+      "data": {
+        "params": {
+          "prompt": "Once upon a time",
+          "max_new_tokens": 200,
+          "temperature": 0.8,
+          "top_k": 50,
+          "top_p": 0.95,
+          "seed": 1234,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "ckpt",
+      "type": "CheckpointSaver",
+      "position": {
+        "x": 1440,
+        "y": 980
+      },
+      "data": {
+        "params": {
+          "path": "tinystories-lm/causal_lm_204m.pt",
+          "epoch": 1
+        }
+      }
+    },
+    {
+      "id": "viz",
+      "type": "Visualize",
+      "position": {
+        "x": 1440,
+        "y": 1400
+      },
+      "data": {
+        "params": {
+          "title": "TinyStories LM training loss",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "out-perplexity",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "name": "perplexity",
+          "description": "Validation perplexity on the held-out TinyStories split, lower is better."
+        }
+      }
+    },
+    {
+      "id": "out-sample",
+      "type": "GraphOutput",
+      "position": {
+        "x": 1800,
+        "y": 460
+      },
+      "data": {
+        "params": {
+          "name": "sample",
+          "description": "Text the trained model wrote when asked to continue 'Once upon a time'."
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-trigger-ds-train",
+      "source": "start",
+      "target": "ds-train",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-tok",
+      "source": "start",
+      "target": "tok",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-ds-val",
+      "source": "start",
+      "target": "ds-val",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-model",
+      "source": "start",
+      "target": "model",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-loss",
+      "source": "start",
+      "target": "loss",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-corpus-train",
+      "source": "ds-train",
+      "target": "pack-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-tok-train",
+      "source": "tok",
+      "target": "pack-train",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer"
+    },
+    {
+      "id": "e-corpus-val",
+      "source": "ds-val",
+      "target": "pack-val",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-tok-val",
+      "source": "tok",
+      "target": "pack-val",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer"
+    },
+    {
+      "id": "e-blocks-loader",
+      "source": "pack-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-loader-train",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader"
+    },
+    {
+      "id": "e-model-train",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-model-opt",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-opt-train",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-loss-train",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn"
+    },
+    {
+      "id": "e-train-ckpt-model",
+      "source": "train",
+      "target": "ckpt",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-opt-ckpt",
+      "source": "opt",
+      "target": "ckpt",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer"
+    },
+    {
+      "id": "e-train-ckpt-losses",
+      "source": "train",
+      "target": "ckpt",
+      "sourceHandle": "losses",
+      "targetHandle": "losses"
+    },
+    {
+      "id": "e-train-ppl",
+      "source": "train",
+      "target": "ppl",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-blocks-ppl",
+      "source": "pack-val",
+      "target": "ppl",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset"
+    },
+    {
+      "id": "e-train-gen",
+      "source": "train",
+      "target": "gen",
+      "sourceHandle": "model",
+      "targetHandle": "model"
+    },
+    {
+      "id": "e-tok-gen",
+      "source": "tok",
+      "target": "gen",
+      "sourceHandle": "tokenizer",
+      "targetHandle": "tokenizer"
+    },
+    {
+      "id": "e-ppl-out",
+      "source": "ppl",
+      "target": "out-perplexity",
+      "sourceHandle": "perplexity",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-gen-out",
+      "source": "gen",
+      "target": "out-sample",
+      "sourceHandle": "text",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e-train-viz",
+      "source": "train",
+      "target": "viz",
+      "sourceHandle": "losses",
+      "targetHandle": "data"
+    }
+  ]
+}
