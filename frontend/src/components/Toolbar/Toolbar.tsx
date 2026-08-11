@@ -208,8 +208,9 @@ function LoadSubMenuPanel({
 export function Toolbar() {
   const { execute, stop } = useGraphExecution();
   // `loadGraphDocument` replaced the five setters both graph readers below
-  // used to call in sequence (#200 items 4 and 8).
-  const { clear, getSerializedGraph, setCurrentGraphFile, loadGraphDocument } = useTabStore();
+  // used to call in sequence (#200 items 4 and 8) -- and, since #200 item 9,
+  // the `setCurrentGraphFile` call each of them made right after it.
+  const { clear, getSerializedGraph, loadGraphDocument } = useTabStore();
   const activeTab = useTabStore((s) => s.tabs.find((t) => t.id === s.activeTabId)!);
   const status = activeTab.status;
   const { reload, fetchDefinitions } = useNodeDefStore();
@@ -320,6 +321,12 @@ export function Toolbar() {
         const tooNew = loadGraphDocument({
           nodes: laidOutNodes,
           edges: resolvedEdges,
+          // `name` is the sanitized file stem — bind the tab to it so
+          // re-saving under the same name doesn't trigger the overwrite
+          // warning. Part of the document install since #200 item 9, not a
+          // line after it: the binding says which file the graph on screen
+          // writes to, so the two must never be set apart.
+          boundFile: name,
           subgraphs: loadedSubgraphs,
           segmentGroups: Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : [],
           description: typeof graphData.description === 'string' ? graphData.description : '',
@@ -328,9 +335,6 @@ export function Toolbar() {
         if (tooNew) {
           addToast(t('project.readOnly.loadNotice', { version: graphData.format_version }), 'warning');
         }
-        // `name` is the sanitized file stem — bind the tab to it so re-saving
-        // under the same name doesn't trigger the overwrite warning.
-        setCurrentGraphFile(name);
         const projectDir = useProjectStore.getState().projectDir;
         if (projectDir !== null) useTabStore.getState().stampActiveTabProject(projectDir);
         if (savedPresets.length > 0) {
@@ -340,7 +344,7 @@ export function Toolbar() {
         addToast(t('toolbar.load.fail', { error: (e as Error).message }), 'error');
       }
     },
-    [loadGraphDocument, setCurrentGraphFile, t, addToast],
+    [loadGraphDocument, t, addToast],
   );
 
   const handleImportFile = useCallback(
@@ -376,6 +380,11 @@ export function Toolbar() {
           const tooNew = loadGraphDocument({
             nodes: resolvedNodes,
             edges: resolvedEdges,
+            // An imported file is a fresh, unsaved graph — not bound to any
+            // saved file yet, so the next save always runs the overwrite
+            // check (#200 item 9 moved this into the install; it used to be
+            // an assignment after it).
+            boundFile: null,
             subgraphs: importedSubgraphs,
             segmentGroups: Array.isArray(data.segmentGroups) ? data.segmentGroups : [],
             description: typeof data.description === 'string' ? data.description : '',
@@ -384,9 +393,6 @@ export function Toolbar() {
           if (tooNew) {
             addToast(t('project.readOnly.loadNotice', { version: data.format_version }), 'warning');
           }
-          // An imported file is a fresh, unsaved graph — not bound to any
-          // saved file yet, so the next save always runs the overwrite check.
-          setCurrentGraphFile(null);
           if (importedPresets.length > 0) {
             useNodeDefStore.setState({ presets: mergedPresets });
           }
@@ -397,7 +403,7 @@ export function Toolbar() {
       reader.readAsText(file);
       event.target.value = '';
     },
-    [loadGraphDocument, setCurrentGraphFile, t, addToast],
+    [loadGraphDocument, t, addToast],
   );
 
   const handleExportJson = useCallback(() => {

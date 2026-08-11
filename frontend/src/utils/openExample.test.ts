@@ -130,6 +130,26 @@ describe('openExample', () => {
     expect(activeTab().readOnly).toBe(false);
   });
 
+  // -- #200 item 9: an example is a template, bound to no file --
+
+  it('unbinds the tab so the example cannot be saved over the file that was open', async () => {
+    // The bug: the tab still claimed to be bound to my_graph, and a bound tab
+    // is exactly the case Save skips the overwrite prompt for -- so the next
+    // Save wrote the EXAMPLE into my_graph without asking.
+    store().setCurrentGraphFile('my_graph');
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+
+    await openExample('x');
+
+    expect(activeTab().currentGraphFile).toBeNull();
+  });
+
+  it('leaves an already-unbound tab unbound', async () => {
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [] });
+    await openExample('x');
+    expect(activeTab().currentGraphFile).toBeNull();
+  });
+
   it('installs the whole example in ONE store update', async () => {
     // #200 item 8: the ordering contract between setNodes and setSubgraphs
     // is enforced by construction now -- there is no intermediate state in
@@ -216,6 +236,55 @@ describe('insertExample', () => {
     await expect(insertExample('x')).resolves.toBe(false);
     expect(activeTab().nodes.map((n) => n.id)).toEqual(['keep']);
     expect(useToastStore.getState().toasts[0].message).toBe('Failed to load example');
+  });
+
+  // -- #200 item 10: a merge cannot be answered with read-only, so it refuses --
+
+  it('refuses a template written by a newer CodefyUI, leaving the canvas untouched', async () => {
+    store().setNodes([
+      { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'k', type: 'K', params: {} } },
+    ] as never);
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a'), raw('b')],
+      edges: [],
+      format_version: 999,
+    });
+
+    await expect(insertExample('x')).resolves.toBe(false);
+
+    // Nothing merged: the node count is the user's own graph, unchanged.
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
+    expect(activeTab().edges).toEqual([]);
+    // ...and the tab is NOT dragged into read-only for what the template is.
+    expect(activeTab().readOnly).toBe(false);
+    const toasts = useToastStore.getState().toasts;
+    const toast = toasts[toasts.length - 1];
+    expect(toast.type).toBe('error');
+    expect(toast.message).toContain('v999');
+  });
+
+  it("does not install a refused template's presets on the way to refusing it", async () => {
+    // Resolution merges unknown presets into the palette, so the gate has to
+    // run on the RAW payload -- before anything is resolved.
+    const preset = { preset_name: 'FromTheFuture', category: 'c', description: '', tags: [], nodes: [], edges: [], exposed_inputs: [], exposed_outputs: [], exposed_params: [] };
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')], edges: [], presets: [preset], format_version: 999,
+    });
+
+    await expect(insertExample('x')).resolves.toBe(false);
+
+    expect(useNodeDefStore.getState().presets).toEqual([]);
+  });
+
+  it('inserts a current-format template, and one with no format_version', async () => {
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('a')], edges: [], format_version: 1 });
+    await expect(insertExample('x')).resolves.toBe(true);
+    expect(activeTab().nodes).toHaveLength(1);
+
+    mockedRest.loadExample.mockResolvedValue({ nodes: [raw('b')], edges: [] });
+    await expect(insertExample('x')).resolves.toBe(true);
+    expect(activeTab().nodes).toHaveLength(2);
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 
   it('round-trips a bypassed node from the example file onto the canvas', async () => {

@@ -760,6 +760,17 @@ describe('Toolbar', () => {
     expect(fileInput().value).toBe('');
   });
 
+  // #200 item 9 folded this assignment into the document install; the
+  // behavior it pins is unchanged, which is the point of pinning it.
+  it('Import: unbinds the tab so the imported graph cannot be saved over the file that was open', async () => {
+    setActiveTab({ currentGraphFile: 'bound-graph' });
+    render(<Toolbar />);
+    const payload = JSON.stringify({ nodes: [], edges: [] });
+    const file = new File([payload], 'imported.json', { type: 'application/json' });
+    fireEvent.change(fileInput(), { target: { files: [file] } });
+    await waitFor(() => expect(useTabStore.getState().tabs[0].currentGraphFile).toBeNull());
+  });
+
   it('Import: JSON without presets / missing arrays uses fallbacks, no preset write', async () => {
     render(<Toolbar />);
     const payload = JSON.stringify({}); // nodes/edges absent -> ?? [] ; presets not array

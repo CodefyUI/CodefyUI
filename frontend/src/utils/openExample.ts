@@ -6,6 +6,7 @@ import { useToastStore } from '../store/toastStore';
 import { useI18n } from '../i18n';
 import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
+import { isFormatTooNew } from './formatVersion';
 
 /** A fetched example, resolved into live canvas nodes and edges. */
 interface ResolvedExample {
@@ -49,8 +50,19 @@ interface ResolvedExample {
  * means for the graph in front of the user.
  */
 async function fetchResolvedExample(path: string): Promise<ResolvedExample> {
-  const data = await loadExample(path);
+  return resolveExample(await loadExample(path));
+}
 
+/**
+ * Resolve an already-fetched example payload.
+ *
+ * Split out of the fetch for `insertExample` (#200 item 10), which has to
+ * read `format_version` off the RAW payload and refuse before anything is
+ * resolved: resolution is not a pure function -- it merges the example's
+ * unknown presets into the node-def store -- so a refusal decided after it
+ * would already have left the palette holding a newer build's presets.
+ */
+function resolveExample(data: any): ResolvedExample {
   const store = useNodeDefStore.getState();
   // An example may ship presets the running server has never seen. Merge the
   // unknown ones in by name so its nodes resolve, without clobbering the
@@ -116,6 +128,13 @@ function applyToActiveTab(example: ResolvedExample): void {
   const openedReadOnly = useTabStore.getState().loadGraphDocument({
     nodes: example.nodes,
     edges: example.edges,
+    // An example is a TEMPLATE, not a file the user owns: it is bound to
+    // nothing, so the first Save has to ask for a name (#200 item 9). This
+    // reader used to leave the binding alone, which meant an example opened
+    // into a tab holding `foo.json` inherited it -- and the next Save wrote
+    // the example over foo.json without the overwrite prompt, because a
+    // bound tab is exactly the case that prompt is skipped for.
+    boundFile: null,
     subgraphs: example.subgraphs,
     segmentGroups: example.segmentGroups,
     name: example.name,
@@ -188,10 +207,34 @@ export async function openExampleInNewTab(path: string): Promise<boolean> {
  * `insertGraph`, so inserting into a populated canvas can never clobber a
  * node that is already there. Unlike `openExample` this does not rename the
  * tab: the tab still holds the user's own graph, which the template joined.
+ *
+ * REFUSES a template written by a newer CodefyUI (#200 item 10). The other
+ * two paths answer a too-new `format_version` by opening the graph read-only,
+ * and that answer does not translate here: a merge has no separate document
+ * to mark, and marking the tab read-only would punish the user's own graph
+ * for what the template is. Read-only exists so an older build can never
+ * write back fields it does not understand -- merging those fields INTO an
+ * editable graph reaches the same place by a shorter road, since the next
+ * save writes the result. So the merge does not happen at all, and the user
+ * is told why rather than left wondering why nothing appeared.
  */
 export async function insertExample(path: string): Promise<boolean> {
   try {
-    const example = await fetchResolvedExample(path);
+    // Read off the raw payload, BEFORE resolving: resolution merges the
+    // example's unknown presets into the node-def store, so a refusal after
+    // it would have already installed a newer build's presets.
+    const data = await loadExample(path);
+    const formatVersion = data.format_version;
+    if (isFormatTooNew(formatVersion)) {
+      useToastStore.getState().addToast(
+        useI18n.getState().t('project.formatTooNew.insertRefused', {
+          version: formatVersion as string | number,
+        }),
+        'error',
+      );
+      return false;
+    }
+    const example = resolveExample(data);
     if (example.nodes.length === 0) return false;
     useTabStore.getState().insertGraph(
       example.nodes,
