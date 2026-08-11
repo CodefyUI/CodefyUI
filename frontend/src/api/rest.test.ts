@@ -288,12 +288,16 @@ describe('GET endpoints', () => {
 describe('fetchHealth', () => {
   it('passes through the project path string when present (project mode)', async () => {
     const fetchMock = mockFetch(200, {
-      status: 'ok', nodes_loaded: 3, presets_loaded: 1, project: '/home/me/my-service',
+      status: 'ok', version: '2.2.0', nodes_loaded: 3, presets_loaded: 1,
+      caches: { execution_cache: { instances: 1, entries: 2, bytes: 2048, max_bytes_each: 4096 } },
+      project: '/home/me/my-service',
     });
     const out = await fetchHealth();
     expect(fetchMock).toHaveBeenCalledWith('/api/health');
     expect(out).toEqual({
-      status: 'ok', nodes_loaded: 3, presets_loaded: 1, project: '/home/me/my-service',
+      status: 'ok', version: '2.2.0', nodes_loaded: 3, presets_loaded: 1,
+      caches: { execution_cache: { instances: 1, entries: 2, bytes: 2048, max_bytes_each: 4096 } },
+      project: '/home/me/my-service',
     });
   });
 
@@ -302,6 +306,35 @@ describe('fetchHealth', () => {
     const out = await fetchHealth();
     expect(out.project).toBeNull();
     expect('project' in out).toBe(true);
+  });
+
+  // #193 item 2: the settings panel maps over `caches` on every render and
+  // prints `version` into a value column, so neither may arrive as undefined.
+  it('normalizes an absent caches block to an empty map and an absent version to null', async () => {
+    mockFetch(200, { status: 'ok', nodes_loaded: 3, presets_loaded: 1 });
+    const out = await fetchHealth();
+    expect(out.caches).toEqual({});
+    expect(out.version).toBeNull();
+  });
+
+  it('passes the per-store cache usage through untouched', async () => {
+    // Each store reports a DIFFERENT set of keys (see CacheUsage); the client
+    // must not narrow them to some common subset.
+    mockFetch(200, {
+      status: 'ok', version: '2.2.0', nodes_loaded: 3, presets_loaded: 1,
+      caches: {
+        execution_cache: { instances: 2, entries: 5, bytes: 1024, max_bytes_each: 2048 },
+        run_output_store: { runs: 1, max_runs: 20, bytes: 4096, max_bytes: 8192 },
+        node_state_store: { modules: 3, max_modules: 64, bytes: 512, max_bytes: 1024 },
+      },
+    });
+    const out = await fetchHealth();
+    expect(out.caches.run_output_store).toEqual({
+      runs: 1, max_runs: 20, bytes: 4096, max_bytes: 8192,
+    });
+    expect(Object.keys(out.caches)).toEqual([
+      'execution_cache', 'run_output_store', 'node_state_store',
+    ]);
   });
 
   it('throws on a non-ok response', async () => {

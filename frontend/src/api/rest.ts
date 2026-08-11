@@ -31,10 +31,31 @@ export async function fetchPresetDefinitions(): Promise<PresetDefinition[]> {
   return res.json();
 }
 
+/**
+ * One cache store's line in the health payload's `caches` block.
+ *
+ * Deliberately an open map of numbers rather than a named-field interface: the
+ * three stores do NOT share a shape. `bytes` is the only key all of them
+ * carry; the budget is `max_bytes` for the run-output and node-state stores
+ * but `max_bytes_each` for the execution cache (there is one instance per
+ * WebSocket, so a single total has no single ceiling), and the item count is
+ * `entries` / `runs` / `modules` respectively. A store added backend-side
+ * therefore needs no change here (#193 item 2).
+ */
+export type CacheUsage = Record<string, number>;
+
 export interface HealthInfo {
   status: string;
+  /** The running server's version. Unconditional since #135 -- normalized to
+   *  `null` only so a pre-#135 server, or a partial test double, renders a
+   *  placeholder instead of "undefined". */
+  version: string | null;
   nodes_loaded: number;
   presets_loaded: number;
+  /** Per-store memory usage, keyed by store name (`execution_cache`,
+   *  `run_output_store`, `node_state_store`). Empty when the server reports
+   *  none -- see `CacheUsage` for why the inner shape is open. */
+  caches: Record<string, CacheUsage>;
   project: string | null;
 }
 
@@ -47,6 +68,12 @@ export interface HealthInfo {
  * `useProjectStore.setProject` / `isProjectMode` key off a strict
  * `!== null` check, which `undefined` would satisfy and misreport project
  * mode as active.
+ *
+ * `caches` is normalized to `{}` rather than left absent for the same reason:
+ * the settings panel maps over it on every render, and a missing key would be
+ * a crash rather than an empty list. The backend also omits an individual
+ * store that is not running (a test client reaches the endpoint with nothing
+ * on `app.state`), so an empty map is a reachable, valid answer.
  */
 export async function fetchHealth(): Promise<HealthInfo> {
   const res = await fetch(`${BASE_URL}/health`);
@@ -54,8 +81,10 @@ export async function fetchHealth(): Promise<HealthInfo> {
   const data = await res.json();
   return {
     status: data.status,
+    version: data.version ?? null,
     nodes_loaded: data.nodes_loaded,
     presets_loaded: data.presets_loaded,
+    caches: data.caches ?? {},
     project: data.project ?? null,
   };
 }

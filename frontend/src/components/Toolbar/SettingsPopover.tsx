@@ -15,6 +15,8 @@ import {
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
+import { HealthSection } from './HealthSection';
+import { SettingsRow as Row } from './SettingsRow';
 import styles from './SettingsPopover.module.css';
 
 interface Props {
@@ -610,39 +612,11 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
             }
           />
         </section>
-      </div>
-    </div>
-  );
-}
 
-interface RowProps {
-  name: string;
-  desc: string;
-  ctrl: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-}
-
-function Row({ name, desc, ctrl, onClick, disabled }: RowProps) {
-  const interactive = onClick !== undefined;
-  return (
-    <div
-      className={`${styles.row} ${interactive ? styles.interactive : ''} ${disabled ? styles.disabled : ''}`}
-      onClick={onClick}
-      role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      onKeyDown={(e) => {
-        if (interactive && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          onClick?.();
-        }
-      }}
-    >
-      <div>
-        <div className={styles.name}>{name}</div>
-        <div className={styles.desc}>{desc}</div>
+        {/* Last, and read-only: everything above changes how a run behaves,
+            this only reports what the server already is (#193 item 2). */}
+        <HealthSection />
       </div>
-      <div className={styles.ctrl}>{ctrl}</div>
     </div>
   );
 }

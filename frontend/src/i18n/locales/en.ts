@@ -480,6 +480,7 @@ const en = {
   'toolbar.settings.section.training': 'Training Behavior',
   'toolbar.settings.section.editor': 'Editor',
   'toolbar.settings.section.llm': 'LLM Providers',
+  'toolbar.settings.section.system': 'This Server',
   'settings.device.name': 'Compute device',
   'settings.device.desc': 'Run the graph on this device. Nodes set to "auto" follow it.',
 
@@ -536,6 +537,29 @@ const en = {
   'settings.codex.signInFailed': 'Codex sign-in failed',
   'settings.codex.logoutFailed': 'Codex sign-out failed',
   'settings.codex.statusFailed': 'Codex status check failed',
+
+  // "This Server" section (#193 item 2). /api/health has reported all of this
+  // since #135; until now nothing in the editor showed it.
+  'settings.health.name': 'What this server has loaded',
+  'settings.health.desc': 'The version you are running, and how much memory its caches are holding right now.',
+  'settings.health.refresh': 'Refresh',
+  // The Codex row's button is also called "Refresh", and the two are only
+  // distinguishable by which section they sit in — which a screen reader does
+  // not read out. The accessible name says which one this is.
+  'settings.health.refreshAria': 'Refresh server status',
+  'settings.health.loading': 'Reading the server…',
+  'settings.health.failed': 'Could not read the server status. Press Refresh to try again.',
+  'settings.health.version': 'Version',
+  'settings.health.nodes': 'Nodes',
+  'settings.health.presets': 'Presets',
+  'settings.health.unknown': 'unknown',
+  'settings.health.caches': 'Caches',
+  'settings.health.cachesEmpty': 'No caches are running yet.',
+  'settings.health.cachesHint': 'These hold results the server already computed so a re-run can skip the work; none of it is your saved graphs or files. Clearing one costs recompute time — for the weight cache that means training time, unless you saved a checkpoint.',
+  'settings.health.cache.execution_cache': 'Node outputs (per editor connection)',
+  'settings.health.cache.run_output_store': 'Recorded run outputs',
+  'settings.health.cache.node_state_store': 'Layer weights kept between runs',
+  'settings.health.cacheOf': '{used} of {budget}',
   // LLM
   'tokenizer.tokenCount': '{count} tokens',
   'tokenizer.emptyOutput': 'No tokens — input text was empty.',

@@ -40,6 +40,13 @@ vi.mock('../../api/rest', () => ({
   fetchCodexStatus: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
   startCodexLogin: vi.fn(() => Promise.resolve({ auth_url: 'https://auth.example' })),
   logoutCodex: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
+  // Used by the popover's "This Server" section (#193 item 2)
+  fetchHealth: vi.fn(() =>
+    Promise.resolve({
+      status: 'ok', version: '2.2.0', nodes_loaded: 0, presets_loaded: 0,
+      caches: {}, project: null,
+    }),
+  ),
 }));
 
 const mockedRest = vi.mocked(rest);
