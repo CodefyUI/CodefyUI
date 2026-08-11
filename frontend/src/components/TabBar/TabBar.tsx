@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { useTabStore } from '../../store/tabStore';
+import { useTabStore, tabHasContent, tabNodeCount } from '../../store/tabStore';
 import { useI18n } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import styles from './TabBar.module.css';
@@ -36,9 +36,37 @@ export function TabBar() {
       if (tabs.length <= 1) return;
       /* v8 ignore stop */
       const tab = tabs.find((t) => t.id === id);
-      if (tab && tab.status === 'running') {
+      // Only reachable if the tab vanished between render and click.
+      /* v8 ignore start */
+      if (!tab) return;
+      /* v8 ignore stop */
+      const hasContent = tabHasContent(tab);
+      // The graph warning, reused by both branches below so a running tab with
+      // a graph in it is still told what it is about to lose.
+      const lossMessage = hasContent
+        ? t('tabs.close.confirmMessage', { count: tabNodeCount(tab) })
+        : undefined;
+      if (tab.status === 'running') {
+        // A running tab already asked before #331, and its question is the
+        // stronger one (closing kills the run too). Chaining the content
+        // confirm after it would mean two dialogs for one click, so the run
+        // question just carries the graph warning as its body.
         const ok = await confirm({
           title: t('tabs.closeRunning'),
+          message: lossMessage,
+          variant: 'danger',
+        });
+        if (!ok) return;
+      } else if (hasContent) {
+        // #331: one misclick used to discard a whole graph with no undo --
+        // `removeTab` drops the tab's undo/redo stacks along with it, so there
+        // was nothing left to undo from. An empty tab still closes silently:
+        // asking about nothing is the noise that trains people to click
+        // through the dialog that matters.
+        const ok = await confirm({
+          title: t('tabs.close.confirmTitle', { name: tab.name }),
+          message: lossMessage,
+          confirmText: t('tabs.close.confirmButton'),
           variant: 'danger',
         });
         if (!ok) return;

@@ -382,6 +382,51 @@ function createTabState(id: string, name: string): TabState {
   };
 }
 
+/**
+ * How many nodes this tab would take with it if it closed right now (#331).
+ *
+ * Counting `tab.nodes` alone is wrong while a block is open: `enterSubgraph`
+ * SWAPS the graph's nodes out into a `subgraphStack` frame and puts the
+ * definition's insides on the canvas, so a user standing inside a freshly
+ * created (empty) block has `tab.nodes.length === 0` with a whole graph
+ * stashed one level up. Every open frame is added back here for the same
+ * reason `buildPersistedTab` flushes the stack before persisting: the tab is
+ * the whole document, not the sub-canvas currently on screen.
+ */
+export function tabNodeCount(
+  tab: Pick<TabState, 'nodes' | 'subgraphStack'>,
+): number {
+  return (
+    (tab.nodes?.length ?? 0) +
+    (tab.subgraphStack ?? []).reduce((n, frame) => n + frame.nodes.length, 0)
+  );
+}
+
+/**
+ * Would closing this tab throw work away? Drives the confirm on the tab's
+ * close x (#331).
+ *
+ * Deliberately NOT derived from `dirtyNodeIds`. That set is the
+ * partial-re-execution hint and answers a different question: `clearDirty`
+ * empties it at the start of every run, and `addNode` never adds to it at
+ * all — so a graph that was dragged together and run but never saved reads as
+ * perfectly clean, which is exactly the tab whose loss hurts most. Nothing in
+ * the store records "matches what is on disk" (there is no snapshot of the
+ * last save to compare against), so the only honest question available is "is
+ * there anything in here", and a tab with anything in it always asks.
+ */
+export function tabHasContent(
+  tab: Pick<TabState, 'nodes' | 'edges' | 'subgraphs' | 'subgraphStack'>,
+): boolean {
+  if (tabNodeCount(tab) > 0) return true;
+  // An edge or a leftover block definition without any node is not reachable
+  // through normal editing, but it is still authored content — and a tab that
+  // has one is not the "brand-new empty tab" the silent close is for.
+  if (tab.edges?.length) return true;
+  if (tab.subgraphs?.length) return true;
+  return false;
+}
+
 // ── Store ──
 
 /**

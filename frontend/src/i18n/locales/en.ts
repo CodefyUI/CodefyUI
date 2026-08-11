@@ -254,6 +254,10 @@ const en = {
   // Tabs
   'tabs.add': 'New tab',
   'tabs.closeRunning': 'This tab is still running. Close it anyway?',
+  'tabs.close.confirmTitle': 'Close "{name}"?',
+  'tabs.close.confirmMessage':
+    'This tab has a graph in it ({count} nodes). Closing discards it, and there is no undo for a closed tab: anything you have not saved to a graph file is gone. Cancel and save it first if you want it back later.',
+  'tabs.close.confirmButton': 'Close tab',
 
   // Subgraph Editor (SequentialModel)
   'layersEditor.title': 'Model Architecture Editor',

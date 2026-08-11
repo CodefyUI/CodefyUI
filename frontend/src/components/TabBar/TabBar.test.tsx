@@ -233,6 +233,153 @@ describe('TabBar', () => {
     expect(useTabStore.getState().tabs).toHaveLength(2);
   });
 
+  // ── Close confirm for a tab with a graph in it (#331) ──────────────────────
+
+  /**
+   * Give the tab at `index` some content without going through the canvas:
+   * `tabHasContent` only reads nodes/edges/subgraphs, so two nodes is enough
+   * to make it the "would lose work" case.
+   */
+  function fillTab(index: number) {
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) =>
+        i === index
+          ? {
+              ...t,
+              nodes: [
+                { id: 'n1', type: 'default', position: { x: 0, y: 0 }, data: { type: 'Dataset', params: {} } },
+                { id: 'n2', type: 'default', position: { x: 90, y: 0 }, data: { type: 'Model', params: {} } },
+              ] as never,
+            }
+          : t,
+      ),
+    });
+  }
+
+  it('closing an EMPTY tab does not ask (closes immediately)', () => {
+    useTabStore.getState().addTab('Tab 2');
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    expect(useDialogStore.getState().active).toBeNull();
+    expect(useTabStore.getState().tabs).toHaveLength(1);
+  });
+
+  it('closing a tab holding a graph asks first, with the tab name and node count', async () => {
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    const active = useDialogStore.getState().active!;
+    expect(active.kind).toBe('confirm');
+    expect(active.title).toBe('Close "Tab 1"?');
+    expect(active.message).toContain('2 nodes');
+    // Destructive action, so the danger styling the overwrite confirm uses.
+    expect(active.kind === 'confirm' && active.variant).toBe('danger');
+    expect(active.confirmText).toBe('Close tab');
+    // Nothing removed while the dialog is up.
+    expect(useTabStore.getState().tabs).toHaveLength(2);
+  });
+
+  it('cancelling the confirm keeps the tab and everything in it', async () => {
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    const before = useTabStore.getState().tabs[0];
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    useDialogStore.getState().close(false);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).toBeNull();
+    });
+    const after = useTabStore.getState().tabs[0];
+    expect(useTabStore.getState().tabs).toHaveLength(2);
+    // Same tab object: nodes, file binding and undo stacks all untouched.
+    expect(after).toBe(before);
+    expect(after.nodes).toHaveLength(2);
+    expect(screen.getByText('Tab 1')).toBeTruthy();
+  });
+
+  it('confirming the dialog removes the tab', async () => {
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    const firstId = useTabStore.getState().tabs[0].id;
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    useDialogStore.getState().close(true);
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs).toHaveLength(1);
+    });
+    expect(useTabStore.getState().tabs.find((t) => t.id === firstId)).toBeUndefined();
+  });
+
+  it('a tab bound to a saved file still asks: dirty tracking cannot prove it is unchanged', async () => {
+    // `dirtyNodeIds` is the partial-re-execution hint -- cleared at the start
+    // of every run and never set by addNode -- so "clean and bound to a file"
+    // does not mean "identical to what is on disk". Asking anyway is the only
+    // answer that cannot silently discard work (#331).
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) =>
+        i === 0 ? { ...t, currentGraphFile: 'saved-graph', dirtyNodeIds: new Set<string>() } : t,
+      ),
+    });
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    expect(useTabStore.getState().tabs).toHaveLength(2);
+  });
+
+  it('a running tab with a graph gets ONE dialog carrying both warnings', async () => {
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) => (i === 0 ? { ...t, status: 'running' as const } : t)),
+    });
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    const active = useDialogStore.getState().active!;
+    expect(active.title).toBe('This tab is still running. Close it anyway?');
+    expect(active.message).toContain('2 nodes');
+    useDialogStore.getState().close(true);
+    await waitFor(() => {
+      expect(useTabStore.getState().tabs).toHaveLength(1);
+    });
+    // Only the one dialog: nothing re-opened behind it.
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('uses the zh-TW copy when that locale is active', async () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    useTabStore.getState().addTab('Tab 2');
+    fillTab(0);
+    render(<TabBar />);
+    fireEvent.click(screen.getAllByText('×')[0]);
+    await waitFor(() => {
+      expect(useDialogStore.getState().active).not.toBeNull();
+    });
+    const active = useDialogStore.getState().active!;
+    expect(active.title).toBe('要關閉「Tab 1」嗎？');
+    expect(active.confirmText).toBe('關閉分頁');
+    expect(active.message).toContain('2 個節點');
+  });
+
   it('clicking the close button stops propagation (does not activate the tab)', () => {
     useTabStore.getState().addTab('Tab 2');
     const firstId = useTabStore.getState().tabs[0].id;
