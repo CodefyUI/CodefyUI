@@ -887,6 +887,16 @@ const zhTW: NodeTranslations = {
       cache_dir: '存放 token 快取檔的子目錄（留空 = 資料目錄下的共用快取）。',
     },
   },
+  DataMixDataset: {
+    description:
+      '把 2–6 個文字語料混成一個原始文字列的資料集 — 依權重、種子化的交錯（比例抽取、不重複、同種子可重現），或依序串接（corpus_1 全部、再 corpus_2… 的課程式排序）。接 TextCorpusDataset 的輸出進來，結果餵給 LMTokenizedDataset，就能研究資料混合比例與課程順序的影響。混合只記錄（來源, 列號）索引、逐列惰性讀取，不會把語料文字實體化。',
+    params: {
+      sources: '這顆節點有幾個語料輸入埠。',
+      weights: '逗號分隔的抽取權重，每個來源一個（會正規化；只在 interleave 模式使用）。抽完的來源不再被抽，其餘來源重新正規化 — 混合的尾段就是還有剩的語料。',
+      mode: 'interleave：種子化的比例抽取、不重複。concat：corpus_1 全部、再 corpus_2… — 有順序的課程。',
+      seed: '交錯順序的種子 — 相同種子與輸入會重現同一個混合順序。',
+    },
+  },
   PerplexityEvaluate: {
     description:
       '在沒看過的文字上為訓練好的語言模型打分。它會跑完整個資料集，把每一個計分位置的 cross-entropy 平均起來，再回報 $\\mathrm{perplexity} = \\exp(\\text{val\\_loss})$ — 大致可以讀成「模型在每一步大約是在幾個機率相當的 token 之間猶豫」，所以在 50257 個 token 的詞彙表上亂猜就是 50257。這個平均值是「每個 token」的，而且綁定這份資料集與這套 tokenizer，因此只有用同樣方式量出來的數字才能互相比較。',

@@ -75,3 +75,24 @@ class HFTorchTextDataset(Dataset):
         # row is data the user pointed at, and failing the whole load over one
         # odd cell is worse than tokenizing its text form.
         return "" if value is None else str(value)
+
+
+class MixedTextDataset(Dataset):
+    """Rows drawn from several text datasets by a precomputed index.
+
+    The mixing NODE decides the order once (seeded, so it is reproducible)
+    and stores only ``(source, row)`` index pairs; rows are read lazily from
+    the underlying datasets, so mixing two HF-backed corpora never
+    materialises their text.
+    """
+
+    def __init__(self, sources: list[Any], index: list[tuple[int, int]]) -> None:
+        self._sources = sources
+        self._index = index
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __getitem__(self, idx: int) -> str:
+        source, row = self._index[idx]
+        return str(self._sources[source][row])
