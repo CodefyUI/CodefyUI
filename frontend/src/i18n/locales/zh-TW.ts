@@ -465,6 +465,7 @@ const zhTW: Record<TranslationKey, string> = {
   'toolbar.settings.section.training': '訓練行為',
   'toolbar.settings.section.editor': '編輯器',
   'toolbar.settings.section.llm': 'LLM 提供者',
+  'toolbar.settings.section.system': '這台伺服器',
   'settings.device.name': '運算裝置',
   'settings.device.desc': '在此裝置上執行圖。設為「auto」的節點會跟隨此設定。',
 
@@ -521,6 +522,26 @@ const zhTW: Record<TranslationKey, string> = {
   'settings.codex.signInFailed': 'Codex 登入失敗',
   'settings.codex.logoutFailed': 'Codex 登出失敗',
   'settings.codex.statusFailed': 'Codex 狀態檢查失敗',
+
+  // 「這台伺服器」區塊（#193 第 2 項）。這些數字 /api/health 從 #135 就一直在
+  // 回報，只是編輯器裡一直沒有地方顯示。
+  'settings.health.name': '這台伺服器載入了什麼',
+  'settings.health.desc': '你正在使用的版本，以及它的快取目前占用了多少記憶體。',
+  'settings.health.refresh': '重新讀取',
+  'settings.health.refreshAria': '重新讀取伺服器狀態',
+  'settings.health.loading': '正在讀取伺服器資訊…',
+  'settings.health.failed': '讀不到伺服器狀態。按「重新讀取」再試一次。',
+  'settings.health.version': '版本',
+  'settings.health.nodes': '節點',
+  'settings.health.presets': '預設組合',
+  'settings.health.unknown': '未知',
+  'settings.health.caches': '快取',
+  'settings.health.cachesEmpty': '目前沒有任何快取在運作。',
+  'settings.health.cachesHint': '這些存放伺服器已經算過的結果，讓下次執行可以跳過重算；裡面不會有你存下來的圖或檔案。清掉的代價是重算的時間 — 權重那一項則是重新訓練的時間，除非你存過 checkpoint。',
+  'settings.health.cache.execution_cache': '節點輸出（每個編輯器連線一份）',
+  'settings.health.cache.run_output_store': '已錄製的執行輸出',
+  'settings.health.cache.node_state_store': '在多次執行間保留的層權重',
+  'settings.health.cacheOf': '{used} / 上限 {budget}',
   // LLM
   'tokenizer.tokenCount': '{count} 個 token',
   'tokenizer.emptyOutput': '沒有 token — 輸入文字為空。',

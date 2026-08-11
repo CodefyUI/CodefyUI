@@ -318,3 +318,91 @@
   color: var(--text-disabled);
   font-weight: var(--fw-medium);
 }
+
+/* ----- "This Server" section (#193 item 2) -----
+   Shared with HealthSection.tsx, which renders that section: one stylesheet
+   per panel, one component per section (same split as InspectorPanel).
+   Read-only figures, so the whole block sits below the row's control column
+   rather than in it — a three-line cache list has nowhere to fit on the right
+   of a settings row. */
+.health {
+  padding: 0 var(--sp-5) var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.healthStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  padding-bottom: var(--sp-3);
+}
+
+.healthStat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.healthStatLabel {
+  color: var(--text-muted);
+}
+
+.healthStatValue {
+  color: var(--text-primary);
+  font-weight: var(--fw-semibold);
+  /* Same-width digits so a refresh that changes a count does not shift the
+     labels beside it. */
+  font-variant-numeric: tabular-nums;
+}
+
+.healthLabel {
+  color: var(--text-secondary);
+  font-weight: var(--fw-semibold);
+  padding-bottom: var(--sp-2);
+}
+
+.cacheList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.cacheRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-4);
+  align-items: baseline;
+}
+
+.cacheName {
+  color: var(--text-muted);
+  line-height: var(--lh-snug);
+}
+
+.cacheValue {
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.healthHint {
+  margin-top: var(--sp-3);
+  color: var(--text-muted);
+  line-height: var(--lh-normal);
+}
+
+.healthNote {
+  color: var(--text-muted);
+  padding-bottom: var(--sp-2);
+}
+
+.healthError {
+  color: var(--status-error);
+  line-height: var(--lh-normal);
+  padding-bottom: var(--sp-3);
+}

@@ -13,11 +13,21 @@ import {
   fetchCodexStatus,
   startCodexLogin,
   logoutCodex,
+  fetchHealth,
 } from '../../api/rest';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
 vi.mock('../../api/rest', () => ({
   resetWeights: vi.fn(),
+  // The "This Server" section reads /api/health when the popover opens
+  // (#193 item 2); its own behaviour is covered in HealthSection.test.tsx.
+  fetchHealth: vi.fn(() =>
+    Promise.resolve({
+      status: 'ok', version: '2.2.0', nodes_loaded: 137, presets_loaded: 12,
+      caches: { run_output_store: { runs: 0, bytes: 0, max_bytes: 1024 * 1024 } },
+      project: null,
+    }),
+  ),
   fetchCodexStatus: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
   startCodexLogin: vi.fn(() => Promise.resolve({ auth_url: 'https://auth.example' })),
   logoutCodex: vi.fn(() => Promise.resolve({ status: 'logged_out' })),
@@ -95,6 +105,12 @@ describe('SettingsPopover', () => {
       globalDevice: 'cpu',
       edgeStyle: 'circuit',
     });
+    vi.mocked(fetchHealth).mockReset();
+    vi.mocked(fetchHealth).mockResolvedValue({
+      status: 'ok', version: '2.2.0', nodes_loaded: 137, presets_loaded: 12,
+      caches: { run_output_store: { runs: 0, bytes: 0, max_bytes: 1024 * 1024 } },
+      project: null,
+    });
     mockedFetchCodexStatus.mockResolvedValue({ status: 'logged_out' });
     mockedStartCodexLogin.mockResolvedValue({ auth_url: 'https://auth.example' });
     mockedLogoutCodex.mockResolvedValue({ status: 'logged_out' });
@@ -128,7 +144,22 @@ describe('SettingsPopover', () => {
     expect(screen.getByText('Recording & Inspection')).toBeInTheDocument();
     expect(screen.getByText('Training Behavior')).toBeInTheDocument();
     expect(screen.getByText('Editor')).toBeInTheDocument();
+    expect(screen.getByText('This Server')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('the server section reads /api/health when the popover opens, not before', async () => {
+    // "Fetch on open" needs no plumbing: the popover renders nothing while
+    // closed, so the section does not exist to fetch (#193 item 2).
+    const { unmount } = render(
+      <SettingsPopover open={false} onClose={vi.fn()} triggerRef={makeTriggerRef()} />,
+    );
+    expect(vi.mocked(fetchHealth)).not.toHaveBeenCalled();
+    unmount();
+
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    await waitFor(() => expect(vi.mocked(fetchHealth)).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('137')).toBeInTheDocument();
   });
 
 

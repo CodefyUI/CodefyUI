@@ -100,8 +100,12 @@ beforeEach(() => {
   mockedFetchHealth.mockReset();
   mockedFetchHealth.mockResolvedValue({
     status: 'ok',
+    // version / caches are read by the settings popover, not by App (#193
+    // item 2); present here because HealthInfo now carries them.
+    version: '2.2.0',
     nodes_loaded: 0,
     presets_loaded: 0,
+    caches: {},
     project: null,
   });
 });
@@ -309,8 +313,10 @@ describe('App', () => {
     );
     mockedFetchHealth.mockResolvedValueOnce({
       status: 'ok',
+      version: '2.2.0',
       nodes_loaded: 0,
       presets_loaded: 0,
+      caches: {},
       project: '/proj',
     });
     render(<App />);
