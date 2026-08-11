@@ -162,14 +162,43 @@ def _apply_rope(
 class _CausalSelfAttention(nn.Module):
     """Multi-head self-attention that can only look left."""
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout: float,
+        *,
+        n_kv_heads: int | None = None,
+        qk_norm: bool = False,
+        bias: bool = True,
+    ) -> None:
         super().__init__()
         self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads or n_heads
         self.head_dim = d_model // n_heads
-        # One fused projection for q, k and v: three separate Linears would
-        # be numerically identical and three times as many kernel launches.
-        self.qkv = nn.Linear(d_model, 3 * d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
+        if self.n_kv_heads == n_heads:
+            # One fused projection for q, k and v: three separate Linears
+            # would be numerically identical and three times as many kernel
+            # launches. This branch is byte-identical to the pre-#299 layout,
+            # so default configs keep their exact parameter shapes and init
+            # stream.
+            self.qkv: nn.Linear | None = nn.Linear(d_model, 3 * d_model, bias=bias)
+            self.q_proj = self.kv_proj = None
+        else:
+            # Grouped-query attention: full-width queries, but only
+            # n_kv_heads key/value heads shared across query-head groups.
+            # Separate projections because q and kv now have different
+            # output widths.
+            self.qkv = None
+            self.q_proj = nn.Linear(d_model, d_model, bias=bias)
+            self.kv_proj = nn.Linear(
+                d_model, 2 * self.n_kv_heads * self.head_dim, bias=bias)
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias)
+        # Per-head RMSNorm on q and k before the dot product — the standard
+        # stability intervention for high-learning-rate training. Gains are
+        # 1-D non-bias parameters, so the init pass leaves them at ones.
+        self.q_norm = nn.RMSNorm(self.head_dim) if qk_norm else None
+        self.k_norm = nn.RMSNorm(self.head_dim) if qk_norm else None
         # A float, not an nn.Dropout: SDPA takes the probability itself so
         # the dropout happens inside the fused kernel on the attention
         # weights, which are never materialised for us to drop out of.
@@ -183,11 +212,22 @@ class _CausalSelfAttention(nn.Module):
         sin: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch, seq_len, d_model = x.shape
-        query, key, value = self.qkv(x).split(d_model, dim=2)
+        if self.qkv is not None:
+            query, key, value = self.qkv(x).split(d_model, dim=2)
+            kv_heads = (batch, seq_len, self.n_kv_heads, self.head_dim)
+        else:
+            query = self.q_proj(x)
+            kv_width = self.n_kv_heads * self.head_dim
+            key, value = self.kv_proj(x).split(kv_width, dim=2)
+            kv_heads = (batch, seq_len, self.n_kv_heads, self.head_dim)
         heads = (batch, seq_len, self.n_heads, self.head_dim)
         query = query.view(heads).transpose(1, 2)
-        key = key.view(heads).transpose(1, 2)
-        value = value.view(heads).transpose(1, 2)
+        key = key.view(kv_heads).transpose(1, 2)
+        value = value.view(kv_heads).transpose(1, 2)
+
+        if self.q_norm is not None and self.k_norm is not None:
+            query = self.q_norm(query)
+            key = self.k_norm(key)
 
         # RoPE rotates q and k and leaves v alone: position enters through
         # the dot product, not through the values being averaged.
@@ -201,6 +241,7 @@ class _CausalSelfAttention(nn.Module):
             value,
             dropout_p=self.attn_dropout if self.training else 0.0,
             is_causal=True,
+            enable_gqa=self.n_kv_heads != self.n_heads,
         )
         attended = attended.transpose(1, 2).reshape(batch, seq_len, d_model)
         return self.resid_dropout(self.out_proj(attended))
@@ -211,11 +252,12 @@ class _FeedForward(nn.Module):
 
     def __init__(
         self, d_model: int, d_ff: int, activation: str, dropout: float,
+        *, bias: bool = True,
     ) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(d_model, d_ff)
+        self.fc1 = nn.Linear(d_model, d_ff, bias=bias)
         self.act = _make_activation(activation)
-        self.fc2 = nn.Linear(d_ff, d_model)
+        self.fc2 = nn.Linear(d_ff, d_model, bias=bias)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -233,12 +275,18 @@ class _DecoderBlock(nn.Module):
         dropout: float,
         norm: str,
         activation: str,
+        *,
+        n_kv_heads: int | None = None,
+        qk_norm: bool = False,
+        bias: bool = True,
     ) -> None:
         super().__init__()
         self.norm1 = _make_norm(norm, d_model)
-        self.attn = _CausalSelfAttention(d_model, n_heads, dropout)
+        self.attn = _CausalSelfAttention(
+            d_model, n_heads, dropout,
+            n_kv_heads=n_kv_heads, qk_norm=qk_norm, bias=bias)
         self.norm2 = _make_norm(norm, d_model)
-        self.mlp = _FeedForward(d_model, d_ff, activation, dropout)
+        self.mlp = _FeedForward(d_model, d_ff, activation, dropout, bias=bias)
 
     def forward(
         self,
@@ -319,6 +367,9 @@ class CausalLMModule(nn.Module):
         gradient_checkpointing: bool,
         init_std: float,
         seed: int,
+        n_kv_heads: int = 0,
+        qk_norm: bool = False,
+        bias: bool = True,
     ) -> None:
         super().__init__()
         if positional not in POSITIONAL_MODES:
@@ -331,6 +382,15 @@ class CausalLMModule(nn.Module):
                 f"n_heads={n_heads} so every head gets the same width. "
                 f"Change d_model or n_heads.")
         head_dim = d_model // n_heads
+        # 0 means "same as n_heads": plain multi-head attention, the layout
+        # every pre-#299 checkpoint was trained with.
+        kv_heads = n_kv_heads or n_heads
+        if kv_heads > n_heads or n_heads % kv_heads:
+            raise ValueError(
+                f"CausalLMModel: n_kv_heads={n_kv_heads} must divide "
+                f"n_heads={n_heads} evenly (each K/V head serves an equal "
+                f"group of query heads; 1 = multi-query attention). Change "
+                f"n_kv_heads or n_heads.")
         if positional == "rope" and head_dim % 2:
             raise ValueError(
                 f"CausalLMModel: positional='rope' rotates each head's "
@@ -366,7 +426,9 @@ class CausalLMModule(nn.Module):
 
         self.drop = nn.Dropout(dropout)
         self.blocks = nn.ModuleList([
-            _DecoderBlock(d_model, n_heads, d_ff, dropout, norm, activation)
+            _DecoderBlock(
+                d_model, n_heads, d_ff, dropout, norm, activation,
+                n_kv_heads=kv_heads, qk_norm=qk_norm, bias=bias)
             for _ in range(n_layers)
         ])
         self.norm_f = _make_norm(norm, d_model)
@@ -523,7 +585,20 @@ def _resolve_config(params: dict[str, Any]) -> dict[str, Any]:
         # weight starts identical, which is a lesson of its own).
         "init_std": max(0.0, init_std),
         "seed": int(params.get("seed", 0) or 0),
+        # 0 = "same as n_heads" (plain MHA). max(0, ...) rather than
+        # _positive_int, whose floor of 1 would silently turn the MHA
+        # sentinel into multi-query attention.
+        "n_kv_heads": max(0, int(params.get("n_kv_heads", 0) or 0)),
+        "qk_norm": bool(params.get("qk_norm", False)),
+        "bias": bool(params.get("bias", True)),
     }
+    kv = config["n_kv_heads"] or config["n_heads"]
+    if kv > config["n_heads"] or config["n_heads"] % kv:
+        raise ValueError(
+            f"CausalLMModel: n_kv_heads={config['n_kv_heads']} must divide "
+            f"n_heads={config['n_heads']} evenly (each K/V head serves an "
+            f"equal group of query heads; 1 = multi-query attention). Change "
+            f"n_kv_heads or n_heads.")
     if config["d_model"] % config["n_heads"]:
         raise ValueError(
             f"CausalLMModel: d_model={config['d_model']} must be divisible "
@@ -574,6 +649,9 @@ class CausalLMModelNode(StatefulModuleMixin, BaseNode):
         "gradient_checkpointing",
         "init_std",
         "seed",
+        "n_kv_heads",
+        "qk_norm",
+        "bias",
     )
 
     @classmethod
@@ -775,6 +853,43 @@ class CausalLMModelNode(StatefulModuleMixin, BaseNode):
                     "Seed for the weight initialisation. The same seed gives "
                     "the same starting model, so two runs differ only by "
                     "what you changed."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="n_kv_heads",
+                param_type=ParamType.INT,
+                default=0,
+                min_value=0,
+                max_value=64,
+                description=(
+                    "Key/value heads for grouped-query attention. 0 = same "
+                    "as n_heads (standard multi-head attention); fewer "
+                    "shares each K/V head across a group of query heads "
+                    "(GQA), and 1 is multi-query attention. Must divide "
+                    "n_heads evenly."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="qk_norm",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "RMS-normalise each head's queries and keys before the "
+                    "attention dot product — the standard stability "
+                    "intervention for training at high learning rates."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="bias",
+                param_type=ParamType.BOOL,
+                default=True,
+                description=(
+                    "Bias terms on the attention and MLP projections. Off "
+                    "gives Llama-style bias-free linears; the parameter "
+                    "count shifts measurably."
                 ),
                 advanced=True,
             ),

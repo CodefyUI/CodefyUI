@@ -827,6 +827,9 @@ const zhTW: NodeTranslations = {
       gradient_checkpointing: '反向傳播時重新計算每個 block，而不是把 activation 存下來：記憶體省很多，時間多花約 30%。當一個 batch 塞不進顯卡時再打開。',
       init_std: '權重初始化所用常態分布的標準差。0.02 是 GPT-2 的值；寫回 residual stream 的那幾個投影層還會再除以 sqrt(2 x n_layers)。',
       seed: '權重初始化的隨機種子。同樣的種子會得到同樣的起始模型，兩次跑的差別就只有你改掉的部分。',
+      n_kv_heads: 'Grouped-query attention 的 key/value 頭數。0 = 與 n_heads 相同（標準多頭注意力）；較少時一組 query 頭共享一個 K/V 頭（GQA），1 就是 multi-query attention。必須能整除 n_heads。',
+      qk_norm: '在注意力點積前對每個頭的 query 與 key 做 RMS 正規化 — 高學習率訓練的標準穩定手段。',
+      bias: '注意力與 MLP 投影層的 bias 項。關閉即 Llama 式無 bias 線性層；參數量會有可量測的變化。',
     },
   },
   LMCrossEntropyLoss: {
