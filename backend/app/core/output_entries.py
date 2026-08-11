@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 from ..config import settings
@@ -232,11 +232,14 @@ def _video_payload(value: Any) -> dict[str, Any] | None:
     fmt = value.get("format")
     if not isinstance(path, str) or not path or not isinstance(fmt, str):
         return None
-    # Path.is_absolute() alone is platform-shaped: on Windows "/leak/a.mp4"
-    # has no drive and counts as relative. Anything rooted or escaping is
-    # refused on every platform.
-    if (Path(path).is_absolute() or path.startswith(("/", "\\"))
-            or path.startswith("..")):
+    # Judged under BOTH path flavours, because the native Path is
+    # platform-shaped in both directions: on Windows "/leak/a.mp4" has no
+    # drive and counts as relative; on POSIX "C:/leak/a.mp4" is one odd
+    # filename that is_absolute() waves through. A reference must be
+    # relative and descend-only on every platform.
+    posix, windows = PurePosixPath(path), PureWindowsPath(path)
+    if (posix.is_absolute() or windows.is_absolute() or windows.drive
+            or ".." in posix.parts or ".." in windows.parts):
         return None
     return {key: value[key] for key in _VIDEO_REFERENCE_KEYS if key in value}
 

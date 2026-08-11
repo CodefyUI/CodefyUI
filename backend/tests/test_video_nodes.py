@@ -225,9 +225,13 @@ def test_video_payload_refuses_absolute_paths_and_junk():
     assert _video_payload("not a dict") is None
     assert _video_payload({"format": "mp4"}) is None  # no path
     assert _video_payload({"path": "a.mp4"}) is None  # no format
+    # rooted/escaping paths refused on EVERY platform, both path flavours
     assert _video_payload({"path": "C:/leak/a.mp4", "format": "mp4"}) is None
+    assert _video_payload({"path": "C:leak.mp4", "format": "mp4"}) is None
     assert _video_payload({"path": "/leak/a.mp4", "format": "mp4"}) is None
+    assert _video_payload({"path": "\\\\srv\\share\\a.mp4", "format": "mp4"}) is None
     assert _video_payload({"path": "../up.mp4", "format": "mp4"}) is None
+    assert _video_payload({"path": "a/../../up.mp4", "format": "mp4"}) is None
     kept = _video_payload(
         {"path": "ok.mp4", "format": "mp4", "url": "/api/media/ok.mp4",
          "junk": "dropped", "fps": 10.0})
