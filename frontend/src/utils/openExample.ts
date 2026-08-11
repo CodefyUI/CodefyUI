@@ -24,6 +24,20 @@ interface ResolvedExample {
   subgraphs: SubgraphDefinition[];
   /** Teaching Inspector segment overlays the example ships; often empty. */
   segmentGroups: SegmentGroup[];
+  /**
+   * The example's own description, or '' when it ships without one (#200
+   * item 4). Carried so opening an example REPLACES the tab's description
+   * instead of leaving the previous graph's on it -- `description` is
+   * persisted through save, so a leftover gets written to disk.
+   */
+  description: string;
+  /**
+   * The example's raw `format_version` (#200 item 4). An example -- or a
+   * plugin-shipped template -- written by a newer CodefyUI must open
+   * read-only here exactly as it does on the Toolbar's load and import
+   * paths; the verdict is `loadGraphDocument`'s to make.
+   */
+  formatVersion: unknown;
 }
 
 /**
@@ -72,28 +86,52 @@ async function fetchResolvedExample(path: string): Promise<ResolvedExample> {
   const segmentGroups: SegmentGroup[] = Array.isArray(data.segmentGroups)
     ? data.segmentGroups
     : [];
-  return { nodes, edges, name, subgraphs, segmentGroups };
+  const description =
+    typeof data.description === 'string' ? data.description : '';
+  return {
+    nodes,
+    edges,
+    name,
+    subgraphs,
+    segmentGroups,
+    description,
+    formatVersion: data.format_version,
+  };
 }
 
-/** Replace the active tab's graph with a resolved example. */
+/**
+ * Replace the active tab's graph with a resolved example.
+ *
+ * One call, because this is the third door onto the same state and the two
+ * in `Toolbar` were the reference (#200 items 4 and 8). Hand-sequencing the
+ * setters here is what lost `description` and the format-version gate on
+ * this path alone; `loadGraphDocument` installs the whole document in one
+ * update, so there is nothing left to forget and no order to get wrong.
+ *
+ * The name is passed through rather than applied by a separate `renameTab`:
+ * mirroring the example's name onto the tab is what gives saves, exports and
+ * the script header a meaningful name out of the box.
+ */
 function applyToActiveTab(example: ResolvedExample): void {
-  const tabs = useTabStore.getState();
-  tabs.setNodes(example.nodes);
-  tabs.setEdges(example.edges);
-  // After the nodes: `setSubgraphs` clears the editing stack and nothing
-  // else, so the canvas has to be in place first.
-  tabs.setSubgraphs(example.subgraphs);
-  // Unconditionally, even for an example that ships none. This REPLACES the
-  // tab's graph, so a segment left over from the graph that was there names
-  // head/tail ids nothing wears any more -- and `segmentGroups` is persisted
-  // through save, so the broken segment would be written to disk. Both
-  // Toolbar readers (`handleLoadGraph`, `handleImportFile`) already do this;
-  // this is the third door onto the same state.
-  tabs.setSegmentGroups(example.segmentGroups);
-  // Mirror the example name onto the active tab so saves, exports, and the
-  // script header all use a meaningful name out of the box.
-  if (example.name) {
-    tabs.renameTab(useTabStore.getState().activeTabId, example.name);
+  const openedReadOnly = useTabStore.getState().loadGraphDocument({
+    nodes: example.nodes,
+    edges: example.edges,
+    subgraphs: example.subgraphs,
+    segmentGroups: example.segmentGroups,
+    name: example.name,
+    description: example.description,
+    formatVersion: example.formatVersion,
+  });
+  // Same notice the Toolbar readers show, for the same reason: read-only is
+  // not a failure, and a user who is not told will read the refused Save as
+  // one.
+  if (openedReadOnly) {
+    useToastStore.getState().addToast(
+      useI18n.getState().t('project.readOnly.loadNotice', {
+        version: example.formatVersion as string | number,
+      }),
+      'warning',
+    );
   }
 }
 

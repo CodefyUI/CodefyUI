@@ -234,20 +234,26 @@ describe('EmptyCanvasOverlay', () => {
     // Existing preset to exercise the "already present, skip" branch.
     useNodeDefStore.setState({ definitions: [], presets: [{ preset_name: 'Existing' } as any] });
 
-    const setNodes = vi.fn();
-    const setEdges = vi.fn();
-    const renameTab = vi.fn();
-    useTabStore.setState({ setNodes, setEdges, renameTab });
+    // One spy, because the gallery path installs the whole document through
+    // one store action now (#200 items 4 and 8) instead of sequencing
+    // setNodes/setEdges/renameTab itself.
+    const loadGraphDocument = vi.fn();
+    useTabStore.setState({ loadGraphDocument });
 
     render(<EmptyCanvasOverlay />);
     fireEvent.click(await screen.findByText('Loadable'));
 
-    await waitFor(() => expect(setNodes).toHaveBeenCalled());
+    await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
     expect(mockedRest.loadExample).toHaveBeenCalledWith('/examples/foo.json');
-    expect(setNodes).toHaveBeenCalledWith([{ id: 'n1' }]);
-    expect(setEdges).toHaveBeenCalledWith([{ id: 'e1' }]);
-    // trimmed example name used for rename
-    expect(renameTab).toHaveBeenCalledWith(useTabStore.getState().activeTabId, 'My Model');
+    expect(loadGraphDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodes: [{ id: 'n1' }],
+        edges: [{ id: 'e1' }],
+        // trimmed example name, carried on the document rather than applied
+        // by a separate renameTab
+        name: 'My Model',
+      }),
+    );
     // new preset merged into the store (Existing + NewPreset)
     await waitFor(() =>
       expect(useNodeDefStore.getState().presets.map((p) => p.preset_name)).toEqual([
@@ -266,7 +272,7 @@ describe('EmptyCanvasOverlay', () => {
       presets: [{ preset_name: 'Shared' }],
     });
     useNodeDefStore.setState({ definitions: [], presets: [{ preset_name: 'Shared' } as any] });
-    useTabStore.setState({ setNodes: vi.fn(), setEdges: vi.fn(), renameTab: vi.fn() });
+    useTabStore.setState({ loadGraphDocument: vi.fn() });
 
     render(<EmptyCanvasOverlay />);
     fireEvent.click(await screen.findByText('Dup'));
@@ -282,16 +288,14 @@ describe('EmptyCanvasOverlay', () => {
     // No nodes/edges/presets keys; name is blank whitespace.
     mockedRest.loadExample.mockResolvedValue({ name: '   ' });
 
-    const setNodes = vi.fn();
-    const setEdges = vi.fn();
-    const renameTab = vi.fn();
-    useTabStore.setState({ setNodes, setEdges, renameTab });
+    const loadGraphDocument = vi.fn();
+    useTabStore.setState({ loadGraphDocument });
     const before = useNodeDefStore.getState().presets;
 
     render(<EmptyCanvasOverlay />);
     fireEvent.click(await screen.findByText('Bare'));
 
-    await waitFor(() => expect(setNodes).toHaveBeenCalled());
+    await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
     // resolveSerializedNodes/Edges were called with [] fallbacks; the edges
     // resolver also receives the resolved nodes for per-data-type coloring.
     // The trailing [] is the example's own subgraph definitions (core#137):
@@ -299,8 +303,10 @@ describe('EmptyCanvasOverlay', () => {
     // interface, so the resolver has to be given them.
     expect(mockedUtils.resolveSerializedNodes).toHaveBeenCalledWith([], [], expect.any(Array), []);
     expect(mockedUtils.resolveSerializedEdges).toHaveBeenCalledWith([], [{ id: 'n1' }]);
-    // blank name => no rename
-    expect(renameTab).not.toHaveBeenCalled();
+    // blank name => the document carries none, so the tab keeps its label
+    expect(loadGraphDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ name: null }),
+    );
     // no imported presets => store unchanged
     expect(useNodeDefStore.getState().presets).toBe(before);
   });
@@ -313,7 +319,7 @@ describe('EmptyCanvasOverlay', () => {
       edges: [],
       presets: 'not-an-array',
     });
-    useTabStore.setState({ setNodes: vi.fn(), setEdges: vi.fn(), renameTab: vi.fn() });
+    useTabStore.setState({ loadGraphDocument: vi.fn() });
     const before = useNodeDefStore.getState().presets;
 
     render(<EmptyCanvasOverlay />);
@@ -329,7 +335,7 @@ describe('EmptyCanvasOverlay', () => {
     mockedRest.loadExample.mockRejectedValue(new Error('load failed'));
     const addToast = vi.fn();
     useToastStore.setState({ addToast });
-    useTabStore.setState({ setNodes: vi.fn(), setEdges: vi.fn(), renameTab: vi.fn() });
+    useTabStore.setState({ loadGraphDocument: vi.fn() });
 
     render(<EmptyCanvasOverlay />);
     fireEvent.click(await screen.findByText('Broken'));

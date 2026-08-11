@@ -30,6 +30,7 @@ import {
   type CollapseResult,
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
+import { isFormatTooNew } from '../utils/formatVersion';
 import { useToastStore } from './toastStore';
 import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
@@ -344,6 +345,36 @@ function createTabState(id: string, name: string): TabState {
 
 // ── Store ──
 
+/**
+ * A whole graph document, in the shape every reader of one already holds
+ * after parsing a file (#200 items 4 and 8).
+ *
+ * Optional here means "the file may omit it", NOT "leave whatever the
+ * previous graph left": `loadGraphDocument` writes every field either way.
+ * That distinction is the bug this type exists to close -- opening an
+ * example used to leave the previous graph's `description` on the tab
+ * because the field was simply never mentioned on that path.
+ */
+export interface GraphDocument {
+  nodes: Node<NodeData>[];
+  edges: Edge[];
+  subgraphs?: SubgraphDefinition[];
+  segmentGroups?: SegmentGroup[];
+  /**
+   * Tab label to adopt. Absent/blank keeps the tab's current name -- a
+   * saved graph is bound to its file by `currentGraphFile`, not by the tab
+   * label, so `Toolbar`'s load path deliberately passes nothing here.
+   */
+  name?: string | null;
+  description?: string;
+  /**
+   * The document's raw `format_version` field, untrusted and unparsed. The
+   * read-only verdict is computed inside the action rather than by the
+   * caller, so a reader cannot forget the gate (ID8, #200 item 4).
+   */
+  formatVersion?: unknown;
+}
+
 interface TabStoreState {
   tabs: TabState[];
   activeTabId: string;
@@ -407,6 +438,15 @@ interface TabStoreState {
    */
   /** Replace the definition list wholesale (load / import). */
   setSubgraphs: (subgraphs: SubgraphDefinition[]) => void;
+  /**
+   * Install a whole graph document into the active tab in ONE update
+   * (#200 items 4 and 8) -- the single door for every reader of a document.
+   *
+   * Returns true when the document opened READ-ONLY because its
+   * `format_version` is newer than this build writes: the store owns the
+   * verdict, the caller owns the notice it shows for it.
+   */
+  loadGraphDocument: (doc: GraphDocument) => boolean;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -1973,9 +2013,15 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // `setNodes`/`setEdges` have installed the graph these definitions belong
   // to. It drops `subgraphStack` without putting a canvas back, so calling
   // it while the user is inside a block leaves the block's INSIDES on screen
-  // as if they were the whole graph. All three callers (`Toolbar`'s load and
-  // import, `openExample`) set nodes and edges first, so no path reaches
-  // that today.
+  // as if they were the whole graph.
+  //
+  // No document reader calls this any more (#200 item 8): all three go
+  // through `loadGraphDocument` below, which installs nodes, edges and
+  // definitions in ONE `set` and so has no order to get wrong. What is left
+  // here is the narrow primitive -- "replace only the definition list" --
+  // and the contract stays written down because it is still a live trap for
+  // anything that reaches for it. Prefer `loadGraphDocument` for anything
+  // that is installing a graph.
   //
   // Deliberately does NOT flush the stack itself, which would look like the
   // safer choice and is not: `flushSubgraphEditing` writes whatever is on
@@ -1996,6 +2042,65 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         subgraphStack: [],
       })),
     }),
+
+  // ── Installing a whole document (#200 items 4 and 8) ──
+  //
+  // Three readers open a graph document: `Toolbar.handleLoadGraph`,
+  // `Toolbar.handleImportFile` and `openExample.applyToActiveTab`. Each used
+  // to hand-sequence five or six setters, and a sequence written out three
+  // times is only ever as right as its worst copy: the third one dropped
+  // `description` and skipped the format-version gate, so an example whose
+  // `format_version` was newer than this build opened EDITABLE -- failing
+  // OPEN, the one direction that gate must never fail -- with the previous
+  // graph's description still on the tab.
+  //
+  // The order of that sequence was load-bearing too, and lived only in the
+  // comment above `setSubgraphs`. Here there is no order: every field of the
+  // tab is computed and committed in ONE `set`, so no subscriber ever
+  // observes a half-installed graph and no caller can sequence it wrongly.
+  //
+  // Undo is deliberately untouched, matching what all three readers did
+  // before: opening a document pushes no snapshot and clears no stack.
+  // Making an open its own undo frame needs `UndoSnapshot` to carry
+  // `segmentGroups`/`description` first -- #200 item 2, which is its own
+  // change because it alters the shape of every frame in the store.
+  loadGraphDocument: (doc) => {
+    // Computed here, not by the caller: a reader that forgets the gate is
+    // exactly the bug this action closes, and `formatVersion` is untrusted
+    // input off a file, so a missing or non-numeric field reads as current.
+    const readOnly = isFormatTooNew(doc.formatVersion);
+    const name =
+      typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+        nodes: doc.nodes,
+        edges: doc.edges,
+        // Normalized on the way in, as `setSubgraphs` does: every reader
+        // hands over a list parsed out of a file and none of them validates
+        // the entries.
+        subgraphs: normalizeSubgraphs(doc.subgraphs ?? []),
+        // The document IS the top level, so an open sub-canvas was editing a
+        // definition this load just replaced. Not flushed, for the reason
+        // `setSubgraphs` records: a flush would write the incoming top level
+        // back into the incoming definition.
+        subgraphStack: [],
+        // Written even when the document ships none of them. Both are
+        // persisted through save, so a leftover from the graph that was here
+        // is not merely cosmetic: it gets written to disk as if it belonged
+        // to the graph that replaced it. `activeSegment` follows its list
+        // for the same reason `clear()` nulls it -- an overlay naming
+        // head/tail ids the new graph does not have.
+        segmentGroups: doc.segmentGroups ?? [],
+        activeSegment: null,
+        description: doc.description ?? '',
+        readOnly,
+        // Only when the document names one: a tab that was never renamed
+        // keeps the label the user is looking at.
+        ...(name ? { name } : {}),
+      })),
+    });
+    return readOnly;
+  },
 
   collapseSelectionToSubgraph: (name) => {
     const tab = get().getActiveTab();

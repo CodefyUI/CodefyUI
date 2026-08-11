@@ -148,28 +148,29 @@ describe('TemplatesTab', () => {
       nodes: [],
       edges: [],
     });
-    const setNodes = vi.fn();
-    const setEdges = vi.fn();
-    const renameTab = vi.fn();
-    useTabStore.setState({ setNodes, setEdges, renameTab });
+    // The whole document goes in through one store action (#200 items 4
+    // and 8), so there is one call to assert on instead of three.
+    const loadGraphDocument = vi.fn();
+    useTabStore.setState({ loadGraphDocument });
 
     render(<TemplatesTab />);
     fireEvent.click(await screen.findByText('Loadable'));
 
-    await waitFor(() => expect(setNodes).toHaveBeenCalled());
+    await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
     expect(mockedRest.loadExample).toHaveBeenCalledWith('Usage_Example/Loadable');
-    expect(setEdges).toHaveBeenCalled();
     // The trimmed example name is mirrored onto the tab.
-    expect(renameTab).toHaveBeenCalledWith(useTabStore.getState().activeTabId, 'My Model');
+    expect(loadGraphDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ nodes: [], edges: [], name: 'My Model' }),
+    );
   });
 
   it('surfaces a load failure as a toast and leaves the graph alone', async () => {
     mockedRest.listExamples.mockResolvedValue([ex({ name: 'Broken' })]);
     mockedRest.loadExample.mockRejectedValue(new Error('nope'));
-    const setNodes = vi.fn();
+    const loadGraphDocument = vi.fn();
     const addToast = vi.fn();
     useToastStore.setState({ addToast });
-    useTabStore.setState({ setNodes, setEdges: vi.fn(), renameTab: vi.fn() });
+    useTabStore.setState({ loadGraphDocument });
 
     render(<TemplatesTab />);
     fireEvent.click(await screen.findByText('Broken'));
@@ -177,7 +178,7 @@ describe('TemplatesTab', () => {
     await waitFor(() =>
       expect(addToast).toHaveBeenCalledWith('Failed to load example', 'error'),
     );
-    expect(setNodes).not.toHaveBeenCalled();
+    expect(loadGraphDocument).not.toHaveBeenCalled();
   });
 
   it('offers a jump index across example categories', async () => {
