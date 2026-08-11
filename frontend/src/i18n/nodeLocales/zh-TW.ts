@@ -481,6 +481,11 @@ const zhTW: NodeTranslations = {
       accumulate_steps: '累積這麼多批之後才做一次優化器更新，同時把每一批的損失除以同一個數字。batch_size 8 搭配 4，梯度會等同於 batch_size 32，但記憶體裡同時只放 8 筆（1 = 關閉）。',
       max_steps: '總共跑滿這麼多次優化器更新後就停止，不論 epochs 設定為何。算的是優化器更新次數而不是批次數，所以不管 accumulate_steps 設多少意思都一樣（0 = 不限制）',
       log_interval: '開啟批次指標時，每 N 批記錄一次。長時間執行時調高可以讓圖表稀疏一點。',
+      scheduler_step: '學習率排程器何時前進（#297）。epoch 是歷史行為；optimizer_step 會在每次優化器更新後走一步 — 以步數計價的排程（warmup_cosine、total_steps = max_steps 的 OneCycleLR）在步數預算的執行裡需要這個模式。ReduceLROnPlateau 由指標驅動，兩種模式下都維持每 epoch 一步。',
+      log_grad_norm: '每 log_interval 個優化器步記錄一次裁剪前的全域梯度範數（grad_norm 序列；設定 grad_clip_norm 時另記 grad_norm_clipped）— loss 突波與穩定性鑑識的原料（#298）。',
+      log_update_ratio: '每 log_interval 個優化器步記錄 ||lr×grad|| / ||weights||（全域近似）為 update_ratio 序列 — 學習率健康度的經典訊號，約 1e-3 是常見的健康量級（#298）。',
+      val_every_steps: '每 N 個優化器步在接入的 val_dataloader 上做一次訓練中途驗證，記錄 val_loss_step 序列（0 = 關閉）。epochs=1 + max_steps 的跑法裡，這是取得驗證「曲線」而非單一終點的唯一方式（#298）。',
+      checkpoint_every_steps: '每 N 個優化器步存一個週期檢查點（0 = 關閉）。步數里程碑快照是研究能力湧現的原料；單 epoch 的跑法裡每 epoch 檢查點永遠不會觸發（#298）。檔案大小警告同 checkpoint_every；快照的 epoch 欄位承載的是步數，不適合拿來續訓。',
       deterministic: '要求 PyTorch 使用決定性的運算核心。沒有決定性實作的運算會發出警告，而不會讓執行失敗。',
       tensorboard: '同時把指標寫成 TensorBoard 事件檔，放在這次執行專屬的資料夾裡。用 `tensorboard --logdir <路徑>` 開啟；該路徑會列在這次執行的產出檔案中。',
     },
@@ -510,7 +515,9 @@ const zhTW: NodeTranslations = {
         'CosineAnnealingLR：一個 cosine 週期的長度，單位是 epoch。通常應該設成和 TrainingLoop.epochs 一樣——排程器每個 epoch 走一步，設小了會在學習率還很高的時候就結束，設大了則是只走到曲線中途，兩者通常會少掉幾個百分點的準確率，而且畫面上完全看不出來是排程造成的。這裡刻意不強制：截斷的排程本來就是合理選擇。CosineAnnealingWarmRestarts 會把這個值當成 T_0（第一次重啟前的週期長度），那種情況下設成和 epochs 一樣反而永遠不會重啟。',
       max_lr: 'OneCycleLR 的最大學習率',
       total_steps:
-        'OneCycleLR：整個 one-cycle 排程的長度。TrainingLoop 是每個 epoch 走一步，所以這裡要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）。預設值 1000 遠大於一般的 epoch 數，照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。',
+        'OneCycleLR：整個 one-cycle 排程的長度。TrainingLoop 是每個 epoch 走一步，所以這裡要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）。預設值 1000 遠大於一般的 epoch 數，照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。warmup 家族也用這個值當總長。',
+      warmup_steps:
+        'warmup_cosine / warmup_linear / constant_with_warmup：先以線性斜坡從 ~0 升到優化器學習率的步數，之後才進入衰減段。以「排程器步」計價 — 搭配 TrainingLoop 的 scheduler_step=optimizer_step 並把 total_steps 設成該跑的 max_steps，「暖身 100 步再在 1500 步內退火」才是字面意思（#297）。',
     },
   },
 

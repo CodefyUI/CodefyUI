@@ -876,6 +876,76 @@ class TrainingLoopNode(BaseNode):
                 advanced=True,
             ),
             ParamDefinition(
+                name="scheduler_step",
+                param_type=ParamType.SELECT,
+                default="epoch",
+                options=["epoch", "optimizer_step"],
+                description=(
+                    "When the LR scheduler advances (#297). `epoch` is the "
+                    "historical behavior; `optimizer_step` steps it after "
+                    "every optimizer update, which is what step-denominated "
+                    "schedules (warmup_cosine, OneCycleLR with total_steps = "
+                    "max_steps) need in a step-budgeted run. "
+                    "ReduceLROnPlateau is metric-driven and stays per-epoch "
+                    "in either mode."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="log_grad_norm",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Record the pre-clip global gradient norm each "
+                    "log_interval-th optimizer step as a grad_norm series "
+                    "(plus grad_norm_clipped when grad_clip_norm is set) — "
+                    "the raw material of loss-spike and stability forensics "
+                    "(#298)."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="log_update_ratio",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "Record ||lr x grad|| / ||weights|| (global "
+                    "approximation) each log_interval-th optimizer step as "
+                    "an update_ratio series — the classic signal for "
+                    "learning-rate health: ~1e-3 is a common healthy scale "
+                    "(#298)."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="val_every_steps",
+                param_type=ParamType.INT,
+                default=0,
+                min_value=0,
+                description=(
+                    "Evaluate the wired val_dataloader every N optimizer "
+                    "steps mid-epoch and record a val_loss_step series "
+                    "(0 = off). For epochs=1 + max_steps runs this is the "
+                    "only way to get a validation CURVE instead of one "
+                    "terminal point (#298)."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
+                name="checkpoint_every_steps",
+                param_type=ParamType.INT,
+                default=0,
+                min_value=0,
+                description=(
+                    "Save a periodic checkpoint every N optimizer steps "
+                    "(0 = off). Step-milestone snapshots are the raw "
+                    "material for studying capability emergence; per-epoch "
+                    "checkpointing never fires inside a single-epoch run "
+                    "(#298). Same size warning as checkpoint_every."
+                ),
+                advanced=True,
+            ),
+            ParamDefinition(
                 name="deterministic",
                 param_type=ParamType.BOOL,
                 default=False,
@@ -1016,6 +1086,14 @@ class TrainingLoopNode(BaseNode):
         batch_metrics = bool(params.get("batch_metrics", False))
         max_steps = int(params.get("max_steps", 0) or 0)
         log_interval = max(1, int(params.get("log_interval", 1) or 1))
+        # #297/#298 research controls, all default-off / historical-default.
+        scheduler_per_step = str(
+            params.get("scheduler_step", "epoch") or "epoch") == "optimizer_step"
+        log_grad_norm = bool(params.get("log_grad_norm", False))
+        log_update_ratio = bool(params.get("log_update_ratio", False))
+        val_every_steps = max(0, int(params.get("val_every_steps", 0) or 0))
+        checkpoint_every_steps = max(
+            0, int(params.get("checkpoint_every_steps", 0) or 0))
         accumulate_steps = max(1, int(params.get("accumulate_steps", 1) or 1))
 
         # Built once for the whole call, so the fallback warning is logged
@@ -1209,7 +1287,7 @@ class TrainingLoopNode(BaseNode):
         # this means "the configured budget was spent and the run is done".
         step_budget_reached = False
 
-        def apply_gradients() -> bool:
+        def apply_gradients() -> tuple[bool, float | None]:
             """Clip, step, and clear -- one accumulation window's update.
 
             Clipping happens HERE rather than after each micro-batch's
@@ -1223,12 +1301,127 @@ class TrainingLoopNode(BaseNode):
             this point, so a clip measured on them would compare a number
             around 65536x too large against the threshold.
             """
+            grad_norm_value: float | None = None
             if grad_clip > 0:
                 policy.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                # clip_grad_norm_ returns the PRE-clip total norm — the
+                # measurement #298's telemetry wants, for free.
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), grad_clip)
+                grad_norm_value = float(total_norm)
+            elif log_grad_norm or log_update_ratio:
+                # Norm-only measurement: an infinite threshold clips
+                # nothing, and the unscale keeps the number meaningful
+                # under fp16 exactly as in the clipping branch.
+                policy.unscale_(optimizer)
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), float("inf"))
+                grad_norm_value = float(total_norm)
             applied = policy.step(optimizer)
             optimizer.zero_grad()
-            return applied
+            return applied, grad_norm_value
+
+        import torch.optim.lr_scheduler as _sched_module
+        scheduler_is_plateau = isinstance(
+            lr_scheduler, _sched_module.ReduceLROnPlateau)
+
+        def after_optimizer_step(grad_norm_value: float | None) -> None:
+            """#297/#298 per-optimizer-step work.
+
+            Called only after a step actually applied, with the pre-clip
+            gradient norm when one was measured. Scheduler stepping comes
+            first so a schedule denominated in optimizer steps advances
+            exactly once per step; the telemetry series are thinned by
+            ``log_interval`` like the batch-loss series.
+            """
+            nonlocal periodic_checkpoint_bytes
+            if (scheduler_per_step and lr_scheduler is not None
+                    and not scheduler_is_plateau):
+                lr_scheduler.step()
+            thinned = optimizer_steps % log_interval == 0
+            if grad_norm_value is not None and log_grad_norm and thinned:
+                record_metric("grad_norm", grad_norm_value, optimizer_steps)
+                if grad_clip > 0:
+                    record_metric(
+                        "grad_norm_clipped",
+                        min(grad_norm_value, float(grad_clip)),
+                        optimizer_steps)
+            if grad_norm_value is not None and log_update_ratio and thinned:
+                with torch.no_grad():
+                    weight_sq = 0.0
+                    for parameter in model.parameters():
+                        if parameter.requires_grad:
+                            weight_sq += float(
+                                parameter.detach().float().norm() ** 2)
+                weight_norm = weight_sq ** 0.5
+                lr_now = float(optimizer.param_groups[0].get("lr", 0.0))
+                record_metric(
+                    "update_ratio",
+                    lr_now * grad_norm_value / max(weight_norm, 1e-12),
+                    optimizer_steps)
+            if (val_every_steps and val_dataloader is not None
+                    and optimizer_steps % val_every_steps == 0):
+                # A mid-epoch validation pass: eval mode + no_grad consume
+                # no RNG, so the training stream is undisturbed. The result
+                # is its OWN series (val_loss_step, x = optimizer steps)
+                # rather than more points on the per-epoch val_loss curve,
+                # which has a different x-axis.
+                was_training = model.training
+                model.eval()
+                step_val_sum = 0.0
+                step_val_batches = 0
+                with torch.no_grad():
+                    for step_batch in val_dataloader:
+                        if should_stop():
+                            break
+                        if (isinstance(step_batch, (list, tuple))
+                                and len(step_batch) == 2):
+                            step_data = to_device(step_batch[0], device)
+                            step_targets = to_device(step_batch[1], device)
+                        else:
+                            step_data = (
+                                to_device(step_batch, device)
+                                if hasattr(step_batch, "to") else step_batch)
+                            step_targets = None
+                        with policy.autocast():
+                            step_out = model(step_data)
+                            step_loss = (
+                                loss_fn(step_out, step_targets)
+                                if step_targets is not None
+                                else loss_fn(step_out))
+                        step_val_sum += float(step_loss.item())
+                        step_val_batches += 1
+                if step_val_batches:
+                    record_metric(
+                        "val_loss_step",
+                        step_val_sum / step_val_batches,
+                        optimizer_steps)
+                if was_training:
+                    model.train()
+            if (checkpoint_every_steps
+                    and optimizer_steps % checkpoint_every_steps == 0):
+                # ``epoch=optimizer_steps`` on purpose: the periodic
+                # filename is stamped ``-e{epoch}``, and step milestones
+                # need DISTINCT files (they are emergence snapshots, not a
+                # rolling latest). The trade is that the checkpoint's
+                # stored epoch field carries the step count — resuming
+                # start_epoch from one of these is not meaningful, and the
+                # param description says so.
+                milestone_path = save_periodic_checkpoint(
+                    context, model, optimizer,
+                    epoch=optimizer_steps,
+                    losses=torch.tensor(
+                        epoch_losses, dtype=torch.float32)
+                    if epoch_losses else None,
+                    lr_scheduler=lr_scheduler,
+                    scaler_state=policy.state_dict(),
+                )
+                if milestone_path is not None:
+                    try:
+                        periodic_checkpoint_bytes += Path(
+                            milestone_path).stat().st_size
+                    except OSError:
+                        pass
 
         # ``epoch`` is the ABSOLUTE epoch index for the whole training run, not
         # an offset into this call: a resume at start_epoch=2 with epochs=4 runs
@@ -1298,8 +1491,10 @@ class TrainingLoopNode(BaseNode):
                 global_batch += 1
 
                 if pending >= accumulate_steps:
-                    if apply_gradients():
+                    applied_step, step_grad_norm = apply_gradients()
+                    if applied_step:
                         optimizer_steps += 1
+                        after_optimizer_step(step_grad_norm)
                     pending = 0
 
                 if batch_metrics and global_batch % log_interval == 0:
@@ -1358,8 +1553,10 @@ class TrainingLoopNode(BaseNode):
             # resident until some later run's first epoch zeroed it.
             if pending:
                 if stopped_at is None and not step_budget_reached:
-                    if apply_gradients():
+                    applied_step, step_grad_norm = apply_gradients()
+                    if applied_step:
                         optimizer_steps += 1
+                        after_optimizer_step(step_grad_norm)
                     # Re-checked here and not only inside the batch loop:
                     # a budget reached BY the tail step must end the run now,
                     # rather than after the next epoch has read one more
@@ -1469,11 +1666,13 @@ class TrainingLoopNode(BaseNode):
             if lr_scheduler is not None:
                 # ReduceLROnPlateau needs a metric
                 if hasattr(lr_scheduler, "step"):
-                    import torch.optim.lr_scheduler as sched_module
-                    if isinstance(lr_scheduler, sched_module.ReduceLROnPlateau):
+                    if scheduler_is_plateau:
+                        # Metric-driven: stays per-epoch in BOTH
+                        # scheduler_step modes — there is no per-step metric
+                        # for it to react to (#297).
                         metric = avg_val_loss if avg_val_loss is not None else avg_train_loss
                         lr_scheduler.step(metric)
-                    else:
+                    elif not scheduler_per_step:
                         lr_scheduler.step()
 
             # ── Early stopping check ──
