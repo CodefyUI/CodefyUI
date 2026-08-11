@@ -754,34 +754,81 @@ function undoFrameOf(state: UndoSnapshot): UndoSnapshot {
   };
 }
 
+/** One overlay compared by value, `null`s included (#200 item 2). */
+function sameSegment(a: SegmentGroup | null, b: SegmentGroup | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.id === b.id && a.headNodeId === b.headNodeId && a.tailNodeId === b.tailNodeId
+  );
+}
+
+/**
+ * The overlays compared by value, the way `sameSubgraphs` compares definitions
+ * (#200 item 2 review).
+ *
+ * Element-wise and NOT by array identity, for the reason the comment on
+ * `closeFrameHistory` gives about definitions: an undo taken inside a block
+ * promotes the frame's own copy of the list to being the live one, so a visit
+ * that created an overlay and then undid it ends with an array that is equal to
+ * the pre-entry one and a different object. Identity would call that a change
+ * and charge the user a phantom undo step for having looked.
+ */
+function sameOverlays(
+  a: Pick<TabState, 'segmentGroups' | 'activeSegment'>,
+  b: Pick<TabState, 'segmentGroups' | 'activeSegment'>,
+): boolean {
+  if (!sameSegment(a.activeSegment, b.activeSegment)) return false;
+  if (a.segmentGroups === b.segmentGroups) return true;
+  if (a.segmentGroups.length !== b.segmentGroups.length) return false;
+  return a.segmentGroups.every((group, index) =>
+    sameSegment(group, b.segmentGroups[index]),
+  );
+}
+
 /**
  * The undo/redo stacks to restore when a sub-canvas closes (core#137 review).
  *
  * Leaving a block puts the OUTER history back -- an undo inside a block must
  * never reach past its own boundary, so the inner stack is thrown away. But
- * the visit also COMMITS the edited definition into the graph, and for a long
+ * the visit also COMMITS what happened in there into the graph, and for a long
  * time it committed it with no undo entry behind it. The next Ctrl+Z then
  * skipped straight to whatever the user had done before entering, undid THAT,
  * and silently took the block edit along with it (a snapshot restores
  * `subgraphs` too). One button press, two changes reverted, neither of them
  * the one the user was looking at.
  *
- * So: if the definitions actually changed in there, push exactly one snapshot
- * of the state as it was on ENTRY. Leaving a block is then one undoable step,
- * the same as collapse and expand already were, and the SECOND undo is what
- * reaches the outer edit.
+ * So: if anything the frame carries actually changed in there, push exactly one
+ * snapshot of the state as it was on ENTRY. Leaving a block is then one undoable
+ * step, the same as collapse and expand already were, and the SECOND undo is
+ * what reaches the outer edit.
  *
- * `sameSubgraphs` rather than an identity check because the exit path rebuilds
- * the definition from the canvas unconditionally: `definitionFromCanvas`
+ * "Anything the frame carries" now includes the overlays (#200 item 2 review),
+ * not just the definitions. A `deleteNode` inside a block prunes the segments
+ * naming that inner node, and both Teaching Inspector buttons work from inside
+ * one too: Compare Segment creates an overlay over two inner nodes, and Clear
+ * active clears a top-level one. An overlay-only visit leaves every definition
+ * byte-identical, so a `sameSubgraphs`-only test pushed nothing, threw away the
+ * inner entry that overlay change had, and left the restored outer stack's top
+ * frame holding the PRE-entry overlays -- so the next unrelated Ctrl+Z wiped
+ * the overlay as a side effect of undoing something else. Exactly the bug this
+ * function exists to prevent, one field later.
+ *
+ * Structural compares rather than identity checks in both halves: the exit path
+ * rebuilds the definition from the canvas unconditionally (`definitionFromCanvas`
  * re-derives positions and re-serializes every edge, so it returns a fresh
- * object even when nothing moved. Without a structural compare, merely LOOKING
- * inside a block would cost the user a phantom undo step.
+ * object even when nothing moved) and an inner undo re-installs an equal-but-
+ * fresh overlay array. Without them, merely LOOKING inside a block would cost
+ * the user a phantom undo step.
  */
 function closeFrameHistory(
   frame: SubgraphFrame,
-  nextSubgraphs: SubgraphDefinition[],
+  next: Pick<TabState, 'subgraphs' | 'segmentGroups' | 'activeSegment'>,
 ): Pick<TabState, 'undoStack' | 'redoStack'> {
-  if (sameSubgraphs(frame.subgraphs, nextSubgraphs)) {
+  if (
+    sameSubgraphs(frame.subgraphs, next.subgraphs) &&
+    sameOverlays(frame, next)
+  ) {
     return { undoStack: frame.undoStack, redoStack: frame.redoStack };
   }
   const snapshot = undoFrameOf(frame);
@@ -2362,7 +2409,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       nodes = refreshInstances(frame.nodes, updated);
       edges = pruneStaleBoundaryEdges(nodes, frame.edges, subgraphs);
     }
-    const history = closeFrameHistory(frame, subgraphs);
+    // `{ ...tab, subgraphs }` rather than the definition list alone: the exit
+    // frame has to be pushed for an overlay-only visit too (#200 item 2
+    // review), and `tab` is where the post-visit overlays are -- an overlay
+    // mutated inside a block is written to the tab, not swapped per level.
+    const history = closeFrameHistory(frame, { ...tab, subgraphs });
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
         subgraphStack: t.subgraphStack.slice(0, -1),
@@ -2386,7 +2437,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const flushed = flushSubgraphEditing(tab);
     // ONE snapshot for the whole exit, not one per level: the user pressed a
     // single button, so a single Ctrl+Z is what they expect to reverse it.
-    const history = closeFrameHistory(tab.subgraphStack[0], flushed.subgraphs);
+    // `flushed` carries both halves the compare needs: the folded-in definitions
+    // and the tab's current overlays, which a flush does not touch.
+    const history = closeFrameHistory(tab.subgraphStack[0], flushed);
     set({
       tabs: updateTab(get().tabs, get().activeTabId, () => ({
         nodes: flushed.nodes,

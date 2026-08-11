@@ -683,6 +683,98 @@ describe('undo restores the segments a subgraph action dropped', () => {
     expect(tab().activeSegment?.id).toBe('s-through');
   });
 
+  // ── an overlay-only visit is still a visit (item 2 review) ────────────
+  //
+  // The exit used to ask "did anything change in there?" of the definitions
+  // alone. Overlays are mutable from inside a block -- Compare Segment works on
+  // two inner nodes, Clear active clears a top-level segment -- and an
+  // overlay-only visit leaves every definition byte-identical. So the exit
+  // pushed nothing, the inner entry went out with the inner stack, and the
+  // restored outer stack's top frame still held the PRE-entry overlays: the
+  // next unrelated Ctrl+Z wiped the overlay as a side effect.
+
+  it('keeps a segment created inside a block when a later undo is about something else', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    store().renameNode('a', 'OUTER-EDIT'); // the unrelated step, one frame
+
+    store().enterSubgraph(instanceId);
+    store().addSegmentGroup({ id: 's-inner', headNodeId: 'b', tailNodeId: 'c' });
+    store().exitSubgraph();
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-inner']);
+
+    // The visit is its own step, so the FIRST undo is the visit -- and the
+    // rename it did not touch survives it.
+    store().undo();
+    expect(tab().segmentGroups).toEqual([]);
+    expect(tab().nodes.find((n) => n.id === 'a')!.data.label).toBe('OUTER-EDIT');
+
+    // ...and the rename's own undo is not what took the overlay away.
+    store().undo();
+    expect(tab().nodes.find((n) => n.id === 'a')!.data.label).toBe('a');
+  });
+
+  it('gives a segment cleared inside a block its own undo entry', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const top = { id: 's-top', headNodeId: 'a', tailNodeId: 'sink' };
+    store().setSegmentGroups([top]);
+    store().setActiveSegment(top);
+
+    store().enterSubgraph(instanceId);
+    // Clear active stays enabled inside a block, and it clears the TOP-LEVEL
+    // segment -- the mirror of the case above.
+    store().removeSegmentGroup('s-top');
+    store().exitSubgraph();
+    expect(tab().segmentGroups).toEqual([]);
+
+    store().undo();
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-top']);
+    expect(tab().activeSegment?.id).toBe('s-top');
+  });
+
+  it('costs nothing for a visit that leaves the overlays as it found them', () => {
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const top = { id: 's-top', headNodeId: 'a', tailNodeId: 'sink' };
+    store().setSegmentGroups([top]);
+    const depth = tab().undoStack.length;
+
+    store().enterSubgraph(instanceId);
+    store().exitSubgraph();
+
+    expect(tab().undoStack.length).toBe(depth);
+  });
+
+  it('costs nothing when an overlay is created and undone inside the block', () => {
+    // The phantom-step trap: the inner undo promotes the frame's COPY of the
+    // list, so the array is equal to the pre-entry one and a different object.
+    // An identity compare would charge a step for a visit that changed nothing.
+    seedChain();
+    select('b', 'c');
+    store().collapseSelectionToSubgraph('Block');
+    const instanceId = tab().nodes.find((n) => subgraphIdOf(n.data.type))!.id;
+    const top = { id: 's-top', headNodeId: 'a', tailNodeId: 'sink' };
+    store().setSegmentGroups([top]);
+    const onEntry = tab().segmentGroups;
+    const depth = tab().undoStack.length;
+
+    store().enterSubgraph(instanceId);
+    store().addSegmentGroup({ id: 's-inner', headNodeId: 'b', tailNodeId: 'c' });
+    store().undo(); // inside the block: back to just s-top, in a fresh array
+    expect(tab().segmentGroups.map((s) => s.id)).toEqual(['s-top']);
+    expect(tab().segmentGroups).not.toBe(onEntry); // same value, different array
+    store().exitSubgraph();
+
+    expect(tab().undoStack.length).toBe(depth);
+  });
+
   it('undo of a block VISIT restores a segment deleted inside the block', () => {
     // The one path with no snapshot of its own: an undo taken inside a block
     // stays inside it, and the inner stack is thrown away on the way out. The
