@@ -1026,6 +1026,60 @@ const zhTW: NodeTranslations = {
     },
   },
 
+  VLAModel: {
+    description:
+      '迷你視覺-語言-動作策略：視覺 stem + 位元組級指令嵌入 -> transformer 主幹 ' +
+      '-> 動作區塊 expert。head_type 選擇範式——flow_matching（pi0/SmolVLA 家族：' +
+      '對動作區塊加噪、學習速度場、推論時 Euler 積分）或 regression（直接 MSE 行為複製）' +
+      '——其他一切固定，兩者可誠實對比。loss_fn 由本節點配對輸出，' +
+      '接錯損失而靜默訓練錯目標的整類錯誤因此不存在。預設約 3.2M 參數',
+    params: {
+      head_type: 'flow_matching：pi0/SmolVLA 式速度場 + Euler 取樣。regression：直接預測區塊、MSE。loss_fn 輸出自動跟隨此選擇',
+      d_model: '所有 token 流的寬度（須能被 n_heads 整除）',
+      n_layers: '主幹深度（作用在 [視覺; 文字] token 上）',
+      n_heads: '注意力頭數（主幹與 expert 共用）',
+      expert_layers: '動作 expert 深度（區塊 query 自注意 + 對主幹交叉注意）',
+      chunk: '每次預測的動作數（區塊視野 H）——須與 PushWorldDemos 的 chunk 一致',
+      image_size: '輸入畫面邊長——須與 PushWorldEnv 的 image_size 一致',
+      vision_stem: 'conv：三層 stride-2 3x3 卷積（定位較精準，「early convolutions help transformers see」在此規模可量測）。patchify：經典 ViT stem，保留以研究這個差異',
+      patch_size: '僅 patchify stem：方形 patch 邊長',
+      action_dim: '動作向量寬度（PushWorld 為 2：dx, dy）',
+      max_text_len: '指令長度（位元組）——須與資料集編碼一致（PushWorldDemos 用 48）',
+      flow_steps: '僅 flow_matching：推論時的 Euler 積分步數（SmolVLA 用 10）。屬執行期旋鈕——修改不會丟棄已保存權重',
+      flow_time_dist: '僅 flow_matching：訓練取樣流時間 t 的分布。beta 偏重雜訊較大的一端（pi0 式）。執行期旋鈕——不影響已保存權重',
+      dropout: '主幹與 expert 全程的 dropout',
+      seed: '權重初始化種子',
+    },
+  },
+  VLARollout: {
+    description:
+      '在 PushWorld 中閉環評估 VLAModel：全新回合、後退視野執行' +
+      '（預測一個區塊、執行 execute_k 步、重新規劃），輸出成功率、逐回合指標、' +
+      '與可接 VideoWrite 的 rollout 影片張量（依結果鑲綠/紅邊框）。' +
+      'instruction_mode=swapped 是語言接地消融：真的在讀指令的策略，指令說謊時會崩潰',
+    params: {
+      episodes: '評估回合數（種子流與訓練資料不相交）',
+      execute_k: '每個預測區塊執行幾步後重新規劃（後退視野）。同一策略實測：2 -> 46%、4 -> 34%、整塊 8 -> 20%——往區塊長度調大即可研究 open-loop 誤差累積',
+      max_steps: '單回合步數預算（覆蓋 env 設定）。學到的策略比腳本專家慢，預算太緊會把控制誤差記成逾時',
+      instruction_mode: 'normal：回合真實指令。swapped：改講干擾 puck 的顏色——語言接地消融。只看畫面的策略兩者同分；讀語言的策略在 swapped 下崩潰',
+      record_episodes: '錄進 frames 的前 N 個回合（0 = 不錄）',
+      seed: '評估種子（回合種子取自與 PushWorldDemos 預設不相交的偏移流）',
+      device: 'auto 跟隨本次執行的裝置',
+    },
+  },
+  VLAActionEval: {
+    description:
+      '開環評估：在保留示範集（PushWorldDemos 的 holdout 輸出）上，' +
+      '計算策略預測動作區塊與專家動作的均方誤差。快速、每種子可重現——' +
+      '與 VLARollout 閉環成功率互補。MSE 低而成功率低，正是誤差累積的特徵',
+    params: {
+      max_samples: '最多評估的樣本數',
+      batch_size: '推論批次大小',
+      seed: '固定 flow head 的取樣噪聲讓數字可重現（regression 不受影響）',
+      device: 'auto 跟隨本次執行的裝置',
+    },
+  },
+
   // ── Custom ──
   AddScalar: {
     description: '將純量值加到張量上（自訂節點範例）',
