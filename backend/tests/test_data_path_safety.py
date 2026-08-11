@@ -53,6 +53,7 @@ from app.core.checkpoints import (
 )
 from app.core.db import Database
 from app.core.run_store import RunProvenance, RunStore
+from app.core.tensorboard import owned_logdir, remove_logdir, run_logdir
 from app.nodes.io.checkpoint_node import CheckpointLoaderNode, CheckpointSaverNode
 from app.nodes.io.image_writer_node import ImageWriterNode
 from app.nodes.io.model_saver_node import ModelSaverNode
@@ -452,6 +453,250 @@ def test_generated_checkpoint_names_are_recognised_as_owned(default_layout):
         )
     assert {p.parent.name for p in generated} == {INTERRUPT_DIRNAME,
                                                  PERIODIC_DIRNAME}
+
+
+# ── 2b. the delete direction, for a TREE (#196) ───────────────────────────
+#
+# Retention now also sweeps ``tensorboard``-kind rows, whose path is a
+# DIRECTORY and whose delete is therefore a ``shutil.rmtree``. Same root
+# cause as #224 -- a row is a claim, and the plugin API can write both the
+# kind and the path -- with a worse blast radius per mistake, so the guard
+# gets the same treatment and its own tests here rather than beside the
+# writer.
+
+
+async def test_prune_does_not_rmtree_a_directory_elsewhere_under_the_data_root(
+    store, default_layout,
+):
+    """#224's scenario with a directory in place of a file. ``models/`` is
+    inside the data root, so a containment-only rule would have said yes --
+    and taken every trained model in it with one ``rmtree``."""
+    run = await _make_run(store)
+    users_own = default_layout.models / "experiment_a"
+    users_own.mkdir()
+    (users_own / "weights.pt").write_bytes(b"hours of training")
+
+    await store.add_artifact(run.id, "tensorboard", str(users_own))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert (users_own / "weights.pt").exists(), (
+        "an unattended prune deleted a directory tree because a row claimed "
+        "it held TensorBoard events"
+    )
+
+
+async def test_prune_does_not_rmtree_another_runs_logdir(
+    store, default_layout,
+):
+    """Being the right SHAPE is not enough: the directory has to be the one
+    this row's own run would have written. Retention already knows which run
+    each row belongs to, so a row cannot nominate a live neighbour's logs."""
+    run = await _make_run(store)
+    neighbour = run_logdir("some-other-run", "loop1")
+    neighbour.mkdir(parents=True)
+    (neighbour / "events.out.tfevents.1.host.1.0").write_bytes(b"events")
+
+    await store.add_artifact(run.id, "tensorboard", str(neighbour))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert neighbour.exists(), "retention deleted another run's logs"
+
+
+async def test_prune_does_not_follow_a_symlinked_logdir(
+    store, default_layout,
+):
+    """A link sitting exactly where the writer puts a directory, pointing
+    at something that is not one. The containment rule alone already
+    refuses it (``resolve()`` runs first, so the link resolves to its
+    target and lands outside the run's own ``tb``), which is #224's
+    reasoning unchanged -- what matters is that the user's data survives a
+    row that named a link."""
+    precious = default_layout.data / "datasets"
+    precious.mkdir()
+    (precious / "train.bin").write_bytes(b"the user's data")
+
+    run = await _make_run(store)
+    link = run_logdir(run.id, "loop1")
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(precious, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    await store.add_artifact(run.id, "tensorboard", str(link))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert (precious / "train.bin").exists(), "retention followed a symlink"
+    assert link.is_symlink(), "the link itself is not retention's to remove"
+
+
+@pytest.mark.parametrize("linked", ["tb", "run"])
+async def test_prune_does_not_follow_a_symlink_planted_above_the_leaf(
+    store, default_layout, linked,
+):
+    """The intermediate components, which the leaf check cannot see.
+
+    Plant a link at ``runs/<id>/tb`` (or at ``runs/<id>``) BEFORE the writer
+    runs -- anything that can log a row can do this, since a plugin knows
+    its own ``context.execution_id`` -- then log a row naming an ordinary
+    child of it. The child is not a symlink, so the leaf check passes; the
+    child resolves INTO the link's target, so a guard that resolved the
+    whole expected prefix as well would have compared two paths that had
+    both moved to the target and let the ``rmtree`` run there.
+
+    ``_expected_logdir_root`` keeps ``<run_id>/tb`` literal for exactly
+    this, which is the same split ``owned_checkpoint_path`` makes for
+    ``periodic/``."""
+    victim = default_layout.data / "datasets"
+    # Shaped so the row's path lands on something real either way: the link
+    # stands in for tb/ itself, or for the whole per-run directory.
+    inner = victim / "loop1" if linked == "tb" else victim / "tb" / "loop1"
+    inner.mkdir(parents=True)
+    (inner / "train.bin").write_bytes(b"the user's data")
+
+    run = await _make_run(store)
+    tb_dir = run_logdir(run.id)                     # runs/<id>/tb
+    link = tb_dir if linked == "tb" else tb_dir.parent
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(victim, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    named = tb_dir / "loop1"                        # an ordinary child
+    assert not named.is_symlink(), "the leaf check must not be what saves this"
+    await store.add_artifact(run.id, "tensorboard", str(named))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert (inner / "train.bin").exists(), (
+        f"a symlink at runs/<id>{'/tb' if linked == 'tb' else ''} redirected "
+        "an unattended rmtree out of the one directory retention owns"
+    )
+
+
+async def test_prune_still_deletes_logs_under_a_symlinked_runs_root(
+    store, default_layout,
+):
+    """The acceptance case the strictness must not cost: ``runs/`` itself on
+    a second disk (event files are small but numerous, and moving the whole
+    data root is the documented way to do that) is an ordinary layout. The
+    SHARED ancestor is resolved for this reason -- only ``<run_id>/tb``
+    stays literal."""
+    elsewhere = default_layout.data.parent / "second-disk"
+    elsewhere.mkdir()
+    try:
+        (default_layout.data / "runs").symlink_to(elsewhere,
+                                                  target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    run = await _make_run(store)
+    logdir = run_logdir(run.id, "loop1")
+    logdir.mkdir(parents=True)
+    (logdir / "events.out.tfevents.1.host.1.0").write_bytes(b"events")
+    real = elsewhere / logdir.parent.parent.name / "tb" / "loop1"
+    assert real.exists(), "the fixture is not writing through the link"
+
+    await store.add_artifact(run.id, "tensorboard", str(logdir))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not real.exists(), (
+        "a symlinked runs/ root is a supported layout, and retention "
+        "stopped cleaning up inside it"
+    )
+
+
+def test_owned_logdir_refuses_a_link_that_points_back_inside(default_layout):
+    """The half of the symlink rule containment cannot cover: a link whose
+    target is inside the run's own ``tb`` passes every path check, and
+    without the explicit refusal the delete would resolve THROUGH it and
+    remove the target while leaving the recorded path (now dangling) on
+    disk. Deleting a directory nobody named is not this sweep's to do."""
+    root = run_logdir("run-abc")
+    real = root / "loop1"
+    real.mkdir(parents=True)
+    link = root / "alias"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable (Windows needs the privilege)")
+
+    assert owned_logdir("run-abc", link) is None
+    assert remove_logdir("run-abc", link) is False
+    assert real.exists()
+
+
+async def test_prune_refuses_a_logdir_path_that_escapes_with_dot_dot(
+    store, default_layout,
+):
+    """``..`` under the run's own directory, which is what a hand-edited or
+    plugin-written row looks like when it is trying to reach out of the one
+    place retention owns. ``resolve()`` runs before the containment check,
+    so the escape is resolved and then refused."""
+    run = await _make_run(store)
+    escape = run_logdir(run.id, "loop1").joinpath(
+        "..", "..", "..", "..", "models")
+    (default_layout.models / "keep.pt").write_bytes(b"a user's model")
+    assert escape.resolve() == default_layout.models.resolve(), (
+        "the traversal this test is about no longer lands on models/"
+    )
+
+    await store.add_artifact(run.id, "tensorboard", str(escape))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert (default_layout.models / "keep.pt").exists()
+
+
+async def test_prune_still_deletes_a_logdir_this_server_wrote(
+    store, default_layout,
+):
+    """The whole point of the sweep, through the real path builder rather
+    than a hand-written path -- retention that stopped removing its own
+    directories would put the unbounded growth in ``runs/`` straight back."""
+    run = await _make_run(store)
+    logdir = run_logdir(run.id, "loop1")
+    logdir.mkdir(parents=True)
+    (logdir / "events.out.tfevents.1.host.1.0").write_bytes(b"events")
+
+    await store.add_artifact(run.id, "tensorboard", str(logdir))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not logdir.exists(), "retention leaked its own log directory"
+
+
+def test_a_refused_logdir_is_logged_rather_than_silently_skipped(
+    default_layout, caplog,
+):
+    """Unattended and irreversible in one direction, invisible in the
+    other: a skip nobody can see is how a broken guard survives a release.
+    ``unlink_checkpoint`` logs its refusals for the same reason."""
+    intruder = default_layout.models / "not-ours"
+    intruder.mkdir()
+
+    with caplog.at_level("WARNING"):
+        assert remove_logdir("run-abc", str(intruder)) is False
+    assert any("not deleting artifact path" in r.getMessage()
+               for r in caplog.records), caplog.text
+    assert intruder.exists()
+
+
+def test_the_writers_own_logdir_is_recognised_as_owned(default_layout):
+    """The anti-drift assertion, matching #224's for checkpoints: if
+    ``run_logdir`` moves and the guard does not follow, retention silently
+    stops cleaning up and every other test here stays green."""
+    for node_id in ("", "loop1", "preset1__inner", "n/o:d*e"):
+        written = run_logdir("run-abc", node_id)
+        assert owned_logdir("run-abc", written) == written.resolve(), (
+            f"the writer puts logs in {written}, and retention would refuse "
+            "to clean them up"
+        )
 
 
 # ── 3. the ordinary paths, which must not have moved ──────────────────────

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,7 @@ from app.core.run_store import (
     ARTIFACT_KIND_CHECKPOINT,
     ARTIFACT_KIND_EXPORT,
     ARTIFACT_KIND_IMAGE,
+    ARTIFACT_KIND_TENSORBOARD,
     RUN_STATUSES,
     TERMINAL_STATUSES,
     MetricPoint,
@@ -35,6 +37,8 @@ from app.core.run_store import (
     RunRecord,
     RunStore,
 )
+from app.core.tensorboard import ARTIFACT_KIND as TENSORBOARD_ARTIFACT_KIND
+from app.core.tensorboard import run_logdir
 
 EXEC_TABLES = {
     "exec_runs",
@@ -1207,6 +1211,156 @@ async def test_prune_refuses_to_delete_a_checkpoint_path_outside_the_data_dir(
 
     assert await store.prune(keep_last=0) == 1
     assert outside.exists(), "a path outside the data directory must survive"
+
+
+# ── 6c. retention sweeps TensorBoard directories (#196) ──────────────────
+#
+# The other half of "no row, no file": open_run_writer refuses to create a
+# log directory unless the run can record the row that indexes it, but
+# nothing ever removed the directory when that row was pruned. So
+# <data root>/runs/*/tb/ grew for the life of the install, one directory per
+# training node per run, invisible because a default install .gitignores the
+# data root. Ownership-guard coverage lives in test_data_path_safety.py,
+# beside #224's, since it is the same question asked about a tree.
+
+
+def _logdir_for(run_id: str, node_id: str) -> Path:
+    """A populated log directory exactly where the writer would put it."""
+    logdir = run_logdir(run_id, node_id)
+    logdir.mkdir(parents=True, exist_ok=True)
+    (logdir / "events.out.tfevents.1700000000.host.1.0").write_bytes(b"events")
+    return logdir
+
+
+async def test_prune_deletes_the_tensorboard_directories_of_pruned_runs(
+    store, tmp_path, monkeypatch,
+):
+    """The point of the change: the tree goes with its row, and only for
+    the runs that actually aged out of the keep window."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+
+    old_run = await _make_run(store)
+    old_logdir = _logdir_for(old_run.id, "loop1")
+    await store.add_artifact(old_run.id, "tensorboard", str(old_logdir))
+    await store.mark_finished(old_run.id, "succeeded")
+
+    kept_run = await _make_run(store)
+    kept_logdir = _logdir_for(kept_run.id, "loop1")
+    await store.add_artifact(kept_run.id, "tensorboard", str(kept_logdir))
+    await store.mark_finished(kept_run.id, "succeeded")
+
+    assert await store.prune(keep_last=1) == 1
+    assert not old_logdir.exists(), "the pruned run's TensorBoard logs leaked"
+    assert kept_logdir.exists(), "the KEPT run's TensorBoard logs must survive"
+
+
+async def test_prune_removes_the_run_directory_left_empty_behind_it(
+    store, tmp_path, monkeypatch,
+):
+    """Sweeping only the per-node leaf would leave ``runs/<id>/tb/`` and
+    ``runs/<id>/`` behind -- empty, but one pair per run forever, which is
+    the same unbounded growth in a cheaper unit. The shared ``runs/`` root
+    is the floor and is never removed."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+    runs_root = tmp_path / "data" / "runs"
+
+    run = await _make_run(store)
+    for node_id in ("loop1", "loop2"):          # a graph with two loops
+        logdir = _logdir_for(run.id, node_id)
+        await store.add_artifact(run.id, "tensorboard", str(logdir))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not run_logdir(run.id).parent.exists(), (
+        "the run's now-empty tb/ and per-run directory were left behind"
+    )
+    assert runs_root.exists(), "the shared runs/ root is never removed"
+
+
+async def test_prune_stops_at_a_directory_no_row_named(
+    store, tmp_path, monkeypatch,
+):
+    """The empty-parent walk is a ``rmdir``, so anything the sweep was not
+    asked to remove stops it immediately -- ``tb/`` survives holding it.
+    Directories retention never had a row for are not retention's to
+    collect, however plainly they sit in the way."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+
+    run = await _make_run(store)
+    doomed = _logdir_for(run.id, "loop1")
+    sibling = _logdir_for(run.id, "loop2")      # written, never logged
+    await store.add_artifact(run.id, "tensorboard", str(doomed))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not doomed.exists()
+    assert sibling.exists(), "a directory with no doomed row must survive"
+    assert sibling.parent.exists(), "and so must the tb/ directory holding it"
+
+
+async def test_prune_deletes_the_tensorboard_directory_of_an_interrupted_run(
+    store, tmp_path, monkeypatch,
+):
+    """The checkpoint sweep exempts ``interrupted`` runs so the user keeps
+    the file they resume from. Event files resume nothing, and the row goes
+    either way -- so exempting them would leave an unreferenced directory
+    for exactly the runs a crashed server produces, which is the leak this
+    closes."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+
+    run = await _make_run(store)
+    logdir = _logdir_for(run.id, "loop1")
+    await store.add_artifact(run.id, "tensorboard", str(logdir))
+    await store.mark_finished(run.id, "interrupted")
+
+    assert await store.prune(keep_last=0) == 1
+    assert not logdir.exists(), (
+        "an interrupted run's log directory has no row left to index it"
+    )
+
+
+async def test_prune_tolerates_a_tensorboard_directory_already_gone(
+    store, tmp_path, monkeypatch,
+):
+    """Removed by hand, or by an earlier prune. Must not turn a successful
+    prune into a failed one -- this runs unattended at every startup."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+
+    run = await _make_run(store)
+    await store.add_artifact(run.id, "tensorboard",
+                             str(run_logdir(run.id, "loop1")))
+    await store.mark_finished(run.id, "succeeded")
+
+    assert await store.prune(keep_last=0) == 1  # must not raise
+
+
+async def test_prune_leaves_the_tensorboard_row_bookkeeping_alone(
+    store, db, tmp_path, monkeypatch,
+):
+    """Same shape as the checkpoint sweep: the ROW goes by the ordinary
+    cascade, the directory goes separately, and neither depends on the
+    other succeeding."""
+    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "data" / "models")
+
+    run = await _make_run(store)
+    logdir = _logdir_for(run.id, "loop1")
+    await store.add_artifact(run.id, "tensorboard", str(logdir),
+                             meta={"events": "events.out.tfevents.x"})
+    await store.mark_finished(run.id, "succeeded")
+    assert len(await store.list_artifacts(run.id, kind="tensorboard")) == 1
+
+    assert await store.prune(keep_last=0) == 1
+    assert await store.get_run(run.id) is None
+    assert await _child_counts(db, run.id) == (0, 0, 0)
+    assert not logdir.exists()
+
+
+def test_the_two_spellings_of_the_tensorboard_kind_agree():
+    """``run_store`` spells the kind where the others are listed and
+    ``core.tensorboard`` where the writer uses it. If they ever drift, the
+    sweep silently stops matching any row and the leak comes back with
+    every test still green."""
+    assert ARTIFACT_KIND_TENSORBOARD == TENSORBOARD_ARTIFACT_KIND
 
 
 async def test_publish_retention_does_not_touch_exec_runs(store, db):
