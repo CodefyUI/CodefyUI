@@ -481,7 +481,7 @@ const zhTW: NodeTranslations = {
       accumulate_steps: '累積這麼多批之後才做一次優化器更新，同時把每一批的損失除以同一個數字。batch_size 8 搭配 4，梯度會等同於 batch_size 32，但記憶體裡同時只放 8 筆（1 = 關閉）。',
       max_steps: '總共跑滿這麼多次優化器更新後就停止，不論 epochs 設定為何。算的是優化器更新次數而不是批次數，所以不管 accumulate_steps 設多少意思都一樣（0 = 不限制）',
       log_interval: '開啟批次指標時，每 N 批記錄一次。長時間執行時調高可以讓圖表稀疏一點。',
-      scheduler_step: '學習率排程器何時前進（#297）。epoch 是歷史行為；optimizer_step 會在每次優化器更新後走一步 — 以步數計價的排程（warmup_cosine、total_steps = max_steps 的 OneCycleLR）在步數預算的執行裡需要這個模式。ReduceLROnPlateau 由指標驅動，兩種模式下都維持每 epoch 一步。',
+      scheduler_step: '學習率排程器何時前進（#297）。epoch 是歷史行為；optimizer_step 會在每次優化器更新後走一步 — 以步數計價的排程（warmup_cosine、total_steps = max_steps 的 OneCycleLR）在步數預算的執行裡需要這個模式。ReduceLROnPlateau 由指標驅動，兩種模式下都維持每 epoch 一步。這個設定同時決定 LRScheduler 節點上每一個長度（T_max、total_steps、step_size）的單位是什麼，以及排程長度提醒是拿哪一把尺去量：epoch 模式量的是 epoch 數，optimizer_step 模式量的是這次執行的優化器步數預算（#308）。',
       log_grad_norm: '每 log_interval 個優化器步記錄一次裁剪前的全域梯度範數（grad_norm 序列；設定 grad_clip_norm 時另記 grad_norm_clipped）— loss 突波與穩定性鑑識的原料（#298）。',
       log_update_ratio: '每 log_interval 個優化器步記錄 ||lr×grad|| / ||weights||（全域近似）為 update_ratio 序列 — 學習率健康度的經典訊號，約 1e-3 是常見的健康量級（#298）。',
       val_every_steps: '每 N 個優化器步在接入的 val_dataloader 上做一次訓練中途驗證，記錄 val_loss_step 序列（0 = 關閉）。epochs=1 + max_steps 的跑法裡，這是取得驗證「曲線」而非單一終點的唯一方式（#298）。',
@@ -508,16 +508,16 @@ const zhTW: NodeTranslations = {
     params: {
       type: '排程器類型',
       step_size:
-        'StepLR：每隔幾個 epoch 降一次學習率。MultiStepLR：在此值的 1、2、3、4 倍處各降一次。TrainingLoop 是每個 epoch 走一步排程器，所以這裡算的是 epoch，不是 batch。',
+        'StepLR：每隔多久降一次學習率。MultiStepLR：在此值的 1、2、3、4 倍處各降一次。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式算的是 epoch（不是 batch），optimizer_step 模式算的是優化器步數。兩種模式下都必須小於整次執行在該單位下的長度，否則第一次下降永遠不會發生，整次執行都在同一個學習率上跑。',
       gamma:
         'StepLR、MultiStepLR、ExponentialLR 的衰減因子；ReduceLROnPlateau 也拿它當 factor。',
       T_max:
-        'CosineAnnealingLR：一個 cosine 週期的長度，單位是 epoch。通常應該設成和 TrainingLoop.epochs 一樣——排程器每個 epoch 走一步，設小了會在學習率還很高的時候就結束，設大了則是只走到曲線中途，兩者通常會少掉幾個百分點的準確率，而且畫面上完全看不出來是排程造成的。這裡刻意不強制：截斷的排程本來就是合理選擇。CosineAnnealingWarmRestarts 會把這個值當成 T_0（第一次重啟前的週期長度），那種情況下設成和 epochs 一樣反而永遠不會重啟。',
+        'CosineAnnealingLR：一個 cosine 週期的長度。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式單位是 epoch，要設成和 TrainingLoop.epochs 一樣；optimizer_step 模式單位是優化器步數，要改成設成整次執行的步數預算（有設 max_steps 就是它，否則是 epochs × 每個 epoch 的批次數 ÷ accumulate_steps）。兩種模式下設小了會讓週期提早結束、cosine 曲線再往上翻，執行的尾段學習率反而是升的；設大了則是只走到曲線中途、結束時學習率還很高。兩者通常會少掉幾個百分點的準確率，而且畫面上完全看不出來是排程造成的。這裡刻意不強制：截斷的排程本來就是合理選擇。CosineAnnealingWarmRestarts 會把這個值當成 T_0（第一次重啟前的週期長度），那種情況下設成和整次執行的長度一樣反而永遠不會重啟。',
       max_lr: 'OneCycleLR 的最大學習率',
       total_steps:
-        'OneCycleLR：整個 one-cycle 排程的長度。TrainingLoop 是每個 epoch 走一步，所以這裡要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）。預設值 1000 遠大於一般的 epoch 數，照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。warmup 家族也用這個值當總長。',
+        'OneCycleLR：整個 one-cycle 排程的長度；warmup 家族也用這個值當總長（暖身斜坡 + 衰減）。單位跟著 TrainingLoop.scheduler_step 走（#308）：預設的 epoch 模式是 epoch 數，要填 TrainingLoop.epochs，不是 batch 數（OneCycleLR 官方文件講的 step 是 batch）；optimizer_step 模式下它就是那個步數，要填整次執行的步數預算：有設 max_steps 就是它，否則是 epochs × 每個 epoch 的批次數 ÷ accumulate_steps。預設值 1000 遠大於一般的 epoch 數，在 epoch 模式照著不改就只會走到週期的開頭：學習率稍微升上去，然後從來不會退火下來。',
       warmup_steps:
-        'warmup_cosine / warmup_linear / constant_with_warmup：先以線性斜坡從 ~0 升到優化器學習率的步數，之後才進入衰減段。以「排程器步」計價 — 搭配 TrainingLoop 的 scheduler_step=optimizer_step 並把 total_steps 設成該跑的 max_steps，「暖身 100 步再在 1500 步內退火」才是字面意思（#297）。',
+        'warmup_cosine / warmup_linear / constant_with_warmup：先以線性斜坡從 ~0 升到優化器學習率的步數，之後才進入衰減段。以「排程器步」計價 — 搭配 TrainingLoop 的 scheduler_step=optimizer_step 並把 total_steps 設成該跑的 max_steps，「暖身 100 步再在 1500 步內退火」才是字面意思（#297）。預設的 scheduler_step=epoch 模式下一個排程器步就是一個 epoch，所以預設的 100 在只跑 5 個 epoch 的執行裡斜坡根本爬不完，整次執行都不會用到你設定的學習率（#308）。',
     },
   },
 

@@ -1,17 +1,25 @@
-"""LRScheduler's epoch-vs-batch units must be stated where the user is standing.
+"""LRScheduler's units must be stated where the user is standing.
 
-`TrainingLoop` steps the scheduler once per EPOCH
-(training_loop_node.py, inside the epoch loop, after validation). Three of
-this node's parameters are therefore in epochs, and two of them are named
-after PyTorch concepts that mean something else:
+At the default `TrainingLoop.scheduler_step = epoch`, `TrainingLoop` steps
+the scheduler once per EPOCH (training_loop_node.py, inside the epoch loop,
+after validation). Three of this node's parameters are lengths in that unit,
+and two of them are named after PyTorch concepts that mean something else:
 
 - `T_max` is a cosine cycle length that should normally equal
   `TrainingLoop.epochs`. Getting it wrong costs a few points of accuracy and
   looks like an architecture problem (#205).
 - `total_steps` is OneCycleLR's cycle length. Upstream, a "step" is an
-  optimizer step (a batch); here it is an epoch. The default of 1000 is far
-  larger than any usual epoch count, so leaving it alone traverses only the
-  start of the cycle.
+  optimizer step (a batch); in epoch mode it is an epoch. The default of 1000
+  is far larger than any usual epoch count, so leaving it alone traverses only
+  the start of the cycle.
+
+**Both units, not one (#308).** #303 added `scheduler_step=optimizer_step`,
+in which all three lengths ARE optimizer-step counts -- and these
+descriptions went on asserting the epoch rule as unconditional, flatly
+contradicting `TrainingLoop.scheduler_step`'s own description one node over.
+A user following one of the two got wrong advice whichever mode they were
+in. The mode guards below exist so that cannot come back: stating one unit
+as though it were the only one is the regression.
 
 These are documentation guards, not behaviour tests -- the wording IS the
 fix, so it is what regresses. Each asserts the load-bearing fact rather than
@@ -40,6 +48,25 @@ def _desc(name: str) -> str:
 def test_epoch_unit_parameters_say_epoch(name):
     """The unit is the trap, so the unit has to be in the description."""
     assert "epoch" in _desc(name), f"{name} does not state its unit"
+
+
+@pytest.mark.parametrize("name", ["step_size", "T_max", "total_steps"])
+def test_every_length_parameter_states_both_modes(name):
+    """#308: the unit depends on TrainingLoop.scheduler_step, so saying only
+    one of the two is the same trap the epoch-only wording was."""
+    desc = _desc(name)
+    assert "optimizer_step" in desc, f"{name} never mentions the other mode"
+    assert "scheduler_step" in desc, (
+        f"{name} does not name the parameter that decides its unit")
+
+
+def test_the_warmup_families_say_what_a_scheduler_step_is_in_epoch_mode():
+    """warmup_steps is denominated in scheduler steps, and in the DEFAULT
+    mode a scheduler step is an epoch -- which is why the node's default of
+    100 never finishes ramping on a normal epoch budget (#308)."""
+    desc = _desc("warmup_steps")
+    assert "optimizer_step" in desc
+    assert "epoch" in desc
 
 
 def test_t_max_names_the_coupling_to_the_training_loop():
