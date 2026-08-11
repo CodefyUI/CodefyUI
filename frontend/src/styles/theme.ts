@@ -108,7 +108,7 @@ export const CATEGORY_LIGHT_VARS: Record<string, string> = {
 export const DATA_TYPE_COLORS_ON_LIGHT: Record<string, string> = {
   TENSOR: '#40a445',
   MODEL: '#2095f2',
-  DATASET: '#d27c00',
+  DATASET: '#a56100',
   DATALOADER: '#9c27b0',
   OPTIMIZER: '#f44336',
   LOSS_FN: '#e91e63',

@@ -414,7 +414,7 @@
      twelve already cleared the bar and keep their canvas value. */
   --diagram-light-type-tensor: #40a445; /* 3.18 */
   --diagram-light-type-model: #2095f2; /* 3.16 */
-  --diagram-light-type-dataset: #d27c00; /* 3.17 */
+  --diagram-light-type-dataset: #a56100; /* 4.67 */
   --diagram-light-type-dataloader: #9c27b0; /* 6.30 — unchanged */
   --diagram-light-type-optimizer: #f44336; /* 3.68 — unchanged */
   --diagram-light-type-loss-fn: #e91e63; /* 4.35 — unchanged */

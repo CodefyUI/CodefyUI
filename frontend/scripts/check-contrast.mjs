@@ -563,6 +563,22 @@ for (const slug of DIAGRAM_CATEGORIES) {
   }
 }
 
+for (const slug of DIAGRAM_TYPES) {
+  const [, da, db] = lab(t(`--type-${slug}`));
+  const [, la, lb] = lab(t(`--diagram-light-type-${slug}`));
+  const drift = Math.abs(
+    ((Math.atan2(lb, la) - Math.atan2(db, da)) * 180) / Math.PI
+  );
+  const wrapped = drift > 180 ? 360 - drift : drift;
+  checked += 1;
+  if (wrapped > 12) {
+    failures.push(
+      `--diagram-light-type-${slug} sits ${wrapped.toFixed(1)} degrees of hue from --type-${slug} ` +
+        `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
+    );
+  }
+}
+
 /* ---------- report ---------- */
 
 if (failures.length) {
