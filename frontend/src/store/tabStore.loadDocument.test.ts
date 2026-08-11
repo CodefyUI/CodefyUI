@@ -9,6 +9,11 @@
  * format-version gate. These tests pin the properties that made that class
  * of bug possible: ONE update, and every field of the document written
  * whether the file carries it or not.
+ *
+ * #200 item 9 added the save binding (`boundFile` -> `currentGraphFile`) to
+ * that set for the same reason, one field later: it was the last piece of
+ * "which graph is this" still being assigned OUTSIDE the install, and the
+ * reader that never assigned it opened examples onto another file's binding.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
@@ -59,6 +64,7 @@ describe('loadGraphDocument', () => {
     store().loadGraphDocument({
       nodes: [node('a')],
       edges: [edge('e1', 'a', 'a')],
+      boundFile: 'doc-file',
       subgraphs: [definition('blk')],
       segmentGroups: [{ id: 's1' } as unknown as SegmentGroup],
       name: 'Doc',
@@ -78,20 +84,27 @@ describe('loadGraphDocument', () => {
     expect(t.name).toBe('Doc');
     expect(t.description).toBe('a description');
     expect(t.readOnly).toBe(false);
+    // The save target lands in the SAME emission as the graph it belongs to
+    // (#200 item 9) -- there is no window in which the tab holds this
+    // document and the previous graph's file.
+    expect(t.currentGraphFile).toBe('doc-file');
   });
 
   it('writes every field even for a document that omits them, so nothing survives from the previous graph', () => {
     store().loadGraphDocument({
       nodes: [node('old')],
       edges: [],
+      boundFile: 'the-previous-file',
       subgraphs: [definition('old-blk')],
       segmentGroups: [{ id: 'stale' } as unknown as SegmentGroup],
       description: 'the previous graph',
     });
     store().setActiveSegment({ id: 'stale' } as unknown as SegmentGroup);
+    // Really bound, so the clear below is not passing vacuously.
+    expect(tab().currentGraphFile).toBe('the-previous-file');
 
     // A bare document -- exactly what a hand-written example file looks like.
-    store().loadGraphDocument({ nodes: [node('new')], edges: [] });
+    store().loadGraphDocument({ nodes: [node('new')], edges: [], boundFile: null });
 
     const t = tab();
     expect(t.nodes.map((n) => n.id)).toEqual(['new']);
@@ -103,39 +116,68 @@ describe('loadGraphDocument', () => {
     // The overlay the Teaching Inspector is pointing at names head/tail ids
     // the new graph does not have.
     expect(t.activeSegment).toBeNull();
+    // The save target is the sharpest case of "written either way": the
+    // previous file's binding under the new graph is what made an example
+    // overwrite it on the next Save (#200 item 9).
+    expect(t.currentGraphFile).toBeNull();
+  });
+
+  // -- #200 item 9: the save binding is part of installing a document --
+
+  it('binds the tab to the file the document names, and unbinds when it names none', () => {
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: 'classifier' });
+    expect(tab().currentGraphFile).toBe('classifier');
+
+    // A template/import: bound to nothing, so the next Save has to ask.
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null });
+    expect(tab().currentGraphFile).toBeNull();
+
+    // ...and back again, so this is a real write and not a one-way clear.
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: 'other' });
+    expect(tab().currentGraphFile).toBe('other');
+  });
+
+  it('never lets a document inherit the previous graph binding', () => {
+    store().setCurrentGraphFile('foo');
+
+    store().loadGraphDocument({ nodes: [node('example')], edges: [], boundFile: null });
+
+    // The whole of item 9: the graph on screen is the example, so the file
+    // Save would overwrite must not still be foo.
+    expect(tab().currentGraphFile).toBeNull();
   });
 
   it('keeps the tab name when the document ships none, and adopts a trimmed one when it does', () => {
-    store().loadGraphDocument({ nodes: [], edges: [] });
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null });
     expect(tab().name).toBe('Tab 1');
 
-    store().loadGraphDocument({ nodes: [], edges: [], name: '  My Model  ' });
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, name: '  My Model  ' });
     expect(tab().name).toBe('My Model');
 
     // A blank name is not a name: it would leave the tab labelled "".
-    store().loadGraphDocument({ nodes: [], edges: [], name: '   ' });
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, name: '   ' });
     expect(tab().name).toBe('My Model');
   });
 
   it('fails closed on a newer format_version: read-only, and the verdict is returned', () => {
-    const tooNew = store().loadGraphDocument({ nodes: [], edges: [], formatVersion: 999 });
+    const tooNew = store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, formatVersion: 999 });
 
     expect(tooNew).toBe(true);
     expect(tab().readOnly).toBe(true);
   });
 
   it('clears a stale read-only flag when a current-format document is loaded', () => {
-    store().loadGraphDocument({ nodes: [], edges: [], formatVersion: 999 });
+    store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, formatVersion: 999 });
     expect(tab().readOnly).toBe(true);
 
-    const tooNew = store().loadGraphDocument({ nodes: [], edges: [], formatVersion: 1 });
+    const tooNew = store().loadGraphDocument({ nodes: [], edges: [], boundFile: null, formatVersion: 1 });
 
     expect(tooNew).toBe(false);
     expect(tab().readOnly).toBe(false);
   });
 
   it('treats a missing format_version as current, not as too new', () => {
-    expect(store().loadGraphDocument({ nodes: [], edges: [] })).toBe(false);
+    expect(store().loadGraphDocument({ nodes: [], edges: [], boundFile: null })).toBe(false);
     expect(tab().readOnly).toBe(false);
   });
 
@@ -145,6 +187,7 @@ describe('loadGraphDocument', () => {
     store().loadGraphDocument({
       nodes: [],
       edges: [],
+      boundFile: null,
       subgraphs: [{ id: 'x' } as unknown as SubgraphDefinition],
     });
 
@@ -177,7 +220,12 @@ describe('loadGraphDocument', () => {
       })) as never,
     });
 
-    store().loadGraphDocument({ nodes: [node('top')], edges: [], subgraphs: [definition('blk')] });
+    store().loadGraphDocument({
+      nodes: [node('top')],
+      edges: [],
+      boundFile: null,
+      subgraphs: [definition('blk')],
+    });
 
     const t = tab();
     expect(t.subgraphStack).toEqual([]);

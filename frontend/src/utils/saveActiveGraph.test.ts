@@ -64,6 +64,24 @@ describe('saveActiveGraph', () => {
     expect(saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'fresh' }));
   });
 
+  // #200 item 9. The binding is the whole of what decides "overwrite in
+  // place, no prompt", so a document installed with no binding has to take
+  // the prompt path even when the tab was bound a moment earlier -- which is
+  // what opening an example into a tab bound to a file now does.
+  it('project mode: a document opened with no file binding prompts instead of overwriting the file that was open', async () => {
+    useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
+    useTabStore.getState().setCurrentGraphFile('classifier');
+    // Exactly what `openExample` hands the store now.
+    useTabStore.getState().loadGraphDocument({ nodes: [], edges: [], boundFile: null });
+    (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('from-template');
+
+    await saveActiveGraph();
+
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(saveGraph).toHaveBeenCalledWith(expect.objectContaining({ name: 'from-template' }));
+    expect(saveGraph).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'classifier' }));
+  });
+
   it('empty prompt aborts the save', async () => {
     (prompt as unknown as ReturnType<typeof vi.fn>).mockResolvedValue('');
     await saveActiveGraph();

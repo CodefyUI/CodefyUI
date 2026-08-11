@@ -397,6 +397,21 @@ function createTabState(id: string, name: string): TabState {
 export interface GraphDocument {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  /**
+   * The saved-graph file the tab is bound to AFTER this load -- the file a
+   * plain Save overwrites in place -- or null for "bound to nothing, so ask
+   * where this should go" (#200 item 9).
+   *
+   * REQUIRED, and the only field here the caller does not read out of the
+   * document: it is the reader's binding decision, and there is no safe
+   * default for it. Omitting it meant "keep whatever the PREVIOUS graph was
+   * bound to", which is how opening an example into a tab holding `foo.json`
+   * made the next Save write the example over `foo.json` with no overwrite
+   * warning. Required so the compiler asks every reader -- the two in
+   * `Toolbar` always answered it (they assigned it right after the call);
+   * the third, `openExample`, never knew there was a question.
+   */
+  boundFile: string | null;
   subgraphs?: SubgraphDefinition[];
   segmentGroups?: SegmentGroup[];
   /**
@@ -484,6 +499,10 @@ interface TabStoreState {
    * Returns true when the document opened READ-ONLY because its
    * `format_version` is newer than this build writes: the store owns the
    * verdict, the caller owns the notice it shows for it.
+   *
+   * The tab's save target comes from `doc.boundFile` and is always written,
+   * so no document can be installed onto another file's binding (#200
+   * item 9). See the field's own note for why it is required.
    */
   loadGraphDocument: (doc: GraphDocument) => boolean;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
@@ -2166,6 +2185,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
   // tab is computed and committed in ONE `set`, so no subscriber ever
   // observes a half-installed graph and no caller can sequence it wrongly.
   //
+  // The save binding (`currentGraphFile`) joined the update in #200 item 9.
+  // It looked like it did not belong here -- it is not read off the file --
+  // but leaving it outside was the same shape of bug one field over: the
+  // example reader never assigned it, so a template opened into a tab bound
+  // to foo.json inherited foo.json as its save target and the next Save
+  // overwrote that file, silently, without the overwrite prompt (the prompt
+  // is skipped precisely BECAUSE the tab claims to be bound to it). Which
+  // file a graph writes to is part of installing a graph, so `boundFile` is
+  // required rather than optional.
+  //
   // Undo is deliberately untouched, matching what all three readers did
   // before: opening a document pushes no snapshot and clears no stack.
   // #200 item 2 has since put `segmentGroups`/`activeSegment` in every frame,
@@ -2203,6 +2232,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         activeSegment: null,
         description: doc.description ?? '',
         readOnly,
+        // The save target, stated by the reader and never inherited (#200
+        // item 9). This is the field whose absence made an example opened
+        // into a tab bound to foo.json overwrite foo.json on the next Save:
+        // the graph on screen had been replaced and the binding had not.
+        currentGraphFile: doc.boundFile,
         // Only when the document names one: a tab that was never renamed
         // keeps the label the user is looking at.
         ...(name ? { name } : {}),

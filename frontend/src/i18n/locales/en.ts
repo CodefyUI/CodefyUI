@@ -599,9 +599,13 @@ const en = {
   'project.save.crossProjectRefused': 'This graph belongs to another project ({origin}) and cannot be saved into the open project.',
 
   // format_version read policy (ID8): newer-than-this-build graphs open
-  // read-only, never blocked on load.
+  // read-only, never blocked on load. The third string is the one case where
+  // read-only is not an available answer (#200 item 10): MERGING a too-new
+  // template into an editable graph has no document to mark read-only, so
+  // that path refuses the merge and explains the two ways forward.
   'project.readOnly.loadNotice': 'Opened read-only: this graph uses a newer format (v{version}) than this CodefyUI build.',
   'project.readOnly.saveBlocked': 'Save is disabled: this graph was written by a newer CodefyUI. Update CodefyUI to edit it.',
+  'project.formatTooNew.insertRefused': 'Nothing was inserted: this template uses a newer format (v{version}) than this CodefyUI build, so merging it into your graph could quietly drop parts of it. Open it instead to view it read-only, or update CodefyUI to use it.',
 
   // Plugin API v3 chrome (#132). Plugin panels and toolbar buttons supply
   // their own titles, so the host only labels the containers around them.
