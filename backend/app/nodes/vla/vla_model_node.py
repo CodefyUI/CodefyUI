@@ -477,10 +477,13 @@ class VLAModelNode(StatefulModuleMixin, BaseNode):
                 default="conv",
                 options=VISION_STEMS,
                 description=(
-                    "conv: three stride-2 3x3 convs (fine localization; the "
-                    "'early convolutions help transformers see' result is "
-                    "measurable here). patchify: the classic ViT stem, kept "
-                    "for studying exactly that difference."
+                    "conv: three stride-2 3x3 convs. patchify: the classic "
+                    "ViT stem. A controlled A/B at a 1200-episode/45-epoch "
+                    "budget measured patchify AHEAD (0.85 vs 0.45 success, "
+                    "same data/seed) - the opposite of the NeurIPS'21 "
+                    "conv-stem result and of this node's earlier confounded "
+                    "notes; at the full 2400/110 budget only conv has been "
+                    "run (0.97). The knob exists to settle exactly this."
                 ),
                 advanced=True,
             ),
