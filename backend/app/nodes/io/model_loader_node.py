@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 #: and its answer cannot change while the interpreter is running.
 _LAYER_GLOBALS: list[type] | None = None
 
+#: Cache for :func:`codefyui_module_globals`, for the same reason.
+_CODEFYUI_GLOBALS: list[type] | None = None
+
 #: How torch names the class its restricted unpickler stopped on.
 _UNSUPPORTED_GLOBAL = re.compile(r"Unsupported global: GLOBAL ([\w.]+)")
 
@@ -49,13 +52,11 @@ def torch_nn_layer_globals() -> list[type]:
     ``TransformerEncoderLayer`` stores its activation as ``F.relu`` and so
     does not load.
 
-    The same boundary excludes CodefyUI's OWN module classes -- the layer
-    editor's ``GraphModelModule`` and the wrappers in
-    ``nodes.utility.sequential_modules``. #283 made those saveable (they were
-    function-local classes and could not be pickled at all); it did not make
-    them loadable here, and widening the allowlist to cover them is a
-    separate decision about a separate trust boundary. ``ModelSaver`` says so
-    at save time rather than letting a user discover it one node later.
+    This is one of the two halves of the allowlist. CodefyUI's own module
+    classes are the other, and they cannot be derived the same way -- see
+    :func:`codefyui_module_globals`. :func:`full_model_safe_globals` joins
+    them, and is what the loader and ``ModelSaver``'s save-time note both
+    read.
     """
     global _LAYER_GLOBALS
     if _LAYER_GLOBALS is not None:
@@ -91,6 +92,191 @@ def torch_nn_layer_globals() -> list[type]:
     return _LAYER_GLOBALS
 
 
+# ── The curated half of the allowlist (#288) ─────────────────────────────
+#
+# #288's decision: a ``full_model`` file CodefyUI wrote has to load back into
+# CodefyUI. Until it, the two halves of the round trip did not meet. #222 made
+# the loader accept ``torch.nn``'s own classes and nothing else; #283 made
+# CodefyUI's own module classes saveable. The product therefore wrote a file it
+# then refused, and #287 could only paper over that with a save-time advisory.
+#
+# What makes widening affordable rather than reckless is WHERE this runs.
+# "CodefyUI is a desktop tool that happens to speak HTTP" (docs/usage/
+# shared-instances.md), deployed on localhost or behind a proxy on an intranet
+# (docs/usage/deployment.md) -- there is no public upload endpoint, and the
+# files an instance is asked to open are overwhelmingly the ones this install,
+# or a colleague's install, wrote. That is an argument for widening the gate by
+# one carefully chosen set of NAMES. It is not an argument for opening it:
+# ``weights_only=True`` stays on, and #222's detonating payload still detonates
+# nothing, because ``os.system`` is not on this list either.
+#
+# THE ADMISSION RULE, which is the whole safety argument. It has TWO halves,
+# and an earlier draft of this comment stated only the first -- corrected in
+# review of #288, because a future auditor following the wrong rule would admit
+# the wrong class.
+#
+#   1. Reconstruction must only restore attributes. No ``__reduce__``, no
+#      ``__setstate__``, no ``__getnewargs__`` -- nothing that turns restoring
+#      an attribute into running something.
+#
+#   2. The CONSTRUCTOR must be safe to run with arbitrary, file-chosen
+#      arguments. Read torch's ``_weights_only_unpickler``: the REDUCE opcode
+#      does ``result = func(*args)`` for anything in the user-allowed globals
+#      (torch 2.11, ``_weights_only_unpickler.py`` around :415). So admitting a
+#      class does NOT only admit ``cls.__new__(cls)`` plus a ``__dict__``
+#      update -- a crafted file can call ``cls(...)`` with values it chose.
+#      Admissible therefore means: no filesystem, network or process side
+#      effects, no mutation of global state (``torch.manual_seed`` and friends
+#      -- a local ``torch.Generator`` is fine, which is what the seeded
+#      constructors here use), no dynamic code (``eval`` / ``exec`` /
+#      ``__import__``). Bad arguments raising, or allocating a large tensor,
+#      is acceptable: that is a failed load, not a compromised one.
+#
+# Note that half 2 was ALREADY true of the torch half of the allowlist (#222) --
+# admitting ``nn.Linear`` admits ``nn.Linear(...)`` on file-chosen sizes. It is
+# not something #288 introduced; it is something #288's comment has to state,
+# because this is now a list a human maintains.
+#
+# Every class below was audited against both halves, with the result recorded
+# next to it. ``test_every_admitted_class_is_safe_to_reconstruct`` re-derives
+# what is mechanically checkable -- the absence of pickle hooks, and the
+# absence of the dangerous-call list from each class's constructor and the
+# module-level helpers it reaches -- so a future edit that adds a
+# ``__setstate__``, or an ``open()`` to one of these constructors, fails rather
+# than quietly turning a name on this list into a code path. The part no test
+# can prove (that running the constructor on nonsense arguments is merely
+# useless) was hand-audited on 2026-08-12.
+#
+# EXACT IDENTITIES, never a module prefix. ``app.custom_nodes.*`` is code the
+# user uploaded and ``cdui_plugins.*`` is code they installed; neither has been
+# through review, both are deliberately outside this list, and an ``app.``
+# prefix filter -- the obvious shortcut -- would have admitted the first of
+# them. What is listed is what is admitted.
+#
+# Recorded as NAMES rather than imported at module scope, for two reasons. The
+# node registry imports this module to read its metadata, and importing the
+# LLM / VLA / diffusion node modules from here would drag ``torch`` onto that
+# path -- the lazy-import property #283 went out of its way to preserve.
+# Second, resolving at call time makes the answer independent of import ORDER:
+# the torch half is a walk over LOADED subclasses, and deriving this half the
+# same way would admit or refuse the same file depending on which nodes the
+# session happened to have touched.
+#
+# The list is enumerated from the SAVE side: every ``nn.Module`` subclass
+# ``app.nodes`` defines, because any of them can reach ``ModelSaver`` -- as the
+# model itself, as a submodule of one, or (for the two loss modules) through an
+# ANY-typed hop, which ``type_system`` allows into a MODEL port.
+# ``test_the_allowlist_covers_every_codefyui_module_class`` fails when a new
+# one is added and not audited, so this cannot rot quietly into the trap #288
+# was opened about.
+_CODEFYUI_MODULE_CLASSES: tuple[tuple[str, str], ...] = (
+    # What every layer-editor model IS, and so #288's headline case. Audited:
+    # holds an ``nn.ModuleDict`` of layers plus the plain dicts / lists /
+    # tuples / strings describing the DAG. No pickle hooks.
+    ("app.nodes.utility.graph_model", "GraphModelModule"),
+
+    # The seven wrappers #283 hoisted out of a function into module scope.
+    # Audited, all seven: each holds one torch submodule and/or the ints and
+    # strings it was constructed from. No pickle hooks.
+    ("app.nodes.utility.sequential_modules", "Reshape"),
+    ("app.nodes.utility.sequential_modules", "SelectIndex"),
+    ("app.nodes.utility.sequential_modules", "TransformerEncoderBlock"),
+    ("app.nodes.utility.sequential_modules", "TransformerDecoderBlock"),
+    ("app.nodes.utility.sequential_modules", "LSTMBlock"),
+    ("app.nodes.utility.sequential_modules", "GRUBlock"),
+    ("app.nodes.utility.sequential_modules", "MultiHeadAttentionBlock"),
+
+    # The LLM wave's model (#289) and the three classes it is built from --
+    # admitting the outer class alone would refuse the file one level down.
+    # Audited: ints, floats, strings, bools, torch submodules, parameters and
+    # buffers. No pickle hooks.
+    ("app.nodes.llm.causal_lm_model_node", "CausalLMModule"),
+    ("app.nodes.llm.causal_lm_model_node", "_DecoderBlock"),
+    ("app.nodes.llm.causal_lm_model_node", "_CausalSelfAttention"),
+    ("app.nodes.llm.causal_lm_model_node", "_FeedForward"),
+
+    # The VLA policy and its two block types. Audited: ints, floats, strings,
+    # torch submodules and parameters. No pickle hooks.
+    ("app.nodes.vla.vla_model_node", "VLAModule"),
+    ("app.nodes.vla.vla_model_node", "_EncoderBlock"),
+    ("app.nodes.vla.vla_model_node", "_ExpertBlock"),
+
+    # The diffusion U-Net and the two modules it composes. Audited: ints and
+    # torch submodules. Their ``__init__`` seeds weights, and the unpickler CAN
+    # reach it (rule 2 above), so that was checked rather than assumed: each
+    # seeds a LOCAL ``torch.Generator`` and never ``torch.manual_seed``, so a
+    # file-chosen seed changes only the tensor it then overwrites. No pickle
+    # hooks.
+    ("app.nodes.diffusion.diffusion_unet_node", "_DiffusionUNetModule"),
+    ("app.nodes.diffusion._resblock_module", "_ResBlockModule"),
+    ("app.nodes.diffusion.timestep_embedding_node", "_TimestepMLP"),
+
+    # Transformer MoE, the seeded RNN cell, the RLHF reward head. Audited: ints
+    # and torch submodules only; ``_SeededRNNCell``'s constructor is reachable
+    # with a file-chosen seed and uses a local ``torch.Generator`` (the
+    # ``torch.manual_seed`` calls in these two modules are in the NODES, which
+    # the unpickler cannot reach). No pickle hooks.
+    ("app.nodes.transformer.moe_layer_node", "_MoELayer"),
+    ("app.nodes.transformer.moe_layer_node", "_ExpertFFN"),
+    ("app.nodes.rnn.rnn_cell_node", "_SeededRNNCell"),
+    ("app.nodes.rl.reward_model_node", "_RewardHead"),
+
+    # The two loss modules. They travel on LOSS_FN ports rather than MODEL
+    # ones, so they reach a save only through an ANY-typed hop -- listed
+    # because that path exists, not because it is the usual one. Audited:
+    # ints, floats and strings. No pickle hooks.
+    ("app.nodes.llm.lm_cross_entropy_loss_node", "LMCrossEntropyLoss"),
+    ("app.nodes.vla.vla_model_node", "VLABehaviorLoss"),
+)
+
+
+def codefyui_module_globals() -> list[type]:
+    """The classes in :data:`_CODEFYUI_MODULE_CLASSES`, resolved and cached.
+
+    The curated half of the ``full_model`` allowlist (#288). See the comment
+    above the data for the decision, the threat model, the admission rule and
+    the per-class audit.
+    """
+    global _CODEFYUI_GLOBALS
+    if _CODEFYUI_GLOBALS is not None:
+        return _CODEFYUI_GLOBALS
+
+    from importlib import import_module
+
+    resolved: list[type] = []
+    for module_path, qualname in _CODEFYUI_MODULE_CLASSES:
+        obj: Any = import_module(module_path)
+        for part in qualname.split("."):
+            obj = getattr(obj, part, None)
+        if not isinstance(obj, type):
+            # A rename that did not update the list. Raised rather than
+            # skipped: skipping would un-admit a class silently, and the
+            # symptom -- a file that used to load and now does not -- would
+            # appear a release later with nothing pointing here.
+            raise RuntimeError(
+                f"The full_model allowlist names {module_path}.{qualname}, "
+                f"which is no longer a class there. It was renamed, moved or "
+                f"removed; update _CODEFYUI_MODULE_CLASSES in "
+                f"app/nodes/io/model_loader_node.py to match (#288)."
+            )
+        resolved.append(obj)
+
+    _CODEFYUI_GLOBALS = resolved
+    return _CODEFYUI_GLOBALS
+
+
+def full_model_safe_globals() -> list[type]:
+    """Every class ``load_mode="full_model"`` will reconstruct.
+
+    The derived torch half plus the curated CodefyUI half, in ONE place, read
+    by both ends of the round trip: this node's loader and ``ModelSaver``'s
+    save-time note. The note being derived from the same call is what stops it
+    drifting from what the loader actually accepts -- which was the whole
+    reason #287 could describe the gap correctly while it existed.
+    """
+    return [*torch_nn_layer_globals(), *codefyui_module_globals()]
+
+
 def _full_model_refusal(p: "Path", exc: Exception) -> str:
     """The message a user gets when a full-model file will not load.
 
@@ -104,8 +290,10 @@ def _full_model_refusal(p: "Path", exc: Exception) -> str:
     refused = _UNSUPPORTED_GLOBAL.search(str(exc))
     if refused is not None:
         detail = (
-            f"it contains {refused.group(1)}, which is not one of the "
-            f"torch.nn layer classes CodefyUI will reconstruct"
+            f"it contains {refused.group(1)}, which is not one of the classes "
+            f"CodefyUI will reconstruct -- torch.nn's own layers and "
+            f"CodefyUI's own module classes (#288). A class from a custom "
+            f"node or a plugin is not on that list"
         )
     else:
         detail = f"{type(exc).__name__}: {exc}"
@@ -117,7 +305,8 @@ def _full_model_refusal(p: "Path", exc: Exception) -> str:
         "it. CodefyUI therefore reads it under torch's restricted unpickler "
         "(weights_only=True) and does not turn that off; the restriction is "
         "widened just far enough to rebuild models made of stock torch.nn "
-        "layers, and everything else is refused rather than executed.\n"
+        "layers and of CodefyUI's own layers, and everything else is refused "
+        "rather than executed.\n"
         "\n"
         "Two ways forward:\n"
         "  1. Use a state_dict, which is the supported path and this node's "
@@ -210,7 +399,9 @@ class ModelLoaderNode(BaseNode):
                     "Load mode: state_dict (requires model input) or full_model. "
                     "full_model rebuilds the saved module itself and is read under "
                     "torch's restricted unpickler, so it accepts models made of "
-                    "stock torch.nn layers and refuses anything else"
+                    "stock torch.nn layers and of CodefyUI's own layers, and "
+                    "refuses anything else -- including classes from custom nodes "
+                    "or plugins"
                 ),
                 options=["state_dict", "full_model"],
             ),
@@ -287,13 +478,19 @@ class ModelLoaderNode(BaseNode):
         """Unpickle a whole ``nn.Module``, without unpickling anything else.
 
         ``weights_only=True`` stays on. It is widened -- for this call only,
-        which is what the context manager is for -- to the layer classes in
-        :func:`torch_nn_layer_globals`, and to nothing else.
+        which is what the context manager is for -- to the classes in
+        :func:`full_model_safe_globals`, and to nothing else.
         """
         import torch
 
+        # Built BEFORE the try: a stale entry in the curated list raises a
+        # RuntimeError that says exactly which name to fix, and swallowing it
+        # into the "could not load this file" message would blame the file for
+        # a bug in this module.
+        allowed = full_model_safe_globals()
+
         try:
-            with torch.serialization.safe_globals(torch_nn_layer_globals()):
+            with torch.serialization.safe_globals(allowed):
                 return torch.load(str(p), map_location=load_device, weights_only=True)
         except Exception as exc:
             raise ValueError(_full_model_refusal(p, exc)) from exc

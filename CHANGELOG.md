@@ -148,6 +148,45 @@ received — each links to the release it was published as.
 
 ### Changed
 
+- **A `full_model` file CodefyUI wrote now loads back into CodefyUI**
+  ([#288]). [#222] had made the loader work by widening torch's restricted
+  unpickler to `torch.nn`'s own classes; [#283] had made the saver work. The two
+  never met: CodefyUI's own module classes are not in `torch.nn`, so the product
+  wrote a valid file it then refused — including every layer-editor model, all
+  of which are a `GraphModelModule`. That was a trust decision rather than a
+  bug, and #288 took it: a CodefyUI instance is a localhost or intranet
+  deployment, so the gate widens by one **curated list of exact classes**, never
+  a wildcard and never a module prefix (`app.custom_nodes.*` is code the user
+  uploaded; an `app.` prefix would have admitted it). `weights_only=True` stays
+  on and #222's detonating-payload test still passes.
+
+  The admission rule has two halves, because admitting a class by name lets a
+  file both restore its attributes AND call its constructor: torch's restricted
+  unpickler runs `func(*args)` for any allowed name, so `cls(...)` is reachable
+  with file-chosen arguments — which was already true of `torch.nn`'s classes
+  under [#222]. So an admissible class defines no `__reduce__` / `__setstate__` /
+  `__getnewargs__`, *and* has a constructor that touches no files, no network
+  and no global state (a local `torch.Generator` is fine; `torch.manual_seed` is
+  not). All 24 of CodefyUI's `nn.Module` classes were audited against both
+  halves, the result is recorded per class next to the list, and two tests keep
+  it honest: one re-derives what is mechanically checkable in each half (no
+  pickle hooks; no dangerous call in the constructor or the module-level helpers
+  it reaches), the other fails when a new `nn.Module` is added to `app.nodes`
+  and not audited, so the list cannot rot back into the trap.
+
+  Two edges remain, both stated at save time and in the new
+  [Saving and Loading Models](https://docs.codefyui.com/usage/model-files) page:
+  a `TransformerEncoder` / `TransformerDecoder` layer still does not load,
+  because `nn.TransformerEncoderLayer` stores its activation as
+  `torch.nn.functional.relu` and no *functions* are on the allowlist (#222 left
+  that out deliberately, and #288 does not take it either); and a `full_model`
+  file is no longer self-contained — an older CodefyUI refuses it, and plain
+  torch needs `weights_only=False` plus the backend package importable.
+  `ModelSaver`'s save-time note says which of the three cases a file is, derived
+  from the same allowlist the loader reads, and now inspects function-valued
+  attributes as well as module classes so it cannot promise a round trip the
+  loader will refuse. `state_dict` mode is byte-for-byte unchanged.
+
 - `components/SubgraphEditor/` is now `components/LayersEditor/`. It never
   edited a nested graph — it edits one node's `layers` param — and since real
   graph nesting landed, two unrelated features had been reading as one. The
@@ -913,6 +952,7 @@ Release candidates before 1.0.0 are on the
 [#289]: https://github.com/CodefyUI/CodefyUI/issues/289
 [#290]: https://github.com/CodefyUI/CodefyUI/issues/290
 [#291]: https://github.com/CodefyUI/CodefyUI/issues/291
+[#288]: https://github.com/CodefyUI/CodefyUI/issues/288
 [#292]: https://github.com/CodefyUI/CodefyUI/issues/292
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main

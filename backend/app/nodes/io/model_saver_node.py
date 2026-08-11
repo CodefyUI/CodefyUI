@@ -87,50 +87,141 @@ def _full_model_save_refusal(offenders: list[type]) -> str:
     )
 
 
-def _reload_advisory(model: Any) -> str:
-    """Say so when the file being written will not load back into CodefyUI.
+def _refused_function_attributes(model: Any, allowed: set[type]) -> list[str]:
+    """Functions and classes stored as attributes that the loader will refuse.
 
-    Saving is only half a round trip, and the two halves do not accept the
-    same set of models. ``ModelLoader(load_mode="full_model")`` reads under
-    torch's restricted unpickler and widens it to ``torch.nn``'s own layer
-    classes and nothing else (#222) -- so a model containing ANY class from
-    outside torch is refused on the way back in, including CodefyUI's own
-    ``GraphModelModule``, which is what every layer-editor model is.
+    The class walk in :func:`_reload_note` reads ``type(submodule)`` and so
+    sees only the modules. It misses a plain attribute holding a FUNCTION,
+    which the restricted unpickler refuses just as firmly -- and there is a
+    shipped case: ``nn.TransformerEncoderLayer`` stores its activation as
+    ``torch.nn.functional.relu``, whatever spelling it was constructed with, so
+    both transformer wrappers fail to load even though every CLASS in them is
+    admitted. #222 left ``torch.nn.functional`` out deliberately (a function is
+    a callable the unpickler may be asked to INVOKE, and the namespace also
+    holds ``handle_torch_function``, which dispatches to an arbitrary object's
+    ``__torch_function__``), and #288 records that as a decision still open. So
+    the note has to be able to say it, or it would promise a round trip on the
+    one shipped shape that does not have one.
 
-    That gap is not new, but #283 made it reachable: before it, these models
-    could not be saved at all, so nobody got as far as failing to load one.
-    A save that succeeds and cannot be undone is a worse trap than a save
-    that refuses, hence this note. It is advisory, not a refusal -- the file
-    is perfectly valid and ``torch.load(..., weights_only=False)`` reads it
-    outside CodefyUI, which is a legitimate reason to write one.
+    Deliberately NOT a full audit of the pickle graph: that is a
+    re-implementation of the unpickler, and the loader is the authority. It
+    covers the category that actually occurs -- a function or a class as a
+    direct attribute value -- and anything subtler still surfaces at load time
+    with the message :func:`_full_model_refusal` writes.
     """
-    from .model_loader_node import torch_nn_layer_globals
+    import types
 
-    allowed = set(torch_nn_layer_globals())
+    modules = getattr(model, "modules", None)
+    candidates = list(modules()) if callable(modules) else [model]
+
+    refused: list[str] = []
+    for module in candidates:
+        # ``getattr(..., "__dict__")`` rather than ``vars()``: this walk does
+        # NOT only see nn.Modules. ``ModelSaver.model`` is a MODEL port, and
+        # ``type_system`` lets an ANY-typed output into one, so a dict, an int
+        # or a None genuinely arrives here -- ``CheckpointLoader``'s
+        # ``grad_scaler_state`` emits dict-or-None, and PythonScript / Switch /
+        # Reduce / GraphInput can pass anything. ``vars(5)`` raises TypeError,
+        # which would replace the note this function exists to write with a
+        # traceback, BEFORE the torch.save that would have succeeded. Found in
+        # review of #288; the pre-#288 walk read only ``type(module)`` and so
+        # never touched an instance dict.
+        for value in (getattr(module, "__dict__", None) or {}).values():
+            if isinstance(value, type):
+                if value in allowed:
+                    continue
+            elif not isinstance(
+                value,
+                types.FunctionType | types.BuiltinFunctionType | types.MethodType,
+            ):
+                continue
+            name = (
+                f"{getattr(value, '__module__', '?')}."
+                f"{getattr(value, '__qualname__', value)}"
+            )
+            if name not in refused:
+                refused.append(name)
+    return refused
+
+
+def _reload_note(model: Any) -> tuple[str, str]:
+    """What to tell the user about reading this full-model file back.
+
+    Returns ``(level, text)``; ``("", "")`` when there is nothing to say.
+
+    Saving is only half a round trip, and until #288 the two halves did not
+    accept the same set of models: ``ModelLoader(load_mode="full_model")`` read
+    under torch's restricted unpickler widened to ``torch.nn``'s own classes
+    and nothing else (#222), so a model containing CodefyUI's own
+    ``GraphModelModule`` -- which is what every layer-editor model is -- saved
+    fine and was refused on the way back in. #283 made that reachable and #287
+    could only warn about it.
+
+    #288 closed the loop: CodefyUI's own module classes are now on the
+    allowlist, so there are three answers rather than two, and which one a
+    model gets is derived from :func:`full_model_safe_globals` rather than
+    written down here -- the note cannot drift from what the loader accepts.
+
+    * stock torch layers only -- silence. The round trip works and always did;
+      a note here would be noise, and noise is how a note stops being read.
+    * plus CodefyUI's own classes -- an INFO note. The round trip works, but
+      the file is no longer self-contained the way a pure-torch one is: reading
+      it needs CodefyUI. Worth one line, because that is the difference between
+      a file a colleague can open and one they cannot.
+    * anything else (a custom node, a plugin, a hand-written class) -- a
+      WARNING, and the same trap #287 named. Still advisory rather than a
+      refusal: the file is valid and ``torch.load(..., weights_only=False)``
+      reads it outside CodefyUI, which is a legitimate reason to write one.
+    """
+    from .model_loader_node import codefyui_module_globals, full_model_safe_globals
+
+    allowed = set(full_model_safe_globals())
+    ours = set(codefyui_module_globals())
     modules = getattr(model, "modules", None)
     candidates = list(modules()) if callable(modules) else [model]
 
     foreign: list[type] = []
+    codefyui: list[type] = []
     for module in candidates:
         cls = type(module)
-        if cls in allowed or cls in foreign:
-            continue
-        foreign.append(cls)
-    if not foreign:
-        return ""
+        if cls in ours:
+            if cls not in codefyui:
+                codefyui.append(cls)
+        elif cls not in allowed and cls not in foreign:
+            foreign.append(cls)
 
-    named = ", ".join(sorted(cls.__qualname__ for cls in foreign))
-    return (
-        f"Saved, but note: this file cannot be read back by ModelLoader in "
-        f"full_model mode. It contains {named}, which {'are' if len(foreign) > 1 else 'is'} "
-        f"not "
-        f"{'torch.nn layer classes' if len(foreign) > 1 else 'a torch.nn layer class'}"
-        f", and full_model loading runs under torch's restricted unpickler, "
-        f"which rebuilds stock torch.nn layers only. The file is still valid "
-        f"outside CodefyUI (torch.load with weights_only=False). For a round "
-        f"trip inside CodefyUI use save_mode=state_dict and load it back with "
-        f"load_mode=state_dict against the same architecture."
-    )
+    refused = sorted(cls.__qualname__ for cls in foreign)
+    refused += _refused_function_attributes(model, allowed)
+
+    if refused:
+        named = ", ".join(refused)
+        plural = len(refused) > 1
+        return "warning", (
+            f"Saved, but note: this file cannot be read back by ModelLoader in "
+            f"full_model mode. It contains {named}, which "
+            f"{'are' if plural else 'is'} not among the things full_model "
+            f"loading reconstructs -- torch.nn's own layer classes and "
+            f"CodefyUI's own module classes, and no functions at all (#288). "
+            f"The file is still valid outside CodefyUI (torch.load with "
+            f"weights_only=False). For a round trip inside CodefyUI use "
+            f"save_mode=state_dict and load it back with load_mode=state_dict "
+            f"against the same architecture."
+        )
+
+    if codefyui:
+        named = ", ".join(sorted(cls.__qualname__ for cls in codefyui))
+        return "info", (
+            f"Saved. ModelLoader reads this file back in full_model mode: it "
+            f"contains {named}, which CodefyUI defines and this version admits "
+            f"to torch's restricted unpickler (#288). That does mean the file "
+            f"is not self-contained -- a CodefyUI older than this one refuses "
+            f"it, and outside CodefyUI torch.load needs weights_only=False "
+            f"and CodefyUI's backend package on sys.path, because pickle "
+            f"imports a class by name. save_mode=state_dict produces a file "
+            f"with none of those conditions on it."
+        )
+
+    return "", ""
 
 
 class ModelSaverNode(BaseNode):
@@ -194,6 +285,7 @@ class ModelSaverNode(BaseNode):
         save_mode = params.get("save_mode", "state_dict")
         fmt = params.get("format", "pytorch")
         note = ""
+        note_level = ""
 
         # Inside the data directory, and not over CodefyUI's own storage --
         # ``core.data_paths`` owns both halves of that rule and is shared
@@ -230,7 +322,7 @@ class ModelSaverNode(BaseNode):
             if offenders:
                 raise ValueError(_full_model_save_refusal(offenders))
 
-            note = _reload_advisory(model)
+            note_level, note = _reload_note(model)
 
             try:
                 torch.save(model, str(p))
@@ -253,8 +345,13 @@ class ModelSaverNode(BaseNode):
                 ) from exc
 
             logger.info("Saved full model to %s", p)
-            if note:
+            if note_level == "warning":
                 logger.warning("%s", note)
+            elif note_level == "info":
+                # INFO, not WARNING: since #288 this case is the round trip
+                # WORKING, and a warning on a success is how a log stops being
+                # a signal.
+                logger.info("%s", note)
 
         result: dict[str, Any] = {"path": str(p), "model": model}
         if note:

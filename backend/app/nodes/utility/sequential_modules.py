@@ -30,15 +30,25 @@ the top HERE, and ``_build_layer`` imports this module inside the function
 body, so nothing pays for torch until a model is actually built. That is the
 same arrangement ``graph_model`` already uses.
 
-One thing this does NOT buy, and it is worth being clear about: a saved file
-containing these classes still will not come back through
-``ModelLoader(load_mode="full_model")``. That path reads under torch's
-restricted unpickler and widens it to ``torch.nn``'s own layer classes only
-(see ``torch_nn_layer_globals``), and these are not torch's -- neither is
-``GraphModelModule``, which every layer-editor model is. What changes is that
-the SAVE now succeeds and produces a valid file, loadable by plain
-``torch.load(..., weights_only=False)`` outside CodefyUI, instead of dying on
-an unpicklable local class. ``state_dict`` remains the round-trip that works.
+For a while this bought only half a round trip: the SAVE succeeded, and
+``ModelLoader(load_mode="full_model")`` then refused the file, because that
+path reads under torch's restricted unpickler widened to ``torch.nn``'s own
+classes only (#222) and these are not torch's -- neither is
+``GraphModelModule``, which every layer-editor model is. #288 decided the other
+way and closed the loop: all seven classes here are named in
+``_CODEFYUI_MODULE_CLASSES`` (``model_loader_node``) and load back. Being
+module-scope is what makes that possible at all -- an allowlist admits a class
+by NAME, and a function-local class has none.
+
+Which means the audit recorded next to that list applies to this file, and it
+has two halves. A ``__reduce__`` or a ``__setstate__`` added to any class here
+would turn a name on an allowlist into a code path. And because torch's
+restricted unpickler implements REDUCE as ``func(*args)`` for an allowed global,
+a crafted file can call these CONSTRUCTORS with arguments it chose -- so an
+``__init__`` here must stay free of filesystem, network and global-state effects
+(the ``shape`` string ``Reshape`` parses is file-controlled). A test in
+``test_model_saver_loader_node.py`` fails if either half breaks; read the
+comment above ``_CODEFYUI_MODULE_CLASSES`` before changing an ``__init__``.
 
 Attribute names are load-bearing: they are the ``state_dict`` key prefixes
 (``encoder.``, ``lstm.``, ``attn.`` ...). Renaming one silently invalidates
