@@ -36,7 +36,7 @@ the editor's bottom dock that lists a run's metrics live, using
 `api.events.onExecution` for the live tail and the read-only `api.runs` facade
 to back-fill what happened before the panel opened. Nothing imports it by
 default — copy it, or call `mountRunMetricsPanel(api)` from
-`ui/src/index.tsx`. It needs `api.apiVersion >= 3` (CodefyUI 1.5+).
+`ui/src/index.tsx`. It needs `api.apiVersion >= 3` (CodefyUI 2.0+).
 
 ## Test
 

@@ -217,7 +217,7 @@ export function buildPluginAPI(
   return {
     // Bumped for `graph.getView` (#200 item 7). The number is the only way a
     // plugin can tell a host that has the new member from one that does not:
-    // on a 1.5-era editor `api.graph.getView` is simply `undefined`, and the
+    // on a 2.0-to-2.2 editor `api.graph.getView` is simply `undefined`, and the
     // documented feature check is `api.apiVersion >= 4`.
     apiVersion: 4,
     pluginId,

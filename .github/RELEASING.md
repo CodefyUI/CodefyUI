@@ -6,8 +6,9 @@ maintainer's job is to push the tag and check the result before publishing.
 ## TL;DR — happy path
 
 ```bash
-# 1. Promote CHANGELOG.md's [Unreleased] section to the new version, and
-#    bump the three version fields (see "Before you tag" below).
+# 1. Promote CHANGELOG.md's [Unreleased] section to the new version, bump the
+#    three version fields, and stamp any "unreleased" docs placeholder with the
+#    new number (see "Before you tag" below).
 # 2. From main, once that commit is in:
 git tag 1.0.0rcN
 git push origin 1.0.0rcN
@@ -15,7 +16,7 @@ git push origin 1.0.0rcN
 
 ## Before you tag
 
-Two things are done by hand, and nothing else in the pipeline checks them for
+Three things are done by hand, and nothing else in the pipeline checks them for
 you:
 
 1. **Promote `CHANGELOG.md`.** Rename `## [Unreleased]` to
@@ -30,6 +31,18 @@ you:
    with `uv lock`), and `frontend/package.json`. A mismatch between them ships
    silently — the frontend claiming one version while the backend claims
    another — so check all three before tagging.
+
+3. **Stamp any "unreleased" version placeholder in the docs.**
+   `git grep -n "unreleased" docs/` — a docs page that promises a feature "from
+   the next release" has to name the release once there is one. Today that is the
+   plugin `apiVersion` table in
+   `docs/docs/advanced/plugin-frontend-extensions.md` (and its zh-TW twin), whose
+   rightmost column says which CodefyUI version shipped each `apiVersion`; a new
+   row lands as *next release (unreleased)* because the number does not exist
+   when the PR is written. **Both locales.** This is a real failure, not a
+   hypothetical: the apiVersion 3 row said "1.5.0" for three releases — a version
+   that was never tagged — because it was written before 2.0.0 was the number,
+   and nothing ever came back to correct it.
 
 Then on GitHub:
 1. Wait for **Release Build** to finish (≈2 min) — produces a draft release.

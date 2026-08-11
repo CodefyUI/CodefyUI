@@ -7,10 +7,10 @@
  * it -- which is the same argument `contract.v2.assert.ts` makes one version
  * down. v2 does not cover the v3-only surface (panels, toolbar buttons,
  * execution events, the runs facade), so without this file the members added in
- * 1.5.0 had nothing frozen watching them: `contract.assert.ts` compares the host
+ * 2.0.0 had nothing frozen watching them: `contract.assert.ts` compares the host
  * against the CURRENT contract, and a change that edits both drifts silently.
  *
- * Every plugin scaffolded by `cdui plugin new` since 1.5.0 vendored the contract
+ * Every plugin scaffolded by `cdui plugin new` since 2.0.0 vendored the contract
  * below as its own `ui/src/sdk/types.ts` and declares
  * `activate(api: CodefyUIPluginAPI)` against it. Those plugins keep working
  * exactly as long as the host's real API object stays ASSIGNABLE to the
