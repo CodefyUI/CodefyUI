@@ -1041,7 +1041,7 @@ const zhTW: NodeTranslations = {
       expert_layers: '動作 expert 深度（區塊 query 自注意 + 對主幹交叉注意）',
       chunk: '每次預測的動作數（區塊視野 H）——須與 PushWorldDemos 的 chunk 一致',
       image_size: '輸入畫面邊長——須與 PushWorldEnv 的 image_size 一致',
-      vision_stem: 'conv：三層 stride-2 3x3 卷積（定位較精準，「early convolutions help transformers see」在此規模可量測）。patchify：經典 ViT stem，保留以研究這個差異',
+      vision_stem: 'conv：三層 stride-2 3x3 卷積。patchify：經典 ViT stem。1200 回合／45 epochs 預算下的控制 A/B 量到 patchify 領先（成功率 0.85 vs 0.45，同資料同 seed）——與 NeurIPS 2021 的 conv-stem 結論及本節點早先的混淆筆記相反；2400／110 完整預算目前只跑過 conv（0.97）。這顆旋鈕存在的目的就是把這件事定案',
       patch_size: '僅 patchify stem：方形 patch 邊長',
       action_dim: '動作向量寬度（PushWorld 為 2：dx, dy）',
       max_text_len: '指令長度（位元組）——須與資料集編碼一致（PushWorldDemos 用 48）',
