@@ -8,7 +8,9 @@ that proves the whole thing can actually learn.
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 
 import pytest
 import torch
@@ -44,6 +46,23 @@ def _build(**overrides):
     """The MODEL output for ``TINY`` plus *overrides*."""
     params = {**TINY, "seed": 1, **overrides}
     return CausalLMModelNode().execute({}, params)
+
+
+def _zh_tw_block(node_name: str) -> str:
+    """This node's entry in the zh-TW catalog, as raw text.
+
+    Same file and same block shape ``test_api_nodes.py`` reads for the
+    translation ratchet. Read here as well because one assertion below is
+    about what the CHINESE copy claims, and a wrong number there is invisible
+    to a reviewer reading the Python.
+    """
+    catalog = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "i18n"
+        / "nodeLocales" / "zh-TW.ts"
+    ).read_text(encoding="utf-8")
+    block = re.search(rf"\n  {node_name}: \{{(.*?)\n  \}},", catalog, re.DOTALL)
+    assert block, f"{node_name} has no zh-TW entry"
+    return block.group(1)
 
 
 def _expected_param_count(
@@ -200,6 +219,58 @@ def test_param_count_matches_the_analytic_formula(overrides):
         tie_embeddings=config.get("tie_embeddings", True),
     )
     assert result["param_count"] == expected, overrides
+
+
+def test_the_advertised_default_size_matches_the_declared_defaults():
+    """The node's copy quotes a model size, and copy drifts silently.
+
+    Shipped as "~350M" in the DESCRIPTION, the ``param_count`` port
+    description and the zh-TW block -- roughly 70% above the 204M the declared
+    defaults actually build. Nothing caught it, because no test builds the
+    DEFAULT model: at 204M parameters that is ~800MB of float32, which is not
+    something a unit suite should allocate. So the claim is checked against
+    the same term-by-term formula the counts above are checked against, and
+    both places it appears are checked against that one number.
+
+    Epic #292's target is a ~200M-parameter model with exactly these
+    defaults, so a figure that stops matching means either the copy or the
+    defaults moved -- both worth failing on.
+    """
+    declared = {p.name: p.default for p in CausalLMModelNode.define_params()}
+    total = _expected_param_count(
+        vocab_size=declared["vocab_size"],
+        d_model=declared["d_model"],
+        n_layers=declared["n_layers"],
+        d_ff=declared["d_ff"],
+        max_seq_len=declared["max_seq_len"],
+        positional=declared["positional"],
+        norm=declared["norm"],
+        tie_embeddings=declared["tie_embeddings"],
+    )
+    assert total == 203_668_480, (
+        f"the declared defaults now build {total:,} parameters. That is the "
+        f"reference shape #292 sizes its run against, so check the defaults "
+        f"before updating this number -- and update the copy either way.")
+
+    advertised = f"{round(total / 1e6)}M"      # "204M"
+    assert advertised in CausalLMModelNode.DESCRIPTION, (
+        f"the DESCRIPTION does not advertise {advertised}: "
+        f"{CausalLMModelNode.DESCRIPTION!r}")
+    # The block itself is deliberately NOT in the message: dumping a few
+    # hundred characters of CJK into a Windows cp950 console is not a useful
+    # failure report.
+    assert advertised in _zh_tw_block("CausalLMModel"), (
+        f"the zh-TW description of CausalLMModel does not advertise "
+        f"{advertised}; a learner reading Chinese would be told a different "
+        f"model size. See frontend/src/i18n/nodeLocales/zh-TW.ts.")
+    # Only the DESCRIPTION states the figure. Repeating it on the port is how
+    # the two came to disagree in the first place.
+    port = next(p for p in CausalLMModelNode.define_outputs()
+                if p.name == "param_count")
+    assert not re.search(r"\d+\s*M\b", port.description), (
+        f"the param_count port states a model size again: "
+        f"{port.description!r}. One fact in two places is one fact that can "
+        f"disagree with itself.")
 
 
 def test_param_count_counts_only_trainable_parameters():

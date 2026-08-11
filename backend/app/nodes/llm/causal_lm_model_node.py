@@ -540,7 +540,7 @@ class CausalLMModelNode(StatefulModuleMixin, BaseNode):
         "a MODEL that maps token ids (batch, seq_len) to next-token logits "
         "(batch, seq_len, vocab_size) -- wire it to Optimizer and "
         "TrainingLoop like any other model, with LMCrossEntropyLoss as the "
-        "loss. The defaults describe a ~350M-parameter model; shrink d_model "
+        "loss. The defaults describe a ~204M-parameter model; shrink d_model "
         "and n_layers to something a laptop can train in a lesson."
     )
 
@@ -596,10 +596,15 @@ class CausalLMModelNode(StatefulModuleMixin, BaseNode):
             PortDefinition(
                 name="param_count",
                 data_type=DataType.SCALAR,
+                # No second size figure here. The DESCRIPTION already quotes
+                # the default model's size, and one fact stated twice is one
+                # fact that can disagree with itself -- which is exactly how
+                # this port came to advertise "a 350M model" for defaults
+                # that build 204M.
                 description=(
                     "Number of trainable parameters, counting a tied "
-                    "embedding/head matrix once. The number people mean by "
-                    "'a 350M model'."
+                    "embedding/head matrix once. This is the number people "
+                    "mean when they name a model's size."
                 ),
             ),
         ]

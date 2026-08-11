@@ -811,7 +811,7 @@ const zhTW: NodeTranslations = {
   },
   CausalLMModel: {
     description:
-      '一個真的可以訓練的 GPT 風格 decoder-only transformer。輸出一個 MODEL，把 token ids（batch, seq_len）對應到下一個 token 的 logits（batch, seq_len, vocab_size）— 跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值大約是 3.5 億參數的模型；把 d_model 與 n_layers 調小，才能在一堂課的時間內用筆電訓練完。',
+      '一個真的可以訓練的 GPT 風格 decoder-only transformer。輸出一個 MODEL，把 token ids（batch, seq_len）對應到下一個 token 的 logits（batch, seq_len, vocab_size）— 跟其他模型一樣接到 Optimizer 與 TrainingLoop，損失函數用 LMCrossEntropyLoss。預設值大約是 204M（2 億）參數的模型；把 d_model 與 n_layers 調小，才能在一堂課的時間內用筆電訓練完。',
     params: {
       vocab_size: '模型認得幾種不同的 token。必須與餵進來的 tokenizer 一致 — 50257 是 GPT-2 的詞彙量。',
       d_model: 'residual stream 的寬度：每個 token 穿過整個網路時所攜帶的向量大小。必須能被 n_heads 整除。',
