@@ -311,19 +311,29 @@ def codefyui_module_globals() -> list[type]:
 # sweep finds exactly one -- ``TransformerEncoderLayer.activation`` /
 # ``TransformerDecoderLayer.activation`` holding ``F.relu``, because no CodefyUI
 # node exposes an activation choice and torch's default is ``relu``.
-# ``F.gelu`` is admitted alongside it because it is the ONLY other value that
-# attribute can hold: torch's ``_get_activation_fn`` maps the string to
-# ``F.relu`` or ``F.gelu`` and raises on anything else, so enumerating the
-# attribute's possible VALUES is complete in a way that enumerating today's
-# node params is not -- a hand-built or future gelu-activated layer would
-# otherwise reopen the same gap for the same reason.
-# ``test_the_admitted_functions_are_what_the_save_side_stores`` re-runs that
-# sweep, so a layer that starts storing a third function fails here rather than
-# rotting into a refusal a release later.
+# ``F.gelu`` is admitted alongside it because, for a layer constructed the way
+# torch's API documents -- ``activation`` as a STRING -- it is the only other
+# value that attribute can hold: ``_get_activation_fn`` maps the string to
+# ``F.relu`` or ``F.gelu`` and raises on anything else. So over
+# string-constructed layers, enumerating the attribute's possible VALUES is
+# complete in a way that enumerating today's node params is not -- a hand-built
+# or future gelu-activated layer would otherwise reopen the same gap for the
+# same reason.
+#
+# That completeness is scoped, and the scope matters to the next reader.
+# ``nn.TransformerEncoderLayer(..., activation=torch.tanh)`` bypasses
+# ``_get_activation_fn`` entirely and stores the callable verbatim, so the
+# attribute CAN hold an arbitrary function -- which is exactly why
+# ``ModelSaver``'s function walk is live code and not a formality. Such a layer
+# gets the save-time warning naming what it stored, and the load refuses it by
+# name. Two admitted identities, not "the activation slot is now safe".
+# ``test_the_admitted_functions_are_what_the_save_side_stores`` re-runs the
+# sweep, so a layer that starts storing a third function by DEFAULT fails here
+# rather than rotting into a refusal a release later.
 #
 # One correction to the ruling's wording, found by running the sweep rather
 # than assuming: ``F.gelu`` is NOT a plain Python function. It is
-# ``torch._C._nn.gelu``, a C binding of a single ATen op, and that is the name
+# ``torch._C._nn.gelu``, a C binding of a single ATen op, and that is what
 # pickle writes down for it. That is LESS surface than ``F.relu`` (which has a
 # Python body that can dispatch), not more -- so it is admitted, and the audit
 # test asserts "a function or a builtin function, and never a type" rather
@@ -341,10 +351,26 @@ _TORCH_FUNCTION_NAMES: tuple[tuple[str, str], ...] = (
     # effects, no global state; a hostile argument raises.
     ("torch.nn.functional", "relu"),
 
-    # The other value ``_get_activation_fn`` can return. Note the module: this
-    # is the C binding ``torch._C._nn.gelu``, which is the name pickle writes
-    # and therefore the name that has to be admitted. Audited: elementwise
-    # arithmetic, no side effects, no global state.
+    # The other value ``_get_activation_fn`` can return for a string-constructed
+    # layer. Audited: elementwise arithmetic, no side effects, no global state.
+    #
+    # On the module written here. It is NOT load-bearing for admission, and an
+    # earlier draft of this comment claimed it was: ``F.gelu`` and
+    # ``torch._C._nn.gelu`` are ONE object, and ``safe_globals`` keys on the
+    # resolved object's own ``__module__``/``__qualname__``
+    # (``_weights_only_unpickler._get_user_allowed_globals``), so this tuple's
+    # module string is only an IMPORT PATH -- spelling it
+    # ``("torch.nn.functional", "gelu")`` resolves to the same object and admits
+    # the same name, which a reviewer confirmed by mutating it.
+    #
+    # It is still the better spelling, for a different reason: it pins
+    # resolution to the exact C op that was audited. Should torch ever add a
+    # public Python ``F.gelu`` WRAPPER, ``torch.nn.functional.gelu`` would
+    # quietly resolve to a different, unaudited object and admit it; this path
+    # either keeps resolving to the audited op or fails loudly through the
+    # resolver's guard below. That guard is also the answer to "``torch._C._nn``
+    # is private": if torch moves or renames it, the failure is a RuntimeError
+    # naming this entry, not a silently un-admitted checkpoint.
     ("torch._C._nn", "gelu"),
 )
 

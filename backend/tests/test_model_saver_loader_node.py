@@ -887,16 +887,28 @@ def test_a_gelu_activated_transformer_layer_round_trips():
     """The second admitted function, exercised rather than assumed.
 
     No CodefyUI node exposes an activation choice today, so the save-side sweep
-    only ever turns up ``F.relu``. ``F.gelu`` is admitted because it is the
-    only OTHER value ``nn.TransformerEncoderLayer.activation`` can hold --
-    torch's ``_get_activation_fn`` returns one or the other and raises on
-    anything else -- which covers a layer built outside CodefyUI or by a future
-    node param. An entry on the list for a case no test reaches is an entry
-    nobody has checked, so this reaches it.
+    only ever turns up ``F.relu``. ``F.gelu`` is admitted because for a layer
+    constructed the documented way -- ``activation`` as a STRING -- it is the
+    only OTHER value ``nn.TransformerEncoderLayer.activation`` can hold, since
+    ``_get_activation_fn`` returns one or the other and raises on anything else.
+    That covers a layer built outside CodefyUI or by a future node param. An
+    entry on the list for a case no test reaches is an entry nobody has checked,
+    so this reaches it.
 
-    Note what pickle actually writes for this one: ``torch._C._nn.gelu``, the C
-    binding, not ``torch.nn.functional.gelu``. Getting that module wrong would
-    have left the name un-admitted while looking correct.
+    Note what pickle writes for this one: ``torch._C._nn.gelu``, the C binding,
+    not ``torch.nn.functional.gelu``. Those are the SAME object, and torch keys
+    ``safe_globals`` off the resolved object's own ``__module__`` -- so, as
+    review established by mutating the entry, either spelling in
+    ``_TORCH_FUNCTION_NAMES`` admits it and this test passes under both. The
+    spelling that ships is chosen to pin resolution to the audited C op, so a
+    future public Python ``F.gelu`` wrapper would be a different, unaudited
+    object that fails loudly rather than being admitted by inheritance of a
+    name.
+
+    Passing a callable DIRECTLY (``activation=torch.tanh``) bypasses
+    ``_get_activation_fn`` and stores it verbatim; that is not admitted and is
+    not meant to be -- ``test_the_note_names_a_refused_function...`` and
+    ``test_the_function_allowlist_is_exact_not_a_namespace`` are that path.
     """
     import torch.nn.functional as F
 

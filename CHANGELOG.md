@@ -256,10 +256,16 @@ received — each links to the release it was published as.
   the layer editor builds, every admitted module family and the graph model
   finds exactly one stored callable — `F.relu`, torch's default activation, as
   no CodefyUI node exposes the choice. `torch._C._nn.gelu` is admitted beside it
-  because it is the only *other* value that attribute can hold, so the
-  enumeration is complete rather than merely current. Two names; never the
-  `torch.nn.functional` namespace, which also holds `handle_torch_function` and
-  would admit whatever torch adds there next. Three tests keep it honest: the
+  because for a layer built the documented way — `activation` as a *string* — it
+  is the only other value that attribute can hold, so over string-constructed
+  layers the enumeration is complete rather than merely current. Passing a
+  callable straight in (`activation=torch.tanh`) bypasses that mapping and
+  stores it verbatim; such a layer is *not* admitted, and gets the save-time
+  warning naming what it stored and a refusal by name on load — the widening is
+  two identities, not an activation slot that stopped being checked. Two names;
+  never the `torch.nn.functional` namespace, which also holds
+  `handle_torch_function` and would admit whatever torch adds there next. Three
+  tests keep it honest: the
   criterion is re-derived per entry, the save-side sweep must agree with the list
   in *both* directions (a stored function that is not admitted, and an admitted
   name nothing stores), and a sibling function from the same module is still
