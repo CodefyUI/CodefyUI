@@ -1,13 +1,13 @@
 name: Frontend Build Check
 
-# Verify the frontend builds + types + tests cleanly on every PR touching it
-# and on every push to main. Catches regressions before they hit a release tag,
+# Verify the frontend builds + types + tests cleanly on every PR and on
+# every push to main. Catches regressions before they hit a release tag,
 # so `release-build.yml` is never the first place to discover a broken build.
 on:
+  # No path filter on pull_request: this check is required by the main
+  # branch ruleset, and a filtered-out workflow never reports, which would
+  # leave the PR's merge button waiting forever. Every PR runs everything.
   pull_request:
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-build.yml'
   push:
     branches:
       - main
