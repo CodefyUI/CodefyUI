@@ -69,6 +69,10 @@ backend/data/images/*
 backend/data/files/*
 !backend/data/files/.gitkeep
 
+# Run-produced playable media (VideoWrite, #310) — generated artifacts,
+# served by /api/media; never ship in the repo.
+backend/data/media/
+
 backend/data/runs/
 backend/data/cifar-10-batches-py/
 backend/data/cifar-10-python.tar.gz
