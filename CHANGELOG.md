@@ -220,18 +220,57 @@ received — each links to the release it was published as.
   it reaches), the other fails when a new `nn.Module` is added to `app.nodes`
   and not audited, so the list cannot rot back into the trap.
 
-  Two edges remain, both stated at save time and in the new
+  One edge remains, stated at save time and in the new
   [Saving and Loading Models](https://docs.codefyui.com/usage/model-files) page:
-  a `TransformerEncoder` / `TransformerDecoder` layer still does not load,
-  because `nn.TransformerEncoderLayer` stores its activation as
-  `torch.nn.functional.relu` and no *functions* are on the allowlist (#222 left
-  that out deliberately, and #288 does not take it either); and a `full_model`
-  file is no longer self-contained — an older CodefyUI refuses it, and plain
-  torch needs `weights_only=False` plus the backend package importable.
-  `ModelSaver`'s save-time note says which of the three cases a file is, derived
-  from the same allowlist the loader reads, and now inspects function-valued
-  attributes as well as module classes so it cannot promise a round trip the
-  loader will refuse. `state_dict` mode is byte-for-byte unchanged.
+  a `full_model` file is no longer self-contained — an older CodefyUI refuses
+  it, and plain torch needs `weights_only=False` plus the backend package
+  importable. `ModelSaver`'s save-time note says which of the three cases a file
+  is, derived from the same allowlist the loader reads, and now inspects
+  function-valued attributes as well as module classes so it cannot promise a
+  round trip the loader will refuse. `state_dict` mode is byte-for-byte
+  unchanged. (A second edge — a `TransformerEncoder` / `TransformerDecoder`
+  layer that still did not load — was closed by the entry below before either
+  reached a release.)
+
+- **The transformer demos' `full_model` checkpoints load back too** (follow-up
+  to [#288]). #288's allowlist admitted CodefyUI's own module *classes* and no
+  functions, which left the shape it was opened about still broken one level
+  down: `nn.TransformerEncoderLayer` and `nn.TransformerDecoderLayer` store
+  their activation as a plain callable attribute, so every transformer
+  checkpoint — a `TransformerEncoder` or `TransformerDecoder` wrapper, and any
+  layer-editor graph containing one — saved fine and was refused on the way back
+  in. The gap was pinned by two *strict* xfails so it could not pass unnoticed.
+
+  The maintainer's ruling, 2026-08-12: torch-owned activation functions are
+  admitted **by exact identity**, because a pure tensor function invoked with
+  arbitrary file-chosen arguments has strictly *less* surface than the
+  already-admitted classes' constructors — which the same REDUCE path can also
+  invoke. Admitting `nn.Linear` already admits `nn.Linear(*file_chosen_args)`;
+  admitting `F.relu` admits a call that returns a tensor or raises. #288 had
+  admitted the larger surface and refused the smaller one, which was
+  inconsistent rather than cautious. A function is admissible when it is
+  torch-owned, a pure tensor operation, free of filesystem / network / process
+  side effects, and free of global-state mutation.
+
+  Enumerated from the save side, like the class list: a sweep over every layer
+  the layer editor builds, every admitted module family and the graph model
+  finds exactly one stored callable — `F.relu`, torch's default activation, as
+  no CodefyUI node exposes the choice. `torch._C._nn.gelu` is admitted beside it
+  because for a layer built the documented way — `activation` as a *string* — it
+  is the only other value that attribute can hold, so over string-constructed
+  layers the enumeration is complete rather than merely current. Passing a
+  callable straight in (`activation=torch.tanh`) bypasses that mapping and
+  stores it verbatim; such a layer is *not* admitted, and gets the save-time
+  warning naming what it stored and a refusal by name on load — the widening is
+  two identities, not an activation slot that stopped being checked. Two names;
+  never the `torch.nn.functional` namespace, which also holds
+  `handle_torch_function` and would admit whatever torch adds there next. Three
+  tests keep it honest: the
+  criterion is re-derived per entry, the save-side sweep must agree with the list
+  in *both* directions (a stored function that is not admitted, and an admitted
+  name nothing stores), and a sibling function from the same module is still
+  refused by name. The save-time note stops warning about a file that now loads,
+  because it reads the same widened allowlist.
 
 - `components/SubgraphEditor/` is now `components/LayersEditor/`. It never
   edited a nested graph — it edits one node's `layers` param — and since real
