@@ -26,30 +26,34 @@ description: What ModelSaver writes and what ModelLoader will read back — stat
 
 A full-model file is a **pickle**, and unpickling is not reading data: a pickle can name a function and ask for it to be called. That is why `weights_only=True` is torch's default, and CodefyUI never turns it off.
 
-Instead, `ModelLoader` widens the restricted unpickler by exactly two sets of names, for the duration of that one load:
+Instead, `ModelLoader` widens the restricted unpickler by exactly three sets of names, for the duration of that one load:
 
 1. **`torch.nn`'s own layer classes.** Derived by walking the loaded subclasses of `nn.Module` and keeping the ones torch defines, so it tracks whatever torch you installed rather than a list written down here.
-2. **CodefyUI's own module classes** — `GraphModelModule` (which every layer-editor model is), the `SequentialModel` wrappers (`Reshape`, `SelectIndex`, the LSTM/GRU/attention/transformer blocks), `CausalLMModule` and the blocks it is built from, the diffusion U-Net, the VLA policy, and the rest. A curated list of exact classes, each audited against the rule below.
+2. **CodefyUI's own module classes** — `GraphModelModule` (which every layer-editor model is), the `SequentialModel` wrappers (`Reshape`, `SelectIndex`, the LSTM/GRU/attention/transformer blocks), `CausalLMModule` and the blocks it is built from, the diffusion U-Net, the VLA policy, and the rest. A curated list of exact classes, each audited against the rules below.
+3. **Two torch activation functions** — `torch.nn.functional.relu` and `torch._C._nn.gelu`. Torch's transformer layers store their activation as a *callable* attribute rather than a layer, so these two are what a `TransformerEncoder` or `TransformerDecoder` checkpoint needs in order to come back. Exact identities, not the `torch.nn.functional` namespace: `handle_torch_function` also lives there and dispatches to an arbitrary object's `__torch_function__`, so admitting the namespace would admit a general-purpose call gadget and whatever torch adds to it next.
 
-Everything else is refused with a message naming what it stopped on. A pickle that names `os.system` does not load, because `os.system` is on neither list.
+Everything else is refused with a message naming what it stopped on. A pickle that names `os.system` does not load, because `os.system` is on none of the three lists — and neither is any function other than those two.
 
 ### What "audited" means, exactly
 
-Admitting a class by name lets a file do two things with it, and both have to be harmless:
+Admitting a **class** by name lets a file do two things with it, and both have to be harmless:
 
 - **Restore its attributes.** So an admitted class must not define `__reduce__`, `__setstate__` or `__getnewargs__` — anything that turns restoring an attribute into running something.
 - **Call its constructor with arguments the file chose.** torch's restricted unpickler runs `func(*args)` for any allowed name, so `cls(...)` is reachable. An admitted constructor must therefore touch no files, no network and no global state (a local `torch.Generator` is fine; `torch.manual_seed` is not). Bad arguments raising an error is acceptable — that is a failed load, not a compromised one.
 
 The second half has always been true of torch's own classes too: admitting `nn.Linear` admits `nn.Linear(...)` on file-chosen sizes. It is worth stating because the CodefyUI list is one a human maintains, and a test enforces the mechanically checkable parts of both halves on every run.
 
+Admitting a **function** is judged on four points, all four required: it is torch-owned, it is a pure tensor operation, it has no filesystem / network / process side effects, and it mutates no global state — so that calling it with arbitrary file-chosen arguments returns a tensor or raises. That is the same standard, and a *smaller* surface than the class case it sits next to: a file could already reach `nn.Linear(...)` through the same code path, and a function has no constructor and no attributes to restore.
+
+Both lists are enumerated from the **save side** — from what the models CodefyUI can actually build store — and both have a test that re-runs that enumeration, so a class or a callable that starts appearing in saved models fails the suite instead of quietly becoming a checkpoint nobody can reopen.
+
 :::note What this means in practice
 A `full_model` file CodefyUI wrote **loads back into CodefyUI**. A `full_model` file containing a class from a [custom node](/advanced/custom-nodes), a [plugin](/advanced/plugins), or somebody's own script **does not** — that code has not been through review, and admitting it is the line CodefyUI does not cross. `ModelSaver` tells you which of the two you just wrote, in its **Log** tab, at save time rather than one node later.
 :::
 
-### Two known edges
+### One known edge
 
-- **A `TransformerEncoder` or `TransformerDecoder` layer still does not come back.** Not because of the wrapper — that is on the list — but because `nn.TransformerEncoderLayer` stores its activation as `torch.nn.functional.relu`, a *function*, and no functions are on the list. Admitting functions means admitting callables the unpickler may be asked to invoke, which is a wider decision than the class one and has not been taken. Use `state_dict` for these.
-- **A file CodefyUI wrote is not self-contained.** Reading it needs CodefyUI's own classes importable, so a CodefyUI older than the version that admitted them refuses it, and plain `torch.load` outside CodefyUI needs `weights_only=False` plus the backend package on `sys.path`. `state_dict` files have neither condition.
+- **A file CodefyUI wrote is not self-contained.** Reading it needs CodefyUI's own classes importable, so a CodefyUI older than the version that admitted them refuses it, and plain `torch.load` outside CodefyUI needs `weights_only=False` plus the backend package on `sys.path`. `state_dict` files have neither condition. (A file made only of stock torch layers — transformers included — has neither condition either; the `Log` note tells you which kind you wrote.)
 
 ## If a load is refused and you trust the file
 

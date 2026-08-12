@@ -592,7 +592,7 @@ const zhTW: NodeTranslations = {
     params: {
       path: '權重檔案路徑（.pt、.pth 或 .safetensors）',
       load_mode:
-        '載入模式：state_dict（需要模型輸入）或 full_model 完整模型。full_model 會重建存檔中的模組本身，並且在 torch 的受限解序列化器下讀取，因此只接受由標準 torch.nn 層與 CodefyUI 自己的層組成的模型，其餘一律拒絕 —— 包含來自自訂節點或外掛的類別',
+        '載入模式：state_dict（需要模型輸入）或 full_model 完整模型。full_model 會重建存檔中的模組本身，並且在 torch 的受限解序列化器下讀取，因此只接受由標準 torch.nn 層與 CodefyUI 自己的層組成的模型，其餘一律拒絕 —— 包含來自自訂節點或外掛的類別，以及除了 transformer 層會存下的那兩個 torch 啟動函式以外的任何函式',
       device: '載入權重的裝置',
       strict: '是否嚴格要求 state_dict 中的鍵值匹配（僅 state_dict 模式）',
     },

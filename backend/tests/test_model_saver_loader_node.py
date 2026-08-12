@@ -524,36 +524,19 @@ def test_a_stock_torch_model_gets_no_advisory():
 WRAPPER_INPUT_SHAPES = {"Reshape": (2, 16)}
 _DEFAULT_WRAPPER_SHAPE = (2, 3, 4)
 
-#: The two wrappers that #288's allowlist admits and that still do not load,
-#: for a reason one level below them: ``nn.TransformerEncoderLayer`` stores its
-#: activation as ``torch.nn.functional.relu`` whatever spelling it was
-#: constructed with, and #222 left ``torch.nn.functional`` out of the allowlist
-#: deliberately -- functions are callables the unpickler may be asked to
-#: INVOKE, and that namespace also holds ``handle_torch_function``, which
-#: dispatches to an arbitrary object's ``__torch_function__``. #288 records
-#: that as a decision still open and does NOT take it, so these two are xfail
-#: rather than quietly dropped from the parameter list: the day the functional
-#: question is answered, these turn green and say so.
-WRAPPERS_BLOCKED_BY_FUNCTIONAL = {"TransformerEncoder", "TransformerDecoder"}
-
-
 @pytest.mark.parametrize(
-    "cfg",
-    [
-        pytest.param(
-            cfg,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="stores torch.nn.functional.relu; the functional half "
-                       "of the allowlist is still an open decision (#288)",
-            ),
-        ) if cfg["type"] in WRAPPERS_BLOCKED_BY_FUNCTIONAL else cfg
-        for cfg in WRAPPER_LAYER_CONFIGS
-    ],
-    ids=[c["type"] for c in WRAPPER_LAYER_CONFIGS],
+    "cfg", WRAPPER_LAYER_CONFIGS, ids=[c["type"] for c in WRAPPER_LAYER_CONFIGS],
 )
 def test_every_sequential_wrapper_round_trips_through_full_model(cfg):
     """All seven of #283's hoisted classes, one per case.
+
+    ``TransformerEncoder`` and ``TransformerDecoder`` were strict xfails when
+    #334 shipped: both are ON the allowlist, and both were refused for
+    something one level below them -- ``nn.TransformerEncoderLayer`` stores its
+    activation as ``torch.nn.functional.relu``, and #334 admitted no functions.
+    The 2026-08-12 follow-up admitted that function and ``F.gelu`` by exact
+    identity, so these two are ordinary cases now. The xfails were STRICT
+    precisely so this moment could not pass unnoticed.
 
     Parameterized over ``WRAPPER_LAYER_CONFIGS`` -- the same list the
     picklability tests above use -- rather than a second hand-written list, so
@@ -588,30 +571,19 @@ def test_every_sequential_wrapper_round_trips_through_full_model(cfg):
             assert torch.allclose(original(x), loaded(x))
 
 
-def _loadable_wrapper_graph_spec() -> dict:
-    """``_wrapper_graph_spec`` minus the transformer block.
-
-    Same three-wrapper shape, with ``TransformerEncoder`` swapped for a plain
-    ``Linear``: that block stores ``torch.nn.functional.relu`` one level down
-    and so cannot come back yet (see ``WRAPPERS_BLOCKED_BY_FUNCTIONAL``). Kept
-    as a separate fixture rather than changing the #283 one, whose whole point
-    is the wrappers it names.
-    """
-    spec = _wrapper_graph_spec()
-    for node in spec["nodes"]:
-        if node["type"] == "TransformerEncoder":
-            node["type"] = "Linear"
-            node["params"] = {"in_features": 4, "out_features": 4}
-    return spec
-
-
 def test_a_layer_editor_model_round_trips_through_full_model():
     """#288's headline: the shape that could be saved and not loaded.
 
-    A ``GraphModelModule`` holding the wrappers -- what
+    A ``GraphModelModule`` holding the wrappers -- exactly what
     ``test_full_model_saves_a_graph_built_from_the_wrappers`` writes, and what
     could previously only be read back with ``weights_only=False`` outside
     CodefyUI.
+
+    Built from ``_wrapper_graph_spec`` itself, transformer block included.
+    While #334's class allowlist shipped without the functions, this test had
+    to run against a copy of that spec with the ``TransformerEncoder`` swapped
+    out for a ``Linear``, because the real one could not come back; the
+    2026-08-12 follow-up removed the need for the copy, and the copy with it.
     """
     import json
 
@@ -621,7 +593,7 @@ def test_a_layer_editor_model_round_trips_through_full_model():
     with _saved("_full_model_graph_roundtrip.pt") as path:
         torch.manual_seed(17)
         original = SequentialModelNode().build_module(
-            {"layers": json.dumps(_loadable_wrapper_graph_spec())},
+            {"layers": json.dumps(_wrapper_graph_spec())},
         )
         original.eval()
 
@@ -729,12 +701,41 @@ def _vla_loss():
     return VLABehaviorLoss("flow_matching")
 
 
+def _causal_lm():
+    from app.nodes.llm.causal_lm_model_node import CausalLMModelNode
+
+    return CausalLMModelNode().build_module({
+        "vocab_size": 16, "d_model": 8, "n_layers": 2, "n_heads": 2,
+        "d_ff": 16, "max_seq_len": 8, "seed": 3,
+    })
+
+
+#: One builder per admitted module family, shared by the round-trip test below
+#: and by the save-side function sweep further down. One mapping rather than two
+#: lists, so a family added to the allowlist and to one of them cannot be
+#: missed by the other -- which is how ``F.relu`` stayed unnoticed until #334
+#: went looking for it.
+_FAMILY_BUILDERS = {
+    "DiffusionUNet": _diffusion_unet,
+    "VLAModule": _vla_policy,
+    "MoELayer": _moe_layer,
+    "SeededRNNCell": _seeded_rnn_cell,
+    "RewardHead": _reward_head,
+    "LMCrossEntropyLoss": _lm_loss,
+    "VLABehaviorLoss": _vla_loss,
+    "CausalLMModule": _causal_lm,
+}
+
+#: ``CausalLMModule`` has its own round-trip test above (it asserts public
+#: attributes and a forward pass on token ids, which the generic comparison
+#: below cannot express), so it is excluded here and included in the sweep.
+_GENERIC_FAMILY_IDS = [k for k in _FAMILY_BUILDERS if k != "CausalLMModule"]
+
+
 @pytest.mark.parametrize(
     "build",
-    [_diffusion_unet, _vla_policy, _moe_layer, _seeded_rnn_cell, _reward_head,
-     _lm_loss, _vla_loss],
-    ids=["DiffusionUNet", "VLAModule", "MoELayer", "SeededRNNCell",
-         "RewardHead", "LMCrossEntropyLoss", "VLABehaviorLoss"],
+    [_FAMILY_BUILDERS[k] for k in _GENERIC_FAMILY_IDS],
+    ids=_GENERIC_FAMILY_IDS,
 )
 def test_the_remaining_admitted_families_round_trip(build):
     """Being ON the allowlist and actually loading are different claims.
@@ -786,7 +787,7 @@ def test_a_full_model_save_of_our_own_classes_says_what_the_file_needs():
 
     with _saved("_full_model_ours_note.pt") as path:
         model = SequentialModelNode().build_module(
-            {"layers": json.dumps(_loadable_wrapper_graph_spec())},
+            {"layers": json.dumps(_wrapper_graph_spec())},
         )
         res = ModelSaverNode().execute(
             {"model": model},
@@ -808,21 +809,30 @@ def test_a_full_model_save_of_our_own_classes_says_what_the_file_needs():
 def test_the_note_names_a_refused_function_not_only_a_refused_class():
     """The note must not promise a round trip the loader will not honour.
 
-    ``TransformerEncoderBlock`` is ON the allowlist, and a model containing one
-    still does not load: ``nn.TransformerEncoderLayer`` stores its activation as
-    ``torch.nn.functional.relu``, and #222 kept functions out of the allowlist
-    on purpose. A note derived from the class walk alone would have said "reads
-    this file back" here -- the exact trap #288 exists to remove, moved one
-    category over. So the walk looks at function-valued attributes too, and
-    names what it found.
+    The class walk reads ``type(submodule)`` and so cannot see a plain
+    attribute holding a FUNCTION, which the unpickler refuses just as firmly
+    unless the function itself is admitted. The shipped instance of this used
+    to be ``nn.TransformerEncoderLayer.activation`` -- every CLASS in a
+    transformer block was on #334's allowlist and the file still would not
+    load. That one is admitted now, so the case is made here with
+    ``F.silu``: torch-owned, picklable by name, and deliberately NOT on the
+    two-name function list.
+
+    Which is also why the note's phrasing had to change. It used to say "no
+    functions at all", true under #334 and a lie after the 2026-08-12
+    follow-up; the assertions below pin the replacement, because a note whose
+    reason is wrong is how a user learns to stop reading it.
     """
-    from app.nodes.utility.sequential_node import _build_layer
+    import torch.nn.functional as F
 
     with _saved("_full_model_functional_note.pt") as path:
-        model = _build_layer(
-            {"type": "TransformerEncoder", "d_model": 4, "nhead": 2,
-             "num_layers": 1, "dim_feedforward": 8},
-        )
+        layer = nn.Linear(4, 4)
+        # A function on an ordinary instance attribute -- what nn.Module's
+        # __setattr__ does with a non-Parameter, non-Module value, and the same
+        # shape torch's own transformer layers store their activation in.
+        layer.gate_fn = F.silu
+        model = nn.Sequential(layer)
+
         res = ModelSaverNode().execute(
             {"model": model},
             {"path": path, "save_mode": "full_model", "format": "pytorch"},
@@ -830,16 +840,119 @@ def test_the_note_names_a_refused_function_not_only_a_refused_class():
 
         note = res.get("__log__", "")
         assert "cannot be read back by ModelLoader in full_model mode" in note
-        assert "torch.nn.functional.relu" in note
-        assert "no functions at all" in note
+        assert "torch.nn.functional.silu" in note
+        # The new reason: exact names, not "no functions".
+        assert "by exact name" in note
+        assert "no functions at all" not in note
 
         # And the loader agrees, which is the property that makes the note
         # worth printing rather than a second opinion nobody checked.
-        with pytest.raises(ValueError, match="torch.nn.functional.relu"):
+        with pytest.raises(ValueError, match="torch.nn.functional.silu"):
             ModelLoaderNode().execute(
                 {},
                 {"path": path, "load_mode": "full_model", "device": "cpu"},
             )
+
+
+def test_a_stock_torch_transformer_gets_no_note_at_all():
+    """The two activations were the only thing standing between a pure-torch
+    transformer and silence.
+
+    ``nn.TransformerEncoderLayer`` contains no CodefyUI class, so once its
+    stored ``F.relu`` is admitted there is nothing left to say about the file
+    -- it is as self-contained as a Conv2d stack. Under #334 this same model
+    produced a warning, and the warning was correct. It is not any more.
+    """
+    with _saved("_full_model_stock_transformer.pt") as path:
+        original = nn.TransformerEncoderLayer(4, 2, 8, batch_first=True)
+        original.eval()
+
+        res = ModelSaverNode().execute(
+            {"model": original},
+            {"path": path, "save_mode": "full_model", "format": "pytorch"},
+        )
+        assert "__log__" not in res
+
+        loaded = ModelLoaderNode().execute(
+            {},
+            {"path": path, "load_mode": "full_model", "device": "cpu"},
+        )["model"]
+        loaded.eval()
+        x = torch.randn(2, 3, 4)
+        with torch.no_grad():
+            assert torch.allclose(original(x), loaded(x))
+
+
+def test_a_gelu_activated_transformer_layer_round_trips():
+    """The second admitted function, exercised rather than assumed.
+
+    No CodefyUI node exposes an activation choice today, so the save-side sweep
+    only ever turns up ``F.relu``. ``F.gelu`` is admitted because it is the
+    only OTHER value ``nn.TransformerEncoderLayer.activation`` can hold --
+    torch's ``_get_activation_fn`` returns one or the other and raises on
+    anything else -- which covers a layer built outside CodefyUI or by a future
+    node param. An entry on the list for a case no test reaches is an entry
+    nobody has checked, so this reaches it.
+
+    Note what pickle actually writes for this one: ``torch._C._nn.gelu``, the C
+    binding, not ``torch.nn.functional.gelu``. Getting that module wrong would
+    have left the name un-admitted while looking correct.
+    """
+    import torch.nn.functional as F
+
+    with _saved("_full_model_gelu_transformer.pt") as path:
+        original = nn.TransformerEncoderLayer(4, 2, 8, activation="gelu", batch_first=True)
+        original.eval()
+        assert original.activation is F.gelu
+
+        ModelSaverNode().execute(
+            {"model": original},
+            {"path": path, "save_mode": "full_model", "format": "pytorch"},
+        )
+        loaded = ModelLoaderNode().execute(
+            {},
+            {"path": path, "load_mode": "full_model", "device": "cpu"},
+        )["model"]
+        loaded.eval()
+
+        assert loaded.activation is F.gelu
+        x = torch.randn(2, 3, 4)
+        with torch.no_grad():
+            assert torch.allclose(original(x), loaded(x))
+
+
+def test_the_function_allowlist_is_exact_not_a_namespace():
+    """A sibling of an admitted function, from the same module, is refused.
+
+    The cheap way to admit ``F.relu`` would have been
+    ``__module__.startswith("torch.nn.functional")``, and it would have been
+    wrong for the reason #222 gave when it refused the whole namespace:
+    ``handle_torch_function`` lives there and dispatches to an arbitrary
+    object's ``__torch_function__``, which is a general-purpose call gadget
+    rather than a tensor operation. So this stores ``F.softmax`` -- as
+    torch-owned and as harmless as ``F.relu``, and not on the list -- and the
+    load still has to refuse it, by name. Admission is by identity; being in
+    good company is not a qualification.
+    """
+    import torch.nn.functional as F
+
+    with _saved("_full_model_fn_impostor.pt") as path:
+        layer = nn.Linear(4, 4)
+        layer.gate_fn = F.softmax
+        ModelSaverNode().execute(
+            {"model": nn.Sequential(layer)},
+            {"path": path, "save_mode": "full_model", "format": "pytorch"},
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            ModelLoaderNode().execute(
+                {},
+                {"path": path, "load_mode": "full_model", "device": "cpu"},
+            )
+        message = str(excinfo.value)
+        assert "torch.nn.functional.softmax" in message
+        assert "weights_only=True" in message
+        assert "load_mode=state_dict" in message
 
 
 @pytest.mark.parametrize(
@@ -1105,6 +1218,264 @@ def test_every_admitted_class_is_safe_to_reconstruct():
         f"touches the filesystem, the network, or global state is not "
         f"admissible. Move the call out of the constructor, or remove the "
         f"class from _CODEFYUI_MODULE_CLASSES (#288)."
+    )
+
+
+# ── The function part of the allowlist (2026-08-12 follow-up) ────────────
+#
+# The class audit above has a counterpart for each of its two halves: the rule
+# is re-derived rather than trusted to a comment, and the list is checked
+# against a save-side sweep so forgetting it fails rather than degrades. The
+# function part gets the same two tests, because it is the same failure mode --
+# an entry admitted on a rule nobody re-checks, or a stored callable nobody
+# noticed.
+
+
+def _configs_build_layer_accepts() -> set[str]:
+    """Every layer-type string ``_build_layer`` knows, read out of its source.
+
+    ``builders``, ``wrappers`` and ``activations`` are locals inside that
+    function, so there is nothing importable to iterate; their keys are read
+    from the AST instead. Derived rather than copied, so a layer type added
+    there and not added to ``_ALL_LAYER_CONFIGS`` below fails this file rather
+    than quietly dropping out of the sweep.
+    """
+    import ast
+    import inspect
+
+    from app.nodes.utility.sequential_node import _build_layer
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_build_layer)))
+    return {
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+
+
+#: One config per layer type ``_build_layer`` accepts. The plain torch layers
+#: are here for completeness rather than suspicion -- none of them stores a
+#: callable -- but "none of them does" is exactly the claim the sweep is
+#: supposed to check rather than assert.
+_ALL_LAYER_CONFIGS = [
+    *WRAPPER_LAYER_CONFIGS,
+    {"type": "Conv2d", "in_channels": 1, "out_channels": 2, "kernel_size": 3},
+    {"type": "Conv1d", "in_channels": 1, "out_channels": 2, "kernel_size": 3},
+    {"type": "ConvTranspose2d", "in_channels": 1, "out_channels": 2, "kernel_size": 3},
+    {"type": "BatchNorm2d", "num_features": 2},
+    {"type": "BatchNorm1d", "num_features": 2},
+    {"type": "LayerNorm", "normalized_shape": 4},
+    {"type": "GroupNorm", "num_groups": 2, "num_channels": 4},
+    {"type": "InstanceNorm2d", "num_features": 2},
+    {"type": "MaxPool2d", "kernel_size": 2},
+    {"type": "AvgPool2d", "kernel_size": 2},
+    {"type": "AdaptiveAvgPool2d", "output_size": 1},
+    {"type": "Dropout"},
+    {"type": "Linear", "in_features": 4, "out_features": 2},
+    {"type": "Flatten"},
+    {"type": "Embedding", "num_embeddings": 4, "embedding_dim": 2},
+    *({"type": t} for t in (
+        "ReLU", "GELU", "Sigmoid", "Tanh", "LeakyReLU", "ELU", "SiLU", "Mish",
+        "SELU", "PReLU", "Hardswish", "Softmax",
+    )),
+]
+
+
+def _functions_stored_by_saveable_models() -> dict[str, list[str]]:
+    """Every function a model CodefyUI can build stores as an attribute.
+
+    The save-side enumeration the function allowlist was derived from, re-run as
+    a test rather than recorded as a number in a comment. It covers every layer
+    ``_build_layer`` accepts, every admitted module family, the layer-editor
+    graph model, and torch's two transformer layers in BOTH activation
+    spellings -- the last because ``activation`` is the only attribute in this
+    whole surface that holds a callable, and its two possible values are what
+    the allowlist has to cover rather than only the one today's node params
+    happen to produce.
+
+    Returns ``{pickle name: [where it was found, ...]}``, so a failure says
+    which layer to go and look at.
+    """
+    import json
+    import types
+
+    from app.nodes.utility.sequential_node import SequentialModelNode, _build_layer
+
+    found: dict[str, list[str]] = {}
+
+    def sweep(model, label):
+        modules = getattr(model, "modules", None)
+        for m in (list(modules()) if callable(modules) else [model]):
+            for attr, value in (getattr(m, "__dict__", None) or {}).items():
+                if isinstance(value, types.FunctionType | types.BuiltinFunctionType):
+                    name = f"{value.__module__}.{value.__qualname__}"
+                    found.setdefault(name, []).append(
+                        f"{label}: {type(m).__name__}.{attr}"
+                    )
+
+    known = _configs_build_layer_accepts()
+    covered = {c["type"] for c in _ALL_LAYER_CONFIGS}
+    assert known == covered, (
+        f"_ALL_LAYER_CONFIGS is out of step with _build_layer: "
+        f"missing {sorted(known - covered)}, stale {sorted(covered - known)}. "
+        f"Add a config for each new layer type so the function sweep sees it."
+    )
+
+    for cfg in _ALL_LAYER_CONFIGS:
+        sweep(_build_layer(dict(cfg)), f"_build_layer[{cfg['type']}]")
+
+    for label, build in _FAMILY_BUILDERS.items():
+        sweep(build(), label)
+
+    sweep(
+        SequentialModelNode().build_module({"layers": json.dumps(_wrapper_graph_spec())}),
+        "GraphModelModule",
+    )
+
+    for activation in ("relu", "gelu"):
+        sweep(nn.TransformerEncoderLayer(4, 2, 8, activation=activation),
+              f"nn.TransformerEncoderLayer(activation={activation!r})")
+        sweep(nn.TransformerDecoderLayer(4, 2, 8, activation=activation),
+              f"nn.TransformerDecoderLayer(activation={activation!r})")
+
+    return found
+
+
+def test_every_admitted_function_is_a_torch_owned_tensor_op():
+    """The function admission criterion, re-derived instead of trusted.
+
+    The maintainer's 2026-08-12 ruling admits a function when it is torch-owned,
+    a pure tensor operation, free of filesystem / network / process side
+    effects, free of global-state mutation, and safe under arbitrary
+    file-chosen arguments -- because the REDUCE path can invoke an admitted name
+    with arguments the file supplies, exactly as it can invoke an admitted
+    class's constructor. Three of those five are judgement and were
+    hand-audited; two are mechanical and are checked here.
+
+    **torch-owned.** ``__module__`` starts with ``torch.``. Self-reported and
+    writable, so this is not a boundary against code already running in the
+    process -- it is a boundary against the FILE, which supplies a NAME the
+    unpickler resolves, and the name is what has to be torch's.
+
+    **A function, never a type.** A class on this list would be admitting a
+    constructor plus an attribute restore under the wrong rule; an arbitrary
+    callable OBJECT could carry state and a ``__call__`` of any shape. Both are
+    excluded by requiring an actual function object.
+
+    The ruling said "a plain function"; running the save-side sweep showed
+    ``F.gelu`` is ``torch._C._nn.gelu``, a C binding of a single ATen op with no
+    Python body -- less surface than ``F.relu``, not more. So the check is
+    "function or builtin function", and the deviation is recorded above
+    ``_TORCH_FUNCTION_NAMES`` rather than left for a reader to spot.
+    """
+    import types
+
+    from app.nodes.io.model_loader_node import torch_function_globals
+
+    admitted = torch_function_globals()
+    assert admitted, "the function part of the allowlist is empty"
+
+    for fn in admitted:
+        name = f"{getattr(fn, '__module__', '?')}.{getattr(fn, '__qualname__', fn)}"
+        # A backstop rather than the live guard: the resolver refuses a class
+        # before it can reach this list, which
+        # ``test_the_function_resolver_refuses_a_name_that_is_not_a_function``
+        # is what actually proves. Kept so loosening that guard cannot silently
+        # move a class onto the function rule.
+        assert not isinstance(fn, type), (
+            f"{name} is on the FUNCTION part of the full_model allowlist and is "
+            f"a class. A class belongs in _CODEFYUI_MODULE_CLASSES (or is "
+            f"derived from torch.nn) and is audited by a different rule -- read "
+            f"the comment above _TORCH_FUNCTION_NAMES (#288)."
+        )
+        assert isinstance(fn, types.FunctionType | types.BuiltinFunctionType), (
+            f"{name} is on the full_model allowlist and is a "
+            f"{type(fn).__name__}, not a function. An arbitrary callable object "
+            f"can carry state and a __call__ of any shape, which the function "
+            f"audit criterion does not cover (#288)."
+        )
+        assert (getattr(fn, "__module__", "") or "").startswith("torch."), (
+            f"{name} is on the full_model allowlist and is not torch-owned. "
+            f"Only torch's own tensor operations are admissible as functions; "
+            f"a function from a custom node, a plugin or anywhere else is the "
+            f"widening #288 decided against (#288)."
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [("torch.nn", "Linear"), ("torch.nn.functional", "relu_renamed_by_torch")],
+    ids=["a-class", "a-name-that-is-gone"],
+)
+def test_the_function_resolver_refuses_a_name_that_is_not_a_function(monkeypatch, entry):
+    """A stale or wrong entry raises, and says which name to fix.
+
+    Skipping it instead would silently un-admit a function, and the symptom -- a
+    transformer checkpoint that used to load and now does not -- would show up a
+    release later with nothing pointing at this list. That is the reasoning the
+    class resolver already records; this is the same guard on the function side,
+    and it doubles as the live check that a CLASS cannot ride in on the function
+    rule, whose criterion is not the one classes are audited against.
+    """
+    from app.nodes.io import model_loader_node as mln
+
+    monkeypatch.setattr(mln, "_TORCH_FUNCTION_NAMES", (entry,))
+    monkeypatch.setattr(mln, "_FUNCTION_GLOBALS", None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mln.torch_function_globals()
+    message = str(excinfo.value)
+    assert f"{entry[0]}.{entry[1]}" in message        # which name
+    assert "_TORCH_FUNCTION_NAMES" in message         # and where to fix it
+
+
+def test_the_admitted_functions_are_what_the_save_side_stores():
+    """The list and the sweep it came from, checked against each other.
+
+    A curated list's real failure mode is going stale in either direction. Too
+    short and a checkpoint stops round-tripping, which is #288 all over again --
+    that is what the ``missing`` half catches. Too long and a name sits on a
+    security-relevant allowlist for a reason nobody remembers and no test
+    reaches, which is what the ``unreachable`` half catches.
+
+    The sweep is the same enumeration the entries were chosen from: every layer
+    ``_build_layer`` builds, every admitted family, the layer-editor graph
+    model, and torch's transformer layers in both activation spellings. It
+    should agree with the list exactly.
+    """
+    from app.nodes.io.model_loader_node import torch_function_globals
+
+    stored = _functions_stored_by_saveable_models()
+    admitted = {
+        f"{fn.__module__}.{fn.__qualname__}": fn for fn in torch_function_globals()
+    }
+
+    #: Audited and deliberately NOT admitted. Empty today; an entry here needs
+    #: a reason about the function's own surface, not about it being unlikely to
+    #: be saved.
+    excluded: set[str] = set()
+
+    missing = {name: sorted(set(where)) for name, where in stored.items()
+               if name not in admitted and name not in excluded}
+    assert not missing, (
+        f"These functions are stored as attributes by models CodefyUI can "
+        f"build, and are not on the full_model function allowlist, so a "
+        f"full_model save containing one cannot be loaded back: {missing}. "
+        f"Audit each against the criterion above _TORCH_FUNCTION_NAMES and add "
+        f"it there, or add it to this test's `excluded` set with a reason "
+        f"(#288)."
+    )
+
+    unreachable = sorted(set(admitted) - set(stored))
+    assert not unreachable, (
+        f"These names are on the full_model function allowlist and nothing in "
+        f"the save-side sweep stores them: {unreachable}. Either the sweep "
+        f"stopped covering the layer that does (extend "
+        f"_functions_stored_by_saveable_models), or torch stopped storing it "
+        f"and the entry should go -- an unreachable entry on a security "
+        f"allowlist is one nobody is checking (#288)."
     )
 
 

@@ -87,21 +87,27 @@ def _full_model_save_refusal(offenders: list[type]) -> str:
     )
 
 
-def _refused_function_attributes(model: Any, allowed: set[type]) -> list[str]:
+def _refused_function_attributes(model: Any, allowed: set[Any]) -> list[str]:
     """Functions and classes stored as attributes that the loader will refuse.
 
     The class walk in :func:`_reload_note` reads ``type(submodule)`` and so
     sees only the modules. It misses a plain attribute holding a FUNCTION,
-    which the restricted unpickler refuses just as firmly -- and there is a
-    shipped case: ``nn.TransformerEncoderLayer`` stores its activation as
+    which the restricted unpickler refuses just as firmly unless the function
+    itself is admitted -- and there is a shipped case:
+    ``nn.TransformerEncoderLayer`` stores its activation as
     ``torch.nn.functional.relu``, whatever spelling it was constructed with, so
-    both transformer wrappers fail to load even though every CLASS in them is
-    admitted. #222 left ``torch.nn.functional`` out deliberately (a function is
-    a callable the unpickler may be asked to INVOKE, and the namespace also
-    holds ``handle_torch_function``, which dispatches to an arbitrary object's
-    ``__torch_function__``), and #288 records that as a decision still open. So
-    the note has to be able to say it, or it would promise a round trip on the
-    one shipped shape that does not have one.
+    for as long as no function was on the allowlist both transformer wrappers
+    failed to load even though every CLASS in them was admitted, and the note
+    had to be able to say so.
+
+    Since the 2026-08-12 follow-up to #288 those two activations ARE admitted,
+    which is why the ``allowed`` set is now consulted for a function exactly as
+    it is for a class, rather than every function being refused on sight. An
+    admitted function is no longer a reason to warn: warning about a file that
+    loads back fine is the same kind of mistake as staying silent about one that
+    does not, and the second is the mistake this whole function was added to
+    stop making. What still warns is any OTHER stored function -- the allowlist
+    is exact identities, never ``torch.nn.functional`` as a namespace.
 
     Deliberately NOT a full audit of the pickle graph: that is a
     re-implementation of the unpickler, and the loader is the authority. It
@@ -127,14 +133,20 @@ def _refused_function_attributes(model: Any, allowed: set[type]) -> list[str]:
         # review of #288; the pre-#288 walk read only ``type(module)`` and so
         # never touched an instance dict.
         for value in (getattr(module, "__dict__", None) or {}).values():
-            if isinstance(value, type):
+            if isinstance(value, type | types.FunctionType | types.BuiltinFunctionType):
+                # ONE membership test for both categories, because since the
+                # 2026-08-12 follow-up the allowlist holds both. These three
+                # types all hash by identity, so ``in`` cannot raise here.
                 if value in allowed:
                     continue
-            elif not isinstance(
-                value,
-                types.FunctionType | types.BuiltinFunctionType | types.MethodType,
-            ):
+            elif not isinstance(value, types.MethodType):
                 continue
+            # A bound method reaches this line without a membership test on
+            # purpose: the allowlist holds only classes and plain functions, so
+            # no method can be on it, and hashing one hashes its ``__self__``
+            # -- which for a numpy array or another unhashable receiver would
+            # raise TypeError and replace this note with a traceback, the
+            # regression ``test_a_non_module_on_the_model_port...`` guards.
             name = (
                 f"{getattr(value, '__module__', '?')}."
                 f"{getattr(value, '__qualname__', value)}"
@@ -161,6 +173,11 @@ def _reload_note(model: Any) -> tuple[str, str]:
     allowlist, so there are three answers rather than two, and which one a
     model gets is derived from :func:`full_model_safe_globals` rather than
     written down here -- the note cannot drift from what the loader accepts.
+    Its 2026-08-12 follow-up added the two torch activation FUNCTIONS the
+    transformer layers store, and that derivation is why nothing here had to
+    change for it: a transformer model moved from the warning answer to the
+    silent one because the allowlist grew, not because this function learned
+    about it.
 
     * stock torch layers only -- silence. The round trip works and always did;
       a note here would be noise, and noise is how a note stops being read.
@@ -200,8 +217,9 @@ def _reload_note(model: Any) -> tuple[str, str]:
             f"Saved, but note: this file cannot be read back by ModelLoader in "
             f"full_model mode. It contains {named}, which "
             f"{'are' if plural else 'is'} not among the things full_model "
-            f"loading reconstructs -- torch.nn's own layer classes and "
-            f"CodefyUI's own module classes, and no functions at all (#288). "
+            f"loading reconstructs -- torch.nn's own layer classes, CodefyUI's "
+            f"own module classes, and the two torch activation functions its "
+            f"transformer layers store, by exact name (#288). "
             f"The file is still valid outside CodefyUI (torch.load with "
             f"weights_only=False). For a round trip inside CodefyUI use "
             f"save_mode=state_dict and load it back with load_mode=state_dict "

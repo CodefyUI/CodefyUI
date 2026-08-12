@@ -40,6 +40,13 @@ way and closed the loop: all seven classes here are named in
 module-scope is what makes that possible at all -- an allowlist admits a class
 by NAME, and a function-local class has none.
 
+The two transformer blocks needed one more thing, added in #288's 2026-08-12
+follow-up: ``nn.TransformerEncoderLayer`` stores its activation as a plain
+``F.relu`` ATTRIBUTE, and while the allowlist held classes only, these two were
+admitted and still refused for something a level below them. The two activation
+functions are named in ``_TORCH_FUNCTION_NAMES`` now, so "all seven load back"
+is finally true of all seven.
+
 Which means the audit recorded next to that list applies to this file, and it
 has two halves. A ``__reduce__`` or a ``__setstate__`` added to any class here
 would turn a name on an allowlist into a code path. And because torch's
