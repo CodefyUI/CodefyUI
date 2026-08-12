@@ -9,20 +9,13 @@ name: Backend Tests
 #   3. Test failures introduced in PRs that don't touch the install path
 #      (the existing install-check workflow only fires on releases).
 #   4. Plugin-SDK drift. `tests/test_plugin_dx.py` guards the scaffold and the
-#      vendored copy of the plugin contract, so it has to fire for changes to
-#      `scripts/` and to the contract itself — neither of which lives under
-#      `backend/`. Without those two paths the drift check could only ever
-#      fail locally, which is the same as not having it.
+#      vendored copy of the plugin contract, which live outside `backend/` —
+#      one more reason the workflow runs on every PR rather than a path subset.
 on:
+  # No path filter on pull_request: these checks are required by the main
+  # branch ruleset, and a filtered-out workflow never reports, which would
+  # leave the PR's merge button waiting forever. Every PR runs everything.
   pull_request:
-    paths:
-      - 'backend/**'
-      - 'examples/**'
-      - 'plugins/**'
-      - 'scripts/**'
-      - 'frontend/src/plugins/contract.ts'
-      - 'ruff.toml'
-      - '.github/workflows/backend-test.yml'
   push:
     branches:
       - main
