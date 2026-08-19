@@ -8,7 +8,6 @@ against ``state_dim`` / ``action_dim``.
 from __future__ import annotations
 
 import pytest
-import torch
 
 from app.nodes.rl.gridworld_env_node import GridWorldEnvNode
 

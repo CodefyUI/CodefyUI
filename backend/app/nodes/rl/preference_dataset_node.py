@@ -142,9 +142,9 @@ class PreferenceDatasetNode(BaseNode):
                 a[:, -1] = torch.randn(count, generator=gen)
                 b[:, -1] = torch.randn(count, generator=gen)
             better_is_a = qa > qb
-            w = torch.where(better_is_a.unsqueeze(1), a, b)
-            l = torch.where(better_is_a.unsqueeze(1), b, a)
-            return w, l
+            winner = torch.where(better_is_a.unsqueeze(1), a, b)
+            loser = torch.where(better_is_a.unsqueeze(1), b, a)
+            return winner, loser
 
         train_w, train_l = make(n, planted=True)
         holdout_w, holdout_l = make(m, planted=False)
