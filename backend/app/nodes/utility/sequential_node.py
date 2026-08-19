@@ -52,6 +52,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         MultiHeadAttentionBlock,
         Reshape,
         SelectIndex,
+        RNNBlock,
         TransformerDecoderBlock,
         TransformerEncoderBlock,
     )
@@ -85,6 +86,7 @@ def _build_layer(cfg: dict) -> "torch.nn.Module":
         "TransformerDecoder": TransformerDecoderBlock,
         "LSTM": LSTMBlock,
         "GRU": GRUBlock,
+        "RNN": RNNBlock,
         "MultiHeadAttention": MultiHeadAttentionBlock,
     }
 

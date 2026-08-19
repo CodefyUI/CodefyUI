@@ -13,14 +13,14 @@ class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
         "Core: $\\text{Attention}(Q,K,V)=\\text{softmax}(\\frac{QK^T}{\\sqrt{d_k}})V$"
     )
 
-    structural_params = ("embed_dim", "num_heads")
+    structural_params = ("embed_dim", "num_heads", "batch_first")
 
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
-            PortDefinition(name="query", data_type=DataType.TENSOR, description="Query tensor (seq_len, batch, embed_dim)"),
-            PortDefinition(name="key", data_type=DataType.TENSOR, description="Key tensor (seq_len, batch, embed_dim)"),
-            PortDefinition(name="value", data_type=DataType.TENSOR, description="Value tensor (seq_len, batch, embed_dim)"),
+            PortDefinition(name="query", data_type=DataType.TENSOR, description="Query tensor — (seq, batch, embed) by default, (batch, seq, embed) when batch_first is on"),
+            PortDefinition(name="key", data_type=DataType.TENSOR, description="Key tensor — same layout as query"),
+            PortDefinition(name="value", data_type=DataType.TENSOR, description="Value tensor — same layout as query"),
         ]
 
     @classmethod
@@ -35,6 +35,17 @@ class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
         return [
             ParamDefinition(name="embed_dim", param_type=ParamType.INT, default=512, description="Total dimension of the model"),
             ParamDefinition(name="num_heads", param_type=ParamType.INT, default=8, description="Number of parallel attention heads"),
+            ParamDefinition(
+                name="batch_first",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "If True, input/output shape is (batch, seq, embed) — the same layout the "
+                    "RNN nodes use by default. Off means torch's transformer default, "
+                    "(seq, batch, embed). Existing graphs were built against that, which is why "
+                    "it stays the default here."
+                ),
+            ),
         ]
 
     def build_module(self, params: dict[str, Any]) -> Any:
@@ -42,6 +53,7 @@ class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
         return nn.MultiheadAttention(
             embed_dim=params.get("embed_dim", 512),
             num_heads=params.get("num_heads", 8),
+            batch_first=bool(params.get("batch_first", False)),
         )
 
     def execute(self, inputs: dict[str, Any], params: dict[str, Any], *, context: Any = None) -> dict[str, Any]:
@@ -62,10 +74,12 @@ class MultiHeadAttentionNode(StatefulModuleMixin, BaseNode):
             from ...core.step_trace import StepRecorder
             recorder = StepRecorder()
             d_k = embed_dim // max(num_heads, 1)
-            # Transpose to (batch, seq, embed) for textbook-style display.
-            q_b = query.transpose(0, 1) if query.dim() == 3 else query
-            k_b = key.transpose(0, 1) if key.dim() == 3 else key
-            v_b = value.transpose(0, 1) if value.dim() == 3 else value
+            # Transpose to (batch, seq, embed) for textbook-style display —
+            # unless batch_first already put it there.
+            seq_first = query.dim() == 3 and not bool(params.get("batch_first", False))
+            q_b = query.transpose(0, 1) if seq_first else query
+            k_b = key.transpose(0, 1) if seq_first else key
+            v_b = value.transpose(0, 1) if seq_first else value
             recorder.record(
                 "inputs_qkv",
                 "Receive Q, K, V (shown as batch-first for clarity).",

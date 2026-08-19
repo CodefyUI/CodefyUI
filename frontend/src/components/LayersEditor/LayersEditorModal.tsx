@@ -136,10 +136,42 @@ const LAYER_DEFS: LayerDef[] = [
     type: 'Embedding', category: 'Linear',
     params: [p_int('num_embeddings', 10000, 'Vocabulary size'), p_int('embedding_dim', 256, 'Embedding dimension')],
   },
+  // Recurrent — the backend's LSTMBlock / GRUBlock / RNNBlock wrappers.
+  // All three default to batch_first, because inside a layer-editor model the
+  // input always arrives from a DataLoader, which is batch-first.
+  {
+    type: 'LSTM', category: 'Recurrent',
+    params: [p_int('input_size', 128, 'Input feature size'), p_int('hidden_size', 256, 'Hidden state size'), p_int('num_layers', 1, 'Stacked recurrent layers')],
+  },
+  {
+    type: 'GRU', category: 'Recurrent',
+    params: [p_int('input_size', 128, 'Input feature size'), p_int('hidden_size', 256, 'Hidden state size'), p_int('num_layers', 1, 'Stacked recurrent layers')],
+  },
+  {
+    type: 'RNN', category: 'Recurrent',
+    params: [p_int('input_size', 128, 'Input feature size'), p_int('hidden_size', 256, 'Hidden state size'), p_int('num_layers', 1, 'Stacked recurrent layers')],
+  },
+  // Attention
+  {
+    type: 'MultiHeadAttention', category: 'Attention',
+    params: [p_int('embed_dim', 512, 'Model dimension'), p_int('num_heads', 8, 'Number of heads')],
+  },
+  {
+    type: 'TransformerEncoder', category: 'Attention',
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size')],
+  },
+  {
+    type: 'TransformerDecoder', category: 'Attention',
+    params: [p_int('d_model', 512, 'Model dimension'), p_int('nhead', 8, 'Number of heads'), p_int('num_layers', 1, 'Stacked blocks'), p_int('dim_feedforward', 2048, 'FFN hidden size')],
+  },
   // Utility
   {
     type: 'Flatten', category: 'Utility',
     params: [],
+  },
+  {
+    type: 'SelectIndex', category: 'Utility',
+    params: [p_int('dim', 1, 'Dimension to select along', 0), p_int('index', -1, 'Index to keep (-1 = last)', null)],
   },
   // Activations
   { type: 'ReLU', category: 'Activation', params: [] },

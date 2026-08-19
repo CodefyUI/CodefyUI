@@ -236,7 +236,9 @@ describe('the layers editor and the canvas agree on a hue', () => {
   it.each([
     ['the green', 'Convolution', 'CNN'],
     ['the purple', 'Normalization', 'Transformer'],
+    ['the purple', 'Attention', 'Transformer'],
     ['the blue', 'Pooling', 'RNN'],
+    ['the blue', 'Recurrent', 'RNN'],
     ['the orange', 'Regularization', 'RL'],
     ['the cyan', 'Linear', 'Data'],
     ['the blue-grey', 'Utility', 'Utility'],
@@ -257,9 +259,11 @@ describe('the layers editor and the canvas agree on a hue', () => {
   });
 
   it('gives the boundary and unknown slots their own names, not a shared one', () => {
-    // Seven hues across eleven roles. The duplication is intentional and
+    // Seven hues across thirteen roles. The duplication is intentional and
     // recorded here so a future edit to one of them is a decision rather than
-    // an accident.
+    // an accident. Recurrent and Attention joined the layers palette without
+    // adding a hue: they reuse the blue and the purple, which is what keeps
+    // a layer the same colour as the canvas node it corresponds to.
     expect(LAYER_TYPE_COLORS.Input).toBe(LAYER_TYPE_COLORS.Convolution);
     expect(LAYER_TYPE_COLORS.Output).toBe(LAYER_TYPE_COLORS.Activation);
     expect(LAYER_TYPE_COLORS.Unknown).toBe(LAYER_TYPE_COLORS.Activation);

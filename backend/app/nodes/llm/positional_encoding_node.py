@@ -56,7 +56,10 @@ class PositionalEncodingNode(BaseNode):
             PortDefinition(
                 name="tensor",
                 data_type=DataType.TENSOR,
-                description="Input embeddings of shape [seq, D] or [seq, batch, D].",
+                description=(
+                    "Input embeddings — [seq, D], or [seq, batch, D] by default / "
+                    "[batch, seq, D] when batch_first is on."
+                ),
             ),
         ]
 
@@ -98,6 +101,17 @@ class PositionalEncodingNode(BaseNode):
                 default=42,
                 description="Seed for `learnable` mode initialisation. Ignored for `sinusoidal`.",
             ),
+            ParamDefinition(
+                name="batch_first",
+                param_type=ParamType.BOOL,
+                default=False,
+                description=(
+                    "For 3D input: if True the layout is (batch, seq, D) — the same layout the "
+                    "RNN nodes use by default. Off means (seq, batch, D), torch's transformer "
+                    "default, which existing graphs were built against. 2D input is [seq, D] "
+                    "either way."
+                ),
+            ),
         ]
 
     def execute(
@@ -115,13 +129,18 @@ class PositionalEncodingNode(BaseNode):
             x = torch.as_tensor(x, dtype=torch.float32)
         x = x.float()
 
+        batch_first = bool(params.get("batch_first", False))
+
         if x.ndim == 2:
             seq, d = x.shape
         elif x.ndim == 3:
-            seq, _, d = x.shape
+            if batch_first:
+                _, seq, d = x.shape
+            else:
+                seq, _, d = x.shape
         else:
             raise ValueError(
-                f"PositionalEncoding expects [seq, D] or [seq, batch, D]; got shape {tuple(x.shape)}"
+                f"PositionalEncoding expects [seq, D] or a 3D batch; got shape {tuple(x.shape)}"
             )
 
         mode = str(params.get("mode", "sinusoidal"))
@@ -145,7 +164,9 @@ class PositionalEncodingNode(BaseNode):
 
         if x.ndim == 2:
             out = x + pe
-        else:  # [seq, batch, d]: broadcast over batch dim
+        elif batch_first:  # [batch, seq, d]: broadcast over the leading batch dim
+            out = x + pe.unsqueeze(0)
+        else:  # [seq, batch, d]: broadcast over the middle batch dim
             out = x + pe.unsqueeze(1)
 
         verbose = context is not None and getattr(context, "verbose", False)

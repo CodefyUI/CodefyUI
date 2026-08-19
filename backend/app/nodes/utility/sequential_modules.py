@@ -67,6 +67,17 @@ from __future__ import annotations
 import torch.nn as nn
 
 
+#: Recurrent wrappers default to ``batch_first``. Inside a layer-editor model
+#: the input always arrives from a DataLoader, which yields ``(batch, seq,
+#: feature)`` -- torch's ``batch_first=False`` default would read that as
+#: ``(seq, batch, feature)`` and silently transpose the two, training a model
+#: on nonsense with no error anywhere. The layer editor's param form is
+#: int/float only, so this cannot be a checkbox; it is the default instead,
+#: and an explicit ``batch_first`` in the layer spec still wins.
+def _batch_first(kwargs: dict) -> dict:
+    return {"batch_first": True, **kwargs}
+
+
 class Reshape(nn.Module):
     """Reshape a tensor, excluding the batch dimension.
 
@@ -128,10 +139,29 @@ class LSTMBlock(nn.Module):
 
     def __init__(self, **kwargs):
         super().__init__()
-        self.lstm = nn.LSTM(**kwargs)
+        self.lstm = nn.LSTM(**_batch_first(kwargs))
 
     def forward(self, x):
         out, _ = self.lstm(x)
+        return out
+
+
+class RNNBlock(nn.Module):
+    """``nn.RNN`` returning only the output tensor (drops the hidden state).
+
+    The plain-tanh recurrent layer, the sibling ``LSTMBlock`` and ``GRUBlock``
+    were missing. Without it a layer-editor model could use the two *gated*
+    cells and not the ungated one they exist to improve on -- so the
+    controlled comparison that motivates gating at all (same graph, same
+    data, same seed, swap the recurrent layer) could not be built here.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.rnn = nn.RNN(**_batch_first(kwargs))
+
+    def forward(self, x):
+        out, _ = self.rnn(x)
         return out
 
 
@@ -140,7 +170,7 @@ class GRUBlock(nn.Module):
 
     def __init__(self, **kwargs):
         super().__init__()
-        self.gru = nn.GRU(**kwargs)
+        self.gru = nn.GRU(**_batch_first(kwargs))
 
     def forward(self, x):
         out, _ = self.gru(x)

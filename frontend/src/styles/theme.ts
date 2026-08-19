@@ -165,6 +165,8 @@ export const LAYER_TYPE_COLORS: Record<string, string> = {
   Utility: '#8097a2',
   Activation: '#f66358',
   Merge: '#ff9800',
+  Recurrent: '#2397f3',
+  Attention: '#c279ce',
   Output: '#f66358',
   Unknown: '#f66358',
 };
@@ -180,6 +182,8 @@ export const LAYER_TYPE_VARS: Record<string, string> = {
   Utility: '--layer-utility',
   Activation: '--layer-activation',
   Merge: '--layer-merge',
+  Recurrent: '--layer-recurrent',
+  Attention: '--layer-attention',
   Output: '--layer-output',
   Unknown: '--layer-unknown',
 };
