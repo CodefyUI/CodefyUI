@@ -176,8 +176,9 @@ _CODEFYUI_MODULE_CLASSES: tuple[tuple[str, str], ...] = (
     # tuples / strings describing the DAG. No pickle hooks.
     ("app.nodes.utility.graph_model", "GraphModelModule"),
 
-    # The seven wrappers #283 hoisted out of a function into module scope.
-    # Audited, all seven: each holds one torch submodule and/or the ints and
+    # The wrappers #283 hoisted out of a function into module scope (RNNBlock
+    # joined them later for the I4 recurrent comparison).
+    # Audited, all of them: each holds one torch submodule and/or the ints and
     # strings it was constructed from. No pickle hooks.
     ("app.nodes.utility.sequential_modules", "Reshape"),
     ("app.nodes.utility.sequential_modules", "SelectIndex"),
@@ -185,6 +186,7 @@ _CODEFYUI_MODULE_CLASSES: tuple[tuple[str, str], ...] = (
     ("app.nodes.utility.sequential_modules", "TransformerDecoderBlock"),
     ("app.nodes.utility.sequential_modules", "LSTMBlock"),
     ("app.nodes.utility.sequential_modules", "GRUBlock"),
+    ("app.nodes.utility.sequential_modules", "RNNBlock"),
     ("app.nodes.utility.sequential_modules", "MultiHeadAttentionBlock"),
 
     # The LLM wave's model (#289) and the three classes it is built from --

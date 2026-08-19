@@ -305,6 +305,17 @@ const zhTW: NodeTranslations = {
       seed: '可重現用的隨機種子。',
     },
   },
+  SyntheticSequence: {
+    description: '即時生成「序列記憶」資料集（免下載、CPU 友善）。每筆是一條長度 seq_len 的整數序列，答案藏在開頭（recall_first）或結尾（recall_last），其餘位置都是不帶資訊的干擾 Token；標籤就是那個答案。兩種 kind 其餘完全相同，只差「答案離輸出多遠」——把依賴距離變成一個可以轉的旋鈕，是檢驗循環模型梯度消失的標準做法。接 DataLoader → TrainingLoop，模型端用 Embedding → LSTM/GRU/RNN → SelectIndex → Linear。',
+    params: {
+      kind: 'recall_first 答案在第 1 個位置（依賴距離 = seq_len）；recall_last 答案在最後一個位置（依賴距離 = 1）。',
+      seq_len: '每條序列的長度 T。調大就是把依賴距離拉遠。',
+      n_samples: '要生成幾筆序列。太少模型會直接背下來，建議上萬筆。',
+      n_classes: '答案有幾種（也就是類別數）。亂猜的準確率是 1/n_classes、亂猜的 loss 是 ln(n_classes)。',
+      n_distractors: '干擾 Token 有幾種。它們不帶任何資訊，只負責把答案和輸出隔開。',
+      seed: '可重現用的隨機種子。訓練集與測試集請用不同的 seed。',
+    },
+  },
   HuggingFaceDataset: {
     description: '從 HuggingFace Hub 載入影像分類資料集（透過 datasets 套件）',
     params: {
@@ -663,6 +674,13 @@ const zhTW: NodeTranslations = {
   },
   Multiply: {
     description: '兩個張量的逐元素相乘（支援廣播）',
+  },
+  MaskedFill: {
+    description: '把遮罩標記的位置換成一個常數（預設 $-\infty$）。搭配 AttentionMask 使用，而且要放在 Softmax **之前**：$e^{-\infty} = 0$，所以被擋住的位置會拿到恰好 0 的權重，剩下的位置則自動重新分配、每列加總仍然是 1。放到 softmax 之後才歸零會破壞這個性質。',
+    params: {
+      value: '填入被遮住位置的值。-inf 是注意力的標準做法（softmax 之後變成 0）；zero 與 custom 用於非注意力的遮罩，不會得到正確的注意力權重。',
+      custom_value: '當 value 選 custom 時實際填入的數值。',
+    },
   },
   MatMul: {
     description: '兩個張量的矩陣乘法（torch.matmul）',

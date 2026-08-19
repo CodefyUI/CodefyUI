@@ -329,6 +329,12 @@
   --layer-utility: #8097a2; /* lifted from #607d8b */
   --layer-activation: #f66358; /* lifted from #f44336 */
   --layer-merge: #ff9800;
+  /* The sequence pair, added with the recurrent + attention layers. Recurrent
+     borrows Pooling's blue family one step darker; Attention gets its own
+     amber-gold, distinct from Regularization/Merge's orange at the sizes the
+     palette dot and node header are drawn. */
+  --layer-recurrent: #1668b8;
+  --layer-attention: #c98a1e;
   --layer-output: #f66358; /* lifted from #f44336 */
   /* A layer type the editor does not know — a hand-edited file, or a torch
      module added to the backend but not yet to the palette. Same red as

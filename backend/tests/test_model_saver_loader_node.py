@@ -289,6 +289,7 @@ WRAPPER_LAYER_CONFIGS = [
      "dim_feedforward": 8},
     {"type": "LSTM", "input_size": 4, "hidden_size": 3, "batch_first": True},
     {"type": "GRU", "input_size": 4, "hidden_size": 3, "batch_first": True},
+    {"type": "RNN", "input_size": 4, "hidden_size": 3, "batch_first": True},
     {"type": "MultiHeadAttention", "embed_dim": 4, "num_heads": 2},
 ]
 
@@ -349,9 +350,10 @@ def test_every_sequential_wrapper_is_a_class_pickle_can_name(cfg):
         ({"type": "TransformerDecoder", "d_model": 4, "nhead": 2}, "decoder."),
         ({"type": "LSTM", "input_size": 4, "hidden_size": 3}, "lstm."),
         ({"type": "GRU", "input_size": 4, "hidden_size": 3}, "gru."),
+        ({"type": "RNN", "input_size": 4, "hidden_size": 3}, "rnn."),
         ({"type": "MultiHeadAttention", "embed_dim": 4, "num_heads": 2}, "attn."),
     ],
-    ids=["TransformerEncoder", "TransformerDecoder", "LSTM", "GRU", "MultiHeadAttention"],
+    ids=["TransformerEncoder", "TransformerDecoder", "LSTM", "GRU", "RNN", "MultiHeadAttention"],
 )
 def test_moving_the_wrappers_kept_their_state_dict_keys(cfg, prefix):
     """Attribute names are a file format here, not an implementation detail.
