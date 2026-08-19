@@ -165,8 +165,8 @@ export const LAYER_TYPE_COLORS: Record<string, string> = {
   Utility: '#8097a2',
   Activation: '#f66358',
   Merge: '#ff9800',
-  Recurrent: '#1668b8',
-  Attention: '#c98a1e',
+  Recurrent: '#2397f3',
+  Attention: '#c279ce',
   Output: '#f66358',
   Unknown: '#f66358',
 };

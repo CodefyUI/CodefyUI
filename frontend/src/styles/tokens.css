@@ -329,12 +329,15 @@
   --layer-utility: #8097a2; /* lifted from #607d8b */
   --layer-activation: #f66358; /* lifted from #f44336 */
   --layer-merge: #ff9800;
-  /* The sequence pair, added with the recurrent + attention layers. Recurrent
-     borrows Pooling's blue family one step darker; Attention gets its own
-     amber-gold, distinct from Regularization/Merge's orange at the sizes the
-     palette dot and node header are drawn. */
-  --layer-recurrent: #1668b8;
-  --layer-attention: #c98a1e;
+  /* The sequence pair, added with the recurrent + attention layers. Both reuse
+     a hue the app already has rather than introducing one: the invariant here
+     is that there is ONE blue and ONE purple across both palettes, so a
+     recurrent layer is the same blue the canvas paints an RNN node, and an
+     attention layer the same purple it paints a Transformer node. They get
+     their own NAMES so the code can say "recurrent" instead of quietly
+     reading "pooling", which is the same reason --layer-unknown exists. */
+  --layer-recurrent: #2397f3;
+  --layer-attention: #c279ce;
   --layer-output: #f66358; /* lifted from #f44336 */
   /* A layer type the editor does not know — a hand-edited file, or a torch
      module added to the backend but not yet to the palette. Same red as
