@@ -11,7 +11,7 @@ A plugin pack can ship a JavaScript bundle alongside its Python nodes. When the 
 :::note Availability
 Frontend extensions are in CodefyUI **1.3.0** and later. Check `cdui --version`; if it reports an older version, run `cdui update`.
 
-Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (unreleased at the time of writing — the next release after 2.2.0). Feature-check before you use them — see [API versions](#api-versions). {/* stamp-on-release */}
+Dock panels, toolbar buttons, execution events and the runs facade need **apiVersion 3** (CodefyUI 2.0.0 and later); `graph.getView` needs **apiVersion 4** (CodefyUI 2.3.0 and later). Feature-check before you use them — see [API versions](#api-versions).
 :::
 
 ## API versions
@@ -23,7 +23,7 @@ Dock panels, toolbar buttons, execution events and the runs facade need **apiVer
 | 1 | 1.3.0 | `ui.addFloatingWidget`, `ui.toast`, `graph.*`, `http.fetch`, `storage.*` |
 | 2 | 1.3.0 | `nodes.registerRenderer` |
 | 3 | 2.0.0 | `ui.addPanel` / `removePanel`, `ui.addToolbarButton` / `removeToolbarButton`, `events.onExecution`, `runs.*` |
-| 4 | *next release (unreleased)* {/* stamp-on-release */} | `graph.getView` — which level of the graph the user is looking at |
+| 4 | 2.3.0 | `graph.getView` — which level of the graph the user is looking at |
 
 Check it before reaching for anything newer than the version you require, and degrade rather than throw:
 
