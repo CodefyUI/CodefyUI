@@ -217,7 +217,7 @@ def _init_registries_like_server() -> None:
     import app.core.plugin_loader as plugin_loader
     from app.config import settings
     from app.core.node_registry import registry
-    from app.core.plugin_loader import install_plugin_finder
+    from app.core.plugin_loader import discover_plugin_nodes
     from app.core.preset_registry import preset_registry
 
     registry.discover(settings.NODES_DIR, "app.nodes")
@@ -225,8 +225,7 @@ def _init_registries_like_server() -> None:
     lockfile = load_lockfile()
     builtin_root = plugin_loader.plugins_builtin_root()
     user_root = plugin_loader.plugins_user_root()
-    for nodes_dir, pkg_name in install_plugin_finder(builtin_root, user_root, lockfile):
-        registry.discover(nodes_dir, pkg_name)
+    discover_plugin_nodes(registry, builtin_root, user_root, lockfile)
     preset_registry.discover(settings.PRESETS_DIR, registry)
     for _pid, pdir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_registry.discover(pdir / "presets", registry)

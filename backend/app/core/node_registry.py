@@ -16,12 +16,37 @@ logger = logging.getLogger(__name__)
 _PLUGIN_NS_PREFIX = "cdui_plugins."  # synthetic namespace, see plugin_loader
 
 
+class _DeriveFromPackage:
+    """Type of the "caller said nothing" default for ``discover(plugin_id=)``.
+
+    A distinct sentinel rather than ``None`` because ``None`` is already a
+    meaningful value here: :func:`qualify` reads it as "builtin, keep the
+    bare name". So ``None`` cannot also mean "work it out yourself".
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "<derive from package name>"
+
+
+_DERIVE_FROM_PACKAGE = _DeriveFromPackage()
+
+
 def _plugin_id_from_package(package_name: str) -> str | None:
     """Return ``c2`` for ``cdui_plugins.c2.nodes`` etc., else ``None``.
 
     Builtin nodes are discovered with ``package_name="app.nodes"`` and don't
     match — they keep their bare ``NODE_NAME``. Plugin nodes are discovered
     under ``cdui_plugins.<plugin_id>.nodes`` and get the prefix.
+
+    LOSSY, and only a fallback. A plugin id may be kebab-case, and the
+    synthetic package name it is loaded under cannot be: ``official-template``
+    is imported as ``cdui_plugins.official_template``, and nothing in that
+    string records that the underscore used to be a hyphen. Callers that know
+    the manifest id — every plugin call site does, see
+    ``plugin_loader.discover_plugin_nodes`` — pass it to :meth:`discover`
+    explicitly instead of letting it be guessed from here. What is left for
+    this function is the builtin case (``app.nodes`` → ``None``) and ad-hoc
+    discoveries in tests.
     """
     if not package_name.startswith(_PLUGIN_NS_PREFIX):
         return None
@@ -103,6 +128,7 @@ class NodeRegistry:
         package_path: Path,
         package_name: str,
         *,
+        plugin_id: str | None | _DeriveFromPackage = _DERIVE_FROM_PACKAGE,
         force_reload: bool = False,
     ) -> int:
         """Walk *package_path* and register every ``BaseNode`` subclass.
@@ -120,11 +146,21 @@ class NodeRegistry:
         plugin id, so ``EduKNN`` from ``cdui_plugins.c2.nodes`` lands in
         the registry as ``c2:EduKNN``. Builtin discoveries (``app.nodes``,
         ``app.custom_nodes``) keep bare names.
+
+        ``plugin_id`` is how a caller that KNOWS the id says so. It must be
+        the id the plugin's manifest declares, hyphens and all, because that
+        is the id the rest of the system uses — the examples route's
+        ``plugin:<id>`` prefix, the install directory, ``cdui plugin list``
+        and the ``"type"`` string in saved graphs. Left unset, the id is
+        derived from ``package_name``, which is right for builtins (no
+        prefix) but can only ever return the snake_case spelling of a plugin
+        id; see :func:`_plugin_id_from_package`.
         """
         count = 0
         if not package_path.exists():
             return count
-        plugin_id = _plugin_id_from_package(package_name)
+        if isinstance(plugin_id, _DeriveFromPackage):
+            plugin_id = _plugin_id_from_package(package_name)
         for importer, modname, ispkg in pkgutil.walk_packages(
             [str(package_path)], prefix=package_name + "."
         ):

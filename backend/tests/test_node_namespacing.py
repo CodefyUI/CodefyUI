@@ -19,11 +19,16 @@ from whatever the test session's plugin install state happens to be.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
+from textwrap import dedent
 
 
+from app.core import plugin_loader
 from app.core.node_base import BaseNode, DataType, PortDefinition
 from app.core.node_registry import NodeRegistry, _plugin_id_from_package, qualify
+from app.core.preset_registry import PresetRegistry
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -156,14 +161,160 @@ def test_exact_qualified_match_bypasses_fallback_path():
     assert reg.get("c2:EduKNN") is a
 
 
-# ── discover() autodetection ──────────────────────────────────────────────
+# ── discover(): where the plugin id comes from ────────────────────────────
+#
+# The id a node is registered under has to be the id the plugin's MANIFEST
+# declares, because that is the id every other subsystem already uses: the
+# examples route's ``plugin:<id>`` path prefix, the install directory,
+# ``cdui plugin list``, and the ``"type": "<id>:<NodeName>"`` that
+# :func:`qualify` documents as the saved-graph form.
+#
+# That id cannot be recovered from the Python package name. A kebab-case id
+# has to become snake_case to be importable at all (``official-template`` ->
+# ``cdui_plugins.official_template``), and nothing in the package name says
+# whether the underscore was a hyphen first. So the loader threads the real
+# id through to ``discover``, which only falls back to reading it off the
+# package name when no caller supplies one.
+
+
+def _write_kebab_pack(root: Path, plugin_id: str, node_name: str) -> Path:
+    """Install a minimal pack under *root* whose manifest id has a hyphen."""
+    plugin_dir = root / plugin_id
+    nodes = plugin_dir / "nodes"
+    nodes.mkdir(parents=True)
+    (plugin_dir / "cdui.plugin.toml").write_text(
+        dedent(f"""            [plugin]
+            id = "{plugin_id}"
+            name = "Kebab pack {plugin_id}"
+            version = "0.0.1"
+            description = ""
+            schema_version = 1
+            """),
+        encoding="utf-8",
+    )
+    (nodes / "__init__.py").write_text("", encoding="utf-8")
+    (nodes / "demo_node.py").write_text(
+        dedent(f"""            from app.core.node_base import BaseNode, DataType, PortDefinition
+
+
+            class DemoNode(BaseNode):
+                NODE_NAME = "{node_name}"
+                CATEGORY = "Test"
+                DESCRIPTION = ""
+
+                @classmethod
+                def define_inputs(cls):
+                    return [PortDefinition(name="x", data_type=DataType.ANY)]
+
+                @classmethod
+                def define_outputs(cls):
+                    return [PortDefinition(name="y", data_type=DataType.ANY)]
+
+                def execute(self, inputs, params, **_):
+                    return {{}}
+            """),
+        encoding="utf-8",
+    )
+    return plugin_dir
+
+
+def test_kebab_case_pack_registers_under_its_hyphenated_manifest_id(tmp_path):
+    """``official-template`` must not reach the registry as ``official_template``.
+
+    Driven through the production pair of calls — ``install_plugin_finder``
+    then ``discover`` — because the id is what gets lost between exactly
+    those two when the loader hands over only the package name.
+    """
+    plugin_id = "kebab-case-pack"
+    user_root = tmp_path / "userdata" / "plugins"
+    user_root.mkdir(parents=True)
+    _write_kebab_pack(user_root, plugin_id, "KebabDemo")
+    lockfile = {
+        "schema": 1,
+        "plugins": {plugin_id: {"source_kind": "user", "enabled": True}},
+    }
+
+    reg = NodeRegistry()
+    try:
+        namespaces = plugin_loader.install_plugin_finder(
+            tmp_path / "builtin", user_root, lockfile
+        )
+        assert [ns.plugin_id for ns in namespaces] == [plugin_id]
+        for ns in namespaces:
+            # The importable spelling and the real id travel together, which
+            # is the whole point: the package name still has to be snake_case.
+            assert ns.package_name == "cdui_plugins.kebab_case_pack.nodes"
+            reg.discover(ns.nodes_dir, ns.package_name, plugin_id=ns.plugin_id)
+    finally:
+        plugin_loader.purge_plugin_modules(plugin_id)
+
+    assert "kebab-case-pack:KebabDemo" in reg.nodes
+    # The snake_case spelling belongs to the Python import path and nowhere
+    # else — no graph, palette label, example path or CLI listing shows it.
+    assert "kebab_case_pack:KebabDemo" not in reg.nodes
+
+
+def test_plugin_discovery_wiring_keeps_the_hyphen_the_manifest_declares(
+    tmp_path, monkeypatch
+):
+    """The wiring, not just the API.
+
+    ``discover_plugin_nodes`` is the one loop the server lifespan, the
+    project CLI and ``POST /api/plugins/reload`` all run, so a call site that
+    stopped passing the id along would fail here rather than only on a
+    student's canvas.
+    """
+    plugin_id = "kebab-case-reload"
+    user_root = tmp_path / "userdata" / "plugins"
+    user_root.mkdir(parents=True)
+    _write_kebab_pack(user_root, plugin_id, "KebabReload")
+    (user_root / "installed.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "plugins": {plugin_id: {"source_kind": "user", "enabled": True}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # rediscover_all reads the lockfile itself rather than taking one, so the
+    # user root has to be redirected as well as passed.
+    monkeypatch.setattr(plugin_loader, "plugins_user_root", lambda: user_root)
+
+    empty = tmp_path / "empty"  # no builtin nodes, custom nodes or presets
+    reg = NodeRegistry()
+    try:
+        counts = plugin_loader.rediscover_all(
+            reg,
+            PresetRegistry(),
+            nodes_dir=empty,
+            custom_nodes_dir=empty,
+            presets_dir=empty,
+            builtin_root=empty,
+            user_root=user_root,
+        )
+    finally:
+        plugin_loader.purge_plugin_modules(plugin_id)
+
+    assert counts["plugins"] == 1
+    assert list(reg.nodes) == ["kebab-case-reload:KebabReload"]
 
 
 # ── _plugin_id_from_package() ────────────────────────────────────────────
 
 
 def test_plugin_id_detection_from_cdui_plugins_namespace():
-    """Discoveries from ``cdui_plugins.<id>.nodes`` should detect ``<id>``."""
+    """Discoveries from ``cdui_plugins.<id>.nodes`` should detect ``<id>``.
+
+    This is the FALLBACK only — the path taken when a caller passes no
+    explicit ``plugin_id`` (builtin discovery, ad-hoc discovery in tests).
+    It reads the Python package name, so the best it can ever return is the
+    snake_case spelling: ``third_party_pack`` is the right answer here
+    whether the manifest said ``third_party_pack`` or ``third-party-pack``,
+    because the package name genuinely does not record which. The
+    hyphen-preserving path is the one above, where the loader supplies the
+    manifest id instead of leaving it to be guessed.
+    """
     assert _plugin_id_from_package("cdui_plugins.c2.nodes") == "c2"
     assert _plugin_id_from_package("cdui_plugins.c2") == "c2"
     assert _plugin_id_from_package("cdui_plugins.third_party_pack.nodes") == "third_party_pack"

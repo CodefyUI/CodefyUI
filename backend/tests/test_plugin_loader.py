@@ -111,9 +111,9 @@ def test_install_plugin_finder_registers_synthetic_namespace(tmp_path):
     assert "cdui_plugins" in sys.modules
     assert "cdui_plugins.c2" in sys.modules
     assert len(pairs) == 1
-    nodes_dir, pkg_name = pairs[0]
-    assert nodes_dir == plugin_dir / "nodes"
-    assert pkg_name == "cdui_plugins.c2.nodes"
+    assert pairs[0].nodes_dir == plugin_dir / "nodes"
+    assert pairs[0].package_name == "cdui_plugins.c2.nodes"
+    assert pairs[0].plugin_id == "c2"
 
 
 def test_install_plugin_finder_resolves_user_packs_from_user_root(tmp_path):
@@ -136,7 +136,13 @@ def test_install_plugin_finder_resolves_user_packs_from_user_root(tmp_path):
     # kebab-case "alice-extras" → snake-case "alice_extras" for the Python module name
     assert "cdui_plugins.alice_extras" in sys.modules
     assert len(pairs) == 1
-    assert pairs[0][1] == "cdui_plugins.alice_extras.nodes"
+    assert pairs[0].package_name == "cdui_plugins.alice_extras.nodes"
+    # ...and the manifest id travels alongside it UNCHANGED. The snake_case
+    # spelling exists only so the pack can be imported; every other subsystem
+    # — examples paths, the install directory, `cdui plugin list`, the
+    # `"type"` in a saved graph — says "alice-extras", so that is what the
+    # node registry has to be told.
+    assert pairs[0].plugin_id == "alice-extras"
 
 
 def test_install_plugin_finder_skips_plugins_without_manifest(tmp_path):
@@ -188,9 +194,9 @@ def test_install_plugin_finder_resolves_local_path_entries(tmp_path):
 
     assert "cdui_plugins.my_plugin" in sys.modules
     assert len(pairs) == 1
-    nodes_dir, pkg_name = pairs[0]
-    assert nodes_dir == work / "nodes"
-    assert pkg_name == "cdui_plugins.my_plugin.nodes"
+    assert pairs[0].nodes_dir == work / "nodes"
+    assert pairs[0].package_name == "cdui_plugins.my_plugin.nodes"
+    assert pairs[0].plugin_id == "my-plugin"
 
 
 def test_install_plugin_finder_local_without_path_is_skipped(tmp_path):

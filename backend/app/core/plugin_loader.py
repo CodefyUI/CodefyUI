@@ -22,7 +22,7 @@ import sys
 import types
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -220,17 +220,42 @@ def frontend_entry_rel(manifest: dict[str, Any]) -> str | None:
     return str(p)
 
 
+class PluginNamespace(NamedTuple):
+    """One installed plugin's nodes, ready to hand to ``NodeRegistry.discover``.
+
+    Carries THREE things, and the third is the one that used to go missing.
+    ``package_name`` and ``plugin_id`` are two different spellings of the same
+    pack and only one of them is the real name: ``official-template`` is
+    imported as ``cdui_plugins.official_template`` because a hyphen cannot
+    appear in a Python module path, but ``official-template`` is what the
+    manifest says, what the install directory is called, what
+    ``cdui plugin list`` prints, and what a saved graph's
+    ``"type": "official-template:HelloPlugin"`` has to say. Rebuilding the id
+    from the package name recovers only the snake_case spelling, so it is
+    carried rather than re-derived.
+
+    A named tuple rather than a bare 3-tuple precisely because two of the
+    three fields are strings: positional unpacking is exactly how the id was
+    dropped in the first place.
+    """
+
+    nodes_dir: Path
+    package_name: str
+    plugin_id: str
+
+
 def install_plugin_finder(
     builtin_root: Path,
     user_root: Path,
     lockfile: dict[str, Any],
-) -> list[tuple[Path, str]]:
-    """Register the synthetic namespace and return ``(nodes_dir, package_name)`` pairs.
+) -> list[PluginNamespace]:
+    """Register the synthetic namespace and return one entry per loadable pack.
 
-    The returned pairs are ready to pass straight to
-    :meth:`NodeRegistry.discover`. Plugins whose manifest is missing,
-    whose ``nodes/`` directory is absent, **or whose ``enabled`` flag is
-    false** are skipped silently — the caller is responsible for surfacing
+    The returned entries are ready to pass straight to
+    :meth:`NodeRegistry.discover` — see :func:`discover_plugin_nodes`, which
+    is what every caller in the app actually uses. Plugins whose manifest is
+    missing, whose ``nodes/`` directory is absent, **or whose ``enabled`` flag
+    is false** are skipped silently — the caller is responsible for surfacing
     those.
     """
     pkg = sys.modules.get(NAMESPACE_PACKAGE)
@@ -239,7 +264,7 @@ def install_plugin_finder(
         pkg.__path__ = []  # namespace package
         sys.modules[NAMESPACE_PACKAGE] = pkg
 
-    pairs: list[tuple[Path, str]] = []
+    found: list[PluginNamespace] = []
     for plugin_id, entry in lockfile.get("plugins", {}).items():
         if not is_enabled(entry):
             continue
@@ -260,9 +285,44 @@ def install_plugin_finder(
 
         nodes_dir = plugin_dir / "nodes"
         if nodes_dir.exists():
-            pairs.append((nodes_dir, f"{sub_name}.nodes"))
+            found.append(PluginNamespace(nodes_dir, f"{sub_name}.nodes", plugin_id))
 
-    return pairs
+    return found
+
+
+def discover_plugin_nodes(
+    registry: Any,
+    builtin_root: Path,
+    user_root: Path,
+    lockfile: dict[str, Any],
+    *,
+    force_reload: bool = False,
+) -> tuple[int, int]:
+    """Register every enabled pack's nodes; returns ``(nodes, packs)``.
+
+    The single place that turns installed packs into registry entries. The
+    server lifespan, ``POST /api/plugins/reload`` (via :func:`rediscover_all`)
+    and ``scripts/project.py`` all go through here instead of writing the
+    ``install_plugin_finder`` → ``discover`` loop themselves, so there is
+    exactly one line that has to remember to pass the manifest id along —
+    and three copies of it cannot drift apart, which is how plugin nodes came
+    to be registered under ``official_template:`` while every other subsystem
+    said ``official-template``.
+
+    Both counts are returned because the lifespan log reports "N nodes from M
+    plugins", and M is not derivable from N.
+    """
+    namespaces = install_plugin_finder(builtin_root, user_root, lockfile)
+    node_count = sum(
+        registry.discover(
+            ns.nodes_dir,
+            ns.package_name,
+            plugin_id=ns.plugin_id,
+            force_reload=force_reload,
+        )
+        for ns in namespaces
+    )
+    return node_count, len(namespaces)
 
 
 def purge_plugin_modules(plugin_id: str) -> None:
@@ -332,10 +392,9 @@ def rediscover_all(
     custom = registry.discover(custom_nodes_dir, "app.custom_nodes", force_reload=True)
 
     lockfile = load_lockfile()
-    pairs = install_plugin_finder(builtin_root, user_root, lockfile)
-    plugin_count = 0
-    for plug_nodes_dir, pkg_name in pairs:
-        plugin_count += registry.discover(plug_nodes_dir, pkg_name, force_reload=True)
+    plugin_count, _packs = discover_plugin_nodes(
+        registry, builtin_root, user_root, lockfile, force_reload=True
+    )
 
     preset_registry.clear()
     preset_count = preset_registry.discover(presets_dir, registry)

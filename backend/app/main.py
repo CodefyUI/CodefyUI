@@ -79,7 +79,7 @@ from .core.port_stats import PortStatsCache
 from .core.version import get_version
 from .core import plugin_loader
 from .core.plugin_loader import (
-    install_plugin_finder,
+    discover_plugin_nodes,
     iter_plugin_dirs,
     load_lockfile,
     rediscover_all,
@@ -222,14 +222,14 @@ async def lifespan(app: FastAPI):
 
     # Discover plugin nodes (per-user installed packs + built-in direction packs)
     lockfile = load_lockfile()
-    pairs = install_plugin_finder(
-        plugin_loader.plugins_builtin_root(), plugin_loader.plugins_user_root(), lockfile
+    plugin_count, pack_count = discover_plugin_nodes(
+        registry,
+        plugin_loader.plugins_builtin_root(),
+        plugin_loader.plugins_user_root(),
+        lockfile,
     )
-    plugin_count = 0
-    for nodes_dir, pkg_name in pairs:
-        plugin_count += registry.discover(nodes_dir, pkg_name)
     logger.info(
-        "Discovered %d plugin nodes from %d active plugin(s)", plugin_count, len(pairs)
+        "Discovered %d plugin nodes from %d active plugin(s)", plugin_count, pack_count
     )
 
     for name in sorted(registry.nodes.keys()):
