@@ -1,8 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { useDragAndDrop } from './useDragAndDrop';
 import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import * as rest from '../api/rest';
+
+// Only the example fetch is stubbed. The drop then runs the real
+// `insertExample` -> `insertGraph` chain, which is the point: what this hook
+// has to get right is the POSITION it hands over, and a mocked insert would
+// assert nothing about where the block actually lands.
+vi.mock('../api/rest', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/rest')>();
+  return { ...actual, loadExample: vi.fn() };
+});
+
+const mockedRest = vi.mocked(rest);
 
 // Mock @xyflow/react so useReactFlow returns a controllable screenToFlowPosition.
 // Identity transform keeps the asserted positions simple.
@@ -49,6 +61,7 @@ function makeDragEvent(data: Record<string, string> = {}) {
 
 beforeEach(() => {
   screenToFlowPosition.mockClear();
+  mockedRest.loadExample.mockReset();
   // Seed node-def store with one preset + one definition.
   useNodeDefStore.setState({
     definitions: [defA],
@@ -136,8 +149,61 @@ describe('useDragAndDrop - onDrop node branch', () => {
     result.current.onDrop(event);
 
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    // Both keys consulted, but no node added.
-    expect(event.dataTransfer.getData).toHaveBeenCalledTimes(2);
+    // All three keys consulted, but no node added.
+    expect(event.dataTransfer.getData).toHaveBeenCalledTimes(3);
+    expect(activeNodes()).toHaveLength(0);
+  });
+});
+
+describe('useDragAndDrop - onDrop example branch (#348)', () => {
+  it('inserts the dropped example with its top-left at the pointer', async () => {
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [
+        { id: 'a', type: 'Dropout', position: { x: 700, y: 700 }, data: { params: {} } },
+      ],
+      edges: [],
+    });
+    const { result } = renderHook(() => useDragAndDrop());
+    const event = makeDragEvent({ 'application/codefyui-example': 'Usage_Example/Foo' });
+
+    result.current.onDrop(event);
+
+    await waitFor(() => expect(activeNodes()).toHaveLength(1));
+    expect(mockedRest.loadExample).toHaveBeenCalledWith('Usage_Example/Foo');
+    // clientX/clientY are 10/20 and screenToFlowPosition is the identity.
+    expect(activeNodes()[0].position).toEqual({ x: 10, y: 20 });
+  });
+
+  it('reads the path and the point BEFORE awaiting the fetch', async () => {
+    // A DataTransfer is only readable during the event that carries it, so an
+    // implementation that reaches for `event.dataTransfer` after its first
+    // await gets nothing -- and the drop silently does nothing.
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [{ id: 'a', type: 'Dropout', position: { x: 0, y: 0 }, data: { params: {} } }],
+      edges: [],
+    });
+    const { result } = renderHook(() => useDragAndDrop());
+    const event = makeDragEvent({ 'application/codefyui-example': 'Usage_Example/Foo' });
+
+    result.current.onDrop(event);
+    // The handler has returned; the browser would have emptied the transfer
+    // by now and the pointer would have moved on.
+    (event.dataTransfer.getData as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new Error('dataTransfer read outside its own event');
+    });
+    Object.defineProperty(event, 'clientX', { value: NaN });
+
+    await waitFor(() => expect(activeNodes()).toHaveLength(1));
+    expect(activeNodes()[0].position).toEqual({ x: 10, y: 20 });
+  });
+
+  it('leaves the canvas alone when the dropped example fails to load', async () => {
+    mockedRest.loadExample.mockRejectedValue(new Error('nope'));
+    const { result } = renderHook(() => useDragAndDrop());
+
+    result.current.onDrop(makeDragEvent({ 'application/codefyui-example': 'bad' }));
+
+    await waitFor(() => expect(mockedRest.loadExample).toHaveBeenCalled());
     expect(activeNodes()).toHaveLength(0);
   });
 });

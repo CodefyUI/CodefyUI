@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listExamples, type ExampleSummary } from '../../api/rest';
-import { openExample } from '../../utils/openExample';
+import { insertExample } from '../../utils/openExample';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { EXAMPLE_CATEGORY_COLORS, EXAMPLE_CATEGORY_FALLBACK } from '../../styles/theme';
@@ -47,13 +47,53 @@ export function groupExamplesByCategory(
 
 // ── Example item ──
 
+/**
+ * One example, as a drag source (#348).
+ *
+ * Both gestures INSERT: dragging drops the block where the pointer was
+ * released, clicking puts it below the graph already on the canvas. Neither
+ * replaces anything, and either is one Ctrl+Z from the canvas as it was.
+ *
+ * This used to call `openExample`, which routes to `loadGraphDocument` — an
+ * action that swaps out the tab's nodes, edges, subgraphs, description and
+ * save binding in one commit and, by design, pushes no undo frame. So a
+ * stray click on a list of ~30 examples destroyed however long the user had
+ * spent on the graph, with nothing to undo. Nothing about the sidebar
+ * suggested that; the hint underneath it read "Click an example to open it".
+ *
+ * A `<div>` carrying button semantics rather than a real `<button>`, which is
+ * what this was: `draggable` is reliable on a plain div in every engine (it
+ * is how the Nodes and Presets tabs have always dragged), and is not on a
+ * button — Firefox has ignored the attribute there for years. The semantics
+ * a button was providing are restored explicitly, because clicking is a real
+ * action here and the drag has to stay an enhancement rather than the only
+ * way in: `role`, `tabIndex`, and Enter/Space activation.
+ */
 function ExampleItem({ example }: { example: ExampleSummary }) {
   const { t } = useI18n();
+  const insert = () => void insertExample(example.path);
+  const handleDragStart = (event: React.DragEvent) => {
+    // The path, not the resolved graph: the drop handler does the fetch, so
+    // opening the Templates tab does not pull ~30 example files off the
+    // server just in case one of them gets dragged.
+    event.dataTransfer.setData('application/codefyui-example', example.path);
+    event.dataTransfer.effectAllowed = 'move';
+  };
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
+      draggable
+      onDragStart={handleDragStart}
       className={tabStyles.exampleItem}
-      onClick={() => void openExample(example.path)}
+      onClick={insert}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        // Space would scroll the panel out from under the list otherwise,
+        // which is the default a real <button> was suppressing for us.
+        event.preventDefault();
+        insert();
+      }}
       title={example.description}
     >
       <div className={tabStyles.exampleName}>{example.name}</div>
@@ -63,7 +103,7 @@ function ExampleItem({ example }: { example: ExampleSummary }) {
       <div className={tabStyles.exampleMeta}>
         {t('empty.nodeCount', { count: example.node_count })}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -75,10 +115,10 @@ function ExampleItem({ example }: { example: ExampleSummary }) {
  *
  * Deliberately thumbnail-less: this is the always-available list view, and the
  * richer gallery is the empty-canvas overlay's job — and core#128's modal,
- * which the footer button below opens. Both call the same `openExample`
- * helper this does, so an example opens the same way from every surface, and
- * both group by category through `groupExamplesByCategory` (exported for
- * exactly that reason) so the two never drift out of order.
+ * which the footer button below opens. All three group by category through
+ * `groupExamplesByCategory` (exported for exactly that reason) so they never
+ * drift out of order, and this tab and the modal now share `insertExample`
+ * (#348) so an example joins the canvas the same way from either.
  *
  * Examples are fetched per mount rather than cached in a store: the sidebar
  * only mounts this tab while it is the selected one, and the list changes

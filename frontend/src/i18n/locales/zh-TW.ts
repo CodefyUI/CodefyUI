@@ -105,7 +105,7 @@ const zhTW: Record<TranslationKey, string> = {
   'templates.loadFail': '載入範例失敗：{error}',
   'templates.empty': '沒有可用的範例',
   'templates.noMatch': '找不到符合的範例',
-  'templates.hint': '點選範例即可開啟',
+  'templates.hint': '把範例拖曳到畫布上，或點一下加入',
 
   // 範例圖庫彈窗 (core#128)
   'gallery.open': '範例圖庫',

@@ -591,11 +591,17 @@ interface TabStoreState {
    * ids are NOT remapped the way node ids are -- an id is what an instance
    * node names -- so a collision is resolved the way paste resolves it: the
    * definition already in this tab wins.
+   *
+   * `at` is a flow-space point to put the block's top-left corner on (#348),
+   * for the one caller that knows better than the automatic placement: a
+   * drag-and-drop, where the user released the pointer somewhere specific.
+   * Omitted, the block lands below the existing graph as it always has.
    */
   insertGraph: (
     nodes: Node<NodeData>[],
     edges: Edge[],
     subgraphs?: SubgraphDefinition[],
+    at?: { x: number; y: number },
   ) => void;
 
   // note actions
@@ -1012,9 +1018,15 @@ const INSERT_GAP = 96;
 function insertionOffset(
   existing: Node<NodeData>[],
   incoming: Node<NodeData>[],
+  at?: { x: number; y: number },
 ): { x: number; y: number } {
-  const target = nodesBoundingBox(existing as Node[]);
   const source = nodesBoundingBox(incoming as Node[]);
+  // A named drop point (#348) answers the question outright: put the block's
+  // top-left there. The existing graph is not consulted, so a drop CAN land
+  // on top of a node that is already there -- which is the user's call to
+  // make, and one Ctrl+Z away either way.
+  if (at) return source ? { x: at.x - source.x, y: at.y - source.y } : { x: 0, y: 0 };
+  const target = nodesBoundingBox(existing as Node[]);
   // An empty canvas (or a template with nothing in it) needs no move at all.
   if (!target || !source) return { x: 0, y: 0 };
   return {
@@ -2659,7 +2671,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
 
   // ── Template insertion (core#128) ──
 
-  insertGraph: (incomingNodes, incomingEdges, incomingSubgraphs = []) => {
+  insertGraph: (incomingNodes, incomingEdges, incomingSubgraphs = [], at) => {
     if (incomingNodes.length === 0) return;
     const tab = get().getActiveTab();
     get().pushUndoSnapshot();
@@ -2671,7 +2683,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const idMap = new Map<string, string>();
     for (const node of incomingNodes) idMap.set(node.id, generateId());
 
-    const offset = insertionOffset(tab.nodes, incomingNodes);
+    const offset = insertionOffset(tab.nodes, incomingNodes, at);
 
     const newNodes: Node<NodeData>[] = incomingNodes.map((node) => {
       const data: NodeData = { ...node.data, executionStatus: 'idle', error: undefined };
@@ -2728,6 +2740,13 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     // user has panned or zoomed into can be entirely off-screen — an insert
     // that looks like it did nothing. Reuse auto-layout's one-shot fit
     // request so the viewport lands on what just arrived.
+    //
+    // Skipped for a drop (#348), and only for a drop: the pointer was on
+    // screen when it was released, so the block cannot have landed out of
+    // sight — and moving the camera would pull the canvas out from under the
+    // gesture that just finished, which reads as the drop having gone
+    // somewhere else.
+    if (at) return;
     const inserted = nodesBoundingBox(newNodes as Node[]);
     if (inserted && inserted.width > 0 && inserted.height > 0) {
       useUIStore.getState().requestLayoutFit(inserted);

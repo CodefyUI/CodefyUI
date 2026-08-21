@@ -70,6 +70,24 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **Clicking a sidebar example destroyed the graph you were working on, with
+  nothing to undo** ([#348]). The Templates tab sent every click through
+  `openExample`, which replaces the active tab's nodes, edges, subgraphs,
+  description, save binding and tab name in one commit and — by design —
+  pushes no undo frame. So a stray click on a list of ~30 examples took
+  however long you had spent on the canvas with it, and Ctrl+Z did nothing,
+  because from the undo stack's point of view nothing had happened. The hint
+  under the list advertised exactly that behaviour: "Click an example to open
+  it". Examples now **join** the canvas the way every other palette item
+  does. Drag one out of the sidebar and it lands where you release the
+  pointer, without the camera moving off the gesture that just finished;
+  click one and it lands clear of the graph already there, with the viewport
+  brought onto it. Either way the ids are remapped so nothing on the canvas
+  can be overwritten, the tab keeps its own name, description and save
+  target, and one Ctrl+Z takes the whole block back off. A template written
+  by a newer CodefyUI is still refused, on the drag path as well as the
+  click.
+
 - **An unhandled `/api` path answered `405 Method Not Allowed` on every real
   installation, and `404` in CI** ([#285]). The catch-all that serves the built
   frontend is registered only when `frontend/dist/index.html` exists, and it
@@ -1040,6 +1058,7 @@ Release candidates before 1.0.0 are on the
 [#288]: https://github.com/CodefyUI/CodefyUI/issues/288
 [#292]: https://github.com/CodefyUI/CodefyUI/issues/292
 [#175]: https://github.com/CodefyUI/CodefyUI/issues/175
+[#348]: https://github.com/CodefyUI/CodefyUI/issues/348
 [#200]: https://github.com/CodefyUI/CodefyUI/issues/200
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main

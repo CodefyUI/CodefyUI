@@ -153,8 +153,10 @@ export function EmptyCanvasOverlay() {
 
   const sections = groupExamples(examples);
 
-  // Loading an example lives in `utils/openExample` so the sidebar's
-  // Templates tab (#126) opens one identically.
+  // Still the REPLACING reader, and the only one left (#348): this overlay
+  // is shown when the canvas is empty, so there is nothing for a replace to
+  // take. The sidebar's Templates tab and the gallery modal both insert
+  // instead, because they are reachable while a graph is on screen.
   const handleClick = useCallback(
     (example: ExampleSummary) => void openExample(example.path),
     [],
