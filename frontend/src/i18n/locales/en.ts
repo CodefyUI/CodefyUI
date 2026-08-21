@@ -107,7 +107,7 @@ const en = {
   'templates.loadFail': 'Failed to load examples: {error}',
   'templates.empty': 'No examples available',
   'templates.noMatch': 'No matching examples',
-  'templates.hint': 'Click an example to open it',
+  'templates.hint': 'Drag an example onto the canvas, or click to add it',
 
   // Template gallery modal (core#128)
   'gallery.open': 'Templates',

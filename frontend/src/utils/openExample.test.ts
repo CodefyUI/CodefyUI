@@ -223,6 +223,34 @@ describe('insertExample', () => {
     expect(tab.name).toBe('Tab 1');
   });
 
+  it('lands the template at a drop point when one is given (#348)', async () => {
+    store().setNodes([
+      { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'k', type: 'K', params: {} } },
+    ] as never);
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a', { position: { x: 900, y: 900 } })],
+      edges: [],
+    });
+
+    await expect(insertExample('x', { x: -50, y: 25 })).resolves.toBe(true);
+
+    const inserted = activeTab().nodes.find((n) => n.selected)!;
+    expect(inserted.position).toEqual({ x: -50, y: 25 });
+  });
+
+  it('still refuses a too-new template on the drop path (#348)', async () => {
+    // The gate lives before resolution on BOTH paths, or a drop installs a
+    // newer build's presets that the click path would have refused.
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [raw('a')],
+      edges: [],
+      format_version: 999,
+    });
+
+    await expect(insertExample('x', { x: 0, y: 0 })).resolves.toBe(false);
+    expect(activeTab().nodes).toHaveLength(0);
+  });
+
   it('reports false for a template with no nodes', async () => {
     mockedRest.loadExample.mockResolvedValue({ nodes: [], edges: [] });
     await expect(insertExample('x')).resolves.toBe(false);

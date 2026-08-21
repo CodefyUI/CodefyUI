@@ -217,8 +217,17 @@ export async function openExampleInNewTab(path: string): Promise<boolean> {
  * editable graph reaches the same place by a shorter road, since the next
  * save writes the result. So the merge does not happen at all, and the user
  * is told why rather than left wondering why nothing appeared.
+ *
+ * `at` is the flow-space point a DROP released on (#348). It is the only
+ * difference between dragging an example out of the sidebar and clicking it:
+ * everything above -- the id remap, the definition merge, the format gate --
+ * is the same work either way, which is why there is one function and not
+ * two.
  */
-export async function insertExample(path: string): Promise<boolean> {
+export async function insertExample(
+  path: string,
+  at?: { x: number; y: number },
+): Promise<boolean> {
   try {
     // Read off the raw payload, BEFORE resolving: resolution merges the
     // example's unknown presets into the node-def store, so a refusal after
@@ -240,6 +249,7 @@ export async function insertExample(path: string): Promise<boolean> {
       example.nodes,
       example.edges,
       example.subgraphs,
+      at,
     );
     return true;
   } catch {

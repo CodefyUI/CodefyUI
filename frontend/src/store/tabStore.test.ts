@@ -2822,6 +2822,48 @@ describe('insertGraph', () => {
   });
 });
 
+// -- #348: a dropped example lands under the pointer, not below the graph --
+
+describe('insertGraph — explicit drop point (#348)', () => {
+  beforeEach(resetToSingleTab);
+
+  it('puts the block top-left at the drop point, ignoring the existing graph', () => {
+    // The auto placement would put this BELOW n1. A drop must not: the user
+    // released the pointer somewhere specific and that is where it goes.
+    store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
+    store().insertGraph([bnode('t1', { position: { x: 500, y: 500 } })], [], [], { x: -80, y: 40 });
+
+    const inserted = activeTab().nodes.find((n) => n.selected)!;
+    expect(inserted.position).toEqual({ x: -80, y: 40 });
+  });
+
+  it('preserves the template layout around the drop point', () => {
+    store().insertGraph(
+      [
+        bnode('t1', { position: { x: 100, y: 100 } }),
+        bnode('t2', { position: { x: 340, y: 180 } }),
+      ],
+      [],
+      [],
+      { x: 0, y: 0 },
+    );
+    // The bounding box origin lands on the point; the second node keeps its
+    // offset from the first.
+    expect(activeTab().nodes.map((n) => n.position)).toEqual([
+      { x: 0, y: 0 },
+      { x: 240, y: 80 },
+    ]);
+  });
+
+  it('is still one undo step', () => {
+    store().setNodes([bnode('n1')]);
+    store().insertGraph([bnode('t1'), bnode('t2')], [], [], { x: 5, y: 5 });
+    expect(activeTab().nodes).toHaveLength(3);
+    store().undo();
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['n1']);
+  });
+});
+
 
 describe('bypass — graph I/O contract nodes (core#128 review)', () => {
   beforeEach(resetToSingleTab);
@@ -2878,6 +2920,15 @@ describe('insertGraph — viewport fit (core#128 review)', () => {
 
   it('does not request a fit for an empty template', () => {
     store().insertGraph([], []);
+    expect(useUIStore.getState().layoutFitRequest).toBeNull();
+  });
+
+  it('does not move the viewport when the caller named a drop point (#348)', () => {
+    // The fit exists because the auto placement can land off-screen. A drop
+    // cannot: the pointer was on screen, so moving the camera would yank the
+    // canvas out from under the gesture that just finished.
+    store().setNodes([bnode('n1', { position: { x: 0, y: 0 } })]);
+    store().insertGraph([bnode('t1')], [], [], { x: 900, y: 900 });
     expect(useUIStore.getState().layoutFitRequest).toBeNull();
   });
 });

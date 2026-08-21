@@ -8,15 +8,28 @@ import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import type { ExampleSummary } from '../../api/rest';
 
-// Only the two network calls are stubbed; `openExample` runs for real so the
-// "opens an example the same way the gallery does" contract is exercised end
-// to end rather than mocked away.
+// Only the two network calls are stubbed; `insertExample` runs for real so
+// the "an example joins the canvas the same way the gallery inserts one"
+// contract is exercised end to end rather than mocked away.
 vi.mock('../../api/rest', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/rest')>();
   return { ...actual, listExamples: vi.fn(), loadExample: vi.fn() };
 });
 
 const mockedRest = vi.mocked(rest);
+
+const activeTab = () => useTabStore.getState().getActiveTab();
+
+/** A serialized example node, in the shape `/api/examples/load` returns. */
+function rawNode(id: string) {
+  return { id, type: 'Dropout', position: { x: 0, y: 0 }, data: { params: {} } };
+}
+
+/** A single empty tab named "Tab 1", so insertion assertions start from zero. */
+function freshTab() {
+  useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
+  useTabStore.getState().addTab('Tab 1');
+}
 
 function ex(overrides: Partial<ExampleSummary> = {}): ExampleSummary {
   return {
@@ -76,7 +89,9 @@ describe('TemplatesTab', () => {
     await waitFor(() => expect(screen.queryByText('Loading examples...')).toBeNull());
     expect(screen.getByText('Templates')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search examples...')).toBeTruthy();
-    expect(screen.getByText('Click an example to open it')).toBeTruthy();
+    expect(
+      screen.getByText('Drag an example onto the canvas, or click to add it'),
+    ).toBeTruthy();
   });
 
   it('lists examples grouped by category, with the node count', async () => {
@@ -139,38 +154,94 @@ describe('TemplatesTab', () => {
     await screen.findByText('Newly installed');
   });
 
-  it('clicking an example loads it into the active tab (same path as the gallery)', async () => {
+  // -- #348: an example JOINS the canvas; it never replaces it --
+
+  it('clicking an example inserts it into the canvas instead of replacing it', async () => {
+    freshTab();
+    useTabStore.getState().setNodes([
+      { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'MINE', type: 'K', params: {} } },
+    ] as never);
     mockedRest.listExamples.mockResolvedValue([
       ex({ name: 'Loadable', path: 'Usage_Example/Loadable' }),
     ]);
     mockedRest.loadExample.mockResolvedValue({
       name: '  My Model  ',
-      nodes: [],
+      nodes: [rawNode('a'), rawNode('b')],
       edges: [],
     });
-    // The whole document goes in through one store action (#200 items 4
-    // and 8), so there is one call to assert on instead of three.
-    const loadGraphDocument = vi.fn();
-    useTabStore.setState({ loadGraphDocument });
 
     render(<TemplatesTab />);
     fireEvent.click(await screen.findByText('Loadable'));
 
-    await waitFor(() => expect(loadGraphDocument).toHaveBeenCalled());
+    await waitFor(() => expect(activeTab().nodes).toHaveLength(3));
     expect(mockedRest.loadExample).toHaveBeenCalledWith('Usage_Example/Loadable');
-    // The trimmed example name is mirrored onto the tab.
-    expect(loadGraphDocument).toHaveBeenCalledWith(
-      expect.objectContaining({ nodes: [], edges: [], name: 'My Model' }),
+    // The user's own node is still there, still under its own id.
+    expect(activeTab().nodes.find((n) => n.id === 'mine')!.data.label).toBe('MINE');
+    // ...and the example's name did NOT take over the tab, because the tab
+    // still holds the user's graph.
+    expect(activeTab().name).toBe('Tab 1');
+  });
+
+  it('a click is one undo step away from the canvas that was there', async () => {
+    freshTab();
+    useTabStore.getState().setNodes([
+      { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'MINE', type: 'K', params: {} } },
+    ] as never);
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Loadable' })]);
+    mockedRest.loadExample.mockResolvedValue({
+      nodes: [rawNode('a'), rawNode('b')],
+      edges: [{ id: 'e1', source: 'a', target: 'b', sourceHandle: 'tensor', targetHandle: 'tensor' }],
+    });
+
+    render(<TemplatesTab />);
+    fireEvent.click(await screen.findByText('Loadable'));
+    await waitFor(() => expect(activeTab().nodes).toHaveLength(3));
+
+    useTabStore.getState().undo();
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
+    expect(activeTab().edges).toHaveLength(0);
+  });
+
+  it('inserts from the keyboard, so the drag is an enhancement and not the way in', async () => {
+    freshTab();
+    mockedRest.listExamples.mockResolvedValue([ex({ name: 'Reachable' })]);
+    mockedRest.loadExample.mockResolvedValue({ nodes: [rawNode('a')], edges: [] });
+
+    render(<TemplatesTab />);
+    const item = (await screen.findByRole('button', { name: /Reachable/ }));
+    fireEvent.keyDown(item, { key: 'Enter' });
+
+    await waitFor(() => expect(activeTab().nodes).toHaveLength(1));
+  });
+
+  it('makes every example draggable, carrying its path', async () => {
+    mockedRest.listExamples.mockResolvedValue([
+      ex({ name: 'Draggable', path: 'Usage_Example/Drag' }),
+    ]);
+    render(<TemplatesTab />);
+    const item = (await screen.findByText('Draggable')).closest('[draggable]') as HTMLElement;
+    expect(item).toBeTruthy();
+
+    const setData = vi.fn();
+    const dt: any = { setData, effectAllowed: '' };
+    fireEvent.dragStart(item, { dataTransfer: dt });
+
+    expect(setData).toHaveBeenCalledWith(
+      'application/codefyui-example',
+      'Usage_Example/Drag',
     );
+    expect(dt.effectAllowed).toBe('move');
   });
 
   it('surfaces a load failure as a toast and leaves the graph alone', async () => {
+    freshTab();
+    useTabStore.getState().setNodes([
+      { id: 'mine', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'MINE', type: 'K', params: {} } },
+    ] as never);
     mockedRest.listExamples.mockResolvedValue([ex({ name: 'Broken' })]);
     mockedRest.loadExample.mockRejectedValue(new Error('nope'));
-    const loadGraphDocument = vi.fn();
     const addToast = vi.fn();
     useToastStore.setState({ addToast });
-    useTabStore.setState({ loadGraphDocument });
 
     render(<TemplatesTab />);
     fireEvent.click(await screen.findByText('Broken'));
@@ -178,7 +249,7 @@ describe('TemplatesTab', () => {
     await waitFor(() =>
       expect(addToast).toHaveBeenCalledWith('Failed to load example', 'error'),
     );
-    expect(loadGraphDocument).not.toHaveBeenCalled();
+    expect(activeTab().nodes.map((n) => n.id)).toEqual(['mine']);
   });
 
   it('offers a jump index across example categories', async () => {
