@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-08-21
+
 ### Added
 
 - **`cdui plugin sync` — one command to catch up on built-in packs, and an
@@ -68,147 +70,516 @@ received — each links to the release it was published as.
   (`api.apiVersion >= 4`). The apiVersion 3 contract is now frozen under test
   too, the same way v2 already was.
 
-### Fixed
+- **A language model can now be pretrained on the canvas** ([#289], [#290],
+  [#291]). Seven LLM nodes close the gap epic [#292] named: the catalog could
+  describe a transformer but had no path from raw text to trained weights, so
+  the only way to train a decoder was to leave CodefyUI.
 
-- **Clicking a sidebar example destroyed the graph you were working on, with
-  nothing to undo** ([#348]). The Templates tab sent every click through
-  `openExample`, which replaces the active tab's nodes, edges, subgraphs,
-  description, save binding and tab name in one commit and — by design —
-  pushes no undo frame. So a stray click on a list of ~30 examples took
-  however long you had spent on the canvas with it, and Ctrl+Z did nothing,
-  because from the undo stack's point of view nothing had happened. The hint
-  under the list advertised exactly that behaviour: "Click an example to open
-  it". Examples now **join** the canvas the way every other palette item
-  does. Drag one out of the sidebar and it lands where you release the
-  pointer, without the camera moving off the gesture that just finished;
-  click one and it lands clear of the graph already there, with the viewport
-  brought onto it. Either way the ids are remapped so nothing on the canvas
-  can be overwritten, the tab keeps its own name, description and save
-  target, and one Ctrl+Z takes the whole block back off. A template written
-  by a newer CodefyUI is still refused, on the drag path as well as the
-  click.
+  `CausalLMModel` is a pre-LN GPT-style decoder — learned/sinusoidal/RoPE
+  positions, LayerNorm or RMSNorm, optional weight tying and gradient
+  checkpointing — whose forward is `input_ids (B, T) -> logits (B, T, V)`, so
+  `Optimizer`, `TrainingLoop`, `CheckpointSaver` and `ModelSaver` need to know
+  nothing about language models. Its defaults build 203,668,480 parameters.
+  `LMCrossEntropyLoss` flattens the batch and time axes before
+  `F.cross_entropy` — deliberately *not* a subclass of `nn.CrossEntropyLoss`,
+  because `TrainingLoop`'s classification gate would then have run
+  `argmax(dim=1)` over the time axis and reported a meaningless accuracy that
+  early stopping can be asked to monitor.
 
-- **An unhandled `/api` path answered `405 Method Not Allowed` on every real
-  installation, and `404` in CI** ([#285]). The catch-all that serves the built
-  frontend is registered only when `frontend/dist/index.html` exists, and it
-  accepts `GET` on any path. Starlette does not stop at the first route whose
-  *path* matches: a route matched by path but missed by method is recorded as a
-  partial match, and a partial match with no full match anywhere is answered
-  405. So `DELETE /api/files/../../etc/passwd` — which no API route can match,
-  because `{filename}` does not span `/` — reached the SPA handler, matched it
-  by path, missed it by method, and came back "the resource exists, your verb
-  is wrong". Both halves of that were false. The exclusion now lives in the
-  route's *pattern* rather than in the handler body, where it could never have
-  helped: the 405 is produced by the router, before any handler runs.
-  Wrong-method requests to real endpoints still answer 405, which is why this
-  is a lookahead on the catch-all and not an all-methods `/api` 404 route in
-  front of it.
+  Data comes in through `TextCorpusDataset` (text rows from the Hugging Face
+  Hub or a local `.txt`) and `LMTokenizedDataset`, which concatenates every
+  document into one token stream and cuts fixed-length blocks whose labels are
+  the inputs shifted by one — no padding, and a disk cache keyed on everything
+  that changes the stream, because tokenising a real corpus is minutes that
+  produce the same bytes every time. `LMTokenizer` supplies one tokenizer
+  object to every node that needs one, over a duck-typed `ANY` port
+  (`encode`/`decode`/`eos_id`/`vocab_size`) rather than a new wire type.
 
-  The reason nobody saw it is the more interesting half. Four traversal
-  assertions in `test_api_data_files.py` had been deterministically red for
-  anyone who had run `pnpm build` and green in CI for as long as the catch-all
-  has existed, because CI's checkout has no `frontend/dist` — so CI was testing
-  the *less* representative environment, the no-Node release path having made a
-  built `dist` universal for real users. A new `pytest (built frontend)` job
-  runs the whole backend suite against a real `pnpm build`, with a step that
-  fails if the SPA routes are not registered so the job cannot quietly decay
-  into a fifth copy of the matrix; the existing matrix keeps covering the
-  dist-absent state, which is what `cdui dev` runs. A sweep of the full suite
-  in both states found those four and nothing else. Three SPA cache-header
-  tests that had been skipped in CI since they were written now run there too.
+  `PerplexityEvaluate` answers the question `EvaluateModel` cannot: a language
+  model is wrong most of the time and should be, so it is scored on the
+  probability it put on the token that actually came next. The mean is
+  token-weighted, so the number does not move when `batch_size` does.
+  `TextGenerate` samples text with temperature / top-k / top-p, slides the
+  context window past `max_seq_len`, and draws on the CPU so one seed gives
+  the same text on a laptop and on a GPU box.
 
-- **`ModelSaver(save_mode="full_model")` died with a raw pickle error on any
-  graph using Reshape, SelectIndex or a transformer block** ([#283]). Those
-  layers — and four more with the same defect: TransformerDecoder, LSTM, GRU,
-  MultiHeadAttention — were built from classes defined *inside a function*, and
-  pickle stores a class by name, so there was nothing to write. The mode failed
-  by construction on exactly these layers with `AttributeError: Can't pickle
-  local object 'Reshape.__new__.<locals>.Mod'`, which names an internal and
-  offers no way out — the same complaint [#222] made about the loader. The
-  closure turned out to be incidental: each already took its configuration
-  through `__init__` arguments, and the nesting only kept `import torch` off
-  the node module's import path. They are now ordinary module-scope classes in
-  `app.nodes.utility.sequential_modules`, imported inside the builder so the
-  lazy-torch property is unchanged, and their attribute names are unchanged so
-  existing `state_dict` checkpoints still load. What is still unpicklable — a
-  custom node or plugin that builds its module in a function — is refused
-  *before* the write, naming the class and pointing at `state_dict`, instead of
-  leaving a half-written file.
+  A new example, **Train a Causal LM on TinyStories**
+  (`examples/LLM/TrainCausalLM-TinyStories`), wires the whole chain up at bf16
+  with an effective batch of 32 sequences, then scores a held-out split and
+  writes a sample. It ships with a `README.md` carrying the recipe, both token
+  budgets and the memory levers, because the card cannot: the canvas gallery
+  truncates a description at 80 characters and shows no tooltip, so the card
+  leads with the only two facts that decide whether the graph can run at all —
+  a 16 GB GPU, and one first-run download. A test asserts those two survive
+  that truncation, and a second asserts every number the README quotes is
+  still derivable from the graph's params — each of them is a relationship
+  between two nodes, which is exactly what graph validation cannot see.
 
-  Saving is only half a round trip, and [#222]'s loader accepts `torch.nn`'s own
-  classes only, so a full-model file containing CodefyUI's classes still will
-  not come back through `ModelLoader` — including `GraphModelModule`, which
-  every layer-editor model is. That was previously unreachable (nothing got as
-  far as saving one); it is now reachable, so the saver says so at save time
-  rather than letting the user discover it one node later. The file is valid
-  and `torch.load(..., weights_only=False)` reads it outside CodefyUI;
-  `state_dict` remains the round trip that works.
+- **The optimizer and loss applicability tables are now checked against the
+  installed torch** ([#189]). `#134` declares which algorithm accepts which
+  hyperparameter rather than inferring it from `inspect.signature`, because
+  inferring it would forward `eps` to Adagrad — whose torch default is 1e-10
+  against the Adam family's 1e-8 — and silently retune every existing Adagrad
+  graph. The cost of declaring is that the table can stop describing torch
+  without anything saying so. Two tests per node close that: one asserts each
+  declared set still equals "accepts it *and* agrees with our default", the
+  other fails when any new keyword appears in a torch signature. Neither
+  forwards anything automatically.
 
-- **A published app's OpenAPI document advertised `http://` even when it was
-  fetched over HTTPS** ([#275]). `servers[].url` was built with a literal
-  scheme, which was true of the deployment CodefyUI was written for — one
-  machine, loopback, no TLS — and stopped being true the moment the documented
-  way to deploy it became a reverse proxy terminating HTTPS. A browser blocks
-  the resulting call as mixed content, so Swagger UI's "Try it out" failed, and
-  a generated client got the wrong base URL. The scheme now comes from the
-  request, which uvicorn rewrites from `X-Forwarded-Proto` when it is run with
-  `--proxy-headers` (reachable since [#272]). The header is deliberately *not*
-  read by the application: doing so would let any client forge the URL a
-  published app advertises to every integrator who fetches the document.
+- **OOM crossed with determinism** ([#193]). Both paths reach for
+  process-global state and their interaction had no test. Two now pin it: OOM
+  recovery runs *inside* the determinism scope, and an OOM unwinds that scope
+  rather than stranding it.
 
-- **The canvas WebSocket refused graphs the HTTP routes accept, and said so
-  only by hanging up** ([#274]). `WS /ws/execution` was never uncapped —
-  uvicorn's `ws_max_size` bounded it, enforced while fragments are assembled —
-  but that 16 MB was an inherited library default: nothing in this repository
-  chose it, no launch path passed it, no document mentioned it, and it was four
-  times *stricter* than the 64 MB `MAX_RUN_BODY_BYTES` the HTTP paths use, so a
-  graph between the two was accepted by `POST /api/graph/run/{name}` and
-  refused by the socket the editor actually uses. There is now a
-  `WS_MAX_MESSAGE_BYTES` setting that defaults to `MAX_RUN_BODY_BYTES` — one
-  graph ceiling, both transports — which `cdui start` and `cdui dev` hand to
-  uvicorn as `--ws-max-size`. The refusal is also legible now: the close frame
-  always carried code 1009 and a reason, and the editor threw both away and ran
-  its generic reconnect, so "your graph is too large" reached the user as
-  "Connection lost" followed by "Connection restored" and an unexplained
-  failure on the next Run click. It now says the graph was too large.
+- **A vision-language-action policy can now be trained, evaluated and watched
+  on the canvas** ([#311], [#312]). Five nodes in a new `VLA` category close
+  the wave epic [#309] scoped: the catalog could build a transformer and,
+  since the LLM wave, train a decoder — but there was no environment to act
+  in, no demonstrations to clone and no closed-loop number to report, so the
+  loop every VLA paper is built around had to happen outside CodefyUI.
 
-- **The layers editor had its own colour scheme, and it was the old one.** The
-  modal that edits a `SequentialModel`'s layers carried a layer-type palette in
-  two hand-synced copies, on the pre-lift Material tones the rest of the app
-  moved off when they were measured too dark to read on a dark surface. The app
-  therefore had two purples, two blues, two reds and two blue-greys, and which
-  one you saw depended on whether a modal was open. There is now one table, in
-  `tokens.css` as its own `--layer-*` group, and the contrast gate checks it —
-  393 colour relationships across 186 tokens, up from 337 across 175. Adding
-  the gate found a real failure it then fixed: a layer node's header was the
-  raw hue with a white title on it, 2.16:1 to 3.09:1 on all seven hues, and is
-  now built the way a canvas node's header is. (#228)
-- The non-convex collapse refusal now tells two same-named blockers apart by
-  their canvas position — a message reading `Conv, Conv` named neither of them.
-  (#200)
-- A plugin's `onGraphChanged` now fires when only the subgraph definitions
-  change. Renaming a block, or editing its insides and stepping back out, moved
-  bytes that `graph.getGraph()` reports while telling a watching plugin
-  nothing. (#200)
-- The publish pre-flight now scans portable preset definitions. A SECRET-typed
-  value baked into `presets[].nodes[].params` — the third and last place a
-  graph file can carry a node — published cleanly, while the identical value
-  one level up was refused. (#200)
-- A node whose `"type"` is explicitly `null` no longer crashes the secret
-  walkers with an `AttributeError`. Reachable only through the publish gate,
-  which reads a file straight off disk with no validation; it failed closed
-  (a 500, nothing written or leaked). (#200)
+  `PushWorldEnv` is that environment, and it installs nothing. A white agent
+  disc, one to four coloured pucks and one or two coloured ring targets on a
+  96px canvas, all of it pure torch: dynamics are circle-overlap resolution,
+  rendering is anti-aliased distance fields on a cached meshgrid, and there
+  is no pygame, no pymunk and no gymnasium behind any of it. Every episode
+  carries an instruction of the form `push the {color} puck to the {color}
+  target`, and that sentence is load-bearing by construction — from
+  `n_distractors: 1` upward there are two targets and at least two pucks with
+  the colours freshly shuffled per episode, so nothing in the pixels says
+  which puck or which target is the goal. What travels on the wire is a
+  factory rather than a live episode, so `(seed, config)` reproduces an
+  episode tensor-exactly and two consumers can draw from disjoint seed
+  streams without coordinating.
 
-- **A stale `addToolbarButton` disposer removed the button that had replaced
-  it** ([#186]). Re-adding a toolbar button id replaces the button, but the
-  remove function returned by the *superseded* registration was keyed by id,
-  so calling it took the live replacement down instead of doing nothing. A
-  plugin that re-registers a button when its own state changes accumulates
-  exactly those disposers, and the host tracks every one of them for teardown.
-  The disposer is now scoped to the registration that produced it — the same
-  discipline `nodes.registerRenderer` already used. `removeToolbarButton(id)`
-  is unchanged and still removes whatever currently holds the id; both
-  behaviours are now in the published contract and the plugin docs.
+  `PushWorldDemos` rolls a scripted expert through it — approach the point
+  behind the puck, orbit if caught on the wrong side, then push through it,
+  recomputed every step so it self-corrects, and pinned in the suite at 99 of
+  100 seeds solved, in under 40 steps on average across the ones it solves —
+  and emits behavior-cloning samples shaped `((image, instruction bytes,
+  action chunk), action chunk)`. The chunk rides inside `data` as well as the
+  target so a flow-matching model can noise it inside `forward` while
+  `TrainingLoop`'s contract stays untouched; instructions are UTF-8 bytes
+  zero-padded to 48, because at this scale a 256-row byte embedding is the
+  whole language stack and BPE would buy a 50k-row table. `demo_noise`
+  defaults to 0.5 and is DART rather than decoration: with probability one
+  half per step the action *executed* in the environment is perturbed while
+  the recorded label stays the expert's, because pure on-trajectory
+  demonstrations contain no recovery states and a cloned policy that drifts
+  one pixel off the manifold has never seen the situation it is now in. The
+  prototype measured that as 4% closed-loop success trained clean against 24%
+  with noise 0.5, everything else equal, before any architecture change. The
+  held-out split runs on a seed stream offset by 1,000,000 so it can never
+  share an episode with training at any `episodes` value, and `demo_video`
+  hands the first few episodes straight to `VideoWrite`.
+
+  `VLAModel` is the policy: a vision stem and a 256-row byte embedding of the
+  instruction feed a pre-LN bidirectional trunk over `[vision; text]` tokens,
+  and an action expert — self-attention over chunk queries, cross-attention
+  into the trunk — predicts H actions at once, 3,339,938 parameters at the
+  defaults. `head_type` is the research knob the node is shaped around:
+  `flow_matching` is the pi0 / SmolVLA family (noise the chunk, learn the
+  velocity field, Euler-integrate `flow_steps` at inference), `regression` is
+  direct MSE behavior cloning, and the trunk, the data and every other knob
+  are held fixed across the two, so the dominant continuous-action paradigms
+  can be compared instead of argued about.
+
+  The loss comes out of a port. A flow head trains on the residual `v_pred -
+  v_target` against zero, a regression head on MSE against the chunk, and a
+  generic loss node wired to the wrong head would train the wrong objective
+  with nothing anywhere reporting it — so there is no separate VLA loss node
+  to mismatch. `VLAModel` emits the mode-matched `loss_fn` on an output port
+  beside the model, and the mistake cannot be built. (The issue sketched a
+  standalone `VLALoss`; the deviation is deliberate and recorded on [#312].)
+  The emitted loss reduces in float32 so bf16 autocast cannot degrade it, and
+  is deliberately not an `nn.CrossEntropyLoss` subclass, for the same reason
+  `LMCrossEntropyLoss` is not: `TrainingLoop`'s classification gate keys on
+  that `isinstance`.
+
+  Evaluation arrives in both halves the literature reports. `VLARollout` runs
+  fresh episodes from a seed stream offset by 2,000,000 — so a default-wired
+  graph never evaluates on initial states it trained on — and reports
+  closed-loop `success_rate`, mean episode length, a per-episode text report,
+  per-episode metric series, and the rollout frames bordered green or red by
+  outcome, ready for `VideoWrite`. Two of its params are experiments rather
+  than settings. `execute_k` is the receding horizon (predict H, execute k,
+  re-plan): measured on one trained policy at 46% for k=2, 34% for k=4 and
+  20% for the full chunk of 8 — the open-loop compounding-error curve as a
+  single knob. `instruction_mode: swapped` hands the policy a distractor
+  puck's colour instead of the real goal's, where a pixels-only policy scores
+  exactly what it scored before and a language-reading one collapses (46% to
+  2% on the same prototype policy). `VLAActionEval` is the fast complement —
+  chunk MSE against the expert over the held-out demos, seconds rather than
+  minutes and deterministic per seed — and a low action MSE beside a low
+  success rate is precisely the compounding-error signature that `demo_noise`
+  and `execute_k` exist to manage.
+
+  A new example, **Train a VLA on PushWorld**
+  (`examples/VLA/TrainVLA-PushWorld`), ships the wave's acceptance graph as a
+  one-click start ([#332]): 13 nodes carrying 2,400 DART-noised demonstration
+  episodes into a 3.3M-parameter regression-head policy, AdamW at 1e-3 under
+  a `warmup_cosine` schedule stepped per optimizer step, 110 epochs, then
+  closed-loop rollout, open-loop MSE and two `VideoWrite` artifacts that play
+  inline in the editor. Reported from an RTX 4080 run of about 56 minutes
+  under 3 GB of VRAM: `success_rate` 0.967 (29 of 30), mean 45.6 steps of a
+  120-step budget, held-out action MSE 0.588 — and 0.033 (1 of 30) with the
+  instruction swapped and the weights unchanged, which is the row the example
+  exists for. The `README.md` beside the graph carries the recipe, the
+  ablation playbook and a scale-down configuration, because the card cannot:
+  the gallery truncates a description at 80 characters, so this one leads
+  with the GPU and the hour.
+
+  One claim in that node set was corrected against a controlled experiment
+  before any of it shipped ([#338]). `vision_stem` was written describing the
+  conv stem as the better one and citing the "early convolutions help
+  transformers see" result, an attribution taken from prototype notes in
+  which the stem and the dataset size had changed in the same iteration — so
+  it measured neither. A two-arm study on the same data, the same seed and
+  the same 1,200-episode / 45-epoch budget, with the stem as the only
+  variable, put `patchify` ahead: 0.85 success against 0.45. The param text
+  now states that result, records that only `conv` has been run at the full
+  2,400-episode / 110-epoch budget (0.97), and says the knob exists to settle
+  exactly this. What is not here: discretized action tokens (the OpenVLA
+  family) would be a third `head_type` rather than a rewrite, and nobody has
+  written it; and `VLA` is in neither the sidebar's curated category order
+  nor the empty-canvas gallery's, so the nodes sort in after the taught
+  categories and the example lands in the gallery's catch-all section.
+
+- **Video on the canvas — a run can write a clip and the results panel plays
+  it** ([#310], the first slice of epic [#309]). One `node_status` event is
+  capped at `RUN_EVENT_PAYLOAD_CAP_BYTES` — 128 KB, two orders of magnitude
+  under a clip — so video cannot ride the event stream the way
+  `MEDIA_IMAGE`'s base64 PNG does. It travels by *reference* instead: nodes
+  write files under a new `settings.MEDIA_DIR` (`<data>/media`,
+  `assets/media` in project mode), the new `GET /api/media/{path}` serves
+  them inline with a real `Content-Type` — the existing download routes force
+  `application/octet-stream`, which a `<video>` element cannot play — and the
+  new `MEDIA_VIDEO` port kind carries a small validated dict of `path` /
+  `url` / `format` plus optional `fps`, `frames`, `width`, `height`, `bytes`.
+  `FileResponse` answers Range requests, so seeking in the player works.
+
+  Zero new Python dependencies, on the tensorboard precedent that turning a
+  feature on should cost an install nothing — torchvision removed its video
+  API in 0.26 and vendoring PyAV for one feature is not the trade.
+  `VideoWrite` accepts `(T,C,H,W)` or `(T,H,W,C)`, float `[0,1]` or uint8,
+  gray or RGB, and encodes gif through Pillow — always available — or mp4 by
+  piping rawvideo to an `ffmpeg` binary when one is on `PATH`. `format: auto`
+  picks mp4 exactly when ffmpeg is there, and the error when it is not names
+  the gif fallback. It also emits a middle-frame PNG on a `MEDIA_IMAGE` port,
+  capped at 256 px on its longest side, so a clip has a face in any client
+  that has not learned the video kind. `VideoLoad` is the other direction —
+  gif via Pillow, mp4/webm via `ffmpeg`/`ffprobe` — returning `(T, 3, H, W)`
+  float `[0,1]`, with `max_frames` to stop the decode early and `stride` that
+  scales the reported fps down so playback duration holds. Both are
+  `cacheable = False` for `ImageWriter`'s reason: the file on disk *is* the
+  output, so a cache hit would hand back a reference to a file that may no
+  longer exist.
+
+  The frontend `LogKind` union gains `'video'`, and the panel plays mp4 in
+  `<video controls loop>` and gif in `<img>` — a gif is an animated image,
+  not a valid `<video>` source. The wire validator forwards only a closed
+  list of reference keys and refuses a path that is not relative, judged
+  under `PurePosixPath` *and* `PureWindowsPath` because `Path.is_absolute()`
+  is platform-shaped in both directions: POSIX waves `C:/leak/a.mp4` through
+  as a filename and Windows waves `/leak/a.mp4` through as drive-relative.
+  `..` is refused as any component, not only as a prefix. `/api/media` is
+  read-only — files arrive only by a node writing one, there is no upload and
+  no delete — so its GETs stay unauthenticated reads like every other
+  download route, and the extension allowlist means a file written with any
+  other suffix is unreachable through it.
+
+- **`CausalLMModel` can now be ablated: grouped-query attention, qk-norm, and
+  a bias switch** ([#299]). The node shipped able to train exactly one
+  architecture. Studying architecture needs knobs that change it, and these
+  three land as advanced params whose defaults leave today's model
+  bit-for-bit unchanged.
+
+  `n_kv_heads` (0 = `n_heads`) is grouped-query attention. At the default the
+  fused `qkv` projection is kept exactly as it was, so every existing config
+  keeps its parameter shapes and its initialization stream; below `n_heads`
+  the module switches to split `q` / `kv` projections and SDPA's
+  `enable_gqa`, and `n_kv_heads=1` is multi-query attention. It has to divide
+  `n_heads` evenly, and the error names both parameters rather than only the
+  one that was typed. On the default 203,668,480-parameter configuration the
+  trade is readable straight off the node's `param_count` output: 184,775,680
+  at `n_kv_heads=4`, 180,052,480 at 1.
+
+  `qk_norm` RMS-normalizes each head's queries and keys before the attention
+  dot product — the standard intervention for training at high learning rates
+  — for 1,536 extra parameters on that same configuration, all of them 1-D
+  gains the initialization pass deliberately leaves at one. `bias=false`
+  gives Llama-style bias-free attention and MLP linears, 110,592 parameters
+  lighter. All three join `structural_params`, so editing one honestly
+  discards the weights persisted for that node rather than trying to load a
+  checkpoint into a different shape. The scope is training-time architecture:
+  GQA's other well-known payoff is a smaller KV cache at decode time, and
+  `TextGenerate` deliberately keeps no KV cache at all, so what moves on the
+  canvas is parameter count, memory and quality — not generation speed.
+
+- **`DataMixDataset` — an eighth LLM node, for mixing corpora** ([#300]).
+  What ratio of TinyStories to wikitext? Does easy-then-hard ordering help?
+  Neither question could be asked on the canvas, because `LMTokenizedDataset`
+  takes one corpus. `DataMixDataset` takes two to six — dynamic
+  `corpus_1..corpus_N` ports driven by a `sources` param, the same
+  `resolve_count_param` convention `ComposeTransform` uses — and emits one
+  dataset of raw text rows for `LMTokenizedDataset` to tokenize, plus a
+  `num_rows` scalar and a per-source row-count breakdown in the run log.
+
+  `interleave` draws rows proportionally to `weights`, seeded and without
+  replacement, so the same seed over the same inputs reproduces the same
+  mixture exactly; picks are drawn in chunks of 8,192 so a million-row corpus
+  does not put a Python loop around a kernel launch. Rows within one source
+  keep their relative order — shuffling stays `DataLoader`'s decision,
+  downstream. `concat` is the curriculum: `corpus_1` in full, then
+  `corpus_2`, and so on. Two behaviours are documented on the params rather
+  than left to be discovered: a source that empties stops being drawn and the
+  remaining weights renormalize, so the tail of a mixture is whatever corpora
+  still have rows; and a blank `weights` means equal weights, the only
+  default that is valid at every source count. The mixture itself stores only
+  `(source, row)` index pairs and reads through a new `MixedTextDataset`
+  adapter, so mixing two Hugging Face corpora never materializes their text.
+  The node is `cacheable = False`, since it consumes live dataset handles a
+  fingerprint cannot describe.
+
+- **The training loop can now run on the optimizer-step clock, and report on
+  itself while it does** ([#297], [#298]). `TrainingLoop` stepped its LR
+  scheduler once per epoch, full stop. A step-budgeted language-model run —
+  `epochs=1` with `max_steps=1500` over a packed corpus — therefore took one
+  scheduler step for the entire run: the acceptance run for epic [#292]
+  declared `OneCycleLR(total_steps=1500)`, traversed about a tenth of a
+  percent of it, and trained at an effectively constant learning rate. It
+  still converged, to a validation perplexity of 19.17, which is exactly what
+  makes it worth fixing — the schedule the graph declared and the schedule
+  that ran were different objects, and nothing said so.
+
+  `TrainingLoop.scheduler_step` picks the clock: `epoch` is the historical
+  behaviour and stays the default, `optimizer_step` advances the scheduler
+  exactly once per applied optimizer step. `ReduceLROnPlateau` is
+  metric-driven and stays per-epoch in both modes, because there is no
+  per-step metric for it to react to. `LRScheduler` gains the three shapes a
+  pretraining run actually asks for — `warmup_cosine`, `warmup_linear` and
+  `constant_with_warmup` — each a `SequentialLR` composing a linear ramp from
+  ~0 over `warmup_steps` with, respectively, a cosine decay, a linear decay,
+  or a hold, all denominated in scheduler steps over `total_steps`.
+
+  Four telemetry switches ([#298]) make the run something you can study
+  rather than only watch, all off by default and all thinned by
+  `log_interval`. `log_grad_norm` records the pre-clip global gradient norm
+  as a `grad_norm` series — free when clipping is on, because
+  `clip_grad_norm_` returns that number anyway, and measured through an
+  infinite-threshold clip call when it is not, so the fp16 unscaling is
+  identical either way; with `grad_clip_norm` set, a `grad_norm_clipped`
+  series makes the clipping pressure visible. `log_update_ratio` records
+  `||lr * grad|| / ||weights||`, the classic learning-rate health signal,
+  around 1e-3 on a healthy run. `val_every_steps` runs the wired
+  `val_dataloader` mid-epoch and records its own `val_loss_step` series
+  against optimizer steps — for an `epochs=1` run that is the only way to get
+  a validation curve instead of one terminal point — and the pass consumes no
+  RNG, so the training stream is undisturbed. `checkpoint_every_steps` writes
+  step milestones through the existing periodic-checkpoint path, each stamped
+  with its step count so the milestones are distinct files rather than a
+  rolling latest. That stamp is the trade: the checkpoint's `epoch` field
+  carries the step count, so resuming `start_epoch` from one of them is not
+  meaningful, and the parameter says so. Every series goes to the run's
+  metric store and to TensorBoard through the same call, so the two cannot
+  disagree about what was recorded.
+
+- **`TrainingLoop` now hands out the optimizer it actually trained with**
+  ([#148]). `CheckpointSaver.optimizer` could only be fed from the
+  `Optimizer` node, and the checkpoint it wrote was correct for two reasons,
+  neither of them visible on the canvas: `_prepare_optimizer` usually mutates
+  that same object in place, and the `train.model -> save.model` edge happens
+  to force `TrainingLoop` to run first. The `rebuilt` branch breaks the first
+  one outright — when the optimizer on the port does not line up with the
+  model, the loop constructs a fresh one and the object the graph saved never
+  trains at all, so the checkpoint stored optimizer state that had never seen
+  this model. No error, and a file that looks entirely valid. The new
+  `optimizer: OPTIMIZER` output carries whichever optimizer the run settled
+  on, on every path including an interrupted one — which is precisely when
+  the optimizer state matters — so the save path becomes an edge you can draw
+  instead of an assumption you have to know about. Additive: existing graphs
+  are unaffected, and no shipped example is rewired here.
+
+- **The layers editor can now build a recurrent or attention model**
+  ([#346]). The backend's `_build_layer` already knew how to construct
+  `LSTM`, `GRU`, `MultiHeadAttention`, `TransformerEncoder`,
+  `TransformerDecoder` and `SelectIndex`, but none of them were in the
+  editor's palette — the only way to get one into a layer-editor model was to
+  hand-edit the serialized spec. All six are now draggable, plus a brand-new
+  `RNN`, and `graphSerialization` learns eight new type names (those seven
+  and `Reshape`, which is recognised on load but is still not in the palette)
+  so a file containing one stops round-tripping as `Unknown`.
+
+  `RNNBlock` is new on the backend beside `LSTMBlock` and `GRUBlock`: the
+  plain-tanh cell the gated ones exist to improve on, without which the
+  controlled comparison that motivates gating at all — same graph, same data,
+  same seed, swap the recurrent layer — could not be built here. All three
+  recurrent wrappers now default to `batch_first=True`, because inside a
+  layer-editor model the input always arrives from a DataLoader, which yields
+  `(batch, seq, feature)`; torch's own default would read that as `(seq,
+  batch, feature)` and silently transpose the two, training on nonsense with
+  no error anywhere. The editor's param form is int/float only, so this could
+  not be a checkbox — it is the default instead, and an explicit
+  `batch_first` in the layer spec still wins. `RNNBlock` joins the curated
+  `full_model` unpickling allowlist ([#288]) alongside its siblings, so a
+  model containing one loads back. The two new palette groups reuse hues
+  rather than adding them: Recurrent takes the blue the canvas already paints
+  an RNN node and Attention the purple it paints a Transformer node, so a
+  layer inside `SequentialModel` is the same colour as the node it
+  corresponds to — the pairing table went from eleven roles to thirteen, not
+  from seven hues to nine.
+
+- **`SyntheticSequence` and `MaskedFill` — the two nodes a sequence lesson
+  could not be built without** ([#346]). The Data category's three synthetic
+  generators are all spatial or tabular — `SyntheticDataset` makes 2D points,
+  `SyntheticSegmentation` an image plus a mask, `SyntheticShapes` an image —
+  so the recurrent nodes had no zero-download dataset to train against at
+  all: one forward pass on a hand-typed `TensorInput` was the whole story.
+  `SyntheticSequence` emits the standard *memory* benchmark — a
+  length-`seq_len` sequence of distractor tokens with the answer hidden at
+  one end and a label obtainable only by carrying it across. The
+  `recall_first` / `recall_last` pair is the point: identical generator,
+  identical shapes, identical task difficulty, dependency length `T` versus
+  1, so flipping one dropdown isolates *distance* as the variable and shows a
+  plain RNN's gradient dying. Answers occupy tokens `0 .. n_classes-1` (they
+  are also the labels) and distractors the range above, and a `vocab_size`
+  output reports the `num_embeddings` a downstream `Embedding` needs. Each
+  sample is `(sequence (T,) int64, label int)`, which drops straight into
+  DataLoader then TrainingLoop with no adapter, and the whole tensor is
+  materialised once under one seed so a shuffling DataLoader with any worker
+  count stays deterministic.
+
+  `MaskedFill` applies a boolean mask — `AttentionMask`'s `True = blocked`
+  convention, broadcasting by torch's normal rules so a `[seq, seq]` mask
+  covers `[batch, seq, seq]` or `[batch, heads, seq, seq]` scores unchanged,
+  and a non-boolean mask is read as non-zero = blocked. Until now
+  `scores.masked_fill(mask, -inf)` was reachable only from *inside* a
+  packaged attention node, so a graph that spells attention out one node per
+  step — `MatMul`, `ScalarMultiply`, `Softmax`, `MatMul` — could build a
+  causal mask and had no way to apply it: the masking half of the mechanism
+  was the one step that could not be shown on the canvas. The default fill is
+  `-inf` and the node belongs *before* the softmax, which is what makes a
+  blocked position get exactly zero probability while the survivors
+  renormalise to sum to 1. `zero` and `custom` fills are offered and
+  documented as not giving correct attention weights.
+
+- **`batch_first` on `MultiHeadAttention` and `PositionalEncoding`**
+  ([#346]). Both took torch's transformer layout, `(seq, batch, embed)`,
+  while the recurrent nodes work in `(batch, seq, feature)` — so the two
+  halves of a sequence model disagreed about which axis was which. Both nodes
+  now carry a `batch_first` param that switches the accepted 3D layout to
+  batch-first; 2D input is `[seq, D]` either way. It defaults to `False`
+  because existing graphs were built against the old layout. On
+  `MultiHeadAttention` it is listed in `structural_params`, so flipping it
+  drops the persisted module and builds a fresh one rather than reusing a
+  differently-shaped `nn.MultiheadAttention`, and the verbose step trace
+  stops transposing for display when the input is already batch-first.
+
+- **Eight RL nodes: the canvas can now run a policy in an environment, score
+  it, and train a reward model on preferences** ([#347]). The RL category had
+  `EnvWrapper` (gymnasium's CartPole), `DQN`, `PPO`, `RewardModel` and
+  `KLDivergence` — and no way to execute the sentence every algorithm starts
+  with, "use the current policy to collect a batch of trajectories". Rollout
+  was faked with a `TensorInput`, which meant the one thing that makes
+  reinforcement learning *reinforcement* learning was the one thing a student
+  never saw run. The change is purely additive: eight new node classes, eight
+  new test files, and zh-TW descriptions — no existing file was modified.
+
+  `GridWorldEnv` is the textbook N-by-N grid with no gymnasium dependency:
+  start top-left, goal bottom-right, traps where you put them, reward sparse
+  and terminal by default (0 per step, +1 at the goal, -1 in a trap, 30-step
+  cap). It is a plain object exposing only `reset()` and `step(action)` —
+  anything more is surface a lesson has to explain away — and state is a
+  one-hot over cells, so a single `Linear` is an exactly-expressive tabular
+  policy. `PolicyRollout` runs a policy in it for `episodes` rollouts and
+  returns the batch flattened: `states`, `actions`, `rewards`, `logits`,
+  `log_probs`, plus per-episode `returns`, `episode_lengths`, `episode_ids`,
+  a `success_rate` and two text tables. Actions are *sampled* from
+  `softmax(logits / temperature)`, never argmaxed — that is both the
+  exploration dial and the entire basis of the group baseline below — and
+  `log_probs` is recorded at sampling time because that number is PPO's
+  `log_probs_old` and is unrecoverable once the policy updates.
+
+  `Discount` folds a reward sequence backwards into `G_t = r_t + gamma *
+  G_{t+1}` — one right-to-left pass, linear time — and restarts the fold at
+  each boundary named by `episode_ids`, so one episode's ending cannot leak
+  into the previous one's returns. `PPOClipObjective` returns every part of
+  `min(r*A, clip(r, 1-eps, 1+eps)*A)` rather than just the value: the
+  unclipped term, the clipped term, the minimum, a mask of which samples the
+  clipped branch actually decided, the ratio used, the scalar loss and a
+  `clip_fraction`. *Which branch won* is the part a lesson is trying to show,
+  and the mask is deliberately "the clipped branch decided this", not "the
+  ratio left the interval" — at zero advantage the two branches agree and
+  nothing was truncated. `GroupRelativeAdvantage` is GRPO's one change to PPO
+  on its own: `A_i = r_i - mean(r)` within each group, with an optional
+  `expand_index` input that broadcasts a per-episode advantage back over
+  every step.
+
+  `PreferenceDataset` and the two Bradley-Terry nodes make reward hacking
+  reproducible rather than anecdotal. The dataset spreads true quality thinly
+  across `signal_dims` coordinates and plants one loud *shortcut* coordinate
+  that tracks quality in the training split and is pure noise in the holdout;
+  nothing else about the two splits differs. `BradleyTerryLoss` is the
+  arithmetic alone — `P(w beats l) = sigmoid(r_w - r_l)`, `loss = -log P`,
+  computed through `softplus(-diff)` so a huge score gap does not overflow —
+  which is what lets a lesson show that *only the difference matters*, and
+  therefore why two reward models' scores are not comparable at all.
+  `BradleyTerryTrain` fits the model and measures accuracy on *both* splits
+  every epoch, because the gap is the only thing that can see the shortcut:
+  at the defaults training accuracy reads 1.0000 either way, while holdout
+  accuracy is 0.9609 with `shortcut_strength = 0` and 0.7773 with the
+  shortcut planted, an ordering asserted across five seeds.
+
+  Honest limits, taken from the nodes' own docstrings. The reward-hacking
+  demonstration is a *gap*, not a divergence curve — at 512 synthetic pairs
+  the fit is essentially immediate, so there is no "learns it right, then
+  learns it wrong" phase to watch, and `shortcut_strength = 0` is the control
+  that attributes the gap to the shortcut rather than to ordinary
+  overfitting. A GRPO group where every sample scores the same yields
+  all-zero advantages and teaches nothing, which is a constraint on the task
+  rather than a bug. `GridWorldEnv`, `PolicyRollout` and `BradleyTerryTrain`
+  are `cacheable = False`, each for a stated reason — an env carries position
+  state, a rollout is stochastic experience, a trained model would come back
+  already fitted. A device-safety test pins the rest: no RL node declares a
+  device or reaches for a GPU, `PolicyRollout` forwards on the model's own
+  device and records back on the CPU so no downstream node has to know where
+  the policy sat, and the numbers do not move with the device. No example
+  graph ships with them.
+
+- **The settings popover shows what this server is running, and how much its
+  caches are holding** ([#193] item 2). `/api/health` has reported the
+  running version, the registry counts and a per-store cache byte breakdown
+  since #135, and the frontend read exactly one field of it — `project`,
+  once, at bootstrap — and dropped the rest. A user on a bounded memory
+  budget had no way to see how close they were, and a bug reporter had no way
+  to state their version from inside the editor. A "This Server" section at
+  the bottom of the gear popover now shows the version, the node and preset
+  counts, and each cache store's usage against its budget. The backend is
+  untouched.
+
+  It reads `/api/health` when the popover opens — `SettingsPopover` renders
+  nothing while closed, so "fetch on open" needed no plumbing — with a
+  Refresh button rather than a poll: the numbers do move during a run, but a
+  timer costs a request per interval for figures nobody is necessarily
+  reading. A read that fails leaves an inline line and *keeps* whatever
+  numbers it already had, which says which half of the panel is
+  untrustworthy; a toast would have outlived the popover it belongs to. The
+  three stores do not share a shape, so `caches` is read as an open map of
+  numbers rather than a named-field interface: the budget is `max_bytes` for
+  the run-output and node-state stores but `max_bytes_each` for the execution
+  cache (one instance per WebSocket, so the total has no single ceiling), and
+  a store this build has never heard of is listed under its raw name rather
+  than dropped. A configured budget of zero means *unbounded* to every store,
+  so it renders as a bare size rather than as "1.5 GB of 0 B", which would
+  say catastrophically over the limit when it means the exact opposite.
+  `formatBytes` steps by 1024 and still says KB/MB/GB, because the budgets it
+  prints are configured that way (`EXECUTION_CACHE_MAX_MB * 1024 * 1024`) —
+  dividing by 1000 would render a configured 512 MB ceiling as "536.9 MB" and
+  read as the app misreporting the setting — and it promotes on the *rounded*
+  value, so 1048575 B prints "1.0 MB" and not "1024.0 KB". The caption says
+  what a cache is and stops short of the tidy version of it: the weight store
+  holds *trained* weights, so clearing that one costs training time rather
+  than a recompute, unless a checkpoint was saved.
 
 ### Changed
 
@@ -429,8 +800,6 @@ received — each links to the release it was published as.
   attacker's) is refused rather than executed, which is the same line
   `plugin_validator` already draws for third-party code.
 
-### Changed
-
 - **`value_bytes` now says when it stops measuring** ([#193]). The
   `MAX_WALK_ITEMS` cap already logged that its total was a lower bound;
   `MAX_WALK_DEPTH` returned a smaller number in silence, which makes an
@@ -439,68 +808,536 @@ received — each links to the release it was published as.
   cross-measurement sharing, and not true of the three things that make the
   walk under-count, which is the direction that costs memory.
 
-### Added
+- **The canvas renders only the nodes the viewport can show** ([#162]). After
+  #125 a 300-node drag still measured 49.3ms p95 against a 32ms budget, and
+  the residue was React Flow re-rendering all 300 node components on every
+  `pointermove`, including the ones nobody can see. React Flow's
+  `onlyRenderVisibleElements` is now set on the main canvas.
 
-- **A language model can now be pretrained on the canvas** ([#289], [#290],
-  [#291]). Seven LLM nodes close the gap epic [#292] named: the catalog could
-  describe a transformer but had no path from raw text to trained weights, so
-  the only way to train a decoder was to leave CodefyUI.
+  The three risks the issue named were checked against `@xyflow/react`
+  12.10.1's own selectors rather than assumed: the MiniMap draws from
+  `s.nodes` and not from the visible set, so it stays complete; an edge
+  survives while the box spanning its two endpoints overlaps the viewport at
+  all, so a wire with one endpoint off-screen still draws; box selection runs
+  `getNodesInside` over the whole `nodeLookup`, and a node being dragged is
+  force-rendered; and a node is force-rendered until it has been measured, so
+  every node is laid out once and its size is known to layout and to the
+  minimap even if it is never looked at.
 
-  `CausalLMModel` is a pre-LN GPT-style decoder — learned/sinusoidal/RoPE
-  positions, LayerNorm or RMSNorm, optional weight tying and gradient
-  checkpointing — whose forward is `input_ids (B, T) -> logits (B, T, V)`, so
-  `Optimizer`, `TrainingLoop`, `CheckpointSaver` and `ModelSaver` need to know
-  nothing about language models. Its defaults build 203,668,480 parameters.
-  `LMCrossEntropyLoss` flattens the batch and time axes before
-  `F.cross_entropy` — deliberately *not* a subclass of `nn.CrossEntropyLoss`,
-  because `TrainingLoop`'s classification gate would then have run
-  `argmax(dim=1)` over the time axis and reported a meaningless accuracy that
-  early stopping can be asked to monitor.
+  Two limits worth stating. The saving is proportional to how much of the
+  graph is off-screen, so it is *zero* at the zoom `fitView` picks — a fitted
+  graph is on-screen by construction — and pays at the zoom someone actually
+  works at. Measured against the built app on a 320-node graph: 320 mounted
+  at fit view (zoom 0.103), 21 at zoom 1.0, 11 at zoom 2.0, each equal to the
+  geometrically on-screen set. And no unit test can watch culling work,
+  because jsdom gives an unmeasured node zero area and zero area counts as
+  visible — 300 of 300 still render there with the flag on — so the tests pin
+  the wiring and a browser pass covers the behaviour. The store half is
+  load-bearing and now pinned too: `onNodesChange` must keep applying
+  `dimensions` changes, or `measured` never reaches our nodes, `@xyflow`
+  drops `handleBounds` on the next commit, every node becomes force-rendered,
+  and culling dies with the flag still set and every test green.
 
-  Data comes in through `TextCorpusDataset` (text rows from the Hugging Face
-  Hub or a local `.txt`) and `LMTokenizedDataset`, which concatenates every
-  document into one token stream and cuts fixed-length blocks whose labels are
-  the inputs shifted by one — no padding, and a disk cache keyed on everything
-  that changes the stream, because tokenising a real corpus is minutes that
-  produce the same bytes every time. `LMTokenizer` supplies one tokenizer
-  object to every node that needs one, over a duck-typed `ANY` port
-  (`encode`/`decode`/`eos_id`/`vocab_size`) rather than a new wire type.
+  One behaviour widens with it: a card that leaves the viewport unmounts, so
+  React state local to it resets on the way back — the viz nodes' `expanded`
+  toggle, and, until this change, a note's unsaved text. `NoteNode` kept
+  typed text in the contentEditable DOM and wrote it to the store only on
+  blur, which held while every way a mounted note could disappear began with
+  a pointer press somewhere else, because a press blurs the note first.
+  Culling adds the first press-free path — `zoomOnScroll` is on, so a wheel
+  or pinch zoom can carry a focused note out of the viewport — and an unmount
+  is not a blur, so the text was simply gone. The card now commits its draft
+  on unmount while editing, and only text typed during that edit.
 
-  `PerplexityEvaluate` answers the question `EvaluateModel` cannot: a language
-  model is wrong most of the time and should be, so it is scored on the
-  probability it put on the token that actually came next. The mean is
-  token-weighted, so the number does not move when `batch_size` does.
-  `TextGenerate` samples text with temperature / top-k / top-p, slides the
-  context window past `max_seq_len`, and draws on the CPU so one seed gives
-  the same text on a laptop and on a GPU box.
+- **`TRANSFORM` wires are a lighter amber, so a dichromat can tell them from
+  `DATASET`** ([#197] item 5). `#FFC107` and `DATASET`'s `#FF9800` meet at
+  every `train_transform` / `eval_transform` port — they are always drawn
+  touching — and sat 14.5 dE00 apart, nearly all of it on the red-green axis.
+  Simulate deuteranopia and that collapses to 6.1 dE00 from `DATASET` and 2.5
+  from `LIST`, which made `TRANSFORM` the closest pair in the entire type
+  palette for a dichromat. `#FFE082` (Material Amber 200) keeps the hue — 91
+  degrees in Lab, against the old 83 and `DATASET`'s 68 — and buys the
+  distance in lightness instead, ~18 L* above `DATASET` rather than ~9.5:
+  21.9 dE00 in normal vision, 12.6 simulated deuteran, 16.6 protan, and
+  `TRANSFORM` is no longer any dichromat's closest pair. Lightness is the
+  axis every viewer keeps, which is why the fix is a lighter amber and not a
+  different hue. The light-export twin `--diagram-light-type-transform`
+  deliberately keeps `#b78901`: that palette is drawn on white against a 3:1
+  floor no lighter amber clears, and it is the same hue darkened, which is
+  what a light-export colour is.
+- `DATA_TYPE_COLORS` now lists its keys in the backend `DataType` declaration
+  order, so the `PythonScript` per-port type dropdown — which is
+  `Object.keys` of that map — reads in the same sequence as the enum, with a
+  test pinning the order against a hand transcription of it. Membership is
+  untouched; `TRIGGER` still has no entry, because it is control flow rather
+  than a data port. (#197)
 
-  A new example, **Train a Causal LM on TinyStories**
-  (`examples/LLM/TrainCausalLM-TinyStories`), wires the whole chain up at bf16
-  with an effective batch of 32 sequences, then scores a held-out split and
-  writes a sample. It ships with a `README.md` carrying the recipe, both token
-  budgets and the memory levers, because the card cannot: the canvas gallery
-  truncates a description at 80 characters and shows no tooltip, so the card
-  leads with the only two facts that decide whether the graph can run at all —
-  a 16 GB GPU, and one first-run download. A test asserts those two survive
-  that truncation, and a second asserts every number the README quotes is
-  still derivable from the graph's params — each of them is a relationship
-  between two nodes, which is exactly what graph validation cannot see.
+### Fixed
 
-- **The optimizer and loss applicability tables are now checked against the
-  installed torch** ([#189]). `#134` declares which algorithm accepts which
-  hyperparameter rather than inferring it from `inspect.signature`, because
-  inferring it would forward `eps` to Adagrad — whose torch default is 1e-10
-  against the Adam family's 1e-8 — and silently retune every existing Adagrad
-  graph. The cost of declaring is that the table can stop describing torch
-  without anything saying so. Two tests per node close that: one asserts each
-  declared set still equals "accepts it *and* agrees with our default", the
-  other fails when any new keyword appears in a torch signature. Neither
-  forwards anything automatically.
+- **Clicking a sidebar example destroyed the graph you were working on, with
+  nothing to undo** ([#348]). The Templates tab sent every click through
+  `openExample`, which replaces the active tab's nodes, edges, subgraphs,
+  description, save binding and tab name in one commit and — by design —
+  pushes no undo frame. So a stray click on a list of ~30 examples took
+  however long you had spent on the canvas with it, and Ctrl+Z did nothing,
+  because from the undo stack's point of view nothing had happened. The hint
+  under the list advertised exactly that behaviour: "Click an example to open
+  it". Examples now **join** the canvas the way every other palette item
+  does. Drag one out of the sidebar and it lands where you release the
+  pointer, without the camera moving off the gesture that just finished;
+  click one and it lands clear of the graph already there, with the viewport
+  brought onto it. Either way the ids are remapped so nothing on the canvas
+  can be overwritten, the tab keeps its own name, description and save
+  target, and one Ctrl+Z takes the whole block back off. A template written
+  by a newer CodefyUI is still refused, on the drag path as well as the
+  click.
 
-- **OOM crossed with determinism** ([#193]). Both paths reach for
-  process-global state and their interaction had no test. Two now pin it: OOM
-  recovery runs *inside* the determinism scope, and an OOM unwinds that scope
-  rather than stranding it.
+- **An unhandled `/api` path answered `405 Method Not Allowed` on every real
+  installation, and `404` in CI** ([#285]). The catch-all that serves the built
+  frontend is registered only when `frontend/dist/index.html` exists, and it
+  accepts `GET` on any path. Starlette does not stop at the first route whose
+  *path* matches: a route matched by path but missed by method is recorded as a
+  partial match, and a partial match with no full match anywhere is answered
+  405. So `DELETE /api/files/../../etc/passwd` — which no API route can match,
+  because `{filename}` does not span `/` — reached the SPA handler, matched it
+  by path, missed it by method, and came back "the resource exists, your verb
+  is wrong". Both halves of that were false. The exclusion now lives in the
+  route's *pattern* rather than in the handler body, where it could never have
+  helped: the 405 is produced by the router, before any handler runs.
+  Wrong-method requests to real endpoints still answer 405, which is why this
+  is a lookahead on the catch-all and not an all-methods `/api` 404 route in
+  front of it.
+
+  The reason nobody saw it is the more interesting half. Four traversal
+  assertions in `test_api_data_files.py` had been deterministically red for
+  anyone who had run `pnpm build` and green in CI for as long as the catch-all
+  has existed, because CI's checkout has no `frontend/dist` — so CI was testing
+  the *less* representative environment, the no-Node release path having made a
+  built `dist` universal for real users. A new `pytest (built frontend)` job
+  runs the whole backend suite against a real `pnpm build`, with a step that
+  fails if the SPA routes are not registered so the job cannot quietly decay
+  into a fifth copy of the matrix; the existing matrix keeps covering the
+  dist-absent state, which is what `cdui dev` runs. A sweep of the full suite
+  in both states found those four and nothing else. Three SPA cache-header
+  tests that had been skipped in CI since they were written now run there too.
+
+- **`ModelSaver(save_mode="full_model")` died with a raw pickle error on any
+  graph using Reshape, SelectIndex or a transformer block** ([#283]). Those
+  layers — and four more with the same defect: TransformerDecoder, LSTM, GRU,
+  MultiHeadAttention — were built from classes defined *inside a function*, and
+  pickle stores a class by name, so there was nothing to write. The mode failed
+  by construction on exactly these layers with `AttributeError: Can't pickle
+  local object 'Reshape.__new__.<locals>.Mod'`, which names an internal and
+  offers no way out — the same complaint [#222] made about the loader. The
+  closure turned out to be incidental: each already took its configuration
+  through `__init__` arguments, and the nesting only kept `import torch` off
+  the node module's import path. They are now ordinary module-scope classes in
+  `app.nodes.utility.sequential_modules`, imported inside the builder so the
+  lazy-torch property is unchanged, and their attribute names are unchanged so
+  existing `state_dict` checkpoints still load. What is still unpicklable — a
+  custom node or plugin that builds its module in a function — is refused
+  *before* the write, naming the class and pointing at `state_dict`, instead of
+  leaving a half-written file.
+
+  Saving is only half a round trip, and [#222]'s loader accepts `torch.nn`'s own
+  classes only, so a full-model file containing CodefyUI's classes still will
+  not come back through `ModelLoader` — including `GraphModelModule`, which
+  every layer-editor model is. That was previously unreachable (nothing got as
+  far as saving one); it is now reachable, so the saver says so at save time
+  rather than letting the user discover it one node later. The file is valid
+  and `torch.load(..., weights_only=False)` reads it outside CodefyUI;
+  `state_dict` remains the round trip that works.
+
+- **A published app's OpenAPI document advertised `http://` even when it was
+  fetched over HTTPS** ([#275]). `servers[].url` was built with a literal
+  scheme, which was true of the deployment CodefyUI was written for — one
+  machine, loopback, no TLS — and stopped being true the moment the documented
+  way to deploy it became a reverse proxy terminating HTTPS. A browser blocks
+  the resulting call as mixed content, so Swagger UI's "Try it out" failed, and
+  a generated client got the wrong base URL. The scheme now comes from the
+  request, which uvicorn rewrites from `X-Forwarded-Proto` when it is run with
+  `--proxy-headers` (reachable since [#272]). The header is deliberately *not*
+  read by the application: doing so would let any client forge the URL a
+  published app advertises to every integrator who fetches the document.
+
+- **The canvas WebSocket refused graphs the HTTP routes accept, and said so
+  only by hanging up** ([#274]). `WS /ws/execution` was never uncapped —
+  uvicorn's `ws_max_size` bounded it, enforced while fragments are assembled —
+  but that 16 MB was an inherited library default: nothing in this repository
+  chose it, no launch path passed it, no document mentioned it, and it was four
+  times *stricter* than the 64 MB `MAX_RUN_BODY_BYTES` the HTTP paths use, so a
+  graph between the two was accepted by `POST /api/graph/run/{name}` and
+  refused by the socket the editor actually uses. There is now a
+  `WS_MAX_MESSAGE_BYTES` setting that defaults to `MAX_RUN_BODY_BYTES` — one
+  graph ceiling, both transports — which `cdui start` and `cdui dev` hand to
+  uvicorn as `--ws-max-size`. The refusal is also legible now: the close frame
+  always carried code 1009 and a reason, and the editor threw both away and ran
+  its generic reconnect, so "your graph is too large" reached the user as
+  "Connection lost" followed by "Connection restored" and an unexplained
+  failure on the next Run click. It now says the graph was too large.
+
+- **The layers editor had its own colour scheme, and it was the old one.** The
+  modal that edits a `SequentialModel`'s layers carried a layer-type palette in
+  two hand-synced copies, on the pre-lift Material tones the rest of the app
+  moved off when they were measured too dark to read on a dark surface. The app
+  therefore had two purples, two blues, two reds and two blue-greys, and which
+  one you saw depended on whether a modal was open. There is now one table, in
+  `tokens.css` as its own `--layer-*` group, and the contrast gate checks it —
+  393 colour relationships across 186 tokens, up from 337 across 175. Adding
+  the gate found a real failure it then fixed: a layer node's header was the
+  raw hue with a white title on it, 2.16:1 to 3.09:1 on all seven hues, and is
+  now built the way a canvas node's header is. (#228)
+- The non-convex collapse refusal now tells two same-named blockers apart by
+  their canvas position — a message reading `Conv, Conv` named neither of them.
+  (#200)
+- A plugin's `onGraphChanged` now fires when only the subgraph definitions
+  change. Renaming a block, or editing its insides and stepping back out, moved
+  bytes that `graph.getGraph()` reports while telling a watching plugin
+  nothing. (#200)
+- The publish pre-flight now scans portable preset definitions. A SECRET-typed
+  value baked into `presets[].nodes[].params` — the third and last place a
+  graph file can carry a node — published cleanly, while the identical value
+  one level up was refused. (#200)
+- A node whose `"type"` is explicitly `null` no longer crashes the secret
+  walkers with an `AttributeError`. Reachable only through the publish gate,
+  which reads a file straight off disk with no validation; it failed closed
+  (a 500, nothing written or leaked). (#200)
+
+- **A stale `addToolbarButton` disposer removed the button that had replaced
+  it** ([#186]). Re-adding a toolbar button id replaces the button, but the
+  remove function returned by the *superseded* registration was keyed by id,
+  so calling it took the live replacement down instead of doing nothing. A
+  plugin that re-registers a button when its own state changes accumulates
+  exactly those disposers, and the host tracks every one of them for teardown.
+  The disposer is now scoped to the registration that produced it — the same
+  discipline `nodes.registerRenderer` already used. `removeToolbarButton(id)`
+  is unchanged and still removes whatever currently holds the id; both
+  behaviours are now in the published contract and the plugin docs.
+
+- **Opening an example carried the previous graph's description onto the tab,
+  and could save the example over the file that was already open** ([#200]
+  items 4 and 8). Three separate readers open a graph document — the
+  Toolbar's Load, the Toolbar's Import, and the examples path in
+  `openExample` — and each hand-sequenced five or six `tabStore` setters. A
+  sequence written out three times is only ever as right as its worst copy,
+  and the third copy was missing three things. It never wrote `description`,
+  so the description of the graph that had been there stayed on the tab — and
+  `description` is persisted through save, so the leftover was written to
+  disk as the new graph's own. It skipped the `format_version` gate entirely,
+  so an example or a plugin-shipped template written by a newer CodefyUI
+  opened fully *editable* — the one direction that gate must never fail — and
+  the next save silently down-converted it; the two Toolbar readers had the
+  gate, the third did not. And it never touched the save binding, so an
+  example opened into a tab bound to `foo.json` inherited `foo.json` as its
+  save target and the next Save overwrote that file with no overwrite prompt,
+  the prompt being skipped precisely because a bound tab is the one case Save
+  is allowed to overwrite in place.
+
+  There is one door now. `tabStore.loadGraphDocument(doc)` installs a whole
+  document — nodes, edges, subgraph definitions, Teaching Inspector overlays,
+  tab name, description, save binding and the read-only verdict — in a single
+  state update, and all three readers call it. The version verdict is
+  computed inside the action from the raw, untrusted `format_version` and
+  returned to the caller, which owns only the notice it shows: a reader can
+  no longer open a newer-format document editable by forgetting a line, and
+  the gate fails closed, with a missing or non-numeric field reading as
+  current-format. `description` and the overlays are written whether or not
+  the file carries them, so nothing from the previous graph survives an open,
+  and `activeSegment` is nulled with its list because an overlay naming
+  head/tail ids the new graph does not have is a dangling reference.
+  `boundFile` is a *required* field rather than an optional one, so the
+  compiler asks every reader the question the third one never knew existed —
+  Load binds to the sanitized file stem, Import and an example both unbind.
+  And the ordering that used to be load-bearing — nodes before definitions,
+  because `setSubgraphs` drops the sub-canvas stack without putting a canvas
+  back — is gone along with the sequence: one `set`, so no subscriber can
+  observe a half-installed graph.
+
+  Opening a document still deliberately pushes no undo frame. A frame carries
+  no description, no read-only flag and no tab name, so an undo that restored
+  the previous graph's nodes under the new graph's description would be a
+  worse lie than not offering the step at all. ([#348] has since taken the
+  sidebar's click off the replacing path entirely; the Toolbar's Load and
+  Import, the empty-canvas example list and Open in new tab still go through
+  it.)
+
+- **A template written by a newer CodefyUI merged straight into an editable
+  graph** ([#200]). The two paths that *open* a document answer a too-new
+  `format_version` by opening it read-only; `insertExample` — the
+  merge-into-the-canvas path — never looked at the field at all. Read-only
+  exists so an older build can never write back fields it does not
+  understand, and merging those fields into an editable graph reaches the
+  same place by a shorter road, because the next save writes the result.
+
+  Read-only is not an available answer for a merge: there is no separate
+  document to mark, and marking the tab would punish the user's own graph for
+  what the template is. So the merge is refused outright, with a toast (en
+  and zh-TW) naming the version and both ways forward — open it to view it
+  read-only, or update CodefyUI. The gate reads the raw payload *before*
+  resolution, because resolution is not pure: it merges the template's
+  unknown presets into the palette, which a refusal decided any later would
+  already have done. A refused template leaves the canvas, the tab's
+  read-only flag and the preset list exactly as they were. This is the
+  refusal [#348] later carried onto the drag path as well.
+
+- **Undo put a deleted node back and left the Teaching Inspector overlay it
+  had swallowed deleted** ([#200] item 2). An undo frame carried nodes, edges
+  and subgraph definitions, and nothing about the segment groups. Every
+  action that takes a node off the canvas also prunes the segments naming it
+  — `deleteNode`, `collapseSelectionToSubgraph`, `expandSubgraphInstance` —
+  because a segment whose head or tail is gone can never resolve a path, and
+  that pruning was one-way: Ctrl+Z restored the node and left the overlay
+  gone, with nothing on screen to say the step had only half happened. Since
+  `segmentGroups` is persisted through save, the loss then reached the file.
+  The bubble's own close button was worse — it had no undo entry at all, so a
+  single misclick was an unrecoverable edit to the graph document.
+
+  A frame now carries `segmentGroups` and `activeSegment`. The highlight
+  travels with the list because it points *into* it: restoring the groups
+  alone brings the bubble back unfocused, restoring the highlight alone
+  leaves it naming a group that is not there. Creating an overlay and
+  clearing one are undo steps of their own, both being single deliberate
+  clicks; merely focusing one still is not, because that is a change of view,
+  like selecting a node, and neither is the bulk `setSegmentGroups`, because
+  opening a document is deliberately not undoable. Leaving a sub-canvas also
+  pushes its exit frame when only the overlays changed in there, not just
+  when a definition did: an overlay-only visit leaves every definition
+  byte-identical, so the exit used to push nothing, throw away the inner
+  stack holding that overlay's own undo entry, and hand back an outer stack
+  whose top frame still carried the *pre-entry* overlays — at which point the
+  next unrelated Ctrl+Z wiped the overlay as a side effect of undoing
+  something else. Both compares are structural rather than by identity, so
+  merely looking inside a block still costs no undo step.
+
+  Underneath, the four near-copies of the frame builder that
+  `pushUndoSnapshot`, `undo`, `redo` and `closeFrameHistory` each kept are
+  now one `undoFrameOf`, and both consumers spread the frame instead of
+  listing its fields — so a future field cannot be captured by one producer
+  and quietly ignored by the other, which is the exact shape of this bug. Two
+  tests assert that `undo` and `redo` apply *every* field a frame carries.
+  Undo stacks are never persisted (`PersistedTab` has no `undoStack`), so no
+  in-flight session holds a frame of the old shape and there is nothing to
+  migrate.
+
+- **Closing a canvas tab discarded the graph in it, permanently, with no
+  confirmation** ([#331]). `removeTab` takes the tab's undo and redo stacks
+  with it, so there was nothing left to undo from either — one misclick on
+  the wrong tab and a whole graph was gone. The tab bar now asks first when
+  the tab has anything in it, using the house confirm (`dialogStore` /
+  `DialogContainer`, `variant: 'danger'` — the same family as the save-name
+  prompt and the overwrite confirm), naming the tab and its node count so the
+  user can see they clicked the wrong one. An *empty* tab still closes
+  silently: asking about nothing is the noise that trains people to click
+  through the dialog that matters.
+
+  It asks for every non-empty tab rather than only the unsaved ones, and that
+  is deliberate. `dirtyNodeIds` looks like a dirty flag but answers a
+  different question — it is the partial-re-execution hint, `clearDirty`
+  empties it at the start of every run, and `addNode` never adds to it at all
+  — so a graph that was dragged together and run but never saved reads as
+  perfectly clean, which is exactly the tab whose loss hurts most. Nothing in
+  the store records "matches what is on disk": `currentGraphFile` says which
+  file a tab is *bound* to, not that the two are identical, and there is no
+  snapshot of the last save to diff against. "Saved and unchanged" is not a
+  state this codebase can currently prove, and guessing it wrong is
+  unrecoverable, so the extra dialog on a genuinely-saved tab is the cheap
+  side of the trade until a saved-state signature exists.
+
+  The node count sums the open `subgraphStack` frames as well as the visible
+  canvas, for the same reason `buildPersistedTab` flushes the stack before
+  persisting: `enterSubgraph` swaps the graph's nodes out into a frame, so
+  standing inside a freshly created block leaves `tab.nodes` empty with the
+  whole graph stashed one level up, and a naive `nodes.length` check would
+  wave that tab through as empty. A *running* tab keeps its existing single
+  question — the stronger one, since closing kills the run too — and now
+  carries the graph warning as that dialog's body, so one click never
+  produces two dialogs. Only the explicit per-tab close is intercepted;
+  window unload and the last-remaining-tab path are untouched.
+
+- **The schedule-length advisory told correctly configured per-step runs to
+  break themselves** ([#308]). The check that compares an `LRScheduler`'s
+  length against the run's was written when there was only one possible
+  answer to "how long is this run" — `TrainingLoop.epochs` — and [#297]'s
+  `scheduler_step=optimizer_step` never reached it. So the exact
+  configuration that mode's own description recommends, `OneCycleLR` with
+  `total_steps = max_steps`, emitted a `run_warning` on every single run
+  telling the user to set `total_steps` to the epoch count instead. Wrong
+  advice is worse than none: it is indistinguishable from right advice, and
+  following it breaks a schedule that was already correct.
+
+  The check now carries a clock through every branch. Per-epoch stepping
+  still measures against `epochs` — the epoch-mode assertions are untouched,
+  so nothing that read correctly before reads differently now — while
+  per-step stepping measures against the run's optimizer-step budget, which
+  has to be derived because no single parameter holds it: `max_steps` when it
+  actually binds, otherwise `epochs * ceil(batches / accumulate_steps)`,
+  rounding up because the loop applies an epoch's short accumulation tail as
+  a step of its own. A budget that cannot be known before the run starts — an
+  `IterableDataset` with no `max_steps` — produces no advisory at all rather
+  than a guess, which would be the same failure in a new costume.
+
+  The warmup families also got their first length check of any kind. They
+  compose a `SequentialLR`, which matched none of the check's `isinstance`
+  branches — so the one family whose entire point is a step-denominated total
+  was the only one never checked, in either mode. The composed total is now
+  recovered from the object itself, the last milestone plus the tail's own
+  `T_max` or `total_iters`, and a tail that declares no length declines
+  rather than inventing one. Three real traps come out of it: a ramp that
+  never finishes, which the node's own default `warmup_steps=100` produces
+  against a five-epoch run and which means the run never trains at the
+  learning rate that was set; a total longer than the run, so the decay never
+  finishes; and a total shorter than it, where `warmup_cosine` turns back
+  *up* and the tail of the run trains at a rising learning rate while
+  `warmup_linear` sits at ~0, spending compute without learning.
+  `constant_with_warmup` has no cycle length to disagree about, so only its
+  ramp is checked and the correct configuration stays silent. `T_max`,
+  `total_steps`, `step_size` and `warmup_steps` on `LRScheduler` and
+  `scheduler_step` on `TrainingLoop` now describe both modes instead of
+  flatly contradicting each other one node over, with zh-TW twins and mode
+  guards in the unit tests so the one-unit claim cannot quietly come back.
+
+- **A resumed run put its per-step schedule back on the wrong clock**
+  ([#316]). Where [#308] was wrong advice, this one was a wrong learning
+  rate. `_fast_forward_scheduler` repositions a resumed scheduler by
+  replaying one `scheduler.step()` per completed epoch — exactly right while
+  the loop also steps once per epoch, and exactly wrong under
+  `scheduler_step=optimizer_step`. A `warmup_cosine(total_steps=1500)`
+  resumed after 1000 optimizer steps was replayed by a handful of
+  epoch-steps and went back to training on a learning rate from the warmup
+  ramp — still rising — for a run two thirds finished. Nothing warned,
+  because from the scheduler's side a replay is a replay. Checkpoints
+  carrying `scheduler_state_dict` take the state-restore path and were never
+  affected; the fast-forward is the legacy fallback.
+
+  Nothing stores the completed step count. A checkpoint carries `epoch` and
+  no step field of any kind — `build_checkpoint` is the single writer both
+  engine paths go through — and the run's own `metrics["total_steps"]` is an
+  output with no port back into a resumed loop. So the replay count is
+  derived instead, as `start_epoch * steps per epoch`, which is by
+  construction where the loop leaves a per-step schedule at the start of
+  epoch `start_epoch`. When there is nothing to derive it from — an
+  `IterableDataset` or a hand-rolled generator, where the loader has no
+  length — the replay is refused outright rather than falling back to the
+  epoch count, with an advisory naming `CheckpointSaver.lr_scheduler` and
+  `CheckpointLoader.lr_scheduler` as the route that needs no batch count and
+  is exact in either mode. Guessing there would have reproduced this bug in a
+  new shape.
+
+  The restored-state branch reads the same clock, because it had the same bug
+  pointed the other way: a per-step schedule comes back at `last_epoch=1000`
+  for a run resuming at epoch 10, and comparing that against an epoch index
+  accused the one always-exact resume route of holding an inconsistent
+  checkpoint, on every per-step run. The derivation's limits are written down
+  where the derivation lives rather than left to be found — an earlier leg
+  over a different dataset size or `accumulate_steps`, an fp16 step skipped
+  on an overflowing gradient, and a leg that `max_steps` cut off mid-epoch,
+  which over-counts by up to one epoch's worth of steps (recorded at 24
+  samples, `batch_size=6`, `epochs=5`, `max_steps=6`: a real 6 steps against
+  a derived 8). Epoch mode is unchanged — same replay count, same log lines,
+  same advisory text.
+
+- **Retention finally sweeps the TensorBoard directories it has been
+  logging** ([#196]). `RunStore.prune` collected `checkpoint`-kind artifact
+  rows only, so every `tensorboard`-kind row's *directory* outlived the run
+  it belonged to. Nothing else scans the runs tree, so those directories
+  became unreachable litter the moment their row was pruned — one per
+  training node per run, for the life of the install, and invisible because a
+  default install gitignores the data root. The sweep now collects them too,
+  by the same keep-last window, in the same transaction, with the delete
+  dispatched off the event loop exactly as the checkpoint unlink already was.
+  No new knob: retention is still only `RUN_RETENTION_KEEP_LAST`.
+
+  The delete guard is [#224]'s `owned_checkpoint_path` reasoning applied to a
+  tree. A row is a *claim*, not evidence — `kind` is free text and
+  `ExecutionContext.log_artifact`, which the plugin API reaches, writes both
+  the kind and the path — so a row labelled `tensorboard` must not be able to
+  hand an unattended `rmtree` an arbitrary directory. The path is re-derived
+  from `run_logdir(run_id)` for that row's *own* run, and anything resolving
+  outside it, any symlink (checked before `resolve()`, so the delete can
+  never resolve *through* a link), any `..` escape and any other run's log
+  directory is skipped and logged, never raised: one odd row must not fail a
+  whole prune. A review catch tightened it further — the expected root now
+  resolves only the shared `runs/` ancestor and keeps the run id and `tb`
+  literal, because resolving the whole prefix let a symlink planted at
+  `runs/<id>` or `runs/<id>/tb` move both sides of the containment check to
+  the same foreign place and pass. That is the same split [#224] already used
+  for checkpoints. The parents the delete just emptied are then rmdir'd,
+  stopping at the shared `runs/` root and at the first directory still
+  holding anything, so the sweep does not trade a growing tree for a growing
+  skeleton of empty directories.
+
+  Two deliberate differences from the checkpoint sweep, both recorded in the
+  docstrings where the code makes them: the delete is `shutil.rmtree`, so the
+  guard is correspondingly stricter (per-run, not merely per-shape); and the
+  `interrupted` exemption does *not* apply. That exemption exists to protect
+  a resume point — event files resume nothing, and exempting them would leave
+  unreferenced directories for precisely the runs a crashed server produces,
+  which is the leak this closes. The augmentation docs and their zh-TW twin
+  now also say how long the logs last, since a curve worth keeping past the
+  window has to be copied out. The issue as filed named `Database.prune_runs`;
+  that is the *publish* `runs` table, which cannot produce a TensorBoard
+  directory at all — `open_run_writer` returns `None` unless the run can
+  record artifacts, which the REST contract runner cannot — so the fix
+  follows the correction comment on the issue rather than its body. Items 1-3
+  of [#196] shipped in #280 and are listed above; this was item 4.
+
+- **`Print` could kill a whole run over one character the console could not
+  spell** ([#346]). `print` encodes with `sys.stdout.encoding`, which on
+  Windows is the machine's ANSI codepage — cp950 on a Traditional Chinese
+  install, cp932 on Japanese. Those cover Han characters fine; what they do
+  not cover is the long tail of Unicode a graph legitimately carries. A
+  superscript `T` (U+1D40) in a label is enough, and so is one stray
+  character in text a language model generated. The resulting
+  `UnicodeEncodeError` came straight out of `execute`, so the node failed and
+  took the run with it — losing a five-minute training run at the final
+  `Print` because the console could not render one glyph. The console now
+  gets a lossy rendering (`errors="replace"`), and any other stdout failure —
+  a closed or redirected stream included — is swallowed rather than raised,
+  because echoing to a console is not worth failing a run for. The `__log__`
+  string the UI displays never passes through that path and keeps the exact
+  text, since the browser has no such limitation, and the value on the output
+  port was always passed through untouched.
+
+- **A plugin whose manifest `id` contains a hyphen registered its nodes under
+  a different id than the rest of the product used** ([#350]).
+  `official-template` is the id in the manifest, in the install directory, in
+  `cdui plugin list`, in the examples route's `plugin:<id>` prefix, and in
+  the `"type"` string that `qualify()`'s own docstring documents as the
+  saved-graph form. The registry said `official_template:HelloPlugin`,
+  because the id never reached discovery — it was re-derived from the Python
+  package the pack is imported under, and that step is not reversible. A
+  hyphen cannot appear in a module path, so `cdui_plugins.official_template`
+  is the only importable spelling and nothing in it records that the
+  underscore used to be a hyphen.
+
+  Why it shipped green is the more useful half. `registry.get()` falls back
+  to a suffix scan, so such a graph still resolved, validated and executed —
+  every server-side check passes. The canvas has no such fallback:
+  `resolveSerializedNodes` does an exact lookup and substitutes an empty
+  definition on a miss, so the node renders as a blank box with no ports, and
+  because those handles do not exist every edge attached to it is silently
+  dropped on load. An example that is visibly broken while nothing anywhere
+  reports a problem — which is exactly how the official plugin template's two
+  `Demo` examples shipped.
+
+  The manifest id is now threaded through: `install_plugin_finder` returns a
+  named `PluginNamespace(nodes_dir, package_name, plugin_id)` rather than a
+  pair that threw the id away, and `NodeRegistry.discover` takes an explicit
+  `plugin_id`, with the lossy derivation kept as a documented fallback so the
+  built-in discoveries are untouched. The three plugin call sites — the
+  server lifespan, `rediscover_all` behind `POST /api/plugins/reload`, and
+  `scripts/project.py` — each kept their own copy of the discovery loop,
+  which is the mechanism that let one subsystem's spelling drift from the
+  others; they now share one `discover_plugin_nodes()`. `/api/nodes`'s
+  `provider` field reads the id off the registry key instead of the module
+  path, so a single node entry no longer contradicts itself. The regression
+  guard is in `test_chapter_examples.py`: every in-repo pack example's node
+  types are checked against *exact* registry keys — deliberately not
+  `registry.get()`, whose suffix scan would mask the mistake being guarded.
+  There is no compatibility alias, because a second entry would duplicate
+  every kebab-named node in the palette and no graph in the repository uses
+  the underscored spelling. The companion fix is in the plugin template
+  repository; both are needed for those two `Demo` examples to open.
 
 ### Internal
 
@@ -557,6 +1394,53 @@ received — each links to the release it was published as.
   against whatever server version is installed, and the day a refusal carries
   a cursor, forwarding it reports a still-running run as failed), but the docs
   now say which rule actually fires, and a test pins the real wire shapes.
+
+- **`TrainingLoop`'s nested-batch device path finally has a caller, and a
+  test** ([#312]). `to_device` has always mapped lists, tuples and dicts
+  element-wise, so a batch whose `data` is itself a tuple was supposed to
+  reach the GPU intact — but every dataset in `app/nodes` emitted a flat
+  `(tensor, tensor)` sample, so the recursion had never carried a real
+  training run and nothing would have failed if it stopped working.
+  `PushWorldDemos` is the first shipped dataset whose sample is `((image,
+  tokens, chunk), chunk)`, and an integration test now trains a `VLAModel`
+  through the stock loop on that shape — both heads, a training loader and a
+  validation loader — so the contract fails loudly if it regresses.
+  `training_loop_node.py` itself is untouched.
+
+- **Backend and frontend checks now run on every PR, not just path-matched
+  ones** ([#270]). The `main` ruleset requires eight status checks to report
+  — `pytest` on Python 3.10, 3.11 and 3.12, on Windows 3.12, and against a
+  built frontend on 3.11; `ruff check`; `pnpm build + tsc + test`; and the
+  raw-control-byte scan. A required check that a path filter kept from
+  running never reports at all, which leaves the PR's merge button waiting
+  forever — a docs-only PR would have been unmergeable. The `pull_request`
+  path filters are dropped from `backend-test.yml` and `frontend-build.yml`;
+  `byte-scan.yml` never had one, for a version of the same reason. The
+  push-to-main triggers keep their filters, since nothing gates on those
+  runs.
+
+- **Issue and PR templates that ask for the graph up front** ([#141]).
+  `.github/` had workflows and `RELEASING.md` but no issue forms and no PR
+  template, and a bug report with no exported graph JSON attached is close to
+  useless for reproduction — nothing on the issue-open path even asked for
+  it. `bug_report.yml` makes that field required and front-loads it with a
+  note pointing at the canvas toolbar's Export button, alongside CodefyUI
+  version (`cdui --version` / `build-info.json`), install flavour (uv-only
+  versus a dev install with pnpm), OS and Python, and an optional logs field
+  pointing at `.codefyui_dev/server.log`. `feature_request.yml` is
+  problem-first — what you cannot do today, and who runs into it — with the
+  proposed shape optional. `config.yml` keeps `blank_issues_enabled: true`,
+  because a lot of house issues here are free-form root-cause write-ups that
+  fit no structured form, and adds contact links to CONTRIBUTING and the docs
+  site. `PULL_REQUEST_TEMPLATE.md` spells out the closing-keyword negation
+  trap explicitly — "does not close #N" still closes #N, so say "Part of #N
+  (stays open)" — asks for the commands actually run as test evidence, and
+  checklists DCO sign-off, the zh-TW docs and node-description twins, and no
+  pictographic emoji. Nothing in CI validates issue-form YAML and this does
+  not add a validator: the four files were checked against GitHub's
+  issue-forms schema by hand and parsed with a structural assertion that
+  every non-markdown body item carries a `type`, an `id` and a `label`.
+  [#141] stays open — good-first-issue curation is handled separately.
 
 ## [2.2.0] — 2026-08-10
 
@@ -1060,8 +1944,29 @@ Release candidates before 1.0.0 are on the
 [#175]: https://github.com/CodefyUI/CodefyUI/issues/175
 [#348]: https://github.com/CodefyUI/CodefyUI/issues/348
 [#200]: https://github.com/CodefyUI/CodefyUI/issues/200
+[#141]: https://github.com/CodefyUI/CodefyUI/issues/141
+[#148]: https://github.com/CodefyUI/CodefyUI/issues/148
+[#162]: https://github.com/CodefyUI/CodefyUI/issues/162
+[#270]: https://github.com/CodefyUI/CodefyUI/issues/270
+[#297]: https://github.com/CodefyUI/CodefyUI/issues/297
+[#298]: https://github.com/CodefyUI/CodefyUI/issues/298
+[#299]: https://github.com/CodefyUI/CodefyUI/issues/299
+[#300]: https://github.com/CodefyUI/CodefyUI/issues/300
+[#308]: https://github.com/CodefyUI/CodefyUI/issues/308
+[#309]: https://github.com/CodefyUI/CodefyUI/issues/309
+[#310]: https://github.com/CodefyUI/CodefyUI/issues/310
+[#311]: https://github.com/CodefyUI/CodefyUI/issues/311
+[#312]: https://github.com/CodefyUI/CodefyUI/issues/312
+[#316]: https://github.com/CodefyUI/CodefyUI/issues/316
+[#331]: https://github.com/CodefyUI/CodefyUI/issues/331
+[#332]: https://github.com/CodefyUI/CodefyUI/pull/332
+[#338]: https://github.com/CodefyUI/CodefyUI/pull/338
+[#346]: https://github.com/CodefyUI/CodefyUI/pull/346
+[#347]: https://github.com/CodefyUI/CodefyUI/pull/347
+[#350]: https://github.com/CodefyUI/CodefyUI/pull/350
 [@oyea0801]: https://github.com/oyea0801
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...main
+[2.3.0]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...2.3.0
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
 [2.1.0]: https://github.com/CodefyUI/CodefyUI/compare/2.0.0...2.1.0
