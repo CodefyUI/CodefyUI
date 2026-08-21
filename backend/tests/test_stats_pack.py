@@ -129,15 +129,17 @@ def test_installing_twice_needs_force(isolated_lockfile):
 def test_an_installed_pack_exposes_all_eight_nodes(isolated_lockfile):
     assert _install() == 0
 
-    pairs = plugin_loader.install_plugin_finder(
+    namespaces = plugin_loader.install_plugin_finder(
         plugin_loader.plugins_builtin_root(),
         plugin_loader.plugins_user_root(),
         plugin_loader.load_lockfile(),
     )
-    nodes_dir, package = next(p for p in pairs if p[1].endswith("stats.nodes"))
+    ns = next(n for n in namespaces if n.plugin_id == "stats")
 
     registry = NodeRegistry()
-    assert registry.discover(nodes_dir, package) == 8
+    assert (
+        registry.discover(ns.nodes_dir, ns.package_name, plugin_id=ns.plugin_id) == 8
+    )
     assert sorted(registry.nodes) == [f"stats:{name}" for name in NODE_NAMES]
 
 
@@ -163,7 +165,7 @@ def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path):
 
     The reload here is exactly what ``rediscover_all`` does — the function
     behind ``POST /api/plugins/reload`` — for a plugin:
-    ``install_plugin_finder`` then ``discover(force_reload=True)``. There is no
+    ``discover_plugin_nodes(force_reload=True)``. There is no
     ``purge_plugin_modules`` call because production does not make one:
     ``force_reload`` re-imports through ``importlib.reload``, which re-reads
     the file, and that is sufficient on its own.
@@ -193,14 +195,15 @@ def test_hot_reload_picks_up_an_edit_to_a_node_file(tmp_path):
 
     def reload_pack() -> int:
         """The plugin half of rediscover_all, verbatim."""
-        pairs = plugin_loader.install_plugin_finder(
-            plugin_loader.plugins_builtin_root(), user_root, lockfile
-        )
         registry.clear()
-        return sum(
-            registry.discover(nodes_dir, pkg, force_reload=True)
-            for nodes_dir, pkg in pairs
+        node_count, _packs = plugin_loader.discover_plugin_nodes(
+            registry,
+            plugin_loader.plugins_builtin_root(),
+            user_root,
+            lockfile,
+            force_reload=True,
         )
+        return node_count
 
     try:
         assert reload_pack() == 8

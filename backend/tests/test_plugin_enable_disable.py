@@ -56,10 +56,10 @@ def test_install_plugin_finder_skips_disabled(tmp_path):
             "deep": {"source_kind": "builtin", "source": "deep", "enabled": False},
         },
     }
-    pairs = plugin_loader.install_plugin_finder(builtin, tmp_path, lockfile)
-    paths = {p[0].parent.name for p in pairs}
-    assert "foundations" in paths
-    assert "deep" not in paths
+    namespaces = plugin_loader.install_plugin_finder(builtin, tmp_path, lockfile)
+    ids = {ns.plugin_id for ns in namespaces}
+    assert "foundations" in ids
+    assert "deep" not in ids
 
 
 def test_iter_plugin_dirs_include_disabled_flag(tmp_path):

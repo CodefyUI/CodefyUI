@@ -73,7 +73,15 @@ def _discover_builtin_packs() -> None:
     for plugin_id in _BUILTIN_TEST_PACKS:
         plugin_nodes = _REPO_ROOT / "plugins" / plugin_id / "nodes"
         if plugin_nodes.exists():
-            registry.discover(plugin_nodes, f"cdui_plugins.{plugin_id}.nodes")
+            # ``plugin_id`` is passed rather than left to be derived from the
+            # package name: none of these packs has a hyphen in its id, so
+            # both routes agree today, but the suite should exercise the same
+            # call production makes.
+            registry.discover(
+                plugin_nodes,
+                f"cdui_plugins.{plugin_id}.nodes",
+                plugin_id=plugin_id,
+            )
 
 
 def _packs_missing_from_registry() -> bool:

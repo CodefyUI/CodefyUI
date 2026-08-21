@@ -230,6 +230,58 @@ def test_provider_field_is_plugin_for_edu_nodes(client):
     assert by_name["deep:Edu-SelfAttention"]["provider"] == "plugin:deep"
 
 
+def test_provider_field_spells_a_plugin_id_the_way_its_manifest_does(client):
+    """A kebab-case pack's ``provider`` agrees with the rest of the API.
+
+    ``/api/plugins`` lists ``official-template`` and ``/api/examples/list``
+    tags its graphs ``plugin:official-template``, so a ``provider`` reading
+    ``plugin:official_template`` would be the single place in the API that
+    spells the same pack differently — and the underscore form is not an id
+    any other endpoint, the lockfile or the CLI will accept.
+
+    Every in-repo pack id is a single word, so the two spellings coincide for
+    all of them; this registers a node the way a kebab-case pack is loaded
+    (hyphenated registry key, snake_case module path) to tell them apart.
+    """
+    from app.core.node_base import BaseNode, DataType, PortDefinition
+    from app.core.node_registry import registry
+
+    class _KebabNode(BaseNode):
+        NODE_NAME = "KebabDemo"
+        CATEGORY = "Test"
+        DESCRIPTION = ""
+
+        @classmethod
+        def define_inputs(cls):
+            return [PortDefinition(name="x", data_type=DataType.ANY)]
+
+        @classmethod
+        def define_outputs(cls):
+            return [PortDefinition(name="y", data_type=DataType.ANY)]
+
+        def execute(self, inputs, params, **_):
+            return {}
+
+    # The import spelling a pack whose manifest id is "kebab-pack" is
+    # genuinely loaded under — the hyphen cannot survive into a module name.
+    _KebabNode.__module__ = "cdui_plugins.kebab_pack.nodes.demo_node"
+    key = "kebab-pack:KebabDemo"
+    registry._nodes[key] = _KebabNode
+    try:
+        listed = client.get("/api/nodes")
+        assert listed.status_code == 200
+        by_name = {n["node_name"]: n for n in listed.json()}
+        assert by_name[key]["provider"] == "plugin:kebab-pack"
+
+        # The single-node route builds the same definition, so it must not
+        # disagree with the list the palette was populated from.
+        one = client.get(f"/api/nodes/{key}")
+        assert one.status_code == 200, one.text
+        assert one.json()["provider"] == "plugin:kebab-pack"
+    finally:
+        registry._nodes.pop(key, None)
+
+
 def test_provider_field_is_builtin_for_production_nodes(client):
     r = client.get("/api/nodes")
     by_name = {n["node_name"]: n for n in r.json()}

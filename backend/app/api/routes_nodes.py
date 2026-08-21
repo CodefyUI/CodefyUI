@@ -24,17 +24,35 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 _filter_device_options = device_options
 
 
-def _provider_for(cls: type[BaseNode]) -> str:
-    """Classify a node by where it was loaded from, via its module path."""
+def _provider_for(qualified_name: str, cls: type[BaseNode]) -> str:
+    """Classify a node by where it was loaded from.
+
+    The module path says WHICH KIND of source a node came from, and that is
+    all it is used for here. For a plugin node the id itself comes from the
+    registry key, because that key is the plugin's manifest id — hyphens
+    included — threaded through discovery by
+    ``plugin_loader.discover_plugin_nodes``. The module path cannot supply
+    it: ``official-template`` is imported as ``cdui_plugins.official_template``
+    because a hyphen is not legal in a Python module name, and reading the id
+    back off that string returns the snake_case spelling no other part of the
+    API uses. ``/api/plugins`` says ``official-template`` and
+    ``/api/examples`` tags graphs ``plugin:official-template``; ``provider``
+    has to say the same thing about the same pack.
+    """
     mod = cls.__module__ or ""
     if mod.startswith("app.nodes"):
         return "builtin"
     if mod.startswith("app.custom_nodes"):
         return "custom"
     if mod.startswith("cdui_plugins."):
-        # cdui_plugins.<py_id>.nodes.<file>  →  provider = "plugin:<py_id>"
-        # py_id may have underscores (from kebab-case → snake_case during load);
-        # callers wanting the original id should look at the lockfile.
+        plugin_id, sep, _node = qualified_name.partition(":")
+        if sep:
+            return f"plugin:{plugin_id}"
+        # No prefix on the key: the node was registered bare even though it
+        # lives under the plugin namespace (only reachable by discovering a
+        # plugin package with the prefix explicitly suppressed). Fall back to
+        # the import spelling — wrong for a kebab-case id, but it is the only
+        # signal left, and it beats reporting the node's own name as the pack.
         parts = mod.split(".")
         if len(parts) >= 2:
             return f"plugin:{parts[1]}"
@@ -54,7 +72,7 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
         node_name=qualified_name,
         category=cls.CATEGORY,
         description=cls.DESCRIPTION,
-        provider=_provider_for(cls),
+        provider=_provider_for(qualified_name, cls),
         inputs=[
             PortDefinitionSchema(
                 name=p.name,
