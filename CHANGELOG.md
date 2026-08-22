@@ -22,6 +22,24 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two nodes reading different ports of the same upstream no longer share one
+  cache entry** ([#360]). Running CF201 a second time drew the *same* picture in
+  both `Visualize` nodes hanging off a `Split` — vertical edges where the
+  horizontal-edge map belonged — and reported both as `cached`. The execution
+  cache key was built from the *source node ids* of the incoming edges and
+  nothing else, so `Split.chunk_0` and `Split.chunk_1` contributed the identical
+  `split` key: two same-typed, same-param siblings hashed to one entry, and
+  whichever executed first became the answer for both. `compute_key` then
+  `sorted()` those ids, which erased input-port order too, so
+  `MatMul(a=A, b=B)` and `MatMul(a=B, b=A)` collided as well — that one returned
+  each other's numbers on every re-run, silently and with no error. Each entry
+  now names its whole edge (target handle, source handle, source key) via the
+  new `ExecutionCache.upstream_ref`, so the sort still normalises the order
+  edges are listed in while the ports stay part of the identity. Cold runs were
+  always correct; only re-runs were wrong, which is why this survived so long.
+
 ## [2.4.1] — 2026-08-22
 
 Four fixes that landed on `main` in the hours after 2.4.0, and nothing else:
@@ -2067,6 +2085,7 @@ Release candidates before 1.0.0 are on the
 [#355]: https://github.com/CodefyUI/CodefyUI/pull/355
 [#356]: https://github.com/CodefyUI/CodefyUI/pull/356
 [#357]: https://github.com/CodefyUI/CodefyUI/pull/357
+[#360]: https://github.com/CodefyUI/CodefyUI/issues/360
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
