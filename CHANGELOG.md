@@ -24,10 +24,10 @@ received — each links to the release it was published as.
 
 ### Added
 
-- **Load now asks where the graph should land, and its list can be searched.**
-  The Load menu opens on two destinations instead of straight onto the list of
-  saved graphs. *Load into this canvas tab* replaces what is on the canvas and
-  binds the tab to nothing, so the next Save asks where the result should go;
+- **Load now asks where the graph should land, and its list can be searched**
+  ([#352]). The Load menu opens on two destinations instead of straight onto
+  the list of saved graphs. *Load into this canvas tab* replaces what is on the
+  canvas and binds the tab to nothing, so the next Save asks where it should go;
   *Load and save* is the load this menu has always performed, which adopts the
   file so Save writes straight back over it. The two were one action before,
   which meant opening a saved graph to look at it silently took over where the
@@ -41,7 +41,7 @@ received — each links to the release it was published as.
 
 ### Fixed
 
-- **A long list of saved graphs is reachable again.** The list rendered
+- **A long list of saved graphs is reachable again** ([#352]). The list rendered
   straight into the shared menu panel, which clips at `overflow: hidden` under
   no height cap at all — so past a screenful of saved graphs, every row below
   the fold could be neither scrolled to nor clicked, on an install with 64 of
@@ -1989,6 +1989,7 @@ Release candidates before 1.0.0 are on the
 [#346]: https://github.com/CodefyUI/CodefyUI/pull/346
 [#347]: https://github.com/CodefyUI/CodefyUI/pull/347
 [#350]: https://github.com/CodefyUI/CodefyUI/pull/350
+[#352]: https://github.com/CodefyUI/CodefyUI/pull/352
 [@oyea0801]: https://github.com/oyea0801
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...main
 [2.3.0]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...2.3.0
