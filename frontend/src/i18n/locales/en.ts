@@ -24,6 +24,16 @@ const en = {
   'toolbar.load.fail': 'Load failed: {error}',
   'toolbar.load.loading': 'Loading...',
   'toolbar.load.empty': 'No saved graphs',
+  'toolbar.load.toCanvas': 'Load into this canvas tab',
+  'toolbar.load.toCanvas.title':
+    'Replace what is on this canvas without binding the tab to the file — the next Save asks where to put it',
+  'toolbar.load.toCanvas.confirm': 'Replace this canvas with "{name}"?',
+  'toolbar.load.toCanvas.confirmAction': 'Replace',
+  'toolbar.load.andSave': 'Load and save',
+  'toolbar.load.andSave.title':
+    'Load it and bind this tab to the file — Save then writes straight back over it',
+  'toolbar.load.search': 'Search saved graphs…',
+  'toolbar.load.noMatch': 'No graph matches "{query}"',
   'toolbar.import': 'Import JSON...',
   'toolbar.import.fail': 'Import failed: {error}',
   'toolbar.clear': 'Clear Canvas',

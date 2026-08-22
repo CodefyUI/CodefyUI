@@ -444,3 +444,101 @@
   inset: 0;
   z-index: 199;
 }
+
+/* ----- Load menu: two levels with a saved-graph flyout ----- */
+
+/*
+ * The Load menu's first level hosts a flyout that has to escape its own box,
+ * so it is the one menu panel that must NOT clip. It holds four short rows
+ * and nothing else, so it never needs to scroll -- the scrolling belongs to
+ * the flyout's list, below.
+ */
+.menuPanelFlyoutHost {
+  overflow: visible;
+}
+
+.submenuRow {
+  position: relative;
+}
+
+.menuItemSub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+}
+
+.menuItemOpen {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.submenuCaret {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/*
+ * Anchored to its row rather than to the panel, so the flyout opens level
+ * with the destination it belongs to. The -sp-2 lines its inner padding up
+ * with the row's top edge instead of hanging one pad lower.
+ */
+.submenuPanel {
+  position: absolute;
+  top: calc(-1 * var(--sp-2));
+  left: 100%;
+  /* Clears the host panel's own padding and border (4px + 1px) before the
+     gap starts, so the flyout does not sit on top of its edge. */
+  margin-left: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  width: 16rem;
+  max-height: 20rem;
+  padding: var(--sp-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+  z-index: 201;
+}
+
+.submenuSearch {
+  flex: none;
+  width: 100%;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--fs-md);
+}
+
+.submenuSearch::placeholder {
+  color: var(--text-disabled);
+}
+
+.submenuSearch:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+/*
+ * The scroll container the saved-graph list always needed: it used to render
+ * straight into `.menuPanel`, which clips at `overflow: hidden` under no
+ * height cap at all -- so past a screenful of saved graphs the rows below the
+ * fold could be neither scrolled to nor clicked.
+ */
+.submenuList {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Long graph names truncate instead of widening the flyout; the row's
+   `title` carries the file name in full. */
+.submenuItem {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
