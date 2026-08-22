@@ -1,6 +1,6 @@
 [project]
 name = "codefyui-backend"
-version = "2.3.0"
+version = "2.4.0"
 description = "Visual Node-Based ML Pipeline Builder - Backend"
 # Names the copyright holder in distribution metadata. Until this landed, no
 # file in the repository said who owns CodefyUI, which left the commercial
