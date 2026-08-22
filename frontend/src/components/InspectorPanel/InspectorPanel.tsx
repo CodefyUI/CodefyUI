@@ -6,7 +6,12 @@ import { BackwardView } from './BackwardView';
 import { TokenChipsView } from './TokenChipsView';
 import { PortGroup, FlowDivider, keyOf } from './PortGroup';
 import type { PortTarget } from './PortGroup';
-import { portDataType, resolveSingleNodePorts, usePortFetches } from './portCaptures';
+import {
+  portDataType,
+  resolveSingleNodePorts,
+  usePortFetches,
+  usePortMedia,
+} from './portCaptures';
 import { isTensor, shapesEqual, makeHighlight } from './diff';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import styles from './InspectorPanel.module.css';
@@ -113,6 +118,9 @@ export function InspectorPanel() {
     [targets],
   );
   const fetches = usePortFetches(lastRunId, allPorts);
+  // Same source the Node Detail Modal's capture tabs read, so a media port
+  // shows the same picture or clip in the side panel and in the modal.
+  const media = usePortMedia();
 
   const collapseButton = (
     <button type="button"
@@ -181,6 +189,7 @@ export function InspectorPanel() {
             title={t('inspector.segment.inputs', { count: targets.inputs.length })}
             ports={targets.inputs}
             fetches={fetches}
+            media={media}
           />
           <FlowDivider />
           <PortGroup
@@ -188,6 +197,7 @@ export function InspectorPanel() {
             title={t('inspector.segment.outputs', { count: targets.outputs.length })}
             ports={targets.outputs}
             fetches={fetches}
+            media={media}
           />
         </div>
       </div>
@@ -268,6 +278,7 @@ export function InspectorPanel() {
                   ports={inputs}
                   fetches={fetches}
                   emptyText={t('inspector.node.inputsEmpty')}
+                  media={media}
                 />
                 <FlowDivider chip={shapeChip} />
                 <PortGroup
@@ -277,6 +288,7 @@ export function InspectorPanel() {
                   fetches={fetches}
                   emptyText={t('inspector.node.outputsEmpty')}
                   highlight={outHighlight}
+                  media={media}
                 />
               </>
             )}

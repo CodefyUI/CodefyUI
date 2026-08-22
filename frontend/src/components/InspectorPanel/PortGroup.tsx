@@ -1,5 +1,6 @@
 import type { OutputData, TensorOutput } from '../../types';
 import { TensorGridView } from './TensorGridView';
+import type { PortMedia, PortMediaMap } from './portCaptures';
 import { getPortColor } from '../../utils';
 import styles from './InspectorPanel.module.css';
 
@@ -36,6 +37,7 @@ export function PortGroup({
   fetches,
   emptyText,
   highlight,
+  media,
 }: {
   kind: 'input' | 'output';
   title: string;
@@ -44,6 +46,14 @@ export function PortGroup({
   emptyText?: string;
   /** Per-cell heat for one specific port (the solo-output transform case). */
   highlight?: { portKey: string; fn: (i: number, j: number) => number };
+  /**
+   * What media ports produced last run, keyed by {@link keyOf} — from
+   * `usePortMedia`. A port with an entry here renders the picture or the clip
+   * INSTEAD of its captured value, because that value is not a readable one:
+   * an image port's is a base64 PNG the capture endpoint truncates at 4000
+   * chars, and a video port's is a reference dict that renders as a `repr`.
+   */
+  media?: PortMediaMap;
 }) {
   return (
     <div className={styles.portGroup}>
@@ -54,6 +64,7 @@ export function PortGroup({
         ports.map((p) => {
           const key = keyOf(p.nodeId, p.port);
           const state = fetches[key];
+          const portMedia = media?.[key];
           return (
             <div key={key} className={styles.portBlock}>
               <div className={styles.portHeader}>
@@ -66,22 +77,67 @@ export function PortGroup({
                 )}
                 <span className={styles.portName}>{p.displayName ?? p.port}</span>
               </div>
-              {state?.error && <div className={styles.portError}>{state.error}</div>}
-              {state?.data && state.data.type === 'tensor' && (
-                <TensorGridView
-                  tensor={state.data as TensorOutput}
-                  highlight={highlight && highlight.portKey === key ? highlight.fn : undefined}
-                />
+              {state?.error && !portMedia && (
+                <div className={styles.portError}>{state.error}</div>
               )}
-              {state?.data && state.data.type !== 'tensor' && (
-                <NonTensorView value={state.data} />
+              {portMedia ? (
+                <PortMediaView media={portMedia} label={p.displayName ?? p.port} />
+              ) : (
+                <>
+                  {state?.data && state.data.type === 'tensor' && (
+                    <TensorGridView
+                      tensor={state.data as TensorOutput}
+                      highlight={
+                        highlight && highlight.portKey === key ? highlight.fn : undefined
+                      }
+                    />
+                  )}
+                  {state?.data && state.data.type !== 'tensor' && (
+                    <NonTensorView value={state.data} />
+                  )}
+                  {!state?.data && !state?.error && (
+                    <div className={styles.diffMissing}>…</div>
+                  )}
+                </>
               )}
-              {!state?.data && !state?.error && <div className={styles.diffMissing}>…</div>}
             </div>
           );
         })
       )}
     </div>
+  );
+}
+
+/**
+ * A media port's own output: the picture it drew, or the clip it wrote.
+ *
+ * Kept in step with the results panel's log rows deliberately — a gif is an
+ * animated image and browsers refuse it as a `<video>` source, so it goes in
+ * an `<img>` there and here alike.
+ */
+export function PortMediaView({ media, label }: { media: PortMedia; label: string }) {
+  if (media.kind === 'image') {
+    return (
+      <img
+        className={styles.portImage}
+        src={`data:image/${media.image.format};base64,${media.image.data}`}
+        alt={label}
+      />
+    );
+  }
+  const { video } = media;
+  if (video.format === 'gif') {
+    return <img className={styles.portVideo} src={video.url} alt={label} />;
+  }
+  return (
+    <video
+      className={styles.portVideo}
+      src={video.url}
+      aria-label={label}
+      controls
+      loop
+      preload="metadata"
+    />
   );
 }
 

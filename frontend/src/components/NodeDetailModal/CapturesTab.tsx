@@ -2,7 +2,11 @@ import { useMemo } from 'react';
 import { useI18n } from '../../i18n';
 import type { OutputSummary } from '../../types';
 import { PortGroup } from '../InspectorPanel/PortGroup';
-import { resolveSingleNodePorts, usePortFetches } from '../InspectorPanel/portCaptures';
+import {
+  resolveSingleNodePorts,
+  usePortFetches,
+  usePortMedia,
+} from '../InspectorPanel/portCaptures';
 import { getPortColor } from '../../utils';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { ChartView } from '../shared/ChartView';
@@ -55,6 +59,9 @@ export function CapturesTab({
   }, [kind, ctx.nodeId, ctx.nodes, ctx.edges]);
 
   const fetches = usePortFetches(ctx.runId, ports);
+  // A port that declared media renders as what it produced — the picture or
+  // the clip — rather than as the string or dict the capture path serves.
+  const media = usePortMedia();
 
   // Charts this node emitted during the run (#130). They arrive on the
   // node_status stream rather than through the captures API, so they are read
@@ -138,6 +145,7 @@ export function CapturesTab({
         ports={ports}
         fetches={fetches}
         emptyText={emptyText}
+        media={media}
       />
     </div>
   );
