@@ -22,6 +22,31 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Load now asks where the graph should land, and its list can be searched.**
+  The Load menu opens on two destinations instead of straight onto the list of
+  saved graphs. *Load into this canvas tab* replaces what is on the canvas and
+  binds the tab to nothing, so the next Save asks where the result should go;
+  *Load and save* is the load this menu has always performed, which adopts the
+  file so Save writes straight back over it. The two were one action before,
+  which meant opening a saved graph to look at it silently took over where the
+  tab saves — and since a Save in project mode overwrites the bound file in
+  place with no prompt, the graph you opened was the graph you overwrote.
+  Because the unbound path replaces live work, it confirms first; an empty
+  canvas has nothing to lose, so it does not ask. Each destination opens the
+  same flyout beside it: a search box over the saved graphs, matching the file
+  name as well as the label, and switching destination neither refetches the
+  list nor throws away what has been typed.
+
+### Fixed
+
+- **A long list of saved graphs is reachable again.** The list rendered
+  straight into the shared menu panel, which clips at `overflow: hidden` under
+  no height cap at all — so past a screenful of saved graphs, every row below
+  the fold could be neither scrolled to nor clicked, on an install with 64 of
+  them. The list now lives in the flyout above, which scrolls.
+
 ## [2.3.0] — 2026-08-21
 
 ### Added

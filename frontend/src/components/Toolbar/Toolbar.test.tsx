@@ -99,6 +99,19 @@ function setActiveTab(overrides: Record<string, unknown> = {}) {
   useTabStore.setState({ tabs: [tab as never], activeTabId: 'tab-1' });
 }
 
+/**
+ * Open Load -> a destination, which is what now stands between the toolbar
+ * and the saved-graph list: the menu grew a first level (load into this
+ * canvas unbound / load and bind for saving) and the list moved into the
+ * searchable, scrollable flyout that opens beside whichever one is hovered.
+ */
+function openLoadPicker(target: 'canvas' | 'bind' = 'bind') {
+  fireEvent.click(screen.getByText('Load'));
+  fireEvent.click(
+    screen.getByText(target === 'bind' ? 'Load and save' : 'Load into this canvas tab'),
+  );
+}
+
 /** Resolve a pending dialog (confirm/prompt) from the dialog store. */
 async function resolveDialog(value: boolean | string | null) {
   await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
@@ -134,8 +147,14 @@ describe('Toolbar', () => {
     mockedRest.listCustomNodes.mockResolvedValue([]);
     // saveGraph is a shared vi.fn() from the module mock — restoreAllMocks
     // does not reset factory mocks, so clear its call history each test to
-    // keep per-test "was/was not called" assertions order-independent.
+    // keep per-test "was/was not called" assertions order-independent. The
+    // two load mocks are cleared for the same reason: the Load tests below
+    // assert on exact call counts ("the flyout fetched the list once", "a
+    // cancelled confirm loaded nothing"), which every earlier test's calls
+    // would otherwise inflate.
     mockedRest.saveGraph.mockClear();
+    mockedRest.loadGraph.mockClear();
+    mockedRest.listGraphs.mockClear();
     mockedRest.exportGraph.mockReset();
 
     mockedExportDiagram.svgToPngBlob.mockReset();
@@ -431,7 +450,7 @@ describe('Toolbar', () => {
       }) as never,
     );
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     await act(async () => {
       resolveList([]);
@@ -450,7 +469,7 @@ describe('Toolbar', () => {
       presets: [{ preset_name: 'P1' }],
     } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
     expect(screen.getByText('Beta')).toBeInTheDocument();
 
@@ -467,7 +486,7 @@ describe('Toolbar', () => {
     // nodes/edges/presets all absent -> ?? [] fallbacks; presets not array
     mockedRest.loadGraph.mockResolvedValueOnce({} as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Gamma')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Gamma'));
     await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalled());
@@ -485,7 +504,7 @@ describe('Toolbar', () => {
       presets: [{ preset_name: 'Existing' }, { preset_name: 'Fresh' }],
     } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('G')).toBeInTheDocument());
     fireEvent.click(screen.getByText('G'));
     await waitFor(() => {
@@ -504,7 +523,7 @@ describe('Toolbar', () => {
       }) as never,
     );
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     // Close the menu (unmounts the panel -> cleanup sets cancelled=true)
     fireEvent.mouseDown(document.body);
@@ -525,7 +544,7 @@ describe('Toolbar', () => {
       }) as never,
     );
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     fireEvent.mouseDown(document.body);
     await waitFor(() => expect(screen.queryByText('Loading...')).toBeNull());
@@ -545,7 +564,7 @@ describe('Toolbar', () => {
       segmentGroups: [{ id: 'g1', headNodeId: 'a', tailNodeId: 'b' }],
     } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Alpha'));
     await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
@@ -556,6 +575,119 @@ describe('Toolbar', () => {
       // Bound to the loaded file so re-saving under the same name is silent.
       expect(tab.currentGraphFile).toBe('alpha');
     });
+  });
+
+  // ── Load: the two destinations, and the searchable flyout ──────────
+  //
+  // The menu has a first level now: the same saved graph either replaces
+  // this canvas WITHOUT adopting the file (so a later Save asks where to put
+  // the result) or replaces it AND binds the tab, which is the load the menu
+  // has always performed. Opening a graph to look at it no longer silently
+  // takes over where the tab saves.
+
+  it('Load: "into this canvas tab" replaces the canvas but binds nothing', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha.json' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+    setActiveTab({ currentGraphFile: 'previous.json' });
+    render(<Toolbar />);
+    openLoadPicker('canvas');
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha.json'));
+    // Unbound: the stale binding to the PREVIOUS file is cleared too, or the
+    // next Save would overwrite a file the user never chose.
+    await waitFor(() => expect(useTabStore.getState().tabs[0].currentGraphFile).toBeNull());
+  });
+
+  it('Load: an empty canvas is replaced with no confirm at all', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha.json' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+    render(<Toolbar />);
+    openLoadPicker('canvas');
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalled());
+    expect(useDialogStore.getState().active).toBeNull();
+  });
+
+  it('Load: replacing a canvas that HAS work asks first, then loads', async () => {
+    setActiveTab({ nodes: [{ id: 'mine', type: 'Add', position: { x: 0, y: 0 }, data: { params: {} } }] });
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha.json' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+    render(<Toolbar />);
+    openLoadPicker('canvas');
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    // The dialog names the graph by its LABEL, not its file stem.
+    await waitFor(() =>
+      expect(useDialogStore.getState().active?.title).toBe('Replace this canvas with "Alpha"?'),
+    );
+    await resolveDialog(true);
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha.json'));
+    await waitFor(() => expect(useTabStore.getState().tabs[0].nodes).toHaveLength(0));
+  });
+
+  it('Load: cancelling that confirm leaves the canvas alone', async () => {
+    setActiveTab({ nodes: [{ id: 'mine', type: 'Add', position: { x: 0, y: 0 }, data: { params: {} } }] });
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha.json' }] as never);
+    render(<Toolbar />);
+    openLoadPicker('canvas');
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    await resolveDialog(false);
+    expect(mockedRest.loadGraph).not.toHaveBeenCalled();
+    expect(useTabStore.getState().tabs[0].nodes).toHaveLength(1);
+  });
+
+  it('Load: "load and save" still binds, and never asks', async () => {
+    setActiveTab({ nodes: [{ id: 'mine', type: 'Add', position: { x: 0, y: 0 }, data: { params: {} } }] });
+    mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha.json' }] as never);
+    mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
+    render(<Toolbar />);
+    openLoadPicker('bind');
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Alpha'));
+    await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha.json'));
+    expect(useDialogStore.getState().active).toBeNull();
+    await waitFor(() => expect(useTabStore.getState().tabs[0].currentGraphFile).toBe('alpha.json'));
+  });
+
+  it('Load: hovering the other destination moves the flyout and keeps the search', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([
+      { name: 'Alpha', file: 'alpha.json' },
+      { name: 'Beta', file: 'beta.json' },
+    ] as never);
+    render(<Toolbar />);
+    fireEvent.click(screen.getByText('Load'));
+    fireEvent.mouseEnter(screen.getByText('Load into this canvas tab'));
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Search saved graphs…'), { target: { value: 'beta' } });
+    expect(screen.queryByText('Alpha')).toBeNull();
+    // Switching destination must not refetch the list or throw away the
+    // query -- both live above the flyout for exactly this reason.
+    fireEvent.mouseEnter(screen.getByText('Load and save'));
+    expect(mockedRest.listGraphs).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText('Search saved graphs…') as HTMLInputElement).value).toBe('beta');
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+
+  it('Load: the search matches the file name too, and says when nothing matches', async () => {
+    mockedRest.listGraphs.mockResolvedValueOnce([
+      { name: 'Alpha', file: 'first-run.json' },
+      { name: 'Beta', file: 'beta.json' },
+    ] as never);
+    render(<Toolbar />);
+    openLoadPicker();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    // "first-run" appears only in the file name, never in the label.
+    fireEvent.change(screen.getByLabelText('Search saved graphs…'), { target: { value: ' FIRST-run ' } });
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.queryByText('Beta')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Search saved graphs…'), { target: { value: 'zzz' } });
+    expect(screen.getByText('No graph matches "zzz"')).toBeInTheDocument();
+    // Distinct from having nothing saved at all.
+    expect(screen.queryByText('No saved graphs')).toBeNull();
   });
 
   // -- Load: project-mode origin stamping (Task 13 review gap, ID10) --
@@ -581,7 +713,7 @@ describe('Toolbar', () => {
       mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
       mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
       render(<Toolbar />);
-      fireEvent.click(screen.getByText('Load'));
+      openLoadPicker();
       await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
       fireEvent.click(screen.getByText('Alpha'));
       await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
@@ -597,7 +729,7 @@ describe('Toolbar', () => {
       mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Alpha', file: 'alpha' }] as never);
       mockedRest.loadGraph.mockResolvedValueOnce({ nodes: [], edges: [] } as never);
       render(<Toolbar />);
-      fireEvent.click(screen.getByText('Load'));
+      openLoadPicker();
       await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
       fireEvent.click(screen.getByText('Alpha'));
       await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('alpha'));
@@ -635,7 +767,7 @@ describe('Toolbar', () => {
       layout_missing: true,
     } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Proj'));
     await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
@@ -670,7 +802,7 @@ describe('Toolbar', () => {
       // layout_missing intentionally omitted
     } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Proj')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Proj'));
     await waitFor(() => expect(mockedRest.loadGraph).toHaveBeenCalledWith('proj'));
@@ -689,7 +821,7 @@ describe('Toolbar', () => {
     mockedRest.listGraphs.mockResolvedValueOnce([{ name: 'Bad', file: 'bad.json' }] as never);
     mockedRest.loadGraph.mockRejectedValueOnce(new Error('404'));
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Bad')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Bad'));
     await waitFor(() =>
@@ -700,14 +832,14 @@ describe('Toolbar', () => {
   it('Load: listGraphs rejecting yields the empty state', async () => {
     mockedRest.listGraphs.mockRejectedValueOnce(new Error('nope'));
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('No saved graphs')).toBeInTheDocument());
   });
 
   it('Load: listGraphs returning a non-array falls back to []', async () => {
     mockedRest.listGraphs.mockResolvedValueOnce({ not: 'an array' } as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('No saved graphs')).toBeInTheDocument());
   });
 
@@ -715,7 +847,7 @@ describe('Toolbar', () => {
     mockedRest.listGraphs.mockResolvedValueOnce([] as never);
     const inputClick = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Import JSON...')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Import JSON...'));
     expect(inputClick).toHaveBeenCalled();
@@ -724,7 +856,7 @@ describe('Toolbar', () => {
   it('Load: closes on outside mousedown', async () => {
     mockedRest.listGraphs.mockResolvedValueOnce([] as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Import JSON...')).toBeInTheDocument());
     fireEvent.mouseDown(document.body);
     await waitFor(() => expect(screen.queryByText('Import JSON...')).toBeNull());
@@ -733,7 +865,7 @@ describe('Toolbar', () => {
   it('Load: mousedown inside the submenu keeps it open', async () => {
     mockedRest.listGraphs.mockResolvedValueOnce([] as never);
     render(<Toolbar />);
-    fireEvent.click(screen.getByText('Load'));
+    openLoadPicker();
     await waitFor(() => expect(screen.getByText('Import JSON...')).toBeInTheDocument());
     fireEvent.mouseDown(screen.getByText('Import JSON...'));
     expect(screen.getByText('Import JSON...')).toBeInTheDocument();

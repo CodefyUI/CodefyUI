@@ -90,7 +90,26 @@ function MenuDropdown({
   );
 }
 
-/* ── Load sub-menu (lists saved graphs) ─────────────────────────── */
+/* ── Load menu (two levels: destination, then which saved graph) ── */
+
+/**
+ * What a load does to the tab it lands in.
+ *
+ * - `canvas` — replace what is on this canvas and bind the tab to NOTHING,
+ *   so the next Save asks where the result should go. Overwriting live work
+ *   is the whole of this path, which is why it confirms first.
+ * - `bind` — the original Load: replace the canvas AND bind the tab to the
+ *   file, so Save writes straight back over it.
+ *
+ * The two used to be one action (always `bind`), which meant opening a saved
+ * graph to look at it silently took over where the tab saves.
+ */
+type LoadTarget = 'canvas' | 'bind';
+
+interface SavedGraph {
+  name: string;
+  file: string;
+}
 
 function LoadSubMenu({
   open,
@@ -103,7 +122,7 @@ function LoadSubMenu({
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
-  onLoadGraph: (name: string) => void;
+  onLoadGraph: (graph: SavedGraph, target: LoadTarget) => void;
   onImport: () => void;
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
 }) {
@@ -123,6 +142,8 @@ function LoadSubMenu({
       <button type="button"
         onClick={onToggle}
         className={`${styles.ghost} ${open ? styles.open : ''}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         {t('toolbar.load')}
       </button>
@@ -138,10 +159,20 @@ function LoadSubMenu({
   );
 }
 
+const LOAD_TARGETS: { key: LoadTarget; label: TranslationKey; title: TranslationKey }[] = [
+  { key: 'canvas', label: 'toolbar.load.toCanvas', title: 'toolbar.load.toCanvas.title' },
+  { key: 'bind', label: 'toolbar.load.andSave', title: 'toolbar.load.andSave.title' },
+];
+
 /**
- * The dropdown body for {@link LoadSubMenu}. Mounted only while the menu is
- * open, so the saved-graph list is fetched once on mount rather than synced
- * off an `open` prop.
+ * The first level of {@link LoadSubMenu}: pick what the load should do, then
+ * pick the graph from the flyout that opens beside it.
+ *
+ * Mounted only while the menu is open, so the saved-graph list is fetched
+ * once on mount rather than synced off an `open` prop. The list and the
+ * search box live HERE rather than in the flyout so that hovering from one
+ * destination to the other neither refetches nor throws away what the user
+ * has already typed.
  */
 function LoadSubMenuPanel({
   onLoadGraph,
@@ -149,13 +180,15 @@ function LoadSubMenuPanel({
   onClose,
   t,
 }: {
-  onLoadGraph: (name: string) => void;
+  onLoadGraph: (graph: SavedGraph, target: LoadTarget) => void;
   onImport: () => void;
   onClose: () => void;
   t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
 }) {
-  const [graphs, setGraphs] = useState<{ name: string; file: string }[]>([]);
+  const [graphs, setGraphs] = useState<SavedGraph[]>([]);
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [target, setTarget] = useState<LoadTarget | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,22 +208,36 @@ function LoadSubMenuPanel({
   }, []);
 
   return (
-    <div className={styles.menuPanel}>
-      {loading ? (
-        <div className={styles.menuMessage}>{t('toolbar.load.loading')}</div>
-      ) : graphs.length === 0 ? (
-        <div className={styles.menuMessageDim}>{t('toolbar.load.empty')}</div>
-      ) : (
-        graphs.map((g) => (
+    <div className={`${styles.menuPanel} ${styles.menuPanelFlyoutHost}`}>
+      {LOAD_TARGETS.map(({ key, label, title }) => (
+        <div key={key} className={styles.submenuRow}>
           <button type="button"
-            key={g.file}
-            onClick={() => { onLoadGraph(g.file); onClose(); }}
-            className={styles.menuItem}
+            className={`${styles.menuItem} ${styles.menuItemSub} ${target === key ? styles.menuItemOpen : ''}`}
+            title={t(title)}
+            // Hover opens it the way a native submenu does; the click is what
+            // keyboard and touch have instead of a hover, so it opens too --
+            // never toggles, or moving the pointer across the rows would
+            // leave the one under it shut.
+            onClick={() => setTarget(key)}
+            onMouseEnter={() => setTarget(key)}
+            aria-haspopup="menu"
+            aria-expanded={target === key}
           >
-            {g.name}
+            <span>{t(label)}</span>
+            <span className={styles.submenuCaret} aria-hidden="true">▸</span>
           </button>
-        ))
-      )}
+          {target === key && (
+            <SavedGraphPicker
+              graphs={graphs}
+              loading={loading}
+              query={query}
+              onQueryChange={setQuery}
+              onPick={(graph) => { onLoadGraph(graph, key); onClose(); }}
+              t={t}
+            />
+          )}
+        </div>
+      ))}
       <div className={styles.menuDivider} />
       <button type="button"
         onClick={() => { onImport(); onClose(); }}
@@ -199,6 +246,75 @@ function LoadSubMenuPanel({
       >
         {t('toolbar.import')}
       </button>
+    </div>
+  );
+}
+
+/**
+ * The saved-graph flyout: a search box over a list that SCROLLS.
+ *
+ * Both are the fix for the same bug -- the list used to render straight into
+ * the shared `.menuPanel`, which clips at `overflow: hidden` with no height
+ * cap, so once a project held more graphs than fit on screen the ones past
+ * the bottom could be neither scrolled to nor clicked.
+ */
+function SavedGraphPicker({
+  graphs,
+  loading,
+  query,
+  onQueryChange,
+  onPick,
+  t,
+}: {
+  graphs: SavedGraph[];
+  loading: boolean;
+  query: string;
+  onQueryChange: (value: string) => void;
+  onPick: (graph: SavedGraph) => void;
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string;
+}) {
+  const needle = query.trim().toLowerCase();
+  // Matched on the file name as well as the label: the two differ once a name
+  // has been sanitized, and the file is what the row's tooltip shows.
+  const matches = needle === ''
+    ? graphs
+    : graphs.filter(
+        (g) =>
+          g.name.toLowerCase().includes(needle) || g.file.toLowerCase().includes(needle),
+      );
+
+  return (
+    <div className={styles.submenuPanel} role="menu">
+      <input
+        type="text"
+        className={styles.submenuSearch}
+        value={query}
+        onChange={(e) => onQueryChange(e.target.value)}
+        placeholder={t('toolbar.load.search')}
+        aria-label={t('toolbar.load.search')}
+        autoFocus
+      />
+      <div className={styles.submenuList}>
+        {loading ? (
+          <div className={styles.menuMessage}>{t('toolbar.load.loading')}</div>
+        ) : graphs.length === 0 ? (
+          <div className={styles.menuMessageDim}>{t('toolbar.load.empty')}</div>
+        ) : matches.length === 0 ? (
+          <div className={styles.menuMessageDim}>{t('toolbar.load.noMatch', { query })}</div>
+        ) : (
+          matches.map((g) => (
+            <button type="button"
+              key={g.file}
+              onClick={() => onPick(g)}
+              className={`${styles.menuItem} ${styles.submenuItem}`}
+              title={g.file}
+              role="menuitem"
+            >
+              {g.name}
+            </button>
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -286,7 +402,22 @@ export function Toolbar() {
   }, [clear, t]);
 
   const handleLoadGraph = useCallback(
-    async (name: string) => {
+    async (graph: SavedGraph, target: LoadTarget) => {
+      const name = graph.file;
+      // Only the unbound path asks. `bind` is the load this menu has always
+      // performed, and adding a confirm to it here would be a change to a
+      // second thing in a change about the first one. An empty canvas has
+      // nothing to lose, so it is not worth a dialog either.
+      const { tabs, activeTabId } = useTabStore.getState();
+      const canvasHasWork = tabs.find((tb) => tb.id === activeTabId)!.nodes.length > 0;
+      if (target === 'canvas' && canvasHasWork) {
+        const ok = await confirm({
+          title: t('toolbar.load.toCanvas.confirm', { name: graph.name }),
+          confirmText: t('toolbar.load.toCanvas.confirmAction'),
+          variant: 'danger',
+        });
+        if (!ok) return;
+      }
       try {
         const graphData = await loadGraph(name);
         const rawNodes = graphData.nodes ?? [];
@@ -326,7 +457,11 @@ export function Toolbar() {
           // warning. Part of the document install since #200 item 9, not a
           // line after it: the binding says which file the graph on screen
           // writes to, so the two must never be set apart.
-          boundFile: name,
+          // `bind` adopts the file, so a later Save overwrites it in place;
+          // `canvas` deliberately does not, which is what makes it safe to
+          // drop a saved graph onto a canvas you are still working in --
+          // the next Save asks for a name instead of eating the original.
+          boundFile: target === 'bind' ? name : null,
           subgraphs: loadedSubgraphs,
           segmentGroups: Array.isArray(graphData.segmentGroups) ? graphData.segmentGroups : [],
           description: typeof graphData.description === 'string' ? graphData.description : '',
