@@ -39,13 +39,88 @@ function Refresh-Path {
     $env:Path = ($machine, $user, $env:Path | Where-Object { $_ }) -join ';'
 }
 
+function Add-UserPath($dir) {
+    $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($null -eq $userPath) { $userPath = '' }
+    $entries = $userPath -split ';' | Where-Object { $_ }
+    if ($entries -contains $dir) { return $false }
+    $newUserPath = if ($userPath) { "$userPath;$dir" } else { $dir }
+    [System.Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+    return $true
+}
+
+# 回傳 $true/$false，由呼叫端決定是否改用備援方案。
 function Install-Winget($id, $friendlyName) {
     if (-not (Test-Cmd winget)) {
-        Die "winget not found. Install '$friendlyName' manually or install 'App Installer' from Microsoft Store, then re-run."
+        Warn "winget 不可用（需先安裝 Microsoft Store 的 'App Installer'），無法透過 winget 安裝 $friendlyName"
+        return $false
     }
-    winget install --id $id --silent --accept-source-agreements --accept-package-agreements --exact
-    if ($LASTEXITCODE -ne 0) { Die "winget install $id failed (exit $LASTEXITCODE)" }
+    # `--source winget` 為必要參數：部分環境（企業網路 TLS 攔截、憑證不符）無法
+    # 連線至 msstore 來源，會回報 0x8a15005e「The server certificate did not match
+    # any of the expected values」。此時 winget 會將結果視為不明確，輸出 "Please
+    # specify one of them using the --source option" 後即以非零狀態結束——即使
+    # winget 來源本身已成功解析到該套件。明確指定來源即可完全略過 msstore。
+    # 輸出導向 Out-Host：原生指令的 stdout 會進入 PowerShell 的成功管線，未加以
+    # 攔截時會混入本函式的回傳值。
+    winget install --id $id --exact --source winget --silent `
+        --accept-source-agreements --accept-package-agreements | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Warn "winget install $id failed (exit $LASTEXITCODE)"
+        return $false
+    }
     Refresh-Path
+    return $true
+}
+
+# winget 不可用時的備援方案：Git for Windows 的 PortableGit 為 7-Zip 自解壓封存
+# 檔，解壓至使用者目錄即可使用，不需系統管理員權限，亦不經過 winget 的套件來源。
+function Install-GitPortable {
+    $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
+        'ARM64' { 'arm64' }
+        'x86'   { '32-bit' }
+        default { '64-bit' }
+    }
+    try {
+        $rel = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 `
+            -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' `
+            -Headers @{ 'User-Agent' = 'CodefyUI-installer' }
+    } catch {
+        Warn "無法查詢 Git for Windows release 資訊：$($_.Exception.Message)"
+        return $false
+    }
+
+    $portable = @($rel.assets | Where-Object { $_.name -like 'PortableGit-*.7z.exe' })
+    $asset = $portable | Where-Object { $_.name -like "*-$arch.7z.exe" } | Select-Object -First 1
+    if (-not $asset) { $asset = $portable | Where-Object { $_.name -like '*-64-bit.7z.exe' } | Select-Object -First 1 }
+    if (-not $asset) {
+        Warn "Git for Windows release 中未提供 PortableGit 自解壓封存檔"
+        return $false
+    }
+
+    $target = Join-Path $env:LOCALAPPDATA 'CodefyUI\PortableGit'
+    $tmp = Join-Path $env:TEMP "cdui-git-$([guid]::NewGuid().ToString('N')).exe"
+    Write-Host "  下載：$($asset.browser_download_url)"
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $tmp -TimeoutSec 600
+    } catch {
+        Warn "PortableGit 下載失敗：$($_.Exception.Message)"
+        return $false
+    }
+
+    if (Test-Path $target) { Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    # 7-Zip SFX 參數：-o<dir>（與路徑之間不可有空白）指定解壓目的地，-y 為全部同意。
+    Start-Process -FilePath $tmp -ArgumentList "-o`"$target`" -y" -Wait -NoNewWindow | Out-Null
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+
+    $gitCmdDir = Join-Path $target 'cmd'
+    if (-not (Test-Path (Join-Path $gitCmdDir 'git.exe'))) {
+        Warn "PortableGit 解壓完成後仍找不到 git.exe"
+        return $false
+    }
+    $env:Path = "$gitCmdDir;$env:Path"
+    if (Add-UserPath $gitCmdDir) { Ok "已將 $gitCmdDir 加入使用者 PATH" }
+    return $true
 }
 
 function Install-NodeToolchain {
@@ -158,7 +233,14 @@ if ($ForceBuild) { Write-Host "  強制本地 build (CODEFYUI_FORCE_BUILD=1)" -F
 Step "git"
 if (-not (Test-Cmd git)) {
     Warn "Not installed, installing via winget..."
-    Install-Winget 'Git.Git' 'Git'
+    if (-not (Install-Winget 'Git.Git' 'Git')) {
+        Warn "winget 安裝路徑失敗，改用免安裝的 PortableGit（不需系統管理員權限）..."
+        if (-not (Install-GitPortable)) {
+            Die "無法自動安裝 git。請手動安裝 Git for Windows（https://git-scm.com/download/win）後重新執行安裝指令。"
+        }
+    }
+    Refresh-Path
+    if (-not (Test-Cmd git)) { Die "git not found on PATH after install. Open a new shell and re-run." }
 }
 Ok (git --version)
 
@@ -261,14 +343,7 @@ Set-Content -Path $Launcher -Value $stub -Encoding ASCII
 Ok "cdui -> $Launcher"
 
 # Ensure LauncherDir is on user PATH for future shells
-$userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-if ($null -eq $userPath) { $userPath = '' }
-$pathEntries = $userPath -split ';' | Where-Object { $_ }
-if ($pathEntries -notcontains $LauncherDir) {
-    $newUserPath = if ($userPath) { "$userPath;$LauncherDir" } else { $LauncherDir }
-    [System.Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
-    Ok "Added $LauncherDir to user PATH"
-}
+if (Add-UserPath $LauncherDir) { Ok "Added $LauncherDir to user PATH" }
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
