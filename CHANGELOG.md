@@ -22,6 +22,77 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-08-22
+
+Four fixes that landed on `main` in the hours after 2.4.0, and nothing else:
+one that stopped the Windows installer at its very first step, three on the
+canvas.
+
+### Fixed
+
+- **The Windows installer no longer gives up when winget's `msstore` source is
+  unreachable** ([#354], contributed by [@oyea0801]). On some machines — school
+  computer labs, corporate networks — `msstore` fails certificate pinning with
+  `0x8a15005e`, typically because a proxy or antivirus performs TLS
+  interception, or because App Installer is too old for Microsoft's rotated
+  certificates. `Git.Git` was sitting in the working `winget` source the whole
+  time, but with no `--source` passed, winget called the partial source failure
+  an ambiguous result and exited non-zero — and the installer stopped there, at
+  step one. The install call now pins `--source winget`, which skips `msstore`
+  entirely. For a machine where winget is absent or its own source is also
+  unreachable, a new portable-Git fallback extracts Git for Windows' PortableGit
+  into `%LOCALAPPDATA%\CodefyUI\PortableGit` and puts it on the user PATH — no
+  administrator rights, no winget involvement. It downloads over the Windows
+  certificate store, so an inspection proxy whose root CA is already on the lab
+  image does not break it.
+
+- **A media port shows its picture or its clip, not its base64 or its `repr`**
+  ([#355], contributed by [@oyea0801]). Double-clicking a Visualize node and
+  opening Outputs showed its `image` port as a wall of base64 text, seconds
+  after the same picture had rendered correctly in the execution log; VideoWrite's
+  `video` port had the same problem dressed as a Python dict `repr`. The
+  declarations were right and the backend was already sending both — the rows
+  were reading the wrong source. `/api/execution/outputs` truncates every string
+  at 4000 characters and a matplotlib loss curve is ~34 600 base64 characters,
+  so the captured value was not merely ugly, it was a fragment that decodes to
+  nothing; a video value is a reference dict the endpoint can only describe as a
+  `repr`. The rows now read the media from the tab's log, where the `node_status`
+  entry already names the port it came from, and render the picture or the clip
+  in place of the captured value. It works with *Record outputs* off, too, when
+  the port fetches have nothing at all. No backend change — the data was already
+  on the wire and already correct.
+
+- **The quick-add palette is dismissable by click and by Escape** ([#356],
+  contributed by [@oyea0801]). Double-clicking the canvas opens the quick node
+  search. Clicking the canvas to dismiss it did nothing, and after one such
+  click Escape stopped working too, leaving a palette on screen with no way out
+  at all. One root cause wearing two hats: React Flow's pane is panned by
+  d3-zoom, whose mousedown handler calls `stopImmediatePropagation` so it can own
+  the drag, so the event died at the pane and the bubble-phase outside-click
+  listener never fired — which is why the palette closed for a click on the
+  toolbar but not on the canvas, the first place anyone dismissing it clicks.
+  Escape was the downstream consequence: it lived on the input's own
+  `onKeyDown`, and the click had blurred the input. Both listeners now sit on
+  the document, the pointer one in the capture phase, which reaches the document
+  before the pane's own handler runs.
+
+- **Connection handles are big enough to hit on the first try** ([#357],
+  contributed by [@latteine1217]). A port dot was 10px across with a 2px ring in
+  `--surface-raised`, the same colour as the node card behind it, so only a 6px
+  core ever read as the dot — on a projector, in front of a class, a target
+  teachers miss. The dot is now 17px with a 13px visible core, and every handle
+  carries a transparent 20px press ring so the target can outgrow the dot
+  without the diagram gaining weight; port rows go from 4px to 8px of vertical
+  padding, because at the old 24px row pitch those rings overlap and
+  neighbouring ports steal each other's presses. The Start and trigger diamonds
+  come *down*, from 12px and 14px to 13px: rotating a square 45° stretches its
+  widest span to 1.41× its side, and its ring is `--text-primary`, part of the
+  shape rather than camouflage, so at nominally similar numbers the diamond read
+  about five times heavier than the dot. Measured in the running app the two are
+  now 169px² against 133px². Handle geometry lives in three tokens, which
+  PresetNode and the layers-editor nodes read as well, instead of six inline
+  copies.
+
 ## [2.4.0] — 2026-08-22
 
 ### Added
@@ -1992,8 +2063,14 @@ Release candidates before 1.0.0 are on the
 [#347]: https://github.com/CodefyUI/CodefyUI/pull/347
 [#350]: https://github.com/CodefyUI/CodefyUI/pull/350
 [#352]: https://github.com/CodefyUI/CodefyUI/pull/352
+[#354]: https://github.com/CodefyUI/CodefyUI/pull/354
+[#355]: https://github.com/CodefyUI/CodefyUI/pull/355
+[#356]: https://github.com/CodefyUI/CodefyUI/pull/356
+[#357]: https://github.com/CodefyUI/CodefyUI/pull/357
 [@oyea0801]: https://github.com/oyea0801
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...main
+[@latteine1217]: https://github.com/latteine1217
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
+[2.4.1]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...2.4.1
 [2.4.0]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...2.4.0
 [2.3.0]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...2.3.0
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
