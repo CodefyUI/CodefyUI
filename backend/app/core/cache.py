@@ -90,6 +90,18 @@ class ExecutionCache:
         the point on a multi-GPU box, where serving one card's tensors to a
         run on the other is a device-mismatch crash rather than a slow path.
 
+        ``upstream_keys`` is one entry PER INCOMING EDGE, and each entry must
+        identify the edge's ports as well as its source -- build them with
+        :meth:`upstream_ref`. The bare source keys are not enough (#360):
+        they say which upstream NODES feed this one, and ``sorted()`` below
+        then reduces even that to an unordered bag, so two different wirings
+        hash the same. ``Split.chunk_0`` and ``Split.chunk_1`` both reduce to
+        the one ``split`` key, and ``MatMul(a=A, b=B)`` and
+        ``MatMul(a=B, b=A)`` both reduce to ``{A, B}`` -- in each case the
+        second node gets served the first one's outputs on a re-run. The
+        ``sorted()`` is still right in INTENT (edge iteration order must not
+        change the key) as long as what it sorts keeps the port pair.
+
         ``fingerprint`` is ``node_cls.cache_fingerprint(params)`` (#144,
         #145): ``None`` for the overwhelming majority of nodes, whose
         params already describe their output completely. A node that reads
@@ -115,6 +127,25 @@ class ExecutionCache:
             default=str,
         )
         return hashlib.sha256(payload.encode()).hexdigest()
+
+    @staticmethod
+    def upstream_ref(
+        target_handle: str, source_handle: str, source_key: str
+    ) -> str:
+        """One ``upstream_keys`` entry: an edge, not just its source node.
+
+        JSON rather than a delimiter-joined string so no handle name can
+        forge a boundary -- ``json.dumps`` escapes whatever is in a port
+        name, where a ``"a<-b"`` separator would let a handle literally
+        called ``a<-b`` collide with a different pair. The list order
+        ``(target, source, key)`` puts the receiving port first so that
+        ``compute_key``'s ``sorted()`` groups a node's edges by the input
+        they land on, which is the reading order a human debugging a key
+        wants.
+        """
+        return json.dumps(
+            [target_handle, source_handle, source_key], separators=(",", ":")
+        )
 
     def get(self, key: str) -> dict[str, Any] | None:
         entry = self._store.get(key)
