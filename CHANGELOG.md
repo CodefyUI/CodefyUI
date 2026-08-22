@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-08-22
+
 ### Added
 
 - **Load now asks where the graph should land, and its list can be searched**
@@ -1991,7 +1993,8 @@ Release candidates before 1.0.0 are on the
 [#350]: https://github.com/CodefyUI/CodefyUI/pull/350
 [#352]: https://github.com/CodefyUI/CodefyUI/pull/352
 [@oyea0801]: https://github.com/oyea0801
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.0...main
+[2.4.0]: https://github.com/CodefyUI/CodefyUI/compare/2.3.0...2.4.0
 [2.3.0]: https://github.com/CodefyUI/CodefyUI/compare/2.2.0...2.3.0
 [2.2.0]: https://github.com/CodefyUI/CodefyUI/compare/2.1.1...2.2.0
 [2.1.1]: https://github.com/CodefyUI/CodefyUI/compare/2.1.0...2.1.1
