@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: 節點參考
-description: 所有內建節點 — 128 個節點涵蓋 15 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
+description: 所有內建節點 — 127 個節點涵蓋 15 大類別，從 CNN 與 Transformer 層到 RL、LLM、Diffusion 與傳統機器學習。
 ---
 
 # 節點參考
 
-CodefyUI 內建 **128 個節點**，涵蓋 **15 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
+CodefyUI 內建 **127 個節點**，涵蓋 **15 大類別**。已安裝的 [外掛包](/advanced/plugins) 與你自己的 [自訂節點](/advanced/custom-nodes) 會再加入更多。
 
 :::tip
 這份清單在撰寫當下是準確的來源依據，但後端才是權威：即時的節點面板與 `GET /api/nodes` 永遠精確反映你的安裝實際有哪些節點。使用應用程式內的搜尋（在畫布上雙擊）可以快速找到節點。
@@ -14,7 +14,7 @@ CodefyUI 內建 **128 個節點**，涵蓋 **15 大類別**。已安裝的 [外�
 
 | 類別 | 節點 | 數量 |
 |----------|-------|------:|
-| **CNN** | Conv2d、Conv1d、Conv2dExplicit、Conv2dKernel、ConvTranspose2d、MaxPool2d、AvgPool2d、AdaptiveAvgPool2d、BatchNorm2d、Dropout、Activation | 11 |
+| **CNN** | Conv2d、Conv1d、Conv2dExplicit、ConvTranspose2d、MaxPool2d、AvgPool2d、AdaptiveAvgPool2d、BatchNorm2d、Dropout、Activation | 10 |
 | **RNN** | LSTM、GRU、RNNCell | 3 |
 | **Transformer** | MultiHeadAttention、TransformerEncoder、TransformerDecoder、MoELayer | 4 |
 | **RL** | DQN、PPO、EnvWrapper、RewardModel、KLDivergence | 5 |

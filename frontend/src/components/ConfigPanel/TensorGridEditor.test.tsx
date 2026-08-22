@@ -58,7 +58,7 @@ describe('TensorGridEditor — non-explicit / disabled mode', () => {
   });
 
   it('kernel_size sibling alone (no value_mode) defaults to explicit and renders an editable k×k grid', () => {
-    // Conv2dKernel-style: shape derived from kernel_size, no value_mode
+    // Conv2dExplicit-style: shape derived from kernel_size, no value_mode
     // sibling. The grid should be live — no "set value_mode" hint.
     renderEditor({
       value: [

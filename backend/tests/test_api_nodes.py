@@ -377,7 +377,6 @@ TRANSLATED_NODES = (
 UNTRANSLATED_NODES = frozenset({
     "Argmax",
     "Conv2dExplicit",
-    "Conv2dKernel",
     "DatasetBatch",
     "DecisionBoundary",
     "DiffusionTrainingLoop",
