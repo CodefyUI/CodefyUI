@@ -94,10 +94,10 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
         position={Position.Top}
         style={{
           background: 'var(--border-strong)',
-          width: 8,
-          height: 8,
+          width: 'var(--handle-size)',
+          height: 'var(--handle-size)',
           border: '2px solid var(--surface-raised)',
-          top: -4,
+          top: 'calc(var(--handle-size) / -2)',
         }}
       />
       <Handle
@@ -105,10 +105,10 @@ function LayerNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
         position={Position.Bottom}
         style={{
           background: 'var(--border-strong)',
-          width: 8,
-          height: 8,
+          width: 'var(--handle-size)',
+          height: 'var(--handle-size)',
           border: '2px solid var(--surface-raised)',
-          bottom: -4,
+          bottom: 'calc(var(--handle-size) / -2)',
         }}
       />
     </div>

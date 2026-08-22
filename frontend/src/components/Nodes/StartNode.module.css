@@ -30,8 +30,8 @@
 
 .handle {
   background: var(--flow-trigger) !important;
-  width: 12px !important;
-  height: 12px !important;
+  width: var(--handle-size-trigger) !important;
+  height: var(--handle-size-trigger) !important;
   border: 2px solid var(--text-primary) !important;
   border-radius: 0 !important;
   transform: rotate(45deg) !important;

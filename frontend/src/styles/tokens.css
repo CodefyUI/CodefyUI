@@ -196,6 +196,27 @@
   --h-control-lg: 40px; /* primary actions, menu rows, dialog buttons */
   --h-row: 36px; /* list row in the node palette */
 
+  /* Graph connection handles. The dots are the smallest thing on the canvas
+     that has to be hit with a mouse, and teachers reported missing them.
+
+     --handle-size is the OUTER diameter; the dot carries a 2px ring in
+     --surface-raised, the same colour as the node card, so what actually
+     reads as "the dot" is 4px smaller than this. That is why the trigger
+     diamond looked so much bigger at nominally similar numbers: its ring is
+     --text-primary, i.e. part of the shape, and rotating a square by 45deg
+     stretches its widest span to 1.41x its side. The two sizes below are held
+     at a ratio where the dot's visible 13px core and the 13px diamond read as
+     the same weight; move one and the other has to follow.
+
+     --handle-hit is a transparent press target drawn around every handle
+     (App.css, .react-flow__handle::before) so the target can outgrow the dot.
+     20px keeps it inside the dot's own former footprint, i.e. clear of the
+     port label; the port row pitch (~32px, see .portRowInput) is the hard
+     ceiling, past which neighbouring ports steal each other's presses. */
+  --handle-size: 17px; /* port dot, 13px of it visible */
+  --handle-size-trigger: 13px; /* Start / trigger diamond */
+  --handle-hit: 20px;
+
   --radius-sm: 4px;
   --radius: 6px;
   --radius-lg: 8px;
