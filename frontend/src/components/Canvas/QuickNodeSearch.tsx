@@ -91,12 +91,11 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
     [addNode, addPresetNode, flowPos, onClose],
   );
 
+  // Navigation only. Escape is deliberately NOT here -- see the dismissal
+  // effect below for why it has to survive the input losing focus.
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown') {
         e.preventDefault();
         setSelectedIndex((i) => Math.min(i + 1, results.length - 1));
       } else if (e.key === 'ArrowUp') {
@@ -109,19 +108,42 @@ export function QuickNodeSearch({ screenPos, flowPos, onClose }: QuickNodeSearch
         }
       }
     },
-    [results, selectedIndex, handleSelect, onClose],
+    [results, selectedIndex, handleSelect],
   );
 
-  // Close on outside click
+  // Dismissal: outside click or Escape, the same pair the toolbar's own menus
+  // give. Both listeners sit on the document, and each is there for a reason
+  // the obvious placement got wrong.
+  //
+  // The pointer listener runs in the CAPTURE phase because the surface this
+  // palette floats over is React Flow's pane, and d3-zoom's mousedown handler
+  // calls `nopropagation(event)` -- `stopImmediatePropagation` -- so it can
+  // own panning (d3-zoom/src/zoom.js). A bubble-phase document listener
+  // therefore never sees a click on the canvas: the palette closed for a click
+  // on the toolbar or the sidebar, but not for a click on the canvas, which is
+  // the first place someone dismissing it will click. Capture runs before the
+  // pane's own handler, so stopping propagation there cannot hide the event.
+  //
+  // Escape is on the document because it used to be the input's own onKeyDown.
+  // Clicking the canvas blurs the input, so after one such click the palette
+  // had no dismissal left at all -- neither the click (swallowed above) nor
+  // the key (no longer routed to the input) could close it.
   const panelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const onPointerDown = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         onClose();
       }
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, [onClose]);
 
   // Position: try to keep on screen

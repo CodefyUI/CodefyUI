@@ -610,7 +610,9 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     setContextMenu(null);
     setPaneMenu(null);
     setEdgeTooltip(null);
-    // quickSearch is closed by QuickNodeSearch's own outside-click handler
+    // quickSearch is closed by QuickNodeSearch's own dismissal effect, which
+    // listens in the capture phase precisely because this pane swallows
+    // mousedown before it can bubble to the document.
   }, [selectNodeExclusively]);
 
   const handlePaneContextMenu = useCallback(
