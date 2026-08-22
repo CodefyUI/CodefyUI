@@ -10,7 +10,18 @@ CodefyUI runs on PyTorch, so it inherits PyTorch's device backends: **CPU**, **N
 
 ## Global device selection
 
-A single global **device** setting drives all tensor-source nodes, so you set it once rather than per node. The backend exposes the devices PyTorch can actually see (via `device_utils.get_available_devices()`), and the UI populates each device dropdown from that list. A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present.
+**CPU is the default, and nothing switches away from it on your behalf.** A run uses the CPU unless you pick an accelerator in Settings, where the dropdown lists every device PyTorch can actually see (via `device_utils.get_available_devices()`). A requested device is checked against what's available and **falls back to CPU with a warning** if it isn't present. Set it once rather than per node.
+
+### Device alignment is guaranteed by the engine
+
+You do not have to reason about where a tensor happens to live. Before a node runs, `graph_engine.invoke_node` moves every tensor in its inputs to the device that node runs on — its own `device` parameter when it declares one, otherwise the run's. Because every path into a node goes through that one function, the guarantee covers builtin nodes, plugin nodes and your own [custom nodes](./custom-nodes) alike.
+
+This matters because a device mismatch cannot happen on a CPU-only machine, so it is invisible during most development and shows up only on someone else's GPU box. Two shipped graphs died that way — `Input type (torch.FloatTensor) and weight type (torch.cuda.FloatTensor) should be the same` — before alignment moved into the engine.
+
+What alignment deliberately does **not** touch:
+
+- **Modules.** `nn.Module.to()` is in-place, so relocating a model handed from one node to another would flip weights out from under the node that owns it. A node that wants a model on its own device says so with an explicit `to_device`.
+- **Datasets, DataLoaders, environments and other non-tensor values.** They pass through untouched, so a dataset stays lazy and `TrainingLoop` keeps streaming batches to the GPU one at a time instead of resident VRAM.
 
 ## Addressing one card out of several
 

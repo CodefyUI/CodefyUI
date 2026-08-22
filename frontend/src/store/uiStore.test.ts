@@ -182,45 +182,23 @@ describe('useUIStore', () => {
     });
   });
 
-  describe('adoptDefaultDevice', () => {
-    it('adopts the backend default when the user has never chosen', () => {
-      // The shared-lab case: nothing persisted, so the CPU placeholder is not
-      // a preference and the GPU should be picked up.
-      useUIStore.getState().adoptDefaultDevice('cuda');
+  describe('the CPU baseline', () => {
+    it('starts on the CPU when nothing has been chosen', () => {
+      // The whole device contract rests on this: CPU always works, so it is
+      // where a fresh profile starts and where a profile with no stored
+      // choice stays. Startup used to adopt the best device the backend
+      // reported, which made the run device a property of the hardware
+      // rather than of the user's choice.
+      expect(useUIStore.getState().globalDevice).toBe('cpu');
+      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
+    });
+
+    it('keeps an accelerator only because the user asked for it', () => {
+      useUIStore.getState().setGlobalDevice('cuda');
       expect(useUIStore.getState().globalDevice).toBe('cuda');
-    });
-
-    it('does not persist what it adopts', () => {
-      // Re-derived every start, so the profile follows the hardware and a
-      // shared machine does not hand a stale device to the next student.
-      useUIStore.getState().adoptDefaultDevice('cuda');
-      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
-    });
-
-    it('leaves an explicit choice alone', () => {
-      useUIStore.getState().setGlobalDevice('cpu');
-      useUIStore.getState().adoptDefaultDevice('cuda');
-      expect(useUIStore.getState().globalDevice).toBe('cpu');
-    });
-
-    it('treats an explicit cpu as a real choice, not the placeholder', () => {
-      // The value cannot distinguish them -- only the key's presence can.
-      // A student may pick CPU deliberately to leave the GPU to someone else.
-      localStorage.setItem(KEYS.GLOBAL_DEVICE, 'cpu');
-      useUIStore.getState().adoptDefaultDevice('cuda');
-      expect(useUIStore.getState().globalDevice).toBe('cpu');
-    });
-
-    it('ignores an empty or missing default', () => {
-      useUIStore.getState().adoptDefaultDevice('');
-      expect(useUIStore.getState().globalDevice).toBe('cpu');
-      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
-    });
-
-    it('is a no-op when the default already matches', () => {
-      useUIStore.getState().adoptDefaultDevice('cpu');
-      expect(useUIStore.getState().globalDevice).toBe('cpu');
-      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
+      // Persisted, unlike the old adopted value: an opt-in is a decision and
+      // survives a reload.
+      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBe('cuda');
     });
   });
 

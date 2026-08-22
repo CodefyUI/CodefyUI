@@ -454,3 +454,67 @@ def to_device(obj: Any, device: Any) -> Any:
 
     # Unknown leaf (int, str, sklearn model, ...) — best effort .to(), else pass.
     return obj
+def node_target_device(params: dict[str, Any] | None, context: Any) -> str:
+    """The device a node's work should happen on.
+
+    Its own ``device`` param when it declares one (so a graph can pin a node),
+    otherwise the run's global device. Both paths go through
+    :func:`resolve_node_device`, so ``"auto"`` and an unavailable request
+    degrade the same way they always have.
+    """
+    value = (params or {}).get("device")
+    return resolve_node_device(value if isinstance(value, str) else None, context)
+
+
+def align_tensors(obj: Any, device: Any) -> Any:
+    """Move every **tensor** in *obj* to `device`, leaving everything else alone.
+
+    The narrow sibling of :func:`to_device`, and the difference is the whole
+    point: ``to_device`` also moves an ``nn.Module``, and ``Module.to()`` is
+    **in-place**. That is right when a node is placing a module it owns, and
+    wrong when the engine is normalising values that arrived on a wire -- a
+    model belongs to the node that built it, and relocating it as a side effect
+    of handing it to a consumer would flip weights out from under the owner
+    (the hazard ``inference_node`` already documents for itself).
+
+    So: tensors are moved (a copy, harmless), modules are passed through
+    untouched, and a node that genuinely wants to place a module it was handed
+    still says so with an explicit ``to_device``.
+
+    Lists, tuples and dicts are mapped element-wise so a ``(data, targets)``
+    batch or a ``{"input_ids": ..., "labels": ...}`` mapping aligns in one
+    call. Datasets, DataLoaders, environments, sklearn estimators and every
+    other leaf pass through: they are not tensors, and eagerly walking them
+    would drag a lazily-loaded dataset into memory.
+
+    MPS float64 is handled exactly as ``to_device`` handles it, because a
+    tensor that cannot exist on the target device is not aligned, it is an
+    error waiting one line further down.
+    """
+    import torch
+
+    if obj is None:
+        return obj
+
+    if isinstance(obj, torch.Tensor):
+        if is_mps_device(device) and obj.dtype == torch.float64:
+            obj = obj.to(torch.float32)
+        # `.to()` on a tensor already there returns self, so the common case
+        # -- everything already aligned -- costs nothing.
+        return obj.to(device)
+
+    if isinstance(obj, torch.nn.Module):
+        return obj
+
+    if isinstance(obj, (list, tuple)):
+        moved = [align_tensors(v, device) for v in obj]
+        try:
+            return type(obj)(moved)
+        except TypeError:
+            # A namedtuple takes its fields positionally, not one iterable.
+            return type(obj)(*moved)
+
+    if isinstance(obj, dict):
+        return {k: align_tensors(v, device) for k, v in obj.items()}
+
+    return obj

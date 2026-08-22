@@ -1526,14 +1526,40 @@ def invoke_node(
     progress_callback: Callable[[dict], None] | None = None,
     context: "ExecutionContext | None" = None,
 ) -> dict[str, Any]:
-    """Call ``instance.execute`` with exactly the keywords it declares.
+    """Call ``instance.execute`` with exactly the keywords it declares, on
+    inputs already aligned to the device this node runs on.
 
     Node authors opt in to ``progress_callback`` / ``context`` by naming them
     in their ``execute`` signature; undeclared ones are dropped here. Both the
     graph engine and exported Python runners route every node call through
     this helper, so invocation semantics can never drift between the canvas
     and an exported script.
+
+    **Device alignment.** ``ExecutionContext.device`` describes one device for
+    the whole run, and ``StatefulModuleMixin`` already puts every layer node's
+    module there. The other half of that sentence -- getting the *tensors*
+    there -- used to be each node's own job, and the record shows what that
+    costs: a graph died with "Expected all tensors to be on the same device"
+    until #347 taught ``PolicyRollout`` to bridge, and the identical failure
+    came back through ``Conv2d`` from a source node that had never learned the
+    same lesson. Fourteen nodes create tensors from nothing; four of them
+    remembered.
+
+    Aligning here makes it structural instead of remembered. Every node gets
+    its inputs on its own device, including third-party plugin nodes and a
+    teacher's custom node, neither of which any amount of reviewing the
+    builtin set can reach. A tensor already in the right place is returned
+    unchanged by ``.to()``, so the aligned case -- which is all of CPU-only
+    running, and all of a correctly-behaved graph -- costs nothing.
+
+    Only tensors move; see :func:`align_tensors` for why a module handed
+    across a wire deliberately does not.
     """
+    if context is not None and getattr(context, "device", None) and inputs:
+        from .device_utils import align_tensors, node_target_device
+
+        inputs = align_tensors(inputs, node_target_device(params, context))
+
     sig = inspect.signature(instance.execute)
     call_kwargs: dict[str, Any] = {}
     if "progress_callback" in sig.parameters:
