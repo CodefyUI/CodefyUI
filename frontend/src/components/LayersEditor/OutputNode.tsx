@@ -32,11 +32,11 @@ function OutputNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>)
             position={Position.Top}
             style={{
               background: color,
-              width: 10,
-              height: 10,
+              width: 'var(--handle-size)',
+              height: 'var(--handle-size)',
               border: '2px solid var(--surface-raised)',
               left: `${left}%`,
-              top: -5,
+              top: 'calc(var(--handle-size) / -2)',
             }}
           />
         );

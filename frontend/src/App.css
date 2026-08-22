@@ -85,6 +85,22 @@ body {
   background: var(--surface-canvas);
 }
 
+/* Press target around every connection handle — port dots, Start's trigger
+   diamond, the layers editor's handles. The dot stays as small as the diagram
+   wants; this transparent ring, sized by --handle-hit, is what the mouse has
+   to land on. Applied here rather than per node component so a handle cannot
+   be added without one. */
+.react-flow__handle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--handle-hit);
+  height: var(--handle-hit);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+}
+
 .react-flow__edge-path {
   stroke: var(--wire);
   stroke-width: 2;

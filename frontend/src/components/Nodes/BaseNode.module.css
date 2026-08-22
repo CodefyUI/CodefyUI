@@ -133,9 +133,14 @@
 }
 
 /* ── Port row ── */
+/* The vertical padding is sized by the dot, not by the label: at
+   --handle-size 20px a 4px pad left only 4px of clear space between one
+   port's dot and the next one's, which is exactly the miss-the-target
+   problem the bigger dot was meant to fix. 8px puts the row pitch at ~32px,
+   i.e. a 12px gap between dots and room for the --handle-hit ring. */
 .portRowInput {
   position: relative;
-  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-5);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -143,7 +148,7 @@
 
 .portRowOutput {
   position: relative;
-  padding: var(--sp-2) var(--sp-5) var(--sp-2) var(--sp-4);
+  padding: var(--sp-3) var(--sp-5) var(--sp-3) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -164,23 +169,25 @@
 }
 
 /* ── Port handle base ── */
-/* Note: background, position offsets injected inline because they depend on data_type and I/O side */
+/* Note: background is injected inline because it depends on data_type. */
 .portHandle {
-  width: 10px !important;
-  height: 10px !important;
+  width: var(--handle-size) !important;
+  height: var(--handle-size) !important;
   border: 2px solid var(--surface-raised) !important;
   border-radius: 50% !important;
   cursor: crosshair !important;
 }
 
+/* Half the dot hangs outside the card edge (the extra 0.5px keeps the old
+   hairline overhang), so its size and its offset stay tied to one token. */
 .portHandleInput {
-  left: -5.5px !important;
+  left: calc(var(--handle-size) / -2 - 0.5px) !important;
   top: 50% !important;
   transform: translateY(-50%) !important;
 }
 
 .portHandleOutput {
-  right: -5.5px !important;
+  right: calc(var(--handle-size) / -2 - 0.5px) !important;
   top: 50% !important;
   transform: translateY(-50%) !important;
 }
@@ -469,16 +476,30 @@
   transition: all var(--transition-fast);
 }
 
+/* This handle exists on every node but is 0x0 and invisible until a trigger
+   drag starts, while React Flow still marks it connectable (pointer-events:
+   all). The global press ring in App.css would therefore park an invisible
+   28px hotspot on every node's top-left corner and swallow drags there, so
+   the ring is withheld until the diamond is actually on screen. */
+.triggerHandle::before {
+  display: none;
+}
+
+.triggerHandleActive::before,
+.triggerHandleDetaching::before {
+  display: block;
+}
+
 .triggerHandleActive {
   /* Visible when user drags from Start trigger. var(--flow-trigger) is the app's
      recurring "trigger / control-flow" green (Start node, entry-point
      marker) — a deliberately different hue from --status-completed's green,
      and tokens.css has no dedicated trigger-flow colour yet (see migration
      report). */
-  width: 14px !important;
-  height: 14px !important;
-  min-width: 14px !important;
-  min-height: 14px !important;
+  width: var(--handle-size-trigger) !important;
+  height: var(--handle-size-trigger) !important;
+  min-width: var(--handle-size-trigger) !important;
+  min-height: var(--handle-size-trigger) !important;
   background: var(--flow-trigger) !important;
   border: 2px solid var(--text-primary) !important;
   opacity: 1;
@@ -492,10 +513,10 @@
    both apply (during a trigger reconnect every node shows the green diamond;
    the originally-connected one must show red instead). */
 .triggerHandleDetaching {
-  width: 14px !important;
-  height: 14px !important;
-  min-width: 14px !important;
-  min-height: 14px !important;
+  width: var(--handle-size-trigger) !important;
+  height: var(--handle-size-trigger) !important;
+  min-width: var(--handle-size-trigger) !important;
+  min-height: var(--handle-size-trigger) !important;
   background: var(--surface-raised) !important;
   border: 2px solid var(--status-error) !important;
   opacity: 1;
