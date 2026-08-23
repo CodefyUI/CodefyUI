@@ -24,6 +24,62 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **The engine puts a node's inputs on the device that node runs on**
+  ([#359]). `ExecutionContext.device` promised one device for a whole run and
+  enforced half of it: `StatefulModuleMixin` moved every layer module
+  centrally, while getting the *tensors* there was left to each node — and
+  ten of the fourteen nodes that build a tensor from nothing never learned
+  it. On a CPU-only machine the two halves cannot disagree, so the gap was
+  invisible during development and showed up only on someone else's GPU:
+  this repo's own `server.log` has two graphs dying of it, one fixed inside
+  `PolicyRollout` by [#347] and the identical failure back the next day
+  through `Conv2d`. Alignment now happens in `graph_engine.invoke_node`, the
+  single function every node call goes through, so it covers plugin nodes and
+  a teacher's custom node as well as the builtin set. Modules are left alone
+  deliberately — `nn.Module.to()` is in-place, and relocating a model handed
+  across a wire would flip weights out from under the node that owns it — as
+  are datasets, DataLoaders and environments, so a dataset stays lazy.
+- **A node whose work is host-side is no longer dragged onto the GPU**
+  ([#359]). Aligning inputs is wrong for a node that hands them straight to
+  numpy, sklearn or matplotlib, because `Tensor.numpy()` raises on anything
+  but the CPU. Those nodes declare `align_inputs = False`, alongside
+  `cacheable`; `TrainTestSplit` is the builtin case, and without it nine of
+  the forty-one shipped example graphs — `Supervised-Learning-101` among them
+  — stopped running the moment a device was selected. `Map` opts out for a
+  different reason: aligning a LIST port would copy the whole collection
+  on-device before the first body node ran, when the point of iterating it is
+  that only one element is resident at a time.
+- **Relocating a value no longer changes what it is** ([#359]). Moving a
+  tensor across devices used to cost a single-field namedtuple its contents
+  (`B(x=tensor)` came back `B(x=[tensor])`, silently, because calling the type
+  with one list *succeeds* there), a `state_dict()` its `OrderedDict` type and
+  the `_metadata` `load_state_dict` reads, a `defaultdict` its factory, and an
+  `nn.Parameter` both its class and its leaf-ness — so `SGD([t])` answered
+  "can't optimize a non-leaf Tensor". A container whose contents are already
+  in place now comes back as the *same object*, which is what keeps a no-op
+  alignment from breaking the in-place-mutation contract `PythonScript`
+  documents. Tensors inside a `set` are aligned too, and the walk is
+  depth-capped and cycle-guarded, because it runs inside the node's own `try`
+  where a `RecursionError` would be reported as the node failing.
+- **A node pinned to one device gets its weights and its inputs there**
+  ([#359]). `get_or_build_module` placed the module by the run's device while
+  the engine aligned inputs by the node's own `device` param, so pinning a
+  stateful node produced a "must be on the same device" raise from the one
+  node that had asked for something specific. Both read the pin through
+  `node_target_device` now — which also stops a plugin whose `device` param
+  means a serial port or a camera index from pulling every input off the
+  accelerator, by requiring the node to actually declare the param and the
+  value to actually name a device.
+- **The startup device is the one you chose, not the best one present**
+  ([#359]). The frontend adopted the backend's best available device at
+  startup for anyone who had never opened Settings ([#235]). That made the run
+  device a property of the hardware rather than of a decision, and a run that
+  moves to a GPU on its own is a run whose failure modes nobody asked for. CPU
+  is the baseline again and an accelerator is opt-in; the trade is
+  discoverability, which the device dropdown in Settings currently carries
+  alone. Note that an exported graph is unaffected: `python graph.py` still
+  defaults to `--device auto`, and the docs now say so.
+
 - **Two nodes reading different ports of the same upstream no longer share one
   cache entry** ([#360]). Running CF201 a second time drew the *same* picture in
   both `Visualize` nodes hanging off a `Split` — vertical edges where the
@@ -2085,6 +2141,7 @@ Release candidates before 1.0.0 are on the
 [#355]: https://github.com/CodefyUI/CodefyUI/pull/355
 [#356]: https://github.com/CodefyUI/CodefyUI/pull/356
 [#357]: https://github.com/CodefyUI/CodefyUI/pull/357
+[#359]: https://github.com/CodefyUI/CodefyUI/pull/359
 [#360]: https://github.com/CodefyUI/CodefyUI/issues/360
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
