@@ -60,13 +60,22 @@ class ReduceNode(BaseNode):
         if op == "last":
             return {"result": items[-1], "count": count}
 
-        # For tensor operations, try to convert items to tensors
+        # For tensor operations, try to convert items to tensors.
+        #
+        # The scalars are built on the device the tensor items are already
+        # on. The engine aligns what arrives on the wire, but it cannot see a
+        # tensor this node makes itself -- so a list mixing `2.0` with real
+        # tensors would reach `torch.stack` half on the accelerator and half
+        # on the host, which is a raise on CUDA and a segfault on MPS.
+        item_device = next(
+            (item.device for item in items if isinstance(item, torch.Tensor)), None)
         tensors = []
         for item in items:
             if isinstance(item, torch.Tensor):
                 tensors.append(item)
             elif isinstance(item, (int, float)):
-                tensors.append(torch.tensor(item, dtype=torch.float32))
+                tensors.append(
+                    torch.tensor(item, dtype=torch.float32, device=item_device))
             else:
                 raise ValueError(
                     f"Reduce '{op}' requires numeric/tensor items, got {type(item).__name__}"

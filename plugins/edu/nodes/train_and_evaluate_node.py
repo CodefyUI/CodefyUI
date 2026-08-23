@@ -123,7 +123,10 @@ class TrainAndEvaluateNode(BaseNode):
         labels = [str(label) for label in labels]
         classes = sorted(set(labels))
         idx = {c: i for i, c in enumerate(classes)}
-        y_idx = torch.tensor([idx[label] for label in labels], dtype=torch.long)
+        # On the device x_train arrived on -- the engine aligns what comes in
+        # over a wire, but a tensor this node builds itself is invisible to it.
+        y_idx = torch.tensor(
+            [idx[label] for label in labels], dtype=torch.long, device=x_train.device)
 
         # 把隱藏堆疊接上一個輸出層（壓到類別數）。輸入維度從堆疊最後一個 Linear 推得。
         modules = list(net_in.children())
@@ -136,7 +139,10 @@ class TrainAndEvaluateNode(BaseNode):
                 "TrainAndEvaluate: the stacked model has no Linear layer — add at least one FFNLayer."
             )
         modules.append(nn.Linear(last_out, len(classes)))
-        net = nn.Sequential(*modules)
+        # FFNLayer builds its Linears with no device handling at all, so the
+        # stack it hands over is on the CPU while x_train has been aligned to
+        # the run's device. Place the assembled net where the data is.
+        net = nn.Sequential(*modules).to(x_train.device)
 
         epochs = max(1, int(params.get("epochs", 400)))
         lr = float(params.get("lr", 0.05))

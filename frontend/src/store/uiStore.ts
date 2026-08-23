@@ -57,12 +57,16 @@ interface UIState {
   fontSize: FontSize;
   setFontSize: (size: FontSize) => void;
   /** Global compute device sent with every graph run ('cpu' | 'cuda' | 'mps').
-   * Nodes whose own device param is 'auto' follow this. */
+   * Nodes whose own device param is 'auto' follow this.
+   *
+   * CPU is the baseline and nothing switches away from it on the user's
+   * behalf: an accelerator is something you opt into in Settings, where the
+   * dropdown lists every device the backend can see. Startup used to adopt
+   * the best one automatically, which made the device a property of the
+   * hardware rather than of the user's choice -- and a run that silently
+   * moved to a GPU is a run whose failure modes the user never asked for. */
   globalDevice: string;
   setGlobalDevice: (device: string) => void;
-  /** Adopt the backend's best-available device, unless the user has picked one.
-   * Called once at startup — see `main.tsx`. */
-  adoptDefaultDevice: (device: string) => void;
   /** How value edges are drawn on the canvas: orthogonal circuit-board
    * traces ('circuit') or the classic curved beziers ('curve'). */
   edgeStyle: EdgeStyle;
@@ -129,7 +133,7 @@ const loadFontSize = (): FontSize => {
   return 'default';
 };
 
-export const useUIStore = create<UIState>((set, get) => ({
+export const useUIStore = create<UIState>((set) => ({
   tooltipsEnabled: localStorage.getItem(TOOLTIPS_KEY) !== 'false',
   toggleTooltips: () =>
     set((state) => {
@@ -178,18 +182,6 @@ export const useUIStore = create<UIState>((set, get) => ({
   globalDevice: loadGlobalDevice(),
   setGlobalDevice: (device) => {
     localStorage.setItem(GLOBAL_DEVICE_KEY, device);
-    set({ globalDevice: device });
-  },
-  adoptDefaultDevice: (device) => {
-    // An explicit choice always wins — including an explicit 'cpu', which a
-    // student may have picked deliberately to leave the GPU to someone else.
-    // Presence of the key is what marks a choice; its value cannot, because
-    // the pre-fetch placeholder is also 'cpu'.
-    if (localStorage.getItem(GLOBAL_DEVICE_KEY) !== null) return;
-    if (!device || device === get().globalDevice) return;
-    // Deliberately NOT persisted. Re-derived every start, so the same profile
-    // follows the hardware — a laptop docked to a GPU box picks it up, and a
-    // shared machine does not hand out a stale device to the next student.
     set({ globalDevice: device });
   },
   edgeStyle: loadEdgeStyle(),

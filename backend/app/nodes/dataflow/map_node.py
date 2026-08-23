@@ -18,6 +18,13 @@ class MapNode(BaseNode):
         "Returns a list of results. Functional-style batch processing."
     )
 
+    # `items` is a whole collection consumed one element at a time. Aligning
+    # the port would copy every element onto the device before the first body
+    # node runs -- peak residency goes from one item to all of them, which is
+    # the opposite of what iterating it was for. Each element is still
+    # aligned, individually, by the `invoke_node` call on the body node.
+    align_inputs = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [

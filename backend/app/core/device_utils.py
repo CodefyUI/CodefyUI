@@ -1,6 +1,7 @@
 """Utilities for detecting and targeting PyTorch devices at runtime."""
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from functools import lru_cache
@@ -447,10 +448,240 @@ def to_device(obj: Any, device: Any) -> Any:
 
     if isinstance(obj, (list, tuple)):
         moved = [to_device(v, device) for v in obj]
-        return type(obj)(moved)
+        return _rebuild_sequence(obj, moved)
 
     if isinstance(obj, dict):
-        return {k: to_device(v, device) for k, v in obj.items()}
+        return _rebuild_dict(obj, {k: to_device(v, device) for k, v in obj.items()})
 
     # Unknown leaf (int, str, sklearn model, ...) — best effort .to(), else pass.
     return obj
+
+
+#: How deep :func:`align_tensors` descends before it stops walking. Payload
+#: below the cap is passed through unaligned rather than aligned, which is a
+#: device error one line later -- loud, and in the node that owns the value.
+#: The alternative is a ``RecursionError`` raised INSIDE the node's own
+#: ``try``, which the engine would report as "the node failed" while naming
+#: ``align_tensors`` in the traceback. ``memory_budget._walk`` capped its
+#: descent for the same reason and from the same position on the hot path.
+MAX_ALIGN_DEPTH = 24
+
+
+def _declares_device_param(node: Any) -> bool:
+    """True when *node* actually declares a param named ``device``."""
+    define = getattr(node, "define_params", None)
+    if define is None:
+        return False
+    try:
+        return any(getattr(p, "name", None) == "device" for p in define())
+    except Exception:  # pragma: no cover - a broken node must not break the run
+        return False
+
+
+def node_target_device(
+    params: dict[str, Any] | None,
+    context: Any,
+    node: Any = None,
+) -> str:
+    """The device a node's work should happen on.
+
+    Its own ``device`` param when it declares one (so a graph can pin a node),
+    otherwise the run's global device. Both paths go through
+    :func:`resolve_node_device`, so ``"auto"`` and an unavailable request
+    degrade the same way they always have.
+
+    **Two guards on "declares one",** because this now decides where every
+    node's inputs land rather than only where a handful of device-aware sink
+    nodes place their own work:
+
+    * *node* is consulted when the caller has it, and only a param the node
+      DECLARES counts. ``params`` is a client-supplied dict; without this, a
+      key that merely happened to be spelled ``device`` would steer the
+      engine.
+    * the value has to be device-shaped. A node whose ``device`` param means
+      a serial port, a camera index or a Hugging Face ``device_map`` would
+      otherwise have every input pulled off the accelerator by
+      :func:`resolve_device`'s fall back to CPU -- silently, and with a
+      warning naming the wrong subject. An unrecognised spelling means "this
+      is not our ``device``", so the run's device stands.
+
+    A device-shaped value that is merely unavailable (``cuda`` on a CPU box)
+    still degrades through :func:`resolve_device` exactly as before: that one
+    IS our device param, it just cannot be honoured.
+    """
+    value = (params or {}).get("device")
+    if not isinstance(value, str):
+        return resolve_node_device(None, context)
+    if node is not None and not _declares_device_param(node):
+        return resolve_node_device(None, context)
+    probe = value.strip().lower()
+    if probe and probe != "auto" and split_device(probe)[0] not in ("cpu", "cuda", "mps"):
+        logger.debug(
+            "Ignoring non-device %r in a 'device' param; the run's device stands.",
+            value,
+        )
+        return resolve_node_device(None, context)
+    return resolve_node_device(value, context)
+
+
+def _align_tensor(obj: Any, device: Any) -> Any:
+    """One tensor, moved, with its autograd role intact.
+
+    ``Tensor.to()`` across devices returns a NON-LEAF view of the copy, and
+    drops ``nn.Parameter`` to a plain tensor. Either one is fatal to a node
+    that optimises a tensor it was handed -- ``SGD([t])`` raises "can't
+    optimize a non-leaf Tensor", and a ``.grad`` that never populates is
+    worse than the raise. On the same device ``.to()`` returns *self*, so
+    none of this is reachable from a CPU-only run; it is reachable from
+    exactly the accelerated runs this alignment exists to serve.
+    """
+    import torch
+
+    if is_mps_device(device) and obj.dtype == torch.float64:
+        obj = obj.to(torch.float32)
+    moved = obj.to(device)
+    if moved is obj:
+        # Already there. The common case -- all of CPU-only running, and all
+        # of a correctly-behaved graph -- and it costs nothing.
+        return obj
+    if isinstance(obj, torch.nn.Parameter):
+        return torch.nn.Parameter(moved.detach(), requires_grad=obj.requires_grad)
+    if obj.is_leaf and obj.requires_grad:
+        return moved.detach().requires_grad_(True)
+    return moved
+
+
+def _rebuild_sequence(obj: Any, moved: list) -> Any:
+    """A list/tuple/set of the same TYPE as *obj*, carrying *moved*'s values.
+
+    A namedtuple is built with ``_make``, not by calling the type and catching
+    ``TypeError``. The catch reads like a guard and is not one: for a
+    single-field namedtuple ``type(obj)(moved)`` SUCCEEDS and packs the whole
+    list into field one, so ``B(x=tensor)`` comes back as ``B(x=[tensor])``
+    with the field's type changed and nothing raised. With ``defaults=`` it is
+    worse -- ``Def(a=[t0, t1], b=None)`` loses a tensor outright. The except
+    branch fires only where arity happens to make the one-iterable call
+    illegal, which is exactly not the case it was written for.
+    """
+    if isinstance(obj, tuple):
+        # ``_fields`` is what a namedtuple actually is; ``_make`` is how one is
+        # built from an iterable.
+        make = getattr(type(obj), "_make", None)
+        if make is not None and hasattr(type(obj), "_fields"):
+            return make(moved)
+    try:
+        return type(obj)(moved)
+    except Exception:  # pragma: no cover - a subclass with a required ctor arg
+        # It still has to come back as SOMETHING moved; the base type is the
+        # honest answer and beats raising from inside the caller's try.
+        if isinstance(obj, tuple):
+            return tuple(moved)
+        if isinstance(obj, frozenset):
+            return frozenset(moved)
+        if isinstance(obj, set):
+            return set(moved)
+        return list(moved)
+
+
+def _rebuild_dict(obj: Any, moved: dict) -> Any:
+    """A dict of the same TYPE as *obj*, carrying *moved*'s values.
+
+    ``dict(moved)`` would be shorter and would quietly cost the caller its
+    subclass: a ``defaultdict``'s ``default_factory`` (so a consumer's
+    ``d[k].append(...)`` starts raising ``KeyError``), a ``Counter``'s
+    ``most_common``, and -- the case that matters here -- the ``_metadata``
+    attribute ``state_dict()`` hangs off its ``OrderedDict`` and
+    ``load_state_dict`` reads back for versioned loading.
+    """
+    try:
+        out = copy.copy(obj)
+        out.update(moved)
+        return out
+    except Exception:  # pragma: no cover - an exotic mapping still aligns
+        return dict(moved)
+
+
+def align_tensors(obj: Any, device: Any, _depth: int = 0, _seen: set | None = None) -> Any:
+    """Move every **tensor** in *obj* to `device`, leaving everything else alone.
+
+    The narrow sibling of :func:`to_device`, and the difference is the whole
+    point: ``to_device`` also moves an ``nn.Module``, and ``Module.to()`` is
+    **in-place**. That is right when a node is placing a module it owns, and
+    wrong when the engine is normalising values that arrived on a wire -- a
+    model belongs to the node that built it, and relocating it as a side effect
+    of handing it to a consumer would flip weights out from under the owner
+    (the hazard ``inference_node`` already documents for itself).
+
+    So: tensors are moved, modules are passed through untouched, and a node
+    that genuinely wants to place a module it was handed still says so with an
+    explicit ``to_device``.
+
+    Lists, tuples, sets and dicts are mapped element-wise so a
+    ``(data, targets)`` batch or a ``{"input_ids": ..., "labels": ...}``
+    mapping aligns in one call. Datasets, DataLoaders, environments, sklearn
+    estimators and every other leaf pass through: they are not tensors, and
+    eagerly walking them would drag a lazily-loaded dataset into memory.
+
+    **Nothing moved means nothing is rebuilt.** A container whose every
+    element is already on *device* is returned as the SAME OBJECT, not as an
+    equal copy. That is not an optimisation, it is the contract: this runs on
+    every node call, and ``python_script_node`` documents in-place mutation of
+    an input (``inputs["lst"].append(x)``) as a side-effect route that
+    downstream nodes share. Rebuilding unconditionally would break that on
+    CPU-only runs -- where alignment is a no-op and has no business changing
+    anything at all.
+
+    **Subclasses survive.** A namedtuple is rebuilt with ``_make`` rather than
+    guessed at by calling the type and catching ``TypeError``: the guess is
+    silently WRONG for a namedtuple whose arity accepts one positional
+    iterable (``namedtuple("B", "x")`` came back as ``B(x=[tensor])``, the
+    field's type changed from ``Tensor`` to ``list``, no exception). Mappings
+    keep their type via :func:`_rebuild_dict`.
+
+    MPS float64 is handled exactly as ``to_device`` handles it, because a
+    tensor that cannot exist on the target device is not aligned, it is an
+    error waiting one line further down.
+    """
+    import torch
+
+    if obj is None or isinstance(obj, (bool, int, float, complex, str, bytes)):
+        return obj
+
+    if isinstance(obj, torch.Tensor):
+        return _align_tensor(obj, device)
+
+    if isinstance(obj, torch.nn.Module):
+        return obj
+
+    if not isinstance(obj, (list, tuple, set, frozenset, dict)):
+        return obj
+
+    if _depth >= MAX_ALIGN_DEPTH:
+        logger.debug(
+            "align_tensors stopped at depth %d; deeper tensors are left where "
+            "they are.", MAX_ALIGN_DEPTH,
+        )
+        return obj
+
+    # A graph value CAN be self-referential (a node that appends its own
+    # output list to itself). Unbounded recursion here would surface as the
+    # NODE failing, since the engine calls us from inside the node's try.
+    seen = set() if _seen is None else _seen
+    if id(obj) in seen:
+        return obj
+    seen.add(id(obj))
+    try:
+        if isinstance(obj, dict):
+            moved = {}
+            for k, v in obj.items():
+                new = align_tensors(v, device, _depth + 1, seen)
+                if new is not v:
+                    moved[k] = new
+            return obj if not moved else _rebuild_dict(obj, moved)
+
+        moved_items = [align_tensors(v, device, _depth + 1, seen) for v in obj]
+        if all(new is old for new, old in zip(moved_items, obj)):
+            return obj
+        return _rebuild_sequence(obj, moved_items)
+    finally:
+        seen.discard(id(obj))

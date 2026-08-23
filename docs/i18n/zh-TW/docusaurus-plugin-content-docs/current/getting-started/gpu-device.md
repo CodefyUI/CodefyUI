@@ -45,7 +45,7 @@ python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| Device:', 
 
 ## Apple Silicon (MPS)
 
-在 M1/M2/M3/M4 Mac 上，預設安裝就已經使用 Metal Performance Shaders 後端。驗證：
+在 M1/M2/M3/M4 Mac 上，預設安裝就已經附帶 Metal Performance Shaders 後端。注意「附帶」不等於「使用」：除非你在設定裡選了 `mps`，否則執行仍然留在 CPU——參見 [Device Backends](/advanced/device-backends)。驗證後端存在：
 
 ```bash
 python -c "import torch; print('MPS:', torch.backends.mps.is_available())"
