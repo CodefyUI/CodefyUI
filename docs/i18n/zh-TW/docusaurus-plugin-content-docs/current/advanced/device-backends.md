@@ -22,6 +22,12 @@ CodefyUI 執行於 PyTorch 之上，因此繼承了 PyTorch 的裝置後端：**
 
 - **模組。** `nn.Module.to()` 是就地修改，把一個從別的節點傳過來的模型搬走，等於在擁有它的節點腳下換掉權重。需要把收到的模型放到自己裝置上的節點，要自己明確呼叫 `to_device`。
 - **Dataset、DataLoader、環境等非張量值。** 它們原樣通過，所以 dataset 維持惰性，`TrainingLoop` 仍然是一次一個 batch 串流到 GPU，而不是整份常駐 VRAM。
+- **宣告了 `align_inputs = False` 的節點。** 本質上就在 host 端做事的節點——直接把輸入交給 numpy、sklearn、matplotlib 或 PIL——會選擇退出，因為 `Tensor.numpy()` 在非 CPU 上會直接丟例外。內建的例子是 `TrainTestSplit`。你自己的節點若是同一類，就寫上 `align_inputs = False`；參見[自訂節點](./custom-nodes)。
+- **節點在自己 `execute` 裡建立的張量。** 對齊看得到的是節點的*輸入*，不是它本體裡第二行才呼叫的 `torch.zeros(...)`。如果你的節點要建一個張量去跟收到的張量運算，請用 `device=<那個輸入>.device` 建立。
+
+:::caution 匯出的腳本會自己挑裝置
+匯出圖的 `--device` 預設是 `auto`，會解析成當下最好的加速器。上面說的 CPU 基準是**應用程式**的；你匯出後用 `python graph.py` 不加參數執行，在有 GPU 的機器上就會用 GPU。想要與 canvas 一致，請傳 `--device cpu`。
+:::
 
 ## 在多張卡之中指定其中一張
 

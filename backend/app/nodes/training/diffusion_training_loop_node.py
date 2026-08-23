@@ -63,7 +63,10 @@ class DiffusionTrainingLoopNode(BaseNode):
             ),
             ParamDefinition(name="beta_start", param_type=ParamType.FLOAT, default=0.0001, min_value=0.0, description="linear 排程起始 beta（要和 DDPMSampler 一致）。"),
             ParamDefinition(name="beta_end", param_type=ParamType.FLOAT, default=0.05, min_value=0.0, description="linear 排程結束 beta（要和 DDPMSampler 一致）。"),
-            ParamDefinition(name="device", param_type=ParamType.SELECT, default="cpu", options=["cpu", "cuda"], description="訓練裝置。"),
+            # 'auto' 跟隨全域裝置，和其他所有 device 參數同一套講法。原本預設
+            # 'cpu' 且沒有 'auto'，等於這個節點在任何加速執行裡都被釘在 CPU，
+            # 而且沒有任何寫法可以說「跟著這次執行走」。
+            ParamDefinition(name="device", param_type=ParamType.SELECT, default="auto", options=["auto", "cpu", "cuda", "mps"], description="訓練裝置（'auto' 跟隨全域裝置）。"),
             ParamDefinition(name="seed", param_type=ParamType.INT, default=0, description="亂數種子（決定每步挑的時間步與加的雜訊）。"),
         ]
 
@@ -104,10 +107,12 @@ class DiffusionTrainingLoopNode(BaseNode):
         beta_end = float(params.get("beta_end", 0.05))
         # Through ``resolve_device`` since #135 rather than an inline
         # ``device == "cuda"`` equality check, which let ``cuda:1`` past the
-        # availability guard and on to an unvalidated ``.to()``.
-        from ...core.device_utils import resolve_device
+        # availability guard and on to an unvalidated ``.to()``. Via
+        # ``node_target_device`` since the param grew an 'auto', so that this
+        # node and the engine's input alignment read the pin the same way.
+        from ...core.device_utils import node_target_device
 
-        device = resolve_device(str(params.get("device", "cpu")))
+        device = node_target_device(params, context, self)
         seed = int(params.get("seed", 0))
 
         torch.manual_seed(seed)

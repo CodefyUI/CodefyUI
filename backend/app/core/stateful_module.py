@@ -118,9 +118,16 @@ class StatefulModuleMixin:
             )
 
         if context is not None and getattr(context, "device", None):
-            from .device_utils import to_device
+            from .device_utils import node_target_device, to_device
 
-            module = to_device(module, context.device)
+            # The SAME rule ``invoke_node`` aligns the inputs with, not
+            # ``context.device`` directly. The two halves of the guarantee --
+            # weights here, tensors there -- have to be computed by one
+            # function or a node pinned to its own device gets them apart:
+            # weights on the run's accelerator, inputs on the pin, and a
+            # "must be on the same device" raise from the node that asked
+            # for neither.
+            module = to_device(module, node_target_device(params, context, self))
         return module
 
 

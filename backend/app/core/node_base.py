@@ -251,6 +251,25 @@ class BaseNode(ABC):
     # in somebody's loss curve.
     cacheable: ClassVar[bool] = True
 
+    # Whether ``graph_engine.invoke_node`` moves the tensors in this node's
+    # inputs onto the device the node runs on. True is right for anything
+    # that computes with torch: it is what makes "one device per run" a
+    # property of the ENGINE rather than of each author's memory.
+    #
+    # Set it False when the node's work is host-side by nature -- it hands
+    # its input straight to numpy, sklearn, matplotlib or PIL. For those,
+    # alignment is not merely wasted (a device round-trip per call); it is
+    # WRONG, because ``Tensor.numpy()`` raises on anything but the CPU. That
+    # is a crash the node cannot see coming and did not ask for, on a machine
+    # its author may not own.
+    #
+    # It is also the answer for a node that takes a whole collection on a
+    # LIST port and consumes it one element at a time (``Map``): aligning the
+    # port materialises every element on the device at once, which is the
+    # opposite of what streaming it was for. The elements still get aligned,
+    # one at a time, when the body node is invoked.
+    align_inputs: ClassVar[bool] = True
+
     @classmethod
     def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
         """Extra state to fold into the cache key, beyond params and

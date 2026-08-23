@@ -183,22 +183,42 @@ describe('useUIStore', () => {
   });
 
   describe('the CPU baseline', () => {
-    it('starts on the CPU when nothing has been chosen', () => {
+    // These re-import the module rather than reading the store the
+    // `beforeEach` just seeded. Reading the seeded value would only restate
+    // the fixture: the initial `globalDevice` is computed at module load
+    // from localStorage, so that is the code a test of "what does a fresh
+    // profile start on" has to actually run.
+    const freshStore = async () => {
+      vi.resetModules();
+      return (await import('./uiStore')).useUIStore;
+    };
+
+    it('starts on the CPU when nothing has been chosen', async () => {
       // The whole device contract rests on this: CPU always works, so it is
       // where a fresh profile starts and where a profile with no stored
       // choice stays. Startup used to adopt the best device the backend
       // reported, which made the run device a property of the hardware
       // rather than of the user's choice.
-      expect(useUIStore.getState().globalDevice).toBe('cpu');
+      localStorage.clear();
+      const store = await freshStore();
+      expect(store.getState().globalDevice).toBe('cpu');
       expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBeNull();
     });
 
-    it('keeps an accelerator only because the user asked for it', () => {
-      useUIStore.getState().setGlobalDevice('cuda');
-      expect(useUIStore.getState().globalDevice).toBe('cuda');
-      // Persisted, unlike the old adopted value: an opt-in is a decision and
-      // survives a reload.
-      expect(localStorage.getItem(KEYS.GLOBAL_DEVICE)).toBe('cuda');
+    it('starts on the accelerator the user chose last time', async () => {
+      // The other half: an opt-in is a decision, so it survives a reload.
+      // The old adopted value deliberately did not persist, which is what
+      // made "is this a choice or a guess?" unanswerable from the value.
+      localStorage.setItem(KEYS.GLOBAL_DEVICE, 'cuda');
+      const store = await freshStore();
+      expect(store.getState().globalDevice).toBe('cuda');
+    });
+
+    it('offers no way to adopt a device on the app\'s behalf', () => {
+      // The removed behaviour lived in `main.tsx`, which nothing imports and
+      // coverage excludes. This is the guard that notices if it comes back
+      // through the store rather than through a reviewer.
+      expect(useUIStore.getState()).not.toHaveProperty('adoptDefaultDevice');
     });
   });
 

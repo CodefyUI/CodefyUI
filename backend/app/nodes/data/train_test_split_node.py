@@ -39,6 +39,12 @@ class TrainTestSplitNode(BaseNode):
         "imbalanced labels."
     )
 
+    # sklearn works on host memory, so this node's whole job is off-device.
+    # Aligning its inputs onto the run's accelerator would hand
+    # `features.numpy()` a cuda/mps tensor, which raises -- a crash created
+    # by moving the tensor TO the node rather than by the node's own code.
+    align_inputs = False
+
     @classmethod
     def define_inputs(cls) -> list[PortDefinition]:
         return [
@@ -122,7 +128,7 @@ class TrainTestSplitNode(BaseNode):
         stratify = bool(params.get("stratify", False))
 
         x_train, x_test, y_train, y_test = train_test_split(
-            features.numpy(),
+            features.detach().cpu().numpy(),
             labels_list,
             test_size=test_size,
             random_state=seed,

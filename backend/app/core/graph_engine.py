@@ -1553,12 +1553,21 @@ def invoke_node(
     running, and all of a correctly-behaved graph -- costs nothing.
 
     Only tensors move; see :func:`align_tensors` for why a module handed
-    across a wire deliberately does not.
+    across a wire deliberately does not. A node whose work is genuinely
+    host-side -- one that hands its input straight to numpy, sklearn or
+    matplotlib -- says ``align_inputs = False`` and is left alone; see
+    :attr:`BaseNode.align_inputs`.
     """
-    if context is not None and getattr(context, "device", None) and inputs:
+    if (
+        context is not None
+        and getattr(context, "device", None)
+        and inputs
+        and getattr(instance, "align_inputs", True)
+    ):
         from .device_utils import align_tensors, node_target_device
 
-        inputs = align_tensors(inputs, node_target_device(params, context))
+        inputs = align_tensors(
+            inputs, node_target_device(params, context, instance))
 
     sig = inspect.signature(instance.execute)
     call_kwargs: dict[str, Any] = {}

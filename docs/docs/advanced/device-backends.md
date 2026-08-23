@@ -22,6 +22,12 @@ What alignment deliberately does **not** touch:
 
 - **Modules.** `nn.Module.to()` is in-place, so relocating a model handed from one node to another would flip weights out from under the node that owns it. A node that wants a model on its own device says so with an explicit `to_device`.
 - **Datasets, DataLoaders, environments and other non-tensor values.** They pass through untouched, so a dataset stays lazy and `TrainingLoop` keeps streaming batches to the GPU one at a time instead of resident VRAM.
+- **Nodes that declare `align_inputs = False`.** A node whose work is host-side by nature — it hands its input straight to numpy, sklearn, matplotlib or PIL — opts out, because `Tensor.numpy()` raises on anything but the CPU. `TrainTestSplit` is the builtin example. Write `align_inputs = False` on your own node if it does the same; see [Custom nodes](./custom-nodes).
+- **Tensors a node creates inside its own `execute`.** Alignment sees a node's *inputs*, not `torch.zeros(...)` called two lines into its body. If your node builds a tensor to combine with one it was handed, build it with `device=<the input>.device`.
+
+:::caution The exported script picks its own device
+`--device` on an exported graph defaults to `auto`, which resolves to the best accelerator present. The CPU baseline above is the **app's**; a graph you exported and run as `python graph.py` with no flags will use the GPU on a machine that has one. Pass `--device cpu` to get the canvas's behaviour.
+:::
 
 ## Addressing one card out of several
 
