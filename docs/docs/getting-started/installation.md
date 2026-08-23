@@ -27,7 +27,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Cod
 
 By default this installs to `~/CodefyUI` (macOS/Linux) or `%USERPROFILE%\CodefyUI` (Windows). Override with the `CODEFYUI_DIR` environment variable.
 
-On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/windows/package-manager/) to install `git` if it's missing. `winget` ships with Windows 11 and recent Windows 10 via the "App Installer" package.
+On Windows, `install.ps1` uses [winget](https://learn.microsoft.com/windows/package-manager/) to install `git` if it's missing. `winget` ships with Windows 11 and recent Windows 10 via the "App Installer" package. If `winget` is unavailable or its package sources cannot be reached (corporate TLS interception makes the `msstore` source fail with `0x8a15005e`), the installer falls back to extracting [PortableGit](https://git-scm.com/download/win) into `%LOCALAPPDATA%\CodefyUI\PortableGit` — no administrator rights required.
 
 The installer places a `cdui` launcher at `~/.local/bin/cdui` (Windows: `%USERPROFILE%\.local\bin\cdui.cmd`). **Restart your terminal**, then from any directory:
 

@@ -57,11 +57,11 @@ function InputNodeComponent({ data, selected }: NodeProps<Node<LayerNodeData>>) 
             position={Position.Bottom}
             style={{
               background: color,
-              width: 10,
-              height: 10,
+              width: 'var(--handle-size)',
+              height: 'var(--handle-size)',
               border: '2px solid var(--surface-raised)',
               left: `${left}%`,
-              bottom: -5,
+              bottom: 'calc(var(--handle-size) / -2)',
             }}
           />
         );

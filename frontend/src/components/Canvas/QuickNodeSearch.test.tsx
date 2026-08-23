@@ -321,6 +321,67 @@ describe('QuickNodeSearch', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // ── Dismissal on a surface that owns the pointer ─────────────────────────
+  // React Flow's pane is dragged by d3-zoom, whose mousedown handler calls
+  // `nopropagation(event)` so it can own panning. A bubble-phase document
+  // listener never sees that event, which is why clicking the canvas used to
+  // leave the palette open; and because clicking also blurred the input, the
+  // Escape key that lived on the input stopped working too, leaving no way
+  // out at all.
+
+  /** A stand-in for the React Flow pane: swallows mousedown like d3-zoom. */
+  function paneThatSwallowsMouseDown(): HTMLElement {
+    const pane = document.createElement('div');
+    pane.addEventListener('mousedown', (e) => e.stopImmediatePropagation());
+    document.body.appendChild(pane);
+    return pane;
+  }
+
+  it('closes on a click that the surface underneath stops propagating', () => {
+    setStore([def('Aaa')], []);
+    const onClose = vi.fn();
+    render(<QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={onClose} />);
+
+    const pane = paneThatSwallowsMouseDown();
+    fireEvent.mouseDown(pane);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    pane.remove();
+  });
+
+  it('Escape still closes after the input has lost focus', () => {
+    setStore([def('Aaa')], []);
+    const onClose = vi.fn();
+    const { getByPlaceholderText } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={onClose} />,
+    );
+    // What clicking the canvas does to the palette: the input is no longer
+    // where keys are routed.
+    (getByPlaceholderText('Search nodes...') as HTMLInputElement).blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('a key other than Escape does not close it', () => {
+    setStore([def('Aaa')], []);
+    const onClose = vi.fn();
+    render(<QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={onClose} />);
+    fireEvent.keyDown(document.body, { key: 'a' });
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('stops listening once unmounted', () => {
+    setStore([def('Aaa')], []);
+    const onClose = vi.fn();
+    const { unmount } = render(
+      <QuickNodeSearch screenPos={SCREEN} flowPos={FLOW} onClose={onClose} />,
+    );
+    unmount();
+    fireEvent.mouseDown(document.body);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('clamps the panel position to stay on screen', () => {
     // Force a large screenPos so Math.min picks the (innerWidth/Height - margin) branch.
     const big = { x: 99999, y: 99999 };

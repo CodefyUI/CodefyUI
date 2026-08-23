@@ -53,9 +53,11 @@
   padding-bottom: var(--sp-3);
 }
 
+/* Vertical padding matches BaseNode's port rows — see the comment there for
+   why the dot, not the label, sets it. */
 .inputRow {
   position: relative;
-  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-5);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -63,7 +65,7 @@
 
 .outputRow {
   position: relative;
-  padding: var(--sp-2) var(--sp-5) var(--sp-2) var(--sp-4);
+  padding: var(--sp-3) var(--sp-5) var(--sp-3) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;

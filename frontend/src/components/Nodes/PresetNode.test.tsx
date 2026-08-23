@@ -270,11 +270,11 @@ describe('PresetNode', () => {
     expect(detaching).toHaveLength(1);
     const handle = detaching[0] as HTMLElement;
     expect(handle.getAttribute('data-handleid')).toBe('x');
-    // The class coexists with PresetNode's inline handle styles — the class's
-    // !important border-color/box-shadow win the cascade over inline styles,
-    // while the untouched inline properties (background, size) remain.
+    // The class coexists with the shared port-dot styling — portDetaching is
+    // declared after portHandle, so its !important border-color/box-shadow win
+    // the cascade, while the inline data-type background remains.
     expect(handle.style.background).not.toBe('');
-    expect(handle.style.width).toBe('10px');
+    expect(handle.className).toMatch(/portHandle/);
   });
 
   it('adds portDetaching to the matching exposed output handle', () => {

@@ -1446,6 +1446,233 @@ describe('NodeDetailModal — chart outputs (#130)', () => {
   });
 });
 
+// ── A media port shows what it produced on the Outputs tab ──────────────────
+// Visualize declares `media=MEDIA_IMAGE`, so its `image` port carries a base64
+// PNG; VideoWrite declares `media=MEDIA_VIDEO` on `video` (and MEDIA_IMAGE on
+// `preview`), so that port carries a reference dict. The results panel has
+// always drawn both; the capture path never could — it truncates strings at
+// 4000 chars where a plot is ~35 000, and can only `repr` a dict. The rows
+// read from the same node_status stream the log does, which is also why they
+// survive Record outputs being off.
+
+describe('NodeDetailModal — media outputs', () => {
+  const PNG =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const OTHER_PNG = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+  function imageLog(nodeId: string, port: string | undefined, data: string) {
+    return {
+      timestamp: 1_700_000_000_000,
+      nodeId,
+      message: '',
+      type: 'info' as const,
+      kind: 'image' as const,
+      image: { format: 'png', encoding: 'base64', data, ...(port ? { port } : {}) },
+    };
+  }
+
+  /** What the capture endpoint actually serves for such a port: a fragment. */
+  function truncatedCapture(): OutputData {
+    return {
+      type: 'string',
+      run_id: 'run1',
+      node_id: 'n1',
+      port: 'image',
+      value: 'iVBORw0KGgoTRUNCATEDAT4000CHARS',
+    } as OutputData;
+  }
+
+  it('renders the picture at its port row instead of the base64 string', async () => {
+    mockOutput.mockResolvedValue(truncatedCapture());
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['image']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [imageLog('n1', 'image', PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    const img = (await screen.findByAltText('image')) as HTMLImageElement;
+    expect(img.src).toBe(`data:image/png;base64,${PNG}`);
+    await waitFor(() => expect(mockOutput).toHaveBeenCalled());
+    expect(screen.queryByText('iVBORw0KGgoTRUNCATEDAT4000CHARS')).toBeNull();
+  });
+
+  it('shows the picture with Record outputs off, when nothing was captured', () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['image']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      recordOutputs: false,
+      logs: [imageLog('n1', 'image', PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.getByAltText('image')).toBeInTheDocument();
+  });
+
+  it('shows only the picture belonging to the node being inspected', () => {
+    seedTab({
+      nodes: [
+        node('n1', { definition: outputsDef(['image']) }),
+        node('n2', { definition: outputsDef(['image']) }),
+      ],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [imageLog('n1', 'image', PNG), imageLog('n2', 'image', OTHER_PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    const img = screen.getByAltText('image') as HTMLImageElement;
+    expect(img.src).toContain(PNG);
+    expect(img.src).not.toContain(OTHER_PNG);
+  });
+
+  it('shows the latest picture logged for the port, not the first', () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['image']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run2',
+      logs: [imageLog('n1', 'image', OTHER_PNG), imageLog('n1', 'image', PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.getAllByAltText('image')).toHaveLength(1);
+    expect((screen.getByAltText('image') as HTMLImageElement).src).toContain(PNG);
+  });
+
+  it('ignores an entry that names no port — it cannot be attributed to a row', async () => {
+    mockOutput.mockResolvedValue(truncatedCapture());
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['image']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [imageLog('n1', undefined, PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.queryByAltText('image')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByText('iVBORw0KGgoTRUNCATEDAT4000CHARS')).toBeInTheDocument(),
+    );
+  });
+
+  it('draws the same picture in the side Inspector as in the modal', () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['image']) })],
+      selectedNodeId: 'n1',
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [imageLog('n1', 'image', PNG)],
+    });
+    render(
+      <>
+        <InspectorPanel />
+        <NodeDetailModal />
+      </>,
+    );
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    const srcs = screen
+      .getAllByAltText('image')
+      .map((el) => (el as HTMLImageElement).src);
+    expect(srcs).toHaveLength(2);
+    expect(new Set(srcs).size).toBe(1);
+  });
+
+  // ── VideoWrite's `video` port: a reference dict, not bytes (#310) ──────────
+
+  function videoLog(nodeId: string, port: string | undefined, over: Record<string, unknown> = {}) {
+    return {
+      timestamp: 1_700_000_000_000,
+      nodeId,
+      message: '',
+      type: 'info' as const,
+      kind: 'video' as const,
+      video: {
+        path: 'clip.mp4',
+        url: '/api/media/clip.mp4',
+        format: 'mp4',
+        ...over,
+        ...(port ? { port } : {}),
+      },
+    };
+  }
+
+  /** What the capture endpoint serves for a reference port: a repr. */
+  function dictCapture(): OutputData {
+    return {
+      type: 'dict',
+      run_id: 'run1',
+      node_id: 'n1',
+      port: 'video',
+      repr: "{'path': 'clip.mp4', 'url': '/api/media/clip.mp4', 'format': 'mp4'}",
+    } as unknown as OutputData;
+  }
+
+  it('plays the clip at its port row instead of showing the reference dict', async () => {
+    mockOutput.mockResolvedValue(dictCapture());
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['video']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [videoLog('n1', 'video')],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+
+    const video = (await screen.findByLabelText('video')) as HTMLVideoElement;
+    expect(video.tagName).toBe('VIDEO');
+    expect(video.getAttribute('src')).toBe('/api/media/clip.mp4');
+    await waitFor(() => expect(mockOutput).toHaveBeenCalled());
+    expect(screen.queryByText(/'path': 'clip.mp4'/)).toBeNull();
+  });
+
+  it('shows a gif clip as an image, since browsers refuse it as a video source', () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['video']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [videoLog('n1', 'video', { format: 'gif', url: '/api/media/clip.gif' })],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect((screen.getByAltText('video') as HTMLImageElement).getAttribute('src')).toBe(
+      '/api/media/clip.gif',
+    );
+    expect(document.querySelector('video')).toBeNull();
+  });
+
+  it('draws a clip and a preview picture side by side on the same node', () => {
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['video', 'preview']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [videoLog('n1', 'video'), imageLog('n1', 'preview', PNG)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.getByLabelText('video')).toBeInTheDocument();
+    expect((screen.getByAltText('preview') as HTMLImageElement).src).toContain(PNG);
+  });
+
+  it('ignores a clip entry that names no port', async () => {
+    mockOutput.mockResolvedValue(dictCapture());
+    seedTab({
+      nodes: [node('n1', { definition: outputsDef(['video']) })],
+      nodeDetailNodeId: 'n1',
+      lastRunId: 'run1',
+      logs: [videoLog('n1', undefined)],
+    });
+    render(<NodeDetailModal />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Outputs' }));
+    expect(screen.queryByLabelText('video')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByText(/'path': 'clip.mp4'/)).toBeInTheDocument(),
+    );
+  });
+});
+
 describe('NodeDetailModal — tab registry', () => {
   function ctx(over: Partial<NodeDetailTabContext> = {}): NodeDetailTabContext {
     const n = node('n1');

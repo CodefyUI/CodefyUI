@@ -27,7 +27,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/Cod
 
 預設安裝到 `~/CodefyUI`（macOS/Linux）或 `%USERPROFILE%\CodefyUI`（Windows）。可用環境變數 `CODEFYUI_DIR` 覆寫。
 
-在 Windows 上，`install.ps1` 會透過 [winget](https://learn.microsoft.com/windows/package-manager/) 安裝缺少的 `git`。`winget` 內建於 Windows 11 與較新的 Windows 10（透過「App Installer」套件）。
+在 Windows 上，`install.ps1` 會透過 [winget](https://learn.microsoft.com/windows/package-manager/) 安裝缺少的 `git`。`winget` 內建於 Windows 11 與較新的 Windows 10（透過「App Installer」套件）。若 `winget` 不可用，或其套件來源無法連線（企業網路 TLS 攔截會使 `msstore` 來源回報 `0x8a15005e`），安裝程式會改以 [PortableGit](https://git-scm.com/download/win) 解壓至 `%LOCALAPPDATA%\CodefyUI\PortableGit` —— 不需系統管理員權限。
 
 安裝程式會把 `cdui` 啟動器放到 `~/.local/bin/cdui`（Windows 為 `%USERPROFILE%\.local\bin\cdui.cmd`）。**請重新開啟你的 terminal**，然後在任何目錄執行：
 

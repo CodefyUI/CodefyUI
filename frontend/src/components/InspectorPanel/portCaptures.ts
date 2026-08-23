@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchOutput,
   RunDataExpiredError,
@@ -6,6 +6,12 @@ import {
 } from '../../api/executionOutputs';
 import type { NodeData, OutputData } from '../../types';
 import type { Edge, Node } from '@xyflow/react';
+import {
+  useTabStore,
+  type LogEntry,
+  type LogImagePayload,
+  type LogVideoPayload,
+} from '../../store/tabStore';
 import { keyOf, type FetchMap, type PortTarget } from './PortGroup';
 
 /**
@@ -68,6 +74,55 @@ export function resolveInputSources(
     result.push({ nodeId: e.source, port: e.sourceHandle });
   }
   return result;
+}
+
+/** Stable empty reference — a fresh `[]` from a zustand selector re-renders forever. */
+const NO_LOGS: LogEntry[] = [];
+
+/** What a media port produced, ready to render. */
+export type PortMedia =
+  | { kind: 'image'; image: LogImagePayload }
+  | { kind: 'video'; video: LogVideoPayload };
+
+export type PortMediaMap = Record<string, PortMedia>;
+
+/**
+ * What each media port produced last run, keyed by {@link keyOf}.
+ *
+ * The capture fetch cannot be the source for either kind. A port declaring
+ * `media=MEDIA_IMAGE` carries a base64 PNG and `/api/execution/outputs`
+ * truncates every string it serves at 4000 chars — two orders of magnitude
+ * under a plot — so what it returns for such a port is a fragment that decodes
+ * to nothing. A port declaring `media=MEDIA_VIDEO` carries a reference dict,
+ * which the capture path can only describe as a `repr`. Both ride the
+ * `node_status` stream instead, which is how the results panel has always
+ * drawn them, and the entry names the port it came from (see
+ * `build_node_output_entries`). Reading the log rather than the capture also
+ * means they still show with "Record outputs" off, the same property the chart
+ * block relies on.
+ *
+ * Later entries win, so a re-run replaces the previous run's media rather than
+ * stacking behind it.
+ */
+export function usePortMedia(): PortMediaMap {
+  const logs = useTabStore(
+    (s) => s.tabs.find((t) => t.id === s.activeTabId)?.logs ?? NO_LOGS,
+  );
+  return useMemo(() => {
+    const out: PortMediaMap = {};
+    for (const entry of logs) {
+      if (!entry.nodeId) continue;
+      // An entry with no `port` predates the named-port contract (or came
+      // from the legacy flat image field): it cannot be attributed to a row,
+      // and guessing would put one node's media on another node's port.
+      if (entry.kind === 'image' && entry.image?.data && entry.image.port) {
+        out[keyOf(entry.nodeId, entry.image.port)] = { kind: 'image', image: entry.image };
+      } else if (entry.kind === 'video' && entry.video?.url && entry.video.port) {
+        out[keyOf(entry.nodeId, entry.video.port)] = { kind: 'video', video: entry.video };
+      }
+    }
+    return out;
+  }, [logs]);
 }
 
 export interface NodePorts {

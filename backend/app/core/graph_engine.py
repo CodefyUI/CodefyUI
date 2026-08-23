@@ -2166,9 +2166,18 @@ async def execute_graph(
             for src_id, _, _ in incoming.get(node_id, [])
         )
         if cache is not None and node_cacheable and upstream_all_cached:
+            # One entry per EDGE, carrying both handles -- not one per
+            # upstream node (#360). A bare source key says only WHICH node
+            # feeds this one, so two sibling Visualizes reading `chunk_0`
+            # and `chunk_1` off the same Split hashed identically and the
+            # second was served the first's image on every re-run; ditto
+            # MatMul(a=A,b=B) vs MatMul(a=B,b=A), which returned each
+            # other's numbers with no error. compute_key still sorts these,
+            # which normalises edge ORDER while the port pair survives.
             upstream_keys = [
-                node_cache_keys[src_id]
-                for src_id, _, _ in incoming.get(node_id, [])
+                cache.upstream_ref(tgt_handle, src_handle,
+                                   node_cache_keys[src_id])
+                for src_id, src_handle, tgt_handle in incoming.get(node_id, [])
             ]
             # #144/#145: a node whose output depends on external state a
             # path param only NAMES (not contains) folds a cheap descriptor

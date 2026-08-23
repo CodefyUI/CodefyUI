@@ -1,5 +1,7 @@
 """Tests for node-level execution caching (Phase 5)."""
 
+from typing import Any
+
 import pytest
 
 from app.core.cache import ExecutionCache
@@ -278,3 +280,182 @@ async def test_non_cacheable_upstream_invalidates_downstream_cache():
     finally:
         registry._nodes.pop("_NonCacheable", None)
         registry._nodes.pop("_Passthrough", None)
+
+
+# ── #360: the key must identify EDGES, not just upstream nodes ───────────
+
+
+class _TwoOutNode(BaseNode):
+    """Cacheable source with two DIFFERENT output ports, like ``Split``."""
+
+    NODE_NAME = "_TwoOut"
+    CATEGORY = "Test"
+    DESCRIPTION = "Two distinguishable outputs"
+
+    @classmethod
+    def define_inputs(cls):
+        return []
+
+    @classmethod
+    def define_outputs(cls):
+        return [
+            PortDefinition(name="left", data_type=DataType.ANY),
+            PortDefinition(name="right", data_type=DataType.ANY),
+        ]
+
+    def execute(self, inputs, params):
+        return {"left": "LEFT", "right": "RIGHT"}
+
+
+class _PairNode(BaseNode):
+    """Cacheable node whose two inputs are NOT interchangeable, like ``MatMul``."""
+
+    NODE_NAME = "_Pair"
+    CATEGORY = "Test"
+    DESCRIPTION = "Order-sensitive over two inputs"
+
+    @classmethod
+    def define_inputs(cls):
+        return [
+            PortDefinition(name="a", data_type=DataType.ANY),
+            PortDefinition(name="b", data_type=DataType.ANY),
+        ]
+
+    @classmethod
+    def define_outputs(cls):
+        return [PortDefinition(name="out", data_type=DataType.ANY)]
+
+    def execute(self, inputs, params):
+        return {"out": f"{inputs.get('a')}->{inputs.get('b')}"}
+
+
+def test_compute_key_distinguishes_source_handles():
+    """Two nodes reading different OUTPUT ports of one upstream differ."""
+    left = ExecutionCache.upstream_ref("data", "chunk_0", "split-key")
+    right = ExecutionCache.upstream_ref("data", "chunk_1", "split-key")
+    assert ExecutionCache.compute_key(
+        "Visualize", {}, [left]
+    ) != ExecutionCache.compute_key("Visualize", {}, [right])
+
+
+def test_compute_key_distinguishes_swapped_target_handles():
+    """Same two upstreams wired into swapped INPUT ports differ."""
+    ab = [
+        ExecutionCache.upstream_ref("tensor_a", "tensor", "A"),
+        ExecutionCache.upstream_ref("tensor_b", "tensor", "B"),
+    ]
+    ba = [
+        ExecutionCache.upstream_ref("tensor_a", "tensor", "B"),
+        ExecutionCache.upstream_ref("tensor_b", "tensor", "A"),
+    ]
+    assert ExecutionCache.compute_key(
+        "MatMul", {}, ab
+    ) != ExecutionCache.compute_key("MatMul", {}, ba)
+
+
+def test_compute_key_ignores_edge_order():
+    """The port pair is what matters; the order edges are listed in is not."""
+    refs = [
+        ExecutionCache.upstream_ref("tensor_a", "tensor", "A"),
+        ExecutionCache.upstream_ref("tensor_b", "tensor", "B"),
+    ]
+    assert ExecutionCache.compute_key(
+        "MatMul", {}, refs
+    ) == ExecutionCache.compute_key("MatMul", {}, list(reversed(refs)))
+
+
+def test_upstream_ref_handle_cannot_forge_a_boundary():
+    """A handle containing the separator must not collide with another pair."""
+    assert ExecutionCache.upstream_ref("a", "b,c", "k") != \
+        ExecutionCache.upstream_ref("a,b", "c", "k")
+
+
+@pytest.mark.asyncio
+async def test_siblings_off_one_multi_output_node_keep_separate_entries():
+    """Regression (#360): the CF201 shape.
+
+    ``_TwoOut`` fans ``left``/``right`` into two same-typed, same-param
+    ``_Passthrough`` siblings. Before the fix both hashed to the SAME key
+    (only the shared source node id reached the key), so on the second run
+    both were served whichever one landed in the cache first -- in CF201
+    that meant two ``Visualize`` nodes rendering one identical image.
+    """
+    registry._nodes["_TwoOut"] = _TwoOutNode
+    registry._nodes["_Passthrough"] = _PassthroughNode
+    try:
+        cache = ExecutionCache()
+        nodes = [
+            _start_node(),
+            {"id": "src", "type": "_TwoOut", "data": {"params": {}}},
+            {"id": "l", "type": "_Passthrough", "data": {"params": {}}},
+            {"id": "r", "type": "_Passthrough", "data": {"params": {}}},
+        ]
+        edges = [
+            _trigger("et", "start", "src"),
+            {"id": "e1", "source": "src", "target": "l", "sourceHandle": "left", "targetHandle": "in_value"},
+            {"id": "e2", "source": "src", "target": "r", "sourceHandle": "right", "targetHandle": "in_value"},
+        ]
+
+        for run in (1, 2, 3):
+            seen: dict[str, tuple[str, Any]] = {}
+
+            async def capture(node_id, status, data):
+                if status in ("completed", "cached"):
+                    seen[node_id] = (status, data)
+
+            await execute_graph(nodes, edges, cache=cache, on_progress=capture)
+            assert seen["l"][1]["out"] == "LEFT", f"run {run}: {seen['l']}"
+            assert seen["r"][1]["out"] == "RIGHT", f"run {run}: {seen['r']}"
+
+        # ...and caching is still doing its job on the re-runs.
+        assert seen["l"][0] == "cached"
+        assert seen["r"][0] == "cached"
+    finally:
+        registry._nodes.pop("_TwoOut", None)
+        registry._nodes.pop("_Passthrough", None)
+
+
+@pytest.mark.asyncio
+async def test_swapped_input_ports_keep_separate_entries():
+    """Regression (#360): the silent-wrong-numbers shape.
+
+    Two ``_Pair`` nodes fed by the same two upstreams with ``a``/``b``
+    swapped. Before the fix ``sorted(upstream_keys)`` erased the
+    difference, so the second node returned the first one's result on
+    every re-run -- for ``MatMul`` that is ``A@B`` answering ``B@A`` with
+    no error raised.
+    """
+    registry._nodes["_Pair"] = _PairNode
+    try:
+        cache = ExecutionCache()
+        nodes = [
+            _start_node(),
+            {"id": "A", "type": "_CacheTest", "data": {"params": {"val": "A"}}},
+            {"id": "B", "type": "_CacheTest", "data": {"params": {"val": "B"}}},
+            {"id": "ab", "type": "_Pair", "data": {"params": {}}},
+            {"id": "ba", "type": "_Pair", "data": {"params": {}}},
+        ]
+        edges = [
+            _trigger("t1", "start", "A"),
+            _trigger("t2", "start", "B"),
+            {"id": "e1", "source": "A", "target": "ab", "sourceHandle": "out", "targetHandle": "a"},
+            {"id": "e2", "source": "B", "target": "ab", "sourceHandle": "out", "targetHandle": "b"},
+            {"id": "e3", "source": "B", "target": "ba", "sourceHandle": "out", "targetHandle": "a"},
+            {"id": "e4", "source": "A", "target": "ba", "sourceHandle": "out", "targetHandle": "b"},
+        ]
+
+        for run in (1, 2, 3):
+            seen: dict[str, tuple[str, Any]] = {}
+
+            async def capture(node_id, status, data):
+                if status in ("completed", "cached"):
+                    seen[node_id] = (status, data)
+
+            await execute_graph(nodes, edges, cache=cache, on_progress=capture)
+            assert seen["ab"][1]["out"] == "A->B", f"run {run}: {seen['ab']}"
+            assert seen["ba"][1]["out"] == "B->A", f"run {run}: {seen['ba']}"
+
+        assert seen["ab"][0] == "cached"
+        assert seen["ba"][0] == "cached"
+    finally:
+        registry._nodes.pop("_Pair", None)

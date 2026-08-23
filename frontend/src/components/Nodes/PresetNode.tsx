@@ -25,9 +25,9 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
   );
 
   // True when this exact handle is the originally-connected endpoint of an
-  // in-progress edge-reconnect drag; it shows the red "detaching" ring. The
-  // shared baseStyles.portDetaching class uses !important declarations, which
-  // beat this component's inline handle styles per the CSS cascade.
+  // in-progress edge-reconnect drag; it shows the red "detaching" ring.
+  // baseStyles.portDetaching is declared after baseStyles.portHandle, so its
+  // !important border-color/box-shadow win the cascade over the base dot.
   const isDetaching = (handleId: string, type: 'source' | 'target') =>
     reconnectingHandle !== null &&
     reconnectingHandle.nodeId === id &&
@@ -145,18 +145,10 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               position={Position.Left}
               id={input.name}
               onMouseDownCapture={(e) => interceptConnectedInputMouseDown(e, input.name)}
-              className={isDetaching(input.name, 'target') ? baseStyles.portDetaching : undefined}
-              style={{
-                background: getPortColor(input.data_type),
-                width: 10,
-                height: 10,
-                border: '2px solid var(--surface-raised)',
-                left: -5.5,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                borderRadius: '50%',
-                cursor: 'crosshair',
-              }}
+              className={`${baseStyles.portHandle} ${baseStyles.portHandleInput}${
+                isDetaching(input.name, 'target') ? ` ${baseStyles.portDetaching}` : ''
+              }`}
+              style={{ background: getPortColor(input.data_type) }}
             />
             <span
               className={styles.portLabel}
@@ -189,18 +181,10 @@ function PresetNode({ id, data, selected }: NodeProps<AppNode>) {
               type="source"
               position={Position.Right}
               id={output.name}
-              className={isDetaching(output.name, 'source') ? baseStyles.portDetaching : undefined}
-              style={{
-                background: getPortColor(output.data_type),
-                width: 10,
-                height: 10,
-                border: '2px solid var(--surface-raised)',
-                right: -5.5,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                borderRadius: '50%',
-                cursor: 'crosshair',
-              }}
+              className={`${baseStyles.portHandle} ${baseStyles.portHandleOutput}${
+                isDetaching(output.name, 'source') ? ` ${baseStyles.portDetaching}` : ''
+              }`}
+              style={{ background: getPortColor(output.data_type) }}
             />
           </div>
         ))}
