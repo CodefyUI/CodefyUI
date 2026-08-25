@@ -22,6 +22,10 @@ from app.nodes.cnn.conv2d_explicit_node import (
     Conv2dExplicitNode,
 )
 
+cuda_only = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="needs a CUDA device"
+)
+
 
 def _run(tensor, **params):
     return Conv2dExplicitNode().execute({"tensor": tensor}, params)
@@ -241,12 +245,40 @@ def test_preserves_input_dtype():
 
 
 def test_output_stays_on_the_inputs_device():
+    # The trivial case: CPU in, CPU out. This one cannot fail -- with no
+    # second device on the box there is no mismatch to reintroduce -- so it
+    # documents the common path rather than guarding it. The guard is
+    # ``test_kernel_is_built_on_the_inputs_device_not_the_cpu`` below.
     x = torch.zeros(1, 1, 5, 5)
     out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
-    # The kernel is built on the input's device rather than on the CPU and
-    # moved, so a node that conjures its own tensor does not reintroduce the
-    # mismatch the engine aligns away for wires.
     assert out.device == x.device
+
+
+@cuda_only
+def test_kernel_is_built_on_the_inputs_device_not_the_cpu():
+    """A node that conjures its own tensor must conjure it in the right place.
+
+    The engine aligns what arrives on a wire (#359); it cannot see a weight a
+    node materialises inside ``execute``. So the kernel is built on the
+    input's device from the start. Left on the CPU it would not merely land
+    in the wrong place -- ``F.conv2d`` refuses a weight and an input on
+    different devices, so the node would raise and the whole graph would stop
+    the moment a student switched the run to a GPU.
+    """
+    x = torch.zeros(1, 1, 5, 5, device="cuda")
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert out.device.type == "cuda"
+
+
+@cuda_only
+def test_a_custom_kernel_is_built_on_the_inputs_device_too():
+    # The Custom branch builds the weight from a different source (the
+    # hand-authored grid, not a preset table) and is worth its own guard.
+    identity = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
+    x = torch.full((1, 1, 5, 5), 3.0, device="cuda")
+    out = _custom(identity, tensor=x, padding=1)["tensor"]
+    assert out.device.type == "cuda"
+    assert torch.allclose(out, x)
 
 
 # ── Input validation ──
