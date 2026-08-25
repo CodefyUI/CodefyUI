@@ -382,3 +382,155 @@ describe('TensorGridEditor — setCell guard', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 });
+
+describe('TensorGridEditor — the value follows the shape (#365)', () => {
+  // The grid used to reshape for DISPLAY only: `normalized` padded the value
+  // out to the new shape so a k×k grid could be drawn, but nothing wrote that
+  // back. Change Conv2dExplicit's kernel_size from 3 to 5 and the panel showed
+  // a filled 5×5 grid while the param still held 9 numbers -- then the run
+  // failed with "`weights` has 9 elements but kernel_size=5 expects 25". What
+  // the student saw and what the graph stored had quietly diverged.
+
+  function renderWithProps(props: {
+    value?: any;
+    siblingParams?: Record<string, any>;
+    onChange: (name: string, value: any) => void;
+  }) {
+    const element = (p: typeof props) => (
+      <TensorGridEditor
+        param={makeParam()}
+        value={p.value}
+        onChange={p.onChange}
+        displayLabel="My Tensor"
+        siblingParams={p.siblingParams}
+      />
+    );
+    const utils = render(element(props));
+    return {
+      ...utils,
+      update: (next: typeof props) => utils.rerender(element(next)),
+    };
+  }
+
+  const identity3 = [
+    [0, 0, 0],
+    [0, 1, 0],
+    [0, 0, 0],
+  ];
+
+  it('writes the resized value back when kernel_size grows', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: identity3,
+      siblingParams: { kernel_size: 3 },
+      onChange,
+    });
+    // Steady state: the value already matches the shape, so nothing is written.
+    expect(onChange).not.toHaveBeenCalled();
+
+    update({ value: identity3, siblingParams: { kernel_size: 5 }, onChange });
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const [name, written] = onChange.mock.calls[0];
+    expect(name).toBe('weights');
+    expect(written).toHaveLength(5);
+    expect(written.flat()).toHaveLength(25);
+  });
+
+  it('keeps the numbers the user already typed and pads the rest with zeros', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: identity3,
+      siblingParams: { kernel_size: 3 },
+      onChange,
+    });
+    update({ value: identity3, siblingParams: { kernel_size: 5 }, onChange });
+
+    // Row-major refill: the nine originals lead, zeros follow. Padding rather
+    // than clearing means widening a kernel is not a silent wipe of the work.
+    expect(onChange.mock.calls[0][1].flat()).toEqual([
+      0, 0, 0, 0, 1,
+      0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0,
+    ]);
+  });
+
+  it('truncates when kernel_size shrinks', () => {
+    const onChange = vi.fn();
+    const five = Array.from({ length: 5 }, (_, r) =>
+      Array.from({ length: 5 }, (_, c) => r * 5 + c),
+    );
+    const { update } = renderWithProps({
+      value: five,
+      siblingParams: { kernel_size: 5 },
+      onChange,
+    });
+    update({ value: five, siblingParams: { kernel_size: 3 }, onChange });
+
+    expect(onChange.mock.calls[0][1]).toEqual([
+      [0, 1, 2],
+      [3, 4, 5],
+      [6, 7, 8],
+    ]);
+  });
+
+  it('stays quiet when the value already has the right number of cells', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: identity3,
+      siblingParams: { kernel_size: 3 },
+      onChange,
+    });
+    // A re-render that changes nothing about the shape must not write, or the
+    // effect would fight the store on every keystroke elsewhere in the panel.
+    update({ value: identity3, siblingParams: { kernel_size: 3 }, onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing while the grid is disabled', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: [[1, 2]],
+      siblingParams: { shape: '1,2', value_mode: 'random' },
+      onChange,
+    });
+    // TensorInput in random mode: the editor is not the source of truth, so a
+    // shape change must not rewrite values the backend is about to generate.
+    update({ value: [[1, 2]], siblingParams: { shape: '4,4', value_mode: 'random' }, onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when there is no value yet', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: null,
+      siblingParams: { shape: '2,2', value_mode: 'explicit' },
+      onChange,
+    });
+    // TensorInput's `values` defaults to null. Filling it with zeros the
+    // moment the panel opens would turn "not set" into "explicitly zero".
+    update({ value: null, siblingParams: { shape: '3,3', value_mode: 'explicit' }, onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('follows a TensorInput-style `shape` sibling too', () => {
+    const onChange = vi.fn();
+    const { update } = renderWithProps({
+      value: [[1, 2], [3, 4]],
+      siblingParams: { shape: '2,2', value_mode: 'explicit' },
+      onChange,
+    });
+    update({
+      value: [[1, 2], [3, 4]],
+      siblingParams: { shape: '2,3', value_mode: 'explicit' },
+      onChange,
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0][1]).toEqual([
+      [1, 2, 3],
+      [4, 0, 0],
+    ]);
+  });
+});
