@@ -1,0 +1,44 @@
+{
+  "name": "C1-3 the same image through four different 3×3 kernels",
+  "description": "Figure C1-3-e made runnable: one (1, 1, 8, 8) image, four Conv2dExplicit nodes, four completely different outputs — from an operator that never changes. §C1.3.4.1 makes the claim that 'the arithmetic is always the same; the nine weights decide what the window is looking for', and this graph is where a student checks it. The image is built by hand rather than randomly: columns 0–3 are 100 and columns 4–7 are 200 (one vertical edge down the middle), with a single bright 200 at row 6, column 1 (one isolated dot in the dark half). Every kernel then reports on the same two features. EdgeDetection returns exactly 800 at the dot — the number worked out by hand in §C1.3.4.1 Example 3-2 — and 0 across both flat regions, which is the 'flat → 0, different → large' property that section claims. Sharpen leaves the flat regions at their own value (100 stays 100, 200 stays 200) and pushes the dot to 600. VerticalEdge answers 300 on the two boundary columns and 0 at the dot, since an isolated point is not a vertical edge. The blur is the Custom preset with all nine weights at 1/9: flat regions unchanged, the dot smeared down to 111.11, the edge softened into a 133 → 167 ramp. Swap any preset, or edit the Custom matrix, and only the output changes — the graph does not.",
+  "nodes": [
+    { "id": "start", "type": "Start",           "position": { "x": -340, "y":    0 }, "data": { "params": {} } },
+    { "id": "img",   "type": "TensorInput",     "position": { "x":  -60, "y":    0 }, "data": { "params": { "shape": "1,1,8,8", "dtype": "float32", "value_mode": "explicit", "values": [[[
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200],
+        [100, 200, 100, 100, 200, 200, 200, 200],
+        [100, 100, 100, 100, 200, 200, 200, 200]
+      ]]] } } },
+
+    { "id": "k_edge",  "type": "Conv2dExplicit", "position": { "x": 320, "y": -390 }, "data": { "params": { "preset": "EdgeDetection3x3", "stride": 1, "padding": 1 } } },
+    { "id": "k_sharp", "type": "Conv2dExplicit", "position": { "x": 320, "y": -130 }, "data": { "params": { "preset": "Sharpen3x3",       "stride": 1, "padding": 1 } } },
+    { "id": "k_vert",  "type": "Conv2dExplicit", "position": { "x": 320, "y":  130 }, "data": { "params": { "preset": "VerticalEdge3x3",  "stride": 1, "padding": 1 } } },
+    { "id": "k_blur",  "type": "Conv2dExplicit", "position": { "x": 320, "y":  390 }, "data": { "params": { "preset": "Custom", "kernel_size": 3, "stride": 1, "padding": 1, "weights": [
+        [0.1111111111111111, 0.1111111111111111, 0.1111111111111111],
+        [0.1111111111111111, 0.1111111111111111, 0.1111111111111111],
+        [0.1111111111111111, 0.1111111111111111, 0.1111111111111111]
+      ] } } },
+
+    { "id": "p_edge",  "type": "Print", "position": { "x": 700, "y": -390 }, "data": { "params": { "label": "邊緣偵測 EdgeDetection — flat regions 0, the isolated dot 800 (§C1.3.4.1 Example 3-2)" } } },
+    { "id": "p_sharp", "type": "Print", "position": { "x": 700, "y": -130 }, "data": { "params": { "label": "銳化 Sharpen — flat regions keep their own value (100, 200), the dot rises to 600" } } },
+    { "id": "p_vert",  "type": "Print", "position": { "x": 700, "y":  130 }, "data": { "params": { "label": "垂直邊緣 VerticalEdge — 300 on the two boundary columns, 0 at the dot" } } },
+    { "id": "p_blur",  "type": "Print", "position": { "x": 700, "y":  390 }, "data": { "params": { "label": "模糊 Blur (Custom, all 1/9) — the dot smears to 111.11, the edge ramps 133 → 167" } } }
+  ],
+  "edges": [
+    { "id": "et", "source": "start", "target": "img", "sourceHandle": "trigger", "type": "trigger" },
+
+    { "id": "e_edge",  "source": "img", "target": "k_edge",  "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_sharp", "source": "img", "target": "k_sharp", "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_vert",  "source": "img", "target": "k_vert",  "sourceHandle": "tensor", "targetHandle": "tensor" },
+    { "id": "e_blur",  "source": "img", "target": "k_blur",  "sourceHandle": "tensor", "targetHandle": "tensor" },
+
+    { "id": "o_edge",  "source": "k_edge",  "target": "p_edge",  "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "o_sharp", "source": "k_sharp", "target": "p_sharp", "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "o_vert",  "source": "k_vert",  "target": "p_vert",  "sourceHandle": "tensor", "targetHandle": "value" },
+    { "id": "o_blur",  "source": "k_blur",  "target": "p_blur",  "sourceHandle": "tensor", "targetHandle": "value" }
+  ]
+}
