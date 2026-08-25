@@ -61,7 +61,7 @@ Open [http://localhost:8000](http://localhost:8000). The single uvicorn process 
 | `cdui test` | Run the backend (`pytest`) and frontend (`vitest`) tests; the frontend half is skipped, not failed, when pnpm is absent |
 | `cdui clean` | Remove virtualenv, `node_modules`, and `frontend/dist` |
 | `cdui uninstall` | Clean + remove the PATH launcher |
-| `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `C2`, `owner/repo[@ref]`, or full GitHub URL) |
+| `cdui plugin install <name\|url>` | Install a plugin pack (catalog name like `foundations`, `owner/repo[@ref]`, or full GitHub URL) |
 | `cdui plugin list` | List installed plugin packs |
 | `cdui plugin uninstall <id>` | Remove an installed plugin pack |
 
@@ -178,6 +178,7 @@ cumulatively as you progress:
 
 ```bash
 cdui plugin install foundations deep rl   # full textbook companion
+cdui plugin install edu stats             # hands-on labs + descriptive statistics
 cdui plugin list
 cdui plugin info deep                      # manifest, lessons covered, node names
 cdui plugin search attention              # query the catalog
@@ -196,6 +197,8 @@ and lets `cdui start` rediscover them on the next launch.
 | `foundations` | I1 資料表示 · I2 經典 ML | Edu-ColumnStats, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-TokenEmbedding, Edu-FFN |
 | `deep` | I3 視覺 · I4 序列 | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |
 | `rl` | I5 強化學習 | Edu-PolicyGradient |
+| `edu` | I1 資料表示 · I2 經典 ML（動手做版） | FilterRows, SlidingWindow2D, SentenceEmbedding, Classifier, AdvancedClassifier, FFNLayer, ActivationLayer, TrainAndEvaluate |
+| `stats` | — 任何資料集 | Stats-Describe, Stats-GroupByAggregate, Stats-Histogram, Stats-Percentile, Stats-Correlation, Stats-ConfusionMatrix, Stats-TableView, Stats-ChartView |
 
 Each Edu node decomposes a single lesson concept into a chain of named steps
 that the Teaching Inspector renders one row at a time — `Edu-ColumnStats`

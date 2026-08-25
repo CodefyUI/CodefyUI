@@ -11,6 +11,7 @@ Educational ("Edu") nodes ship as installable **plugin packs**, organised **by d
 ```bash
 cdui plugin sync                           # install every built-in pack you have not decided about
 cdui plugin install foundations deep rl   # or pick them one by one
+cdui plugin install edu stats              # hands-on labs, descriptive statistics
 cdui plugin list
 cdui plugin info deep                      # manifest, lessons covered, node names
 cdui plugin search attention               # query the catalog
@@ -25,6 +26,7 @@ cdui plugin uninstall deep                 # remembered: sync will not re-add it
 | `foundations` | I1 Data Representation · I2 Classical ML | Edu-ColumnStats, Edu-KNN, Edu-LinearRegression, Edu-LogisticRegression, Edu-TokenEmbedding, Edu-FFN |
 | `deep` | I3 Vision · I4 Sequences | Edu-CrossAttention, Edu-ResBlock, Edu-SelfAttention, Edu-MultiHeadAttention, Edu-Patchify |
 | `rl` | I5 Reinforcement Learning | Edu-PolicyGradient |
+| `edu` | I1 Data Representation · I2 Classical ML (hands-on labs) | FilterRows, SlidingWindow2D, SentenceEmbedding, Classifier, AdvancedClassifier, FFNLayer, ActivationLayer, TrainAndEvaluate |
 | `stats` | — (any dataset) | Stats-Describe, Stats-GroupByAggregate, Stats-Histogram, Stats-Percentile, Stats-Correlation, Stats-ConfusionMatrix, Stats-TableView, Stats-ChartView |
 
 `stats` is the odd one out: not a textbook companion but a working reference for third-party pack authors. It is pure numpy + torch, installs at [Tier 0](#security--three-tiers) with **no `[security]` section at all**, and its [README](https://github.com/CodefyUI/CodefyUI/blob/main/plugins/stats/README.md) is the normative write-up of the two contracts a data pack needs — how a table travels between ports, and how a `chart` output is declared and drawn.
