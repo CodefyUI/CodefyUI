@@ -251,6 +251,46 @@ _GITHUB_SHORT = re.compile(r"^([\w.-]+)/([\w.-]+?)(?:@([\w./-]+))?$")
 _GITHUB_URL = re.compile(
     r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?(?:@(.+))?$"
 )
+# One word, no slash and no scheme: the only thing it can have been meant as is
+# a catalog name. See _unknown_catalog_name for why that deserves its own error.
+_BARE_NAME = re.compile(r"^[A-Za-z0-9][\w.-]*$")
+
+
+def _unknown_catalog_name(spec: str, known: list[str]) -> ValueError:
+    """The error for a bare word this install's catalog does not have (#363).
+
+    The generic "expected a catalog name, owner/repo, or a URL" is a dead end
+    here, because the user *did* type a catalog name — what they cannot see is
+    that their copy of ``plugins/registry.json`` has never heard of it. The
+    usual reason is an install old enough to predate the pack: a stale ``cdui``
+    reported exactly this for ``edu``, which only entered the catalog in 1.3.0,
+    and the message gave its user nothing to act on. So name the packs this
+    install really has, and point at the update that would add the missing one.
+    """
+    have = ", ".join(known) if known else t("（無）", "(none)")
+    lines = [
+        t(
+            f"這份安裝的內建外掛目錄裡沒有 {spec!r}。",
+            f"No plugin pack named {spec!r} in this install's catalog.",
+        ),
+        t(f"目前可裝的內建包：{have}", f"Built-in packs available here: {have}"),
+    ]
+    if not known:
+        lines.append(
+            t(
+                f"目錄檔讀不到或是空的：{_catalog_path()}",
+                f"The catalog file is missing or unreadable: {_catalog_path()}",
+            )
+        )
+    lines.append(
+        t(
+            "若這個包應該存在，代表你的 CodefyUI 比它舊 — 先執行 `cdui update` "
+            "再試一次；第三方外掛則要寫成 owner/repo[@ref] 或完整的 GitHub URL。",
+            "If the pack should exist, this install predates it — run `cdui update` "
+            "and try again. Third-party packs need owner/repo[@ref] or a full GitHub URL.",
+        )
+    )
+    return ValueError("\n    ".join(lines))
 
 
 def parse_source(spec: str) -> tuple[str, str, str, str]:
@@ -260,6 +300,7 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
     For github: ``a`` = owner, ``b`` = repo, ``ref`` = tag/branch/sha (may be empty).
     """
     catalog = load_catalog()
+    known = sorted(catalog.get("plugins", {}))
     if spec.lower() in catalog.get("plugins", {}):
         return ("catalog", spec.lower(), "", "")
 
@@ -271,9 +312,19 @@ def parse_source(spec: str) -> tuple[str, str, str, str]:
     if m:
         return ("github", m.group(1), m.group(2), m.group(3) or "")
 
+    if _BARE_NAME.match(spec):
+        raise _unknown_catalog_name(spec, known)
+
+    # Name the example from the catalog rather than hard-coding it: this line
+    # spent three releases telling people to try "C2" after that pack was gone.
+    example = known[0] if known else "foundations"
     raise ValueError(
-        f"Could not parse plugin source: {spec!r}. "
-        "Expected a catalog name (e.g. foundations), owner/repo[@ref], or a GitHub URL."
+        t(
+            f"無法解析外掛來源：{spec!r}。請輸入內建包名稱"
+            f"（例如 {example}）、owner/repo[@ref] 或 GitHub URL。",
+            f"Could not parse plugin source: {spec!r}. "
+            f"Expected a catalog name (e.g. {example}), owner/repo[@ref], or a GitHub URL.",
+        )
     )
 
 

@@ -49,6 +49,54 @@ def test_parse_source_rejects_garbage():
         plugin_cli.parse_source("not a valid source spec")
 
 
+def test_parse_source_names_the_example_from_the_catalog():
+    # Hard-coding the example is how this line spent releases advertising "C2"
+    # after that pack was renamed away.
+    with pytest.raises(ValueError) as excinfo:
+        plugin_cli.parse_source("not a valid source spec")
+    example = sorted(plugin_cli.load_catalog()["plugins"])[0]
+    assert f"e.g. {example}" in str(excinfo.value)
+
+
+def test_parse_source_unknown_bare_name_lists_the_catalog(monkeypatch):
+    # A bare word is unambiguously a catalog name, so saying "expected a catalog
+    # name" back is a dead end: say which ones this install actually has.
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    with pytest.raises(ValueError) as excinfo:
+        plugin_cli.parse_source("edo")
+    msg = str(excinfo.value)
+    assert "No plugin pack named 'edo'" in msg
+    for pack_id in plugin_cli.load_catalog()["plugins"]:
+        assert pack_id in msg
+    assert "cdui update" in msg  # the fix for the stale-install case
+
+
+def test_parse_source_unknown_bare_name_flags_an_unreadable_catalog(monkeypatch):
+    # An empty catalog fails every name, including the valid ones — say so
+    # instead of blaming the name the user typed.
+    monkeypatch.setenv("CODEFYUI_LANG", "en")
+    monkeypatch.setattr(plugin_cli, "load_catalog", lambda: {"schema": 1, "plugins": {}})
+    with pytest.raises(ValueError) as excinfo:
+        plugin_cli.parse_source("foundations")
+    msg = str(excinfo.value)
+    assert "(none)" in msg
+    assert str(plugin_cli._catalog_path()) in msg
+
+
+def test_parse_source_bare_name_error_is_localized(monkeypatch):
+    monkeypatch.setenv("CODEFYUI_LANG", "zh")
+    with pytest.raises(ValueError) as excinfo:
+        plugin_cli.parse_source("edo")
+    assert "內建包" in str(excinfo.value)
+
+
+def test_parse_source_accepts_every_catalog_pack():
+    # Regression for the report that `cdui plugin install edu` "could not parse
+    # plugin source" — every id the catalog ships must round-trip.
+    for pack_id in plugin_cli.load_catalog()["plugins"]:
+        assert plugin_cli.parse_source(pack_id) == ("catalog", pack_id, "", "")
+
+
 # ── validate_manifest ──────────────────────────────────────────────────────
 
 def _good_manifest(plugin_id: str = "test-pack") -> dict:
