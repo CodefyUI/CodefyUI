@@ -70,6 +70,16 @@ const zhTW: NodeTranslations = {
       padding: '兩側的零填充',
     },
   },
+  Conv2dExplicit: {
+    description: '用你指定的 kernel 做 2D 卷積 —— 不是網路學出來的那種，沒有可學參數、也沒有隨機初始化。可以選內建的 3×3 濾波器（邊緣偵測 / 銳化 / 垂直邊緣），或把 preset 設成 Custom 自己填一個 NxN 矩陣。同一個 kernel 會套用到每個輸入通道（depthwise 分組卷積），所以 (N, C, H, W) 進去就是 (N, C, H, W) 出來，通道數不變。',
+    params: {
+      preset: '內建的 3×3 kernel，或選 Custom 自己寫一個矩陣。',
+      kernel_size: 'NxN kernel 的邊長 N（只有 Custom 會用到）。',
+      weights: '自訂的 kernel 矩陣（NxN）；格子大小跟著 kernel_size 走。',
+      stride: '卷積步幅',
+      padding: '空間維度兩側的零填充',
+    },
+  },
   MaxPool2d: {
     description: '對輸入張量套用 2D 最大池化（封裝 nn.MaxPool2d）',
     params: {
