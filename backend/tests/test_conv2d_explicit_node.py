@@ -1,15 +1,41 @@
-"""Tests for Conv2dExplicitNode (conv with kernel via input port)."""
+"""Tests for Conv2dExplicitNode — convolution with a kernel picked in the node.
+
+The kernel used to arrive on a second input port from a ``Conv2dKernel``
+producer. Those two nodes are now one, so the tests are too: the preset /
+Custom-matrix half came over from ``test_conv2d_kernel_node.py``, and the
+tests that only described the removed port (4D kernel shapes, a non-tensor
+kernel) went with it. What a caller can express changed; what the convolution
+computes did not, and the numeric tests below are unchanged from both files.
+"""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from app.nodes.cnn.conv2d_explicit_node import Conv2dExplicitNode
+from app.nodes.cnn.conv2d_explicit_node import (
+    CUSTOM_OPTION,
+    MAX_KERNEL_SIZE,
+    MIN_KERNEL_SIZE,
+    PRESET_OPTIONS,
+    PRESETS_3X3,
+    Conv2dExplicitNode,
+)
+
+cuda_only = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="needs a CUDA device"
+)
 
 
-def _run(tensor, kernel, **params):
-    return Conv2dExplicitNode().execute({"tensor": tensor, "kernel": kernel}, params)
+def _run(tensor, **params):
+    return Conv2dExplicitNode().execute({"tensor": tensor}, params)
+
+
+def _custom(weights, **params):
+    """Run with a hand-authored kernel matrix."""
+    k = len(weights)
+    return _run(params.pop("tensor"), preset=CUSTOM_OPTION, kernel_size=k,
+                weights=weights, **params)
 
 
 # ── Schema ──
@@ -20,184 +46,249 @@ def test_node_metadata():
     assert Conv2dExplicitNode.CATEGORY == "CNN"
     in_names = [p.name for p in Conv2dExplicitNode.define_inputs()]
     out_names = [p.name for p in Conv2dExplicitNode.define_outputs()]
-    assert in_names == ["tensor", "kernel"]
+    # One input. The kernel is a parameter now, not a wire.
+    assert in_names == ["tensor"]
     assert out_names == ["tensor"]
 
 
-def test_param_names_are_just_stride_and_padding():
+def test_params_are_the_kernel_choice_then_the_conv_trim():
     names = [p.name for p in Conv2dExplicitNode.define_params()]
-    assert names == ["stride", "padding"]
+    # Order is the reading order on the node card: what filter, then how it
+    # is swept.
+    assert names == ["preset", "kernel_size", "weights", "stride", "padding"]
 
 
-def test_no_kernel_size_or_in_out_channels_params():
-    # All kernel-shape info is derived from the kernel input tensor.
+def test_preset_options_are_the_three_builtins_plus_custom():
+    preset = next(p for p in Conv2dExplicitNode.define_params() if p.name == "preset")
+    assert preset.options == PRESET_OPTIONS
+    assert preset.options == [
+        "EdgeDetection3x3", "Sharpen3x3", "VerticalEdge3x3", CUSTOM_OPTION,
+    ]
+    assert preset.default == "EdgeDetection3x3"
+
+
+def test_kernel_size_and_weights_are_visible_only_when_custom():
+    params = {p.name: p for p in Conv2dExplicitNode.define_params()}
+    assert params["kernel_size"].visible_when == {"preset": CUSTOM_OPTION}
+    assert params["weights"].visible_when == {"preset": CUSTOM_OPTION}
+    # stride/padding apply to every preset, so they are always on show.
+    assert params["stride"].visible_when is None
+    assert params["padding"].visible_when is None
+
+
+def test_kernel_size_param_bounds():
+    ks = next(p for p in Conv2dExplicitNode.define_params() if p.name == "kernel_size")
+    assert ks.min_value == MIN_KERNEL_SIZE
+    assert ks.max_value == MAX_KERNEL_SIZE
+    assert ks.default == 3
+
+
+def test_weights_default_is_identity_3x3():
+    w = next(p for p in Conv2dExplicitNode.define_params() if p.name == "weights")
+    assert w.default == [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
+
+
+def test_no_in_or_out_channel_params():
+    # Depthwise: the channel count comes from the input, never from a param.
     names = {p.name for p in Conv2dExplicitNode.define_params()}
-    assert "kernel_size" not in names
     assert "in_channels" not in names
     assert "out_channels" not in names
 
 
-# ── Execution: bare 2D kernel ──
+# ── Preset values ──
 
 
-def test_identity_2d_kernel_passes_image_through():
-    identity = torch.tensor([
-        [0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0],
-    ])
-    x = torch.arange(25, dtype=torch.float32).reshape(1, 1, 5, 5)
-    res = _run(x, identity, stride=1, padding=1)
-    assert torch.allclose(res["tensor"], x)
-
-
-def test_laplacian_2d_kernel_detects_isolated_pixel():
-    laplacian = torch.tensor([
+def test_edge_detection_preset_values():
+    assert PRESETS_3X3["EdgeDetection3x3"] == [
         [-1.0, -1.0, -1.0],
         [-1.0,  8.0, -1.0],
         [-1.0, -1.0, -1.0],
-    ])
+    ]
+
+
+def test_sharpen_preset_values():
+    assert PRESETS_3X3["Sharpen3x3"] == [
+        [ 0.0, -1.0,  0.0],
+        [-1.0,  5.0, -1.0],
+        [ 0.0, -1.0,  0.0],
+    ]
+
+
+def test_vertical_edge_preset_values():
+    assert PRESETS_3X3["VerticalEdge3x3"] == [
+        [-1.0, 0.0, 1.0],
+        [-1.0, 0.0, 1.0],
+        [-1.0, 0.0, 1.0],
+    ]
+
+
+# ── Execution: presets ──
+
+
+def test_edge_detection_preset_detects_an_isolated_pixel():
     x = torch.zeros(1, 1, 5, 5)
     x[0, 0, 2, 2] = 1.0
-    res = _run(x, laplacian, stride=1, padding=1)
-    y = res["tensor"]
-    assert y[0, 0, 2, 2].item() == pytest.approx(8.0)
-    assert y[0, 0, 1, 1].item() == pytest.approx(-1.0)
+    res = _run(x, preset="EdgeDetection3x3", padding=1)
+    out = res["tensor"]
+    assert out.shape == (1, 1, 5, 5)
+    # Centre sees +8 from itself; each neighbour sees -1 from the centre.
+    assert out[0, 0, 2, 2].item() == pytest.approx(8.0)
+    assert out[0, 0, 1, 2].item() == pytest.approx(-1.0)
 
 
-def test_uniform_input_with_laplacian_is_zero_in_interior():
-    # padding=0 keeps the kernel window away from zero-padding artefacts.
-    laplacian = torch.tensor([
-        [-1.0, -1.0, -1.0],
-        [-1.0,  8.0, -1.0],
-        [-1.0, -1.0, -1.0],
-    ])
-    x = torch.ones(1, 1, 5, 5)
-    res = _run(x, laplacian, stride=1, padding=0)
-    assert res["tensor"].shape == (1, 1, 3, 3)
-    assert torch.allclose(res["tensor"], torch.zeros(1, 1, 3, 3))
+def test_uniform_input_with_edge_detection_is_zero_in_interior():
+    # The Laplacian sums to 0, so a flat region has no response. Only the
+    # border reacts, and only because zero padding invents an edge there.
+    x = torch.full((1, 1, 6, 6), 3.0)
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert torch.allclose(out[0, 0, 1:-1, 1:-1], torch.zeros(4, 4), atol=1e-5)
 
 
-def test_2d_kernel_rejects_non_square():
-    x = torch.zeros(1, 1, 5, 5)
-    k = torch.zeros(2, 3)
-    with pytest.raises(ValueError, match=r"square"):
-        _run(x, k)
+def test_sharpen_preset_leaves_a_flat_region_alone():
+    # Sharpen sums to 1: a flat region passes through at its own value.
+    x = torch.full((1, 1, 6, 6), 2.0)
+    out = _run(x, preset="Sharpen3x3", padding=1)["tensor"]
+    assert torch.allclose(out[0, 0, 1:-1, 1:-1], torch.full((4, 4), 2.0), atol=1e-5)
 
 
-# ── Execution: 4D kernel forms ──
+def test_vertical_edge_preset_responds_to_a_vertical_boundary():
+    # Left half 0, right half 1. Prewitt-X fires on the boundary column.
+    x = torch.zeros(1, 1, 5, 6)
+    x[0, 0, :, 3:] = 1.0
+    out = _run(x, preset="VerticalEdge3x3", padding=1)["tensor"]
+    assert out[0, 0, 2, 2].item() == pytest.approx(3.0)
+    # Well inside either flat half there is nothing to respond to.
+    assert out[0, 0, 2, 0].item() == pytest.approx(0.0)
 
 
-def test_4d_kernel_with_out_channel_1_is_broadcast():
-    # (1, 1, k, k) → same effective behaviour as a (k, k) kernel.
-    k = torch.tensor([
-        [-1.0, -1.0, -1.0],
-        [-1.0,  8.0, -1.0],
-        [-1.0, -1.0, -1.0],
-    ]).reshape(1, 1, 3, 3)
-    x = torch.zeros(1, 1, 5, 5)
-    x[0, 0, 2, 2] = 1.0
-    res = _run(x, k, padding=1)
-    assert res["tensor"][0, 0, 2, 2].item() == pytest.approx(8.0)
+def test_unknown_preset_rejected():
+    with pytest.raises(ValueError, match="Unknown preset"):
+        _run(torch.zeros(1, 1, 5, 5), preset="Nope")
 
 
-def test_4d_kernel_with_out_channel_matching_input_channels():
-    # (C, 1, k, k) — one distinct kernel per input channel.
-    # ch0: identity. ch1: 3x zero (kills the channel).
+# ── Execution: custom kernels ──
+
+
+def test_custom_identity_passes_the_image_through():
     identity = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
-    zero = [[0.0] * 3 for _ in range(3)]
-    k = torch.tensor([identity, zero]).reshape(2, 1, 3, 3)
+    x = torch.arange(25, dtype=torch.float32).reshape(1, 1, 5, 5)
+    out = _custom(identity, tensor=x, padding=1)["tensor"]
+    assert torch.allclose(out, x)
+
+
+def test_custom_5x5_box_blur():
+    box = [[1.0 / 25] * 5 for _ in range(5)]
+    x = torch.full((1, 1, 7, 7), 4.0)
+    out = _custom(box, tensor=x, padding=2)["tensor"]
+    # The interior averages 25 identical values back to the same number.
+    assert out[0, 0, 3, 3].item() == pytest.approx(4.0)
+
+
+def test_custom_2x2_is_allowed():
+    # Even sizes are legal; only non-square grids are not expressible.
+    out = _custom([[1.0, 1.0], [1.0, 1.0]], tensor=torch.ones(1, 1, 4, 4),
+                  padding=0)["tensor"]
+    assert out.shape == (1, 1, 3, 3)
+    assert torch.allclose(out, torch.full((1, 1, 3, 3), 4.0))
+
+
+def test_custom_rejects_when_weights_size_mismatches_kernel_size():
+    # A grid the user resized but never re-filled. Padding or truncating it
+    # would convolve with a filter they did not write.
+    with pytest.raises(ValueError, match=r"9 elements but kernel_size=5"):
+        _run(torch.zeros(1, 1, 5, 5), preset=CUSTOM_OPTION, kernel_size=5,
+             weights=[[0.0] * 3 for _ in range(3)])
+
+
+def test_custom_rejects_when_weights_missing():
+    with pytest.raises(ValueError, match="requires `weights`"):
+        _run(torch.zeros(1, 1, 5, 5), preset=CUSTOM_OPTION, kernel_size=3)
+
+
+# ── Execution: depthwise behaviour ──
+
+
+def test_the_same_kernel_is_applied_to_every_channel():
+    # 3 channels, each uniform. A Laplacian on a flat region is 0 everywhere
+    # inside, whatever the channel's value -- and the channel count survives.
+    x = torch.stack([torch.full((1, 6, 6), float(c)) for c in range(3)], dim=1)
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert out.shape == (1, 3, 6, 6)
+    assert torch.allclose(out[0, :, 1:-1, 1:-1], torch.zeros(3, 4, 4), atol=1e-5)
+
+
+def test_channels_stay_independent():
+    identity = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
     x = torch.stack([
         torch.full((1, 5, 5), 7.0),
         torch.full((1, 5, 5), 9.0),
     ], dim=1)
-    res = _run(x, k, padding=1)
-    assert res["tensor"].shape == (1, 2, 5, 5)
-    # Channel 0 passed through as identity → still 7.
-    assert torch.allclose(res["tensor"][0, 0], torch.full((5, 5), 7.0))
-    # Channel 1 zeroed out by the zero kernel.
-    assert torch.allclose(res["tensor"][0, 1], torch.zeros(5, 5))
+    out = _custom(identity, tensor=x, padding=1)["tensor"]
+    # Grouped conv, not a sum across channels: 7 stays 7 and 9 stays 9.
+    assert torch.allclose(out[0, 0], torch.full((5, 5), 7.0))
+    assert torch.allclose(out[0, 1], torch.full((5, 5), 9.0))
 
 
-def test_4d_kernel_rejects_mismatched_out_channels():
-    x = torch.zeros(1, 3, 5, 5)
-    # (2, 1, 3, 3) doesn't match C=3 and isn't 1 (broadcast) — invalid.
-    k = torch.zeros(2, 1, 3, 3)
-    with pytest.raises(ValueError, match=r"out-channel.*1.*C=3"):
-        _run(x, k, padding=1)
-
-
-def test_4d_kernel_rejects_inner_channel_not_one():
-    # (1, 3, 3, 3) — looks like a full Conv2d weight tensor for a multi-channel
-    # convolution. We only support depthwise here.
-    x = torch.zeros(1, 3, 5, 5)
-    k = torch.zeros(1, 3, 3, 3)
-    with pytest.raises(ValueError, match=r"inner channel must be 1"):
-        _run(x, k, padding=1)
-
-
-def test_3d_kernel_rejected():
-    x = torch.zeros(1, 1, 5, 5)
-    k = torch.zeros(3, 3, 3)
-    with pytest.raises(ValueError, match=r"2D \(k, k\) or 4D"):
-        _run(x, k, padding=1)
-
-
-# ── Execution: multi-channel depthwise ──
-
-
-def test_depthwise_applies_same_2d_kernel_per_channel():
-    # 3 channels uniformly 0/1/2. Laplacian on a flat region → 0.
-    laplacian = torch.tensor([
-        [-1.0, -1.0, -1.0],
-        [-1.0,  8.0, -1.0],
-        [-1.0, -1.0, -1.0],
-    ])
-    x = torch.stack([
-        torch.zeros(1, 5, 5),
-        torch.ones(1, 5, 5),
-        torch.full((1, 5, 5), 2.0),
-    ], dim=1)
-    res = _run(x, laplacian, padding=0)
-    assert res["tensor"].shape == (1, 3, 3, 3)
-    assert torch.allclose(res["tensor"], torch.zeros(1, 3, 3, 3))
-
-
-# ── Validation: input shapes ──
-
-
-def test_rejects_3d_input_with_helpful_message():
-    x = torch.zeros(1, 5, 5)
-    k = torch.zeros(3, 3)
-    with pytest.raises(ValueError, match=r"4D \(N, C, H, W\).*Unsqueeze"):
-        _run(x, k)
-
-
-def test_rejects_non_tensor_input():
-    k = torch.zeros(3, 3)
-    with pytest.raises(ValueError, match=r"`tensor` input must be a torch.Tensor"):
-        Conv2dExplicitNode().execute({"tensor": [[1, 2], [3, 4]], "kernel": k}, {})
-
-
-def test_rejects_non_tensor_kernel():
-    x = torch.zeros(1, 1, 5, 5)
-    with pytest.raises(ValueError, match=r"`kernel` input must be a torch.Tensor"):
-        Conv2dExplicitNode().execute({"tensor": x, "kernel": [[1, 0], [0, 1]]}, {})
-
-
-# ── Stride / dtype ──
+# ── Execution: shape and dtype ──
 
 
 def test_stride_2_halves_spatial_dims():
-    k = torch.ones(3, 3)
-    x = torch.ones(1, 1, 8, 8)
-    res = _run(x, k, stride=2, padding=1)
-    # (8 + 2 - 3) // 2 + 1 = 4
-    assert res["tensor"].shape == (1, 1, 4, 4)
+    out = _run(torch.zeros(1, 1, 8, 8), preset="EdgeDetection3x3",
+               stride=2, padding=1)["tensor"]
+    assert out.shape == (1, 1, 4, 4)
 
 
 def test_preserves_input_dtype():
-    k = torch.ones(3, 3)
-    x = torch.ones(1, 1, 5, 5, dtype=torch.float64)
-    res = _run(x, k, padding=1)
-    assert res["tensor"].dtype == torch.float64
+    x = torch.zeros(1, 1, 5, 5, dtype=torch.float64)
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert out.dtype == torch.float64
+
+
+def test_output_stays_on_the_inputs_device():
+    # The trivial case: CPU in, CPU out. This one cannot fail -- with no
+    # second device on the box there is no mismatch to reintroduce -- so it
+    # documents the common path rather than guarding it. The guard is
+    # ``test_kernel_is_built_on_the_inputs_device_not_the_cpu`` below.
+    x = torch.zeros(1, 1, 5, 5)
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert out.device == x.device
+
+
+@cuda_only
+def test_kernel_is_built_on_the_inputs_device_not_the_cpu():
+    """A node that conjures its own tensor must conjure it in the right place.
+
+    The engine aligns what arrives on a wire (#359); it cannot see a weight a
+    node materialises inside ``execute``. So the kernel is built on the
+    input's device from the start. Left on the CPU it would not merely land
+    in the wrong place -- ``F.conv2d`` refuses a weight and an input on
+    different devices, so the node would raise and the whole graph would stop
+    the moment a student switched the run to a GPU.
+    """
+    x = torch.zeros(1, 1, 5, 5, device="cuda")
+    out = _run(x, preset="EdgeDetection3x3", padding=1)["tensor"]
+    assert out.device.type == "cuda"
+
+
+@cuda_only
+def test_a_custom_kernel_is_built_on_the_inputs_device_too():
+    # The Custom branch builds the weight from a different source (the
+    # hand-authored grid, not a preset table) and is worth its own guard.
+    identity = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]]
+    x = torch.full((1, 1, 5, 5), 3.0, device="cuda")
+    out = _custom(identity, tensor=x, padding=1)["tensor"]
+    assert out.device.type == "cuda"
+    assert torch.allclose(out, x)
+
+
+# ── Input validation ──
+
+
+def test_rejects_3d_input_with_helpful_message():
+    with pytest.raises(ValueError, match=r"must be 4D"):
+        _run(torch.zeros(1, 5, 5), preset="EdgeDetection3x3")
+
+
+def test_rejects_non_tensor_input():
+    with pytest.raises(ValueError, match=r"must be a torch.Tensor"):
+        _run([[1, 2], [3, 4]], preset="EdgeDetection3x3")

@@ -118,7 +118,7 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
   // Shape sources, in priority order:
   //   1. siblingParams.shape — the convention used by TensorInput
   //      ("3,4,5" comma-separated string).
-  //   2. siblingParams.kernel_size — used by Conv2dKernel and any future
+  //   2. siblingParams.kernel_size — used by Conv2dExplicit and any future
   //      square-matrix param ("3" → [3, 3]).
   // We also track which source won so the disabled-by-default rule for
   // value_mode doesn't fire on kernel_size nodes that don't expose one.
@@ -149,7 +149,7 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
   // value_mode is a TensorInput-style sibling (SELECT: random / zeros /
   // ones / arange / explicit). For TensorInput the default is 'random' so
   // the editor stays disabled until the user opts into 'explicit'. For
-  // kernel_size-driven nodes (Conv2dKernel) there is no such sibling and
+  // kernel_size-driven nodes (Conv2dExplicit) there is no such sibling and
   // the grid is meant to be edit-first → default to 'explicit'.
   const valueMode =
     siblingParams?.value_mode ?? (shapeSource === 'kernel_size' ? 'explicit' : 'random');

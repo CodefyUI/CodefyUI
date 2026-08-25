@@ -260,26 +260,25 @@ def test_execute_graph_untriggered_producer_is_rescued_and_runs():
          "data": {"params": {"shape": "1,1,5,5", "value_mode": "zeros"}}},
         # Pure producer — no inputs, no trigger of its own — but its output
         # feeds a required input on 'conv', which IS reachable.
-        {"id": "kernel", "type": "Conv2dKernel",
-         "data": {"params": {"preset": "EdgeDetection3x3"}}},
-        {"id": "conv", "type": "Conv2dExplicit",
-         "data": {"params": {"stride": 1, "padding": 1}}},
+        {"id": "producer", "type": "TensorCreate",
+         "data": {"params": {"shape": "1,1,5,5", "fill": "zeros"}}},
+        {"id": "consumer", "type": "Add", "data": {"params": {}}},
         {"id": "sink", "type": "Print",
          "data": {"params": {"label": "out"}}},
     ]
     edges = [
         _trigger("et", "start", "trig_src"),
-        {"id": "e_src_conv", "source": "trig_src", "target": "conv",
-         "sourceHandle": "tensor", "targetHandle": "tensor"},
-        {"id": "e_kernel_conv", "source": "kernel", "target": "conv",
-         "sourceHandle": "tensor", "targetHandle": "kernel"},
-        {"id": "e_conv_sink", "source": "conv", "target": "sink",
+        {"id": "e_src", "source": "trig_src", "target": "consumer",
+         "sourceHandle": "tensor", "targetHandle": "tensor_a"},
+        {"id": "e_prod", "source": "producer", "target": "consumer",
+         "sourceHandle": "tensor", "targetHandle": "tensor_b"},
+        {"id": "e_sink", "source": "consumer", "target": "sink",
          "sourceHandle": "tensor", "targetHandle": "value"},
     ]
 
     results = asyncio.run(execute_graph(nodes, edges))
-    assert "kernel" in results, "the untriggered producer must be rescued and executed"
-    assert "conv" in results
+    assert "producer" in results, "the untriggered producer must be rescued and executed"
+    assert "consumer" in results
     assert "sink" in results
 
 
@@ -296,27 +295,26 @@ def test_execute_graph_triggered_producer_runs():
         {"id": "trig_src", "type": "TensorInput",
          "data": {"params": {"shape": "1,1,5,5", "value_mode": "zeros"}}},
         # Producer now has its own trigger from Start → it's an entry point.
-        {"id": "kernel", "type": "Conv2dKernel",
-         "data": {"params": {"preset": "EdgeDetection3x3"}}},
-        {"id": "conv", "type": "Conv2dExplicit",
-         "data": {"params": {"stride": 1, "padding": 1}}},
+        {"id": "producer", "type": "TensorCreate",
+         "data": {"params": {"shape": "1,1,5,5", "fill": "zeros"}}},
+        {"id": "consumer", "type": "Add", "data": {"params": {}}},
         {"id": "sink", "type": "Print",
          "data": {"params": {"label": "out"}}},
     ]
     edges = [
         _trigger("et", "start", "trig_src"),
-        _trigger("ek", "start", "kernel"),
-        {"id": "e_src_conv", "source": "trig_src", "target": "conv",
-         "sourceHandle": "tensor", "targetHandle": "tensor"},
-        {"id": "e_kernel_conv", "source": "kernel", "target": "conv",
-         "sourceHandle": "tensor", "targetHandle": "kernel"},
-        {"id": "e_conv_sink", "source": "conv", "target": "sink",
+        _trigger("ek", "start", "producer"),
+        {"id": "e_src", "source": "trig_src", "target": "consumer",
+         "sourceHandle": "tensor", "targetHandle": "tensor_a"},
+        {"id": "e_prod", "source": "producer", "target": "consumer",
+         "sourceHandle": "tensor", "targetHandle": "tensor_b"},
+        {"id": "e_sink", "source": "consumer", "target": "sink",
          "sourceHandle": "tensor", "targetHandle": "value"},
     ]
 
     results = asyncio.run(execute_graph(nodes, edges))
-    assert "kernel" in results, "Triggered producer Conv2dKernel must be executed"
-    assert "conv" in results, "Conv2dExplicit downstream must be executed"
+    assert "producer" in results, "a triggered producer must be executed"
+    assert "consumer" in results, "its downstream consumer must be executed"
     assert "sink" in results
 
 
@@ -327,8 +325,8 @@ def test_execute_graph_still_prunes_draft_pure_producer():
         _start_node(),
         {"id": "trig_src", "type": "_TestSource", "data": {"params": {"val": 1}}},
         # Draft producer: not wired to anything reachable.
-        {"id": "draft_producer", "type": "Conv2dKernel",
-         "data": {"params": {"preset": "EdgeDetection3x3"}}},
+        {"id": "draft_producer", "type": "TensorCreate",
+         "data": {"params": {"shape": "1,1,5,5", "fill": "zeros"}}},
     ]
     edges = [
         _trigger("et", "start", "trig_src"),

@@ -125,7 +125,7 @@ class ParamDefinition:
     # Conditional visibility, evaluated client-side. When set, the param
     # only renders in the config panel / node card if every key in this
     # dict matches the live value of the corresponding sibling param.
-    # Example: ``visible_when={"preset": "Custom"}`` on Conv2dKernel's
+    # Example: ``visible_when={"preset": "Custom"}`` on Conv2dExplicit's
     # ``weights`` param means the editor only shows when ``preset`` is
     # set to ``"Custom"``. None means always visible.
     #

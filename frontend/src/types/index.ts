@@ -24,7 +24,7 @@ export interface ParamDefinition {
   /**
    * Conditional visibility — the param renders only when every key in
    * this dict matches the live value of the corresponding sibling param.
-   * Example: ``{ preset: "Custom" }`` on Conv2dKernel's ``weights`` means
+   * Example: ``{ preset: "Custom" }`` on Conv2dExplicit's ``weights`` means
    * the editor only shows when ``preset === "Custom"``. ``null`` /
    * undefined means always visible.
    *
