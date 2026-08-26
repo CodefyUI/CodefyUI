@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ParamDefinition } from '../../types';
 import styles from './TensorGridEditor.module.css';
 
@@ -60,6 +60,13 @@ function fillFlat(shape: number[], flat: number[], offset = 0): [any, number] {
     cur = next;
   }
   return [out, cur];
+}
+
+/** How many numbers a (possibly nested) value holds, counted the way
+ *  ``reshapeValues`` flattens it. */
+function flatLength(value: any): number {
+  if (!Array.isArray(value)) return 1;
+  return value.reduce((n, v) => n + flatLength(v), 0);
 }
 
 function reshapeValues(value: any, shape: number[]): any {
@@ -162,6 +169,26 @@ export function TensorGridEditor({ param, value, onChange, displayLabel, sibling
     if (total > MAX_INLINE_NUMEL) return null;
     return reshapeValues(value ?? zerosOf(shape), shape);
   }, [value, shape, valueMode, total]);
+
+  // `normalized` reshapes for DISPLAY. Left at that, the panel and the stored
+  // param drift apart the moment the shape changes: raise Conv2dExplicit's
+  // kernel_size from 3 to 5 and a filled 5×5 grid appears over a param that
+  // still holds 9 numbers, until the run fails with "`weights` has 9 elements
+  // but kernel_size=5 expects 25" (#365). So commit the reshape — what the
+  // student sees is what the graph stores.
+  //
+  // Only on a cell-count change: a value that is already the right size is
+  // left exactly as it is, including its nesting, so opening a panel never
+  // rewrites a graph. The three ways this stays quiet matter as much as when
+  // it fires — a disabled grid is not the source of truth (TensorInput in
+  // random mode is about to have its values generated), and a null value is
+  // "not set", which is not the same as "explicitly zero".
+  useEffect(() => {
+    if (disabled || normalized === null) return;
+    if (value === null || value === undefined) return;
+    if (flatLength(value) === total) return;
+    onChange(param.name, normalized);
+  }, [disabled, normalized, value, total, onChange, param.name]);
 
   const grid = useMemo(
     () => (normalized ? drill2D(normalized, leading) : []),

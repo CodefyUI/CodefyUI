@@ -349,8 +349,11 @@ async def test_loss_and_dataloader_advertise_their_new_params(test_client):
 #: core#136's: the review found that this test was still hardcoded to the
 #: original four, so eleven new nodes and twenty-three new param keys were
 #: translated correctly and pinned by nothing -- the same gap the test was
-#: written for.
+#: written for. ``Conv2dExplicit`` is #367's: #362 gave it three new
+#: user-facing params in English on the node that C1-3 §C1.3.4.1 teaches
+#: from, so it was translated and moved up here out of the debt list below.
 TRANSLATED_NODES = (
+    "Conv2dExplicit",
     "Optimizer",
     "Loss",
     "DataLoader",
@@ -373,10 +376,11 @@ TRANSLATED_NODES = (
 #: older than core#136 -- listed rather than fixed because translating
 #: sixteen nodes is its own change. The point of the list is the ratchet in
 #: ``test_no_new_node_ships_without_a_zh_tw_entry``: this set may shrink,
-#: never grow. Delete a name from here when you translate it.
+#: never grow. Delete a name from here when you translate it. Two are gone
+#: already: ``Conv2dKernel`` with the node itself (#362), and
+#: ``Conv2dExplicit`` by being translated (#367) -- thirteen left.
 UNTRANSLATED_NODES = frozenset({
     "Argmax",
-    "Conv2dExplicit",
     "DatasetBatch",
     "DecisionBoundary",
     "DiffusionTrainingLoop",
