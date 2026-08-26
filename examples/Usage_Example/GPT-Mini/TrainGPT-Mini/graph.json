@@ -70,7 +70,7 @@
       },
       "data": {
         "params": {
-          "title": "GPT Language Modeling Loss",
+          "title": "Mini-GPT on MNIST — 10-class cross-entropy loss",
           "plot_type": "line"
         }
       }

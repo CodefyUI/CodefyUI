@@ -1,6 +1,6 @@
 {
   "name": "DQN with CNN Feature Extractor (Atari)",
-  "description": "Deep Q-Network with CNN backbone for Atari game playing - the landmark DeepMind architecture (2015) that demonstrated superhuman performance on Atari games. Conv layers extract visual features from stacked 84x84 frames, fed into a DQN head for action-value estimation. This example runs fully offline: a TensorCreate node supplies a synthetic batch of preprocessed observations (randn, shape 2x4x84x84) in place of a live Atari environment, so no gym/ale-py install is needed. Swap in an EnvWrapper to drive it from a real environment.",
+  "description": "Deep Q-Network with CNN backbone for Atari game playing - the landmark DeepMind architecture (2015) that demonstrated superhuman performance on Atari games. Conv layers extract visual features from stacked 84x84 frames, fed into a DQN head for action-value estimation. This example runs fully offline: a TensorCreate node supplies a synthetic batch of preprocessed observations (randn, shape 2x4x84x84) in place of a live Atari environment, so no gym/ale-py install is needed. Swap in an EnvWrapper to drive it from a real environment. The `seq-model` node off to the side is not part of the data path: it holds the same Conv/ReLU backbone the canvas builds node by node, packaged as one layer stack — double-click it to read the whole architecture in the layer editor. The optimizer is fed by `dqn-1.model`, the agent's own network, which is what gets trained.",
   "nodes": [
     {
       "id": "start-1",
@@ -293,13 +293,6 @@
       "target": "print-action",
       "sourceHandle": "action",
       "targetHandle": "value"
-    },
-    {
-      "id": "e-auto-12",
-      "source": "seq-model",
-      "target": "optimizer-1",
-      "sourceHandle": "model",
-      "targetHandle": "model"
     },
     {
       "id": "e-auto-14",

@@ -1,6 +1,6 @@
 {
   "name": "Inference CNN on MNIST",
-  "description": "Load a trained CNN model and classify a single handwritten digit. Run 'Train CNN on MNIST' once first - it saves model_weights.pt, which this graph loads. ImageReader reads test_digit.png (a real MNIST digit bundled under backend/data/images/), SequentialModel rebuilds the same architecture, ModelLoader restores the saved weights, and Inference runs the forward pass to produce a prediction.",
+  "description": "PREREQUISITE: run 'Train CNN on MNIST' once first — it writes model_weights.pt, which this graph loads. Trained weights are never shipped with an install, so on a fresh machine this graph fails at ModelLoader until that training run has happened. After that: ImageReader reads test_digit.png (a real MNIST digit bundled under backend/data/images/), SequentialModel rebuilds the same architecture, ModelLoader restores the saved weights, and Inference runs the forward pass to classify a single handwritten digit.",
   "nodes": [
     {
       "id": "start-1",

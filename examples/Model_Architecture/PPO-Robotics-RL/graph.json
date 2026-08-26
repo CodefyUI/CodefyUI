@@ -1,6 +1,6 @@
 {
   "name": "PPO Robotics Controller",
-  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment.",
+  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment. The `seq-model` node off to the side is not part of the data path: it holds the 376-256-256-17 policy stack as one layer spec — double-click it to read the whole architecture in the layer editor. The optimizer is fed by `ppo-1.model`, the agent's own network, which is what gets trained.",
   "nodes": [
     {
       "id": "start-1",
@@ -141,13 +141,6 @@
       "target": "print-action",
       "sourceHandle": "action",
       "targetHandle": "value"
-    },
-    {
-      "id": "e-auto-5",
-      "source": "seq-model",
-      "target": "optimizer-1",
-      "sourceHandle": "model",
-      "targetHandle": "model"
     },
     {
       "id": "e-auto-6",
