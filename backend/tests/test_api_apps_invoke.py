@@ -780,9 +780,28 @@ async def test_invoke_succeeds_after_queued_timeout(
 
 @pytest.mark.asyncio
 async def test_runs_list_metadata_only_newest_first(
-    test_client, app_db, api_key,
+    test_client, app_db, api_key, monkeypatch,
 ):
+    """Ordering, field set, and the limit/before cursor on distinct stamps.
+
+    The clock is stepped rather than left real. Two invokes this close
+    together often land in one ``created_at`` tick, and the `before` cursor
+    is keyed on ``created_at`` alone (``created_at < ?``) -- so on a tie the
+    cursor below excludes BOTH rows and this test fails with an empty list.
+    That is a real defect in the endpoint, tracked separately; it is not what
+    this test is about, and leaving it to chance made this file fail on CI at
+    random. Ordering under a genuine tie has its own test above
+    (``test_two_invokes_in_one_timestamp_tick_still_list_newest_first``).
+    """
     await _publish(test_client, SLUG, _echo_graph())
+
+    stamps = iter([
+        "2026-03-03T00:00:01.000000Z",
+        "2026-03-03T00:00:02.000000Z",
+    ])
+    monkeypatch.setattr("app.api.routes_apps.utc_now_iso",
+                        lambda: next(stamps))
+
     key_headers = _bearer(api_key["token"])
     first = await test_client.post(f"/api/apps/{SLUG}/invoke",
                                    json={"inputs": {"x": "one"}},
@@ -817,11 +836,28 @@ async def test_runs_list_metadata_only_newest_first(
 
 
 @pytest.mark.asyncio
-async def test_runs_list_tie_breaks_on_run_id_desc_when_created_at_equal(
+async def test_runs_list_tie_breaks_on_insertion_order_when_created_at_equal(
     test_client, app_db,
 ):
-    """Rows sharing one created_at timestamp must still sort deterministically
-    (run_id DESC tie-break) — the `before` cursor design is unaffected."""
+    """Rows sharing one created_at timestamp still come back newest first.
+
+    The tie-break used to be ``run_id DESC``, chosen for determinism alone.
+    It is deterministic, but ``run_id`` is a ``uuid4().hex`` -- so among rows
+    that share a timestamp the order was arbitrary with respect to when they
+    actually happened, and an endpoint whose whole contract is "newest first"
+    could hand back the older run first. Two invokes in quick succession land
+    in the same timestamp tick often enough that
+    ``test_runs_list_metadata_only_newest_first`` failed on CI over it (#370).
+
+    ``rowid`` rises with insertion, so it is both deterministic AND the real
+    answer to "which happened last" -- and it is what the same query in
+    ``run_store.py`` (lines 520, 695, 1174) already tie-breaks on. The
+    ``before`` cursor stays keyed on ``created_at`` alone, unchanged.
+
+    The ids below are deliberately NOT in lexicographic order: inserted
+    aaa, zzz, mmm, a run_id sort would answer zzz/mmm/aaa, and only an
+    insertion-order sort answers mmm/zzz/aaa.
+    """
     await _publish(test_client, SLUG, _echo_graph())
 
     def _app_id(conn: sqlite3.Connection) -> int:
@@ -845,7 +881,43 @@ async def test_runs_list_tie_breaks_on_run_id_desc_when_created_at_equal(
     resp = await test_client.get(f"/api/apps/{SLUG}/runs")
     assert resp.status_code == 200
     assert [r["run_id"] for r in resp.json()] == [
-        "run-zzz", "run-mmm", "run-aaa",
+        "run-mmm", "run-zzz", "run-aaa",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_two_invokes_in_one_timestamp_tick_still_list_newest_first(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """The flake in ``test_runs_list_metadata_only_newest_first``, made real.
+
+    That test invokes twice and asserts the newer run comes back first. On a
+    fast machine both rows land in the same ``created_at`` tick, and until
+    #370 the tie-break was ``run_id DESC`` over two uuid4 hexes -- a coin
+    flip, so CI failed it at random. Here the clock is frozen so the tie is
+    guaranteed rather than hoped for: if the ordering ever goes back to
+    something that is not insertion order, this fails every single time
+    instead of one run in N.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    monkeypatch.setattr(
+        "app.api.routes_apps.utc_now_iso",
+        lambda: "2026-02-02T00:00:00.000000Z",
+    )
+
+    key_headers = _bearer(api_key["token"])
+    first = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                   json={"inputs": {"x": "one"}},
+                                   headers=key_headers)
+    second = await test_client.post(f"/api/apps/{SLUG}/invoke",
+                                    json={"inputs": {"x": "two"}},
+                                    headers=key_headers)
+
+    rows = (await test_client.get(f"/api/apps/{SLUG}/runs")).json()
+    assert {r["created_at"] for r in rows} == {"2026-02-02T00:00:00.000000Z"}, (
+        "the freeze did not take -- the tie this test exists for never happened")
+    assert [r["run_id"] for r in rows] == [
+        second.json()["run_id"], first.json()["run_id"],
     ]
 
 

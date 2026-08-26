@@ -1018,10 +1018,16 @@ async def list_runs(
         if before is not None:
             sql += " AND created_at < ?"
             params.append(before)
-        # run_id DESC is a pure tie-breaker for rows sharing a created_at
-        # timestamp — determinism only, the `before` cursor stays keyed on
-        # created_at alone.
-        sql += " ORDER BY created_at DESC, run_id DESC LIMIT ?"
+        # rowid DESC is the tie-breaker for rows sharing a created_at
+        # timestamp. It was `run_id DESC`, which is deterministic but says
+        # nothing about when a run happened -- run_id is a uuid4().hex, so
+        # among rows in one timestamp tick the "newest first" list could put
+        # the older run first, and two invokes in quick succession share a
+        # tick often enough to fail this endpoint's own test on CI (#370).
+        # rowid rises with insertion, so it is deterministic AND actually
+        # newest-first; it is what run_store.py's equivalent queries already
+        # use. The `before` cursor stays keyed on created_at alone.
+        sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
