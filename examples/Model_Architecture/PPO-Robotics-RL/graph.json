@@ -1,6 +1,6 @@
 {
   "name": "PPO Robotics Controller",
-  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment.",
+  "description": "Proximal Policy Optimization for Robotics Control - PPO (OpenAI, 2017) is the default algorithm behind most modern RL deployments: OpenAI Five (Dota 2), ChatGPT RLHF fine-tuning, robotic manipulation, and autonomous driving. Uses a clipped surrogate objective for stable policy gradient updates with an Actor-Critic architecture. This example runs fully offline: a TensorCreate node supplies a synthetic batch of Humanoid-style observations (randn, shape 2x376) in place of a live MuJoCo environment, so no gym/mujoco install is needed. Swap in an EnvWrapper to drive it from a real environment. The `seq-model` node off to the side is not part of the data path: it holds the 376-256-256-17 policy stack as one layer spec — double-click it to read the whole architecture in the layer editor. The optimizer is fed by `ppo-1.model`, the agent's own network, which is what gets trained.",
   "nodes": [
     {
       "id": "start-1",
@@ -98,6 +98,19 @@
           "plot_type": "heatmap"
         }
       }
+    },
+    {
+      "id": "seq-model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 400,
+        "y": 300
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"n0\",\"type\":\"Linear\",\"params\":{\"in_features\":376,\"out_features\":256}},{\"id\":\"n1\",\"type\":\"ReLU\"},{\"id\":\"n2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":256}},{\"id\":\"n3\",\"type\":\"ReLU\"},{\"id\":\"n4\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":17}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"n0\"},{\"id\":\"e1\",\"source\":\"n0\",\"target\":\"n1\"},{\"id\":\"e2\",\"source\":\"n1\",\"target\":\"n2\"},{\"id\":\"e3\",\"source\":\"n2\",\"target\":\"n3\"},{\"id\":\"e4\",\"source\":\"n3\",\"target\":\"n4\"},{\"id\":\"e5\",\"source\":\"n4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
+        }
+      }
     }
   ],
   "edges": [
@@ -140,6 +153,13 @@
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "obs-1",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e-trigger-2",
+      "source": "start-1",
+      "target": "seq-model",
       "sourceHandle": "trigger",
       "type": "trigger"
     }
