@@ -1,6 +1,6 @@
 {
   "name": "Iris with sklearn KNN: same graph, production scale",
-  "description": "Identical pipeline shape to KNN-from-Scratch — CSV → ColumnSelector → Normalize → TrainTestSplit — but the classifier is the production KNN node (sklearn-backed) instead of EduKNN. Both nodes share the same input/output contract, so swapping is a one-edit change in the graph; the goal of the lesson is to show that the dual-track design lets you teach the math with EduKNN and ship with KNN. Distance-weighted voting + KD-tree internally means this same graph would still run at 100k+ rows.",
+  "description": "CSV → ColumnSelector → Normalize → TrainTestSplit → KNN: the production classifier (sklearn-backed), with distance-weighted voting and a KD-tree internally, so this same graph still runs at 100k+ rows. It is the second half of a dual-track pair — the teaching half is the `Edu-KNN` node, which computes every distance in the open where you can read it. Both share the same input/output contract, so swapping one for the other is a one-edit change to this graph. `Edu-KNN` and the matching `KNN-from-Scratch` example ship in the `foundations` chapter pack (`cdui plugin install foundations`), not in the base install.",
   "nodes": [
     { "id": "start-1",   "type": "Start",          "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "csv",       "type": "CSVReader",      "position": { "x": -40,  "y": 0 }, "data": { "params": { "path": "data/samples/iris.csv", "target_column": "species", "include_columns": "", "skip_header": true } } },

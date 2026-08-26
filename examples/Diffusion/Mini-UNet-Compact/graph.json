@@ -1,6 +1,6 @@
 {
   "name": "Mini U-Net (Compact): the same architecture in one node",
-  "description": "Counterpart to `Mini-UNet-Expanded`: instead of wiring every ResBlock + Upsample + Concat by hand, the entire U-Net is packaged into a single `DiffusionUNet` meta-node. Same teaching architecture, same hyperparameters, just collapsed into one block — the form you'd actually use when assembling a sampling pipeline. Run it: GaussianNoise feeds the model + DDPMSampler at one step to confirm the output shape is preserved.",
+  "description": "The whole U-Net packaged into a single `DiffusionUNet` meta-node, rather than every ResBlock + Upsample + Concat wired by hand — the form you'd actually use when assembling a sampling pipeline. Run it: GaussianNoise feeds the model + DDPMSampler at one step to confirm the output shape is preserved. If you want to see the same architecture opened up node by node, the `Mini-UNet-Expanded` counterpart ships in the `deep` chapter pack (`cdui plugin install deep`), not in the base install.",
   "nodes": [
     { "id": "start-1",  "type": "Start", "position": { "x": -260, "y": 0 }, "data": { "params": {} } },
     { "id": "noise",    "type": "GaussianNoise", "position": { "x": 0,    "y": 60 }, "data": { "params": { "shape": "1,3,16,16", "mean": 0, "std": 1, "seed": 42 } } },
