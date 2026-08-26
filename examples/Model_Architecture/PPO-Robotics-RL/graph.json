@@ -98,19 +98,6 @@
           "plot_type": "heatmap"
         }
       }
-    },
-    {
-      "id": "seq-model",
-      "type": "SequentialModel",
-      "position": {
-        "x": 400,
-        "y": 300
-      },
-      "data": {
-        "params": {
-          "layers": "{\"version\":2,\"nodes\":[{\"id\":\"in\",\"type\":\"Input\",\"ports\":[{\"id\":\"p_x\",\"name\":\"x\"}]},{\"id\":\"n0\",\"type\":\"Linear\",\"params\":{\"in_features\":376,\"out_features\":256}},{\"id\":\"n1\",\"type\":\"ReLU\"},{\"id\":\"n2\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":256}},{\"id\":\"n3\",\"type\":\"ReLU\"},{\"id\":\"n4\",\"type\":\"Linear\",\"params\":{\"in_features\":256,\"out_features\":17}},{\"id\":\"out\",\"type\":\"Output\",\"ports\":[{\"id\":\"p_y\",\"name\":\"y\"}]}],\"edges\":[{\"id\":\"e0\",\"source\":\"in\",\"sourceHandle\":\"p_x\",\"target\":\"n0\"},{\"id\":\"e1\",\"source\":\"n0\",\"target\":\"n1\"},{\"id\":\"e2\",\"source\":\"n1\",\"target\":\"n2\"},{\"id\":\"e3\",\"source\":\"n2\",\"target\":\"n3\"},{\"id\":\"e4\",\"source\":\"n3\",\"target\":\"n4\"},{\"id\":\"e5\",\"source\":\"n4\",\"target\":\"out\",\"targetHandle\":\"p_y\"}]}"
-        }
-      }
     }
   ],
   "edges": [
@@ -143,13 +130,6 @@
       "targetHandle": "value"
     },
     {
-      "id": "e-auto-5",
-      "source": "seq-model",
-      "target": "optimizer-1",
-      "sourceHandle": "model",
-      "targetHandle": "model"
-    },
-    {
       "id": "e-auto-6",
       "source": "ppo-1",
       "target": "visualize-actions",
@@ -160,13 +140,6 @@
       "id": "e-trigger-1",
       "source": "start-1",
       "target": "obs-1",
-      "sourceHandle": "trigger",
-      "type": "trigger"
-    },
-    {
-      "id": "e-trigger-2",
-      "source": "start-1",
-      "target": "seq-model",
       "sourceHandle": "trigger",
       "type": "trigger"
     }
