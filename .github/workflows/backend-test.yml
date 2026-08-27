@@ -25,6 +25,12 @@ on:
       - 'plugins/**'
       - 'scripts/**'
       - 'frontend/src/plugins/contract.ts'
+      # The zh-TW node catalog is a BACKEND test fixture: test_api_nodes.py's
+      # translation ratchet and test_causal_lm_model_node.py both read
+      # frontend/src/i18n/nodeLocales/zh-TW.ts off disk. Editing it with no
+      # backend file touched would otherwise skip the very checks that guard
+      # it. (Same class of gap as examples/** in frontend-build.yml.)
+      - 'frontend/src/i18n/**'
       - 'ruff.toml'
       - '.github/workflows/backend-test.yml'
   workflow_dispatch:

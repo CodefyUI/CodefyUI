@@ -445,27 +445,56 @@ async def test_queue_position_counts_from_the_front(service):
     assert service.queue_position("nope") is None
 
 
+async def _two_run_at_once_third_queues(service, store, probe, *,
+                                        device: str, labels: list[str]):
+    """Assert a cap of two admits two AT ONCE and queues the third.
+
+    "At once" is the part worth being careful about. Sizing a sleep and then
+    reading ``probe.peak`` asks whether the two runs happened to overlap on
+    the wall clock, and on a loaded CI runner the first can finish before the
+    second even reaches ``enter`` -- peak stays 1 and the test fails having
+    found no defect at all (#370; observed on main and on two PR branches).
+
+    So both runs are held open on gates instead. ``wait_entered`` returns
+    only once a run is provably inside its slot, so by the time the second
+    returns, two are demonstrably in flight and the peak is a fact rather
+    than a race. This is what ``_Probe.hold`` was built for in #187.
+    """
+    release_a = probe.hold(labels[0])
+    release_b = probe.hold(labels[1])
+    try:
+        results = [await _submit(service, label, device=device)
+                   for label in labels]
+        assert [r.status for r in results] == [STATUS_RUNNING, STATUS_RUNNING,
+                                               STATUS_QUEUED]
+        # Both provably occupying a slot at the same moment.
+        await probe.wait_entered(labels[0])
+        await probe.wait_entered(labels[1])
+        assert probe.peak[device] == 2
+    finally:
+        release_a.set()
+        release_b.set()
+
+    for result in results:
+        await _await_terminal(store, result.run_id)
+    # The third only ever ran after a slot came free, so the cap held for
+    # the whole test, not just at the moment it was sampled above.
+    assert probe.peak[device] == 2
+
+
 async def test_cpu_admits_two_at_once_and_queues_the_third(service, store,
                                                            probe):
     """The cap is per key, and ``cpu``'s is two — contention, not death."""
-    results = [await _submit(service, f"cpu-{i}", seconds=0.25)
-               for i in range(3)]
-    assert [r.status for r in results] == [STATUS_RUNNING, STATUS_RUNNING,
-                                           STATUS_QUEUED]
-    for result in results:
-        await _await_terminal(store, result.run_id)
-    assert probe.peak["cpu"] == 2
+    await _two_run_at_once_third_queues(
+        service, store, probe, device="cpu",
+        labels=["cpu-0", "cpu-1", "cpu-2"])
 
 
 async def test_an_override_raises_one_devices_cap(make_service, store, probe):
     service = make_service(gpu=1, overrides=(("cuda:0", 2),))
-    results = [await _submit(service, f"gpu-{i}", device="cuda:0",
-                             seconds=0.2) for i in range(3)]
-    assert [r.status for r in results] == [STATUS_RUNNING, STATUS_RUNNING,
-                                           STATUS_QUEUED]
-    for result in results:
-        await _await_terminal(store, result.run_id)
-    assert probe.peak["cuda:0"] == 2
+    await _two_run_at_once_third_queues(
+        service, store, probe, device="cuda:0",
+        labels=["gpu-0", "gpu-1", "gpu-2"])
 
 
 async def test_a_freed_slot_promotes_the_next_run(service, store, probe):
