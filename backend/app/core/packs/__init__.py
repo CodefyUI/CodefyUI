@@ -20,6 +20,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Re-exported so a caller catching an install failure never has to know which
+# module inside the package raised it. ``errors`` is stdlib-only, so this
+# keeps the promise above: importing this package still touches neither the
+# filesystem nor the import machinery.
+from .errors import (
+    PackCancelled,
+    PackInstallError,
+    PackInsufficientDisk,
+    PackNeedsRestart,
+)
+
+__all__ = [
+    "PackCancelled",
+    "PackInstallError",
+    "PackInsufficientDisk",
+    "PackMissingError",
+    "PackNeedsRestart",
+    "asset_path",
+    "model_dir",
+    "pack_available",
+    "parse_requirement",
+    "require_pack",
+]
+
 
 class PackMissingError(RuntimeError):
     """A node needs an optional pack that is not installed.
