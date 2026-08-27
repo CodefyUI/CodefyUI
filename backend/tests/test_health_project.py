@@ -24,7 +24,8 @@ from app.api import routes_graph  # for the shared settings object
 
 #: Every top-level key `/api/health` returns outside project mode. `project`
 #: is the one conditional key and is asserted separately below.
-_BASE_KEYS = {"status", "version", "nodes_loaded", "presets_loaded", "caches"}
+_BASE_KEYS = {"status", "version", "boot_id", "nodes_loaded",
+              "presets_loaded", "caches"}
 
 
 async def test_health_project_key_absent_when_unset(test_client, monkeypatch):

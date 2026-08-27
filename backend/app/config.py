@@ -155,6 +155,18 @@ class Settings(BaseSettings):
     # env vars demand JSON-in-env quote hell; split in init_allowed_hosts.
     EXTRA_ALLOWED_HOSTS: str = ""
 
+    # ── Package Center (optional packs) ────────────────────────────────
+    # Let a request from another machine start a pack install. OFF by
+    # default, and the default is the whole point: an install runs a package
+    # manager against the interpreter serving the request, so "whoever can
+    # reach the port" is the wrong audience for it. With HOST on loopback
+    # (the shipped default) the question never arises — the gate only binds
+    # when the server was deliberately put on 0.0.0.0 or a LAN address.
+    # A classroom or lab server that serves the LAN on purpose opts back in
+    # with CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1; it changes nothing else,
+    # since every mutating pack route already needs the session token.
+    ALLOW_REMOTE_PACK_INSTALL: bool = False
+
     # ── Port statistics (#129) ─────────────────────────────────────────
     # GET /api/execution/outputs/{run}/{node}/{port}/stats summarises a
     # captured value instead of shipping it. Above this element count the
