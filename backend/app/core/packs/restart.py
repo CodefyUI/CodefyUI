@@ -195,7 +195,18 @@ def install_command_for(pack: Pack, variant: str | None = None) -> str:
     The GPU pack is not installed by ``cdui packs`` at all -- it is a wheel
     swap the installer owns -- so it gets ``cdui install --gpu <variant>``,
     defaulting to whatever this machine should have.
+
+    *variant* is checked against :data:`VARIANTS` even though every caller
+    today validates it first. This function's whole output is a line the user
+    is invited to paste into a shell, so an unchecked value would be text of
+    somebody else's choosing wearing a command's clothes -- and the day a CLI
+    flag or a restart record reaches here unvalidated, this refuses instead of
+    printing it.
     """
+    if variant is not None and variant not in VARIANTS:
+        raise ValueError(
+            f"unknown torch variant {variant!r}; expected one of "
+            f"{', '.join(VARIANTS)}")
     if pack.pack_id == _GPU_TORCH_PACK_ID:
         chosen = variant or gpu_info()["recommended_variant"]
         return f"cdui install --gpu {chosen}"

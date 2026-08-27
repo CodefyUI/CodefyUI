@@ -39,7 +39,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import settings
 from ..core.packs import catalog, flows, restart, state
@@ -84,6 +84,23 @@ class InstallRequest(BaseModel):
     mode: Literal["live", "restart"] | None = None
     #: Only meaningful for the GPU pack: which torch wheel to install.
     variant: str | None = None
+
+    @field_validator("variant")
+    @classmethod
+    def _known_variant(cls, value: str | None) -> str | None:
+        """Refuse a wheel name that is not one of ours.
+
+        This value comes back to the user as part of a command line to paste
+        into a shell (``cdui install --gpu <variant>``), and a later release
+        hands it to the installer. Neither is a place for a free-form string
+        from a request body, so the allowlist is enforced by the SCHEMA --
+        anything else is a 422 before a line of route code runs.
+        """
+        if value is not None and value not in restart.VARIANTS:
+            raise ValueError(
+                f"unknown torch variant {value!r}; expected one of "
+                f"{', '.join(restart.VARIANTS)}")
+        return value
 
 
 def remote_install_allowed() -> bool:
@@ -153,6 +170,22 @@ def _pack_status(pack: Pack, probed: PackState, active: PackJob | None) -> str:
     return "partial" if progressed else "not_installed"
 
 
+def _install_command(pack: Pack, gpu: dict) -> str:
+    """The terminal command shown next to one pack.
+
+    A restart-mode pack is a wheel swap the installer owns rather than
+    something ``cdui packs install`` can do, so its command names a torch
+    variant -- and that variant is already in the ``gpu`` block this request
+    computed. Reading it from there keeps ``list_packs`` to exactly ONE GPU
+    probe, which is what lets that probe be moved off the event loop:
+    calling ``restart.install_command_for`` for the GPU pack would run a
+    second one right here, on the loop thread.
+    """
+    if pack.install_mode == "restart":
+        return gpu["install_command"]
+    return restart.install_command_for(pack)
+
+
 def _item_payload(item: ModelItem, probed: ItemState,
                   active: PackJob | None) -> dict:
     # Both `repo_id` and `url` are always present, one of them null: the
@@ -168,7 +201,8 @@ def _item_payload(item: ModelItem, probed: ItemState,
     }
 
 
-def _pack_payload(pack: Pack, probed: PackState, active: PackJob | None) -> dict:
+def _pack_payload(pack: Pack, probed: PackState, active: PackJob | None,
+                  gpu: dict) -> dict:
     mine = active if active is not None and active.pack_id == pack.pack_id else None
     items = [
         _item_payload(item, item_probe, mine)
@@ -193,7 +227,7 @@ def _pack_payload(pack: Pack, probed: PackState, active: PackJob | None) -> dict
             item.approx_bytes
             for item, item_probe in zip(pack.items, probed.items)
             if not item_probe.present),
-        "install_command": restart.install_command_for(pack),
+        "install_command": _install_command(pack, gpu),
     }
 
 
@@ -205,21 +239,27 @@ async def list_packs(request: Request) -> dict:
     caches until something changes it, and the GPU facts are detected once
     per process (see ``restart.gpu_info``), so polling this while a download
     runs costs a dict walk.
+
+    That first detection, though, is a ``shutil.which`` and an ``nvidia-smi``
+    subprocess with a five second timeout, so it goes to a thread. On the
+    loop it would stall every other request -- including the install long
+    poll -- for as long as a wedged driver takes to answer.
     """
     service = _service(request)
     active = _active_job(service)
     probed = state.probe_all()
     launch_mode = os.environ.get("CODEFYUI_MANAGED")
+    gpu = await asyncio.to_thread(restart.gpu_info)
 
     return {
-        "packs": [_pack_payload(pack, probed[pack.pack_id], active)
+        "packs": [_pack_payload(pack, probed[pack.pack_id], active, gpu)
                   for pack in catalog.iter_packs()],
         "active_job": (None if active is None
                        else {"job_id": active.job_id, "pack_id": active.pack_id}),
         "last_restart_job": restart.read_last_restart(),
         "remote_install_allowed": remote_install_allowed(),
         "launch_mode": launch_mode if launch_mode in _LAUNCH_MODES else "unknown",
-        "gpu": restart.gpu_info(),
+        "gpu": gpu,
     }
 
 

@@ -258,13 +258,20 @@ class PackService:
             for. Checked HERE rather than in the job so the client is told
             by the response to its own request -- a 507 it can act on,
             instead of a job that starts, appears in the panel, and fails.
-        :raises KeyError: an item id this pack does not have.
+        :raises ValueError: an item id this pack does not have.
         """
         running = self._job
         if running is not None and not running.terminal:
             raise PackBusy(running.job_id)
 
-        if mode == "restart" and not restart.restart_available():
+        # The pack's OWN mode decides as much as the request does. A pack
+        # marked restart-mode is one whose install replaces something this
+        # process has already imported, and running it live does not fail --
+        # it succeeds having changed nothing, and the panel then reports a
+        # GPU PyTorch install that never happened. So a restart-mode pack is
+        # refused whatever the client asked for.
+        if ((mode == "restart" or pack.install_mode == "restart")
+                and not restart.restart_available()):
             # PR 5 replaces this branch with the real restart handshake.
             raise RestartUnavailable(
                 f"{pack.title} cannot be installed from inside the running "
@@ -301,13 +308,23 @@ class PackService:
 
         ``None`` means "the whole pack, minus what is already downloaded":
         a learner adding a second embedding model must not re-fetch the
-        first. An unknown id raises ``KeyError`` -- a caller mistake, and the
-        route turns it into a 400 before anything is started.
+        first. An unknown id raises ``ValueError`` -- the same type, and the
+        same message, ``flows._resolve_items`` raises for it, so a caller
+        that handles one handles the other. The route turns it into a 400
+        before anything is started.
         """
         if item_ids is None:
             return [item for item in pack.items
                     if not state.item_state(pack, item).present]
-        return [get_item(pack, item_id) for item_id in item_ids]
+
+        items: list[ModelItem] = []
+        for item_id in item_ids:
+            try:
+                items.append(get_item(pack, item_id))
+            except KeyError as exc:
+                raise ValueError(
+                    f"pack {pack.pack_id!r} has no item {item_id!r}") from exc
+        return items
 
     # ── running ───────────────────────────────────────────────────────────
 
@@ -340,6 +357,17 @@ class PackService:
             # just a quoted key and says nothing about what broke.
             log.exception("pack install job %s raised", job.job_id)
             self._fail(job, repr(exc), None)
+        except BaseException as exc:
+            # KeyboardInterrupt, SystemExit, CancelledError. The job is over
+            # either way, and a job left saying "running" forever is worse
+            # than one that says why it stopped -- the panel would offer a
+            # Stop button for a thread that no longer exists, and no submit
+            # would ever be accepted again. Record, then let it travel: these
+            # are not ours to swallow.
+            log.warning("pack install job %s ended on %s", job.job_id,
+                        type(exc).__name__)
+            self._fail(job, repr(exc), None)
+            raise
         else:
             self._finish(job, STATUS_DONE, {"type": "job_done"})
         finally:

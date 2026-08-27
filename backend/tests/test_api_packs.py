@@ -22,6 +22,7 @@ No test here installs anything: each one injects a scripted flow into a
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -372,6 +373,40 @@ async def test_restart_mode_refused_with_command_409(client):
     assert live.json()["command"] == f"cdui packs install {SENTENCE}"
 
 
+async def test_gpu_torch_install_without_mode_is_refused_with_command_409(
+        client, flow):
+    """The PACK's mode decides, not the client's.
+
+    gpu-torch has no pip specs, no probe modules and no items, so a live
+    install of it would run every step successfully and change nothing -- and
+    the panel would report that the GPU PyTorch install had finished.
+    """
+    response = await client.post("/api/packs/gpu-torch/install", json={})
+    assert response.status_code == 409
+    assert response.json()["command"].startswith("cdui install --gpu ")
+    assert not flow.started.is_set(), "no job may have been started"
+    assert (await client.get("/api/packs")).json()["active_job"] is None
+
+
+async def test_install_rejects_an_unknown_variant_422(client):
+    """``variant`` comes back as a command line to paste into a shell."""
+    for bogus in ("; rm -rf /", "cu999", "", "cpu ; whoami"):
+        response = await client.post(
+            "/api/packs/gpu-torch/install",
+            json={"mode": "restart", "variant": bogus})
+        assert response.status_code == 422, bogus
+
+
+async def test_install_command_for_refuses_an_unknown_variant():
+    from app.core.packs.catalog import get_pack
+
+    with pytest.raises(ValueError, match="unknown torch variant"):
+        restart.install_command_for(get_pack("gpu-torch"), "; rm -rf /")
+    # A known one is still fine, and a pack that ignores the variant too.
+    assert restart.install_command_for(
+        get_pack("gpu-torch"), "cu128") == "cdui install --gpu cu128"
+
+
 async def test_install_emits_job_started_then_flow_events_then_job_done(
         client, flow):
     flow.script(
@@ -583,6 +618,35 @@ async def test_health_has_boot_id_stable_within_process(test_client):
     assert isinstance(BOOT_ID, str) and len(BOOT_ID) == 32
 
 
+async def test_gpu_info_runs_off_the_event_loop_thread(client, monkeypatch):
+    """``detect_gpu`` shells out with a five second timeout.
+
+    On the loop that stalls every other request -- including the install long
+    poll -- for as long as a wedged driver takes to answer, so the whole GPU
+    probe belongs in a thread.
+    """
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _probe() -> dict:
+        seen.append(threading.get_ident())
+        return {"detected_label": None, "recommended_variant": "cpu",
+                "installed_variant": None, "variants": list(restart.VARIANTS),
+                "install_command": "cdui install --gpu cpu"}
+
+    monkeypatch.setattr(restart, "gpu_info", _probe)
+    response = await client.get("/api/packs")
+
+    assert response.status_code == 200
+    assert response.json()["gpu"]["install_command"] == "cdui install --gpu cpu"
+    assert seen, "the route never asked for the GPU facts"
+    assert all(ident != loop_thread for ident in seen), (
+        "restart.gpu_info ran on the event-loop thread")
+    # Exactly one probe per request: the GPU pack's install_command is read
+    # from the block above, not computed with a second call.
+    assert len(seen) == 1
+
+
 async def test_gpu_info_never_raises_and_mirrors_dev_py():
     import dev  # scripts/dev.py -- conftest puts scripts/ on sys.path
 
@@ -600,6 +664,35 @@ async def test_gpu_info_never_raises_and_mirrors_dev_py():
     assert info["variants"] == list(restart.VARIANTS)
     assert info["install_command"] == (
         f"cdui install --gpu {info['recommended_variant']}")
+
+
+async def test_detect_gpu_matches_dev_py_on_this_machine():
+    import dev
+
+    # Both run the real probe on this box; the label and the recommended
+    # wheel have to be the same answer or the panel and the CLI disagree in
+    # front of the user.
+    assert restart.detect_gpu() == dev.detect_gpu()
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+async def test_detect_gpu_matches_dev_py_with_no_gpu(monkeypatch, system):
+    import dev
+
+    # ``platform`` and ``shutil`` are the same module objects in both, so one
+    # patch covers the mirror and the original -- which is the point.
+    monkeypatch.setattr(restart.platform, "system", lambda: system)
+    monkeypatch.setattr(restart.shutil, "which", lambda name: None)
+    assert restart.detect_gpu() == dev.detect_gpu() == ("CPU only", "cpu")
+
+
+async def test_detect_gpu_matches_dev_py_on_apple_silicon(monkeypatch):
+    import dev
+
+    monkeypatch.setattr(restart.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(restart.platform, "machine", lambda: "arm64")
+    assert restart.detect_gpu() == dev.detect_gpu() == (
+        "Apple Silicon (MPS)", "mps")
 
 
 async def test_gpu_info_falls_back_when_detection_explodes(monkeypatch):

@@ -151,6 +151,22 @@ def test_error_types_are_reachable_from_the_package(installer):
     assert not issubclass(PackCancelled, PackInstallError)
 
 
+def test_a_restart_mode_pack_is_not_installable_live(installer):
+    """gpu-torch has no pip specs, no probe modules and no items, so every
+    step below would be a no-op and the install would report SUCCESS having
+    changed nothing at all. A caller that gets here has a bug, which is why
+    it is a ValueError rather than one of the install errors."""
+    with pytest.raises(ValueError, match="restart mode"):
+        _install("gpu-torch", None, installer)
+
+    assert installer.events == []
+    assert installer.disk_checked == []
+    assert installer.downloaded == []
+    # And it refused BEFORE touching anything -- no probe cache was dropped,
+    # because nothing on this machine changed.
+    assert installer.invalidated == 0
+
+
 # -- the happy path --------------------------------------------------------
 
 

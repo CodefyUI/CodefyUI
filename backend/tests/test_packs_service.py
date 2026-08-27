@@ -430,6 +430,35 @@ async def test_an_unexpected_exception_is_reported_as_a_failure():
     assert events[-1]["hint"] is None
 
 
+class _Abort(BaseException):
+    """A BaseException that is NOT KeyboardInterrupt or SystemExit.
+
+    Those two are special-cased by ``asyncio.Task.__step``, which re-raises
+    them into the event loop itself -- a test using one would tear down the
+    loop rather than exercise the bookkeeping.
+    """
+
+
+async def test_a_base_exception_still_records_a_terminal_state():
+    flow = ScriptedFlow()
+    flow.fail(_Abort("interrupted"))
+    service = PackService(run_flow=flow)
+    job = await service.submit_install(get_pack(SENTENCE), [],
+                                       mode="live", variant=None)
+    events, status = await drain(service, job.job_id)
+
+    # A job stuck on "running" forever would leave the panel offering Stop
+    # for a thread that no longer exists, and no submit would be accepted
+    # again for the life of the process.
+    assert status == "failed"
+    assert events[-1]["type"] == "job_failed"
+    assert "_Abort" in events[-1]["message"]
+    assert job.finished_at is not None
+    # And it was re-raised rather than swallowed. Retrieving it here is also
+    # what keeps "exception was never retrieved" out of the test output.
+    assert isinstance(service._task.exception(), _Abort)
+
+
 async def test_the_probe_cache_is_dropped_when_a_job_ends(monkeypatch):
     calls = []
     monkeypatch.setattr(state, "invalidate", lambda: calls.append(1))
@@ -469,6 +498,29 @@ async def test_restart_mode_is_refused_with_the_cli_command():
         await service.submit_install(get_pack("gpu-torch"), [],
                                      mode="restart", variant="cu128")
     assert excinfo.value.command == "cdui install --gpu cu128"
+    assert service.current_job() is None
+
+
+async def test_a_restart_mode_pack_is_refused_even_when_asked_for_live():
+    """The pack's mode decides. gpu-torch has no pip specs, no probe modules
+    and no items, so a live install of it would report success having done
+    nothing at all."""
+    flow = ScriptedFlow()
+    service = PackService(run_flow=flow)
+    with pytest.raises(RestartUnavailable) as excinfo:
+        await service.submit_install(get_pack("gpu-torch"), None,
+                                     mode="live", variant=None)
+    assert excinfo.value.command.startswith("cdui install --gpu ")
+    assert service.current_job() is None
+    assert not flow.started.is_set()
+
+
+async def test_an_unknown_item_id_is_a_value_error():
+    """The same type, and the same message, ``flows._resolve_items`` uses."""
+    service = PackService(run_flow=ScriptedFlow())
+    with pytest.raises(ValueError, match="has no item"):
+        await service.submit_install(get_pack(SENTENCE), ["not-a-model"],
+                                     mode="live", variant=None)
     assert service.current_job() is None
 
 

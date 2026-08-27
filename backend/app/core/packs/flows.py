@@ -285,7 +285,21 @@ def install_pack_live(
     :class:`PackCancelled` when *cancel_check* goes true, and one of the
     :mod:`.errors` types when something fails -- see the module docstring for
     which failure means what.
+
+    A restart-mode pack is a ``ValueError``, not an install. That kind of pack
+    replaces something the calling process has already imported, so there is
+    no version of "live" that works -- and the failure mode without this guard
+    is the quiet one: ``gpu-torch`` has no pip specs, no probe modules and no
+    items, so every step below is a no-op and the install reports SUCCESS
+    having changed nothing at all. A caller that reaches here with one has a
+    bug, not a runtime problem, which is why it is a ValueError rather than a
+    :class:`PackInstallError`.
     """
+    if pack.install_mode == "restart":
+        raise ValueError(
+            f"pack {pack.pack_id!r} installs in restart mode; "
+            f"install_pack_live cannot install it")
+
     items = _resolve_items(pack, item_ids)
     pip_installed = False
     done: list[str] = []
