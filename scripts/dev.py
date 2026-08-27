@@ -83,6 +83,17 @@
                     python scripts/dev.py plugin uninstall deep  # 從 lockfile 移除
                                                                 # （sync 之後不會再裝回）
 
+    packs <subcmd> ...
+                套件中心（Package Center）的終端機介面：安裝選用的模型與套件。
+                只能安裝 catalog 內建清單裡的項目，不接受 pip spec 或網址。
+                    cdui packs list                      # 列出所有套件與狀態
+                    cdui packs status                    # 加上 torch 版本與建議指令
+                    cdui packs install sentence-embeddings --yes
+                    cdui packs install sentence-embeddings --items all-MiniLM-L6-v2
+                    cdui packs remove word-vectors glove-50d
+                離開碼：0 成功、1 失敗、2 拒絕執行（id 錯誤、相依未裝、無法確認）、
+                3 需要重啟伺服器（會印出該執行的指令）、130 Ctrl+C 取消。
+
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
     CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
@@ -1680,6 +1691,11 @@ def start() -> None:
     # automatically (app.core.auth.init_allowed_hosts).
     os.environ["CODEFYUI_HOST"] = host
     os.environ["CODEFYUI_PORT"] = str(port)
+    # Only this launcher knows the server it is about to start is one it
+    # supervises. The Package Center reads this back as `launch_mode` to tell
+    # a server that could be restarted for the user from a bare
+    # `uvicorn app.main:app`, which nothing here can bring back up.
+    os.environ["CODEFYUI_MANAGED"] = "start"
     uvicorn = _require_venv_tool("uvicorn")
     # Extras go last so `app.main:app` keeps its position — the process
     # matchers in `cdui stop` key on it. --ws-max-size is passed explicitly
@@ -2176,6 +2192,10 @@ def dev() -> None:
     if project is not None:
         _activate_project(project)
 
+    # `--reload` restarts the worker on every edit, so a pack install that
+    # needs a restart is a different proposition here than under `cdui start`
+    # — the panel tells the two apart by this marker (see start()).
+    os.environ["CODEFYUI_MANAGED"] = "dev"
     uvicorn = _require_venv_tool("uvicorn")
     # Same WS ceiling as `cdui start` — a limit that only holds in production
     # is a limit developers discover from a bug report (core#274).
@@ -3070,6 +3090,47 @@ def _dispatch_project_subcommand() -> int:
     return project_cli.main(sys.argv[2:])
 
 
+def _dispatch_packs_subcommand() -> int:
+    """Hand off `cdui packs <subcmd> ...` to scripts/packs.py.
+
+    Same venv hop as the other subgroups, and it is load-bearing here:
+    packs.py reads `app.core.packs` for the catalog and drives
+    `flows.install_pack_live`, so the interpreter has to be the venv's before
+    the import — an outer Python has no `app` to find.
+
+    `backend/` joins `scripts/` on sys.path because that is where `app` lives
+    when the backend is not installed as a package (a half-finished install is
+    exactly the machine somebody reaches for the Package Center on).
+    """
+    _exec_into_venv_if_available()
+    _ensure_uv()
+    _apply_dev_env()
+    for path in (Path(__file__).resolve().parent, BACKEND_DIR):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import packs as packs_cli  # noqa: PLC0415 — late import: needs venv
+    return packs_cli.main(sys.argv[2:])
+
+
+#: `cdui <group> <subcmd> ...` — commands that hand their tail to a sibling
+#: script rather than to a function in this module. A table rather than a
+#: chain of `if`s in `__main__`, because `__main__` is not importable: the
+#: routing is what a test can reach, and a subcommand that is registered
+#: nowhere is one nobody discovers until they type it.
+SUBCOMMAND_GROUPS = {
+    "plugin": _dispatch_plugin_subcommand,
+    "project": _dispatch_project_subcommand,
+    "packs": _dispatch_packs_subcommand,
+}
+
+
+def _subcommand_group(argv: list):
+    """The sub-group dispatcher *argv* selects, or None when it selects none."""
+    if len(argv) >= 2 and argv[1] in SUBCOMMAND_GROUPS:
+        return SUBCOMMAND_GROUPS[argv[1]]
+    return None
+
+
 if __name__ == "__main__":
     # Before anything else, including the uv bootstrap: `--version` has to
     # answer on a broken or half-installed machine, because that is exactly
@@ -3079,11 +3140,9 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # Long-form sub-grouped commands come first.
-    if len(sys.argv) >= 2 and sys.argv[1] == "plugin":
-        sys.exit(_dispatch_plugin_subcommand())
-
-    if len(sys.argv) >= 2 and sys.argv[1] == "project":
-        sys.exit(_dispatch_project_subcommand())
+    _group = _subcommand_group(sys.argv)
+    if _group is not None:
+        sys.exit(_group())
 
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(__doc__)

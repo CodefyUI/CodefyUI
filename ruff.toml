@@ -2,9 +2,9 @@
 #
 # Lives at the repo root rather than in `backend/pyproject.toml` because the
 # Python here is not only the backend package: `scripts/` holds the CLI
-# (`dev.py`, `plugins.py`, `project.py`), and `plugins/` and `examples/` hold
-# node code that ships to users. `backend-test.yml` already treats all four as
-# one blast radius; the linter covers the same ground.
+# (`dev.py`, `plugins.py`, `project.py`, `packs.py`), and `plugins/` and
+# `examples/` hold node code that ships to users. `backend-test.yml` already
+# treats all four as one blast radius; the linter covers the same ground.
 #
 # Frontend linting (eslint / biome) is deliberately NOT started here. It is a
 # larger argument -- it drags in a formatting decision, and a formatter that
