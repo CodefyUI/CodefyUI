@@ -241,6 +241,14 @@ def test_path_helpers_do_not_create_directories(user_data_dir):
     for path in (hf_cache_dir(), sentinel_dir(), control_dir(), job_log_dir()):
         assert not path.exists(), f"{path} was created just by asking for it"
 
+    # The one exception, pinned rather than quietly omitted: ``asset_dir()``
+    # IS the cache root, and ``asset_cache.cache_dir()`` mkdirs it as it
+    # answers. The day that helper goes lazy this fails, which is the
+    # signal to move ``asset_dir()`` up into the loop -- the guarantee
+    # above would then hold for every path in this module.
+    assert asset_dir().exists(), (
+        "asset_cache.cache_dir() no longer creates the cache root")
+
 
 def test_paths_never_touch_hf_home(user_data_dir, monkeypatch):
     """``HF_HOME`` is the whole machine's Hugging Face cache. CodefyUI keeps

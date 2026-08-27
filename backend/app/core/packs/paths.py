@@ -13,9 +13,19 @@ Both come from the existing helpers rather than from a fresh
 a dev clone out of the OS-wide cache -- keeps working without this module
 knowing the variable exists.
 
-These functions only COMPUTE paths. Creating the directory is the caller's
-job (``mkdir(parents=True, exist_ok=True)``), so merely asking where
-something would go never leaves an empty directory behind.
+These functions only COMPUTE paths -- creating the directory is the caller's
+job (``mkdir(parents=True, exist_ok=True)``) -- with one exception, and it
+is inherited rather than chosen. ``asset_cache.cache_dir()`` mkdirs the
+cache ROOT as it answers, so the four helpers that go through it
+(``hf_cache_dir``, ``asset_dir``, ``sentinel_dir``, ``sentinel_path``) do
+leave an empty cache directory behind on a machine that has never installed
+a pack.
+
+Nothing BELOW that root is created here, and nothing under the user data
+root is either: a status or disk-report route can compute every path it
+needs and still find the pack tree empty.
+``test_path_helpers_do_not_create_directories`` pins both halves, so the
+day ``cache_dir()`` goes lazy the test says the guarantee widened.
 
 Nothing here reads or sets ``HF_HOME``: that variable is the whole
 machine's Hugging Face cache, shared with every other tool the user runs,
@@ -36,7 +46,11 @@ def hf_cache_dir() -> Path:
 
 
 def asset_dir() -> Path:
-    """Root for single-file assets (the GloVe table and friends)."""
+    """Root for single-file assets (the GloVe table and friends).
+
+    This IS the cache root, so unlike every other helper here, calling it
+    creates the directory (see ``asset_cache.cache_dir``).
+    """
     return cache_dir()
 
 
