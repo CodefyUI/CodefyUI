@@ -133,27 +133,43 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
     emit({"type": "step_done", "step": "pip"})
 
 
-def _download_step(pack: Pack, item: ModelItem, *, emit, cancel_check) -> None:
+def _download_step(pack: Pack, item: ModelItem, *, emit, cancel_check) -> Path:
+    """Fetch one item; returns where its bytes landed.
+
+    The path is the step's real output, not a detail: the GloVe convert step
+    that follows needs the FILE that was just downloaded, and asking the
+    sentinel for it again would be a second answer to a question this call
+    already answered.
+    """
     step = f"download:{item.item_id}"
     emit({"type": "step_started", "step": step,
           "label": f"Downloading {item.item_id}"})
     if item.kind == "hf":
-        download.download_hf_item(pack, item, emit=emit,
-                                  cancel_check=cancel_check)
+        landed = download.download_hf_item(pack, item, emit=emit,
+                                           cancel_check=cancel_check)
     else:
-        download.download_asset_item(pack, item, emit=emit,
-                                     cancel_check=cancel_check)
+        landed = download.download_asset_item(pack, item, emit=emit,
+                                              cancel_check=cancel_check)
     emit({"type": "step_done", "step": step})
+    return landed
 
 
-def _convert_glove_step(*, emit) -> None:
-    """Turn the downloaded GloVe gzip into the form the node loads.
+def _convert_glove_step(gz_path: Path, *, emit) -> None:
+    """Turn the downloaded GloVe gzip into the ``.npz`` the node loads.
+
+    ``ensure_npz(gz_path, progress=...)`` converts *gz_path* into
+    ``glove-50d.npz`` beside it, once, and returns that path. Unpacking 400k
+    word vectors is slow enough to need its own bar, so its ``progress``
+    callback is forwarded as ordinary ``progress`` events for ``glove-50d``
+    -- the UI already knows how to draw those, and to a learner this is the
+    same wait as the download that came before it.
 
     The converter arrives in a later PR. Until then the download is still
     worth having -- so a missing converter is a log line and a finished step,
     not a failed install that throws away 66 MB somebody just waited for.
     """
-    emit({"type": "step_started", "step": "convert:glove-50d",
+    item_id = _GLOVE[1]
+    emit({"type": "step_started", "step": f"convert:{item_id}",
           "label": "Preparing GloVe vectors"})
     try:
         from ...nodes.llm._glove import ensure_npz
@@ -162,8 +178,14 @@ def _convert_glove_step(*, emit) -> None:
             "GloVe conversion is not available in this build; the downloaded "
             "table is kept and will be converted on first use")})
     else:
-        ensure_npz()
-    emit({"type": "step_done", "step": "convert:glove-50d"})
+        def _forward(payload: dict) -> None:
+            # Stamped LAST, so whatever the converter reports, what leaves
+            # here is a progress frame for THIS item and nothing else.
+            emit({**payload, "type": "progress", "item": item_id})
+
+        npz_path = ensure_npz(gz_path, progress=_forward)
+        emit({"type": "log", "line": f"GloVe vectors ready at {npz_path}"})
+    emit({"type": "step_done", "step": f"convert:{item_id}"})
 
 
 def verify_imports(pack: Pack, *, emit) -> None:
@@ -224,15 +246,17 @@ def install_pack_live(
             _run_pip_step(pack, emit=emit, cancel_check=cancel_check)
             pip_installed = True
 
+        landed: dict[str, Path] = {}
         for item in items:
             if cancel_check():
                 raise PackCancelled(f"install of {pack.pack_id} cancelled")
-            _download_step(pack, item, emit=emit, cancel_check=cancel_check)
+            landed[item.item_id] = _download_step(
+                pack, item, emit=emit, cancel_check=cancel_check)
             done.append(item.item_id)
 
         glove_pack_id, glove_item_id = _GLOVE
         if pack.pack_id == glove_pack_id and glove_item_id in done:
-            _convert_glove_step(emit=emit)
+            _convert_glove_step(landed[glove_item_id], emit=emit)
 
         verify_imports(pack, emit=emit)
     finally:

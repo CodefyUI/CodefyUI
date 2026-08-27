@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,63 @@ def test_asset_pack_downloads_then_converts(installer):
     assert outcome.items_done == ("glove-50d",)
     # No packages to probe, so no verify step to run.
     assert installer.probes == []
+
+
+def test_glove_convert_step_hands_the_converter_the_downloaded_file(
+        installer, monkeypatch):
+    """``ensure_npz`` is given the gz that just landed -- not a path guessed
+    from the catalog -- and the bar it reports through is the learner's:
+    unpacking 400k word vectors is its own wait, and forwarding the frames as
+    ``glove-50d`` progress means the UI needs to know nothing new to draw it.
+    """
+    seen: dict = {}
+
+    def _ensure_npz(gz_path, progress=None):
+        seen["gz_path"] = gz_path
+        seen["progress"] = progress
+        progress({"bytes_done": 40, "bytes_total": 100, "percent": 40.0})
+        return Path(gz_path).with_name("glove-50d.npz")
+
+    module = types.ModuleType("app.nodes.llm._glove")
+    module.ensure_npz = _ensure_npz
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", module)
+
+    _install("word-vectors", None, installer)
+
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert seen["gz_path"] == asset_dir() / item.filename
+    assert seen["gz_path"].is_file(), "the converter was handed a path with no file"
+    assert callable(seen["progress"])
+
+    forwarded = [event for event in installer.events
+                 if event["type"] == "progress"]
+    assert forwarded == [{"type": "progress", "item": "glove-50d",
+                          "bytes_done": 40, "bytes_total": 100,
+                          "percent": 40.0}]
+    logs = [event["line"] for event in installer.events
+            if event["type"] == "log"]
+    assert any("glove-50d.npz" in line for line in logs), logs
+    assert "step_done convert:glove-50d" in installer.steps
+
+
+def test_glove_progress_cannot_be_reported_against_another_item(
+        installer, monkeypatch):
+    """The converter's frames are stamped by the flow, not trusted from it:
+    a payload naming a different item would move the wrong bar."""
+    def _ensure_npz(gz_path, progress=None):
+        progress({"type": "log", "item": "all-MiniLM-L6-v2", "bytes_done": 1})
+        return Path(gz_path).with_name("glove-50d.npz")
+
+    module = types.ModuleType("app.nodes.llm._glove")
+    module.ensure_npz = _ensure_npz
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", module)
+
+    _install("word-vectors", None, installer)
+
+    forwarded = [event for event in installer.events
+                 if event.get("bytes_done") == 1]
+    assert forwarded == [{"type": "progress", "item": "glove-50d",
+                          "bytes_done": 1}]
 
 
 def test_missing_converter_is_a_log_line_not_a_failed_install(installer):
