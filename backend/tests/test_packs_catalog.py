@@ -181,10 +181,30 @@ def test_validate_rejects_dependency_cycle():
                                      url="https://x/f.gz"),)),),
                  id="asset-without-filename"),
     pytest.param((_pack(items=(_item("dup"), _item("dup"))),), id="duplicate-item-id"),
+    pytest.param((_pack("a", items=(_item("m"),)),
+                  _pack("b", items=(_item("n"),))),
+                 id="repo-id-shared-by-two-packs"),
+    pytest.param((_pack("a", items=(_item("m"), _item("n"))),),
+                 id="repo-id-shared-inside-one-pack"),
 ])
 def test_validate_rejects_malformed_packs(packs):
     with pytest.raises(ValueError):
         _validate(packs)
+
+
+def test_repo_ids_are_unique_across_the_whole_catalog():
+    """Two items may not name the same Hugging Face repo.
+
+    Removing an item deletes the repo FOLDER, which is where the bytes
+    actually are -- one directory shared by every revision of one repo. If
+    two items pointed at the same repo, uninstalling one model would delete
+    the other pack's model out from under it, and the other pack would go on
+    reporting itself installed because its sentinel is still there.
+    """
+    repo_ids = [item.repo_id for pack in CATALOG for item in pack.items
+                if item.kind == "hf"]
+
+    assert len(repo_ids) == len(set(repo_ids)), sorted(repo_ids)
 
 
 def test_pack_missing_error_names_the_pack_in_its_message():

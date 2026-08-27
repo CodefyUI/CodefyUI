@@ -90,10 +90,16 @@ class _ByteMeter:
     makes Stop work inside a single multi-hundred-megabyte file: they are
     called from the transfer's own thread, so raising here unwinds the
     download instead of waiting for it to finish.
+
+    ``begin_file`` sets a CEILING, and the ceiling is not decoration: several
+    progress bars can be alive for one file at once (huggingface_hub's Xet
+    path builds one for reconstruction and one for network transfer), and
+    they report the same bytes twice. Whatever they claim, a 400-byte file
+    contributes 400 bytes.
     """
 
     __slots__ = ("_emit", "_item_id", "_cancel_check", "_min_interval",
-                 "_last", "total", "done")
+                 "_last", "_ceiling", "_initial_seen", "total", "done")
 
     def __init__(
         self,
@@ -116,8 +122,33 @@ class _ByteMeter:
         self._cancel_check = cancel_check
         self._min_interval = max(0.0, float(min_interval_s))
         self._last: float | None = None
+        self._ceiling: int | None = None
+        self._initial_seen = False
         self.total = total if total else None
         self.done = 0
+
+    def begin_file(self, base: int, size: int | None) -> None:
+        """Start accounting for one file of *size* bytes, *base* already done.
+
+        With a known size this caps what the file may contribute; with an
+        unknown one (the hub does not always report a size) there is no cap,
+        because a ceiling of zero would freeze the bar instead of bounding it.
+        """
+        self._ceiling = base + size if size else None
+        self._initial_seen = False
+
+    def note_initial(self, initial: int) -> None:
+        """Credit bytes a RESUMED transfer already had on disk.
+
+        tqdm is told about them once, as ``initial=``, and never ``update``s
+        them -- so a download that resumes at 300 MB would otherwise report
+        300 MB less than it has. Applied once per file: huggingface_hub
+        rebuilds the bar on a retry with the same ``initial``.
+        """
+        if self._initial_seen or initial <= 0:
+            return
+        self._initial_seen = True
+        self.add(initial)
 
     def _payload(self) -> dict:
         percent = None
@@ -144,9 +175,17 @@ class _ByteMeter:
         self._emit(self._payload())
 
     def add(self, n: int) -> None:
-        """Account for *n* more bytes (what a tqdm ``update`` reports)."""
+        """Account for *n* more bytes (what a tqdm ``update`` reports).
+
+        *n* may be NEGATIVE: huggingface_hub rolls a bar back by
+        ``-resume_size`` when a server ignores a Range request and sends the
+        file from the start, and treating that as zero would count the
+        resumed part twice.
+        """
         self._check_cancelled()
-        self.done += max(0, int(n or 0))
+        self.done = max(0, self.done + int(n or 0))
+        if self._ceiling is not None:
+            self.done = min(self.done, self._ceiling)
         self._emit_throttled()
 
     def advance_to(self, value: int) -> None:
@@ -156,6 +195,10 @@ class _ByteMeter:
         than a delta, and a Hugging Face file that was already cached reports
         nothing at all -- without this the bar would stop at the last byte
         that happened to move over the network.
+
+        Not subject to the per-file ceiling: this is THIS module telling the
+        meter what it knows, where ``add`` is a progress bar telling it what
+        it claims.
         """
         self._check_cancelled()
         self.done = max(self.done, int(value))
@@ -172,6 +215,15 @@ def make_tqdm_class(meter: _ByteMeter) -> type:
     ``disable=True`` is forced in the constructor: huggingface_hub only
     injects its own ``disable`` for subclasses of ITS tqdm, and a bar left
     enabled would write escape sequences into a server log.
+
+    ``update_transfer`` and ``set_transfer_postfix_str`` exist to be FOUND.
+    ``XetDownloadProgressReporter`` asks the class it is handed whether it
+    can ``update_transfer``; a class that cannot gets TWO bars -- one for
+    reconstruction, one for network transfer -- both built from it and both
+    updated, which for one shared meter is every byte counted twice and a
+    bar that runs to 200%. Answering yes keeps it to a single bar, and the
+    network figure it then routes here is dropped: those are the same bytes
+    the reconstruction bar has already reported.
     """
     from tqdm.auto import tqdm as _tqdm
 
@@ -185,12 +237,24 @@ def make_tqdm_class(meter: _ByteMeter) -> type:
             # confusing bug report.
             kwargs.pop("name", None)
             super().__init__(*args, **kwargs)
+            # huggingface_hub always passes ``initial`` by keyword.
+            meter.note_initial(int(kwargs.get("initial") or 0))
 
         def update(self, n=1):
             # Before ``super()``: a disabled tqdm returns early without
             # touching ``n``, so this is the only place the bytes exist.
             meter.add(n or 0)
             return super().update(n)
+
+        def update_transfer(self, n=1, *args, **kwargs):
+            """Network bytes for the Xet path. Counted by ``update``
+            already, so this only has to EXIST -- see the class docstring."""
+            return None
+
+        def set_transfer_postfix_str(self, *args, **kwargs):
+            """The postfix that goes with ``update_transfer``. Nothing is
+            drawn, but the reporter calls it whenever it calls that."""
+            return None
 
     return _MeterTqdm
 
@@ -276,6 +340,8 @@ def download_hf_item(
     for path, size in files:
         if cancel_check():
             raise PackCancelled(f"download of {item.item_id} cancelled")
+        # Everything the bars for THIS file report is capped at its size.
+        meter.begin_file(accounted, size)
         returned = hf_hub_download(
             repo_id=item.repo_id,
             filename=path,

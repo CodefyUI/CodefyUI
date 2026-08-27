@@ -30,11 +30,30 @@ from app.core.packs import runner
 from app.core.packs.errors import PackCancelled
 
 
+class _FakePipe:
+    """A stdout pipe that can be iterated and, like a real one, CLOSED."""
+
+    def __init__(self, lines: list[str]):
+        self._lines = iter(lines)
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        if self.closed:
+            raise StopIteration
+        return next(self._lines)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeProc:
     """A finished (or never-finishing) ``uv`` process, without the process."""
 
     def __init__(self, lines: list[str], *, returncode: int | None = 0):
-        self.stdout = iter(lines)
+        self.stdout = _FakePipe(lines)
         self._returncode = returncode
         self.pid = 4242
         self.terminated = False
@@ -182,17 +201,59 @@ def test_run_pip_env_sanitised(monkeypatch):
 
 
 def test_run_pip_cancel_terminates_the_process_tree_on_windows(monkeypatch):
-    """Windows: kill the whole tree, because uv's children hold the download."""
+    """Windows: kill the whole tree, because uv's children hold the download.
+
+    And kill it the way everything else here starts a process: with a
+    deadline, so a wedged ``taskkill`` cannot hold the caller's thread
+    forever, and with no console window of its own.
+    """
     monkeypatch.setattr(sys, "platform", "win32")
-    killed: list[list[str]] = []
+    killed: list[tuple] = []
     monkeypatch.setattr(subprocess, "run",
-                        lambda argv, **kwargs: killed.append(argv))
+                        lambda argv, **kwargs: killed.append((argv, kwargs)))
     proc = _FakeProc([], returncode=None)
 
     with pytest.raises(PackCancelled):
         _run(proc, monkeypatch, cancel=True)
 
-    assert killed == [["taskkill", "/F", "/T", "/PID", "4242"]]
+    argv, kwargs = killed[0]
+    assert argv == ["taskkill", "/F", "/T", "/PID", "4242"]
+    assert kwargs["timeout"] == runner.KILL_TIMEOUT_S
+    assert kwargs["creationflags"] & runner.CREATE_NO_WINDOW
+
+
+def test_run_pip_survives_a_taskkill_that_hangs(monkeypatch):
+    """A kill that never returns must not become a job that never ends."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def _hangs(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=10)
+
+    monkeypatch.setattr(subprocess, "run", _hangs)
+
+    with pytest.raises(PackCancelled):
+        _run(_FakeProc([], returncode=None), monkeypatch, cancel=True)
+
+
+def test_run_pip_closes_the_pipe_when_cancelled(monkeypatch):
+    """The reader is a daemon and ``join`` has a timeout, so it can outlive
+    the call. Closing the pipe ends its read -- otherwise a thread nobody is
+    waiting for goes on emitting log lines into a cancelled job."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    proc = _FakeProc(["still going\n"], returncode=None)
+
+    with pytest.raises(PackCancelled):
+        _run(proc, monkeypatch, cancel=True)
+
+    assert proc.stdout.closed
+
+
+def test_run_pip_closes_the_pipe_after_a_normal_exit(monkeypatch):
+    proc = _FakeProc(["Installed 3 packages\n"])
+
+    _run(proc, monkeypatch)
+
+    assert proc.stdout.closed
 
 
 def test_run_pip_cancel_terminates_then_kills_on_posix(monkeypatch):
@@ -225,16 +286,28 @@ def test_run_pip_uv_missing_returns_127(monkeypatch):
 
 @pytest.mark.parametrize("line", [
     "  x No solution found when resolving dependencies:",
+    "  \u00d7 No solution found when resolving dependencies:",
     "Because torch==2.11.0+cu128 depends on ...",
+    "  \u2570\u2500\u25b6 Because torch==2.11.0+cu128 depends on ...",
     "constraint torch==2.11.0 is not satisfiable",
 ])
 def test_resolver_conflict_is_recognised(line):
-    """uv's three ways of saying "your pins and this pack disagree"."""
+    """uv's ways of saying "your pins and this pack disagree", each of them
+    first on the line behind whatever gutter that version draws."""
     assert runner.looks_like_resolver_conflict(["Resolved 0 packages", line])
 
 
-def test_ordinary_failure_is_not_a_resolver_conflict():
-    """A network failure must not be reported as a version conflict."""
-    assert not runner.looks_like_resolver_conflict(
-        ["error: Failed to fetch: https://pypi.org/simple/demo/",
-         "  Caused by: Connection reset by peer"])
+@pytest.mark.parametrize("lines", [
+    pytest.param(["error: Failed to fetch: https://pypi.org/simple/demo/",
+                  "  Caused by: Connection reset by peer"], id="network"),
+    pytest.param(["error: Failed to build `sentencepiece==0.2.0`",
+                  "  The build backend returned an error because the "
+                  "compiler crashed"], id="because-mid-sentence"),
+    pytest.param(["error: the wheel violates a constraint of this platform"],
+                 id="constraint-mid-sentence"),
+])
+def test_ordinary_failure_is_not_a_resolver_conflict(lines):
+    """A failure that merely CONTAINS one of the words is not a version
+    conflict, and must not tell the user to restart the server: the words
+    are anchored to the start of the line, where uv puts them."""
+    assert not runner.looks_like_resolver_conflict(lines)

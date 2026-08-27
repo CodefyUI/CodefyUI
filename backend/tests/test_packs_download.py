@@ -295,6 +295,172 @@ def test_meter_raises_when_cancelled_mid_file():
         meter.add(1)
 
 
+# -- the Xet path (two bars, one meter) ------------------------------------
+
+
+def _xet_build_bars(tqdm_class, *, total: int, desc: str):
+    """Build bars the way ``XetDownloadProgressReporter.__init__`` does.
+
+    Mirrors huggingface_hub 1.29's ``_xet_progress_reporting.py``: when the
+    class it was handed can ``update_transfer`` it keeps ONE bar and routes
+    the network figure through it; when it cannot, it builds a second bar
+    from the same class and updates both. Returns
+    ``(reconstruction, transfer, aggregated)``.
+    """
+    aggregated = callable(getattr(tqdm_class, "update_transfer", None))
+    reconstruction = tqdm_class(desc=desc, total=total, unit="B",
+                                unit_scale=True, position=1, leave=True,
+                                bar_format="{l_bar}{bar}| {n_fmt:>5}B")
+    if aggregated:
+        return reconstruction, reconstruction, True
+    transfer = tqdm_class(desc="Downloading bytes", total=total, unit="B",
+                          unit_scale=True, position=0, leave=True,
+                          bar_format="{desc}: {bar}| {n_fmt:>5}B")
+    return reconstruction, transfer, False
+
+
+def _xet_update(bars, *, written: int, transferred: int) -> None:
+    """One ``XetDownloadProgressReporter.update_progress`` call."""
+    reconstruction, transfer, aggregated = bars
+    if written > 0:
+        reconstruction.update(written)
+        reconstruction.set_postfix_str("1MB/s", refresh=False)
+    if transferred > 0 and transfer is not None:
+        if aggregated:
+            reconstruction.update_transfer(transferred)
+            reconstruction.set_transfer_postfix_str("1MB/s", refresh=False)
+        else:
+            transfer.update(transferred)
+            transfer.set_postfix_str("1MB/s", refresh=False)
+
+
+def test_tqdm_class_flips_hf_xet_to_one_aggregated_bar():
+    """huggingface_hub decides how many bars to build by asking the class we
+    hand it whether it can ``update_transfer``. Without that method it builds
+    TWO bars from our class -- a reconstruction bar and a transfer bar -- and
+    updates both, and since both feed one meter the download reports twice
+    the bytes it moved and the bar runs to 200%.
+
+    Answering yes is what keeps it to one bar, and the network figure it then
+    routes through ``update_transfer`` must NOT be counted: those are the
+    same bytes the reconstruction bar already reported.
+    """
+    events: list[dict] = []
+    meter = download._ByteMeter(emit=events.append, item_id="m", total=1000,
+                                min_interval_s=0.0)
+    bar_class = download.make_tqdm_class(meter)
+
+    assert callable(getattr(bar_class, "update_transfer", None))
+    assert callable(getattr(bar_class, "set_transfer_postfix_str", None))
+
+    bars = _xet_build_bars(bar_class, total=1000, desc="model.safetensors")
+    assert bars[2] is True, "hf would still build a second bar from our class"
+
+    _xet_update(bars, written=400, transferred=400)
+    _xet_update(bars, written=600, transferred=600)
+
+    assert meter.done == 1000
+    assert _progress(events)[-1]["percent"] == 100.0
+
+
+def test_download_hf_item_does_not_double_count_two_xet_bars(
+        fake_api, monkeypatch):
+    """Belt and braces: even if a future hub builds two bars from our class
+    anyway, one file cannot report more than its own size."""
+    import huggingface_hub
+
+    monkeypatch.setattr(download, "PROGRESS_MIN_INTERVAL_S", 0.0)
+    pack = get_pack("sentence-embeddings")
+    item = get_item(pack, "all-MiniLM-L6-v2")
+    fake_api(("config.json", 400), ("model.safetensors", 600))
+
+    def _two_bars(*, repo_id, filename, cache_dir=None, tqdm_class=None,
+                  **kwargs):
+        target = _snapshot_file(cache_dir, repo_id, filename)
+        target.write_bytes(b"z")
+        size = {"config.json": 400, "model.safetensors": 600}[filename]
+        # The pre-fix shape: two independent bars, both fed.
+        reconstruction = tqdm_class(desc=filename, total=size, unit="B")
+        transfer = tqdm_class(desc="Downloading bytes", total=size, unit="B")
+        for bar in (reconstruction, transfer):
+            bar.update(size // 2)
+            bar.update(size - size // 2)
+        return str(target)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _two_bars)
+    events: list[dict] = []
+
+    download.download_hf_item(pack, item, emit=events.append,
+                              cancel_check=lambda: False)
+
+    frames = _progress(events)
+    assert all(frame["percent"] <= 100.0 for frame in frames), frames
+    assert all(frame["bytes_done"] <= 1000 for frame in frames), frames
+    assert frames[-1]["bytes_done"] == frames[-1]["bytes_total"] == 1000
+
+
+def test_meter_takes_back_a_rolled_back_delta():
+    """huggingface_hub rolls a bar back by ``-resume_size`` when the server
+    ignores a Range request and restarts the file. A meter that treated that
+    as zero would keep the bytes twice."""
+    events: list[dict] = []
+    meter = download._ByteMeter(emit=events.append, item_id="m", total=1000,
+                                min_interval_s=0.0)
+
+    meter.add(300)
+    meter.add(-300)
+    assert meter.done == 0
+
+    # And it never goes below zero, whatever it is told.
+    meter.add(-500)
+    assert meter.done == 0
+    assert _progress(events)[-1]["percent"] == 0.0
+
+
+def test_tqdm_initial_credits_a_resumed_transfer():
+    """A resumed file starts its bar at ``initial=<bytes already on disk>``
+    and only ``update``s the rest. Ignoring it under-reports the whole
+    download by however much had already been fetched."""
+    events: list[dict] = []
+    meter = download._ByteMeter(emit=events.append, item_id="m", total=1000,
+                                min_interval_s=0.0)
+    meter.begin_file(0, 1000)
+    bar_class = download.make_tqdm_class(meter)
+
+    bar_class(total=1000, initial=300, desc="model.safetensors", unit="B")
+    assert meter.done == 300
+
+    # A second bar for the SAME file (hf's retry path) must not re-credit it.
+    bar_class(total=1000, initial=300, desc="model.safetensors", unit="B")
+    assert meter.done == 300
+
+
+def test_meter_clamps_one_file_to_its_own_size():
+    """The ceiling is per file: whatever a bar claims, a 400-byte file cannot
+    contribute more than 400 bytes to the total."""
+    meter = download._ByteMeter(emit=lambda event: None, item_id="m",
+                                total=1000, min_interval_s=0.0)
+
+    meter.begin_file(0, 400)
+    meter.add(4000)
+    assert meter.done == 400
+
+    meter.begin_file(400, 600)
+    meter.add(6000)
+    assert meter.done == 1000
+
+
+def test_meter_without_a_known_size_is_not_clamped():
+    """An unknown file size means no ceiling, not a ceiling of zero."""
+    meter = download._ByteMeter(emit=lambda event: None, item_id="m",
+                                total=None, min_interval_s=0.0)
+
+    meter.begin_file(0, 0)
+    meter.add(4000)
+
+    assert meter.done == 4000
+
+
 # -- Hugging Face items ----------------------------------------------------
 
 

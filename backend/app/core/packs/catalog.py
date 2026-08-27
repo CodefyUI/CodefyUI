@@ -183,6 +183,23 @@ def _validate(packs: Sequence[Pack]) -> None:
             raise ValueError(f"duplicate pack id: {pack.pack_id!r}")
         by_id[pack.pack_id] = pack
 
+    # Across the WHOLE catalog, not per pack. Uninstalling a Hugging Face
+    # item deletes the repo folder -- the one directory where that repo's
+    # bytes live, shared by all of its revisions -- so two items naming one
+    # repo would make removing either of them delete the other's model,
+    # while the other's sentinel went on claiming it was there.
+    repo_owner: dict[str, str] = {}
+    for pack in packs:
+        for item in pack.items:
+            if item.kind != "hf" or not item.repo_id:
+                continue
+            owner = repo_owner.get(item.repo_id)
+            if owner is not None:
+                raise ValueError(
+                    f"repo_id {item.repo_id!r} is used by item "
+                    f"{item.item_id!r} in pack {pack.pack_id!r} and by {owner}")
+            repo_owner[item.repo_id] = f"{pack.pack_id}/{item.item_id}"
+
     for pack in packs:
         if pack.install_mode not in INSTALL_MODES:
             raise ValueError(

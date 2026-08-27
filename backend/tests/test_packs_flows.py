@@ -31,13 +31,18 @@ from pathlib import Path
 import pytest
 
 from app.core.packs import download, flows, runner, state
-from app.core.packs.catalog import get_item, get_pack
+from app.core.packs.catalog import ModelItem, Pack, get_item, get_pack
 from app.core.packs.errors import (
     PackCancelled,
     PackInstallError,
     PackNeedsRestart,
 )
-from app.core.packs.paths import asset_dir, hf_cache_dir, sentinel_path
+from app.core.packs.paths import (
+    asset_dir,
+    hf_cache_dir,
+    sentinel_dir,
+    sentinel_path,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +63,7 @@ class _Installer:
         self.downloaded: list[str] = []
         self.disk_checked: list[list[str]] = []
         self.probes: list[list[str]] = []
+        self.probe_kwargs: list[dict] = []
         self.invalidated = 0
         self.pip_returncode = 0
         self.pip_output: list[str] = []
@@ -108,6 +114,7 @@ def installer(monkeypatch, tmp_path):
 
     def _subprocess_run(argv, **kwargs):
         fake.probes.append(list(argv))
+        fake.probe_kwargs.append(kwargs)
         return subprocess.CompletedProcess(argv, fake.probe_returncode,
                                            stdout="", stderr="boom")
 
@@ -302,7 +309,30 @@ def test_glove_progress_cannot_be_reported_against_another_item(
     forwarded = [event for event in installer.events
                  if event.get("bytes_done") == 1]
     assert forwarded == [{"type": "progress", "item": "glove-50d",
-                          "bytes_done": 1}]
+                          "bytes_done": 1, "bytes_total": None,
+                          "percent": None}]
+
+
+def test_converter_whose_own_dependency_is_missing_fails_the_install(
+        installer, monkeypatch):
+    """"The converter is not in this build" and "the converter is broken"
+    are both ImportErrors and mean opposite things. Only the first may be
+    shrugged off; the second has to be reported, or a GloVe pack that can
+    never convert reports itself installed."""
+    module = types.ModuleType("app.nodes.llm._glove")
+
+    def _module_getattr(name):
+        raise ImportError("No module named 'numpy'", name="numpy")
+
+    module.__getattr__ = _module_getattr
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", module)
+
+    with pytest.raises(ImportError, match="numpy"):
+        _install("word-vectors", None, installer)
+
+    logs = [event["line"] for event in installer.events
+            if event["type"] == "log"]
+    assert not any("not available in this build" in line for line in logs), logs
 
 
 def test_missing_converter_is_a_log_line_not_a_failed_install(installer):
@@ -364,6 +394,14 @@ def test_verify_step_runs_import_probe(installer, monkeypatch):
 
     assert installer.probes == [
         [sys.executable, "-c", "import sentence_transformers, transformers"]]
+
+    kwargs = installer.probe_kwargs[0]
+    assert "PYTHONPATH" not in kwargs["env"], (
+        "a dev shell's PYTHONPATH would put this repo inside the probe")
+    assert kwargs["env"]["PYTHONUTF8"] == "1"
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["creationflags"] == runner.creation_flags()
+    assert "shell" not in kwargs
 
 
 def test_failed_import_probe_fails_the_install(installer, monkeypatch):
@@ -438,44 +476,95 @@ def test_disk_check_runs_before_anything_is_installed(installer, monkeypatch):
 # -- removal ---------------------------------------------------------------
 
 
-def test_remove_item_deletes_the_snapshot_and_the_sentinel(installer):
-    """Uninstalling one model frees its bytes and stops claiming it is there."""
-    pack = get_pack("sentence-embeddings")
-    _install("sentence-embeddings", ["all-MiniLM-L6-v2"], installer)
-    item = get_item(pack, "all-MiniLM-L6-v2")
-    snapshot = hf_cache_dir() / item.item_id
+def _hf_repo_layout(repo_id: str):
+    """The directory huggingface_hub really builds for one repo.
+
+    The BLOBS hold the bytes; the snapshot holds links (or, on a filesystem
+    without them, copies) into that folder. Deleting only the snapshot frees
+    little or nothing, which is the whole reason removal targets the repo
+    folder.
+    """
+    folder = hf_cache_dir() / ("models--" + repo_id.replace("/", "--"))
+    blob = folder / "blobs" / "deadbeef"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"x" * 512)
+    snapshot = folder / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    return folder, snapshot
+
+
+def _hf_sentinel_for(pack, item, snapshot_dir) -> None:
     state.write_sentinel(pack.pack_id, item.item_id, {
         "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
         "kind": "hf", "repo_id": item.repo_id, "revision": item.revision,
-        "snapshot_dir": str(snapshot), "bytes": 1, "at": "2026-08-28T00:00:00Z",
+        "snapshot_dir": str(snapshot_dir), "bytes": 1,
+        "at": "2026-08-28T00:00:00Z",
     })
-    assert snapshot.is_dir()
+
+
+def _asset_sentinel_for(pack, item, path) -> None:
+    state.write_sentinel(pack.pack_id, item.item_id, {
+        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
+        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
+    })
+
+
+def test_remove_item_deletes_the_whole_repo_folder(installer):
+    """Uninstalling one model has to free its BYTES.
+
+    They are in ``models--org--name/blobs``; the snapshot directory holds
+    links into it. Deleting the snapshot alone would report 90 MB freed and
+    free none of it, and the model would be re-listed as removed while the
+    disk stayed exactly as full.
+    """
+    pack = get_pack("sentence-embeddings")
+    item = get_item(pack, "all-MiniLM-L6-v2")
+    folder, snapshot = _hf_repo_layout(item.repo_id)
+    _hf_sentinel_for(pack, item, snapshot)
 
     assert flows.remove_item(pack, item.item_id) is True
 
-    assert not snapshot.exists()
+    assert not folder.exists(), "the blobs were left behind"
     assert not sentinel_path(pack.pack_id, item.item_id).exists()
+    assert hf_cache_dir().exists(), "the cache root went with it"
 
 
-def test_remove_item_refuses_paths_outside_cache(installer, tmp_path):
-    """A sentinel is a file on disk. One naming ``C:/Windows`` -- corrupted,
-    hand-edited, or restored from another machine -- must not turn "remove
-    this model" into "delete that directory"."""
+def test_remove_item_ignores_the_snapshot_path_a_sentinel_names(
+        installer, tmp_path):
+    """A sentinel is a file on disk, and a corrupt or hand-edited one must
+    not steer a delete. The repo folder is derived from the CATALOG, so a
+    sentinel naming somewhere else is simply not consulted."""
     pack = get_pack("sentence-embeddings")
     item = get_item(pack, "all-MiniLM-L6-v2")
+    folder, _ = _hf_repo_layout(item.repo_id)
     outside = tmp_path / "not-the-cache"
     outside.mkdir()
     (outside / "important.txt").write_text("keep me", encoding="utf-8")
-    state.write_sentinel(pack.pack_id, item.item_id, {
-        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
-        "kind": "hf", "repo_id": item.repo_id, "revision": item.revision,
-        "snapshot_dir": str(outside), "bytes": 1, "at": "2026-08-28T00:00:00Z",
-    })
+    _hf_sentinel_for(pack, item, outside)
 
-    flows.remove_item(pack, item.item_id)
+    assert flows.remove_item(pack, item.item_id) is True
 
     assert (outside / "important.txt").read_text(encoding="utf-8") == "keep me"
-    assert not sentinel_path(pack.pack_id, item.item_id).exists()
+    assert not folder.exists()
+
+
+def test_remove_item_refuses_a_repo_folder_outside_the_hf_cache(
+        installer, monkeypatch, tmp_path):
+    """The derived folder is still checked: it must be a direct child of the
+    Hugging Face cache and be named like one."""
+    pack = get_pack("sentence-embeddings")
+    item = get_item(pack, "all-MiniLM-L6-v2")
+    monkeypatch.setattr(flows, "_hf_repo_folder_name",
+                        lambda repo_id: "../../escaped")
+    escaped = (hf_cache_dir() / ".." / ".." / "escaped").resolve()
+    escaped.mkdir(parents=True, exist_ok=True)
+    (escaped / "important.txt").write_text("keep me", encoding="utf-8")
+
+    assert flows.remove_item(pack, item.item_id) is False
+
+    assert (escaped / "important.txt").read_text(encoding="utf-8") == "keep me"
 
 
 def test_remove_item_deletes_an_asset_file(installer):
@@ -484,16 +573,97 @@ def test_remove_item_deletes_an_asset_file(installer):
     _install("word-vectors", None, installer)
     item = get_item(pack, "glove-50d")
     path = asset_dir() / item.filename
-    state.write_sentinel(pack.pack_id, item.item_id, {
-        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
-        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
-        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
-    })
+    _asset_sentinel_for(pack, item, path)
     assert path.is_file()
 
     assert flows.remove_item(pack, item.item_id) is True
 
     assert not path.exists()
+    assert asset_dir().exists(), "the cache root went with it"
+
+
+@pytest.mark.parametrize("where", ["cache-root", "sentinel-dir", "outside",
+                                   "another-file"])
+def test_remove_item_refuses_an_asset_path_that_is_not_its_own(
+        installer, tmp_path, where):
+    """An asset may only ever delete ONE path: its own file, in the asset
+    directory. Every other answer -- the cache root itself, the directory the
+    sentinels live in, somewhere off the cache entirely, or another pack's
+    download -- is a sentinel telling us to delete something that is not the
+    thing being removed."""
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    (asset_dir() / item.filename).write_bytes(b"data")
+    neighbour = asset_dir() / "someone-elses.bin"
+    neighbour.write_bytes(b"data")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    target = {"cache-root": asset_dir(), "sentinel-dir": sentinel_dir(),
+              "outside": outside, "another-file": neighbour}[where]
+    if where == "sentinel-dir":
+        target.mkdir(parents=True, exist_ok=True)
+    _asset_sentinel_for(pack, item, target)
+
+    flows.remove_item(pack, item.item_id)
+
+    assert target.exists(), f"{where} was deleted"
+    assert neighbour.exists()
+    assert asset_dir().exists()
+    assert hf_cache_dir().parent.exists()
+
+
+@pytest.mark.parametrize("filename", ["", "..", "../escaped.bin",
+                                     "sub/nested.bin"])
+def test_remove_item_refuses_an_asset_filename_that_is_not_one_component(
+        installer, filename):
+    """A filename is ONE name, and every other spelling deletes the wrong
+    thing: ``""`` joins to the cache root, ``".."`` to its parent, ``"../x"``
+    to a file outside the cache, and a nested path to somebody else's
+    subdirectory. None of them may be reached by removing a model."""
+    item = ModelItem(item_id="nameless", kind="asset", filename=filename,
+                     url="https://example.invalid/x", approx_bytes=1,
+                     license="MIT")
+    pack = Pack(pack_id="broken", title="t", description="d", pip=(),
+                probe_modules=(), items=(item,), depends_on=(),
+                install_mode="live")
+    keep = asset_dir() / "keep.bin"
+    keep.write_bytes(b"data")
+
+    planted = None
+    candidate = (asset_dir() / filename) if filename else None
+    if candidate is not None and not candidate.is_dir():
+        planted = candidate
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.write_bytes(b"data")
+    _asset_sentinel_for(pack, item, asset_dir() / filename)
+
+    assert flows.remove_item(pack, "nameless") is False
+
+    assert keep.exists()
+    assert asset_dir().exists()
+    assert asset_dir().parent.exists()
+    if planted is not None:
+        assert planted.exists(), f"{filename} was deleted"
+
+
+def test_remove_item_is_false_when_the_bytes_did_not_actually_go(
+        installer, monkeypatch, caplog):
+    """On Windows a file another process has open cannot be deleted, and
+    ``rmtree(ignore_errors=True)`` says nothing about it. Reporting success
+    would tell the user they had freed 90 MB they still have."""
+    pack = get_pack("sentence-embeddings")
+    item = get_item(pack, "all-MiniLM-L6-v2")
+    folder, snapshot = _hf_repo_layout(item.repo_id)
+    _hf_sentinel_for(pack, item, snapshot)
+    monkeypatch.setattr(flows.shutil, "rmtree",
+                        lambda path, **kwargs: None)
+
+    with caplog.at_level("WARNING"):
+        assert flows.remove_item(pack, item.item_id) is False
+
+    assert folder.exists()
+    assert any(str(folder) in record.message for record in caplog.records)
 
 
 def test_remove_item_with_nothing_to_remove_is_false(installer):

@@ -33,6 +33,7 @@ Four decisions here are not stylistic:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,12 +62,25 @@ TERMINATE_GRACE_S = 3
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 
+#: How long ``taskkill`` gets before we stop waiting for it.
+KILL_TIMEOUT_S = 10
+
 #: What uv says when the pack and this interpreter's pins cannot both be
 #: satisfied. Its resolver explains itself with "No solution found" followed
 #: by a chain of "Because ..." lines; "constraint" catches the wording used
-#: when the constraints file itself is the blocker. Matched case-insensitively
-#: on the captured output -- see ``looks_like_resolver_conflict``.
-_CONFLICT_MARKERS = ("no solution found", "because", "constraint")
+#: when the constraints file itself is the blocker.
+#:
+#: Anchored to the START of a line, and that is the whole point: "because" is
+#: an ordinary English word that turns up in perfectly ordinary failures
+#: ("failed to build because the compiler crashed"), and matching it anywhere
+#: would answer a broken toolchain with "restart the server and try again".
+#: uv puts its markers first on the line, behind nothing but indentation and
+#: a bullet -- ``x``, ``\u00d7`` or a box-drawing gutter -- which is what the
+#: leading group skips. Matched case-insensitively, on the joined output.
+_CONFLICT_PATTERN = re.compile(
+    r"^[^\w\n]*(?:x[^\w\n]+)?"
+    r"(?:no solution found|because\b|constraint\b)",
+    re.MULTILINE)
 
 
 def find_uv() -> str | None:
@@ -104,12 +118,15 @@ def looks_like_resolver_conflict(lines: Sequence[str]) -> bool:
     conflict means "this cannot be done inside the running server, restart
     and try again", while a failed download means "try again".
     """
-    haystack = "\n".join(lines).lower()
-    return any(marker in haystack for marker in _CONFLICT_MARKERS)
+    return _CONFLICT_PATTERN.search("\n".join(lines).lower()) is not None
 
 
-def _pip_env() -> dict[str, str]:
-    """This process's environment, minus what would confuse the child."""
+def pip_env() -> dict[str, str]:
+    """This process's environment, minus what would confuse the child.
+
+    Public because every subprocess the Package Center starts wants it --
+    the install itself and the import probe that checks the install worked.
+    """
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
@@ -117,9 +134,13 @@ def _pip_env() -> dict[str, str]:
     return env
 
 
-def _creation_flags() -> int:
+def creation_flags() -> int:
     """Windows creation flags, or 0 everywhere else. Reads ``sys.platform`` at
-    CALL time so the platform is a fact a test can state."""
+    CALL time so the platform is a fact a test can state.
+
+    Public for the same reason as :func:`pip_env`: a probe that flashed a
+    console window over the editor would be as wrong as an install that did.
+    """
     if sys.platform == "win32":
         return CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     return 0
@@ -131,8 +152,16 @@ def _stop_process(proc) -> None:
         # taskkill /T is the only way to reach uv's children from here:
         # ``Popen.terminate`` on Windows is TerminateProcess, which does not
         # touch the process group the flags above put them in.
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                       capture_output=True, check=False)
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, check=False,
+                           timeout=KILL_TIMEOUT_S,
+                           creationflags=creation_flags())
+        except subprocess.TimeoutExpired:
+            # taskkill itself hung. Nothing left to try, and blocking the
+            # caller's thread forever is worse than a process we could not
+            # reach: the reader below is a daemon and the pipe is closed.
+            pass
         try:
             # Reap it, so the Popen object does not warn about a running
             # child when it is collected. taskkill /F has already ended it;
@@ -146,6 +175,23 @@ def _stop_process(proc) -> None:
         proc.wait(timeout=TERMINATE_GRACE_S)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+def _close_output(proc) -> None:
+    """Shut the pipe the reader thread is holding.
+
+    The reader is a daemon and ``join`` has a timeout, so it can outlive this
+    function -- and a thread still blocked on ``readline`` would go on
+    emitting ``log`` events into a job that has already reported itself
+    cancelled. Closing the pipe ends its read instead.
+    """
+    stdout = getattr(proc, "stdout", None)
+    if stdout is None:
+        return
+    try:
+        stdout.close()
+    except (OSError, ValueError):
+        pass
 
 
 def run_pip(
@@ -183,8 +229,8 @@ def run_pip(
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=_pip_env(),
-            creationflags=_creation_flags(),
+            env=pip_env(),
+            creationflags=creation_flags(),
         )
     except FileNotFoundError:
         emit({"type": "log",
@@ -213,6 +259,7 @@ def run_pip(
         if cancel_check():
             _stop_process(proc)
             reader.join(timeout=TERMINATE_GRACE_S)
+            _close_output(proc)
             raise PackCancelled("install cancelled")
         returncode = proc.poll()
         if returncode is not None:
@@ -222,4 +269,5 @@ def run_pip(
     # The child is gone but its output may not be drained yet; the events
     # have to be out before the caller decides what the exit code meant.
     reader.join(timeout=TERMINATE_GRACE_S)
+    _close_output(proc)
     return returncode
