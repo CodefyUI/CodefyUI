@@ -273,10 +273,26 @@ class PackService:
         if ((mode == "restart" or pack.install_mode == "restart")
                 and not restart.restart_available()):
             # PR 5 replaces this branch with the real restart handshake.
+            #
+            # Off the loop. Naming the GPU pack's command means asking which
+            # wheel this machine should have, and answering that from a cold
+            # cache runs nvidia-smi with a five second timeout. Since the
+            # condition above widened to the pack's own mode, this branch is
+            # reached by every POST to gpu-torch rather than only by a client
+            # that explicitly asked for restart mode -- so what used to be a
+            # rare stall would now be one on the ordinary path.
+            #
+            # This is the only ``await`` in this method, and it is inside a
+            # branch that always raises. The busy check above and the
+            # assignment of ``self._job`` below therefore still run without a
+            # suspension point between them, which is what makes "one job at
+            # a time" hold against two submits arriving together.
+            command = await asyncio.to_thread(
+                restart.install_command_for, pack, variant)
             raise RestartUnavailable(
                 f"{pack.title} cannot be installed from inside the running "
                 f"server; run the command instead",
-                command=restart.install_command_for(pack, variant))
+                command=command)
 
         targets = self._targets(pack, item_ids)
         download.check_disk(targets)
@@ -332,9 +348,15 @@ class PackService:
                    ) -> None:
         """Run the flow on a worker thread and record how it ended.
 
-        Never raises: this is a bare task nobody awaits except ``shutdown``,
-        and an escaping exception would be reported as "task exception was
-        never retrieved" long after the job disappeared from the UI.
+        Swallows every ``Exception``: this is a bare task nobody awaits
+        except ``shutdown``, and an escaping one would be reported as "task
+        exception was never retrieved" long after the job disappeared from
+        the UI.
+
+        A ``BaseException`` -- KeyboardInterrupt, SystemExit, CancelledError
+        -- is recorded and then RE-RAISED. Those are not ours to swallow, and
+        the job reaches a terminal state either way, which is the part that
+        matters to anyone still watching it.
         """
         emit = self._emitter(loop, broadcast)
         try:

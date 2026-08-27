@@ -388,6 +388,35 @@ async def test_gpu_torch_install_without_mode_is_refused_with_command_409(
     assert (await client.get("/api/packs")).json()["active_job"] is None
 
 
+async def test_gpu_pack_refusal_probes_off_the_event_loop_thread(
+        client, monkeypatch):
+    """Refusing gpu-torch has to NAME the wheel this machine wants.
+
+    Answering that from a cold cache runs nvidia-smi with a five second
+    timeout, and since the refusal keys off the pack's own mode it is now
+    reached by every POST to gpu-torch -- so the ordinary path would stall
+    the loop, not just the rare explicit `mode="restart"` request.
+    """
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def _detect() -> tuple[str, str]:
+        seen.append(threading.get_ident())
+        return ("CPU only", "cpu")
+
+    monkeypatch.setattr(restart, "_detected", None)   # cold cache
+    monkeypatch.setattr(restart, "detect_gpu", _detect)
+
+    response = await client.post("/api/packs/gpu-torch/install", json={})
+
+    assert response.status_code == 409
+    assert response.json()["command"] == "cdui install --gpu cpu"
+    assert seen, "the refusal never asked which wheel this machine wants"
+    assert all(ident != loop_thread for ident in seen), (
+        "the GPU probe ran on the event-loop thread")
+    assert len(seen) == 1
+
+
 async def test_install_rejects_an_unknown_variant_422(client):
     """``variant`` comes back as a command line to paste into a shell."""
     for bogus in ("; rm -rf /", "cu999", "", "cpu ; whoami"):
