@@ -8,9 +8,17 @@ guarantees added in the secret-params work (C1 / I3):
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
+from app.core.node_base import (
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+)
 from app.core.preset_registry import preset_registry
 
 
@@ -127,6 +135,72 @@ async def test_exposed_param_keeps_visibility_and_tier(
     lr = by_name["lr"]["param_def"]
     assert lr["advanced"] is False
     assert lr["visible_when"] is None
+
+
+class _PackedNode(BaseNode):
+    """A node with a SELECT whose options need different optional packs."""
+
+    NODE_NAME = "_PackedPresetTest"
+    CATEGORY = "Test"
+    DESCRIPTION = "Has a pack-gated option"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [
+            ParamDefinition(
+                name="table",
+                param_type=ParamType.SELECT,
+                default="demo-16d",
+                options=["demo-16d", "glove-50d"],
+                option_packs={"glove-50d": "word-vectors"},
+            ),
+        ]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": None}
+
+
+@pytest.fixture
+def _packed_node():
+    from app.core.node_registry import registry
+
+    registry._nodes[_PackedNode.NODE_NAME] = _PackedNode
+    yield _PackedNode
+    registry._nodes.pop(_PackedNode.NODE_NAME, None)
+
+
+@pytest.mark.asyncio
+async def test_exposed_param_keeps_its_option_packs(
+    test_client, _isolated_presets, _packed_node,
+):
+    """Same failure mode as core#134, one field later.
+
+    ``_resolve_param_def`` copies field by field, so a pack-gated SELECT
+    exposed through a preset would offer options nothing on this machine can
+    load -- and the editor, seeing no gating, would let the learner pick one.
+    """
+    resp = await test_client.post("/api/presets/create", json={
+        "name": "Packed Preset",
+        "nodes": [
+            {"id": "p", "type": _PackedNode.NODE_NAME,
+             "data": {"params": {"table": "demo-16d"}}},
+        ],
+        "edges": [],
+    })
+    assert resp.status_code == 200, resp.text
+
+    by_name = {p["param_name"]: p for p in resp.json()["exposed_params"]}
+    assert by_name["table"]["param_def"]["option_packs"] == {
+        "glove-50d": "word-vectors"}
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,16 @@
 """Tests for the nodes API endpoints."""
 
+from typing import Any
+
 import pytest
+
+from app.core.node_base import (
+    BaseNode,
+    DataType,
+    ParamDefinition,
+    ParamType,
+    PortDefinition,
+)
 
 
 @pytest.mark.asyncio
@@ -338,6 +348,103 @@ async def test_loss_and_dataloader_advertise_their_new_params(test_client):
     assert loader["pin_memory"]["advanced"] is False
     assert loader["drop_last"]["advanced"] is True
     assert loader["prefetch_factor"]["advanced"] is True
+
+
+# ── Package Center metadata (requires_pack / option_packs) ───────────────
+
+
+class _PackedNode(BaseNode):
+    """Stand-in for a node that only runs once an optional pack is there.
+
+    Synthetic rather than a real node so these tests keep passing whichever
+    way the catalog is edited: what is under test is the plumbing from the
+    class attribute to the wire, not any particular node's needs.
+    """
+
+    NODE_NAME = "_PackedTest"
+    CATEGORY = "Test"
+    DESCRIPTION = "Needs an optional pack"
+    REQUIRES_PACK = "rag"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [
+            ParamDefinition(
+                name="table",
+                param_type=ParamType.SELECT,
+                default="demo-16d",
+                options=["demo-16d", "glove-50d"],
+                option_packs={"glove-50d": "word-vectors"},
+            ),
+            ParamDefinition(name="label", param_type=ParamType.STRING, default=""),
+        ]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        return {"value": None}
+
+
+@pytest.fixture
+def packed_node():
+    """Register ``_PackedTest`` for one test, then take it back out.
+
+    Left behind it would show up in every later registry-wide assertion --
+    the zh-TW ratchet at the bottom of this file included -- as a node core
+    does not actually ship.
+    """
+    from app.core.node_registry import registry
+
+    registry._nodes[_PackedNode.NODE_NAME] = _PackedNode
+    yield _PackedNode
+    registry._nodes.pop(_PackedNode.NODE_NAME, None)
+
+
+@pytest.mark.asyncio
+async def test_node_definition_exposes_requires_pack(test_client, packed_node):
+    """A node the base install cannot run says so before anyone runs it."""
+    packed = (await test_client.get("/api/nodes/_PackedTest")).json()
+    assert packed["requires_pack"] == "rag"
+
+    plain = (await test_client.get("/api/nodes/Linear")).json()
+    assert plain["requires_pack"] is None
+
+    nodes = (await test_client.get("/api/nodes")).json()
+    assert all("requires_pack" in node for node in nodes)
+
+
+@pytest.mark.asyncio
+async def test_param_option_packs_round_trip(test_client, packed_node):
+    """Per-OPTION gating: one SELECT, some options installed, some not.
+
+    The map arrives verbatim so the editor can grey out exactly the options
+    whose pack is missing instead of disabling the whole parameter.
+    """
+    params = {p["name"]: p for p in
+              (await test_client.get("/api/nodes/_PackedTest")).json()["params"]}
+
+    assert params["table"]["option_packs"] == {"glove-50d": "word-vectors"}
+    assert params["label"]["option_packs"] is None
+
+
+@pytest.mark.asyncio
+async def test_every_param_carries_the_option_packs_key(test_client):
+    """The key is on the WIRE, not just on the Python dataclass -- the same
+    hand-copied mirror that ``advanced`` had to be threaded through."""
+    nodes = (await test_client.get("/api/nodes")).json()
+    params = [p for node in nodes for p in node["params"]]
+
+    assert params, "no node declares a parameter"
+    assert all("option_packs" in p for p in params)
+    assert all(p["option_packs"] is None or isinstance(p["option_packs"], dict)
+               for p in params)
 
 
 # ── zh-TW coverage (#188 review M8; widened by the core#136 review) ──────
