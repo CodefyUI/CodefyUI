@@ -8,8 +8,9 @@ embedder needs arrive only when a lesson asks for them.
 This package stays free of imports from ``app.api`` so node code and the
 routes can both depend on it.
 
-The four functions below are the whole surface a NODE needs: ask whether a
-pack is there, refuse to run without it, and find what it downloaded. They
+The functions below are the whole surface a NODE needs: read a requirement
+written by a node author, ask whether the pack (or one particular model in
+it) is there, refuse to run without it, and find what it downloaded. They
 import ``state`` lazily so that ``from app.core.packs import PackMissingError``
 -- which every pack-aware node does at import time -- stays a stdlib-only
 import that touches neither the filesystem nor the import machinery.
@@ -32,39 +33,81 @@ class PackMissingError(RuntimeError):
         super().__init__(f"{message} (pack={pack_id})")
 
 
-def pack_available(pack_id: str) -> bool:
-    """Is this pack installed and usable right now?
+def parse_requirement(value: str) -> tuple[str, str | None]:
+    """Split a pack requirement into ``(pack_id, item_id | None)``.
 
-    An unknown id is False rather than an error: a graph saved against a
-    plugin that is no longer here should report a missing pack, not crash the
-    run with a KeyError.
+    The convention a node author writes in ``REQUIRES_PACK`` or in an
+    ``option_packs`` value: ``"rag"`` for "this pack", or
+    ``"sentence-embeddings:all-MiniLM-L6-v2"`` when a SELECT option needs one
+    particular model rather than any of the pack's four.
+
+    Purely syntax -- it does not check that either id exists. A malformed
+    value raises ``ValueError`` rather than returning an empty id, because
+    gating on the pack whose id is the empty string fails open: no pack
+    matches, so the check would quietly never pass and the node would report
+    a missing pack nobody can install.
+    """
+    pack_id, separator, item_id = value.partition(":")
+    pack_id, item_id = pack_id.strip(), item_id.strip()
+
+    if not pack_id or ":" in item_id or (separator and not item_id):
+        raise ValueError(
+            f"malformed pack requirement {value!r}; "
+            f"expected '<pack_id>' or '<pack_id>:<item_id>'")
+    return pack_id, (item_id or None)
+
+
+def pack_available(pack_id: str, item_id: str | None = None) -> bool:
+    """Can a node run against this pack right now?
+
+    Without *item_id*: the pack's packages are importable and it has
+    something to run with -- either it downloads nothing, or at least ONE of
+    its items is there. The four sentence-embedding models are alternatives,
+    so a learner who fetched one of them is not short of anything.
+
+    With *item_id*: the packages are importable AND that specific item is
+    downloaded, which is what a SELECT option naming one model needs.
+
+    An unknown pack or item is False rather than an error: a graph saved
+    against a plugin that is no longer here should report a missing pack, not
+    crash the run with a KeyError.
     """
     from . import state
 
     probed = state.probe_all().get(pack_id)
-    return probed is not None and probed.installed
+    if probed is None:
+        return False
+    if item_id is None:
+        return probed.usable
+    return probed.pip_ready and any(
+        item.item_id == item_id and item.present for item in probed.items)
 
 
-def require_pack(pack_id: str) -> None:
-    """Refuse to run without *pack_id*, in words the editor can act on.
+def require_pack(pack_id: str, item_id: str | None = None) -> None:
+    """Refuse to run without this pack, in words the editor can act on.
 
     A graph run NEVER downloads. Four hundred megabytes arriving mid-run, on
     a classroom connection, with no progress bar and no way to cancel, is not
     a thing a "Run" button may do -- so the failure names the one place that
     can install it, and the run stops there.
     """
-    if pack_available(pack_id):
+    if pack_available(pack_id, item_id):
         return
 
     from .catalog import find_pack
 
     pack = find_pack(pack_id)
     title = pack.title if pack is not None else pack_id
-    raise PackMissingError(
-        pack_id,
-        f"{title} is not installed. Open Package Center "
-        "(toolbar > Settings > Optional packs) to install it; "
-        "graph runs never download")
+    if item_id is None:
+        message = (f"{title} is not installed. Open Package Center "
+                   "(toolbar > Settings > Optional packs) to install it; "
+                   "graph runs never download")
+    else:
+        message = (f"Model '{item_id}' from the {title} pack is not "
+                   "downloaded. Open Package Center "
+                   "(toolbar > Settings > Optional packs) to download it; "
+                   "graph runs never download")
+    raise PackMissingError(pack_id, message)
 
 
 def model_dir(repo_id: str) -> Path | None:

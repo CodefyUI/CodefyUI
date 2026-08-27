@@ -29,7 +29,7 @@ import torch
 from app.core import packs
 from app.core.asset_cache import cache_dir
 from app.core.packs import PackMissingError, state
-from app.core.packs.catalog import get_item, get_pack, iter_packs
+from app.core.packs.catalog import Pack, get_item, get_pack, iter_packs
 from app.core.packs.paths import asset_dir, hf_cache_dir, sentinel_path
 
 
@@ -58,14 +58,20 @@ def _hf_sentinel(pack_id: str, item_id: str, *, repo_id: str, revision: str,
     })
 
 
-def _install_qwen():
-    """Make the rag pack's one model look downloaded. Returns the snapshot."""
-    item = get_item(get_pack("rag"), "qwen2.5-0.5b-instruct")
-    snapshot = hf_cache_dir() / "models--Qwen--Qwen2.5-0.5B-Instruct" / "abc123"
+def _install_hf(pack_id: str, item_id: str):
+    """Make one Hugging Face item look downloaded. Returns the snapshot."""
+    item = get_item(get_pack(pack_id), item_id)
+    snapshot = (hf_cache_dir()
+                / f"models--{item.repo_id.replace('/', '--')}" / "abc123")
     snapshot.mkdir(parents=True)
-    _hf_sentinel("rag", item.item_id, repo_id=item.repo_id,
+    _hf_sentinel(pack_id, item_id, repo_id=item.repo_id,
                  revision=item.revision, snapshot_dir=snapshot)
     return snapshot
+
+
+def _install_qwen():
+    """Make the rag pack's one model look downloaded. Returns the snapshot."""
+    return _install_hf("rag", "qwen2.5-0.5b-instruct")
 
 
 def _install_glove():
@@ -136,14 +142,22 @@ def test_item_present_requires_sentinel_and_directory(user_data_dir):
 
 
 def test_corrupt_sentinel_reads_as_missing(user_data_dir):
+    """Both ways a sentinel can be garbage. The second one is not JSON at all:
+    ``read_text`` raises ``UnicodeDecodeError`` on it, which is a ValueError
+    rather than an OSError -- and one corrupt byte in one sentinel must cost
+    that item alone, not every pack query in the process."""
     pack, item = get_pack("rag"), get_item(get_pack("rag"), "qwen2.5-0.5b-instruct")
     _install_qwen()
+    sentinel = sentinel_path(pack.pack_id, item.item_id)
 
-    sentinel_path(pack.pack_id, item.item_id).write_text("{ truncated",
-                                                         encoding="utf-8")
-
-    assert state.read_sentinel(sentinel_path(pack.pack_id, item.item_id)) is None
+    sentinel.write_text("{ truncated", encoding="utf-8")
+    assert state.read_sentinel(sentinel) is None
     assert not state.item_state(pack, item).present
+
+    sentinel.write_bytes(b"\xff\xfe\x00garbage")
+    assert state.read_sentinel(sentinel) is None
+    assert not state.item_state(pack, item).present
+    assert state.probe_all()["rag"].pack_id == "rag"
 
 
 def test_sentinel_for_the_wrong_revision_reads_as_missing(user_data_dir):
@@ -215,6 +229,11 @@ def test_read_sentinel_rejects_json_that_is_not_an_object(user_data_dir):
     pytest.param("a/b", id="slash"),
     pytest.param("a\\b", id="backslash"),
     pytest.param("", id="empty"),
+    # A `$`-anchored pattern used with `.match()` accepts a TRAILING NEWLINE:
+    # "rag\n" and "..\n" both pass `^[A-Za-z0-9._-]+$`, and "..\n" is not
+    # equal to ".." either, so it walks past the explicit check as well.
+    pytest.param("rag\n", id="trailing-newline"),
+    pytest.param("..\n", id="parent-with-newline"),
 ])
 def test_sentinel_ids_may_not_walk_out_of_the_state_directory(bad_id, user_data_dir):
     """``sentinel_path`` interpolates both ids straight into a filename. The
@@ -293,6 +312,69 @@ def test_pack_is_installed_only_when_packages_and_items_are_both_there(
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     assert not state.pack_state(pack).installed, "model present, package gone"
+
+
+def test_installed_needs_every_model_but_usable_needs_one(monkeypatch,
+                                                          user_data_dir):
+    """The four embedding models are alternatives, not parts of one thing.
+
+    A learner who downloaded the 90 MB English model and skipped the three
+    multilingual ones has a working TextEmbedding node -- so the pack is
+    USABLE. It is not INSTALLED, and the Package Center still shows three
+    models to download, which is the honest thing to show.
+    """
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    pack = get_pack("sentence-embeddings")
+
+    nothing = state.pack_state(pack)
+    assert not nothing.installed
+    assert not nothing.usable
+
+    _install_hf("sentence-embeddings", "all-MiniLM-L6-v2")
+    partial = state.pack_state(pack)
+    assert partial.usable, "one downloaded model is enough to run a node"
+    assert not partial.installed, "three of the four are still missing"
+
+    for item_id in ("paraphrase-multilingual-MiniLM-L12-v2",
+                    "bge-small-zh-v1.5", "multilingual-e5-small"):
+        _install_hf("sentence-embeddings", item_id)
+    assert state.pack_state(pack).installed
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    without_packages = state.pack_state(pack)
+    assert not without_packages.usable, "models alone cannot run the node"
+    assert not without_packages.installed
+
+
+def test_a_pack_with_nothing_to_download_is_usable_once_its_packages_are_there(
+        monkeypatch):
+    """Nothing to download means nothing to wait for. No shipped pack is
+    pip-only today (gpu-torch has no items but answers to the torch build
+    instead), so the rule is pinned against a pack built here."""
+    pip_only = Pack(pack_id="pip-only", title="Pip only", description="",
+                    pip=("something",), probe_modules=("something",), items=(),
+                    depends_on=(), install_mode="live")
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    assert state.pack_state(pip_only).usable
+    assert state.pack_state(pip_only).installed
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert not state.pack_state(pip_only).usable
+
+
+def test_gpu_torch_usable_follows_torch_variant(monkeypatch):
+    """gpu-torch has no items, so the general "any item present" rule would
+    call it usable on a CPU-only box. It is not: for this pack alone, usable
+    means the accelerated build is the one in place, exactly like installed."""
+    monkeypatch.setattr(torch, "__version__", "2.6.0+cpu")
+    cpu = state.pack_state(get_pack("gpu-torch"))
+
+    assert not cpu.usable
+    assert not cpu.installed
+
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu128")
+    assert state.pack_state(get_pack("gpu-torch")).usable
 
 
 def test_blocked_by_lists_unready_dependencies(monkeypatch):
@@ -392,6 +474,98 @@ def test_require_pack_raises_pack_missing_error_with_id_suffix(monkeypatch):
     assert message.startswith("RAG stack is not installed.")
     assert "Package Center" in message
     assert "graph runs never download" in message
+
+
+def test_pack_available_without_item_is_true_when_any_item_present(
+        monkeypatch, user_data_dir):
+    """A node that takes whichever embedding model the user chose only needs
+    ONE of the four to be there."""
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    state.invalidate()
+    assert not packs.pack_available("sentence-embeddings")
+
+    _install_hf("sentence-embeddings", "bge-small-zh-v1.5")
+    state.invalidate()
+
+    assert packs.pack_available("sentence-embeddings")
+    assert not state.probe_all()["sentence-embeddings"].installed
+
+
+def test_pack_available_with_item_checks_that_item(monkeypatch, user_data_dir):
+    """A SELECT option naming one model has to be gated on THAT model. Being
+    able to run English embeddings says nothing about the Chinese one."""
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    _install_hf("sentence-embeddings", "all-MiniLM-L6-v2")
+    state.invalidate()
+
+    assert packs.pack_available("sentence-embeddings", "all-MiniLM-L6-v2")
+    assert not packs.pack_available("sentence-embeddings", "bge-small-zh-v1.5")
+    assert not packs.pack_available("sentence-embeddings", "no-such-model")
+    assert not packs.pack_available("no-such-pack", "all-MiniLM-L6-v2")
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    state.invalidate()
+    assert not packs.pack_available("sentence-embeddings", "all-MiniLM-L6-v2"), (
+        "the model is downloaded but sentence-transformers is gone")
+
+
+def test_require_pack_with_item_names_the_model_and_keeps_suffix(
+        monkeypatch, user_data_dir):
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    _install_hf("sentence-embeddings", "all-MiniLM-L6-v2")
+    state.invalidate()
+
+    assert packs.require_pack("sentence-embeddings", "all-MiniLM-L6-v2") is None
+
+    with pytest.raises(PackMissingError) as caught:
+        packs.require_pack("sentence-embeddings", "bge-small-zh-v1.5")
+
+    message = str(caught.value)
+    assert caught.value.pack_id == "sentence-embeddings"
+    assert message.endswith("(pack=sentence-embeddings)")
+    assert message.startswith(
+        "Model 'bge-small-zh-v1.5' from the Sentence embeddings pack "
+        "is not downloaded.")
+    assert "Package Center" in message
+    assert "graph runs never download" in message
+
+
+def test_require_pack_with_an_unknown_item_still_names_the_pack(
+        monkeypatch, user_data_dir):
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    state.invalidate()
+
+    with pytest.raises(PackMissingError) as caught:
+        packs.require_pack("sentence-embeddings", "no-such-model")
+
+    assert caught.value.pack_id == "sentence-embeddings"
+    assert str(caught.value).endswith("(pack=sentence-embeddings)")
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("rag", ("rag", None)),
+    ("sentence-embeddings", ("sentence-embeddings", None)),
+    ("sentence-embeddings:all-MiniLM-L6-v2",
+     ("sentence-embeddings", "all-MiniLM-L6-v2")),
+])
+def test_parse_requirement_shapes(value, expected):
+    assert packs.parse_requirement(value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    pytest.param("", id="empty"),
+    pytest.param(":", id="both-empty"),
+    pytest.param(":item", id="no-pack"),
+    pytest.param("pack:", id="no-item"),
+    pytest.param("pack:item:extra", id="two-colons"),
+    pytest.param("  ", id="whitespace"),
+])
+def test_parse_requirement_rejects_malformed_values(value):
+    """``option_packs`` values are written by node authors by hand. A typo has
+    to fail loudly at the point it is read, not silently gate on a pack id
+    that is the empty string."""
+    with pytest.raises(ValueError):
+        packs.parse_requirement(value)
 
 
 def test_an_unknown_pack_id_is_never_available(monkeypatch):

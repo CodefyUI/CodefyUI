@@ -188,6 +188,10 @@ def test_constraints_text_defaults_to_this_interpreter():
     pytest.param("-leading-dash", id="leading-dash"),
     pytest.param("space in name", id="space"),
     pytest.param("evil\n--index-url http://attacker", id="newline-injection"),
+    # The one a `$`-anchored pattern used with `.match()` waves through: `$`
+    # matches before a newline at the end of the string, so this name -- the
+    # exact shape the guard exists to stop -- would emit "evil\n==1.0".
+    pytest.param("evil\n", id="trailing-newline"),
     pytest.param("", id="empty"),
 ])
 def test_constraints_text_drops_unusable_names(name):

@@ -44,7 +44,11 @@ _SEPARATORS = re.compile(r"[-_.]+")
 #: newline would become a second LINE, and uv reads lines starting with ``-``
 #: as flags. Nothing on a healthy machine fails this; it is here so that the
 #: one that does gets dropped rather than turned into an argument.
-_SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#:
+#: Matched with ``fullmatch``, and it has to stay that way: ``$`` also matches
+#: BEFORE a trailing newline, so ``re.match(r"^...$", "evil\n")`` succeeds --
+#: waving through the exact character this guard exists to reject.
+_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 CONSTRAINTS_FILENAME = "constraints.txt"
 
@@ -134,7 +138,7 @@ def constraints_text(dists: dict[str, str] | None = None) -> str:
 
     lines = []
     for name, version in sorted(dists.items()):
-        if not _SAFE_NAME.match(name):
+        if not _SAFE_NAME.fullmatch(name):
             continue
         if not version or any(character.isspace() for character in version):
             continue

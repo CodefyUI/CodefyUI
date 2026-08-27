@@ -43,7 +43,12 @@ _GPU_TORCH_PACK_ID = "gpu-torch"
 #: Both ids are interpolated straight into a sentinel FILENAME. Today they
 #: only ever come from the catalog; this is the guard for the day one arrives
 #: from a request body instead.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+#:
+#: Matched with ``fullmatch``, and it has to stay that way: ``$`` also matches
+#: BEFORE a trailing newline, so ``re.match(r"^...$", "..\n")`` succeeds --
+#: which would slip a traversal id past both this pattern and the explicit
+#: ``{".", ".."}`` check below, since ``"..\n" != ".."``.
+_SAFE_ID = re.compile(r"[A-Za-z0-9._-]+")
 
 
 @dataclass(frozen=True)
@@ -70,8 +75,18 @@ class PackState:
     #: pack that is pure data.
     pip_ready: bool
     items: tuple[ItemState, ...]
-    #: Packages AND downloads are both there -- the node can run.
+    #: Packages AND every download are there. This is the UI's "Installed"
+    #: pill, and the honest answer to "is there anything left to fetch".
     installed: bool
+    #: Packages are there AND there is something to run with: either the pack
+    #: downloads nothing, or at least one of its items is present.
+    #:
+    #: The two differ because a pack's items can be ALTERNATIVES. The four
+    #: sentence-embedding models are four choices of embedder, not four parts
+    #: of one -- a learner who fetched the 90 MB English one and skipped the
+    #: three multilingual ones has a working node, and must not be told to
+    #: download 1 GB more before they may run it.
+    usable: bool
     #: Dependency packs that are not themselves ready, so installing this one
     #: would not make it usable.
     blocked_by: tuple[str, ...]
@@ -103,10 +118,16 @@ def pip_ready(pack: Pack) -> bool:
 def read_sentinel(path: Path) -> dict | None:
     """The sentinel at *path*, or None if it is missing, unreadable or not a
     JSON object. A corrupt sentinel is treated as no sentinel: the honest
-    answer is "we cannot show this was downloaded"."""
+    answer is "we cannot show this was downloaded".
+
+    ``ValueError`` on the READ as well as on the parse: a file of arbitrary
+    bytes raises ``UnicodeDecodeError`` -- a ValueError, not an OSError -- and
+    letting that escape would take ``probe_all`` down with it, so one corrupt
+    byte in one sentinel would break every pack query in the process.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return None
     try:
         data = json.loads(raw)
@@ -116,7 +137,9 @@ def read_sentinel(path: Path) -> dict | None:
 
 
 def _validate_id(value: str, label: str) -> str:
-    if not isinstance(value, str) or not _SAFE_ID.match(value) or value in {".", ".."}:
+    if (not isinstance(value, str)
+            or not _SAFE_ID.fullmatch(value)
+            or value in {".", ".."}):
         raise ValueError(f"unsafe {label}: {value!r}")
     return value
 
@@ -216,15 +239,21 @@ def pack_state(pack: Pack) -> PackState:
     items = tuple(item_state(pack, item) for item in pack.items)
 
     if pack.pack_id == _GPU_TORCH_PACK_ID:
+        # This pack downloads nothing, so the general rules below would call
+        # it both installed and usable on any machine at all. Its readiness
+        # lives in the installed WHEEL instead, and both answers come from
+        # there -- otherwise ``require_pack("gpu-torch")`` would wave through
+        # a CPU-only box, which is the one question this pack exists to ask.
         variant = torch_variant()
-        installed = variant is not None and variant != "cpu"
+        installed = usable = variant is not None and variant != "cpu"
     else:
         installed = ready and all(item.present for item in items)
+        usable = ready and (not items or any(item.present for item in items))
 
     blocked_by = tuple(dep for dep in pack.depends_on
                        if not pip_ready(get_pack(dep)))
     return PackState(pack_id=pack.pack_id, pip_ready=ready, items=items,
-                     installed=installed, blocked_by=blocked_by)
+                     installed=installed, usable=usable, blocked_by=blocked_by)
 
 
 #: Filled by the first ``probe_all()`` and dropped by ``invalidate()``. The
@@ -268,6 +297,13 @@ def invalidate() -> None:
     """
     global _cache, _generation
 
-    _cache = None
+    # Bump BEFORE clearing, never the other way round. A probe that finishes
+    # in the window between these two statements re-checks the generation it
+    # started in: bumped first, it sees the change and declines to cache;
+    # cleared first, it passes that check and installs an answer computed
+    # before the install finished -- which then outlives the very invalidate
+    # that was meant to drop it. The window is two adjacent statements wide,
+    # so it cannot be entered from a test without contriving a seam here.
     _generation += 1
+    _cache = None
     importlib.invalidate_caches()
