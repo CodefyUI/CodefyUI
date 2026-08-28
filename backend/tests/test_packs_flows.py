@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import gzip
 import importlib.util
+import shlex
 import subprocess
 import sys
 import types
@@ -546,7 +547,8 @@ def test_resolver_conflict_becomes_needs_restart_with_command(
         "the command must name THIS interpreter, not whichever python uv "
         "would find on PATH")
     for spec in get_pack("sentence-embeddings").pip:
-        assert spec in command
+        # WITH its quotes -- see the shell-metacharacter test below.
+        assert f'"{spec}"' in command
     assert "--restart" not in command, (
         "no CLI flag installs a pack into a stopped server")
     # A pure command line: the words around it live in the hint, so the
@@ -568,6 +570,40 @@ def test_restart_command_quotes_an_interpreter_path_with_spaces(monkeypatch):
 
     assert '"C:\\Program Files\\py\\python.exe"' in command
     assert command.startswith("uv pip install --python ")
+
+
+def test_restart_command_quotes_a_spec_a_shell_would_read_as_redirection():
+    """``sentence-transformers>=3.0,<6`` unquoted is not a version range.
+
+    It has no whitespace in it, so quoting on whitespace alone left it bare
+    -- and a bare ``>`` is REDIRECTION in every shell the user might paste
+    into: bash writes a file named ``=3.0,``, PowerShell refuses to parse
+    the line, cmd fails on ``6``. The only pack that can reach this path is
+    the one carrying that spec, so unquoted the feature's one restart
+    message runs in no shell at all.
+
+    Proved by splitting the rendered line back up: the spec has to come back
+    as ONE token, spelled the way the catalog spells it.
+    """
+    pack = get_pack("sentence-embeddings")
+    spec = pack.pip[0]
+    assert "<" in spec and ">" in spec, (
+        "this test is about shell metacharacters and the pack no longer "
+        "has any; pick a spec that still does")
+
+    command = flows._restart_command(pack)
+
+    assert f'"{spec}"' in command
+    tokens = shlex.split(command, posix=True)
+    assert tokens[-1] == spec, tokens
+
+    # And a part made only of safe characters is still left bare, so the
+    # common case reads as a command line rather than as quoted noise.
+    assert flows._shell_quote("uv") == "uv"
+    assert flows._shell_quote("--python") == "--python"
+    assert flows._shell_quote("/usr/bin/python3.12") == "/usr/bin/python3.12"
+    assert flows._shell_quote(r"C:\venv\Scripts\python.exe") == (
+        r"C:\venv\Scripts\python.exe")
 
 
 def test_ordinary_pip_failure_is_a_plain_install_error(installer, monkeypatch):

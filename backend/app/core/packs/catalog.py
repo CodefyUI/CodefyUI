@@ -32,13 +32,22 @@ class ModelItem:
 
     item_id: str                 # stable id used in URLs and sentinels
     kind: str                    # "hf" | "asset"
-    approx_bytes: int            # for the disk precheck and progress fallback
+    approx_bytes: int            # the DOWNLOAD: sizes shown, progress fallback
     license: str                 # e.g. "Apache-2.0", "MIT", "PDDL-1.0"
     repo_id: str | None = None   # hf items
     revision: str = "main"       # hf items
     url: str | None = None       # asset items
     sha256: str | None = None    # asset items (None until recorded)
     filename: str | None = None  # asset items: file name inside the asset dir
+    #: Extra bytes the install writes BESIDE the download -- the GloVe npz
+    #: the convert step leaves next to the gz. Kept apart from
+    #: ``approx_bytes`` because the two answer different questions and only
+    #: two surfaces want the sum: the disk precheck (which has to hold both)
+    #: and the removal message (which deletes both). Everything that shows a
+    #: user "what will come down the wire" -- ``packs list``, the confirm
+    #: prompt, ``size_bytes``/``size_bytes_total`` on /api/packs, the
+    #: progress meter's fallback total -- reads ``approx_bytes`` alone.
+    derived_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -124,11 +133,13 @@ CATALOG: tuple[Pack, ...] = (
                 # is also the test that PRINTS a digest to record when an
                 # asset item has none yet.
                 sha256="5c55f98957aa9fed8d2ac5fb1dcff57af3b23c5a3ee7af3f7945f8d49198eb24",
-                # The DOWNLOAD plus what installing it writes: the convert
-                # step leaves an npz beside the gz and the disk has to hold
-                # both. 69,182,535 gz + 83,357,227 npz measured; the
-                # precheck budgets 1.5x this.
-                approx_bytes=153_000_000,
+                # 69,182,535 gz + 83,357,227 npz, both measured. The gz is
+                # what comes down the wire and what every size shown to a
+                # user names; the npz is what the convert step writes beside
+                # it, so only the disk precheck (which budgets 1.5x their
+                # sum, about 230 MB) and the removal message add the two.
+                approx_bytes=69_000_000,
+                derived_bytes=83_000_000,
                 license="PDDL-1.0",
             ),
         ),

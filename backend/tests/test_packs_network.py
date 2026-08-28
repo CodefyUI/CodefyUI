@@ -128,10 +128,11 @@ def test_real_glove_download_verifies_sha256_and_reports_progress(
     assert path.is_file()
     size = path.stat().st_size
     print(f"\nglove-50d: {size} bytes in {elapsed:.1f}s -> {path}")
-    # The release asset is 69 MB (the catalog's 153 MB budgets the npz the
-    # convert step writes beside it, which is not what landed here); anything
-    # an order of magnitude off is a redirect page or a truncated transfer
-    # wearing the right filename.
+    # The catalog's ``approx_bytes`` calls it 69 MB, which is the download
+    # and so the right number to check a downloaded file against; the npz
+    # the convert step writes beside it is ``derived_bytes`` and has not
+    # been written yet. Anything an order of magnitude off is a redirect
+    # page or a truncated transfer wearing the right filename.
     assert 50_000_000 < size < 90_000_000, size
 
     progress = _progress(events)

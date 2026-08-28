@@ -29,13 +29,13 @@ Adding a pack changes nothing about the base install except which options light 
 | `rag` | `Qwen2.5-0.5B-Instruct`, a local generator small enough to run on CPU | about 1 GB | Apache-2.0 | `HFTextGenerate` and the retrieval chain around it, **next release**. Needs `sentence-embeddings` first |
 | `gpu-torch` | The CUDA or ROCm PyTorch build that matches this machine | varies by variant | PyTorch's own (BSD-3-Clause) | No new nodes; every node that can use an accelerator gets one. Not installed by `cdui packs` at all: run `cdui install --gpu <variant>`, see [GPU & Device Setup](../getting-started/gpu-device.md) |
 
-Sizes are what comes down the wire. The GloVe row is the one that costs more than it downloads: the table lists the 69 MB download, and installing also writes an 83 MB converted table beside it, so the catalog budgets the pair at 153 MB and the disk precheck asks for about 230 MB of free space (1.5 x 153 MB) before it starts.
+Sizes are what comes down the wire. The GloVe row is the one that costs more than it downloads: a 69 MB download plus the 83 MB converted table the install writes beside it, so the disk precheck asks for about 230 MB of free space before it starts, and removing the item gives all of it back.
 
 The `rag` row is in the catalog before the nodes that use it, on purpose: the download is a separate decision from the code, and a classroom can fetch the model the day before the lesson that needs it. `HFTextGenerate` is not in this build.
 
 ## Installing and removing
 
-**In the app.** Open the Package Center (toolbar > Settings > Optional packs). Each pack lists its items with a size and whether it is already downloaded; select the ones you want, start the install, and watch the log and the byte counter as it runs. **Cancel** takes effect immediately rather than at the end of the current file: the download stops mid-file, and the partial file is reused if you install again. One install job runs at a time.
+**In the app.** Open the Package Center (toolbar > Settings > Optional packs). Each pack lists its items with a size and whether it is already downloaded; select the ones you want, start the install, and watch the log and the byte counter as it runs. **Cancel** stops the transfer mid-file. A model download resumes from the partial file next time; an asset download such as the GloVe table starts over. One install job runs at a time.
 
 **From a terminal.** The same installer, over the same code path:
 

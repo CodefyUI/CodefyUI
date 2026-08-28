@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -111,15 +112,29 @@ def _tail_text(lines: Sequence[str]) -> str:
     return "\n".join(lines).strip()
 
 
+#: An argument every shell passes through untouched: letters, digits, and
+#: the punctuation that is never syntax in bash, cmd or PowerShell. The
+#: characters deliberately NOT in it are the ones that bite -- whitespace,
+#: and the ``<`` / ``>`` of a PEP 508 version spec.
+_BARE_ARGUMENT = re.compile(r"[A-Za-z0-9._/\\:+-]+")
+
+
 def _shell_quote(part: str) -> str:
     """One argument of a command line a human is going to paste.
 
-    ``shlex.quote`` is POSIX in its choice of quote character, and the path
-    this quotes is most often a Windows one, where ``'C:\\...'`` is not a
-    quoted string at all. Double quotes are what both shells read the same
-    way, and only a part that needs them gets them.
+    ``shlex.quote`` is POSIX in its choice of quote character, and one of
+    the parts here is usually a Windows path, where ``'C:\\...'`` is not a
+    quoted string at all. Double quotes are what bash, cmd and PowerShell
+    all read the same way, for a path and for a version spec alike.
+
+    Quoting only on whitespace was not enough, and the only pack that can
+    reach this path proves it: ``sentence-transformers>=3.0,<6`` has no
+    space in it, and a bare ``>`` is REDIRECTION in all three shells --
+    bash writes a file named ``=3.0,``, PowerShell refuses to parse, cmd
+    fails on ``6``. So the test is inverted: a part is left bare only when
+    every character in it is one no shell reads as syntax.
     """
-    return f'"{part}"' if any(char.isspace() for char in part) else part
+    return part if _BARE_ARGUMENT.fullmatch(part) else f'"{part}"'
 
 
 def _restart_command(pack: Pack) -> str:

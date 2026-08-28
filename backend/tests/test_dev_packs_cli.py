@@ -376,7 +376,7 @@ def test_cli_install_prompt_shows_the_download_size(
     monkeypatch.setattr("builtins.input",
                         lambda prompt="": asked.append(prompt) or "y")
     assert packs.main(["install", "word-vectors"]) == 0
-    assert "153" in "".join(asked), "the prompt must say how many MB this is"
+    assert "69" in "".join(asked), "the prompt must say how many MB this is"
 
 
 def test_cli_install_needs_restart_exits_3_with_command(

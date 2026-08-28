@@ -55,10 +55,11 @@ log = logging.getLogger(__name__)
 #: down a WebSocket.
 PROGRESS_MIN_INTERVAL_S = 0.25
 
-#: Multiplier over an item's ``approx_bytes`` for the disk precheck. The
-#: Hugging Face cache stores each file once as a blob and once more as a
-#: snapshot entry -- a real copy on any filesystem without symlinks, which on
-#: Windows means most of them -- and the catalog's sizes are approximate.
+#: Multiplier over an item's ``approx_bytes + derived_bytes`` for the disk
+#: precheck. The Hugging Face cache stores each file once as a blob and once
+#: more as a snapshot entry -- a real copy on any filesystem without
+#: symlinks, which on Windows means most of them -- and the catalog's sizes
+#: are approximate.
 DISK_HEADROOM = 1.5
 
 #: What a model needs to load: config, tokenizer, weights. Matched against the
@@ -584,8 +585,14 @@ def check_disk(items: Iterable[ModelItem]) -> None:
     the UI can say how much short it is. Finding out at 90% of a 470 MB
     download that the disk was always too small wastes the download and
     leaves a half-written cache behind.
+
+    ``derived_bytes`` counts here and nowhere a size is DISPLAYED: what has
+    to fit is the download plus whatever the install writes beside it, and
+    for GloVe that second file is bigger than the first. Budgeting the
+    download alone would pass the check on a disk that then fills during the
+    convert step -- with the download already spent.
     """
-    approx = sum(item.approx_bytes for item in items)
+    approx = sum(item.approx_bytes + item.derived_bytes for item in items)
     if approx <= 0:
         return
 

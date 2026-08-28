@@ -54,7 +54,8 @@ TOP_KEYS = {"packs", "active_job", "last_restart_job", "remote_install_allowed",
 PACK_KEYS = {"id", "title", "description", "install_mode", "status",
              "pip_ready", "usable", "depends_on", "blocked_by", "pip", "items",
              "size_bytes_total", "install_command"}
-ITEM_KEYS = {"id", "kind", "repo_id", "url", "size_bytes", "license", "status"}
+ITEM_KEYS = {"id", "kind", "repo_id", "url", "size_bytes", "derived_bytes",
+             "license", "status"}
 GPU_KEYS = {"detected_label", "recommended_variant", "installed_variant",
             "variants", "install_command"}
 
@@ -179,7 +180,12 @@ async def test_a_data_only_pack_with_nothing_downloaded_is_not_installed(
     vectors = next(p for p in body["packs"] if p["id"] == "word-vectors")
     assert vectors["pip_ready"] is True
     assert vectors["status"] == "not_installed"
-    assert vectors["size_bytes_total"] == 153_000_000
+    # The DOWNLOAD, not the disk budget: the npz the convert step writes
+    # beside it travels as `derived_bytes` on the item and is deliberately
+    # not folded in here.
+    assert vectors["size_bytes_total"] == 69_000_000
+    assert vectors["items"][0]["size_bytes"] == 69_000_000
+    assert vectors["items"][0]["derived_bytes"] == 83_000_000
     assert vectors["install_command"] == "cdui packs install word-vectors"
 
 

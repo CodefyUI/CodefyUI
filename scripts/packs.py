@@ -531,8 +531,12 @@ def cmd_remove(args: argparse.Namespace) -> int:
 
     removed = flows.remove_item(pack, args.item_id)
     if removed:
-        ok(f"已刪除 {item.item_id}（約釋出 {_mb(item.approx_bytes)} MB）",
-           f"Removed {item.item_id} (about {_mb(item.approx_bytes)} MB freed)")
+        # Download PLUS what was derived from it: ``remove_item`` deletes the
+        # GloVe npz along with the gz it came from, so reporting the gz alone
+        # would under-count the space returned by more than half.
+        freed = _mb(item.approx_bytes + item.derived_bytes)
+        ok(f"已刪除 {item.item_id}（約釋出 {freed} MB）",
+           f"Removed {item.item_id} (about {freed} MB freed)")
     elif not was_present:
         info(f"{item.item_id} 本來就沒有下載，沒有東西需要移除",
              f"{item.item_id} was not downloaded; nothing to remove")
