@@ -1030,6 +1030,21 @@ const zhTW: NodeTranslations = {
       device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
     },
   },
+  TextEmbedding: {
+    description:
+      '用預訓練的 sentence-transformer 把每段文字變成一條稠密向量，意思相近的文字向量會靠得很近（cosine 接近 1）。這就是語意搜尋與 RAG 背後的編碼器：先把文件各自嵌入一次，再把問題嵌入，然後比較。需要從套件中心安裝 sentence-embeddings 套件包；內附的四個模型都很小（22M 到 118M 參數），純 CPU 也跑得動。',
+    params: {
+      model: 'all-MiniLM-L6-v2：最小、英文。paraphrase-multilingual-MiniLM-L12-v2：支援 50 多種語言（含繁體中文），不需要前綴。bge-small-zh-v1.5：中文專用。multilingual-e5-small：檢索效果最好，但需要 "query: " / "passage: " 前綴（見 prefix）。',
+      text: '沒有任何輸入連線時使用的備用文字。',
+      split_lines: '把文字輸入的每一個非空白行當成一段獨立的文字。若要讓一整份多行文件變成一條向量，請關閉。',
+      prefix: '編碼前加在每段文字前面的字串。multilingual-e5 訓練時問題用 "query: "、文件用 "passage: "；其他模型會忽略它。',
+      normalize: 'L2 正規化，讓下游的點積等於 cosine similarity。',
+      batch_size: '一次前向傳播處理幾段文字。只影響速度與記憶體。',
+      max_seq_length: '每段文字的 token 上限（0 = 模型自己的預設：paraphrase-multilingual 128、all-MiniLM 256、bge/e5 512）。超過的部分會被截掉，切塊時請把長度控制在範圍內。',
+      label_chars: 'labels 輸出中每段文字保留的字元數。',
+      device: '在哪個裝置上編碼（auto 表示跟隨全域裝置）。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {

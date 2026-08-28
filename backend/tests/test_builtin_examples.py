@@ -57,8 +57,9 @@ assert _GRAPHS, "builtin example smoke suite discovered no examples"
 
 # Node types that pull a real dataset, train for multiple epochs, or load/save
 # weights — longer than a few seconds or dependent on prior runs.
-# test_chapter_examples.py carries the same list minus ``TextCorpusDataset``,
-# which no plugin example uses. This correctly skips execution for six graphs:
+# test_chapter_examples.py carries the same list minus ``TextCorpusDataset``
+# and ``TextEmbedding``, which no plugin example uses. This correctly skips
+# execution for six graphs:
 # the five training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
 # ResNet-18 baseline and the TinyStories LM) and the MNIST inference example,
 # which needs weights from a prior training run. Everything else — including
@@ -78,6 +79,11 @@ _SLOW_NODE_TYPES = {
     # trains — so an LLM example that only prepares data cannot start
     # downloading in CI by being added.
     "TextCorpusDataset",
+    # Needs the sentence-embeddings pack; graphs are still validated. CI has
+    # no pack cache, so an example using this node would fail at the gate
+    # rather than run -- and a machine that DOES have the pack would load
+    # half a gigabyte of weights inside the fast smoke suite.
+    "TextEmbedding",
 }
 
 
