@@ -64,8 +64,9 @@ PROBE_TIMEOUT_S = 120
 #: The pack and item whose download needs a conversion pass afterwards.
 _GLOVE = ("word-vectors", "glove-50d")
 
-#: The module that pass lives in. A LATER PR adds it; until then its absence
-#: is expected and its presence-but-broken is not -- see ``_converter_absent``.
+#: The module that pass lives in. It ships with the backend, so its absence
+#: now means a trimmed or partial build -- which is survivable -- while its
+#: presence-but-broken is not. See ``_converter_absent``.
 _GLOVE_MODULE = "app.nodes.llm._glove"
 
 #: What huggingface_hub names a repo's directory. Checked before deleting
@@ -167,10 +168,10 @@ def _download_step(pack: Pack, item: ModelItem, *, emit, cancel_check) -> Path:
 
 
 def _converter_absent(exc: ImportError) -> bool:
-    """Did the import fail because the converter is not here YET?
+    """Did the import fail because the converter is not in this build?
 
-    "The converter has not been written" and "the converter is broken" are
-    both ``ImportError``. The first is expected and may be shrugged off; the
+    "The converter is not in this build" and "the converter is broken" are
+    both ``ImportError``. The first is survivable and may be shrugged off; the
     second is a GloVe pack that can never convert, and shrugging THAT off
     would report the install as finished.
 
@@ -203,9 +204,11 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
     -- the UI already knows how to draw those, and to a learner this is the
     same wait as the download that came before it.
 
-    The converter arrives in a later PR. Until then the download is still
-    worth having -- so a missing converter is a log line and a finished step,
-    not a failed install that throws away 66 MB somebody just waited for.
+    The converter ships with the backend, so a build without it is a trimmed
+    or partial one rather than a version that predates it. The download is
+    still worth having there -- so an absent converter is a log line and a
+    finished step, not a failed install that throws away 66 MB somebody just
+    waited for.
     """
     item_id = _GLOVE[1]
     emit({"type": "step_started", "step": f"convert:{item_id}",

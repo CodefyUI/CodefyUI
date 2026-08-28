@@ -23,6 +23,8 @@ download functions and ``subprocess.run`` are all replaced.
 
 from __future__ import annotations
 
+import gzip
+import importlib.util
 import subprocess
 import sys
 import types
@@ -43,6 +45,20 @@ from app.core.packs.paths import (
     sentinel_dir,
     sentinel_path,
 )
+from app.nodes.llm import _glove
+
+
+def _glove_gz_bytes() -> bytes:
+    """Two words of GloVe, gzipped -- the shape of the real 400k-word file.
+
+    The convert step is no longer a stub: ``app.nodes.llm._glove`` ships with
+    the backend, so a download named ``.gz`` has to BE one or every install
+    below fails inside a converter this file is not about. Two lines is enough
+    for that; what the converter does with 400,000 belongs to
+    ``test_glove_loader``.
+    """
+    row = " ".join(["0.1"] * _glove.GLOVE_DIM)
+    return gzip.compress(f"the {row}\nking {row}\n".encode("utf-8"))
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +122,8 @@ def installer(monkeypatch, tmp_path):
             raise PackCancelled("cancelled")
         fake.downloaded.append(item.item_id)
         target = asset_dir() / item.filename
-        target.write_bytes(b"data")
+        target.write_bytes(_glove_gz_bytes() if item.filename.endswith(".gz")
+                           else b"data")
         return target
 
     def _check_disk(items):
@@ -257,7 +274,12 @@ def test_item_ids_none_installs_everything_not_already_present(
 
 
 def test_asset_pack_downloads_then_converts(installer):
-    """GloVe arrives as a gzip and is converted once, after it lands."""
+    """GloVe arrives as a gzip and is converted once, after it lands.
+
+    End to end against the REAL converter, so the npz at the end is the file
+    ``WordVector`` will open: the two halves are written in different modules
+    and nothing else runs them together.
+    """
     outcome = _install("word-vectors", None, installer)
 
     assert installer.steps == [
@@ -267,6 +289,8 @@ def test_asset_pack_downloads_then_converts(installer):
         "step_done convert:glove-50d",
     ]
     assert outcome.items_done == ("glove-50d",)
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert _glove.npz_path_for(asset_dir() / item.filename).is_file()
     # No packages to probe, so no verify step to run.
     assert installer.probes == []
 
@@ -385,15 +409,46 @@ def test_converter_module_without_ensure_npz_fails_the_install(
     assert "step_done convert:glove-50d" not in installer.steps
 
 
-def test_missing_converter_is_a_log_line_not_a_failed_install(installer):
-    """The GloVe converter lands in a later PR. Until it does, the download
-    is still worth having, and the install must say so rather than fail."""
+def test_a_build_without_the_converter_logs_and_finishes(
+        installer, monkeypatch):
+    """A build that does not ship ``_glove`` keeps the download.
+
+    66 MB somebody just waited for is still worth having, and converting it
+    is something a later run can do -- so the step logs and finishes rather
+    than failing the install.
+
+    Both halves are patched because in THIS build the converter really is
+    here: ``None`` in ``sys.modules`` is how the import layer spells "not
+    there", and the presence check that decides what to make of it is pinned
+    on the real module by the test below.
+    """
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", None)
+    monkeypatch.setattr(flows, "_converter_absent", lambda exc: True)
+
     _install("word-vectors", None, installer)
 
     logs = [event["line"] for event in installer.events
             if event["type"] == "log"]
-    assert any("glove" in line.lower() for line in logs), logs
+    assert any("not available in this build" in line for line in logs), logs
     assert "step_done convert:glove-50d" in installer.steps
+
+
+def test_the_converter_that_ships_is_never_called_absent(monkeypatch):
+    """``_converter_absent`` asks about PRESENCE, and the converter is present.
+
+    Two ways in, because the guard has two: already imported, and importable.
+    An answer of True on either would turn a broken converter into a shrugged
+    -off step and report a GloVe pack that can never convert as installed.
+    """
+    exc = ImportError("cannot import name 'ensure_npz'",
+                      name="app.nodes.llm._glove")
+
+    assert "app.nodes.llm._glove" in sys.modules  # imported at the top
+    assert flows._converter_absent(exc) is False
+
+    monkeypatch.delitem(sys.modules, "app.nodes.llm._glove")
+    assert flows._converter_absent(exc) is False
+    assert importlib.util.find_spec("app.nodes.llm._glove") is not None
 
 
 # -- failures --------------------------------------------------------------
