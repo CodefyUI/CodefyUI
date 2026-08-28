@@ -286,12 +286,20 @@ def _hashed_bag(text: str, dim: int) -> np.ndarray:
 
     Coarse, and deliberately so: 32 dimensions puts unrelated texts around
     0.2-0.5 cosine rather than at 0. Assert on the ORDER of similarities,
-    never on an absolute threshold.
+    never on an absolute threshold -- and for Chinese, where a whole sentence
+    is one token and only the characters separate it from another, pick
+    examples whose character overlap is obvious (four or five shared
+    characters out of seven) rather than one or two.
     """
     vector = np.zeros(dim, dtype=np.float64)
-    for word in set(text.split()):
+    # ``sorted``, not set order: float addition is not associative, and set
+    # iteration order for strings moves with the per-process hash seed. Two
+    # processes would otherwise embed the same text into rows that differ in
+    # the last bits -- enough to break an exact-equality assertion about a
+    # cached embedding.
+    for word in sorted(set(text.split())):
         vector += _hashed_direction(word, dim)
-    for char in {char for char in text if not char.isspace()}:
+    for char in sorted({char for char in text if not char.isspace()}):
         vector += _FAKE_CHAR_WEIGHT * _hashed_direction(char, dim)
     return vector
 
@@ -303,17 +311,33 @@ class _FakeSentenceTransformer:
     from the local snapshot, on the device the node chose?) and ``calls``
     (which texts, how many times, in which order) -- because that is what a
     node test can assert about a model it never trained.
+
+    Strict on purpose. Both signatures take keywords only after the first
+    argument, and name the exact keywords a node may pass, so a call that
+    would MISBEHAVE against the real library fails here instead of passing:
+    ``SentenceTransformer(path, "cpu")`` binds ``modules`` upstream, not
+    ``device``, and an unknown keyword is a typo either way.
     """
 
-    def __init__(self, path, **kwargs):
+    def __init__(self, path, *, device=None, cache_folder=None,
+                 local_files_only=False, trust_remote_code=False, token=None):
         self.path = path
-        self.init_kwargs = dict(kwargs)
+        # Every keyword, resolved -- not only the ones passed. A node test
+        # asserting ``trust_remote_code is False`` should not have to know
+        # whether the node spelled the default out.
+        self.init_kwargs = {
+            "device": device,
+            "cache_folder": cache_folder,
+            "local_files_only": local_files_only,
+            "trust_remote_code": trust_remote_code,
+            "token": token,
+        }
         # Mutable, like the real one: nodes clamp it to the token budget the
         # user picked, and a test should see the value they set.
         self.max_seq_length = 128
         self.calls: list[list[str]] = []
 
-    def encode(self, texts, batch_size=32, convert_to_numpy=True,
+    def encode(self, texts, *, batch_size=32, convert_to_numpy=True,
                normalize_embeddings=False, show_progress_bar=False):
         """Deterministic embeddings, shaped like the real return value.
 
@@ -342,6 +366,25 @@ class _FakeSentenceTransformer:
         return matrix[0] if single else matrix
 
 
+def _invalidate_pack_probe_cache() -> None:
+    """Drop the process-wide "which packs are installed" cache.
+
+    ``packs.state`` memoises one answer for the whole process, and the answer
+    is partly ``find_spec("sentence_transformers")`` -- which reads
+    ``sys.modules`` first, and therefore says YES while the fake is installed.
+    Cached on the way in, that answer would outlive the test and tell the next
+    one the pack is there; cached on the way out of an EARLIER test, it would
+    tell this one the pack is missing however loudly the fake is installed.
+    So: dropped at both ends, the same convention ``test_api_packs`` and
+    ``test_packs_download`` follow.
+    """
+    try:
+        from app.core.packs import state
+    except ImportError:  # an install with no packs package -- nothing to drop
+        return
+    state.invalidate()
+
+
 @pytest.fixture
 def fake_sentence_transformers(monkeypatch, tmp_path):
     """Install the fake library AND pretend its pack is downloaded.
@@ -352,16 +395,23 @@ def fake_sentence_transformers(monkeypatch, tmp_path):
     the rest of the suite still sees whether sentence-transformers is really
     installed on this machine.
 
-    Yields the fake MODULE; ``module.SentenceTransformer`` is the class.
+    Yields the fake MODULE. ``module.SentenceTransformer`` is the class;
+    ``module.required`` is the list of ``(pack_id, item_id)`` pairs the code
+    under test asked the gate about, in order.
     """
+    _invalidate_pack_probe_cache()
+
     module = types.ModuleType("sentence_transformers")
-    # A bare ModuleType has ``__spec__ = None``, and ``find_spec`` -- how
-    # packs/state.py decides whether a pack's packages are importable --
-    # raises ValueError on exactly that. Give the fake a spec so a probe
-    # running alongside it answers "installed" rather than exploding.
+    # A bare ModuleType has ``__spec__ = None``, which makes ``find_spec``
+    # raise ValueError -- harmless in itself, because ``state._module_available``
+    # swallows it, but it would swallow it as "not importable". A real spec is
+    # what makes a probe taken alongside the fake read "installed", which is
+    # the whole point of installing it.
     module.__spec__ = importlib.machinery.ModuleSpec(
         "sentence_transformers", loader=None)
     module.SentenceTransformer = _FakeSentenceTransformer
+    # (pack_id, item_id) pairs, in the order the gate was asked about them.
+    module.required = []
     monkeypatch.setitem(sys.modules, "sentence_transformers", module)
 
     model_path = tmp_path / "model"
@@ -369,17 +419,29 @@ def fake_sentence_transformers(monkeypatch, tmp_path):
     # Enough for code that sanity-checks the snapshot before loading it.
     (model_path / "config.json").write_text("{}", encoding="utf-8")
 
+    def fake_pack_available(pack_id, item_id=None):
+        module.required.append((pack_id, item_id))
+        return True
+
+    def fake_require_pack(pack_id, item_id=None):
+        module.required.append((pack_id, item_id))
+        return None
+
     from app.nodes.llm import _packs_bridge
 
-    monkeypatch.setattr(_packs_bridge, "pack_available",
-                        lambda pack_id, item_id=None: True)
-    monkeypatch.setattr(_packs_bridge, "require_pack",
-                        lambda pack_id, item_id=None: None)
+    monkeypatch.setattr(_packs_bridge, "pack_available", fake_pack_available)
+    monkeypatch.setattr(_packs_bridge, "require_pack", fake_require_pack)
     monkeypatch.setattr(_packs_bridge, "model_dir", lambda repo_id: model_path)
 
     try:
         yield module
     finally:
+        # NOT redundant with the call on the way in: anything that probed
+        # during the test cached an answer taken while the fake was installed.
+        # ``monkeypatch`` undoes the ``sys.modules`` entry after this runs, so
+        # what matters here is that the cache is left EMPTY -- the next probe
+        # then recomputes against the real machine.
+        _invalidate_pack_probe_cache()
         # The loaded-model cache is process-wide and keyed by path; a fake
         # model cached under this test's tmp_path would be handed to the
         # next test, after the directory it was loaded from is gone. Guarded

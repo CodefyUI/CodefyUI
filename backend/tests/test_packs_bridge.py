@@ -18,14 +18,43 @@ words or characters coming out closer than texts that share neither.
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from app.core import packs
+from app.core.packs import state
+from app.core.packs.catalog import get_pack
 from app.nodes.llm import _packs_bridge as bridge
+
+
+@pytest.fixture(scope="module", autouse=True)
+def probe_cache_is_honest_when_this_module_ends():
+    """Fail this module if it leaves the process-wide pack probe cache
+    claiming the Sentence embeddings pack is installed when it is not.
+
+    Module scope is the whole point. ``packs.state`` caches one answer for
+    the process, ``monkeypatch`` is what removes the fake from
+    ``sys.modules``, and a function-scoped check cannot see past it: pytest
+    finalises in reverse setup order, and ``monkeypatch`` is set up by an
+    autouse fixture in conftest before anything a test of mine could
+    request, so it is undone LAST. A module-scoped teardown runs after every
+    function-scoped one, which is the first vantage point where the fake is
+    really gone.
+    """
+    state.invalidate()   # so the check below is about what THIS module left
+    yield
+    honest = all(importlib.util.find_spec(name) is not None
+                 for name in get_pack("sentence-embeddings").probe_modules)
+    assert state.probe_all()["sentence-embeddings"].pip_ready is honest, (
+        "a fixture in this module cached a probe taken while the fake "
+        "sentence-transformers was installed")
+    state.invalidate()
 
 
 # ── the bridge ───────────────────────────────────────────────────────────
@@ -131,13 +160,30 @@ def test_fake_sentence_transformers_fixture_pretends_the_pack_is_installed(
     assert model_path == tmp_path / "model"
     assert (model_path / "config.json").is_file()
 
+    # What the gate was asked, in order -- a node test asserts on this to
+    # show the node gated on the model the user PICKED, not on the pack.
+    assert fake_sentence_transformers.required == [
+        ("sentence-embeddings", None),
+        ("sentence-embeddings", "all-MiniLM-L6-v2"),
+        ("sentence-embeddings", "all-MiniLM-L6-v2"),
+        ("no-such-pack", "no-such-model"),
+        ("no-such-pack", None),
+    ]
+
 
 def test_fake_sentence_transformers_fixture_is_deterministic_and_normalises(
         fake_sentence_transformers):
     model = fake_sentence_transformers.SentenceTransformer(
         "/models/all-MiniLM-L6-v2", device="cpu", local_files_only=True)
 
-    assert model.init_kwargs == {"device": "cpu", "local_files_only": True}
+    assert model.path == "/models/all-MiniLM-L6-v2"
+    assert model.init_kwargs == {
+        "device": "cpu",
+        "cache_folder": None,
+        "local_files_only": True,
+        "trust_remote_code": False,
+        "token": None,
+    }
     assert model.max_seq_length == 128
     model.max_seq_length = 64
     assert model.max_seq_length == 64
@@ -181,3 +227,83 @@ def test_fake_sentence_transformers_fixture_is_deterministic_and_normalises(
     assert float(zh_a @ zh_b) > float(zh_a @ zh_other)
 
     assert model.calls == [texts, texts, texts, [""], english, chinese]
+
+
+def test_fake_sentence_transformers_rejects_calls_that_would_misbehave(
+        fake_sentence_transformers):
+    """Strict where being lax would let a broken node pass.
+
+    ``SentenceTransformer(path, "cpu")`` binds ``modules`` in the real
+    library, not ``device``, and ``encode(texts, 64)`` binds ``prompt_name``
+    -- both would load or embed something other than what the node meant. A
+    fake that accepted them would make the node test green and the node
+    wrong.
+    """
+    SentenceTransformer = fake_sentence_transformers.SentenceTransformer
+
+    with pytest.raises(TypeError):
+        SentenceTransformer("/models/x", "cpu")
+    with pytest.raises(TypeError):
+        SentenceTransformer("/models/x", prompt_name="query")
+
+    model = SentenceTransformer("/models/x")
+    with pytest.raises(TypeError):
+        model.encode(["a"], 64)
+    with pytest.raises(TypeError):
+        model.encode(["a"], output_value="token_embeddings")
+
+    assert model.calls == [], "a rejected call must not be recorded"
+
+
+@pytest.fixture
+def warm_probe_cache():
+    """Leave a probe cached before the fake is installed, the way any earlier
+    test that looked at the Package Center would have."""
+    state.probe_all()
+    yield
+
+
+def test_fake_sentence_transformers_fixture_drops_a_stale_probe_on_entry(
+        warm_probe_cache, fake_sentence_transformers, monkeypatch):
+    """A probe cached BEFORE the fake was installed says the pack is missing,
+    and would go on saying so all through the test -- so the fixture drops it
+    on the way in, not only on the way out.
+
+    Detected the way ``test_packs_state`` detects it: a probe that recomputes
+    calls ``find_spec``, a probe served from the cache does not.
+    """
+    calls: list[str] = []
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name: calls.append(name) or real_find_spec(name))
+
+    state.probe_all()
+
+    assert calls, "the fixture handed the test a probe cached before it ran"
+
+
+def test_fake_sentence_transformers_fixture_leaves_the_probe_cache_honest(
+        monkeypatch, tmp_path, fake_sentence_transformers):
+    """The fake makes ``find_spec("sentence_transformers")`` answer YES, and
+    ``packs.state`` memoises that answer for the whole process -- so the
+    fixture has to drop the cache at both ends or the next test is told the
+    pack is installed.
+
+    This venv has neither of the pack's two probe modules, so the fake alone
+    cannot flip the answer and the second one is stood in for here. On a
+    machine that really has ``transformers`` -- anyone who installed the
+    pack, or the ``llm`` extra -- installing the fake is enough by itself,
+    which is what makes this a leak rather than a curiosity.
+
+    The half that cannot be asserted from inside a test (what the cache says
+    once the fake is gone) is asserted by the module-scoped fixture at the
+    top of this file.
+    """
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    stub = types.ModuleType("transformers")
+    stub.__spec__ = importlib.machinery.ModuleSpec("transformers", loader=None)
+    monkeypatch.setitem(sys.modules, "transformers", stub)
+    state.invalidate()
+
+    # True only because both fakes are installed, and now cached process-wide.
+    assert state.probe_all()["sentence-embeddings"].pip_ready is True
