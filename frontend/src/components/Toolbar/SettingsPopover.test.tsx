@@ -15,6 +15,7 @@ import {
   logoutCodex,
   fetchHealth,
   listPacks,
+  PackApiError,
   type PackCatalog,
   type PackSummary,
 } from '../../api/rest';
@@ -25,7 +26,12 @@ import {
 } from '../../store/packStore';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
-vi.mock('../../api/rest', () => ({
+vi.mock('../../api/rest', async (importOriginal) => ({
+  // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
+  // catalog read with `err instanceof PackApiError`, and an undefined export
+  // makes that line throw a TypeError instead of reporting the 404 an older
+  // server answers with.
+  PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   resetWeights: vi.fn(),
   // The "This Server" section reads /api/health when the popover opens
   // (#193 item 2); its own behaviour is covered in HealthSection.test.tsx.
@@ -294,6 +300,22 @@ describe('SettingsPopover', () => {
 
     expect(screen.getByText('Not available on this server')).toBeInTheDocument();
     expect(screen.queryByText('0 of 0 packs installed')).toBeNull();
+  });
+
+  it('reaches that verdict from the 404 an older server actually answers with', async () => {
+    // The store narrows the failure with `err instanceof PackApiError`. This
+    // is the case that proves the class reaching it is the real one — a
+    // stubbed-away export makes that line throw a TypeError, and the row
+    // would be stuck on "no catalog yet" forever.
+    _resetPackStoreForTesting();
+    mockedListPacks.mockRejectedValueOnce(new PackApiError(404, 'Not Found'));
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(await screen.findByText('Not available on this server')).toBeInTheDocument();
+    expect(usePackStore.getState().unsupported).toBe(true);
+    // Reported silently: the user did nothing wrong by running an older
+    // server, so nothing is toasted about it.
+    expect(usePackStore.getState().error).toBeNull();
   });
 
   it('shows the installing summary while a job runs', () => {

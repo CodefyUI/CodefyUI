@@ -21,7 +21,12 @@ vi.mock('../../hooks/useGraphExecution', () => ({
   useGraphExecution: () => ({ execute, stop }),
 }));
 
-vi.mock('../../api/rest', () => ({
+vi.mock('../../api/rest', async (importOriginal) => ({
+  // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
+  // catalog read with `err instanceof PackApiError`, and an undefined export
+  // makes that line throw a TypeError instead of reporting the 404 an older
+  // server answers with.
+  PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   // Used directly by Toolbar
   saveGraph: vi.fn(),
   loadGraph: vi.fn(),

@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import type { ParamDefinition } from '../../types';
+import type { PackItem, PackItemStatus, PackSummary } from '../../api/rest';
 import { useToastStore } from '../../store/toastStore';
+import { useUIStore } from '../../store/uiStore';
+import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 
 // Mock the REST file backends used by the model_file / image_file / data_file
@@ -55,6 +58,11 @@ const mkParam = (over: Partial<ParamDefinition>): ParamDefinition => ({
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useToastStore.setState({ toasts: [] });
+  // The select branch reads the pack catalog. Every case that does not seed
+  // one runs against an EMPTY catalog, which is the base install: nothing is
+  // greyed out and no hint appears.
+  _resetPackStoreForTesting();
+  useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
   // Clear accumulated call history so per-test "not called" assertions don't
   // pick up calls from earlier tests (these are factory vi.fn()s, not spies).
   [
@@ -546,5 +554,227 @@ describe('ParamField — code params (core#131)', () => {
     // The string default arm would have produced an <input type="text">,
     // which turns a multi-line script into an unreadable single line.
     expect(screen.queryByRole('textbox')).toBeNull();
+  });
+});
+
+// ── select options gated on an optional pack (PR 2, F7) ───────────────────
+
+function packItem(id: string, status: PackItemStatus): PackItem {
+  return {
+    id,
+    kind: 'hf',
+    repo_id: `org/${id}`,
+    url: null,
+    size_bytes: 1024,
+    license: null,
+    status,
+  };
+}
+
+function packSummary(over: Partial<PackSummary> & { id: string }): PackSummary {
+  return {
+    title: over.id,
+    description: '',
+    install_mode: 'live',
+    status: 'not_installed',
+    pip_ready: false,
+    usable: false,
+    depends_on: [],
+    blocked_by: [],
+    pip: [],
+    items: [],
+    size_bytes_total: 0,
+    install_command: null,
+    ...over,
+  };
+}
+
+/** Put a catalog in the store, the way a finished `refresh()` would. */
+function seedPacks(...packs: PackSummary[]) {
+  usePackStore.setState({
+    loaded: true,
+    unsupported: false,
+    packs,
+    byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+  });
+}
+
+const wordVectors = () =>
+  packSummary({ id: 'word-vectors', title: 'Word vectors', pip_ready: true, usable: false });
+
+const embeddingParam = (over: Partial<ParamDefinition> = {}) =>
+  mkParam({
+    name: 'model',
+    param_type: 'select',
+    default: 'demo-16d',
+    options: ['demo-16d', 'glove-50d'],
+    option_packs: { 'glove-50d': 'word-vectors' },
+    ...over,
+  });
+
+const hintFor = (select: HTMLElement): HTMLElement => {
+  const id = select.getAttribute('aria-describedby');
+  expect(id).toBeTruthy();
+  return document.getElementById(id as string) as HTMLElement;
+};
+
+describe('ParamField — select options gated on an optional pack', () => {
+  it('disables options whose pack is missing and suffixes the pack name', () => {
+    seedPacks(wordVectors());
+    render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
+
+    const options = screen.getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((o) => o.value)).toEqual(['demo-16d', 'glove-50d']);
+    expect(options[0].disabled).toBe(false);
+    expect(options[0].textContent).toBe('demo-16d');
+    // The reason travels with the option: a learner reading the list should
+    // not have to open the Package Center to find out why one is greyed.
+    expect(options[1].disabled).toBe(true);
+    expect(options[1].textContent).toBe('glove-50d — needs pack: Word vectors');
+  });
+
+  it('suffixes the model id for a pack:item requirement', () => {
+    seedPacks(
+      packSummary({
+        id: 'sentence-embeddings',
+        title: 'Sentence embeddings',
+        pip_ready: true,
+        // "partial": one model is downloaded, the other never was.
+        usable: false,
+        items: [packItem('all-MiniLM-L6-v2', 'present'), packItem('all-mpnet-base-v2', 'missing')],
+      }),
+    );
+    render(
+      <ParamField
+        param={mkParam({
+          name: 'model',
+          param_type: 'select',
+          default: 'all-MiniLM-L6-v2',
+          options: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+          option_packs: {
+            'all-MiniLM-L6-v2': 'sentence-embeddings:all-MiniLM-L6-v2',
+            'all-mpnet-base-v2': 'sentence-embeddings:all-mpnet-base-v2',
+          },
+        })}
+        value="all-MiniLM-L6-v2"
+        onChange={() => {}}
+      />,
+    );
+
+    const options = screen.getAllByRole('option') as HTMLOptionElement[];
+    // A downloaded model inside a pack the catalog still calls partial loads
+    // fine, so only the model that is actually absent greys out.
+    expect(options[0].disabled).toBe(false);
+    expect(options[0].textContent).toBe('all-MiniLM-L6-v2');
+    expect(options[1].disabled).toBe(true);
+    expect(options[1].textContent).toBe('all-mpnet-base-v2 — needs model: all-mpnet-base-v2');
+  });
+
+  it('keeps the current value selectable even when its requirement is missing and shows the install link', () => {
+    seedPacks(wordVectors());
+    const onChange = vi.fn();
+    render(<ParamField param={embeddingParam()} value="glove-50d" onChange={onChange} />);
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.value).toBe('glove-50d');
+    // A saved graph may hold it. Disabling it would make the browser drop the
+    // selection, i.e. silently rewrite the graph the moment the panel opened.
+    const chosen = screen.getAllByRole('option')[1] as HTMLOptionElement;
+    expect(chosen.disabled).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+
+    const hint = hintFor(select);
+    expect(hint.className).toContain('hintWarning');
+    expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors pack.');
+    expect(within(hint).getByRole('button', { name: 'Install pack' })).toBeInTheDocument();
+  });
+
+  it('names the model in the warning for a pack:item requirement on the current value', () => {
+    seedPacks(
+      packSummary({
+        id: 'sentence-embeddings',
+        title: 'Sentence embeddings',
+        pip_ready: true,
+        items: [packItem('all-mpnet-base-v2', 'missing')],
+      }),
+    );
+    render(
+      <ParamField
+        param={mkParam({
+          name: 'model',
+          param_type: 'select',
+          default: 'all-mpnet-base-v2',
+          options: ['all-mpnet-base-v2'],
+          option_packs: { 'all-mpnet-base-v2': 'sentence-embeddings:all-mpnet-base-v2' },
+        })}
+        value="all-mpnet-base-v2"
+        onChange={() => {}}
+      />,
+    );
+
+    expect(hintFor(screen.getByRole('combobox'))).toHaveTextContent(
+      '"all-mpnet-base-v2" needs the model all-mpnet-base-v2 from the Sentence embeddings pack.',
+    );
+  });
+
+  it('shows the muted hint when other options are unavailable', () => {
+    seedPacks(wordVectors());
+    render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
+
+    const hint = hintFor(screen.getByRole('combobox'));
+    expect(hint).toHaveTextContent('Greyed-out options need an optional pack.');
+    // Nothing is wrong with what this node is set to, so it is not a warning.
+    expect(hint.className).not.toContain('hintWarning');
+  });
+
+  it('opens the Package Center focused on the pack from the link', () => {
+    seedPacks(wordVectors());
+    render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install pack' }));
+
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('renders plain options when the catalog is unsupported', () => {
+    // An older server has no Package Center at all; greying an option out
+    // there would hide a node that works, with no way to find out why.
+    usePackStore.setState({
+      loaded: true,
+      unsupported: true,
+      packs: [],
+      byId: { 'word-vectors': wordVectors() },
+    });
+    render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
+
+    const options = screen.getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((o) => o.textContent)).toEqual(['demo-16d', 'glove-50d']);
+    expect(options.some((o) => o.disabled)).toBe(false);
+    expect(screen.getByRole('combobox')).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByRole('button', { name: 'Install pack' })).toBeNull();
+  });
+
+  it('renders plain options while no catalog has arrived', () => {
+    render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
+
+    expect(screen.getAllByRole('option').some((o) => (o as HTMLOptionElement).disabled)).toBe(
+      false,
+    );
+    expect(screen.getByRole('combobox')).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('leaves a select with no option_packs untouched', () => {
+    seedPacks(wordVectors());
+    render(
+      <ParamField
+        param={mkParam({ name: 'mode', param_type: 'select', options: ['a', 'b'], default: 'a' })}
+        value="a"
+        onChange={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['a', 'b']);
+    expect(screen.getByRole('combobox')).not.toHaveAttribute('aria-describedby');
   });
 });

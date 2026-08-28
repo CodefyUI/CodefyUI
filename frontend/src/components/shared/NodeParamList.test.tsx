@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition, ParamDefinition } from '../../types';
+import type { PackSummary } from '../../api/rest';
 import { NodeParamList } from './NodeParamList';
 import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
+import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 
 // Isolate the list from ParamField's REST/file backends; the mock exposes a
@@ -60,10 +63,42 @@ function nodeWith(params: Record<string, unknown>): Node<NodeData> {
   };
 }
 
+function packSummary(over: Partial<PackSummary> & { id: string }): PackSummary {
+  return {
+    title: over.id,
+    description: '',
+    install_mode: 'live',
+    status: 'not_installed',
+    pip_ready: false,
+    usable: false,
+    depends_on: [],
+    blocked_by: [],
+    pip: [],
+    items: [],
+    size_bytes_total: 0,
+    install_command: null,
+    ...over,
+  };
+}
+
+/** Put a catalog in the store, the way a finished `refresh()` would. */
+function seedPacks(...packs: PackSummary[]) {
+  usePackStore.setState({
+    loaded: true,
+    unsupported: false,
+    packs,
+    byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+  });
+}
+
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('t');
+  // Every case that does not seed a catalog runs against an empty one, which
+  // is the base install: no banner anywhere.
+  _resetPackStoreForTesting();
+  useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
 });
 
 describe('NodeParamList', () => {
@@ -224,5 +259,59 @@ describe('NodeParamList', () => {
     expect(screen.getByTestId('field-shape').dataset.siblings).toBe(
       JSON.stringify({ shape: '2,2', value_mode: 'zeros' }),
     );
+  });
+
+  // ── node-level pack banner (PR 2, F7) ─────────────────────────────────
+
+  it('shows the node-level pack banner with a link when requires_pack is missing', () => {
+    seedPacks(packSummary({ id: 'word-vectors', title: 'Word vectors', usable: false }));
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={{ ...def([param({ name: 'lr' })]), requires_pack: 'word-vectors' }}
+        params={{ lr: 0.1 }}
+      />,
+    );
+
+    const banner = screen.getByRole('note');
+    expect(banner).toHaveTextContent('This node needs the Word vectors pack.');
+    // A missing pack is a warning, not a reason to hide the configuration:
+    // the params stay editable so a saved graph can still be read.
+    expect(screen.getByTestId('field-lr')).toBeInTheDocument();
+
+    fireEvent.click(within(banner).getByRole('button', { name: 'Install pack' }));
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('omits it when the pack is usable', () => {
+    seedPacks(packSummary({ id: 'word-vectors', title: 'Word vectors', usable: true }));
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={{ ...def([param({ name: 'lr' })]), requires_pack: 'word-vectors' }}
+        params={{ lr: 0.1 }}
+      />,
+    );
+
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Install pack' })).toBeNull();
+  });
+
+  it('omits it on a server with no Package Center', () => {
+    usePackStore.setState({
+      loaded: true,
+      unsupported: true,
+      byId: { 'word-vectors': packSummary({ id: 'word-vectors', usable: false }) },
+    });
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={{ ...def([param({ name: 'lr' })]), requires_pack: 'word-vectors' }}
+        params={{ lr: 0.1 }}
+      />,
+    );
+
+    expect(screen.queryByRole('note')).toBeNull();
   });
 });
