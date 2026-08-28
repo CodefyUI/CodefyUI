@@ -6,8 +6,10 @@ import { useI18n } from '../../i18n';
 import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
+import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import type { NodeDefinition, NodeData } from '../../types';
 import * as rest from '../../api/rest';
+import type { PackItem, PackItemStatus, PackSummary } from '../../api/rest';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor } from '../../styles/theme';
 import BaseNode, { BaseNodeBody } from './BaseNode';
 
@@ -1017,5 +1019,202 @@ describe('BaseNodeBody — script nodes', () => {
   it('says the script is empty rather than showing a blank block', () => {
     renderBody(scriptData({ code: '   \n\n', input_ports: 1, output_ports: 1 }));
     expect(screen.getByText('(no code yet)')).toBeInTheDocument();
+  });
+});
+
+// ── Optional packs on the card (PR 2, F8) ────────────────────────────────
+
+function packItem(id: string, status: PackItemStatus): PackItem {
+  return {
+    id,
+    kind: 'hf',
+    repo_id: `org/${id}`,
+    url: null,
+    size_bytes: 1024,
+    license: null,
+    status,
+  };
+}
+
+function packSummary(over: Partial<PackSummary> & { id: string }): PackSummary {
+  return {
+    title: over.id,
+    description: '',
+    install_mode: 'live',
+    status: 'not_installed',
+    pip_ready: false,
+    usable: false,
+    depends_on: [],
+    blocked_by: [],
+    pip: [],
+    items: [],
+    size_bytes_total: 0,
+    install_command: null,
+    ...over,
+  };
+}
+
+/** Put a catalog in the store, the way a finished `refresh()` would. */
+function seedPacks(...packs: PackSummary[]) {
+  usePackStore.setState({
+    loaded: true,
+    unsupported: false,
+    packs,
+    byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+  });
+}
+
+const wordVectors = (over: Partial<PackSummary> = {}) =>
+  packSummary({ id: 'word-vectors', title: 'Word vectors', ...over });
+
+/** A node whose SELECT names one downloaded model per option. */
+const embeddingDef = () =>
+  makeDef({
+    node_name: 'SentenceEmbed',
+    params: [
+      {
+        name: 'model',
+        param_type: 'select',
+        default: 'all-MiniLM-L6-v2',
+        description: '',
+        options: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+        option_packs: {
+          'all-MiniLM-L6-v2': 'sentence-embeddings:all-MiniLM-L6-v2',
+          'all-mpnet-base-v2': 'sentence-embeddings:all-mpnet-base-v2',
+        },
+        min_value: null,
+        max_value: null,
+      },
+    ],
+  });
+
+const sentenceEmbeddings = () =>
+  packSummary({
+    id: 'sentence-embeddings',
+    title: 'Sentence embeddings',
+    pip_ready: true,
+    // "partial": one model was downloaded, the other never was.
+    usable: false,
+    items: [packItem('all-MiniLM-L6-v2', 'present'), packItem('all-mpnet-base-v2', 'missing')],
+  });
+
+describe('BaseNode — optional packs', () => {
+  beforeEach(() => {
+    resetStores();
+    _resetPackStoreForTesting();
+    useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
+  });
+
+  it('shows the PACK header badge and opens the Package Center on click without selecting/dragging', () => {
+    seedPacks(wordVectors());
+    renderBody(baseData({ definition: makeDef({ requires_pack: 'word-vectors' }) }));
+
+    const badge = screen.getByRole('button', { name: 'PACK' });
+    expect(badge.getAttribute('title')).toBe(
+      'Needs the Word vectors pack. Click to open the Package Center.',
+    );
+    // xyflow starts a node drag from a plain mousedown; `nodrag` is how every
+    // other control inside a card (the code editor, the text-input box) opts
+    // out of it.
+    expect(badge.className).toContain('nodrag');
+
+    // The card is a click target of its own — selection, and a double-click
+    // that opens the detail modal — so the badge's click has to stop at the
+    // badge. React's delegated listener sits on the render container, so a
+    // listener on <body> fires only for clicks allowed to bubble past it.
+    const escaped = vi.fn();
+    document.body.addEventListener('click', escaped);
+    try {
+      fireEvent.click(badge);
+      expect(escaped).not.toHaveBeenCalled();
+      // Counterfactual, so the assertion above is about stopPropagation and
+      // not about the harness: an ordinary click on the card does bubble.
+      fireEvent.click(screen.getByText('My Linear'));
+      expect(escaped).toHaveBeenCalledTimes(1);
+    } finally {
+      document.body.removeEventListener('click', escaped);
+    }
+
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    // Opened on the pack id — not on the click event, and not unfocused.
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('marks a select param whose value needs a missing model', () => {
+    seedPacks(sentenceEmbeddings());
+    renderBody(
+      baseData({ definition: embeddingDef(), params: { model: 'all-mpnet-base-v2' } }),
+    );
+
+    // The value itself stays on the card: a graph saved where the model was
+    // downloaded still has to be readable where it was not.
+    expect(screen.getByText('all-mpnet-base-v2')).toBeInTheDocument();
+    const marker = screen.getByText('needs pack');
+    expect(marker.getAttribute('title')).toBe(
+      '"all-mpnet-base-v2" needs the model all-mpnet-base-v2 from the Sentence embeddings pack.',
+    );
+    // The requirement is per-model, so the pack itself is not the problem and
+    // the header carries no badge.
+    expect(screen.queryByText('PACK')).toBeNull();
+  });
+
+  it('leaves the sibling value that IS downloaded unmarked', () => {
+    seedPacks(sentenceEmbeddings());
+    renderBody(
+      baseData({ definition: embeddingDef(), params: { model: 'all-MiniLM-L6-v2' } }),
+    );
+    expect(screen.getByText('all-MiniLM-L6-v2')).toBeInTheDocument();
+    // Only the CURRENT value is asked about: the other option being missing
+    // is the config panel's business, not the card's.
+    expect(screen.queryByText('needs pack')).toBeNull();
+  });
+
+  it('says nothing when the pack is installed, or the catalog cannot answer', () => {
+    seedPacks(
+      wordVectors({ pip_ready: true, usable: true, status: 'installed' }),
+      packSummary({
+        id: 'sentence-embeddings',
+        pip_ready: true,
+        usable: true,
+        items: [packItem('all-mpnet-base-v2', 'present')],
+      }),
+    );
+    const { unmount } = renderBody(
+      baseData({
+        definition: makeDef({ ...embeddingDef(), requires_pack: 'word-vectors' }),
+        params: { model: 'all-mpnet-base-v2' },
+      }),
+    );
+    expect(screen.queryByText('PACK')).toBeNull();
+    expect(screen.queryByText('needs pack')).toBeNull();
+    unmount();
+
+    // An unloaded catalog (boot) and a server with no Package Center are both
+    // "cannot answer", and neither greys anything out.
+    for (const state of [{ loaded: false }, { loaded: true, unsupported: true }]) {
+      _resetPackStoreForTesting();
+      usePackStore.setState({
+        byId: { 'word-vectors': wordVectors(), 'sentence-embeddings': sentenceEmbeddings() },
+        ...state,
+      });
+      const view = renderBody(
+        baseData({
+          definition: makeDef({ ...embeddingDef(), requires_pack: 'word-vectors' }),
+          params: { model: 'all-mpnet-base-v2' },
+        }),
+      );
+      expect(screen.queryByText('PACK')).toBeNull();
+      expect(screen.queryByText('needs pack')).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it('badges the header in the reader locale', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    seedPacks(wordVectors());
+    renderBody(baseData({ definition: makeDef({ requires_pack: 'word-vectors' }) }));
+    // Sized by its content, not by a fixed width: the zh-TW badge is three
+    // characters where the English one is four letters.
+    expect(screen.getByRole('button', { name: '需套件' })).toBeInTheDocument();
   });
 });

@@ -50,6 +50,36 @@
   flex-shrink: 0;
 }
 
+/* "Needs a pack" chip in the header — the bypass badge's metrics, in the
+   warning pair check-contrast.mjs already measures rather than that badge's
+   literal scrim. Sized by its text, so 'PACK' and the shorter zh-TW '需套件'
+   both fit; the button resets keep it looking like the chip it is. */
+.packBadge {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  letter-spacing: 0.08em;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--warning-wash);
+  color: var(--status-warning);
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.packBadge:hover {
+  background: var(--status-warning);
+  color: var(--surface-raised);
+}
+
+.packBadge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--sp-1);
+}
+
 /* ── Hover tooltip ── */
 .tooltip {
   position: absolute;
@@ -219,6 +249,16 @@
   color: var(--text-muted);
 }
 
+/* Holds the value and, when it needs one, its "needs pack" marker — so the
+   value keeps its own ellipsis and the marker is never what gets truncated. */
+.paramValueCell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
 .paramValue {
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
@@ -229,6 +269,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: right;
+}
+
+/* The value is there and readable; this only says it will not load yet. */
+.paramNeedsPack {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: var(--warning-wash);
+  color: var(--status-warning);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── CODE param preview (core#131) ── */

@@ -256,16 +256,22 @@
 
 /* ── Node item ──
    Densest list in the app: real row height + roomy padding carry the
-   density instead of small text (core token migration). */
+   density instead of small text (core token migration).
+
+   A two-column grid rather than the old column flex: the "needs pack" badge
+   has to sit beside the name, and wrapping the two in a row would have cost
+   the name its own ellipsis (text-overflow does not reach into an anonymous
+   flex item). The second track is `auto`, so it collapses to nothing on the
+   rows — nearly all of them — that carry no badge. */
 .nodeItem {
   position: relative;
   min-height: var(--h-row);
   padding: var(--sp-3) var(--sp-4);
   margin: var(--sp-1) var(--sp-3);
   border-radius: var(--radius);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
   cursor: grab;
   border: 1px solid transparent;
   transition: all var(--transition-fast);
@@ -282,10 +288,31 @@
   white-space: nowrap;
 }
 
+/* "Needs pack" chip beside the name. Warning ink on its own wash — the pair
+   check-contrast.mjs already measures — because a node that needs a download
+   is a note, not an error the reader caused. Width comes from the text, so
+   the English "Needs pack" and the shorter zh-TW "需要套件" both fit. */
+.nodeItemBadge {
+  align-self: center;
+  /* Its own margin rather than a `column-gap`, which would take those 4px off
+     every name in the library and not just the badged ones. */
+  margin-left: var(--sp-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: var(--warning-wash);
+  color: var(--status-warning);
+  white-space: nowrap;
+}
+
 /* Was single-line ellipsis (the "currently truncated" description the
    maintainer called out); now wraps up to two lines instead of hiding the
    rest of the text behind an ellipsis after a handful of characters. */
 .nodeItemDesc {
+  /* Full width under the name + badge row. */
+  grid-column: 1 / -1;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   line-height: var(--lh-snug);
@@ -319,6 +346,16 @@
 .nodeTooltipDesc {
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  line-height: var(--lh-normal);
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* The pack sentence, under the description it qualifies. */
+.nodeTooltipPack {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--status-warning);
   line-height: var(--lh-normal);
   white-space: normal;
   word-break: break-word;

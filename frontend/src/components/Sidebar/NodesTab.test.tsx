@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, within, act } from '@testing-library/react';
 import { NodesTab } from './NodesTab';
 import { useNodeDefStore } from '../../store/nodeDefStore';
+import { _resetPackStoreForTesting, usePackStore } from '../../store/packStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import type { PackSummary } from '../../api/rest';
 import type { NodeDefinition } from '../../types';
 
 /*
@@ -48,6 +50,9 @@ function seedStore(opts: {
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
   useUIStore.setState({ tooltipsEnabled: true, beginnerMode: false });
+  // Every case that does not seed a catalog runs against an empty, unloaded
+  // one — the base install, where no palette row says anything about packs.
+  _resetPackStoreForTesting();
   seedStore({ categorized: {} });
   // A fresh mock per test, set through the store rather than vi.spyOn: set()
   // clones the state object, so a spy would outlive restoreAllMocks() and carry
@@ -368,5 +373,110 @@ describe('NodesTab', () => {
     });
     expect(screen.getByText('LSTM')).toBeTruthy();
     expect(screen.queryByText('Conv2d')).toBeNull();
+  });
+});
+
+// ── "Needs pack" badge (PR 2, F8) ─────────────────────────────────────────
+
+function packSummary(over: Partial<PackSummary> & { id: string }): PackSummary {
+  return {
+    title: over.id,
+    description: '',
+    install_mode: 'live',
+    status: 'not_installed',
+    pip_ready: false,
+    usable: false,
+    depends_on: [],
+    blocked_by: [],
+    pip: [],
+    items: [],
+    size_bytes_total: 0,
+    install_command: null,
+    ...over,
+  };
+}
+
+/** Put a catalog in the store, the way a finished `refresh()` would. */
+function seedPacks(...packs: PackSummary[]) {
+  usePackStore.setState({
+    loaded: true,
+    unsupported: false,
+    packs,
+    byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+  });
+}
+
+const wordVectors = (over: Partial<PackSummary> = {}) =>
+  packSummary({ id: 'word-vectors', title: 'Word vectors', ...over });
+
+const packedDef = (): NodeDefinition => ({
+  ...def('WordVectorLookup', 'LLM', 'looks a word up in a vector table'),
+  requires_pack: 'word-vectors',
+});
+
+const PALETTE_SENTENCE =
+  'Needs the Word vectors pack. You can drag it now and install the pack from the Package Center.';
+
+describe('NodesTab — needs-pack badge', () => {
+  it('shows a Needs pack badge for a node whose pack is missing and keeps it draggable', () => {
+    seedPacks(wordVectors());
+    seedStore({ categorized: { LLM: [packedDef()] } });
+    render(<NodesTab />);
+
+    const badge = screen.getByText('Needs pack');
+    expect(badge.getAttribute('title')).toBe(PALETTE_SENTENCE);
+
+    // The badge is a note on the row, not a gate. Dragging a node whose pack
+    // is missing is exactly how a learner gets to the point of installing it,
+    // so the payload the canvas receives must be the one it always was.
+    const item = screen.getByText('WordVectorLookup').parentElement as HTMLElement;
+    expect(item.contains(badge)).toBe(true);
+    expect(item.getAttribute('draggable')).toBe('true');
+    const setData = vi.fn();
+    fireEvent.dragStart(item, { dataTransfer: { setData, effectAllowed: '' } });
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith('application/codefyui-node', 'WordVectorLookup');
+
+    // The same sentence again in the hover tooltip, which is where the
+    // description is read before the drag.
+    fireEvent.mouseEnter(item);
+    expect(screen.getByText(PALETTE_SENTENCE)).toBeTruthy();
+  });
+
+  it('omits the badge when the pack is usable or the catalog is unsupported', () => {
+    seedPacks(wordVectors({ pip_ready: true, usable: true, status: 'installed' }));
+    seedStore({ categorized: { LLM: [packedDef()] } });
+    render(<NodesTab />);
+    expect(screen.queryByText('Needs pack')).toBeNull();
+
+    // A server with no Package Center at all: it cannot answer, so it says
+    // nothing rather than badging every pack-backed node in the library.
+    act(() => {
+      usePackStore.setState({
+        unsupported: true,
+        byId: { 'word-vectors': wordVectors() },
+      });
+    });
+    expect(screen.queryByText('Needs pack')).toBeNull();
+
+    // Same during boot, before the catalog answers.
+    act(() => {
+      usePackStore.setState({ unsupported: false, loaded: false });
+    });
+    expect(screen.queryByText('Needs pack')).toBeNull();
+
+    // Counterfactual: the very same row DOES badge once a loaded catalog
+    // says the pack is not installed.
+    act(() => {
+      usePackStore.setState({ loaded: true });
+    });
+    expect(screen.getByText('Needs pack')).toBeTruthy();
+  });
+
+  it('leaves a node with no pack requirement untouched', () => {
+    seedPacks(wordVectors());
+    seedStore({ categorized: { CNN: [def('Conv2d', 'CNN')] } });
+    render(<NodesTab />);
+    expect(screen.queryByText('Needs pack')).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { nodeMissingPack, packTitle, usePackAvailability } from '../../utils/packAvailability';
 import type { NodeDefinition } from '../../types';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
@@ -19,7 +20,17 @@ export function NodeItem({ definition }: NodeItemProps) {
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   const itemRef = useRef<HTMLDivElement>(null);
   const tooltipsEnabled = useUIStore((s) => s.tooltipsEnabled);
-  const { tn } = useI18n();
+  const { t, tn } = useI18n();
+  // Three narrow slices that change only when a catalog refresh lands, so a
+  // library of a hundred rows costs a selector compare each and nothing per
+  // frame. The badge is deliberately NOT a gate: the item stays draggable,
+  // and the pre-run check (plus the backend error) is the real safety net.
+  const { byId, loaded, unsupported } = usePackAvailability();
+  const missingPack = nodeMissingPack(definition, byId, loaded, unsupported);
+  const packSentence =
+    missingPack === null
+      ? null
+      : t('palette.needsPack.title', { pack: packTitle(byId, missingPack.packId) });
 
   const desc = tn(definition.node_name, 'description', definition.description);
 
@@ -44,7 +55,9 @@ export function NodeItem({ definition }: NodeItemProps) {
     event.dataTransfer.effectAllowed = 'move';
   };
 
-  const showTooltip = tooltipsEnabled && desc && hovered && tooltipPos;
+  // A pack-backed node with no description still earns a tooltip: the pack
+  // sentence is the thing worth reading before the drag.
+  const showTooltip = tooltipsEnabled && (desc || packSentence) && hovered && tooltipPos;
 
   return (
     <div
@@ -62,6 +75,13 @@ export function NodeItem({ definition }: NodeItemProps) {
       <div className={styles.nodeItemName}>
         {definition.node_name}
       </div>
+      {/* A sibling of the name rather than a child of it, so the name keeps
+          its own ellipsis; the item's grid puts the two on one row. */}
+      {packSentence !== null && (
+        <span className={styles.nodeItemBadge} title={packSentence}>
+          {t('palette.needsPack')}
+        </span>
+      )}
       {desc && (
         <div className={styles.nodeItemDesc}>
           {desc}
@@ -73,7 +93,10 @@ export function NodeItem({ definition }: NodeItemProps) {
           style={{ left: tooltipPos.x, top: tooltipPos.y }}
         >
           <div className={styles.nodeTooltipTitle}>{definition.node_name}</div>
-          <div className={styles.nodeTooltipDesc}>{desc}</div>
+          {desc && <div className={styles.nodeTooltipDesc}>{desc}</div>}
+          {packSentence !== null && (
+            <div className={styles.nodeTooltipPack}>{packSentence}</div>
+          )}
         </div>,
         document.body,
       )}
