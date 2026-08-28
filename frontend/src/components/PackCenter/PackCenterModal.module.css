@@ -418,9 +418,14 @@
   cursor: pointer;
 }
 
-.itemRemove:hover {
+.itemRemove:hover:not(:disabled) {
   border-color: var(--status-error);
   color: var(--status-error);
+}
+
+.itemRemove:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* The progress row spans the whole grid so the bar is as wide as the row. */

@@ -341,6 +341,17 @@ describe('PackCard — while a job is running', () => {
     expect(installBtn()).toBeDisabled();
   });
 
+  it('locks Remove too, so nothing deletes a file the job is writing', () => {
+    renderCard({
+      pack: pack({
+        id: 'sentence-embeddings',
+        items: [item({ id: 'labse', status: 'present' })],
+      }),
+      job: emptyPackJob('j1', 'sentence-embeddings'),
+    });
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeDisabled();
+  });
+
   it('leaves another pack alone while this one installs', () => {
     renderCard({
       pack: pack({ id: 'word-vectors', items: [item({ id: 'glove-6b-50d' })] }),

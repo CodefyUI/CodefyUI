@@ -94,6 +94,10 @@ export function PackItemRow({
         <button
           type="button"
           className={styles.itemRemove}
+          // Same lock as the tick boxes: deleting a file out from under the
+          // job that is writing to this pack is the one destructive thing
+          // this row can do, and it must not be reachable mid-install.
+          disabled={disabled}
           onClick={() => onRemove(item.id)}
         >
           {t('packs.item.remove')}
