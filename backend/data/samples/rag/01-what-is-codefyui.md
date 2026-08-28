@@ -16,9 +16,9 @@ run.
 
 That last point is the difference between a diagram and a program. A node
 sitting on the canvas with no path back to Start is documentation, not work.
-Two Start nodes give you two independent runs on one canvas, which is a
-convenient way to keep an experiment beside the thing you are comparing it
-against.
+Two Start nodes give you two independent branches within a single run, which
+is a convenient way to keep an experiment beside the thing you are comparing
+it against.
 
 CodefyUI is built for three kinds of people. Students see the shape of a
 pipeline before they have to write one, and can change a single thing -- a
@@ -40,8 +40,8 @@ CodefyUI 是一套在瀏覽器裡用「節點圖」來組裝並執行機器學�
 從哪裡開始：它會往圖裡送出一個觸發訊號，只有這個訊號到得了的節點才會被執行。
 
 最後這一點正是「示意圖」與「程式」的分野。畫布上一個沒有任何路徑回到 Start 的
-節點，是說明，不是工作。放兩個 Start 節點，就等於在同一張畫布上有兩次互相獨立的
-執行 -- 想把一個實驗和它的對照組並排放著看時，這很方便。
+節點，是說明，不是工作。放兩個 Start 節點，就等於在同一次執行裡有兩條互相獨立
+的分支 -- 想把一個實驗和它的對照組並排放著看時，這很方便。
 
 CodefyUI 是為三種人設計的。學生可以在還沒有能力自己寫出流程之前，先看見流程的
 樣子，而且只改一個地方 -- 學習率、激活函數、某一層的寬度 -- 就能觀察到什麼跟著

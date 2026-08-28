@@ -179,6 +179,30 @@ def test_separator_options():
             == _run(separator="blank_line", number_contexts=False)["context"])
 
 
+def test_a_rule_separator_still_numbers_and_cites():
+    """The two knobs are independent, and ``rule`` is the one that looks
+    like markup.
+
+    A divider line between numbered entries is what a small model needs
+    when a blank line is not enough separation, and the numbering has to
+    survive it intact -- the ``[n]`` is what makes "cite your source"
+    answerable at all.
+    """
+    result = _run(separator="rule", number_contexts=True,
+                  inputs={"sources": list(_SOURCES)})
+
+    assert result["context"] == (
+        "[1] (02-nodes-and-edges.md) A node is a box that computes."
+        "\n---\n"
+        "[2] (01-what-is-codefyui.md) An edge carries a tensor between nodes."
+    )
+    assert result["context"] in result["prompt"]
+
+    # The divider is not mistaken for a placeholder or a chunk: two chunks
+    # mean exactly one divider.
+    assert result["context"].count("\n---\n") == 1
+
+
 def test_template_input_overrides_param():
     wired = _run(inputs={"template": "Q: {question}\nC: {context}"},
                  template="the param: {context} {question}")
@@ -196,6 +220,54 @@ def test_template_input_overrides_param():
         fallback = _run(inputs={"template": empty},
                         template="the param: {context}|{question}")
         assert fallback["prompt"].startswith("the param: [1] "), repr(empty)
+
+
+def test_a_blank_connected_template_says_so_in_the_log():
+    """A wired TextInput with nothing in it is a node with no effect.
+
+    Falling back to the param is right -- raising about placeholders missing
+    from a value that is not visible on the node would be worse -- but the
+    learner built that TextInput on purpose, and is entitled to know that
+    the prompt came from somewhere else.
+    """
+    for blank in ("", "   "):
+        result = _run(inputs={"template": blank},
+                      template="the param: {context}|{question}")
+        assert ("the connected `template` input is blank, so the template "
+                "param was used") in result["__log__"], repr(blank)
+
+    # An UNWIRED port is the ordinary case and says nothing about itself.
+    assert "template" not in _run(inputs={"template": None})["__log__"]
+    assert "template" not in _run()["__log__"]
+
+    # And a connected template that HAS something in it is simply used.
+    used = _run(inputs={"template": "Q {question} C {context}"})
+    assert "template" not in used["__log__"]
+
+
+def test_a_stray_brace_pair_in_the_template_is_just_text():
+    """Substitution is ``str.replace``, and this is what that buys.
+
+    A template asking for JSON -- ``reply as {"answer": ...}`` -- is an
+    ordinary thing to write, and under ``str.format`` it is a ``KeyError``
+    from inside a node the learner did not write, triggered by nothing
+    worse than a brace.
+    """
+    template = (
+        'Reply as {"answer": "...", "cited": [1]}.\n'
+        "Context:\n{context}\nQuestion: {question}"
+    )
+
+    result = _run(template=template, number_contexts=False,
+                  inputs={"contexts": ["A node is a box that computes."]})
+
+    assert result["prompt"] == (
+        'Reply as {"answer": "...", "cited": [1]}.\n'
+        "Context:\nA node is a box that computes.\n"
+        "Question: What is a node?"
+    )
+    # The stray pair is untouched -- not substituted, not escaped, not eaten.
+    assert '{"answer": "...", "cited": [1]}' in result["prompt"]
 
 
 def test_missing_placeholder_is_an_error():
@@ -297,6 +369,33 @@ def test_empty_contexts_produce_placeholder_and_log():
 
     # The normal case says nothing alarming.
     assert "[PromptBuilder] " not in _run()["__log__"]
+
+
+def test_blank_chunks_are_not_chunks():
+    """A retrieval that produced only blanks retrieved nothing.
+
+    ``contexts=""`` is what an exported script writes when the upstream node
+    produced nothing, and a list holding ``""`` is what a hand-built one
+    writes. Either way the prompt must say ``(no context retrieved)`` and
+    warn -- a ``[1]`` with nothing after it looks like a retrieval that
+    worked.
+    """
+    for nothing in ("", [""], ["", None], [None]):
+        result = _run(inputs={"contexts": nothing})
+        assert result["context"] == "(no context retrieved)", repr(nothing)
+        assert "no chunks reached this node" in result["__log__"], repr(nothing)
+
+    # A blank among real chunks is dropped, and the numbering closes up
+    # rather than printing an empty [2].
+    mixed = _run(inputs={"contexts": ["first", "", "second"]})
+    assert mixed["context"] == "[1] first\n\n[2] second"
+
+    # ``sources`` is the one list read POSITIONALLY, so a blank entry there
+    # stays where it is and prints as ``?`` -- closing the gap would put a
+    # real filename under the wrong passage.
+    cited = _run(inputs={"contexts": ["first", "second"],
+                         "sources": ["", "b.md"]})
+    assert cited["context"] == "[1] (?) first\n\n[2] (b.md) second"
 
 
 def test_step_trace_when_verbose():

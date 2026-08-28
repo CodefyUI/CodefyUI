@@ -69,11 +69,17 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
        picking an uploaded file must not depend on the server's working
        directory.
     3. In PROJECT MODE a relative path resolves inside the project directory
-       and may not escape it, so a graph shared between machines cannot read
-       arbitrary files on the one that opens it. The exception is a path under
+       and may not escape it, so a graph shared between machines does not
+       reach outside the project by accident. (It is not a sandbox: an
+       ABSOLUTE path is honoured as typed, here and in every other reader
+       node in this project, because a learner pointing at a folder of their
+       own notes is the ordinary case.) The exception is a path under
        ``data/samples/``: that names the INSTALL, not the project, and
        ``CSVReader`` already carves out the same hole for ``iris.csv`` so its
-       demo keeps working in project mode.
+       demo keeps working in project mode. The exemption is a prefix test, so
+       it also requires that no component is ``..`` -- otherwise
+       ``data/samples/../../elsewhere`` would wear the prefix and land
+       anywhere.
     4. Otherwise: the backend working directory first, then ``backend/``.
 
     *kind* is the param name, and only exists so the project-escape error can
@@ -94,7 +100,12 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     # ``data\samples\rag`` into the param, and that is the same bundled
     # corpus as the POSIX spelling.
     normalised = path_str.replace("\\", "/")
-    is_bundled_sample = normalised.startswith("data/samples/")
+    # The prefix is not enough on its own: ``data/samples/../../elsewhere``
+    # starts with it and ends outside the install, so the exemption also
+    # requires that the path only ever goes downwards.
+    is_bundled_sample = (
+        normalised.startswith("data/samples/")
+        and ".." not in Path(normalised).parts)
 
     if settings.PROJECT_DIR is not None and not is_bundled_sample:
         project = settings.PROJECT_DIR.resolve()
@@ -141,9 +152,17 @@ def _read_document(path: Path) -> str | None:
     a zero-length chunk, the encoder turns it into a vector that sits near
     nothing in particular, and retrieval then offers it as a citation with no
     text under it.
+
+    ``utf-8-sig`` rather than ``utf-8``: Notepad and several Windows export
+    tools write a byte-order mark, which is a legal UTF-8 file whose first
+    character is an invisible U+FEFF. Read as plain utf-8 that character
+    survives into the first chunk, into its embedding, and into the first
+    citation the model is shown -- a corruption nobody can see. The codec
+    eats a BOM when there is one and behaves exactly like utf-8 when there
+    is not.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         # Named and refused rather than read with errors="replace": silently
         # substituting U+FFFD would embed mojibake, and the only symptom
@@ -362,6 +381,17 @@ class DocumentLoaderNode(BaseNode):
             # against a big folder cheaply.
             if limit and len(documents) >= limit:
                 break
+        if not documents:
+            # Files were found and every one of them was blank. Returning
+            # zero documents instead would push the failure two nodes
+            # downstream, where VectorStore reports an empty embedding
+            # matrix -- true, and about the wrong folder. The same exception
+            # class as its sibling above, because it is the same outcome for
+            # the learner: there is nothing here to read.
+            raise FileNotFoundError(
+                f"DocumentLoader found only blank files in {root}: every "
+                ".txt and .md there is empty or whitespace, so there is "
+                "nothing to chunk.")
         return documents, directory
 
     # -- uploaded_file ---------------------------------------------------

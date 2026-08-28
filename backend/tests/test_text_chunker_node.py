@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.core.node_base import DataType
-from app.nodes.llm.text_chunker_node import TextChunkerNode
+from app.nodes.llm.text_chunker_node import TextChunkerNode, _character_spans
 
 #: Every default the node ships, read off the node itself so a test names
 #: only the params it actually changes.
@@ -121,6 +121,37 @@ def test_characters_windows_with_overlap_and_offsets():
     chunks = result["chunks"]
     assert chunks[0][-20:] == chunks[1][:20]
     assert chunks[1][-20:] == chunks[2][:20]
+
+
+def test_a_window_that_strips_to_its_predecessor_is_dropped():
+    """One passage, one chunk -- however much whitespace surrounds it.
+
+    Two characters in the middle of seventy blanks: with a 50-character
+    window and a 25-character step, windows 0-50 and 25-72 both strip down
+    to the same ``xy``. Emitted twice it is embedded twice, stored twice and
+    returned twice by one search, which reads to the learner as the corpus
+    saying the same thing in two places.
+    """
+    text = " " * 30 + "xy" + " " * 40
+
+    # The unit that produces the duplicate, checked directly: at the node's
+    # default min_chunk_chars the tail merge folds the second copy back into
+    # the first, which would make an end-to-end assertion pass either way.
+    assert _character_spans(text, 0, len(text), size=50, step=25) == [(30, 32)]
+
+    result = _run(inputs={"text": text}, strategy="characters",
+                  chunk_size=50, chunk_overlap=25, min_chunk_chars=1)
+
+    assert result["chunks"] == ["xy"]
+    assert result["count"] == 1
+    assert [m["start_char"] for m in result["metadata"]] == [30]
+    _assert_offsets_select_the_chunks(text, result)
+
+    # Not a blanket de-duplicator: the same TEXT at two different places is
+    # two chunks, because the offsets a citation prints differ.
+    twice = "ab" + " " * 60 + "ab"
+    assert _character_spans(twice, 0, len(twice), size=50, step=50) == [
+        (0, 2), (62, 64)]
 
 
 def test_overlap_must_be_smaller_than_chunk_size():
@@ -394,3 +425,68 @@ def test_neither_input_is_an_error():
     assert empty["chunks"] == []
     assert empty["metadata"] == []
     assert empty["count"] == 0
+
+
+def test_a_dict_without_text_says_which_keys_it_had():
+    """The likeliest hand-built document: the right shape, the wrong key.
+
+    ``{"content": ...}`` and ``{"body": ...}`` are what a PythonScript node
+    or an exported script produces, and ``str(item)`` of a dict would chunk
+    the literal ``{'content': 'hello'}`` -- a run that succeeds and embeds
+    punctuation.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _run(inputs={"documents": [{"content": "hello", "source": "a.md"}]})
+
+    assert str(excinfo.value) == (
+        "TextChunker: a dict on the `documents` input must carry a 'text' "
+        "key holding the document; this one has ['content', 'source'].")
+
+
+def test_a_bare_string_on_the_documents_port_names_the_other_port():
+    """``list("hello")`` is five one-character documents.
+
+    Every layer below would accept that: five chunks come back, the offsets
+    are right, nothing raises -- and the learner is looking at a corpus of
+    single letters wondering why retrieval is broken.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _run(inputs={"documents": "one long document"})
+
+    assert str(excinfo.value) == (
+        "TextChunker: the `documents` input carries a single string, not a "
+        "list of documents. Wire it into the `text` input instead.")
+
+
+def test_unknown_strategy_lists_the_three():
+    """The strategy decides what the chunks ARE, so it is refused rather
+    than defaulted -- and the message names the three that work."""
+    with pytest.raises(ValueError) as excinfo:
+        _run(inputs={"text": "a paragraph"}, strategy="semantic")
+
+    assert str(excinfo.value) == (
+        "TextChunker: unknown strategy 'semantic'; set the `strategy` param "
+        "to one of ['characters', 'sentences', 'paragraphs'].")
+
+
+def test_log_counts_chunks_and_documents_and_says_the_mean():
+    """The one line the canvas Log tab shows, including its singulars.
+
+    "37 chunks from 5 documents (mean 312 chars)" is what a learner reads to
+    decide whether chunk_size is doing what they think, so both counts and
+    the mean are pinned -- and so is the grammar, because "1 chunks from 1
+    documents" is the kind of thing that ships.
+    """
+    text = "".join(str(i % 10) for i in range(250))
+
+    many = _run(inputs={"text": text}, strategy="characters",
+                chunk_size=100, chunk_overlap=20, min_chunk_chars=1)
+    # Three windows of 100, 100 and 90 characters: mean 96.67, rounded.
+    assert many["__log__"] == "3 chunks from 1 document (mean 97 chars)"
+
+    one = _run(inputs={"text": "a short note"})
+    assert one["__log__"] == "1 chunk from 1 document (mean 12 chars)"
+
+    # 10 characters and 12: the mean is over CHUNKS, not documents.
+    pair = _run(inputs={"documents": ["first note", "second draft"]})
+    assert pair["__log__"] == "2 chunks from 2 documents (mean 11 chars)"

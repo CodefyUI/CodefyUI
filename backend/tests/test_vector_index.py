@@ -90,6 +90,38 @@ def test_scores_returns_full_matrix():
     assert index.scores(torch.tensor([1.0, 0.0])).shape == (1, 3)
 
 
+def test_a_query_that_is_not_a_tensor_names_the_wiring():
+    """``None`` and a string are the same mistake: no embedding arrived.
+
+    ``torch.as_tensor`` raises "Could not infer dtype of NoneType" for the
+    first and of str for the second -- both true, both from a module the
+    learner never opened, and neither naming the edge that is missing.
+    """
+    index = _small_index()
+    expected = (
+        "Retriever: the query input must be the embedding of the question "
+        "(a tensor) -- connect TextEmbedding.embeddings"
+    )
+
+    with pytest.raises(ValueError) as nothing:
+        index.scores(None)
+    assert str(nothing.value) == expected
+
+    with pytest.raises(ValueError) as text:
+        index.scores("what is a node?")
+    assert str(text.value) == expected
+
+    # And through ``search``, because that is the call Retriever makes when
+    # it is not tracing.
+    with pytest.raises(ValueError) as searched:
+        index.search(None, 3)
+    assert str(searched.value) == expected
+
+    # A list of numbers is still a perfectly good query: the guard is about
+    # what cannot become a tensor, not about what is not already one.
+    assert index.scores([[1.0, 0.0]]).shape == (1, 3)
+
+
 def test_top_k_is_clamped_to_size():
     index = _small_index()
 
@@ -288,6 +320,10 @@ def test_load_rejects_a_file_whose_lists_disagree(tmp_path):
     message = str(excinfo.value)
     assert "3 vectors" in message
     assert "2 chunks" in message
+    # Only the list that is WRONG is named: the metadata is three entries
+    # long and agrees with the vectors, and inviting the reader to check a
+    # count that is already right is how a message wastes its one chance.
+    assert "metadata" not in message
 
     # Metadata is checked the same way and for the same reason: the class
     # promises metadata[i] is always safe to index, and load is the one
@@ -297,8 +333,25 @@ def test_load_rejects_a_file_whose_lists_disagree(tmp_path):
     thin_path = tmp_path / "thin.npz"
     thin.save(thin_path)
 
-    with pytest.raises(ValueError, match="1 metadata entries"):
+    with pytest.raises(ValueError) as thin_case:
         VectorIndex.load(thin_path)
+
+    # Singular, because there is one of them.
+    assert "1 metadata entry --" in str(thin_case.value)
+    assert "chunk" not in str(thin_case.value)
+
+    # Both wrong at once still reads as a sentence.
+    both = build_index(torch.eye(3), ["a", "b", "c"], None, metric="cosine",
+                       normalize=True)
+    both.chunks = ["a"]
+    both.metadata = [{}, {}]
+    both_path = tmp_path / "both.npz"
+    both.save(both_path)
+
+    with pytest.raises(ValueError) as both_case:
+        VectorIndex.load(both_path)
+    assert "3 vectors but 1 chunk and 2 metadata entries --" in str(
+        both_case.value)
 
 
 def test_load_rejects_an_unknown_metric(tmp_path):

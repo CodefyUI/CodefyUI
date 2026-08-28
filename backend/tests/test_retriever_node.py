@@ -120,9 +120,8 @@ def test_returns_top_k_best_first_with_sources():
     assert len(everything["contexts"]) == 3
     assert everything["indices"] == [[2, 1, 0]]
 
-    # A param that is not a number at all (a hand-edited graph, an exported
-    # script) falls back to the default rather than failing a run that has
-    # already paid for the embeddings.
+    # Empty means "not set" and takes the default, the same reading
+    # TextChunker's integers give it.
     defaulted = _run(inputs={"query": _EAST, "index": _index()}, top_k="")
     assert len(defaulted["contexts"]) == 3
 
@@ -156,10 +155,66 @@ def test_min_score_filters_contexts_but_not_scores_tensor():
     assert all_dropped["scores"].shape == (1, 3)
     assert "min_score" in all_dropped["__log__"]
 
-    # Not a number: the floor goes back to 0.0 rather than failing the run.
+    # Empty means "not set": no floor at all, so everything comes back.
     defaulted = _run(inputs={"query": _EAST, "index": _index()},
                      top_k=3, min_score="")
     assert len(defaulted["contexts"]) == 3
+
+
+def test_a_param_that_is_not_a_number_is_refused():
+    """Out of range is clamped; not a number at all is an error.
+
+    The split ``TextChunker._integer`` makes, and these two helpers now make
+    the same one. A value the INT widget cannot produce came from a
+    hand-edited graph or a generated script: 500 still means "as many as
+    you have", so it is clamped, but ``"three"`` means the caller believes
+    they set something, and answering with the default would hide that from
+    them for the whole run.
+    """
+    with pytest.raises(ValueError) as top_k_case:
+        _run(inputs={"query": _EAST, "index": _index()}, top_k="three")
+    assert str(top_k_case.value) == (
+        "Retriever: top_k must be a whole number, got 'three'.")
+
+    with pytest.raises(ValueError) as min_score_case:
+        _run(inputs={"query": _EAST, "index": _index()}, min_score="high")
+    assert str(min_score_case.value) == (
+        "Retriever: min_score must be a number, got 'high'.")
+
+    # A NUMBER outside the widget's bounds is still clamped, not refused.
+    everything = _run(inputs={"query": _EAST, "index": _index()}, top_k=500)
+    assert len(everything["contexts"]) == 3
+    clamped = _run(inputs={"query": _EAST, "index": _index()},
+                   top_k=3, min_score=9.0)
+    # Clamped to 1.0, which only the exact match clears.
+    assert clamped["contexts"] == [_CHUNKS[2]]
+
+
+def test_min_score_zero_is_no_floor_at_all():
+    """The default keeps an ANTICORRELATED hit; -0.5 drops it.
+
+    ``min_score``'s help says "0 keeps everything", and cosine runs from
+    -1, so a floor AT zero would make that sentence false -- and would hide
+    the most instructive result this node produces: a corpus whose best
+    match is negative is the corpus saying it does not contain the answer.
+    Any value a learner actually types is read literally instead.
+    """
+    west = torch.tensor([[-1.0, 0.0]])
+
+    kept = _run(inputs={"query": west, "index": _index()}, top_k=3)
+    # east scores -1.0 against a query pointing west, and it is still on
+    # the wire at the default.
+    assert kept["contexts"][-1] == _CHUNKS[2]
+    assert kept["scores"][0, -1].item() == pytest.approx(-1.0, abs=1e-6)
+    assert len(kept["contexts"]) == 3
+
+    floored = _run(inputs={"query": west, "index": _index()}, top_k=3,
+                   min_score=-0.5)
+    # north-east is at -0.7071 and east at -1.0; only north (0.0) survives.
+    assert floored["contexts"] == [_CHUNKS[0]]
+    # The numbers are still all there -- filtering the texts, never the
+    # diagnostic tensor.
+    assert floored["scores"].shape == (1, 3)
 
 
 def test_an_empty_query_matrix_answers_nothing():
@@ -191,6 +246,29 @@ def test_wrong_index_type_names_vector_store():
     with pytest.raises(ValueError) as tensor_case:
         _run(inputs={"query": _EAST, "index": _VECTORS})
     assert "(got Tensor)" in str(tensor_case.value)
+
+
+def test_an_unwired_query_names_the_port_and_the_node_to_wire():
+    """``None`` on the query port is a missing edge, not a torch problem.
+
+    ``torch.as_tensor(None)`` raises "Could not infer dtype of NoneType",
+    which is true, comes from a module the learner never opened, and names
+    nothing they can draw.
+    """
+    expected = (
+        "Retriever: the query input must be the embedding of the question "
+        "(a tensor) -- connect TextEmbedding.embeddings"
+    )
+
+    with pytest.raises(ValueError) as missing:
+        _run(inputs={"query": None, "index": _index()})
+    assert str(missing.value) == expected
+
+    # Something wired that no tensor can be made of -- a Print node's text,
+    # a list of chunk strings -- is the same mistake from the other side.
+    with pytest.raises(ValueError) as text_case:
+        _run(inputs={"query": "what is a node?", "index": _index()})
+    assert str(text_case.value) == expected
 
 
 def test_dimension_mismatch_message():
@@ -257,6 +335,32 @@ def test_step_trace_when_verbose():
 
     quiet = _run(inputs={"query": _EAST, "index": _index()}, top_k=2)
     assert "__steps__" not in quiet
+
+
+def test_verbose_trace_reuses_the_matrix_the_search_computed():
+    """ONE matrix multiply, whether or not the trace is on.
+
+    The trace shows the whole ``[Q, N]`` and the outputs show its winners,
+    and those have to be the same numbers: a second ``scores`` call is both
+    a second matmul over the corpus and a set of numbers that is merely
+    expected to agree with the results printed under it.
+    """
+    index = _index()
+    computed: list[object] = []
+    real = index.scores
+
+    def counted(query):
+        computed.append(query)
+        return real(query)
+
+    index.scores = counted
+
+    result = _run(inputs={"query": _EAST, "index": index}, top_k=2,
+                  context=FakeContext(verbose=True))
+
+    assert len(computed) == 1
+    step = {s.name: s for s in result["__steps__"]}["scores"]
+    assert step.tensors["scores"].shape == (1, 3)
 
 
 def test_step_trace_omits_the_matrix_for_a_large_corpus():

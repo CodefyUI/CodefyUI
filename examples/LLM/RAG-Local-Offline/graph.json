@@ -1,6 +1,6 @@
 {
   "name": "RAG, fully local: retrieve then generate",
-  "description": "Needs the rag pack (Package Center, about 1.5 GB); then runs offline on CPU. The DocumentLoader reads five short bilingual notes from data/samples/rag, TextChunker cuts 400-character pieces, TextEmbedding (multilingual-e5-small, 'passage: ') vectorises them and VectorStore indexes them. The question is embedded the same way ('query: '), Retriever pulls the 3 closest chunks, PromptBuilder wraps them in an answer-only-from-context prompt, and HFTextGenerate answers with Qwen2.5-0.5B-Instruct. Expect 20-40 s of generation on a laptop CPU. README.md beside this graph explains each stage.",
+  "description": "Needs two packs: rag and sentence-embeddings (about 1.5 GB); then runs offline. The DocumentLoader reads five short bilingual notes from data/samples/rag, TextChunker cuts 400-character pieces, TextEmbedding (multilingual-e5-small, 'passage: ') vectorises them and VectorStore indexes them. The question is embedded the same way ('query: '), Retriever pulls the 3 closest chunks, PromptBuilder wraps them in an answer-only-from-context prompt, and HFTextGenerate answers with Qwen2.5-0.5B-Instruct. Expect 20-40 s of generation on a laptop CPU. README.md beside this graph explains each stage.",
   "nodes": [
     {
       "id": "start",

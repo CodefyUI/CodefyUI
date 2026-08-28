@@ -351,7 +351,15 @@ class HFTextGenerateNode(BaseNode):
             messages, tokenize=False, add_generation_prompt=True)
         # What the FIRST forward pass gets: the whole prompt. Every pass
         # after it gets a single token, and the cache carries the rest.
-        step_ids = tokenizer(chat, return_tensors="pt")["input_ids"].to(device)
+        #
+        # ``add_special_tokens=False`` because the chat template has ALREADY
+        # emitted them -- it rendered the role markers and the BOS the model
+        # was fine-tuned on. Letting the tokenizer add its own on top gives
+        # the model a transcript that starts with two beginnings, which is
+        # a prompt no training example ever looked like.
+        step_ids = tokenizer(
+            chat, return_tensors="pt", add_special_tokens=False,
+        )["input_ids"].to(device)
 
         stops = stop_ids(tokenizer, model)
         # Deliberately a local generator, not ``torch.manual_seed``: the global
@@ -363,6 +371,17 @@ class HFTextGenerateNode(BaseNode):
 
         should_stop = stop_checker(context)
         throttle = ProgressThrottle(progress_callback)
+        # ``logits_to_keep=1`` (transformers >= 4.49) runs the LM head over
+        # the LAST position only. Without it the first pass computes logits
+        # for every prompt token -- a [1, prompt_len, vocab] tensor, which
+        # for a 1000-token RAG prompt and Qwen's 151k vocabulary is over
+        # half a gigabyte of float32 built to read one row of it. Assembled
+        # once and, on a library too old to take the keyword, dropped once:
+        # re-discovering that on all 200 steps would cost 200 TypeErrors.
+        forward_kwargs: dict[str, Any] = {
+            "use_cache": True,
+            "logits_to_keep": 1,
+        }
         new_ids: list[int] = []
         past: Any = None
         stopped_after: int | None = None
@@ -382,11 +401,22 @@ class HFTextGenerateNode(BaseNode):
                 if should_stop():
                     stopped_after = len(new_ids)
                     break
-                out = model(
-                    input_ids=step_ids,
-                    past_key_values=past,
-                    use_cache=True,
-                )
+                try:
+                    out = model(input_ids=step_ids, past_key_values=past,
+                                **forward_kwargs)
+                except TypeError as exc:
+                    if ("logits_to_keep" not in forward_kwargs
+                            or "logits_to_keep" not in str(exc)):
+                        # Not the keyword's fault -- a real TypeError from
+                        # inside the model, and swallowing it would turn a
+                        # bug into a mysteriously slower run.
+                        raise
+                    logger.info(
+                        "%s does not accept logits_to_keep (%s); generating "
+                        "with the full logits tensor instead", repo, exc)
+                    forward_kwargs.pop("logits_to_keep")
+                    out = model(input_ids=step_ids, past_key_values=past,
+                                **forward_kwargs)
                 # Opaque, both ways: whatever the model handed back goes
                 # straight into the next call. See the module docstring.
                 past = out.past_key_values

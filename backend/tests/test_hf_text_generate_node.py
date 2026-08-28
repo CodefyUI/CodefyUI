@@ -130,6 +130,14 @@ def test_chat_template_is_applied_with_system_and_user(fake_transformers):
     assert call["add_generation_prompt"] is True
     assert tokenizer.encoded == [call["rendered"]], (
         "the raw prompt reached the model instead of the templated string")
+    # The template has ALREADY emitted the model's special tokens, so the
+    # tokenizer must not add its own on top: a transcript that begins twice
+    # is a prompt no training example ever looked like.
+    assert tokenizer.encode_calls[0] == {
+        "text": call["rendered"],
+        "return_tensors": "pt",
+        "add_special_tokens": False,
+    }
 
     # Whitespace is not an instruction: a blank system prompt sends none,
     # rather than a system turn saying nothing.
@@ -226,6 +234,92 @@ def test_kv_cache_is_passed_back(fake_transformers):
     assert model.calls[1]["past_key_values"].fed_back is True
     assert model.calls[1]["past_key_values"].length == prompt_len
     assert model.calls[2]["past_key_values"].length == prompt_len + 1
+
+
+def test_first_pass_keeps_only_the_last_logits(fake_transformers):
+    """``logits_to_keep=1`` reaches the model on EVERY forward pass.
+
+    Without it the first pass runs the LM head over every prompt token and
+    builds a ``[1, prompt_len, vocab]`` tensor -- for a 1000-token RAG
+    prompt against Qwen's 151k vocabulary that is over half a gigabyte of
+    float32, produced so the loop can read one row of it. The steps after
+    the first feed one token, so the keyword costs them nothing; passing it
+    once and not the rest would be the easy half-fix, which is why this
+    asserts on all of them.
+    """
+    res = _run(max_new_tokens=3, temperature=0.0)
+
+    model = fake_transformers.models[0]
+    assert [call["logits_to_keep"] for call in model.calls] == [1, 1, 1]
+    # And the node still reads the right row out of the shorter tensor.
+    assert res["text"] == _continuation(_chat(fake_transformers), 3)
+
+
+def test_an_older_transformers_drops_the_keyword_once(fake_transformers,
+                                                      monkeypatch):
+    """A library too old for ``logits_to_keep`` still generates.
+
+    The keyword arrived in transformers 4.49 and the pack installer is free
+    to resolve an older one, so the node retries without it -- once, and
+    then remembers: re-discovering this on all 200 steps of a decode would
+    be 200 TypeErrors raised and caught for one answer.
+    """
+    loaded = fake_transformers.AutoModelForCausalLM.from_pretrained
+    refusals: list[str] = []
+
+    def load_an_old_model(*args, **kwargs):
+        model = loaded(*args, **kwargs)
+        accepted = model.forward
+
+        def forward(*call_args, **call_kwargs):
+            if "logits_to_keep" in call_kwargs:
+                refusals.append("logits_to_keep")
+                raise TypeError("forward() got an unexpected keyword "
+                                "argument 'logits_to_keep'")
+            return accepted(*call_args, **call_kwargs)
+
+        model.forward = forward
+        return model
+
+    monkeypatch.setattr(fake_transformers.AutoModelForCausalLM,
+                        "from_pretrained", load_an_old_model)
+
+    res = _run(max_new_tokens=4, temperature=0.0)
+
+    assert res["token_count"] == 4
+    assert res["text"] == _continuation(_chat(fake_transformers), 4)
+    # Refused ONCE, on the first step; the decision was remembered.
+    assert refusals == ["logits_to_keep"]
+    assert [call["logits_to_keep"]
+            for call in fake_transformers.models[0].calls] == [0, 0, 0, 0]
+
+
+def test_half_precision_logits_are_upcast(fake_transformers):
+    """A float16 model samples, and samples the same answer.
+
+    ``auto`` loads half precision on CUDA and an explicit ``float16`` does
+    it on any device, so the logits reaching the sampler are routinely not
+    float32 -- and the sampling knobs run in whatever precision they are
+    handed, where float16 has both a narrower range and a different set of
+    kernels per device. The ``.float()`` in the decode loop is what puts
+    the sampler on one dtype everywhere, and the fake builds its logits in
+    the module's own dtype so this test runs against half tensors rather
+    than only claiming to.
+    """
+    import torch
+
+    half = _run(max_new_tokens=3, temperature=1.0, dtype="float16")
+
+    model = fake_transformers.models[0]
+    assert model.weight.dtype is torch.float16
+    assert half["token_count"] == 3
+    assert half["text"] == _continuation(_chat(fake_transformers), 3)
+
+    # Precision is not supposed to be visible in the answer: same seed, same
+    # prompt, same text -- which is the promise the upcast keeps.
+    full = _run(max_new_tokens=3, temperature=1.0, dtype="float32")
+    assert fake_transformers.models[1].weight.dtype is torch.float32
+    assert full["text"] == half["text"]
 
 
 def test_progress_frames_carry_the_running_text(fake_transformers, monkeypatch):

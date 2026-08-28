@@ -527,6 +527,12 @@ class _FakeCausalLM(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
+        #: A real causal LM builds its logits in the precision its weights
+        #: are held in, so the fake needs one weight to be held in: this is
+        #: what ``.to(dtype=)`` moves, and it is what makes a test that asks
+        #: for float16 really exercise half-precision logits instead of
+        #: float32 ones wearing the label.
+        self.weight = torch.nn.Parameter(torch.zeros(1))
         #: Which forward call OF ONE GENERATION emits end-of-turn, i.e.
         #: how many tokens the model chooses to write. Counted per
         #: generation and not per instance: the loader caches the model, so
@@ -535,7 +541,8 @@ class _FakeCausalLM(torch.nn.Module):
         self.eos_at_step: int | None = None
         self.step = 0
         #: One dict per forward call: the ids it was fed, the cache it was
-        #: handed, and whether it was asked to keep one.
+        #: handed, whether it was asked to keep one, and how many rows of
+        #: logits it was asked for.
         self.calls: list[dict[str, Any]] = []
         #: ``(args, kwargs)`` of every ``.to()`` -- which device and which
         #: precision the loader asked for.
@@ -552,7 +559,14 @@ class _FakeCausalLM(torch.nn.Module):
         return super().eval()
 
     def forward(self, input_ids=None, *, past_key_values=None,
-                use_cache=False, **_ignored):
+                use_cache=False, logits_to_keep=0):
+        # No ``**_ignored``: every keyword a node may pass is named here, so
+        # a call that would MISBEHAVE against the real library (a typo, a
+        # keyword transformers dropped) raises TypeError in the test rather
+        # than being silently swallowed. Same rule as
+        # ``_FakeCausalTokenizer``. ``logits_to_keep=0`` is transformers'
+        # own default and means "every position".
+        #
         # A generation starts with no cache, and that is what resets the
         # step counter -- see `eos_at_step`.
         self.step = 0 if past_key_values is None else self.step + 1
@@ -561,12 +575,18 @@ class _FakeCausalLM(torch.nn.Module):
             "input_ids": input_ids.tolist(),
             "past_key_values": past_key_values,
             "use_cache": use_cache,
+            "logits_to_keep": logits_to_keep,
         })
         if past_key_values is not None:
             past_key_values.fed_back = True
 
         fed = [int(token) for token in input_ids[0].tolist()]
-        logits = torch.zeros(1, len(fed), _FAKE_VOCAB)
+        # In the module's OWN precision, like a real model's LM head. It is
+        # what gives the ``.float()`` in a decode loop something to do: a
+        # fake that always built float32 logits would let a test say
+        # "float16" and prove nothing about it.
+        logits = torch.zeros(1, len(fed), _FAKE_VOCAB,
+                             dtype=self.weight.dtype)
         for position, token in enumerate(fed):
             logits[0, position, (token + 1) % _FAKE_VOCAB] = _FAKE_LOGIT
         if self.eos_at_step is not None and step == self.eos_at_step:
@@ -574,6 +594,11 @@ class _FakeCausalLM(torch.nn.Module):
             # caller already has, and a decode loop never reads them.
             logits[0, -1, :] = 0.0
             logits[0, -1, _FAKE_EOS_ID] = _FAKE_LOGIT
+        if logits_to_keep:
+            # What transformers does with the keyword: the LM head runs over
+            # the last ``logits_to_keep`` positions only, so the caller gets
+            # a shorter tensor back and must still read row -1.
+            logits = logits[:, -int(logits_to_keep):, :]
 
         seen = past_key_values.length if past_key_values is not None else 0
         return _FakeCausalOutput(logits, _FakeKVCache(seen + len(fed)))
@@ -601,6 +626,10 @@ class _FakeCausalTokenizer:
         self.chat_calls: list[dict[str, Any]] = []
         #: Every string that was tokenized, in order.
         self.encoded: list[str] = []
+        #: One dict per ``__call__``: the text and the keywords it came
+        #: with, so a test can see that the chat template's own special
+        #: tokens were not doubled by a second pass.
+        self.encode_calls: list[dict[str, Any]] = []
 
     def apply_chat_template(self, messages, *, tokenize=False,
                             add_generation_prompt=False):
@@ -615,8 +644,13 @@ class _FakeCausalTokenizer:
         })
         return rendered
 
-    def __call__(self, text, *, return_tensors=None):
+    def __call__(self, text, *, return_tensors=None, add_special_tokens=True):
         self.encoded.append(text)
+        self.encode_calls.append({
+            "text": text,
+            "return_tensors": return_tensors,
+            "add_special_tokens": add_special_tokens,
+        })
         ids = [ord(char) % _FAKE_VOCAB for char in text]
         return {"input_ids": torch.tensor([ids], dtype=torch.int64)}
 

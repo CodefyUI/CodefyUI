@@ -5,12 +5,13 @@ Everything here runs offline against the ``fake_transformers`` fixture, so
 this file also pins the two promises that make that possible.
 
 The GATE runs before anything heavy. A model id that is not in the catalog
-is rejected before the packs layer is asked about it, a pack that is not
-installed stops the run with the message the Package Center wrote, and a
-snapshot that was never downloaded is named in the error rather than
-silently downloaded mid-run. Each rung is a separate test because each one
-is a different thing going wrong for the learner, and the frontend routes
-them by the ``(pack=<id>)`` suffix.
+is rejected before the packs layer is asked about it and so is a dtype name
+nothing recognises (both are authoring bugs, and no download fixes either),
+a pack that is not installed stops the run with the message the Package
+Center wrote, and a snapshot that was never downloaded is named in the
+error rather than silently downloaded mid-run. Each rung is a separate test
+because each one is a different thing going wrong for the learner, and the
+frontend routes them by the ``(pack=<id>)`` suffix.
 
 The CACHE holds exactly ONE generator, and that bound is behaviour rather
 than an implementation detail: these weights are a gigabyte, and a learner
@@ -95,6 +96,31 @@ def test_unknown_repo_raises_before_touching_packs(monkeypatch):
     # The learner is told what they CAN pick, not just that they were wrong.
     for repo_id in generators.GENERATOR_MODELS:
         assert repo_id in message
+    assert not isinstance(caught.value, PackMissingError)
+
+
+def test_unknown_dtype_raises_before_touching_packs(monkeypatch):
+    """The second authoring bug, checked on the same rung as the first.
+
+    A ``dtype`` name nothing recognises came from a hand-edited graph or a
+    generated script, and no download fixes it -- so it must not reach the
+    packs layer, which would send the learner to Package Center to install
+    a gigabyte that will not help.
+    """
+    def explode(*args, **kwargs):
+        raise AssertionError("the packs layer was asked about a bad dtype")
+
+    monkeypatch.setattr(bridge, "require_pack", explode)
+    monkeypatch.setattr(bridge, "model_dir", explode)
+
+    with pytest.raises(ValueError) as caught:
+        generators.load_causal_lm(QWEN, "cpu", "int8")
+
+    message = str(caught.value)
+    assert "int8" in message
+    # Named, so a graph carrying a dead option says what the live ones are.
+    for name in generators.DTYPES:
+        assert name in message
     assert not isinstance(caught.value, PackMissingError)
 
 

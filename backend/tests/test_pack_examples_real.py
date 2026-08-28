@@ -72,13 +72,20 @@ _VECTOR_PACK = ("word-vectors", "glove-50d")
 _RAG_ENCODER_PACK = ("sentence-embeddings", "multilingual-e5-small")
 _RAG_GENERATOR_PACK = ("rag", "qwen2.5-0.5b-instruct")
 
-#: Which bundled note is expected to answer the question the example ships
-#: with ("What is a node in CodefyUI, and how do I run a graph?"). It is the
-#: note titled "Nodes, Ports and Edges", and the one that writes "To run a
-#: graph, press Run in the toolbar" -- 01-what-is-codefyui.md touches both
-#: subjects in passing, so which of the two wins is exactly the kind of
-#: question only a real encoder settles. That is what this file is for.
-_EXPECTED_TOP_SOURCE = "02-nodes-and-edges.md"
+#: The bundled notes that can answer the question the example ships with
+#: ("What is a node in CodefyUI, and how do I run a graph?").
+#: 02-nodes-and-edges.md is the note titled "Nodes, Ports and Edges" and the
+#: only one that writes "To run a graph, press Run in the toolbar";
+#: 01-what-is-codefyui.md opens by defining a node and by saying you press
+#: Run. Both contain the answer, so the whole top 3 has to come from these
+#: two -- and which of them takes first place is decided by where the
+#: chunker's 400-character boundaries happen to fall, not by anything a
+#: test should pin.
+_ANSWER_BEARING_SOURCES = {"01-what-is-codefyui.md", "02-nodes-and-edges.md"}
+#: The one that is not optional: only this note actually says how to run a
+#: graph, so an answer to the second half of the question cannot be
+#: retrieved without it.
+_REQUIRED_SOURCE = "02-nodes-and-edges.md"
 
 #: Which sentence is which one's partner: four pairs, in the order the
 #: TextInput lists them (weather, food, the stock market, and machine
@@ -209,10 +216,13 @@ def test_rag_local_example_answers_for_real():
     off them. An empty generation, equally, leaves a graph that ran green
     and printed nothing.
 
-    The top source is asserted rather than the answer's wording: which
-    document wins is a property of the corpus and the encoder and is stable,
-    while what a 0.5B model writes about it is not, and a test that pinned
-    the prose would fail on a temperature nobody changed.
+    The SET of retrieved sources is asserted rather than the answer's
+    wording: which documents can answer the question is a property of the
+    corpus and the encoder, while what a 0.5B model writes about them is
+    not, and a test that pinned the prose would fail on a temperature
+    nobody changed. Which of the two answer-bearing notes takes first place
+    is not pinned either -- both contain the answer, and the winner depends
+    on where the chunker's 400-character boundaries fall inside them.
 
     Both gates are checked -- the encoder item and the generator model are
     different downloads from different packs, and skipping on the one that
@@ -232,11 +242,15 @@ def test_rag_local_example_answers_for_real():
     assert len(contexts) == len(sources) == 3, (
         f"top_k is 3 in the shipped graph but the run brought back "
         f"{len(contexts)} contexts / {len(sources)} sources")
-    assert sources[0] == _EXPECTED_TOP_SOURCE, (
-        f"the closest chunk to the example's question came from "
-        f"{sources[0]!r}, not {_EXPECTED_TOP_SOURCE!r}; the whole retrieval "
-        f"was {sources}. Either the corpus changed or the two encoders are "
-        f"no longer the same model with the right e5 prefixes.")
+    assert set(sources) <= _ANSWER_BEARING_SOURCES, (
+        f"the retrieval was {sources}, which reaches outside the two notes "
+        f"that contain the answer ({sorted(_ANSWER_BEARING_SOURCES)}). "
+        f"Either the corpus changed or the two encoders are no longer the "
+        f"same model with the right e5 prefixes.")
+    assert _REQUIRED_SOURCE in sources, (
+        f"{_REQUIRED_SOURCE!r} is not in the top 3 ({sources}); it is the "
+        f"only note that says how to run a graph, so the second half of the "
+        f"question cannot be answered from what was retrieved.")
 
     answer = results["gen"]["text"]
     assert answer.strip(), (

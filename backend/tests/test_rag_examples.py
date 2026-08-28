@@ -87,8 +87,12 @@ _PACK_BACKED_CARDS = [
         id="Sentence-Similarity-zhTW",
     ),
     pytest.param(
+        # BOTH pack ids: installing ``rag`` fetches Qwen but not e5, which
+        # comes from ``sentence-embeddings``, and a card naming one of them
+        # sends the learner back to Package Center a second time -- after
+        # the download they thought was the last one.
         _RAG_LOCAL_EXAMPLE,
-        ("rag pack",),
+        ("rag", "sentence-embeddings"),
         id="RAG-Local-Offline",
     ),
     pytest.param(
@@ -405,11 +409,28 @@ def test_rag_examples_trigger_both_root_nodes(graph_path: Path):
 
     The sibling check for Sentence-Similarity-zhTW asserts exactly ONE
     trigger, because that graph has one root. These two have two, and both
-    of them have to be wired.
+    of them have to be wired -- and, like that sibling, each edge has to
+    leave Start's ``trigger`` handle and be typed as one. An edge that says
+    ``"type": "trigger"`` while hanging off a data handle (or the reverse)
+    loads as a graph the canvas draws differently from the one the runner
+    walks.
     """
     payload = _payload(graph_path)
-    triggers = {(edge["source"], edge["target"]) for edge in payload["edges"]
-                if edge.get("type") == "trigger"}
+    # Selected by EITHER mark, so the loop below checks both directions: an
+    # edge typed trigger that hangs off a data handle, and an edge off the
+    # trigger handle that forgot the type, are both graphs the canvas draws
+    # differently from the one the runner walks.
+    trigger_edges = [edge for edge in payload["edges"]
+                     if edge.get("type") == "trigger"
+                     or edge.get("sourceHandle") == "trigger"]
+    for edge in trigger_edges:
+        assert edge.get("sourceHandle") == "trigger", (
+            f"edge {edge.get('id')!r} is typed trigger but leaves the "
+            f"{edge.get('sourceHandle')!r} handle")
+        assert edge.get("type") == "trigger", (
+            f"edge {edge.get('id')!r} leaves Start's trigger handle but is "
+            f"typed {edge.get('type')!r}")
+    triggers = {(edge["source"], edge["target"]) for edge in trigger_edges}
 
     assert triggers == {("start", "loader"), ("start", "question")}, (
         f"the trigger wiring is {sorted(triggers)}; both roots -- the "

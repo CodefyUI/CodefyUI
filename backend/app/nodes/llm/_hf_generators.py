@@ -13,10 +13,10 @@ heard of would report a model as un-downloadable however many times it was
 downloaded, so ``test_hf_generators`` compares this table against
 ``core.packs.catalog`` rather than trusting that both were typed correctly.
 
-**One gate, in one order.** Unknown id, then pack, then snapshot, then the
-library. Each rung is a different thing gone wrong for the learner, and
-each raises before the next is touched: an id that is not in the table is
-an authoring bug and must not be offered as something installable, and
+**One gate, in one order.** Unknown id, unknown dtype, then pack, then
+snapshot, then the library. Each rung is a different thing gone wrong for
+the learner, and each raises before the next is touched: the first two are
+authoring bugs and must not be offered as something installable, and
 nothing imports ``transformers`` until the pack has already said yes.
 
 **A graph run never downloads pack contents.** ``local_files_only=True`` is
@@ -70,7 +70,10 @@ RAG_PACK = "rag"
 
 #: Hugging Face repo id -> the catalog item id it is downloaded under.
 #: Insertion order is catalog order, which is the order the SELECT lists
-#: them in.
+#: them in. Only INSTRUCTION-TUNED checkpoints -- ones whose tokenizer
+#: carries a ``chat_template`` -- belong in this table: the node addresses
+#: every entry through ``apply_chat_template``, and a base model has no
+#: template to apply.
 GENERATOR_MODELS: dict[str, str] = {
     "Qwen/Qwen2.5-0.5B-Instruct": "qwen2.5-0.5b-instruct",
 }
@@ -180,9 +183,10 @@ def load_causal_lm(repo_id: str, device: str, dtype: str) -> tuple[Any, Any]:
     unlike ``TextGenerate`` (which is handed a module the graph owns and must
     put back the way it found it) nothing here has a training mode to restore.
 
-    Raises ``ValueError`` for an id that is not in ``GENERATOR_MODELS``, and
-    ``PackMissingError`` (message ending in ``(pack=rag)``) when the pack,
-    the snapshot or the library is not there.
+    Raises ``ValueError`` for an id that is not in ``GENERATOR_MODELS`` or a
+    ``dtype`` name that is not in ``DTYPES``, and ``PackMissingError``
+    (message ending in ``(pack=rag)``) when the pack, the snapshot or the
+    library is not there.
     """
     item_id = GENERATOR_MODELS.get(repo_id)
     if item_id is None:
@@ -192,6 +196,12 @@ def load_causal_lm(repo_id: str, device: str, dtype: str) -> tuple[Any, Any]:
         raise ValueError(
             f"Unknown generator model {repo_id!r}; choose one of: "
             + ", ".join(GENERATOR_MODELS))
+
+    # The second authoring bug, and it is checked in the same place as the
+    # first: a dtype name nothing recognises is a hand-edited graph, and no
+    # download fixes it. Before the pack rung so a learner is not sent to
+    # the Package Center to install a gigabyte that will not help.
+    resolved = resolve_dtype(dtype, device)
 
     # Through the bridge, never through ``core.packs`` directly: the bridge
     # is the seam node tests patch, and it is what keeps this import lazy.
@@ -221,7 +231,6 @@ def load_causal_lm(repo_id: str, device: str, dtype: str) -> tuple[Any, Any]:
             "sentence-embeddings pack for transformers; reinstall it from "
             "Package Center") from exc
 
-    resolved = resolve_dtype(dtype, device)
     # The RESOLVED precision, not the param: ``auto`` and ``bfloat16`` name
     # the same weights on an Ampere card, and keying on the param would load
     # the model twice for two nodes that asked for the same thing.

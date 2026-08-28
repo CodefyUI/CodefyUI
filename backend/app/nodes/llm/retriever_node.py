@@ -25,6 +25,14 @@ Dropping it from ``scores`` too would hide exactly what the learner needs in
 order to choose a threshold: what the runners-up scored, and how far under
 the line they fell.
 
+**Why ``min_score = 0`` is no floor rather than a floor at zero.** The
+param's help says "0 keeps everything", and the default has to keep that
+promise: cosine runs from -1, so a floor AT zero would silently drop the
+anticorrelated hits -- and a corpus whose best answer scores -0.1 is the
+single most instructive thing this node can show a learner. Every other
+value is read literally, negatives included: somebody who types -0.5 means
+-0.5, not "off".
+
 **Why only the first query's chunks.** ``contexts`` and ``sources`` are
 single-valued LIST ports -- one list of strings, not one per query row -- so
 a query tensor with several rows can only put one row's texts on the wire.
@@ -104,28 +112,56 @@ def _check_index(value: Any) -> VectorIndex:
 def _top_k(params: dict[str, Any]) -> int:
     """How many chunks to bring back, clamped to the widget's own bounds.
 
-    Clamped and defaulted rather than refused, like ``TextChunker``'s
-    integers: the INT widget already bounds this param, so a value that is
-    out of range or not a number at all reached the node from a hand-edited
-    graph or a generated script, and returning three chunks is a better
-    answer than failing a run that has already paid for the embeddings.
+    The same split ``TextChunker._integer`` makes, and for its reasons. A
+    number OUT OF RANGE is clamped: the INT widget already bounds this
+    param, so such a value reached the node from a hand-edited graph or a
+    generated script, and returning three chunks beats failing a run that
+    has already paid for the embeddings. A value that is not a number at
+    all is REFUSED -- there is nothing to clamp, and quietly answering with
+    the default would hide a param the caller believes they set. Missing,
+    null and empty all mean "not set" and take the default.
     """
     raw = params.get("top_k", TOP_K_DEFAULT)
+    if raw is None or raw == "":
+        raw = TOP_K_DEFAULT
     try:
         value = int(raw)
-    except (TypeError, ValueError):
-        value = TOP_K_DEFAULT
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Retriever: top_k must be a whole number, got {raw!r}."
+        ) from exc
     return max(TOP_K_MIN, min(TOP_K_MAX, value))
 
 
 def _min_score(params: dict[str, Any]) -> float:
-    """The score floor, clamped to the cosine range. See :func:`_top_k`."""
+    """The score floor, clamped to the cosine range. See :func:`_top_k`.
+
+    0.0 -- the default -- is not a floor at all but the absence of one; see
+    :func:`_below_floor`.
+    """
     raw = params.get("min_score", MIN_SCORE_DEFAULT)
+    if raw is None or raw == "":
+        raw = MIN_SCORE_DEFAULT
     try:
         value = float(raw)
-    except (TypeError, ValueError):
-        value = MIN_SCORE_DEFAULT
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Retriever: min_score must be a number, got {raw!r}."
+        ) from exc
     return max(MIN_SCORE_MIN, min(MIN_SCORE_MAX, value))
+
+
+def _below_floor(score: float, min_score: float) -> bool:
+    """Whether *score* is under the floor -- and 0.0 is not a floor.
+
+    The param's help says "0 keeps everything", and that has to be true:
+    the default must not quietly drop the anticorrelated hits a learner is
+    entitled to see (a top hit at -0.1 is the corpus saying it does not
+    contain the answer, which is the lesson). Any value the learner
+    actually typed IS a literal floor, negative ones included -- somebody
+    who sets -0.5 means -0.5, not "off".
+    """
+    return min_score != 0.0 and score < min_score
 
 
 def _source_of(meta: dict[str, Any]) -> str:
@@ -268,8 +304,12 @@ class RetrieverNode(BaseNode):
 
         # Coercion, the dimension check and the metric all live in the index
         # (see ``_vector_index``), so this node never has an opinion about
-        # what a query looks like.
-        scores, positions = index.search(query, top_k)
+        # what a query looks like. ``search`` split into its two halves: the
+        # whole [Q, N] is what the verbose trace shows, and taking it from
+        # the SAME matrix multiply the outputs came from is what stops the
+        # trace and the results below it from disagreeing.
+        matrix = index.scores(query)
+        scores, positions = index.top_hits(matrix, top_k)
         indices = positions.tolist()
 
         queries = int(scores.shape[0])
@@ -286,7 +326,7 @@ class RetrieverNode(BaseNode):
             # ``continue`` rather than ``break`` though the row is sorted:
             # the filter is a statement about each hit, and it should not
             # quietly depend on an ordering guarantee made two modules away.
-            if score < min_score:
+            if _below_floor(score, min_score):
                 continue
             meta = index.metadata[position]
             contexts.append(index.chunks[position])
@@ -327,7 +367,7 @@ class RetrieverNode(BaseNode):
 
         if context is not None and getattr(context, "verbose", False):
             result["__steps__"] = self._trace(
-                index, query, queries=queries, top_k=top_k,
+                index, matrix, queries=queries, top_k=top_k,
                 min_score=min_score, kept=len(contexts))
 
         logger.info("Retriever: %d of %d chunk(s) kept for the top query",
@@ -337,7 +377,7 @@ class RetrieverNode(BaseNode):
     @staticmethod
     def _trace(
         index: VectorIndex,
-        query: Any,
+        matrix: Any,
         *,
         queries: int,
         top_k: int,
@@ -355,15 +395,16 @@ class RetrieverNode(BaseNode):
             scalars={"Q": float(queries), "D": float(index.dim)},
         )
         if size <= MAX_TRACE_SCORES:
-            # A second matmul, in verbose mode only: ``search`` threw the
-            # losing columns away and they are precisely what makes a winning
-            # score readable. At this size it is microseconds.
+            # The matrix ``execute`` already had, not a second matmul over
+            # the same vectors: the losing columns are precisely what makes
+            # a winning score readable, and a trace showing numbers the
+            # outputs were not taken from would be worse than no trace.
             recorder.record(
                 "scores",
                 f"{index.metric}(query, chunk) for all {size} chunks -- one "
                 f"[{queries}, {size}] matrix, computed as a single matrix "
                 "multiply.",
-                scores=index.scores(query),
+                scores=matrix,
             )
         else:
             recorder.record(

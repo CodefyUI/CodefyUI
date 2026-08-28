@@ -126,11 +126,110 @@ def test_invalid_utf8_names_the_file(tmp_path):
         _run(directory=str(tmp_path))
 
 
+def test_a_bom_never_reaches_a_chunk(tmp_path):
+    """Notepad's byte-order mark is invisible and travels a long way.
+
+    A UTF-8 BOM is a legal file whose first character is U+FEFF. Read as
+    plain utf-8 it survives into the first chunk, into its embedding and
+    into the first citation the model is shown -- a corruption with no
+    symptom anybody can see. ``utf-8-sig`` eats it.
+    """
+    (tmp_path / "notepad.md").write_bytes(
+        b"\xef\xbb\xbfWhat is CodefyUI?")
+    (tmp_path / "plain.md").write_text("No mark here.", encoding="utf-8")
+
+    result = _run(directory=str(tmp_path))
+
+    assert [d["source"] for d in result["documents"]] == [
+        "notepad.md", "plain.md"]
+    assert [d["text"] for d in result["documents"]] == [
+        "What is CodefyUI?", "No mark here."]
+    assert not any("﻿" in d["text"] for d in result["documents"])
+
+
 def test_no_matching_files_raises_friendly_error(tmp_path):
     _write(tmp_path / "notes.pdf", "not plain text")
 
     with pytest.raises(FileNotFoundError, match="found no .txt or .md files"):
         _run(directory=str(tmp_path))
+
+
+def test_a_folder_of_only_blank_files_is_an_error(tmp_path):
+    """Zero documents from a folder that HAS files is not a result.
+
+    Every blank file is skipped one at a time, so a folder of them loads
+    nothing and says so cheerfully; the first real complaint then comes from
+    VectorStore, two nodes downstream, about an empty embedding matrix --
+    which is true and names the wrong node.
+    """
+    _write(tmp_path / "a.md", "")
+    _write(tmp_path / "b.txt", "   \n\t\n")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _run(directory=str(tmp_path))
+
+    message = str(excinfo.value)
+    assert "found only blank files" in message
+    assert str(tmp_path) in message
+
+    # One real file among them is enough: the folder is not empty, and the
+    # blanks are skipped as before.
+    _write(tmp_path / "c.md", "something to say")
+    assert _run(directory=str(tmp_path))["count"] == 1
+
+
+def test_a_missing_folder_names_the_param(tmp_path):
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _run(directory=str(tmp_path / "nowhere"))
+
+    message = str(excinfo.value)
+    assert "DocumentLoader: no folder at" in message
+    assert "nowhere" in message
+    assert "`directory`" in message
+
+
+def test_an_empty_directory_param_points_at_the_bundled_corpus(tmp_path):
+    """A cleared text box is not a folder, and the message says what to do.
+
+    Resolving "" would give the working directory, which is whatever the
+    server was started in -- a folder of someone's source code loaded as a
+    corpus is a worse outcome than an error.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _run(directory="   ")
+
+    message = str(excinfo.value)
+    assert "DocumentLoader has no folder set" in message
+    assert "data/samples/rag" in message
+    assert "uploaded_file" in message
+
+
+def test_a_missing_uploaded_file_names_the_param(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _run(source="uploaded_file", file="not-uploaded.txt")
+
+    message = str(excinfo.value)
+    assert "DocumentLoader: no file at" in message
+    assert "`file`" in message
+
+    # Nothing picked at all is a different sentence: there is no path to
+    # name, so it names the dropdown and the upload button instead.
+    with pytest.raises(ValueError) as unset:
+        _run(source="uploaded_file", file="")
+    assert "no file selected" in str(unset.value)
+
+
+def test_unknown_source_lists_the_two():
+    """A hand-edited graph, or one saved by a newer version. Defaulting to
+    ``directory`` would read a folder the caller never asked for."""
+    with pytest.raises(ValueError) as excinfo:
+        _run(source="s3")
+
+    assert str(excinfo.value) == (
+        "DocumentLoader: unknown source 's3'; set the `source` param to one "
+        "of ['directory', 'uploaded_file'].")
 
 
 def test_max_docs_caps_in_name_order(tmp_path):
@@ -180,6 +279,32 @@ def test_project_mode_refuses_escape(tmp_path, monkeypatch):
     # Names the PARAM, so the reader knows which field to fix.
     assert "DocumentLoader: directory" in message
     assert "../outside" in message
+
+
+def test_project_mode_refuses_a_dotted_path_wearing_the_samples_prefix(
+        tmp_path, monkeypatch):
+    """The ``data/samples/`` exemption is a PREFIX test, so it needs the
+    second half: no component may be ``..``.
+
+    ``data/samples/../../../elsewhere`` starts with the exempt prefix and
+    ends outside the project entirely, and without the ``..`` half it would
+    skip the project check the exemption exists to sidestep for the shipped
+    corpus alone.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    _write(tmp_path / "outside" / "secret.md", "not yours")
+    monkeypatch.setattr(settings, "PROJECT_DIR", project)
+
+    with pytest.raises(ValueError) as excinfo:
+        _run(directory="data/samples/../../../outside")
+
+    assert "escapes the project directory" in str(excinfo.value)
+
+    # The Windows spelling of the same trick, since the prefix test
+    # normalises backslashes before it looks.
+    with pytest.raises(ValueError):
+        _run(directory="data\\samples\\..\\..\\..\\outside")
 
 
 def test_project_mode_still_allows_the_bundled_samples(tmp_path, monkeypatch):

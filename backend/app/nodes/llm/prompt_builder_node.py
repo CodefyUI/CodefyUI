@@ -125,8 +125,8 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else str(value)
 
 
-def _string_list(value: Any) -> list[str]:
-    """A LIST port's value as strings.
+def _string_list(value: Any, *, drop_blanks: bool = True) -> list[str]:
+    """A LIST port's value as strings, blank entries dropped.
 
     The bare-string guard is not paranoia about the canvas, which type-checks
     LIST against STRING; it is about ``run_graph.py`` and exported scripts,
@@ -134,16 +134,28 @@ def _string_list(value: Any) -> list[str]:
     string is its CHARACTERS, so without this the prompt would come back
     numbered one letter at a time -- a wrong answer that looks like a
     formatting bug rather than a wiring one.
+
+    A blank entry is not a chunk. It would spend a ``[2]`` and a separator
+    saying nothing, and -- the case that matters -- a ``contexts`` port
+    carrying ``""`` or a list of nothing but blanks has to reach the
+    ``(no context retrieved)`` branch and its warning, rather than build a
+    prompt out of punctuation and look like it retrieved something.
+
+    ``drop_blanks=False`` is for ``sources``, the one list this node reads
+    POSITIONALLY: see :func:`_source_at`. Closing a gap there would slide
+    every later citation up and print a real filename under the wrong
+    passage, which is a worse lie than one label reading ``?``.
     """
     if value is None:
         return []
     if isinstance(value, str):
-        return [value]
+        return [value] if value else []
     try:
         items = list(value)
     except TypeError:
         return [str(value)]
-    return [_text(item) for item in items]
+    texts = [_text(item) for item in items]
+    return [text for text in texts if text] if drop_blanks else texts
 
 
 def _fill(template: str, *, context: str, question: str) -> str:
@@ -162,18 +174,25 @@ def _fill(template: str, *, context: str, question: str) -> str:
     return context.join(pieces)
 
 
-def _template(inputs: dict[str, Any], params: dict[str, Any]) -> str:
-    """The template in force: the input port when it carries one.
+def _template(inputs: dict[str, Any],
+              params: dict[str, Any]) -> tuple[str, bool]:
+    """The template in force, and whether a CONNECTED one was passed over.
 
     Blank counts as absent. An unwired port is ``None`` and a ``TextInput``
     whose box the learner cleared is ``""`` or whitespace -- neither is a
     template, and falling back to the param beats raising about placeholders
     missing from a value that is not visible on the node.
+
+    The second half of the answer is what the log needs. An UNWIRED port is
+    the ordinary case and says nothing; a wired one carrying nothing is a
+    node the learner built on purpose, silently having no effect, and they
+    are entitled to be told which template actually ran.
     """
-    supplied = _text(inputs.get("template"))
-    if supplied.strip():
-        return supplied
-    return _text(params.get("template"))
+    supplied = inputs.get("template")
+    text = _text(supplied)
+    if text.strip():
+        return text, False
+    return _text(params.get("template")), supplied is not None
 
 
 def _validate(template: str) -> None:
@@ -396,12 +415,14 @@ class PromptBuilderNode(BaseNode):
         # Validated before anything is assembled: a template that cannot
         # hold the retrieval is worth failing on immediately, and the check
         # costs nothing.
-        template = _template(inputs, params)
+        template, blank_template_input = _template(inputs, params)
         _validate(template)
 
         question = _text(inputs.get("question"))
         contexts = _string_list(inputs.get("contexts"))
-        sources = _string_list(inputs.get("sources"))
+        # Blanks KEPT here: ``sources`` is paired with ``contexts`` by index
+        # and ``_source_at`` turns a gap into ``?`` in place.
+        sources = _string_list(inputs.get("sources"), drop_blanks=False)
         limit = _max_context_chars(params)
 
         warning = None
@@ -440,6 +461,14 @@ class PromptBuilderNode(BaseNode):
                 f"{len(prompt):,}-char prompt")
         if truncated:
             note += f" (context truncated to max_context_chars {limit})"
+        # Not an advisory: nothing is wrong, and the node did the sensible
+        # thing. But a learner who wired a TextInput and then emptied it is
+        # looking at a prompt built from a template they cannot see on the
+        # node, and that is worth one line.
+        fallback_note = (
+            "the connected `template` input is blank, so the template param "
+            "was used" if blank_template_input else None
+        )
 
         result: dict[str, Any] = {
             # A plain STRING output: ``core.output_entries`` summarises it
@@ -451,7 +480,7 @@ class PromptBuilderNode(BaseNode):
             "context": block,
             # The one result key the canvas Log tab renders; dunder keys are
             # filtered out of recorded outputs and port summaries.
-            "__log__": join_notes(note, warning),
+            "__log__": join_notes(note, fallback_note, warning),
         }
 
         if context is not None and getattr(context, "verbose", False):

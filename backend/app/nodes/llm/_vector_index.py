@@ -11,11 +11,12 @@ the one a learner can read.
 
 Keeping it here rather than inside either node is what makes both nodes thin:
 ``VectorStore.execute`` is a call to :func:`build_index`, ``Retriever.execute``
-is a call to :meth:`VectorIndex.search`, and a later ``VectorStoreFile`` node
+is a search over this class, and a later ``VectorStoreFile`` node
 is :meth:`save` / :meth:`load` with a path widget. ``search`` is itself
-:meth:`VectorIndex.scores` plus a ``topk``, and the split is public because
-``Retriever``'s verbose trace shows the whole ``[Q, N]`` matrix: the chunks
-that lost are half of what makes a top score readable.
+:meth:`VectorIndex.scores` plus :meth:`VectorIndex.top_hits`, and the split
+is public because ``Retriever`` wants both halves out of ONE matrix multiply:
+its verbose trace shows the whole ``[Q, N]``, because the chunks that lost
+are half of what makes a top score readable, and its outputs are the winners.
 
 Four decisions worth knowing about.
 
@@ -63,6 +64,16 @@ import numpy as np
 import torch
 
 METRICS = ("cosine", "dot")
+
+#: What a query that is not a vector at all is answered with. One string
+#: because ``scores`` raises it from two places (nothing wired, and something
+#: wired that no tensor can be made of) and both are the same mistake seen
+#: from different sides. Named for ``Retriever`` because that is the only
+#: node a learner reaches this class through.
+_QUERY_NOT_A_TENSOR = (
+    "Retriever: the query input must be the embedding of the question (a "
+    "tensor) -- connect TextEmbedding.embeddings"
+)
 
 # ``np.savez`` member names. Changing one changes the file format, so they are
 # named once here rather than spelled inline in save and again in load.
@@ -126,8 +137,17 @@ class VectorIndex:
         (CPU float32, matching ``vectors``, which is why the nodes can leave
         ``align_inputs`` off), and a query from the wrong encoder is refused
         with the message that names the fix.
+
+        A query that is not a tensor at all gets a message about the WIRING
+        rather than torch's. An unwired port is ``None`` and
+        ``torch.as_tensor(None)`` raises "Could not infer dtype of
+        NoneType", which is a true sentence about a node the learner did not
+        write and says nothing about the edge they forgot to draw.
         """
-        q = torch.as_tensor(query).detach().float().cpu()
+        try:
+            q = torch.as_tensor(query).detach().float().cpu()
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise ValueError(_QUERY_NOT_A_TENSOR) from exc
         if q.ndim == 1:
             q = q.unsqueeze(0)
         if q.ndim != 2:
@@ -151,21 +171,31 @@ class VectorIndex:
             vectors = torch.nn.functional.normalize(vectors, dim=1, eps=1e-12)
         return q @ vectors.T  # [Q, N]
 
+    def top_hits(self, matrix: torch.Tensor, top_k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """The best *top_k* columns of a ``[Q, N]`` matrix from :meth:`scores`.
+
+        The second half of :meth:`search`, public for the same reason
+        ``scores`` is: ``Retriever`` needs BOTH the whole matrix (for its
+        verbose trace) and the winners (for its outputs), and calling the two
+        halves gets it both from one matrix multiply. Recomputing the matrix
+        for the trace would be a second matmul that is allowed to disagree
+        with the results printed under it.
+
+        *top_k* is clamped to ``[1, N]``: asking for three chunks from a
+        two-chunk corpus is a reasonable thing for a default parameter to do,
+        and ``torch.topk`` would raise instead.
+        """
+        k = max(1, min(int(top_k), len(self)))
+        return torch.topk(matrix, k=k, dim=1)
+
     def search(self, query: torch.Tensor, top_k: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Score every chunk against *query* and return the best *top_k*.
 
         Returns ``(scores, indices)``, both ``[Q, k]`` and both sorted best
         first; ``indices`` is int64 and indexes into ``chunks``. A ``[D]``
         query counts as one question and comes back as ``[1, k]``.
-
-        *top_k* is clamped to ``[1, N]``: asking for three chunks from a
-        two-chunk corpus is a reasonable thing for a default parameter to do,
-        and ``torch.topk`` would raise instead.
         """
-        matrix = self.scores(query)
-        k = max(1, min(int(top_k), len(self)))
-        values, indices = torch.topk(matrix, k=k, dim=1)
-        return values, indices
+        return self.top_hits(self.scores(query), top_k)
 
     def save(self, path: Path) -> None:
         """Write the whole index to *path* as an ``.npz`` archive.
@@ -223,11 +253,23 @@ class VectorIndex:
         metadata = [dict(m) if isinstance(m, dict) else {}
                     for m in texts.get("metadata", [])]
         rows = int(matrix.shape[0]) if matrix.ndim >= 1 else 0
-        if len(chunks) != rows or len(metadata) != rows:
+        # Only the list that is actually wrong: "3 vectors but 3 chunks and 1
+        # metadata entry" invites the reader to check the count that already
+        # agrees, and the plural of "1 entry" is the difference between a
+        # message that was written and one that was concatenated.
+        disagree = []
+        if len(chunks) != rows:
+            disagree.append(
+                f"{len(chunks)} {'chunk' if len(chunks) == 1 else 'chunks'}")
+        if len(metadata) != rows:
+            disagree.append(
+                f"{len(metadata)} metadata "
+                f"{'entry' if len(metadata) == 1 else 'entries'}")
+        if disagree:
             raise ValueError(
-                f"{path} holds {rows} vectors but {len(chunks)} chunks and "
-                f"{len(metadata)} metadata entries -- the archive is "
-                "truncated or was not written by VectorIndex.save"
+                f"{path} holds {rows} {'vector' if rows == 1 else 'vectors'} "
+                f"but {' and '.join(disagree)} -- the archive is truncated or "
+                "was not written by VectorIndex.save"
             )
         if metric not in METRICS:
             raise ValueError(

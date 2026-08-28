@@ -153,16 +153,22 @@ def _character_spans(text: str, start: int, end: int, *,
                      size: int, step: int) -> list[tuple[int, int]]:
     """Fixed-size windows over ``text[start:end]``, stripped and non-empty.
 
-    The walk stops as soon as a window reaches *end* rather than stepping
-    once more: a final window that begins inside its predecessor and ends at
-    the same place is a duplicate of text already emitted, and it would be
-    embedded, stored and retrieved a second time.
+    Two ways a window turns out to be text already emitted, and both are
+    skipped. The walk stops as soon as a window reaches *end* rather than
+    stepping once more, because a final window that begins inside its
+    predecessor and ends at the same place is a duplicate. And a window that
+    STRIPS down to the span before it is the same duplicate arrived at
+    differently: with a high overlap and a run of whitespace -- a
+    front-matter block, an ASCII diagram, an indented code sample -- two
+    consecutive windows can trim to the same handful of characters. Either
+    one would otherwise be embedded, stored and retrieved a second time, and
+    the search would then return one passage twice.
     """
     spans: list[tuple[int, int]] = []
     cursor = start
     while cursor < end:
         window = _strip_span(text, cursor, min(cursor + size, end))
-        if window is not None:
+        if window is not None and (not spans or window != spans[-1]):
             spans.append(window)
         if cursor + size >= end:
             break
@@ -235,11 +241,12 @@ def _document_spans(text: str, *, strategy: str, chunk_size: int,
     """Every chunk of one document, as spans into *text*."""
     if strategy == "characters":
         # ``execute`` has already refused an overlap at or above chunk_size,
-        # so the step is at least 1 by the time it gets here. The floor is
-        # belt and braces for a future caller: a step of 0 is not a wrong
-        # answer, it is a window that never advances, i.e. a hung run.
+        # so the step is at least 1 by the time it gets here. No second
+        # floor on it: a ``max(1, ...)`` here is a line nothing can reach,
+        # and an unreachable guard is a claim that the check above it might
+        # not hold -- which is exactly the doubt a reader should not have.
         spans = _character_spans(text, 0, len(text), size=chunk_size,
-                                 step=max(1, chunk_size - chunk_overlap))
+                                 step=chunk_size - chunk_overlap)
     else:
         pattern = (_SENTENCE_END if strategy == "sentences"
                    else _PARAGRAPH_BREAK)
