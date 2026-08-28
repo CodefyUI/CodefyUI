@@ -124,7 +124,11 @@ CATALOG: tuple[Pack, ...] = (
                 # is also the test that PRINTS a digest to record when an
                 # asset item has none yet.
                 sha256="5c55f98957aa9fed8d2ac5fb1dcff57af3b23c5a3ee7af3f7945f8d49198eb24",
-                approx_bytes=66_000_000,
+                # The DOWNLOAD plus what installing it writes: the convert
+                # step leaves an npz beside the gz and the disk has to hold
+                # both. 69,182,535 gz + 83,357,227 npz measured; the
+                # precheck budgets 1.5x this.
+                approx_bytes=153_000_000,
                 license="PDDL-1.0",
             ),
         ),

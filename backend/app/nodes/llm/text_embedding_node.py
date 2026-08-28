@@ -301,9 +301,13 @@ class TextEmbeddingNode(BaseNode):
         label_chars = _integer(params, "label_chars", 48, minimum=1)
 
         device = resolve_node_device(params.get("device"), context)
-        started = time.monotonic()
         model = load_sentence_model(
             repo, device, max_seq_length=max_seq_length)
+        # Started AFTER the load: the first run in a session pays seconds to
+        # read the weights off disk and every run after it pays none, so a
+        # clock started above would report "the encode took 6s" once and
+        # "0.2s" thereafter for identical work.
+        started = time.monotonic()
 
         rows_array, stopped_at = encode_in_batches(
             model,
@@ -361,6 +365,11 @@ class TextEmbeddingNode(BaseNode):
 
         note = (f"embedded {rows} texts with {repo} (D={dim}) in "
                 f"{elapsed:.1f}s on {device}")
+        if stopped_at is not None:
+            # Numbered the way the progress frames number batches (1-based),
+            # so "stopped before batch 3" follows a bar that last said
+            # "batch 2 of 5". The raw index stays in the marker below.
+            note += f" (stopped before batch {stopped_at + 1})"
         result: dict[str, Any] = {
             "embeddings": tensor,
             "labels": labels,
@@ -407,6 +416,14 @@ class TextEmbeddingNode(BaseNode):
                     "string, not a list of strings. Wire it into the `text` "
                     "input instead.")
             texts = [cls._element_text(item) for item in listed]
+            if not texts:
+                # Named apart from the generic message below: the `texts`
+                # input IS connected, so "connect texts or text" sends the
+                # learner to check wiring that is already right. What is
+                # empty is what the upstream node produced.
+                raise ValueError(
+                    "TextEmbedding received an empty texts list - the "
+                    "upstream node produced no texts.")
         else:
             raw = single if single is not None else params.get("text", "")
             texts = cls._split(str(raw), bool(params.get("split_lines", True)))

@@ -25,7 +25,7 @@ npz, which is larger than the gzip it was built from and which the catalog
 does not name. It exists so ``flows.remove_item`` can delete them with the
 item, and presence deliberately ignores it: a converted file somebody
 deleted is rebuilt on the next run, so its absence is not a reason to call
-a 66 MB download missing.
+a 69 MB download missing.
 """
 
 from __future__ import annotations

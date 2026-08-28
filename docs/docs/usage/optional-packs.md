@@ -29,13 +29,13 @@ Adding a pack changes nothing about the base install except which options light 
 | `rag` | `Qwen2.5-0.5B-Instruct`, a local generator small enough to run on CPU | about 1 GB | Apache-2.0 | `HFTextGenerate` and the retrieval chain around it, **next release**. Needs `sentence-embeddings` first |
 | `gpu-torch` | The CUDA or ROCm PyTorch build that matches this machine | varies by variant | PyTorch's own (BSD-3-Clause) | No new nodes; every node that can use an accelerator gets one. Not installed by `cdui packs` at all: run `cdui install --gpu <variant>`, see [GPU & Device Setup](../getting-started/gpu-device.md) |
 
-Sizes are what comes down the wire. The disk precheck budgets the catalog's estimate instead, which for the GloVe table is 66 MB against a 69 MB file, so keep a little more headroom free than the number in the table.
+Sizes are what comes down the wire. The GloVe row is the one that costs more than it downloads: the table lists the 69 MB download, and installing also writes an 83 MB converted table beside it, so the catalog budgets the pair at 153 MB and the disk precheck asks for about 230 MB of free space (1.5 x 153 MB) before it starts.
 
 The `rag` row is in the catalog before the nodes that use it, on purpose: the download is a separate decision from the code, and a classroom can fetch the model the day before the lesson that needs it. `HFTextGenerate` is not in this build.
 
 ## Installing and removing
 
-**In the app.** Open the Package Center (toolbar > Settings > Optional packs). Each pack lists its items with a size and whether it is already downloaded; select the ones you want, start the install, and watch the log and the byte counter as it runs. **Cancel** stops it mid-file rather than at the end of one, and the half-written download is removed. One install job runs at a time.
+**In the app.** Open the Package Center (toolbar > Settings > Optional packs). Each pack lists its items with a size and whether it is already downloaded; select the ones you want, start the install, and watch the log and the byte counter as it runs. **Cancel** takes effect immediately rather than at the end of the current file: the download stops mid-file, and the partial file is reused if you install again. One install job runs at a time.
 
 **From a terminal.** The same installer, over the same code path:
 
@@ -63,7 +63,7 @@ Run it with the server stopped.
 
 ## What changes on the canvas
 
-With a pack missing, the editor says so before anything runs: `TextEmbedding` is greyed out in the palette, and `WordVector`'s **backend** dropdown greys the options whose download is not there while `demo-16d` stays selectable. A greyed option carries the install with it, so the fix is one click away in the Package Center panel.
+With a pack missing, the editor says so before anything runs: `TextEmbedding` is greyed out in the palette, and `WordVector`'s **backend** dropdown greys the options whose download is not there while `demo-16d` stays selectable. A greyed option carries the install with it, so the fix is one click away in the Package Center panel. On a build without the Package Center panel, `cdui packs list` shows the same information.
 
 A run that reaches a node needing something missing stops at that node with the sentence that names it:
 
@@ -129,7 +129,7 @@ Two loaded models stay resident at a time, which is exactly what comparing an En
 - **"Model ... is not downloaded"** -- the Python side is there but that particular model is not. The four are alternatives, so installing one never brings the others: download it in the Package Center, or `cdui packs install sentence-embeddings --items multilingual-e5-small`.
 - **Speed on CPU.** These are small models (22M to 118M parameters) and CPU is the expected place to run them. The first encode in a session pays a few seconds to read the weights off disk; after that a handful of sentences is well under a second. GloVe pays a one-time conversion from the downloaded text table into an npz, roughly ten seconds with a progress line saying so, and about a second per process to load afterwards.
 - **Windows paths.** Hugging Face snapshot directories nest deeply. If the cache sits far down an already long path, turn on long-path support or point `CODEFYUI_USER_DATA_DIR` somewhere shallow. A removal on Windows can also report that the item is no longer registered while its files are still on disk, because something is holding them open: stop the server, then delete the directory by hand.
-- **"cannot be installed while the server is running".** Every live install runs under a constraints file pinning each distribution already in this interpreter to the version it has, so an install can only ADD -- nothing the running server has already imported can be replaced under it. A pack that would have to replace something stops there instead of half-replacing it (exit code 3 from the CLI) and prints the command to run in its place. Stop the server with `cdui stop`, run that command, then start it again. The GPU pack is always in this class: it is installed with `cdui install --gpu <variant>`, never with `cdui packs install`.
+- **"cannot be installed while the server is running".** Every live install runs under a constraints file pinning each distribution already in this interpreter to the version it has, so an install can only ADD -- nothing the running server has already imported can be replaced under it. A pack that would have to replace something stops there instead of half-replacing it (exit code 3 from the CLI) and prints a `uv pip install` line to run with the server stopped. Stop the server with `cdui stop`, run that line, then start it again. The GPU pack is always in this class: it is installed with `cdui install --gpu <variant>`, never with `cdui packs install`.
 - **Not enough disk.** Checked before the first byte is fetched, so a 470 MB download does not fail at 90% on a disk that was always too small. The message names what was needed and what is free.
 
 ## Licences

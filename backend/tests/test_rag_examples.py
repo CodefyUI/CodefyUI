@@ -1,7 +1,7 @@
 """What the pack-backed example graphs promise, checked without a pack.
 
 Two shipped examples cannot run on a fresh install: Word-Embedding-Analogy
-switches to a 66 MB GloVe table for its real vectors, and
+switches to a 69 MB GloVe table for its real vectors, and
 Sentence-Similarity-zhTW needs a 470 MB multilingual encoder before it does
 anything at all. Neither is executed here -- CI has no pack cache, and a box
 that HAS one should not load half a gigabyte of weights inside the fast

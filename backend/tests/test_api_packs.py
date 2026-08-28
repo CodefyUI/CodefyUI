@@ -179,7 +179,7 @@ async def test_a_data_only_pack_with_nothing_downloaded_is_not_installed(
     vectors = next(p for p in body["packs"] if p["id"] == "word-vectors")
     assert vectors["pip_ready"] is True
     assert vectors["status"] == "not_installed"
-    assert vectors["size_bytes_total"] == 66_000_000
+    assert vectors["size_bytes_total"] == 153_000_000
     assert vectors["install_command"] == "cdui packs install word-vectors"
 
 
@@ -471,13 +471,13 @@ async def test_failed_flow_ends_with_job_failed_message_and_hint(client, flow):
 async def test_needs_restart_flow_ends_with_needs_restart_status_and_command(
         client, flow):
     flow.fail(PackNeedsRestart("cannot replace a package already in use",
-                               command="cdui packs install gpu-torch --restart"))
+                               command="uv pip install --python /venv/bin/python torch"))
     job_id = await start_install(client)
     events, status = await drain(client, job_id)
 
     assert status == "needs_restart"
     assert events[-1]["type"] == "needs_restart"
-    assert events[-1]["command"] == "cdui packs install gpu-torch --restart"
+    assert events[-1]["command"] == "uv pip install --python /venv/bin/python torch"
 
 
 # ── the job routes ────────────────────────────────────────────────────────

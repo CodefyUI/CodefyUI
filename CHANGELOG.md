@@ -106,7 +106,7 @@ received — each links to the release it was published as.
   weather, food, the stock market, machine learning, the last pair split
   across Chinese and English — encoded, ranked by `CosineSimilarity` and
   projected to 2D by `EmbeddingScatter`. Rank 2 is each sentence's partner
-  though the two share almost no characters, and the zh/en pair shows the
+  though the two share few characters, and the zh/en pair shows the
   model aligning languages. Needs the `sentence-embeddings` pack; runs
   offline on CPU in a few seconds once it is there.
 

@@ -376,21 +376,27 @@ def test_cli_install_prompt_shows_the_download_size(
     monkeypatch.setattr("builtins.input",
                         lambda prompt="": asked.append(prompt) or "y")
     assert packs.main(["install", "word-vectors"]) == 0
-    assert "66" in "".join(asked), "the prompt must say how many MB this is"
+    assert "153" in "".join(asked), "the prompt must say how many MB this is"
 
 
 def test_cli_install_needs_restart_exits_3_with_command(
         probed, fake_flow, capsys):
     from app.core.packs.errors import PackNeedsRestart
 
+    # The real command, in the shape ``flows._restart_command`` builds: a
+    # ``uv pip install`` line to run with the server stopped. There is no
+    # ``cdui packs install --restart``, so a CLI that printed one would send
+    # the user from exit code 3 to a usage error.
+    command = f"uv pip install --python {sys.executable} sentence-transformers"
     fake_flow["raise"] = PackNeedsRestart(
         "sentence-transformers cannot be installed while the server is running",
-        command="cdui packs install sentence-embeddings --restart",
-        hint="ResolutionImpossible")
+        command=command,
+        hint=f"stop the server, then run:\n{command}\n\nResolutionImpossible")
     assert packs.main(["install", "sentence-embeddings", "--yes"]) == 3
     captured = capsys.readouterr()
     text = captured.out + captured.err
-    assert "cdui packs install sentence-embeddings --restart" in text
+    assert command in text
+    assert "stop the server, then run:" in text
 
 
 def test_cli_install_failure_exits_1_with_hint(probed, fake_flow, capsys):
@@ -495,7 +501,7 @@ def test_cli_remove_an_item_that_was_never_downloaded_says_nothing_to_remove(
 
     ``remove_item`` returns False for both -- it only reports whether BYTES
     went -- so the CLI answers from what the probe already knew, rather than
-    telling somebody who never downloaded a 66 MB table that a process is
+    telling somebody who never downloaded a 69 MB table that a process is
     holding it open.
     """
     from app.core.packs import flows

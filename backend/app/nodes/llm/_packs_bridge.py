@@ -94,7 +94,7 @@ def record_derived(pack_id: str, item_id: str, path: Path) -> None:
 
     The only WRITE on this bridge. A node that converts a download -- today
     just ``_glove`` turning the GloVe gzip into an npz -- has to leave a
-    record, or ``remove_item`` deletes the 66 MB download, reports the space
+    record, or ``remove_item`` deletes the 69 MB download, reports the space
     as freed, and leaves 83 MB behind that nothing will ever find again.
 
     A missing packs package is a no-op rather than an error, unlike the read

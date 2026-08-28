@@ -111,6 +111,30 @@ def _tail_text(lines: Sequence[str]) -> str:
     return "\n".join(lines).strip()
 
 
+def _shell_quote(part: str) -> str:
+    """One argument of a command line a human is going to paste.
+
+    ``shlex.quote`` is POSIX in its choice of quote character, and the path
+    this quotes is most often a Windows one, where ``'C:\\...'`` is not a
+    quoted string at all. Double quotes are what both shells read the same
+    way, and only a part that needs them gets them.
+    """
+    return f'"{part}"' if any(char.isspace() for char in part) else part
+
+
+def _restart_command(pack: Pack) -> str:
+    """The command that finishes this install with the server stopped.
+
+    Spelled out in full rather than pointing at a ``cdui packs`` flag: no
+    flag installs a pack into a stopped server, so naming one would send the
+    user to an exit code instead of to a working install. The constraints
+    file is deliberately absent -- it pins what THIS process has already
+    imported, which is the very thing that has to be replaced.
+    """
+    argv = ["uv", "pip", "install", "--python", sys.executable, *pack.pip]
+    return " ".join(_shell_quote(part) for part in argv)
+
+
 def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
     """Install *pack*'s packages, or explain why it could not be done here."""
     emit({"type": "step_started", "step": "pip",
@@ -134,11 +158,12 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
     if returncode != 0:
         detail = _tail_text(tail)
         if runner.looks_like_resolver_conflict(tail):
+            command = _restart_command(pack)
             raise PackNeedsRestart(
                 f"{pack.title} cannot be installed while the server is "
                 f"running: it would have to replace a package already in use",
-                command=f"cdui packs install {pack.pack_id} --restart",
-                hint=detail)
+                command=command,
+                hint=f"stop the server, then run:\n{command}\n\n{detail}")
         raise PackInstallError(
             f"installing {pack.title} failed (uv exited {returncode})",
             hint=detail)
@@ -207,7 +232,7 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
     The converter ships with the backend, so a build without it is a trimmed
     or partial one rather than a version that predates it. The download is
     still worth having there -- so an absent converter is a log line and a
-    finished step, not a failed install that throws away 66 MB somebody just
+    finished step, not a failed install that throws away 69 MB somebody just
     waited for.
     """
     item_id = _GLOVE[1]
@@ -249,7 +274,7 @@ def record_derived(pack_id: str, item_id: str, *paths: Path) -> None:
 
     The npz the conversion writes is 83 MB that the CATALOG does not describe
     -- it has one filename per item -- so ``remove_item`` would delete the
-    66 MB download, report the bytes as freed, and leave the larger file
+    69 MB download, report the bytes as freed, and leave the larger file
     behind forever. The sentinel is the file that already says this item was
     downloaded, so it is where "and this came with it" belongs.
 

@@ -57,13 +57,13 @@ assert _GRAPHS, "builtin example smoke suite discovered no examples"
 
 # Node types that pull a real dataset, train for multiple epochs, or load/save
 # weights — longer than a few seconds or dependent on prior runs.
-# test_chapter_examples.py carries the same list minus ``TextCorpusDataset``
-# and ``TextEmbedding``, which no plugin example uses. This correctly skips
-# execution for six graphs:
-# the five training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
-# ResNet-18 baseline and the TinyStories LM) and the MNIST inference example,
-# which needs weights from a prior training run. Everything else — including
-# all Model_Architecture graphs — must execute.
+# test_chapter_examples.py carries the same list minus ``TextCorpusDataset``,
+# which no plugin example uses. This correctly skips execution for eight
+# graphs: the six training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
+# ResNet-18 baseline, the TinyStories LM and VLA-PushWorld), the MNIST
+# inference example, which needs weights from a prior training run, and the
+# zh-TW Sentence Similarity example, whose encoder is a pack download.
+# Everything else — including all Model_Architecture graphs — must execute.
 _SLOW_NODE_TYPES = {
     "Dataset",
     "DataLoader",

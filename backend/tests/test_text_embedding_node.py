@@ -183,6 +183,22 @@ def test_param_fallback_when_nothing_connected(fake_sentence_transformers):
     assert "nothing to embed" in str(caught.value)
 
 
+def test_an_empty_texts_list_blames_the_upstream_node():
+    """A connected-but-empty list is not "you forgot to connect something".
+
+    No pack fixture: like the both-inputs case this is decided before
+    anything is loaded. "connect texts or text" would send a learner to
+    check wiring that is already right -- the chunker or filter feeding this
+    node is what produced nothing.
+    """
+    with pytest.raises(ValueError) as caught:
+        _run(inputs={"texts": []})
+
+    assert str(caught.value) == (
+        "TextEmbedding received an empty texts list - the upstream node "
+        "produced no texts.")
+
+
 def test_both_inputs_connected_is_an_error():
     """Two inputs saying different things is a graph bug, not a merge.
 
@@ -323,6 +339,12 @@ def test_progress_frames_and_cooperative_stop(fake_sentence_transformers,
     assert len(res["labels"]) == res["embeddings"].shape[0]
     assert res["__interrupted__"]["batch"] == stop_after
     assert res["__interrupted__"]["texts"] == stop_after
+
+    # The Log tab is where a learner reads what a run did, and "embedded 0
+    # texts" with nothing after it reads as a finished run that found
+    # nothing. The batch number is 1-based, like the progress frames'.
+    assert res["__log__"].endswith(
+        f" (stopped before batch {stop_after + 1})"), res["__log__"]
 
     # One frame per batch that ran -- ``ProgressThrottle`` always emits the
     # first, and nothing here runs long enough to reach a second.

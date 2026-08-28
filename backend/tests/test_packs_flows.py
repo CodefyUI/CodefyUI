@@ -319,7 +319,7 @@ def test_the_convert_step_records_the_npz_on_the_sentinel(installer):
     """The conversion is bigger than the download and the catalog does not
     name it, so the only thing that can tie the two together is the record of
     the download itself. Without this line in the sentinel, uninstalling the
-    pack frees 66 MB and silently leaves 83 MB behind.
+    pack frees 69 MB and silently leaves 83 MB behind.
 
     What the download wrote stays -- ``derived`` is added to the sentinel,
     not written over it.
@@ -478,7 +478,7 @@ def test_a_build_without_the_converter_logs_and_finishes(
         installer, monkeypatch):
     """A build that does not ship ``_glove`` keeps the download.
 
-    66 MB somebody just waited for is still worth having, and converting it
+    69 MB somebody just waited for is still worth having, and converting it
     is something a later run can do -- so the step logs and finishes rather
     than failing the install.
 
@@ -522,7 +522,13 @@ def test_the_converter_that_ships_is_never_called_absent(monkeypatch):
 def test_resolver_conflict_becomes_needs_restart_with_command(
         installer, monkeypatch):
     """uv refusing to satisfy the pins means "not while the server is
-    running" -- and the message has to say what to type instead."""
+    running" -- and the message has to say what to type instead.
+
+    What it says has to be RUNNABLE. The command names uv directly rather
+    than a ``cdui packs install ... --restart``: no such flag exists, so a
+    user who followed that hint would get a usage error and a pack still not
+    installed.
+    """
     monkeypatch.setattr(state, "pip_ready", lambda pack: False)
     installer.pip_returncode = 1
     installer.pip_output = [
@@ -534,11 +540,34 @@ def test_resolver_conflict_becomes_needs_restart_with_command(
     with pytest.raises(PackNeedsRestart) as failure:
         _install("sentence-embeddings", ["all-MiniLM-L6-v2"], installer)
 
-    assert failure.value.command == (
-        "cdui packs install sentence-embeddings --restart")
+    command = failure.value.command
+    assert command.startswith("uv pip install --python ")
+    assert sys.executable in command, (
+        "the command must name THIS interpreter, not whichever python uv "
+        "would find on PATH")
+    for spec in get_pack("sentence-embeddings").pip:
+        assert spec in command
+    assert "--restart" not in command, (
+        "no CLI flag installs a pack into a stopped server")
+    # A pure command line: the words around it live in the hint, so the
+    # panel and the CLI can present it as something to paste.
+    assert "\n" not in command
+    assert failure.value.hint.startswith("stop the server, then run:")
+    assert command in failure.value.hint
     assert "No solution found" in failure.value.hint
     assert installer.downloaded == [], "downloaded despite a failed pip run"
     assert installer.invalidated == 1
+
+
+def test_restart_command_quotes_an_interpreter_path_with_spaces(monkeypatch):
+    """``C:\\Program Files\\...\\python.exe`` is the common Windows case, and
+    unquoted it is two arguments neither of which is an interpreter."""
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\py\python.exe")
+
+    command = flows._restart_command(get_pack("sentence-embeddings"))
+
+    assert '"C:\\Program Files\\py\\python.exe"' in command
+    assert command.startswith("uv pip install --python ")
 
 
 def test_ordinary_pip_failure_is_a_plain_install_error(installer, monkeypatch):
@@ -747,7 +776,7 @@ def test_remove_item_deletes_an_asset_file(installer):
 def test_remove_item_deletes_what_the_install_derived(installer):
     """Uninstalling has to free the CONVERSION too.
 
-    The npz is the bigger of the two files -- 83 MB against the 66 MB it was
+    The npz is the bigger of the two files -- 83 MB against the 69 MB it was
     built from -- and it is the one nothing in the catalog names. Leaving it
     behind while reporting the item removed is how a learner ends up with a
     cache full of files no screen in the product mentions.

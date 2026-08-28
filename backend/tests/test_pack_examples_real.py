@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 
 from app.core.graph_engine import execute_graph
-from app.core.packs import pack_available
+from app.core.packs import pack_available, state
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CODEFYUI_PACK_NETWORK_TESTS") != "1",
@@ -70,6 +70,11 @@ _PARTNER = {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4, 6: 7, 7: 6}
 
 
 def _require(pack_id: str, item_id: str) -> None:
+    # A pack installed since this process started is on disk and invisible:
+    # ``pack_available`` answers from a cached probe, and find_spec answers
+    # from a directory listing made before the install. Both are dropped
+    # here, so the gate reads the disk as it is now.
+    state.invalidate()
     if not pack_available(pack_id, item_id):
         pytest.skip(
             f"{pack_id}:{item_id} is not installed -- get it from Package "
@@ -137,6 +142,12 @@ def test_sentence_similarity_example_pairs_up_for_real():
             f"{labels[neighbours[1]]!r} instead of "
             f"{labels[_PARTNER[row]]!r} -- the model no longer groups this "
             f"example by meaning")
+        # Checked before the index: an empty row would raise IndexError and
+        # the sentence below -- the one that says what actually broke --
+        # would never be printed.
+        assert top_labels[row], (
+            f"row {row} has no top-k labels at all, so key_labels never "
+            f"reached CosineSimilarity")
         assert top_labels[row][0] == labels[row], (
             "key_labels are not the embedding's labels, so the printed "
             "top-k names the wrong sentences")
