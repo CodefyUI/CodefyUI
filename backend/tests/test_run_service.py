@@ -34,6 +34,7 @@ from app.core.node_base import (
     PortDefinition,
 )
 from app.core.node_registry import registry
+from app.core.packs import PackMissingError
 from app.core.seeding import derive_seed
 from app.core.run_service import (
     EVENT_ARTIFACT,
@@ -301,6 +302,33 @@ class _RunBoomNode(BaseNode):
                            + "x" * int(params.get("size", 0)))
 
 
+class _RunPackMissingNode(BaseNode):
+    """Raises the real ``PackMissingError`` — the typed-error probe.
+
+    Deliberately the production exception rather than a lookalike: the whole
+    point of ``error_type`` on the wire is that the frontend keys its
+    beginner-friendly message off the CLASS NAME, so a test that invented its
+    own class would pass while the name a user's browser sees changed.
+    """
+
+    NODE_NAME = "_RunPackMissing"
+    CATEGORY = "Test"
+    DESCRIPTION = "Raises PackMissingError"
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    def execute(self, inputs: dict[str, Any],
+                params: dict[str, Any]) -> dict[str, Any]:
+        raise PackMissingError("word-vectors",
+                               "WordVector needs the GloVe table")
+
+
 _TEST_NODES = {
     "_RunSlow": _RunSlowNode,
     "_RunMetrics": _RunMetricsNode,
@@ -309,6 +337,7 @@ _TEST_NODES = {
     "_RunNan": _RunNanNode,
     "_RunImage": _RunImageNode,
     "_RunBoom": _RunBoomNode,
+    "_RunPackMissing": _RunPackMissingNode,
 }
 
 
@@ -720,6 +749,36 @@ async def test_error_mode_reaches_the_engine(store, service):
                 for e in await store.get_events(submitted.run_id)
                 if e.type == EVENT_NODE_STATUS}
     assert ("mid", "error") in statuses     # the node still reported failure
+
+
+async def test_an_error_frame_carries_the_exception_class_name(store, service):
+    """``error_type`` survives the bridge, so the UI can map typed errors.
+
+    The engine already puts ``type(exc).__name__`` in the node's result dict
+    and the frontend already has a branch keyed on it — but the bridge used
+    to copy only ``error`` out of that dict, so the branch was unreachable
+    and a missing pack read as a raw stack-trace string. This pins the one
+    key that closes the gap.
+    """
+    submitted = await service.submit(_graph("_RunPackMissing"),
+                                     options={"error_mode": "continue"})
+    await _await_terminal(store, submitted.run_id)
+    frames = [e.payload for e in await store.get_events(submitted.run_id)
+              if e.type == EVENT_NODE_STATUS]
+
+    failures = [f for f in frames if f["status"] == "error"]
+    assert [f["node_id"] for f in failures] == ["mid"]
+    assert failures[0]["error_type"] == "PackMissingError"
+    # The message still rides along unchanged — `error_type` is an addition,
+    # not a replacement, and the pack id is recovered from the message.
+    assert "(pack=word-vectors)" in failures[0]["error"]
+
+    # ...and nothing else grows the key: a `running`/`completed` frame that
+    # carried an `error_type` would light up the UI's error path on a node
+    # that is fine.
+    healthy = [f for f in frames if f["status"] != "error"]
+    assert healthy, "expected the surrounding nodes to report too"
+    assert all("error_type" not in f for f in healthy)
 
 
 async def test_run_id_is_also_the_execution_id(store, service):
