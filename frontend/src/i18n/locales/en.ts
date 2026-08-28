@@ -812,6 +812,28 @@ const en = {
   'chart.unknownKind': 'This chart kind ({kind}) needs a newer editor',
   'chart.malformed': 'This {kind} chart arrived without its data',
   'nodeDetail.captures.charts': 'Charts ({count})',
+
+  // Package Center — the keys the pack store toasts with (the panel's own
+  // strings land with the panel).
+  'packs.item.remove': 'Remove',
+  'packs.item.removeConfirm':
+    'Remove "{item}"? It will be downloaded again the next time it is installed.',
+  'packs.item.removed': 'Removed {item}.',
+  'packs.item.removeFailed': 'Could not remove {item}',
+  'packs.restart.done': 'Server restarted. {pack} is ready.',
+  'packs.restart.failed': 'The server restarted, but installing {pack} failed: {message}',
+  'packs.toast.installed': '{pack} installed.',
+  'packs.toast.installFailed': 'Install failed',
+  'packs.toast.cancelled': 'Install cancelled.',
+  'packs.toast.cancelFailed': 'Could not cancel the install',
+  'packs.toast.busy': 'Another install is already running.',
+  'packs.toast.remoteNotAllowed':
+    'Installing is only allowed on the computer that runs the server.',
+  'packs.toast.blocked': 'Install {pack} first.',
+  'packs.toast.devRestart':
+    'This pack needs a server restart, which cdui dev cannot do by itself. Use the command shown in the Package Center.',
+  'packs.toast.inProgress': 'A pack is still installing. Open the Package Center to watch it.',
+  'packs.toast.openCenter': 'Open Package Center',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -783,6 +783,26 @@ const zhTW: Record<TranslationKey, string> = {
   'chart.unknownKind': '這種圖表類型（{kind}）需要更新版的編輯器',
   'chart.malformed': '這張 {kind} 圖表沒有帶資料',
   'nodeDetail.captures.charts': '圖表（{count}）',
+
+  // Package Center — the keys the pack store toasts with (the panel's own
+  // strings land with the panel).
+  'packs.item.remove': '移除',
+  'packs.item.removeConfirm': '要移除「{item}」嗎？下次安裝時會重新下載。',
+  'packs.item.removed': '已移除 {item}。',
+  'packs.item.removeFailed': '無法移除 {item}',
+  'packs.restart.done': '伺服器已重新啟動，{pack} 可以使用了。',
+  'packs.restart.failed': '伺服器已重新啟動，但安裝 {pack} 失敗：{message}',
+  'packs.toast.installed': '已安裝 {pack}。',
+  'packs.toast.installFailed': '安裝失敗',
+  'packs.toast.cancelled': '已取消安裝。',
+  'packs.toast.cancelFailed': '無法取消安裝',
+  'packs.toast.busy': '已經有另一個安裝在進行中。',
+  'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
+  'packs.toast.blocked': '請先安裝 {pack}。',
+  'packs.toast.devRestart':
+    '這個套件需要重新啟動伺服器，cdui dev 模式無法自動處理。請使用套件中心顯示的指令。',
+  'packs.toast.inProgress': '有套件仍在安裝中，可在套件中心查看進度。',
+  'packs.toast.openCenter': '開啟套件中心',
 };
 
 export default zhTW;
