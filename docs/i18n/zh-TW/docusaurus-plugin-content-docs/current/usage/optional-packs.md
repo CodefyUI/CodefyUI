@@ -31,7 +31,7 @@ description: 安裝精選的模型套件包，把 LLM 節點從玩具示範切�
 
 表格裡的大小是實際下載的量。GloVe 那一列是唯一一個「裝完會比下載的更佔空間」的：69 MB 的下載，加上安裝時在它旁邊寫下的 83 MB 轉檔表，所以磁碟空間預檢查會在開始前要求大約 230 MB 的可用空間；移除這個項目時，這些空間會一併還回來。
 
-`rag` 這一列要下載的是兩樣東西，不是一樣。它相依於 `sentence-embeddings`，而這層相依帶來的是那個套件包的 Python 套件，**不是**任何一個編碼器：RAG 圖裡負責檢索的那一半，仍然需要一個模型來做嵌入。所以一堂完全在本機跑的 RAG 課，需要 `rag` 裡的 `qwen2.5-0.5b-instruct`，「加上」`sentence-embeddings` 裡的 `multilingual-e5-small` —— 兩者合計約 1.5 GB，在套件中心裡分別勾選這兩個項目，或是執行 `cdui packs install rag --yes` 之後再執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。只裝 `rag` 的話，`TextEmbedding` 仍然是灰的，整條鏈也就跑不起來。不論如何，下載和程式碼都還是兩個可以分開的決定，所以教室可以在上課前一天就把兩份都先抓好。
+`rag` 這一列要下載的是兩樣東西，不是一樣。它相依於 `sentence-embeddings`，而這層相依帶來的是那個套件包的 Python 套件，**不是**任何一個編碼器：RAG 圖裡負責檢索的那一半，仍然需要一個模型來做嵌入。所以一堂完全在本機跑的 RAG 課，需要 `rag` 裡的 `qwen2.5-0.5b-instruct`，「加上」`sentence-embeddings` 裡的 `multilingual-e5-small` —— 兩者合計約 1.5 GB，而且要先裝編碼器那一個。`rag` 自己不帶任何 Python 套件，所以在 `sentence-embeddings` 的函式庫還匯入不了之前，它會被擋下來：在預設安裝上執行 `cdui packs install rag` 會以離開碼 2 結束，並回報 `RAG stack needs another pack first`，同時印出該先裝哪一個套件包；套件中心也會基於同一條規則拒絕這次安裝，因為兩者本來就是同一條規則的兩個入口。所以請先執行 `cdui packs install sentence-embeddings --items multilingual-e5-small` —— 這一個指令會先裝好 Python 套件、再下載那個編碼器 —— 之後再執行 `cdui packs install rag --yes`。在套件中心裡勾選這兩個項目也是同樣的順序：等 sentence-embeddings 的函式庫到位，RAG stack 才會解鎖。不論如何，下載和程式碼都還是兩個可以分開的決定，所以教室可以在上課前一天就把兩份都先抓好。
 
 ## 安裝與移除
 
@@ -114,7 +114,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 | 節點 | 做什麼 | 需要 |
 |------|--------|------|
-| `DocumentLoader` | 讀取指定資料夾裡的每一個 `.md` 與 `.txt`（不支援 PDF、HTML、DOCX），每份文件輸出成 `{text, source}`，讓後面每一個切塊都還說得出自己來自哪個檔案。`recursive` 會連子資料夾一起讀，`max_docs` 則限制最多讀幾個檔案 | 不需要 |
+| `DocumentLoader` | 讀取指定資料夾裡的每一個 `.md` 與 `.txt`（不支援 PDF、HTML、DOCX），每份文件輸出成 `{text, source}`，讓後面每一個切塊都還說得出自己來自哪個檔案。`recursive` 會連子資料夾一起讀，`max_docs` 則限制最多讀幾個檔案；把 `source` 改成 `uploaded_file`，它就改讀 `file` 選到的那一個 `.txt`，也就是用旁邊那個按鈕上傳的檔案 | 不需要 |
 | `TextChunker` | 把每份文件切成小到可以嵌入、也塞得進提示詞的片段。`characters` 是固定長度的視窗，也是最不挑語言的一個 —— 中文根本沒有空格；`sentences` 與 `paragraphs` 則按作者本來就寫下的界線切，再打包到 `chunk_size` 為止。每個切塊都帶著來源與 `start_char`/`end_char`，而且 `text[start_char:end_char]` 就正好是那個切塊，所以引用是可以被驗證的，不只是裝飾 | 不需要 |
 | `TextEmbedding` | 每個切塊一個向量，問題也是一個。兩邊必須指定同一個模型 | `sentence-embeddings` |
 | `VectorStore` | 把切塊的向量疊成一個 `[N, D]` 矩陣，並把切塊的文字與 metadata 放在旁邊。這就是 RAG 系統裡的那個「資料庫」；每一列都以單位長度儲存，所以一次餘弦搜尋就只是一次矩陣相乘。它只存在記憶體裡，重跑時用快取好的嵌入在幾毫秒內重建 | 不需要 |
