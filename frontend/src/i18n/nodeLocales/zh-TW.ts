@@ -1045,6 +1045,17 @@ const zhTW: NodeTranslations = {
       device: '在哪個裝置上編碼（auto 表示跟隨全域裝置）。',
     },
   },
+  DocumentLoader: {
+    description:
+      '從一個資料夾或一個上傳的檔案讀入純文字文件（.txt 與 .md）。每份文件會以 {text, source} 的形式輸出，讓後面的節點能標註答案出自哪裡。內附的 data/samples/rag 資料夾放了五篇關於 CodefyUI 與機器學習基礎的中英雙語短文，所以 RAG 範例不需要任何設定就能跑。RAG 鏈的第一個節點：DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore。',
+    params: {
+      source: '文件來源：一個資料夾，或一個你上傳的檔案。',
+      directory: '放 .txt/.md 檔的資料夾。相對路徑先以後端工作目錄解析，再以 CodefyUI 後端資料夾解析（所以內附範例在任何目錄下都找得到）；專案模式下相對路徑必須留在專案目錄內。',
+      recursive: '也讀取子資料夾。',
+      file: '你用旁邊按鈕上傳的 .txt 檔。',
+      max_docs: '最多保留這麼多份文件，依檔名排序（0 = 全部）。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {

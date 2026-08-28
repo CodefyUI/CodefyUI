@@ -494,6 +494,7 @@ TRANSLATED_NODES = (
     "Conv2dExplicit",
     "WordVector",
     "TextEmbedding",
+    "DocumentLoader",
     "Optimizer",
     "Loss",
     "DataLoader",
