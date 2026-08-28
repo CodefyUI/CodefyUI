@@ -2,7 +2,7 @@
 
 Thanks for wanting to help. This document covers the three things you need before your first pull request: how to sign your commits, how to get a working development environment, and what the review conventions in this repository actually are.
 
-> 中文摘要：送 PR 前請先讀「Signing your work」一節——每個 commit 都要用 `git commit -s` 加上 DCO 簽署，否則因為本專案採雙軌授權，你的程式碼無法被納入商業授權路徑。開發環境設定與各項檢查指令列在下面，指令都是從 `scripts/dev.py` 與 CI workflow 直接核對過的，不是憑印象寫的。
+> 中文摘要：送 PR 前請先讀「Signing your work」一節——每個 commit 都要用 `git commit -s` 加上 DCO 簽署，否則因為本專案採雙軌授權，你的程式碼無法被納入商業授權路徑。貢獻是自願的無償授權：每位貢獻者都會被永久記錄並保有著作權，但著作權人銷售商業授權時不向貢獻者分潤；認為自己的貢獻特別重大的人，歡迎直接與維護者討論——見「Credit, compensation, and outstanding contributions」。開發環境設定與各項檢查指令列在下面，指令都是從 `scripts/dev.py` 與 CI workflow 直接核對過的，不是憑印象寫的。
 
 **Table of contents**
 
@@ -56,6 +56,16 @@ Two things are true when you sign off on a commit here.
 Point 2 is stated here as an inbound term of contributing, not as a separate agreement you sign. It is spelled out explicitly because the DCO on its own certifies *provenance* and submission under the project's open source license; it does not by itself say anything about a second, proprietary license. Rather than leave that gap implicit, the project states its position where you can read it before you contribute.
 
 If you are contributing on behalf of an employer, make sure you actually have the authority to agree to both points. If you are not comfortable with point 2, say so in the pull request before doing the work and the maintainers will discuss it with you rather than merge something on an unclear basis.
+
+### Credit, compensation, and outstanding contributions
+
+Three ground rules apply to every contribution. Read them before you contribute.
+
+1. **Every contributor is credited.** Your name and email stay with your commits in the git history permanently, and GitHub's contributors graph is derived from the same record. You also retain copyright in your own work (see [NOTICE](NOTICE)); nothing in this document assigns ownership to the project.
+
+2. **The grant is voluntary and royalty-free.** The inbound terms above license your contribution to the project on both paths without payment. If the copyright holder sells a commercial license that includes your code, no royalty, revenue share, or other compensation is owed to you for it. Contributing is voluntary; if that term does not work for you, raise it before doing the work.
+
+3. **Outstanding contributions can be discussed.** If you believe a contribution you have made, or are about to make, is substantial enough that different recognition or terms should apply, open an issue or contact the maintainers and discuss it. Any arrangement beyond the defaults above requires explicit written agreement with the copyright holder; the size of a merged PR does not imply one.
 
 ### Developer Certificate of Origin 1.1
 
@@ -317,4 +327,4 @@ Browse the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues) for some
 
 ## License
 
-By contributing you agree that your contributions are licensed as described in [Signing your work](#signing-your-work-dco) above: AGPL-3.0-only, and available to the copyright holder for the commercial path. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+By contributing you agree that your contributions are licensed as described in [Signing your work](#signing-your-work-dco) above: AGPL-3.0-only, and available to the copyright holder, royalty-free, for the commercial path. Contributors are credited and retain copyright, and outstanding contributions can always be discussed with the maintainers — see [Credit, compensation, and outstanding contributions](#credit-compensation-and-outstanding-contributions). See also [LICENSE](LICENSE), [NOTICE](NOTICE), and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).

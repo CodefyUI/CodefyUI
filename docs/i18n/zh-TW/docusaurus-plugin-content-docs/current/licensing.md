@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: 授權常見問題
-description: AGPL-3.0 對 CodefyUI 使用者實際的要求是什麼、內部執行會不會觸發第 13 條、自訂節點與外掛怎麼算，以及商業授權涵蓋哪些範圍。
+description: AGPL-3.0 對 CodefyUI 使用者實際的要求是什麼、內部執行會不會觸發第 13 條、自訂節點與外掛怎麼算、商業授權涵蓋哪些範圍，以及貢獻者同意了什麼。
 ---
 
 # 授權常見問題
@@ -88,6 +88,16 @@ AGPL-3.0 第 2 條（*Basic Permissions*）寫著：
 **它不做什麼：** 它不會從開源路徑拿走任何東西，也不是技術支援合約。條款與價格逐案商議。
 
 請從[問題追蹤器](https://github.com/CodefyUI/CodefyUI/issues)開始接洽。另見 [COMMERCIAL-LICENSE.md](https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md)。
+
+## 貢獻者同意了什麼？商業授權收入會分給貢獻者嗎？
+
+三條基本規則，完整內容見 [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md)：
+
+- **每一位貢獻者都會被記錄。** git 歷史會永久保留每位貢獻者的名字與 email，GitHub 的 contributors 圖表也由同一份記錄產生，而且貢獻者保有自己作品的著作權。
+- **授權是自願且無償的。** 貢獻以雙軌授權給專案——AGPL-3.0-only 與商業授權。當著作權人銷售包含貢獻程式碼的商業授權時，不需要向這些程式碼的貢獻者支付權利金、分潤或任何其他報酬。
+- **重大貢獻可以另行討論。** 若貢獻者認為某項貢獻夠重大、應該有不同的表彰或條件，可以在貢獻前後向維護者提出討論。任何超出上述預設的安排，都需要與著作權人明確書面約定。
+
+對商業授權買方而言，這代表只有單一授權人，且授權不附帶任何來自個別貢獻者的付款主張。
 
 ## 第三方元件
 
