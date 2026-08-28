@@ -1056,6 +1056,16 @@ const zhTW: NodeTranslations = {
       max_docs: '最多保留這麼多份文件，依檔名排序（0 = 全部）。',
     },
   },
+  TextChunker: {
+    description:
+      '把文件切成有重疊的小塊，小到能嵌入、也放得進提示詞。檢索是以「塊」為單位而不是整份檔案：一個問題應該撈回能回答它的那一段，而不是整份五頁的文件。characters 與語言無關、中文沒有空格也適用；sentences 與 paragraphs 會保留自然的邊界，再把它們塞滿到 chunk_size。',
+    params: {
+      strategy: 'characters：固定長度的字元視窗。sentences：以句號、問號、驚嘆號切句再打包。paragraphs：以空行切段再打包。',
+      chunk_size: '每一塊的字元數（所有策略共用的上限）。',
+      chunk_overlap: '相鄰兩塊共享的字元數，讓被切在中間的句子至少會完整出現在其中一塊；必須小於 chunk_size。',
+      min_chunk_chars: '最後一塊若短於這個長度，就併進前一塊。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
