@@ -40,6 +40,14 @@ export interface ParamDefinition {
    * against an older host sends.
    */
   advanced?: boolean;
+  /**
+   * Package Center. Maps a SELECT option to the optional pack that option
+   * needs -- `"<pack_id>"` for the whole pack, or `"<pack_id>:<item_id>"` for
+   * one downloaded model inside it -- so the editor can grey out exactly the
+   * options that are not installed instead of disabling the parameter.
+   * Absent / null means every option works on a base install.
+   */
+  option_packs?: Record<string, string> | null;
 }
 
 export interface SegmentGroup {
@@ -98,6 +106,13 @@ export interface NodeDefinition {
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];
+  /**
+   * Package Center. The optional pack this node needs before it can run at
+   * all; null for everything the base install already covers. Optional for
+   * the same reason as `ParamDefinition.option_packs`: a host or plugin built
+   * before the Package Center sends no such key.
+   */
+  requires_pack?: string | null;
 }
 
 export interface PresetDefinition {

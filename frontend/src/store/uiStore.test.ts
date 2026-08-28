@@ -29,6 +29,8 @@ describe('useUIStore', () => {
       gridSnapEnabled: false,
       isCanvasPanning: false,
       shortcutsModalOpen: false,
+      packCenterOpen: false,
+      packCenterFocusPackId: null,
       draggingSourceType: null,
       reconnectingHandle: null,
       beginnerMode: false,
@@ -119,6 +121,39 @@ describe('useUIStore', () => {
         .setReconnectingHandle({ nodeId: 'n1', handleId: 'out', type: 'source' });
       expect(localStorage.length).toBe(0);
       useUIStore.getState().setReconnectingHandle(null);
+      expect(localStorage.length).toBe(0);
+    });
+  });
+
+  describe('openPackCenter / closePackCenter', () => {
+    it('records the focus pack and closePackCenter clears it', () => {
+      expect(useUIStore.getState().packCenterOpen).toBe(false);
+      expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+
+      // Opened from a node that needs a pack: the panel scrolls to it.
+      useUIStore.getState().openPackCenter('word-vectors');
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+      expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+
+      useUIStore.getState().closePackCenter();
+      expect(useUIStore.getState().packCenterOpen).toBe(false);
+      // Cleared with the modal, so the next open starts at the top of the
+      // list instead of on whatever the last node happened to need.
+      expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+    });
+
+    it('opens with no focus when reached from the menu', () => {
+      useUIStore.getState().openPackCenter('word-vectors');
+      useUIStore.getState().closePackCenter();
+      useUIStore.getState().openPackCenter();
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+      expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+    });
+
+    it('is transient — writes nothing to localStorage', () => {
+      useUIStore.getState().openPackCenter('gpu-torch');
+      expect(localStorage.length).toBe(0);
+      useUIStore.getState().closePackCenter();
       expect(localStorage.length).toBe(0);
     });
   });
