@@ -26,12 +26,12 @@ description: 安裝精選的模型套件包，把 LLM 節點從玩具示範切�
 |--------|------|--------|------|----------|
 | `sentence-embeddings` | `sentence-transformers` 套件，加上四個小型編碼器：`all-MiniLM-L6-v2`、`paraphrase-multilingual-MiniLM-L12-v2`、`bge-small-zh-v1.5`、`multilingual-e5-small` | 四個模型分別是 90 MB、470 MB、95 MB、470 MB（它們是互相替代的選項，不是一整套都要裝），另外還有 pip 套件 | 兩個 MiniLM 模型是 Apache-2.0，`bge` 與 `e5` 是 MIT | `TextEmbedding`（整個節點），以及 `WordVector` 的四個句子編碼 backend |
 | `word-vectors` | `glove-wiki-gigaword-50.gz`：真正的 400,000 詞、50 維 GloVe 詞向量表。完全不需要 Python 套件 | 69 MB，另外會在旁邊產生約 83 MB 的一次性轉檔 | PDDL-1.0 | `WordVector` 的 `glove-50d` backend |
-| `rag` | `Qwen2.5-0.5B-Instruct`，一個小到可以在 CPU 上跑的本機生成模型 | 約 1 GB | Apache-2.0 | `HFTextGenerate` 與它周邊的檢索鏈，**下一版推出**。需要先裝好 `sentence-embeddings` |
+| `rag` | `Qwen2.5-0.5B-Instruct`，一個小到可以在 CPU 上跑的本機生成模型 | 約 1 GB | Apache-2.0 | `HFTextGenerate`，以及它帶來的「先檢索、再生成」整條鏈：不用連網，就能從你自己的筆記裡回答問題。需要先裝好 `sentence-embeddings` |
 | `gpu-torch` | 符合這台機器的 CUDA 或 ROCm PyTorch 版本 | 依變體而異 | PyTorch 自己的授權（BSD-3-Clause） | 不會多出新節點；而是讓每個用得到加速器的節點都用得到。它根本不是用 `cdui packs` 裝的：請執行 `cdui install --gpu <variant>`，見 [GPU 與裝置設定](../getting-started/gpu-device.md) |
 
 表格裡的大小是實際下載的量。GloVe 那一列是唯一一個「裝完會比下載的更佔空間」的：69 MB 的下載，加上安裝時在它旁邊寫下的 83 MB 轉檔表，所以磁碟空間預檢查會在開始前要求大約 230 MB 的可用空間；移除這個項目時，這些空間會一併還回來。
 
-`rag` 這一列比用到它的節點更早出現在型錄裡，是刻意的：下載和程式碼是兩個可以分開的決定，教室可以在上課前一天先把模型抓好。`HFTextGenerate` 不在這一版裡。
+`rag` 這一列要下載的是兩樣東西，不是一樣。它相依於 `sentence-embeddings`，而這層相依帶來的是那個套件包的 Python 套件，**不是**任何一個編碼器：RAG 圖裡負責檢索的那一半，仍然需要一個模型來做嵌入。所以一堂完全在本機跑的 RAG 課，需要 `rag` 裡的 `qwen2.5-0.5b-instruct`，「加上」`sentence-embeddings` 裡的 `multilingual-e5-small` —— 兩者合計約 1.5 GB，在套件中心裡分別勾選這兩個項目，或是執行 `cdui packs install rag --yes` 之後再執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。只裝 `rag` 的話，`TextEmbedding` 仍然是灰的，整條鏈也就跑不起來。不論如何，下載和程式碼都還是兩個可以分開的決定，所以教室可以在上課前一天就把兩份都先抓好。
 
 ## 安裝與移除
 
@@ -103,9 +103,36 @@ Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Op
 
 `embeddings` 與 `labels` 兩個輸出可以直接接到 `CosineSimilarity` 與 `EmbeddingScatter`。[範例集](./examples-gallery.md)裡的 **Sentence Similarity (zh-TW)** 就是整條鏈，套件包裝好之後就能直接執行。
 
-### 下一版才會有的
+### RAG 鏈
 
-`rag` 套件包的 `HFTextGenerate` 節點，以及它周邊「切塊 - 嵌入 - 檢索 - 生成」的整條鏈，會在下一版推出。套件包已經先進型錄了，所以模型可以在節點還不存在時就先下載好。
+檢索增強生成就是七個節點接成一排，其中只有兩個需要下載：
+
+```text
+DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> PromptBuilder -> HFTextGenerate
+                                                                                           (或 LLMChat)
+```
+
+| 節點 | 做什麼 | 需要 |
+|------|--------|------|
+| `DocumentLoader` | 讀取指定資料夾裡的每一個 `.md` 與 `.txt`（不支援 PDF、HTML、DOCX），每份文件輸出成 `{text, source}`，讓後面每一個切塊都還說得出自己來自哪個檔案。`recursive` 會連子資料夾一起讀，`max_docs` 則限制最多讀幾個檔案 | 不需要 |
+| `TextChunker` | 把每份文件切成小到可以嵌入、也塞得進提示詞的片段。`characters` 是固定長度的視窗，也是最不挑語言的一個 —— 中文根本沒有空格；`sentences` 與 `paragraphs` 則按作者本來就寫下的界線切，再打包到 `chunk_size` 為止。每個切塊都帶著來源與 `start_char`/`end_char`，而且 `text[start_char:end_char]` 就正好是那個切塊，所以引用是可以被驗證的，不只是裝飾 | 不需要 |
+| `TextEmbedding` | 每個切塊一個向量，問題也是一個。兩邊必須指定同一個模型 | `sentence-embeddings` |
+| `VectorStore` | 把切塊的向量疊成一個 `[N, D]` 矩陣，並把切塊的文字與 metadata 放在旁邊。這就是 RAG 系統裡的那個「資料庫」；每一列都以單位長度儲存，所以一次餘弦搜尋就只是一次矩陣相乘。它只存在記憶體裡，重跑時用快取好的嵌入在幾毫秒內重建 | 不需要 |
+| `Retriever` | 拿問題和每一列算分數，留下最接近的 `top_k` 個，把低於 `min_score` 的丟掉，再把切塊的文字連同它們各自來自哪個檔案交給下一棒。它的紀錄行會印出每一個命中的分數 | 不需要 |
+| `PromptBuilder` | 把檢索到的切塊和問題貼進一個範本，而這個範本會要求模型「只」根據那些內容回答。範本必須包含 `{context}` 與 `{question}`；想自己寫的話，接一個 `TextInput` 到 `template` 輸入 | 不需要 |
+| `HFTextGenerate` | 由 Qwen2.5-0.5B-Instruct 在本機作答，chat template 會自動幫你套用，token 也會邊產生邊串流到畫布上 | `rag` |
+
+最後一棒也可以換成 `LLMChat`：同一份提示詞，改送給本機的 Ollama 或某個雲端供應商，而不是載進這個行程裡，而且它完全不需要任何套件包。
+
+**隨附的語料。** `backend/data/samples/rag` 附了五份短筆記 —— CodefyUI 是什麼、節點與連線、訓練基礎、嵌入與 RAG，以及選用套件包 —— 每一份都有英文和繁體中文兩半，所以一按執行就有東西可讀，多語言編碼器也才有東西可以證明自己。`DocumentLoader` 會把它被指到的那個資料夾裡的每一個 `.md` 與 `.txt` 都讀進來，所以要把這堂課換成你自己的教材，最快的方式就是把 `directory` 指向你自己的筆記資料夾；圖裡其他東西都不用改。
+
+**e5 的前綴不是裝飾。** `multilingual-e5-small` 訓練時兩邊是不對稱的：提問那一側加 `query: `，建索引那一側加 `passage: `。所以兩個 `TextEmbedding` 節點的前綴不同、`model` 卻必須相同 —— 而「同一個模型」是這張圖唯一不能被破壞的前提。兩個模型就是兩個向量空間，跨空間算出來的餘弦值只是一個沒有意義的數字：只改其中一側的編碼器，搜尋照樣會回傳 `top_k` 個切塊，只是那些切塊是隨便挑的，而且圖裡沒有任何東西擋得下來。
+
+**「只根據上下文回答」才是整堂課的重點。** 一個 0.5B 的模型對 CodefyUI 幾乎一無所知。把五份關於它的筆記擺在模型面前，它卻能答對 —— 不是因為它被微調過，而是因為對的段落被貼在問題前面了。這個落差就是檢索存在的理由，而範本則負責讓它誠實：問一個語料裡根本沒有答案的問題，`Retriever` 還是會回傳它最近的那幾個切塊，因為「最近」永遠都定義得出來；真正讓模型說「我不知道」而不是就地編一個的，是那一句指示。
+
+**在 CPU 上生成是什麼感覺。** 筆電上大約每秒幾個 token，所以本機那個範例要的 160 個 token 大概是 20 到 40 秒，第一次執行還要多花幾秒把權重從磁碟讀進來。token 會邊產生邊串流到畫布上，所以你看得出節點正在工作，而不是只是卡著。有 GPU 會快非常多；`device` 預設跟著全域裝置選擇器走，除非你在節點上另外指定。
+
+兩張圖都在[範例集](./examples-gallery.md)裡，而且每一張旁邊都有一份 `README.md`。**RAG, fully local**（`examples/LLM/RAG-Local-Offline`）需要兩個下載 —— `qwen2.5-0.5b-instruct` 與 `multilingual-e5-small` —— 之後執行時不會有任何東西離開這台機器。**RAG with a chat API**（`examples/LLM/RAG-LLMChat-API`）的檢索鏈和它一個節點一個節點完全相同，只是最後一棒換成 `LLMChat`，所以它只需要編碼器，外加一個跑著的 Ollama 或某個供應商的金鑰。拿同一個問題把兩張圖都跑一次，正是最值得做的對照：檢索到的上下文一模一樣，所以答案上的每一個差異都來自生成模型。
 
 ## 如何挑選嵌入模型
 
@@ -128,6 +155,8 @@ Model 'all-MiniLM-L6-v2' from the Sentence embeddings pack is not downloaded. Op
 - **「reports installed but `sentence_transformers` cannot be imported」** —— 紀錄檔說套件包裝好了，直譯器卻不同意，這是安裝壞掉，而不是少下載。請從套件中心重新安裝，或執行 `cdui packs install sentence-embeddings --yes`。
 - **「Model ... is not downloaded」** —— Python 那一半在，但那一個模型不在。四個模型是互相替代的，裝了一個絕不會順便裝其他的：請在套件中心下載它，或執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。
 - **CPU 上的速度。** 這些都是小模型（22M 到 118M 參數），CPU 本來就是它們預期要跑的地方。一次工作階段裡的第一次編碼要花幾秒把權重從磁碟讀進來，之後幾句話的編碼遠低於一秒。GloVe 則要付一次性的轉檔成本：把下載回來的文字表轉成 npz，大約十秒，而且過程中會有一行進度說明；之後每個行程載入它大約一秒。
+- **生成很慢。** `HFTextGenerate` 是一個 token 一個 token 解碼的，0.5B 的模型在筆電 CPU 上一秒只能吐出幾個，所以一個答案要等上幾十秒，這裡沒有什麼壞掉的東西要修。可以動的地方，由便宜到貴：把 `max_new_tokens` 調小（它是「這個節點最久會跑多久」的上限，不是目標值）；把 `Retriever` 的 `top_k` 調小，或用 `PromptBuilder` 的 `max_context_chars` 設個上限，因為每一個檢索回來的字元都要先被讀過，模型才會寫出第一個 token；有 GPU 的話把 `device` 設成 `cuda`。把最後一棒換成 `LLMChat`，則是直接把生成整個移出這個行程。
+- **答案沒有理會上下文。** 先看 `Retriever` 的紀錄行再怪模型 —— 它會印出每一個命中的分數。最高分只有 0.3 左右，通常表示語料裡根本沒有這個答案，換什麼提示詞都救不回來。如果命中看起來是對的、答案卻在亂飄，就把 `top_k` 調大，好讓真正回答問題的那一段確實進到提示詞裡。如果什麼都沒回來，那是 `min_score` 濾掉的：這時 `PromptBuilder` 會寫進 `(no context retrieved)` 並發出警告，把門檻調低（0 表示全部保留）就會把切塊放回來。如果連分數本身都像是隨便給的，請檢查兩個 `TextEmbedding` 節點是不是指定了同一個模型 —— 這個錯誤產生的是聽起來很合理的胡說，而不是一個錯誤訊息。
 - **Windows 的路徑。** Hugging Face 的 snapshot 目錄層數很深。如果快取本來就位在一條很長的路徑底下，請開啟長路徑支援，或用 `CODEFYUI_USER_DATA_DIR` 把它指到淺一點的地方。另外在 Windows 上，移除有可能回報「紀錄已清除，但檔案還在磁碟上」，因為有程式正開著它們：請停掉伺服器，再手動刪掉那個目錄。
 - **「cannot be installed while the server is running」。** 每一次線上安裝都跑在一份 constraints 檔底下，它把這個直譯器裡已經有的每一個發行套件都釘在目前的版本，所以安裝只能「增加」—— 執行中的伺服器已經載入的東西，不可能在它腳下被換掉。若某個套件包非得換掉某個東西，它會直接停下來（用 CLI 時的離開碼是 3）而不是換到一半，並印出一行要在伺服器停掉之後執行的 `uv pip install` 指令。請用 `cdui stop` 停掉伺服器、執行那一行，再重新啟動。GPU 套件包永遠屬於這一類：它是用 `cdui install --gpu <variant>` 安裝的，不是 `cdui packs install`。
 - **磁碟空間不夠。** 在抓第一個位元組之前就會先檢查，所以不會發生 470 MB 下載到 90% 才發現這顆磁碟從一開始就放不下。訊息會告訴你需要多少、目前剩多少。
