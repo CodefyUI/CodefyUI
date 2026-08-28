@@ -609,6 +609,9 @@ function seedPacks(...packs: PackSummary[]) {
   });
 }
 
+// The server's English title, which is deliberately NOT what the field
+// shows: this build ships copy for `word-vectors`, and the panel, the node
+// badge and this hint all have to call the pack the same thing.
 const wordVectors = () =>
   packSummary({ id: 'word-vectors', title: 'Word vectors', pip_ready: true, usable: false });
 
@@ -640,7 +643,7 @@ describe('ParamField — select options gated on an optional pack', () => {
     // The reason travels with the option: a learner reading the list should
     // not have to open the Package Center to find out why one is greyed.
     expect(options[1].disabled).toBe(true);
-    expect(options[1].textContent).toBe('glove-50d — needs pack: Word vectors');
+    expect(options[1].textContent).toBe('glove-50d — needs pack: Word vectors (GloVe)');
   });
 
   it('suffixes the model id for a pack:item requirement', () => {
@@ -695,11 +698,11 @@ describe('ParamField — select options gated on an optional pack', () => {
 
     const hint = hintFor(select);
     expect(hint.className).toContain('hintWarning');
-    expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors pack.');
+    expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors (GloVe) pack.');
     // The accessible name carries the pack, because a node with two gated
     // selects shows two of these and "Install pack, Install pack" is not a
     // choice anyone can make from a list of controls.
-    const link = within(hint).getByRole('button', { name: 'Install pack: Word vectors' });
+    const link = within(hint).getByRole('button', { name: 'Install pack: Word vectors (GloVe)' });
     // The visible label stays short — the pack is already named in the
     // sentence this button sits at the end of.
     expect(link).toHaveTextContent('Install pack');
@@ -749,10 +752,54 @@ describe('ParamField — select options gated on an optional pack', () => {
 
     // The value is fine here; it is a SIBLING option that needs the pack, and
     // the link still names the one it would install.
-    fireEvent.click(screen.getByRole('button', { name: 'Install pack: Word vectors' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Install pack: Word vectors (GloVe)' }));
 
     expect(useUIStore.getState().packCenterOpen).toBe(true);
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('names the pack in the reader language, not in the server one', () => {
+    // The one bug this rule exists for: a zh-TW reader was told
+    // 「glove-50d」需要 Word vectors (GloVe) 套件。 here, opened the Package Center,
+    // and found a card headed 詞向量（GloVe） — two names for one pack.
+    useI18n.setState({ locale: 'zh-TW' });
+    seedPacks(wordVectors());
+    render(<ParamField param={embeddingParam()} value="glove-50d" onChange={() => {}} />);
+
+    const hint = hintFor(screen.getByRole('combobox'));
+    expect(hint).toHaveTextContent('「glove-50d」需要 詞向量（GloVe） 套件。');
+    expect(hint).not.toHaveTextContent('Word vectors');
+    expect(
+      within(hint).getByRole('button', { name: '安裝套件：詞向量（GloVe）' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the saved value when the catalog arrives after the field is mounted', () => {
+    // The commonest order on a cold start: the node renders, THEN the
+    // catalog answers and the option turns out to be unavailable. The select
+    // must not drop the value it was given — an <option disabled> the
+    // browser deselects would rewrite the saved graph without a click.
+    const onChange = vi.fn();
+    render(<ParamField param={embeddingParam()} value="glove-50d" onChange={onChange} />);
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.value).toBe('glove-50d');
+    expect(select).not.toHaveAttribute('aria-describedby');
+
+    act(() => {
+      usePackStore.setState({
+        loaded: true,
+        unsupported: false,
+        packs: [wordVectors()],
+        byId: { 'word-vectors': wordVectors() },
+      });
+    });
+
+    expect(select.value).toBe('glove-50d');
+    expect((screen.getAllByRole('option')[1] as HTMLOptionElement).disabled).toBe(false);
+    expect(hintFor(select)).toHaveTextContent(
+      '"glove-50d" needs the Word vectors (GloVe) pack.',
+    );
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('renders plain options when the catalog is unsupported', () => {

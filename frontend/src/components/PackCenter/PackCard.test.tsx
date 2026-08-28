@@ -123,7 +123,10 @@ describe('PackCard — what it says about a pack', () => {
   });
 
   it('shows the server copy for a pack this build predates', () => {
-    renderCard({ pack: pack({ id: 'pack-from-the-future' }) });
+    // The catalog knows the row; this BUILD has no copy for it, which is the
+    // fallback under test.
+    const future = pack({ id: 'pack-from-the-future' });
+    renderCard({ pack: future, byId: index(future) });
     expect(screen.getByText('server title for pack-from-the-future')).toBeInTheDocument();
     expect(screen.getByText('server description')).toBeInTheDocument();
   });
@@ -213,7 +216,9 @@ describe('PackCard — choosing what to install', () => {
 
   it('offers to remove an item that is already on disk', () => {
     const { onRemoveItem } = renderCard({ pack: p });
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove sentence-transformers/bge-small-zh' }),
+    );
     expect(onRemoveItem).toHaveBeenCalledWith('bge-small-zh');
   });
 
@@ -300,6 +305,35 @@ describe('PackCard — when it cannot install', () => {
   });
 });
 
+describe('PackCard — a pack whose python half is missing', () => {
+  const p = pack({
+    id: 'sentence-embeddings',
+    status: 'partial',
+    pip: [{ spec: 'sentence-transformers>=3' }],
+    pip_ready: false,
+    items: [item({ id: 'labse', status: 'present' })],
+  });
+
+  it('installs the libraries when every file is already downloaded', () => {
+    // Nothing to tick — every model is on disk — and there is still an
+    // install to run: the backend runs exactly the pip step for `items: []`.
+    const { onInstall } = renderCard({ pack: p });
+    expect(screen.getByText('Python packages not installed')).toBeInTheDocument();
+    expect(installBtn()).toBeEnabled();
+
+    fireEvent.click(installBtn());
+    expect(onInstall).toHaveBeenCalledWith([], 'live');
+  });
+
+  it('says so when the libraries are already there', () => {
+    renderCard({ pack: pack({ ...p, pip_ready: true }) });
+    expect(screen.getByText('Python packages installed')).toBeInTheDocument();
+    // Now there really is nothing to do, and the button says what would help.
+    expect(installBtn()).toBeDisabled();
+    expect(installBtn()).toHaveAttribute('title', 'Tick at least one item to install');
+  });
+});
+
 describe('PackCard — while a job is running', () => {
   it('puts a bar and a byte count on each downloading item', () => {
     const job: PackJob = {
@@ -352,15 +386,47 @@ describe('PackCard — while a job is running', () => {
       }),
       job: emptyPackJob('j1', 'sentence-embeddings'),
     });
-    expect(screen.getByRole('button', { name: 'Remove' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Remove sentence-transformers/labse' }),
+    ).toBeDisabled();
   });
 
   it('leaves another pack alone while this one installs', () => {
+    // The other pack's job describes an item id THIS card also lists, so the
+    // `jobHere` gate is the only thing standing between them: without it the
+    // row would be locked and painted with a bar it has no part in.
+    const elsewhere: PackJob = {
+      ...emptyPackJob('j1', 'sentence-embeddings'),
+      items: {
+        'glove-6b-50d': { bytesDone: 1024, bytesTotal: 2048, percent: 50 },
+      },
+    };
     renderCard({
       pack: pack({ id: 'word-vectors', items: [item({ id: 'glove-6b-50d' })] }),
-      job: emptyPackJob('j1', 'sentence-embeddings'),
+      job: elsewhere,
     });
     expect(screen.getByLabelText('sentence-transformers/glove-6b-50d')).toBeEnabled();
+    expect(
+      screen.queryByRole('progressbar', { name: 'sentence-transformers/glove-6b-50d' }),
+    ).toBeNull();
+  });
+
+  it('paints no bar for an item the running job never mentions', () => {
+    // `job.items` is a bare object keyed by whatever ids the catalog ships:
+    // a row this job says nothing about must read as "no bar", not as an
+    // inherited member with NaN bytes on it.
+    renderCard({
+      pack: pack({
+        id: 'sentence-embeddings',
+        items: [item({ id: 'labse' }), item({ id: 'constructor' })],
+      }),
+      job: {
+        ...emptyPackJob('j1', 'sentence-embeddings'),
+        items: { 'all-MiniLM-L6-v2': { bytesDone: 1024, bytesTotal: 2048, percent: 50 } },
+      },
+    });
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByLabelText('sentence-transformers/labse')).toBeInTheDocument();
   });
 });
 

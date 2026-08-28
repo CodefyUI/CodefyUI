@@ -4,7 +4,11 @@ import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { isParamVisible } from '../../utils';
-import { nodeMissingPack, packTitle, usePackAvailability } from '../../utils/packAvailability';
+import {
+  localizedPackTitle,
+  nodeMissingPack,
+  usePackAvailability,
+} from '../../utils/packAvailability';
 import { ParamField } from './ParamField';
 import styles from './NodeParamList.module.css';
 
@@ -96,7 +100,9 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
           on one that does not. */}
       {missingPack !== null && (
         <div role="note" className={styles.packBanner}>
-          {t('config.needsPack', { pack: packTitle(byId, missingPack.packId) })}{' '}
+          {t('config.needsPack', {
+            pack: localizedPackTitle(t, byId, missingPack.packId),
+          })}{' '}
           <button
             type="button"
             className={styles.packLink}
@@ -104,7 +110,9 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
             // be on screen for the same node, each with its own "Install
             // pack": two identically named controls in one list is a choice
             // nobody navigating by control can make.
-            aria-label={`${t('paramField.installPack')}: ${packTitle(byId, missingPack.packId)}`}
+            aria-label={t('paramField.installPackFor', {
+              pack: localizedPackTitle(t, byId, missingPack.packId),
+            })}
             onClick={() => useUIStore.getState().openPackCenter(missingPack.packId)}
           >
             {t('paramField.installPack')}

@@ -18,15 +18,22 @@
  */
 import { useI18n } from '../i18n';
 import { usePackStore } from '../store/packStore';
-import { packTitle } from './packAvailability';
+import { localizedPackTitle } from './packAvailability';
 
 /** Recover the class name from a traceback's last line, for untyped sources. */
 function typeFromTraceback(raw: string): string | undefined {
   return raw.match(/\b([A-Z]\w*(?:Error|Exception))\s*:/)?.[1];
 }
 
-/** The id `PackMissingError` always appends: `... (pack=word-vectors)`. */
-const PACK_ID = /pack=([a-z0-9-]+)/i;
+/**
+ * The id `PackMissingError` always appends: `... (pack=word-vectors)`.
+ *
+ * Case-SENSITIVE: pack ids are lowercase kebab by construction (the backend
+ * catalog ships them that way and the Package Center keys its copy off them),
+ * so matching `PACK=Word-Vectors` would only ever produce an id no catalog
+ * lists, and the friendly sentence would name a pack that does not exist.
+ */
+const PACK_ID = /pack=([a-z0-9-]+)/;
 
 /**
  * The optional pack a failure is really about, or null.
@@ -63,10 +70,11 @@ export function friendlyError(raw: string, errorType?: string): string {
   // rather than `errorType` so a DEBUG traceback names it too.
   const packId = missingPackFromError(raw, kind);
   if (packId) {
-    // The title if the catalog has answered, the id if it has not — "needs
-    // the word-vectors pack" is still a usable sentence.
+    // The name the Package Center will use when this toast's button opens
+    // it — this build's copy for the packs it ships, the server's title or
+    // the bare id otherwise, each of which is still a usable sentence.
     return t('error.missingPack', {
-      pack: packTitle(usePackStore.getState().byId, packId),
+      pack: localizedPackTitle(t, usePackStore.getState().byId, packId),
     });
   }
 

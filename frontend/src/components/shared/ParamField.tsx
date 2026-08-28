@@ -16,8 +16,8 @@ import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import {
   itemTitle,
+  localizedPackTitle,
   missingRequirementForOption,
-  packTitle,
   requirementSentence,
   usePackAvailability,
   type PackIndex,
@@ -386,14 +386,6 @@ function SelectField({
   // What the current value needs comes first: it is the thing standing
   // between this node and a run. The others are a footnote.
   const focus = currentMissing ?? otherMissing;
-  // Deliberately keyed on `focus`, not on the hint text: they are non-null
-  // together by construction (`focus` is picked from the two requirements the
-  // two arms describe), and saying so HERE is what lets the button below name
-  // its pack outright instead of a `?.` that would quietly open an unfocused
-  // panel if the invariant ever broke.
-  const hint = currentMissing
-    ? requirementSentence(t, byId, currentValue, currentMissing)
-    : t('paramField.packHintOthers');
 
   return (
     <div>
@@ -420,7 +412,16 @@ function SelectField({
           id={hintId}
           className={currentMissing ? `${styles.hint} ${styles.hintWarning}` : styles.hint}
         >
-          {hint}{' '}
+          {/* Computed HERE rather than above, so the generic "greyed-out
+              options need a pack" sentence cannot be built — let alone
+              rendered — for a select with nothing missing. `currentMissing`
+              and `focus` are non-null together by construction (`focus` is
+              picked from the two requirements the two arms describe), which
+              is also what lets the button below name its pack outright
+              instead of a `?.` that would quietly open an unfocused panel. */}
+          {currentMissing
+            ? requirementSentence(t, byId, currentValue, currentMissing)
+            : t('paramField.packHintOthers')}{' '}
           <button
             type="button"
             className={styles.linkBtn}
@@ -428,7 +429,9 @@ function SelectField({
             // once: two "Install pack" buttons are one list entry twice over
             // to anyone navigating by control, and the visible label cannot
             // carry the pack without turning a link into a sentence.
-            aria-label={`${t('paramField.installPack')}: ${packTitle(byId, focus.packId)}`}
+            aria-label={t('paramField.installPackFor', {
+              pack: localizedPackTitle(t, byId, focus.packId),
+            })}
             // `getState()` rather than a subscription: every select on the
             // canvas holds this component, and none of them re-render when
             // the Package Center opens.
@@ -453,7 +456,7 @@ type Translate = (key: TranslationKey, vars?: Record<string, string | number>) =
  */
 function optionSuffix(t: Translate, byId: PackIndex, req: PackRequirement): string {
   return req.itemId === null
-    ? t('paramField.needsPack', { pack: packTitle(byId, req.packId) })
+    ? t('paramField.needsPack', { pack: localizedPackTitle(t, byId, req.packId) })
     : t('paramField.needsModel', { item: itemTitle(byId, req) });
 }
 

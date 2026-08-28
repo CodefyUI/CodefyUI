@@ -11,6 +11,7 @@ import {
 import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
+import { STICK_PX } from './PackLogTail';
 import { HIGHLIGHT_MS, PackCenterModal } from './PackCenterModal';
 
 function item(over: Partial<PackItem> & { id: string }): PackItem {
@@ -262,7 +263,9 @@ describe('PackCenterModal — installing', () => {
     seed({ packs: [embeddings] });
     open();
     render(<PackCenterModal />);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove sentence-transformers/labse' }),
+    );
     expect(actions.removeItem).toHaveBeenCalledWith('sentence-embeddings', 'labse');
   });
 
@@ -355,12 +358,39 @@ describe('PackCenterModal — a pack that needs another one', () => {
       // The constant, not a copy of it: a ring that outlived its exported
       // duration would still pass a hard-coded 2000.
       act(() => {
-        vi.advanceTimersByTime(HIGHLIGHT_MS);
+        vi.advanceTimersByTime(HIGHLIGHT_MS - 1);
+      });
+      // One millisecond short: still on. The pair of assertions is what
+      // makes this about the constant rather than about "eventually".
+      expect(cardFor('word-vectors').className).toContain('cardHighlighted');
+
+      act(() => {
+        vi.advanceTimersByTime(1);
       });
       expect(cardFor('word-vectors').className).not.toContain('cardHighlighted');
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('finds no card for a pack id that names an Object.prototype member', () => {
+    // `cardRefs` is a bare object keyed by pack id: a plain index would hand
+    // back a FUNCTION for `constructor` — truthy, and `scrollIntoView` is not
+    // one of its methods, so the panel would die of a TypeError.
+    seed({ packs: [embeddings, words] });
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+    // `scrollIntoView` is stubbed on the shared prototype, and spying on an
+    // already-spied method hands back the SAME mock — history and all. A
+    // "was never called" assertion has to start from zero to mean anything.
+    scroll.mockClear();
+    open('constructor');
+    render(<PackCenterModal />);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(scroll).not.toHaveBeenCalled();
+    expect(cardFor('word-vectors').className).not.toContain('cardHighlighted');
+    // Unconsumed: the request is kept in case the card turns up later.
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('constructor');
   });
 
   it('waits for the catalog before deciding it cannot find the pack', () => {
@@ -543,8 +573,90 @@ describe('PackCenterModal — the activity pane', () => {
     open();
     render(<PackCenterModal />);
     expect(
-      screen.getByText('Lost contact with the server. Refresh to check the pack status.'),
+      within(screen.getByRole('status')).getByText(
+        'Lost contact with the server. Refresh to check the pack status.',
+      ),
     ).toBeInTheDocument();
+  });
+
+  it('reports a finished install, and an install the user stopped', () => {
+    seed({ packs: [embeddings], job: job({ status: 'done' }) });
+    open();
+    const view = render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    expect(banner).toHaveAttribute('data-tone', 'success');
+    expect(
+      within(banner).getByText('Installed Sentence embeddings.'),
+    ).toBeInTheDocument();
+
+    view.unmount();
+    seed({ packs: [embeddings], job: job({ status: 'cancelled' }) });
+    open();
+    render(<PackCenterModal />);
+    const stopped = screen.getByRole('status');
+    // Neutral, not an error: the user asked for this one.
+    expect(stopped).toHaveAttribute('data-tone', 'neutral');
+    expect(within(stopped).getByText('Install cancelled.')).toBeInTheDocument();
+  });
+
+  it('announces how a job ENDED, not just how it was going', () => {
+    // The banner mounts with its text already in it, which is not reliably
+    // read; `cancelled` and `lost` were silent because the live region was
+    // unmounted with the progress bar. One region, for the job's whole life.
+    seed({ packs: [embeddings], job: job({ status: 'cancelled' }) });
+    open();
+    render(<PackCenterModal />);
+    expect(
+      document.querySelector('[aria-live="polite"][aria-atomic="true"]')!.textContent,
+    ).toBe('Install cancelled.');
+  });
+
+  it('says the log is waiting rather than showing an empty box', () => {
+    seed({ packs: [embeddings], job: job({ log: [] }) });
+    open();
+    render(<PackCenterModal />);
+    const log = screen.getByRole('log', { name: 'Install log' });
+    expect(within(log).getByText('Waiting for the first message...')).toBeInTheDocument();
+  });
+
+  it('follows the log while the reader is at the bottom, and stops when they are not', () => {
+    const line = (seq: number) => ({
+      seq, ts: null, kind: 'log' as const, text: `line ${seq}`,
+    });
+    seed({ packs: [embeddings], job: job({ log: [line(1)] }) });
+    open();
+    render(<PackCenterModal />);
+
+    // jsdom does no layout, so the box's geometry is stated outright.
+    const box = screen.getByRole('log', { name: 'Install log' });
+    for (const [prop, value] of Object.entries({
+      scrollHeight: 500, clientHeight: 100, scrollTop: 400,
+    })) {
+      Object.defineProperty(box, prop, { value, writable: true, configurable: true });
+    }
+
+    act(() => {
+      usePackStore.setState({ job: job({ log: [line(1), line(2)] }) });
+    });
+    expect(box.scrollTop).toBe(500);
+
+    // Scrolled up to read the line that failed: the next message must not
+    // yank the reader back down.
+    box.scrollTop = 500 - 100 - STICK_PX - 1;
+    fireEvent.scroll(box);
+    act(() => {
+      usePackStore.setState({ job: job({ log: [line(1), line(2), line(3)] }) });
+    });
+    expect(box.scrollTop).toBe(500 - 100 - STICK_PX - 1);
+
+    // Back within STICK_PX of the bottom: following resumes.
+    box.scrollTop = 500 - 100 - STICK_PX;
+    fireEvent.scroll(box);
+    act(() => {
+      usePackStore.setState({ job: job({ log: [line(1), line(2), line(3), line(4)] }) });
+    });
+    expect(box.scrollTop).toBe(500);
   });
 
   it('keeps the job on screen across a close and a reopen, and touches no follower', () => {

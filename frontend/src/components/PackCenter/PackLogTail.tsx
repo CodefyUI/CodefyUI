@@ -4,7 +4,7 @@ import { useI18n } from '../../i18n';
 import styles from './PackCenterModal.module.css';
 
 /** How close to the bottom still counts as "following the log". */
-const STICK_PX = 24;
+export const STICK_PX = 24;
 
 export interface PackLogTailProps {
   lines: PackLogLine[];

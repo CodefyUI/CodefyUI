@@ -11,7 +11,7 @@ import { useUIStore } from '../store/uiStore';
 import { usePackStore } from '../store/packStore';
 import { getRun, validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
-import { packTitle } from '../utils/packAvailability';
+import { localizedPackTitle } from '../utils/packAvailability';
 import { friendlyError, missingPackFromError } from '../utils/errorMessages';
 import { useI18n } from '../i18n';
 import { RECONNECTED_EVENT, type ExecutionWebSocket } from '../api/ws';
@@ -84,7 +84,7 @@ function toastMissingPack(rawError: unknown, errorType?: unknown): void {
 
   const t = useI18n.getState().t;
   const message = t('packs.toast.missingPack', {
-    pack: packTitle(usePackStore.getState().byId, packId),
+    pack: localizedPackTitle(t, usePackStore.getState().byId, packId),
   });
   const store = useToastStore.getState();
   if (store.toasts.some((toast) => toast.message === message)) return;

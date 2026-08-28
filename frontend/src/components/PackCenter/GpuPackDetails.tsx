@@ -121,7 +121,12 @@ export function GpuPackDetails({
       ) : (
         <>
           <div className={styles.note}>
-            {launchMode === 'start' ? t('packs.gpu.notYet') : t('packs.gpu.devMode')}
+            {/* `dev` only. An `unknown` launch mode means no catalog has
+                answered yet (or a server too old to say), and telling a user
+                they started CodefyUI a particular way when we do not know it
+                is worse than the neutral sentence — which is true either
+                way: run the command with the server stopped. */}
+            {launchMode === 'dev' ? t('packs.gpu.devMode') : t('packs.gpu.notYet')}
           </div>
           {command === null ? (
             <div className={styles.note}>{t('packs.gpu.noCommand')}</div>

@@ -94,6 +94,11 @@ export function PackItemRow({
         <button
           type="button"
           className={styles.itemRemove}
+          // Named, because a pack card carries one of these per downloaded
+          // model: "Remove" three times over is one control repeated to
+          // anyone navigating by name, and the visible label has to stay the
+          // short word for the row to fit.
+          aria-label={t('packs.item.removeNamed', { item: name })}
           // Same lock as the tick boxes: deleting a file out from under the
           // job that is writing to this pack is the one destructive thing
           // this row can do, and it must not be reachable mid-install.

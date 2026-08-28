@@ -8,7 +8,7 @@ import type {
 } from '../../api/rest';
 import type { PackItemProgress, PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
-import { packTitle, type PackIndex } from '../../utils/packAvailability';
+import { localizedPackTitle, type PackIndex } from '../../utils/packAvailability';
 import { GpuPackDetails } from './GpuPackDetails';
 import { PackItemRow } from './PackItemRow';
 import {
@@ -17,7 +17,6 @@ import {
   missingItems,
   statusKey,
   statusTone,
-  type Translate,
 } from './packStatus';
 import styles from './PackCenterModal.module.css';
 
@@ -30,18 +29,6 @@ import styles from './PackCenterModal.module.css';
  * supervisor handshake and flips this one constant.
  */
 export const RESTART_INSTALL_AVAILABLE = false;
-
-/** The label for a pack, preferring this build's copy over the server's. */
-function displayTitle(
-  t: Translate,
-  byId: PackIndex,
-  packId: string,
-  serverTitle?: string,
-): string {
-  const key = catalogKey(packId, 'title');
-  if (key !== null) return t(key);
-  return serverTitle ?? packTitle(byId, packId);
-}
 
 export function StatusPill({ status }: { status: PackStatus }) {
   const { t } = useI18n();
@@ -117,7 +104,7 @@ export function PackCard({
   const running = jobHere && job.status === 'running';
   const locked = busy || running;
 
-  const title = displayTitle(t, byId, pack.id, pack.title);
+  const title = localizedPackTitle(t, byId, pack.id);
   const descKey = catalogKey(pack.id, 'desc');
   const description = descKey !== null ? t(descKey) : pack.description;
 
@@ -125,12 +112,20 @@ export function PackCard({
   const chosenBytes = chosen.reduce((sum, item) => sum + item.size_bytes, 0);
   const blockedBy = pack.blocked_by;
 
-  const disabled = !canInstall || locked || blockedBy.length > 0 || chosen.length === 0;
+  // The Python half can be missing while every FILE is already on disk — an
+  // install that fetched the models and then failed at pip, or a pack whose
+  // wheels were removed since. There is still something to install, and the
+  // backend runs exactly the pip step for an empty `items`, so the button
+  // must stay alive with nothing ticked.
+  const pipMissing = pack.pip.length > 0 && !pack.pip_ready;
+  const nothingToDo = chosen.length === 0 && !pipMissing;
+
+  const disabled = !canInstall || locked || blockedBy.length > 0 || nothingToDo;
   const reason = !canInstall
     ? t('packs.remoteDisabled')
     : blockedBy.length > 0
-      ? t('packs.dependsOnMissing', { pack: displayTitle(t, byId, blockedBy[0]) })
-      : chosen.length === 0
+      ? t('packs.dependsOnMissing', { pack: localizedPackTitle(t, byId, blockedBy[0]) })
+      : nothingToDo
         // Its own sentence, not the "Select all missing" button's label: a
         // tooltip explaining why a button is dead has to say what to DO, and
         // naming another button is not that.
@@ -165,7 +160,15 @@ export function PackCard({
 
       {pack.pip.length > 0 && (
         <div className={styles.cardMeta}>
-          {t('packs.pip', { specs: pack.pip.map((entry) => entry.spec).join(', ') })}
+          {t('packs.pip', { specs: pack.pip.map((entry) => entry.spec).join(', ') })}{' '}
+          {/* Said out loud, because it is the difference between a pack that
+              needs nothing and one whose Install button is alive with no box
+              ticked: the models are here and the libraries are not. Each part
+              keeps its own element so the specs and the state are each one
+              phrase to a reader — and to a query — rather than a run-on. The
+              dash between them is punctuation, not information. */}
+          <span aria-hidden="true">—</span>{' '}
+          <span>{t(pipMissing ? 'packs.pipMissing' : 'packs.pipReady')}</span>
         </div>
       )}
 
@@ -174,7 +177,7 @@ export function PackCard({
           <span>
             {t('packs.dependsOn', {
               packs: pack.depends_on
-                .map((depId) => displayTitle(t, byId, depId))
+                .map((depId) => localizedPackTitle(t, byId, depId))
                 .join(', '),
             })}
           </span>
@@ -193,7 +196,7 @@ export function PackCard({
                     className={styles.linkBtn}
                     onClick={() => onFocusPack(depId)}
                   >
-                    {t('packs.dependsOnMissing', { pack: displayTitle(t, byId, depId) })}
+                    {t('packs.dependsOnMissing', { pack: localizedPackTitle(t, byId, depId) })}
                   </button>
                 )}
               </span>
@@ -269,8 +272,12 @@ export function PackCard({
  * paint a NaN bar instead of no bar at all.
  */
 function itemProgress(job: PackJob, itemId: string): PackItemProgress | null {
+  // `?? null` because the index is typed as total and is not: a job that names
+  // an item this pack does not list — or one whose key was explicitly set to
+  // undefined — would otherwise hand back `undefined` under a `| null` type
+  // and put the row one property access away from a crash.
   return Object.prototype.hasOwnProperty.call(job.items, itemId)
-    ? job.items[itemId]
+    ? job.items[itemId] ?? null
     : null;
 }
 

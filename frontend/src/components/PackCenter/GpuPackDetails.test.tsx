@@ -142,6 +142,19 @@ describe('GpuPackDetails — the command block', () => {
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
   });
 
+  it('gives an unknown launch mode the neutral sentence, not the dev one', () => {
+    // `unknown` means no catalog has answered (or a server too old to say).
+    // Telling a reader they started CodefyUI with `cdui dev` when we do not
+    // know that is a guess; the start-mode sentence is true either way.
+    renderCard({ launchMode: 'unknown' });
+    expect(
+      screen.getByText(
+        'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/cdui dev/)).toBeNull();
+  });
+
   it('falls back to the GPU-wide command when the pack has none', () => {
     renderCard({ pack: pack({ install_command: null }) });
     expect(screen.getByText('cdui install --gpu auto')).toBeInTheDocument();

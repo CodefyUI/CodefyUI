@@ -107,9 +107,26 @@ const PACK_MISSING =
 describe('missingPackFromError — a node that needs an optional pack', () => {
   it('maps PackMissingError to the friendly sentence and extracts the pack id', () => {
     expect(missingPackFromError(PACK_MISSING, 'PackMissingError')).toBe('word-vectors');
+    // The name this build ships for the pack, with no catalog loaded at all:
+    // the run failed, and the sentence still calls the pack what the Package
+    // Center will call it when the user opens it.
     expect(friendlyError(PACK_MISSING, 'PackMissingError')).toBe(
-      'This node needs the word-vectors pack. Install it from the Package Center.',
+      'This node needs the Word vectors (GloVe) pack. Install it from the Package Center.',
     );
+  });
+
+  it('falls back to the bare id for a pack this build has no copy for', () => {
+    const raw = 'Nope is not installed. Open Package Center (pack=pack-from-the-future)';
+    expect(friendlyError(raw, 'PackMissingError')).toBe(
+      'This node needs the pack-from-the-future pack. Install it from the Package Center.',
+    );
+  });
+
+  it('ignores an id the case does not match, since pack ids are lowercase', () => {
+    // A capitalised id can only come from something that is not a pack id,
+    // and naming a pack no catalog lists is worse than the raw message.
+    const raw = 'Open Package Center (pack=Word-Vectors)';
+    expect(missingPackFromError(raw, 'PackMissingError')).toBeNull();
   });
 
   it('ignores a plain error mentioning pack=', () => {
@@ -133,19 +150,22 @@ describe('missingPackFromError — a node that needs an optional pack', () => {
     expect(missingPackFromError('', 'PackMissingError')).toBeNull();
   });
 
-  it('names the pack by its catalog title once the store has one', () => {
+  it('prefers the shipped copy over the server title once the store has one', () => {
+    // The server's English title loses to this build's own copy — the same
+    // rule the panel, the node badge and the toasts follow, so a reader is
+    // never sent to a Package Center that calls the pack something else.
     usePackStore.setState({
       byId: { 'word-vectors': { id: 'word-vectors', title: 'Word vectors' } as PackSummary },
     });
     expect(friendlyError(PACK_MISSING, 'PackMissingError')).toBe(
-      'This node needs the Word vectors pack. Install it from the Package Center.',
+      'This node needs the Word vectors (GloVe) pack. Install it from the Package Center.',
     );
   });
 
   it('answers in Traditional Chinese under the zh-TW locale', () => {
     useI18n.setState({ locale: 'zh-TW' });
     const out = friendlyError(PACK_MISSING, 'PackMissingError');
-    expect(out).toContain('word-vectors');
+    expect(out).toContain('詞向量（GloVe）');
     expect(out).toMatch(/[一-鿿]/);
   });
 

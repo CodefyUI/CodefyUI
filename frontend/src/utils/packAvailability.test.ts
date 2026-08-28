@@ -3,9 +3,11 @@ import { act, renderHook } from '@testing-library/react';
 import type { PackItem, PackItemStatus, PackSummary } from '../api/rest';
 import type { NodeDefinition, ParamDefinition } from '../types';
 import { _resetPackStoreForTesting, usePackStore } from '../store/packStore';
+import type { TranslationKey } from '../i18n';
 import {
   isRequirementAvailable,
   itemTitle,
+  localizedPackTitle,
   missingRequirementForOption,
   nodeMissingPack,
   packTitle,
@@ -271,6 +273,34 @@ describe('packTitle / itemTitle', () => {
   it('names the item when the requirement has one', () => {
     expect(itemTitle(byId, { packId: 'rag', itemId: 'qwen2.5-0.5b' })).toBe('qwen2.5-0.5b');
     expect(itemTitle(byId, { packId: 'rag', itemId: null })).toBe('RAG stack');
+  });
+});
+
+describe('localizedPackTitle', () => {
+  // Names the key rather than translating it, so the assertions are about
+  // WHICH source won rather than about the copy in the en table.
+  const t = (key: TranslationKey): string => `<${key}>`;
+
+  const byId = index(
+    makePack({ id: 'word-vectors', title: 'Word vectors' }),
+    makePack({ id: 'pack-from-the-future', title: 'Something newer' }),
+  );
+
+  it('prefers the copy this build ships, then the server title, then the id', () => {
+    // Copy this build ships for the pack — the only translated source, and
+    // the one the panel, the node badge and the toasts all have to agree on.
+    expect(localizedPackTitle(t, byId, 'word-vectors'))
+      .toBe('<packs.catalog.word-vectors.title>');
+    // A pack from a newer backend: no shipped copy, so the server's title.
+    expect(localizedPackTitle(t, byId, 'pack-from-the-future')).toBe('Something newer');
+    // Not in the catalog at all — a node can name a pack before the catalog
+    // answers, and "needs the not-a-pack pack" is still a usable sentence.
+    expect(localizedPackTitle(t, byId, 'not-a-pack')).toBe('not-a-pack');
+    expect(localizedPackTitle(t, {}, 'not-a-pack')).toBe('not-a-pack');
+    // Both lookups are own-property tests: the message table and the index
+    // are plain objects, and an id naming an Object.prototype member must
+    // not resolve to an inherited function.
+    expect(localizedPackTitle(t, byId, 'constructor')).toBe('constructor');
   });
 });
 

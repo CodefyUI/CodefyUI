@@ -82,7 +82,7 @@ received — each links to the release it was published as.
   own: it cannot be installed while the server is running, so instead of a
   button that would fail it names the detected card, the build this venv
   currently has, and the exact `cdui install --gpu` line to run, ready to
-  copy. Reachable from Settings (with an at-a-glance "3 of 5 packs
+  copy. Reachable from Settings (with an at-a-glance "2 of 4 packs
   installed") and from the sidebar's Custom tab.
 
 - **A dropdown says which of its options are one download away.** A SELECT
@@ -186,6 +186,16 @@ received — each links to the release it was published as.
   new `ExecutionCache.upstream_ref`, so the sort still normalises the order
   edges are listed in while the ports stay part of the identity. Cold runs were
   always correct; only re-runs were wrong, which is why this survived so long.
+
+- **A typed failure keeps its type on the way to the browser.** `node_status`
+  error frames now carry `error_type`, the exception's class name, which the
+  engine had recorded and the run service then dropped. Every rule that maps a
+  raw Python exception into a sentence a beginner can act on keys off that
+  field — the missing-pack sentence with its "Open Package Center" button, and
+  the pre-existing `KeyError` ("this node needs an input on `<port>`") and
+  `ValueError` rules — so all of them were unreachable outside DEBUG, where a
+  traceback happens to name the class in its last line. The message itself
+  never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
 
 ## [2.4.1] — 2026-08-22
 

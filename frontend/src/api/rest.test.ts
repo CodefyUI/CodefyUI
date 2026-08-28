@@ -1090,9 +1090,22 @@ describe('pack endpoints', () => {
     });
 
     it('throws PackApiError with the status on 404', async () => {
-      mockFetch(404, { detail: 'Package Center is not available' });
+      // What a server with no `/api/packs` route at all answers: FastAPI's
+      // own not-found body. It is the ONE status the store reads as "this
+      // build predates the Package Center".
+      mockFetch(404, { detail: 'Not Found' });
       const err = await packError(listPacks());
       expect(err.status).toBe(404);
+      expect(err.message).toBe('Not Found');
+    });
+
+    it('throws a plain PackApiError when the route exists but is disabled', async () => {
+      // The 503 the backend raises when the Package Center is switched off:
+      // a route that EXISTS and refused, which is an error to report rather
+      // than a server to treat as pack-less.
+      mockFetch(503, { detail: 'Package Center is not available' });
+      const err = await packError(listPacks());
+      expect(err.status).toBe(503);
       expect(err.message).toBe('Package Center is not available');
     });
   });

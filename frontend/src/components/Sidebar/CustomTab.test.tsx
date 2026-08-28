@@ -232,11 +232,12 @@ describe('CustomTab', () => {
     expect(screen.getByText('Partly installed')).toBeTruthy();
     // The same pill the modal uses, so a status reads the same in both.
     expect(container.querySelectorAll('[class*="pill"][data-tone]')).toHaveLength(2);
-    // The count is the INSTALLED packs, not the size of the catalog.
+    // The count is the ROWS listed, like both sibling sections: "1" over
+    // two listed packs reads as a list that failed to load half of itself.
     const counts = Array.from(container.querySelectorAll('[class*="sectionCount"]')).map(
       (el) => el.textContent,
     );
-    expect(counts).toEqual(['0', '1', '0']);
+    expect(counts).toEqual(['0', '2', '0']);
 
     fireEvent.click(screen.getByText('Package Center...'));
     expect(useUIStore.getState().packCenterOpen).toBe(true);

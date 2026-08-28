@@ -2,7 +2,12 @@
   position: fixed;
   bottom: var(--sp-6);
   right: var(--sp-6);
-  z-index: 10000;
+  /* Above the modal backdrops (10000). Both are portalled into <body> and
+     neither ancestor makes a stacking context, so a tie is broken by tree
+     order and the Package Center — a later sibling — painted its scrim over
+     every toast its own buttons fire. A click then hit the backdrop and
+     closed the panel. */
+  z-index: 10001;
   display: flex;
   flex-direction: column-reverse;
   gap: var(--sp-3);
@@ -99,6 +104,16 @@
 .action:hover {
   background: rgba(255, 255, 255, 0.28);
   border-color: var(--text-primary);
+}
+
+/* Both controls draw their own ring: the toast fills are saturated, and the
+   browser default (a thin blue outline on the deep red above) is hard to see
+   on exactly the toast a keyboard user most needs to reach — the error one,
+   which never times out and whose action is the offer to fix it. */
+.action:focus-visible,
+.close:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
 }
 
 .close {

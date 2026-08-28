@@ -17,7 +17,7 @@ import {
 import { computeSegmentNodes } from '../../utils/segmentPath';
 import { generateId } from '../../utils';
 import { confirm } from '../../utils/dialog';
-import { catalogKey } from '../PackCenter/packStatus';
+import { localizedPackTitle, type PackIndex } from '../../utils/packAvailability';
 import { HealthSection } from './HealthSection';
 import { SettingsRow as Row } from './SettingsRow';
 import styles from './SettingsPopover.module.css';
@@ -36,6 +36,9 @@ type PackStoreState = ReturnType<typeof usePackStore.getState>;
 // log, its per-item bytes and its step list on every long-poll turn, and the
 // settings panel must not re-render for any of that.
 const selectPacks = (state: PackStoreState): PackSummary[] => state.packs;
+// Rebuilt in the same `set` as `packs`, so subscribing to both costs no
+// extra render — and naming a pack is an index lookup, not a scan.
+const selectPacksById = (state: PackStoreState): PackIndex => state.byId;
 const selectPacksLoaded = (state: PackStoreState): boolean => state.loaded;
 const selectPacksUnsupported = (state: PackStoreState): boolean => state.unsupported;
 const selectInstallingPackId = (state: PackStoreState): string | null =>
@@ -104,6 +107,7 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
   // only ever shows what the store already knows.
   const openPackCenter = useUIStore((s) => s.openPackCenter);
   const packs = usePackStore(selectPacks);
+  const packsById = usePackStore(selectPacksById);
   const packsLoaded = usePackStore(selectPacksLoaded);
   const packsUnsupported = usePackStore(selectPacksUnsupported);
   const installingPackId = usePackStore(selectInstallingPackId);
@@ -269,12 +273,10 @@ export function SettingsPopover({ open, onClose, triggerRef }: Props) {
         : t('settings.codex.descLoggedOut');
   // What to call a pack: this build's own copy for the packs it ships, the
   // server's title for one it predates, and the bare id when the catalog in
-  // hand does not list it at all (a job adopted from another tab can).
-  const packName = (packId: string): string => {
-    const key = catalogKey(packId, 'title');
-    if (key !== null) return t(key);
-    return packs.find((pack) => pack.id === packId)?.title ?? packId;
-  };
+  // hand does not list it at all (a job adopted from another tab can). The
+  // rule is shared with the node side and the panel, so one pack has one
+  // name wherever a reader meets it.
+  const packName = (packId: string): string => localizedPackTitle(t, packsById, packId);
 
   const packsDesc = packsUnsupported
     ? t('settings.packs.unsupported')

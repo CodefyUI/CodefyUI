@@ -5,10 +5,10 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  /* One above the modals and the toast stack (both 10000): while the server is
+  /* Above the modals (10000) and the toast stack (10001): while the server is
      going away, nothing on the page is still true, so nothing may sit on top
      of this. */
-  z-index: 10001;
+  z-index: 10002;
   background: var(--surface-scrim);
   backdrop-filter: blur(2px);
   display: flex;

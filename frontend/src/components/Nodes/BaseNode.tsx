@@ -16,9 +16,9 @@ import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
 import { useI18n } from '../../i18n';
 import {
+  localizedPackTitle,
   missingRequirementForOption,
   nodeMissingPack,
-  packTitle,
   requirementSentence,
   usePackAvailability,
 } from '../../utils/packAvailability';
@@ -319,7 +319,9 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
           <button
             type="button"
             className={`${styles.packBadge} nodrag`}
-            title={t('node.needsPack.title', { pack: packTitle(byId, missingPack.packId) })}
+            title={t('node.needsPack.title', {
+              pack: localizedPackTitle(t, byId, missingPack.packId),
+            })}
             onClick={(e) => {
               e.stopPropagation();
               // `getState()` rather than a subscription: every card on the

@@ -414,8 +414,11 @@ const packedDef = (): NodeDefinition => ({
   requires_pack: 'word-vectors',
 });
 
+// The pack is named from this build's own copy, not from the server title
+// above: the Package Center this sentence sends the reader to says the same.
 const PALETTE_SENTENCE =
-  'Needs the Word vectors pack. You can drag it now and install the pack from the Package Center.';
+  'Needs the Word vectors (GloVe) pack. You can drag it now and install the pack from '
+  + 'the Package Center.';
 
 describe('NodesTab — needs-pack badge', () => {
   it('shows a Needs pack badge for a node whose pack is missing and keeps it draggable', () => {
@@ -424,7 +427,13 @@ describe('NodesTab — needs-pack badge', () => {
     render(<NodesTab />);
 
     const badge = screen.getByText('Needs pack');
-    expect(badge.getAttribute('title')).toBe(PALETTE_SENTENCE);
+    // The whole sentence is the badge's accessible name; the visible label
+    // is the two-word chip. NO native tooltip, because the portal tooltip
+    // below renders the same sentence on the same hover, and two copies of
+    // it — one of them a browser tooltip a second late — read as two
+    // different messages.
+    expect(badge.getAttribute('aria-label')).toBe(PALETTE_SENTENCE);
+    expect(badge).not.toHaveAttribute('title');
 
     // The badge is a note on the row, not a gate. Dragging a node whose pack
     // is missing is exactly how a learner gets to the point of installing it,
@@ -441,6 +450,22 @@ describe('NodesTab — needs-pack badge', () => {
     // description is read before the drag.
     fireEvent.mouseEnter(item);
     expect(screen.getByText(PALETTE_SENTENCE)).toBeTruthy();
+  });
+
+  it('keeps the native tooltip when the portal one is switched off', () => {
+    // With tooltips off the badge is the only place the sentence can live,
+    // so the native title is what a hover has to reach.
+    useUIStore.setState({ tooltipsEnabled: false });
+    seedPacks(wordVectors());
+    seedStore({ categorized: { LLM: [packedDef()] } });
+    render(<NodesTab />);
+
+    const badge = screen.getByText('Needs pack');
+    expect(badge.getAttribute('title')).toBe(PALETTE_SENTENCE);
+    expect(badge.getAttribute('aria-label')).toBe(PALETTE_SENTENCE);
+
+    fireEvent.mouseEnter(screen.getByText('WordVectorLookup').parentElement as HTMLElement);
+    expect(screen.queryAllByText(PALETTE_SENTENCE)).toHaveLength(0);
   });
 
   it('omits the badge when the pack is usable or the catalog is unsupported', () => {

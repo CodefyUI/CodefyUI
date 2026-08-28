@@ -349,12 +349,12 @@ describe('useGraphExecution - node_status handler', () => {
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0].type).toBe('error');
-    expect(toasts[0].message).toBe('This run needs the Word vectors pack.');
+    expect(toasts[0].message).toBe('This run needs the Word vectors (GloVe) pack.');
     expect(toasts[0].action?.label).toBe('Open Package Center');
 
     // ...and the log keeps its own, node-scoped sentence.
     const log = tabById('t1').logs.find((l: any) => l.type === 'error');
-    expect(log.message).toContain('This node needs the Word vectors pack');
+    expect(log.message).toContain('This node needs the Word vectors (GloVe) pack');
 
     // The action opens the Package Center ON the pack that is missing.
     act(() => toasts[0].action!.onClick());
@@ -362,7 +362,7 @@ describe('useGraphExecution - node_status handler', () => {
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
   });
 
-  it('falls back to the pack id when the catalog has not loaded', () => {
+  it('names the pack from this build even when the catalog has not loaded', () => {
     const ws = tabById('t1').ws as FakeWs;
     renderHook(() => useGraphExecution());
     act(() => {
@@ -373,8 +373,11 @@ describe('useGraphExecution - node_status handler', () => {
         error_type: 'PackMissingError',
       });
     });
+    // No catalog, and still the name the Package Center will use when the
+    // action below opens it. The bare id is the last resort, for a pack this
+    // build ships no copy for.
     expect(useToastStore.getState().toasts[0].message).toBe(
-      'This run needs the word-vectors pack.',
+      'This run needs the Word vectors (GloVe) pack.',
     );
   });
 
@@ -757,7 +760,7 @@ describe('useGraphExecution - lifecycle events', () => {
     act(() => ws.emit('execution_error', { error: PACK_MISSING }));
     const toasts = useToastStore.getState().toasts;
     expect(toasts).toHaveLength(1);
-    expect(toasts[0].message).toBe('This run needs the word-vectors pack.');
+    expect(toasts[0].message).toBe('This run needs the Word vectors (GloVe) pack.');
     expect(toasts[0].action?.label).toBe('Open Package Center');
     // Still an ordinary run failure in every other respect.
     expect(tabById('t1').status).toBe('error');

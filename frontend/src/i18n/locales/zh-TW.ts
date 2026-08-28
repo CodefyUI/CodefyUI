@@ -787,6 +787,7 @@ const zhTW: Record<TranslationKey, string> = {
   // Package Center — the keys the pack store toasts with (the panel's own
   // strings land with the panel).
   'packs.item.remove': '移除',
+  'packs.item.removeNamed': '移除 {item}',
   'packs.item.removeConfirm': '要移除「{item}」嗎？下次安裝時會重新下載。',
   'packs.item.removed': '已移除 {item}。',
   'packs.item.removeFailed': '無法移除 {item}',
@@ -848,6 +849,8 @@ const zhTW: Record<TranslationKey, string> = {
 
   // What a pack costs, and the buttons that spend it.
   'packs.pip': 'Python 套件：{specs}',
+  'packs.pipReady': 'Python 套件已安裝',
+  'packs.pipMissing': 'Python 套件尚未安裝',
   'packs.size': '下載大小：{size}',
   'packs.sizeSelected': '已選 {size}',
   'packs.dependsOn': '需要先安裝：{packs}',
@@ -933,6 +936,7 @@ const zhTW: Record<TranslationKey, string> = {
   'paramField.modelHint': '「{option}」需要 {pack} 套件裡的模型 {item}。',
   'paramField.packHintOthers': '灰色的選項需要另外安裝套件。',
   'paramField.installPack': '安裝套件',
+  'paramField.installPackFor': '安裝套件：{pack}',
   'config.needsPack': '這個節點需要 {pack} 套件。',
   'palette.needsPack': '需要套件',
   'palette.needsPack.title': '需要 {pack} 套件。可以先拖曳到畫布，再到套件中心安裝。',

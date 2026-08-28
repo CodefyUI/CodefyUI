@@ -816,6 +816,10 @@ const en = {
   // Package Center — the keys the pack store toasts with (the panel's own
   // strings land with the panel).
   'packs.item.remove': 'Remove',
+  // The accessible name, because a pack card carries one Remove button per
+  // downloaded model and "Remove" three times over is one control repeated to
+  // anyone navigating by name. The visible label stays the short word.
+  'packs.item.removeNamed': 'Remove {item}',
   'packs.item.removeConfirm':
     'Remove "{item}"? It will be downloaded again the next time it is installed.',
   'packs.item.removed': 'Removed {item}.',
@@ -884,6 +888,11 @@ const en = {
 
   // What a pack costs, and the buttons that spend it.
   'packs.pip': 'Python packages: {specs}',
+  // Said next to the specs, because the pip half can be missing while every
+  // model file is already on disk — which is the only reason Install is alive
+  // on a card with nothing ticked.
+  'packs.pipReady': 'Python packages installed',
+  'packs.pipMissing': 'Python packages not installed',
   'packs.size': 'Download size: {size}',
   'packs.sizeSelected': '{size} selected',
   'packs.dependsOn': 'Requires: {packs}',
@@ -976,6 +985,11 @@ const en = {
   'paramField.modelHint': '"{option}" needs the model {item} from the {pack} pack.',
   'paramField.packHintOthers': 'Greyed-out options need an optional pack.',
   'paramField.installPack': 'Install pack',
+  // The accessible name for the same button: one config panel can show two of
+  // them, and "Install pack" twice is one entry repeated to anyone navigating
+  // by control. A key rather than a hardcoded "label: pack", because the
+  // separator is punctuation and punctuation is translated.
+  'paramField.installPackFor': 'Install pack: {pack}',
   'config.needsPack': 'This node needs the {pack} pack.',
   'palette.needsPack': 'Needs pack',
   'palette.needsPack.title':

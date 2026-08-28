@@ -11,7 +11,7 @@ import { usePackStore } from '../../store/packStore';
 import { useUIStore } from '../../store/uiStore';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
 import { StatusPill } from '../PackCenter/PackCard';
-import { catalogKey } from '../PackCenter/packStatus';
+import { catalogKey, localizedPackTitle } from '../../utils/packAvailability';
 import { RefreshIcon } from '../shared/Icons';
 import styles from './NodePalette.module.css';
 import tabStyles from './CustomTab.module.css';
@@ -92,10 +92,11 @@ export function CustomTab() {
 
   /** A pack's name and one-line description, preferring this build's copy. */
   const packCopy = (pack: PackSummary): { title: string; desc: string } => {
-    const titleKey = catalogKey(pack.id, 'title');
     const descKey = catalogKey(pack.id, 'desc');
     return {
-      title: titleKey !== null ? t(titleKey) : pack.title,
+      // A one-entry index: this row IS the pack, and the shared rule is
+      // what keeps this list, the node badges and the panel in agreement.
+      title: localizedPackTitle(t, { [pack.id]: pack }, pack.id),
       desc: descKey !== null ? t(descKey) : pack.description,
     };
   };
@@ -105,7 +106,6 @@ export function CustomTab() {
   // count is taken from the same list the rows are, so a stale catalog left
   // over from a previous server cannot make the header disagree with them.
   const visiblePacks = packsUnsupported ? [] : packs;
-  const packsInstalled = visiblePacks.filter((pack) => pack.status === 'installed').length;
 
   return (
     <>
@@ -178,7 +178,10 @@ export function CustomTab() {
             {/* ── Optional packs ── */}
             <div className={tabStyles.sectionHeader}>
               <span className={tabStyles.sectionTitle}>{t('customTab.section.packs')}</span>
-              <span className={tabStyles.sectionCount}>{packsInstalled}</span>
+              {/* Rows, like both sibling sections: a count beside a
+                  section title says how much is in it. A "1" over three
+                  listed packs reads as a list that half failed to load. */}
+              <span className={tabStyles.sectionCount}>{visiblePacks.length}</span>
               <button
                 type="button"
                 className={tabStyles.manageButton}

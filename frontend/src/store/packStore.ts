@@ -16,6 +16,7 @@ import {
   type PackSummary,
 } from '../api/rest';
 import { confirm } from '../utils/dialog';
+import { localizedPackTitle } from '../utils/packAvailability';
 import { useToastStore } from './toastStore';
 import { useI18n } from '../i18n';
 
@@ -147,6 +148,15 @@ export type PackJobPhase = PackJobStatus | 'lost';
 export interface PackJob {
   jobId: string;
   packId: string;
+  /**
+   * How this job was launched.
+   *
+   * Recorded because `needs_restart` means two different things depending on
+   * it: a RESTART-mode job ended the way it was always going to, and a LIVE
+   * one hit a resolver conflict against the constraints file and is telling
+   * the user to run a command. Only the first is a restart anybody asked for.
+   */
+  mode: PackInstallMode;
   status: PackJobPhase;
   steps: PackJobStep[];
   /** Keyed by item id, so a replayed frame overwrites instead of appending. */
@@ -209,11 +219,23 @@ const IDLE_RESTART: RestartState = {
   phase: 'idle', packId: null, startedAt: null, command: null,
 };
 
-/** A job with nothing in it yet — what an adopted or just-started job starts as. */
-export function emptyPackJob(jobId: string, packId: string): PackJob {
+/**
+ * A job with nothing in it yet — what an adopted or just-started job starts as.
+ *
+ * `mode` defaults to `live` because that is what an ADOPTED job is until the
+ * catalog says otherwise: it decides whether a `needs_restart` ending starts a
+ * restart handshake, and starting one for a job that never asked for it puts a
+ * blocking overlay over a server that is not going anywhere.
+ */
+export function emptyPackJob(
+  jobId: string,
+  packId: string,
+  mode: PackInstallMode = 'live',
+): PackJob {
   return {
     jobId,
     packId,
+    mode,
     status: 'running',
     steps: [],
     items: {},
@@ -521,9 +543,17 @@ async function follow(
   }
 }
 
-/** A pack's human name, falling back to its id before the catalog loads. */
+/**
+ * A pack's human name for a toast, in the reader's language.
+ *
+ * The rule itself lives in `packAvailability` because the node side, the
+ * panel and these toasts all name the same packs, and a zh-TW reader told
+ * 已安裝 Word vectors (GloVe)。 about a card headed 詞向量（GloVe） is being told
+ * about two different packs.
+ */
 function packTitle(packId: string): string {
-  return usePackStore.getState().byId[packId]?.title ?? packId;
+  const { t } = useI18n.getState();
+  return localizedPackTitle(t, usePackStore.getState().byId, packId);
 }
 
 /**
@@ -563,15 +593,23 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
       break;
     case 'needs_restart': {
       const command = settled?.restartCommand ?? null;
-      if (store.launchMode === 'start') {
+      // The JOB's mode, not the launch mode. A restart-mode install is the
+      // only one that ends by design in a wheel swap the supervisor performs;
+      // a LIVE install lands here when its resolver conflicts with the
+      // constraints file, and the server it was talking to is not going
+      // anywhere. Keying this on `launchMode` alone put a blocking "Server
+      // restarting" overlay over a running server for thirty seconds, and hid
+      // the command the user actually needs behind it.
+      if (settled?.mode === 'restart' && store.launchMode === 'start') {
         // Parked BEFORE the reload so the page that comes back knows which
         // pack to report on — the job itself does not survive the reload.
         writePending(packId);
         void store.restartFlow(packId, command);
       } else {
-        // `cdui dev` has no supervisor to swap the wheel and relaunch. The
-        // job stays on screen: it is what the command block describes.
-        toast(t('packs.toast.devRestart'), 'warning');
+        // Nothing here can finish this install: either no supervisor exists
+        // (`cdui dev`) or none was asked for. The job STAYS on screen — its
+        // banner is what renders the command block this names.
+        toast(t('packs.toast.needsCli', { command: command ?? '' }), 'warning');
       }
       break;
     }
@@ -653,7 +691,12 @@ export const usePackStore = create<PackState>((set, get) => ({
     if (active !== null) {
       const current = get().job;
       if (!current || current.jobId !== active.job_id) {
-        set({ job: emptyPackJob(active.job_id, active.pack_id) });
+        // `active_job` does not carry the mode it was launched with (PR 5),
+        // so the pack's own default is the closest thing to the truth. It is
+        // right for every pack that HAS a restart mode, and a live pack has
+        // no other mode to be running in.
+        const mode = get().byId[active.pack_id]?.install_mode ?? 'live';
+        set({ job: emptyPackJob(active.job_id, active.pack_id, mode) });
       }
       // Idempotent: this runs on every poll, and only the FIRST one starts a
       // follower. This is how a job started in another tab is adopted.
@@ -662,12 +705,22 @@ export const usePackStore = create<PackState>((set, get) => ({
     }
 
     const job = get().job;
-    if (job && job.status === 'running' && jobBefore?.jobId === job.jobId) {
+    if (
+      job
+      && job.status === 'running'
+      && jobBefore?.jobId === job.jobId
+      // ...and nobody is watching it. A follower that is still parked on the
+      // events endpoint has a better answer coming than this catalog read
+      // does: `active_job` goes null the moment a job finishes, and the
+      // follower's next page settles it as done/failed/cancelled. Marking it
+      // `lost` from here is a race that turns a successful install into a
+      // "lost contact with the server" banner.
+      && followingJobId !== job.jobId
+    ) {
       // The server has no record of a job we think is running: it restarted,
       // or the job aged out. Saying "running" would be the one answer that
       // is definitely wrong.
       set({ job: { ...job, status: 'lost' } });
-      if (followingJobId === job.jobId) stopFollowing();
     }
   },
 
@@ -705,7 +758,10 @@ export const usePackStore = create<PackState>((set, get) => ({
       const requested = opts.items
         ?? pack?.items.filter((item) => item.status !== 'present').map((item) => item.id)
         ?? [];
-      const job = emptyPackJob(job_id, packId);
+      // The mode resolved above, not `opts.mode`: what the job IS decides how
+      // a `needs_restart` ending is handled, and a caller that let the pack's
+      // default stand still launched a restart-mode install.
+      const job = emptyPackJob(job_id, packId, mode);
       for (const item of requested) {
         job.items[item] = { bytesDone: 0, bytesTotal: null, percent: 0 };
       }
@@ -801,7 +857,9 @@ export const usePackStore = create<PackState>((set, get) => ({
   followJob: (jobId, packId, cursor = 0) => {
     const current = get().job;
     if (!current || current.jobId !== jobId) {
-      set({ job: emptyPackJob(jobId, packId) });
+      // Same reasoning as the adoption in `refresh`: nothing tells us how a
+      // job we did not start was launched, so the pack's own mode stands in.
+      set({ job: emptyPackJob(jobId, packId, get().byId[packId]?.install_mode ?? 'live') });
     }
     startFollowing(jobId, packId, cursor);
   },
@@ -843,13 +901,20 @@ export const usePackStore = create<PackState>((set, get) => ({
       // Wall clock, never a tick count: a sleeping laptop fires no timers,
       // and an overlay that counts turns would still be up an hour later.
       const elapsed = Date.now() - startedAt;
+      // Both give-up branches drop the breadcrumb. It exists to let the page
+      // that comes back from an automatic reload report how the install went;
+      // once the handshake has given up, the user reloads by hand at a time of
+      // their choosing, and a breadcrumb left behind would toast an outcome
+      // read off a `last_restart_job` record from some other attempt.
       if (elapsed > RESTART_TIMEOUT_MS) {
+        writePending(null);
         set((state) => ({ restart: { ...state.restart, phase: 'timeout' } }));
         return;
       }
       if (!sawDown && elapsed > RESTART_GRACE_MS) {
         // Half a minute and the server never even flinched: nothing picked
         // the restart up, and the user needs the command, not a spinner.
+        writePending(null);
         set((state) => ({ restart: { ...state.restart, phase: 'notStarted' } }));
         return;
       }

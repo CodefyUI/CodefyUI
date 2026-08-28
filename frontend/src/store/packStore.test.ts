@@ -405,6 +405,22 @@ describe('packStore — refresh', () => {
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
 
+  it('does not treat a 503 as a server without a Package Center', async () => {
+    // The route EXISTS and refused — the Package Center is switched off, or
+    // wedged. Answering that by silently enabling every pack-gated node (as
+    // the 404 path does) would hide a state the user can act on.
+    api.listPacks.mockRejectedValue(
+      new PackApiError(503, 'Package Center is not available'),
+    );
+
+    await usePackStore.getState().refresh();
+
+    const state = usePackStore.getState();
+    expect(state.unsupported).toBe(false);
+    expect(state.error).toBe('Package Center is not available');
+    expect(state.loading).toBe(false);
+  });
+
   it('keeps the rows it already has when the network fails', async () => {
     api.listPacks.mockResolvedValue(catalog({ packs: [makePack({ id: 'rag' })] }));
     await usePackStore.getState().refresh();
@@ -435,6 +451,9 @@ describe('packStore — refresh', () => {
     expect(api.getPackJobEvents.mock.calls[0][1]).toMatchObject({
       cursor: 0, wait: EVENT_WAIT_S,
     });
+    // The server rejects `wait > 60` with a 422, and the follower has no
+    // recovery for a request that is malformed on every single turn.
+    expect(EVENT_WAIT_S).toBeLessThanOrEqual(60);
   });
 
   it('adopts the same job idempotently, never wiping what it has already shown', async () => {
@@ -458,6 +477,36 @@ describe('packStore — refresh', () => {
     await usePackStore.getState().refresh();
 
     expect(usePackStore.getState().job!.status).toBe('lost');
+  });
+
+  it('does not mark a job lost while its follower is still watching it', async () => {
+    // `active_job` goes null the moment a job finishes, and the follower's
+    // next page carries the real ending. Racing it from here turned a
+    // successful install into "lost contact with the server".
+    vi.useFakeTimers();
+    try {
+      // The follower is PARKED on its long poll while the catalog is read,
+      // which is the whole point: the answer arrives after it.
+      let release: (page: PackJobEventsPage) => void = () => {};
+      const parked = new Promise<PackJobEventsPage>((resolve) => { release = resolve; });
+      const finished = eventsPage({
+        job_id: 'j9', status: 'done', cursor: 1,
+        events: [{ type: 'job_done', cursor: 1, ts: 't' }],
+      });
+      api.getPackJobEvents.mockReturnValueOnce(parked).mockResolvedValue(finished);
+      usePackStore.getState().followJob('j9', 'word-vectors', 0);
+
+      await usePackStore.getState().refresh();
+      expect(usePackStore.getState().job!.status).toBe('running');
+
+      // ...and the page the follower was waiting for still settles it.
+      release(finished);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(usePackStore.getState().job!.status).toBe('done');
+      expect(lastToast()).toMatchObject({ type: 'success' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not mark a job that was started while the request was in flight', async () => {
@@ -838,8 +887,10 @@ describe('packStore — a job settling', () => {
     usePackStore.getState().followJob('j1', 'word-vectors', 0);
     await settle();
 
+    // This build's own copy for the pack, not the server's English title:
+    // one pack has ONE name on the node, on the card and in this toast.
     expect(lastToast()).toMatchObject({
-      type: 'success', message: 'Word vectors installed.',
+      type: 'success', message: 'Word vectors (GloVe) installed.',
     });
     expect(api.listPacks).toHaveBeenCalled();
   });
@@ -872,6 +923,15 @@ describe('packStore — a job settling', () => {
   });
 
   it('starts the restart flow and remembers the pack across the reload', async () => {
+    // A RESTART-mode job: the only kind whose `needs_restart` is an ending
+    // somebody asked for, and so the only kind the handshake may run for.
+    usePackStore.setState({
+      byId: {
+        'word-vectors': makePack({
+          id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+        }),
+      },
+    });
     terminal({
       status: 'needs_restart',
       events: [{
@@ -889,6 +949,32 @@ describe('packStore — a job settling', () => {
     });
   });
 
+  it('does not start a handshake for a LIVE job that ends needs_restart', async () => {
+    // The only way a live install lands here: its resolver conflicted with
+    // the constraints file, so the server it was talking to is not going
+    // anywhere. Under `cdui start` this used to raise a blocking "Server
+    // restarting" overlay for thirty seconds — over a running server, and
+    // on top of the command the user actually needs.
+    terminal({
+      status: 'needs_restart',
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't',
+        command: 'cdui packs install word-vectors --restart',
+      }],
+    });
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+
+    expect(usePackStore.getState().job!.mode).toBe('live');
+    expect(usePackStore.getState().restart.phase).toBe('idle');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+    expect(lastToast()).toMatchObject({ type: 'warning' });
+    expect(lastToast().message).toContain('cdui packs install word-vectors --restart');
+    // The job stays on screen: its banner is what renders the command.
+    expect(usePackStore.getState().job!.status).toBe('needs_restart');
+  });
+
   it('shows the command instead of restarting under cdui dev', async () => {
     usePackStore.setState({ launchMode: 'dev' });
     terminal({
@@ -902,7 +988,9 @@ describe('packStore — a job settling', () => {
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
     expect(usePackStore.getState().restart.phase).toBe('idle');
     expect(lastToast()).toMatchObject({ type: 'warning' });
-    expect(lastToast().message).toContain('cdui dev');
+    // The command, not a sentence about `cdui dev`: it is the only thing
+    // that finishes this install, and nothing here is hiding it.
+    expect(lastToast().message).toContain('cdui install --gpu cu128');
     // The job stays on screen so the command block has something to describe.
     expect(usePackStore.getState().job!.restartCommand).toBe('cdui install --gpu cu128');
   });
@@ -1073,6 +1161,7 @@ describe('packStore — restartFlow', () => {
 
   it('gives up as notStarted when nothing ever went down within the grace', async () => {
     api.fetchHealth.mockResolvedValue(health({ boot_id: 'boot-a' }));
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
 
     void usePackStore.getState().restartFlow('gpu-torch', 'cmd');
     await settle();
@@ -1083,10 +1172,15 @@ describe('packStore — restartFlow', () => {
     expect(usePackStore.getState().restart.phase).toBe('notStarted');
     expect(usePackStore.getState().restart.command).toBe('cmd');
     expect(reload).not.toHaveBeenCalled();
+    // The breadcrumb is for a page that comes back from an AUTOMATIC
+    // reload. Left behind, it would toast an outcome read off some other
+    // attempt's record the next time the user reloads by hand.
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
   });
 
   it('times out when the server goes down and never comes back', async () => {
     api.fetchHealth.mockRejectedValue(new Error('connection refused'));
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
 
     void usePackStore.getState().restartFlow('gpu-torch', 'cmd');
     await settle();
@@ -1094,6 +1188,9 @@ describe('packStore — restartFlow', () => {
 
     expect(usePackStore.getState().restart.phase).toBe('timeout');
     expect(reload).not.toHaveBeenCalled();
+    // See the notStarted branch: a stale breadcrumb outlives the handshake
+    // that wrote it and reports on the wrong attempt.
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
   });
 
   it('measures its deadlines against the wall clock, not the number of polls', async () => {

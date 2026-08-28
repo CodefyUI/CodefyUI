@@ -2,11 +2,11 @@ import { useMemo } from 'react';
 import type { PackSummary } from '../../api/rest';
 import type { PackJob, PackJobPhase } from '../../store/packStore';
 import { useI18n } from '../../i18n';
+import { localizedPackTitle } from '../../utils/packAvailability';
 import { ProgressBar } from '../shared/ProgressBar';
 import { CommandBlock } from './CommandBlock';
 import { PackLogTail } from './PackLogTail';
 import {
-  catalogKey,
   currentStep,
   jobOverallPercent,
   stepLabel,
@@ -54,6 +54,9 @@ export function PackActivityPane({
           label: stepLabel(t, step.step, step.label),
         });
 
+  // How a job that has stopped is reported, or null while it is running.
+  const result = job === null ? null : resultSentence(t, job, title);
+
   // Announced on a STEP change and every ten percent, never on every byte: a
   // polite live region re-read on each of the thousands of progress frames a
   // 2 GB download emits would talk over itself for the whole install.
@@ -64,16 +67,18 @@ export function PackActivityPane({
   const bucket = percent === null ? -1 : Math.floor(percent / 10);
   const announcement = useMemo(
     () =>
-      [
+      result ?? [
         stepText ?? t('packs.activity.job', { pack: title }),
         percent === null ? null : `${Math.round(percent)}%`,
       ]
         .filter(Boolean)
         .join(' '),
     // Intentionally narrow: `stepText`, `title` and `percent` are read at the
-    // moment one of these changes, which IS the throttle.
+    // moment one of these changes, which IS the throttle. `result` is a
+    // string, so it compares by value and the ending announces itself even
+    // when the step and the bucket both stayed put.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [job?.jobId, step?.step, bucket, locale],
+    [job?.jobId, step?.step, bucket, locale, result],
   );
 
   if (job === null) {
@@ -93,12 +98,18 @@ export function PackActivityPane({
         {t('packs.activity.job', { pack: title })}
       </div>
 
+      {/* Mounted for the job's whole life, not just while it runs: a live
+          region that appears WITH its text already in it is not reliably
+          announced, and unmounting this one at the end is what made
+          `cancelled` and `lost` silent. One region, from "installing" to the
+          sentence that ends it. */}
+      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
+
       {running ? (
         <>
           {stepText !== null && <div className={styles.stepLine}>{stepText}</div>}
-          <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
-            {announcement}
-          </div>
           <div className={styles.overallLabel}>{t('packs.activity.overall')}</div>
           <ProgressBar
             tone="info"
@@ -138,33 +149,23 @@ function ResultBanner({ job, title }: { job: PackJob; title: string }) {
   const { t } = useI18n();
   const tone = BANNER_TONE[job.status] ?? 'neutral';
 
+  // The same sentence the live region announces, by construction rather than
+  // by two copies of the same five `t()` calls.
+  const sentence = resultSentence(t, job, title);
+
   return (
     <div className={styles.resultBanner} role="status" data-tone={tone}>
-      {job.status === 'done' && <span>{t('packs.activity.done', { pack: title })}</span>}
+      {sentence !== null && <span>{sentence}</span>}
 
-      {job.status === 'failed' && (
-        <>
-          <span>
-            {t('packs.activity.failed', { message: job.error?.message ?? '' })}
-          </span>
-          {/* The server's hint is the actionable half — "free 4 GB", "install
-              build tools" — and it is written by the step that failed. */}
-          {job.error?.hint && (
-            <span className={styles.resultHint}>{job.error.hint}</span>
-          )}
-        </>
+      {/* The server's hint is the actionable half — "free 4 GB", "install
+          build tools" — and it is written by the step that failed. */}
+      {job.status === 'failed' && job.error?.hint && (
+        <span className={styles.resultHint}>{job.error.hint}</span>
       )}
 
-      {job.status === 'cancelled' && <span>{t('packs.activity.cancelled')}</span>}
-
-      {job.status === 'needs_restart' && (
-        <>
-          <span>{t('packs.activity.needsRestart', { pack: title })}</span>
-          {job.restartCommand !== null && <CommandBlock command={job.restartCommand} />}
-        </>
+      {job.status === 'needs_restart' && job.restartCommand !== null && (
+        <CommandBlock command={job.restartCommand} />
       )}
-
-      {job.status === 'lost' && <span>{t('packs.activity.lost')}</span>}
     </div>
   );
 }
@@ -178,9 +179,39 @@ const BANNER_TONE: Record<PackJobPhase, BannerTone> = {
   lost: 'warning',
 };
 
-/** The pack's name, preferring this build's copy, then the server's, then id. */
+/**
+ * The pack's name, by the one rule every surface uses.
+ *
+ * `pack` is this job's own catalog row, so a one-entry index answers exactly
+ * what the whole catalog would — and the pane has no reason to hold the rest
+ * of it.
+ */
 function packName(t: Translate, packId: string, pack: PackSummary | undefined): string {
-  const key = catalogKey(packId, 'title');
-  if (key !== null) return t(key);
-  return pack?.title ?? packId;
+  return localizedPackTitle(t, pack ? { [packId]: pack } : {}, packId);
+}
+
+/**
+ * The one sentence a finished job is reported with.
+ *
+ * Shared by the banner and the live region on purpose: the banner is what a
+ * sighted reader sees, and a `role="status"` element that MOUNTS with its text
+ * already in it is not reliably announced — `cancelled` and `lost` were
+ * silent. The announcer stays mounted for the whole job and this sentence
+ * lands in it as a change, which is the thing screen readers do read.
+ */
+function resultSentence(t: Translate, job: PackJob, title: string): string | null {
+  switch (job.status) {
+    case 'done':
+      return t('packs.activity.done', { pack: title });
+    case 'failed':
+      return t('packs.activity.failed', { message: job.error?.message ?? '' });
+    case 'cancelled':
+      return t('packs.activity.cancelled');
+    case 'needs_restart':
+      return t('packs.activity.needsRestart', { pack: title });
+    case 'lost':
+      return t('packs.activity.lost');
+    default:
+      return null;
+  }
 }

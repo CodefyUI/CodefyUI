@@ -3,7 +3,11 @@ import { createPortal } from 'react-dom';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { nodeMissingPack, packTitle, usePackAvailability } from '../../utils/packAvailability';
+import {
+  localizedPackTitle,
+  nodeMissingPack,
+  usePackAvailability,
+} from '../../utils/packAvailability';
 import type { NodeDefinition } from '../../types';
 import { orderCategories } from './categories';
 import { CategoryList, type CategoryGroup } from './CategoryList';
@@ -30,7 +34,9 @@ export function NodeItem({ definition }: NodeItemProps) {
   const packSentence =
     missingPack === null
       ? null
-      : t('palette.needsPack.title', { pack: packTitle(byId, missingPack.packId) });
+      : t('palette.needsPack.title', {
+          pack: localizedPackTitle(t, byId, missingPack.packId),
+        });
 
   const desc = tn(definition.node_name, 'description', definition.description);
 
@@ -78,7 +84,16 @@ export function NodeItem({ definition }: NodeItemProps) {
       {/* A sibling of the name rather than a child of it, so the name keeps
           its own ellipsis; the item's grid puts the two on one row. */}
       {packSentence !== null && (
-        <span className={styles.nodeItemBadge} title={packSentence}>
+        <span
+          className={styles.nodeItemBadge}
+          // The accessible name carries the whole sentence; the visible label
+          // is the two-word chip. The native tooltip is dropped whenever the
+          // portal tooltip below is going to render the SAME sentence on the
+          // same hover — two copies of it, one of them a browser tooltip that
+          // arrives a second late, read as two different messages.
+          aria-label={packSentence}
+          title={tooltipsEnabled ? undefined : packSentence}
+        >
           {t('palette.needsPack')}
         </span>
       )}

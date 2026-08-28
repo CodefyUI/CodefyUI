@@ -1110,8 +1110,10 @@ describe('BaseNode — optional packs', () => {
     renderBody(baseData({ definition: makeDef({ requires_pack: 'word-vectors' }) }));
 
     const badge = screen.getByRole('button', { name: 'PACK' });
+    // This build's copy for the pack, not the server's English title: the
+    // panel this badge opens is headed with the same name.
     expect(badge.getAttribute('title')).toBe(
-      'Needs the Word vectors pack. Click to open the Package Center.',
+      'Needs the Word vectors (GloVe) pack. Click to open the Package Center.',
     );
     // xyflow starts a node drag from a plain mousedown; `nodrag` is how every
     // other control inside a card (the code editor, the text-input box) opts

@@ -1,6 +1,6 @@
 import type { PackItem, PackStatus, PackSummary } from '../../api/rest';
 import type { PackJob } from '../../store/packStore';
-import en, { type TranslationKey } from '../../i18n/locales/en';
+import type { TranslationKey } from '../../i18n/locales/en';
 
 /**
  * The pure half of the Package Center: everything the panel needs to decide
@@ -12,6 +12,16 @@ import en, { type TranslationKey } from '../../i18n/locales/en';
  * this frontend has no copy for — and none of them are worth mounting a modal
  * to exercise.
  */
+
+/**
+ * `catalogKey` is defined one layer down, in `utils/packAvailability`, and
+ * re-exported here because this is where the panel looks for it.
+ *
+ * It moved because the node side names packs too, and ONE existence test is
+ * what keeps the card, the node badge and the toast calling a pack the same
+ * thing. See `localizedPackTitle`.
+ */
+export { catalogKey } from '../../utils/packAvailability';
 
 /** Signature of `useI18n`'s `t`, so the helpers stay callable outside React. */
 export type Translate = (
@@ -59,22 +69,6 @@ const STATUS_KEY: Record<PackStatus, TranslationKey> = {
 
 export function statusKey(status: PackStatus): TranslationKey {
   return STATUS_KEY[status] ?? STATUS_KEY.not_installed;
-}
-
-/**
- * The i18n key for a pack's shipped copy, or null when this build has none.
- *
- * Catalog copy is keyed by PACK ID, and the backend is free to ship a pack
- * this frontend predates. `hasOwnProperty` rather than `in`, because the
- * message table is a plain object: an id like `constructor` would otherwise
- * "exist" and translate to the prototype's own member.
- */
-export function catalogKey(
-  packId: string,
-  field: 'title' | 'desc',
-): TranslationKey | null {
-  const key = `packs.catalog.${packId}.${field}`;
-  return Object.prototype.hasOwnProperty.call(en, key) ? (key as TranslationKey) : null;
 }
 
 /** Everything in *pack* that still has bytes to fetch. */
