@@ -1,11 +1,11 @@
 """The pack-backed gallery examples, executed against the real models.
 
 ``test_rag_examples.py`` holds these graphs to their shape; this file is the
-only place that asks whether they still DO what their cards claim. Both
-claims are about a downloaded model and nothing else can stand in for it: a
-faked encoder returns whatever the fake was written to return, so a test
-built on one proves the wiring and re-states the author's assumption about
-the model instead of checking it.
+only place that asks whether they still DO what their cards claim. Every one
+of those claims is about a downloaded model and nothing else can stand in
+for it: a faked encoder returns whatever the fake was written to return, so
+a test built on one proves the wiring and re-states the author's assumption
+about the model instead of checking it.
 
 That makes the suite OPT-IN twice over::
 
@@ -16,7 +16,8 @@ switch turns on everything that needs more than an offline runner. The inner
 gate is per test: each one asks ``pack_available`` for the exact item it
 needs and SKIPS when it is missing, because "the maintainer has the
 sentence encoder" and "the maintainer has GloVe" are different facts and
-one of them being false must not hide the other test's result.
+one of them being false must not hide the other test's result. The RAG test
+asks twice, for the two different downloads its two halves need.
 
 Nothing here redirects ``CODEFYUI_USER_DATA_DIR``. Every other pack test
 does, to keep bytes out of the developer's cache; these read that cache on
@@ -55,6 +56,8 @@ _SENTENCE_EXAMPLE = (
     _EXAMPLES_ROOT / "LLM" / "Sentence-Similarity-zhTW" / "graph.json")
 _ANALOGY_EXAMPLE = (
     _EXAMPLES_ROOT / "LLM" / "Word-Embedding-Analogy" / "graph.json")
+_RAG_LOCAL_EXAMPLE = (
+    _EXAMPLES_ROOT / "LLM" / "RAG-Local-Offline" / "graph.json")
 
 #: The pack item each example is written against, spelled the way the
 #: catalog spells it -- ``pack_available`` answers False for an id it does
@@ -62,6 +65,20 @@ _ANALOGY_EXAMPLE = (
 _SENTENCE_PACK = ("sentence-embeddings",
                   "paraphrase-multilingual-MiniLM-L12-v2")
 _VECTOR_PACK = ("word-vectors", "glove-50d")
+#: RAG-Local-Offline needs BOTH: the retrieval half encodes with
+#: multilingual-e5-small (a different item from the one
+#: Sentence-Similarity-zhTW uses, so having that one installed is not
+#: enough), and the generation half reads Qwen2.5 out of the rag pack.
+_RAG_ENCODER_PACK = ("sentence-embeddings", "multilingual-e5-small")
+_RAG_GENERATOR_PACK = ("rag", "qwen2.5-0.5b-instruct")
+
+#: Which bundled note is expected to answer the question the example ships
+#: with ("What is a node in CodefyUI, and how do I run a graph?"). It is the
+#: note titled "Nodes, Ports and Edges", and the one that writes "To run a
+#: graph, press Run in the toolbar" -- 01-what-is-codefyui.md touches both
+#: subjects in passing, so which of the two wins is exactly the kind of
+#: question only a real encoder settles. That is what this file is for.
+_EXPECTED_TOP_SOURCE = "02-nodes-and-edges.md"
 
 #: Which sentence is which one's partner: four pairs, in the order the
 #: TextInput lists them (weather, food, the stock market, and machine
@@ -179,3 +196,51 @@ def test_wordvector_glove_analogy_is_queen():
     assert top_labels[0][0] == "queen", (
         f"the analogy's top hit on glove-50d is {top_labels[0][0]!r}, not "
         f"'queen'; the whole top-k was {top_labels[0]}")
+
+
+def test_rag_local_example_answers_for_real():
+    """The shipped question retrieves the right note, and Qwen answers it.
+
+    Two claims in one run, because they are one run: a RAG example is only
+    honest if the retrieval finds the passage that contains the answer AND
+    the generator then says something. Either half can fail silently. A
+    prefix typo or a mismatched encoder still returns three chunks -- just
+    the wrong three -- and the model will happily write a fluent paragraph
+    off them. An empty generation, equally, leaves a graph that ran green
+    and printed nothing.
+
+    The top source is asserted rather than the answer's wording: which
+    document wins is a property of the corpus and the encoder and is stable,
+    while what a 0.5B model writes about it is not, and a test that pinned
+    the prose would fail on a temperature nobody changed.
+
+    Both gates are checked -- the encoder item and the generator model are
+    different downloads from different packs, and skipping on the one that
+    is missing has to name the right one.
+    """
+    _require(*_RAG_ENCODER_PACK)
+    _require(*_RAG_GENERATOR_PACK)
+
+    nodes, edges = _load(_RAG_LOCAL_EXAMPLE)
+    results = _execute(nodes, edges, "RAG-Local-Offline")
+
+    sources = results["retriever"]["sources"]
+    contexts = results["retriever"]["contexts"]
+    assert sources, (
+        "the Retriever returned nothing at all, so min_score or the query "
+        "wiring dropped every hit before the prompt was built")
+    assert len(contexts) == len(sources) == 3, (
+        f"top_k is 3 in the shipped graph but the run brought back "
+        f"{len(contexts)} contexts / {len(sources)} sources")
+    assert sources[0] == _EXPECTED_TOP_SOURCE, (
+        f"the closest chunk to the example's question came from "
+        f"{sources[0]!r}, not {_EXPECTED_TOP_SOURCE!r}; the whole retrieval "
+        f"was {sources}. Either the corpus changed or the two encoders are "
+        f"no longer the same model with the right e5 prefixes.")
+
+    answer = results["gen"]["text"]
+    assert answer.strip(), (
+        "HFTextGenerate produced an empty answer, so the example prints a "
+        "blank Print node after a minute of CPU")
+    print(f"[RAG-Local-Offline] sources: {sources}")
+    print(f"[RAG-Local-Offline] answer: {answer.strip()[:200]}")

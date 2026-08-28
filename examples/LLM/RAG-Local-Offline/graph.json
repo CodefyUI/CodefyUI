@@ -1,0 +1,311 @@
+{
+  "name": "RAG, fully local: retrieve then generate",
+  "description": "Needs the rag pack (Package Center, about 1.5 GB); then runs offline on CPU. The DocumentLoader reads five short bilingual notes from data/samples/rag, TextChunker cuts 400-character pieces, TextEmbedding (multilingual-e5-small, 'passage: ') vectorises them and VectorStore indexes them. The question is embedded the same way ('query: '), Retriever pulls the 3 closest chunks, PromptBuilder wraps them in an answer-only-from-context prompt, and HFTextGenerate answers with Qwen2.5-0.5B-Instruct. Expect 20-40 s of generation on a laptop CPU. README.md beside this graph explains each stage.",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": -300,
+        "y": 200
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "loader",
+      "type": "DocumentLoader",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "source": "directory",
+          "directory": "data/samples/rag",
+          "recursive": false,
+          "file": "",
+          "max_docs": 0
+        }
+      }
+    },
+    {
+      "id": "chunker",
+      "type": "TextChunker",
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "strategy": "characters",
+          "chunk_size": 400,
+          "chunk_overlap": 80,
+          "min_chunk_chars": 40
+        }
+      }
+    },
+    {
+      "id": "embed_docs",
+      "type": "TextEmbedding",
+      "position": {
+        "x": 600,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "model": "intfloat/multilingual-e5-small",
+          "text": "",
+          "split_lines": false,
+          "prefix": "passage: ",
+          "normalize": true,
+          "batch_size": 32,
+          "max_seq_length": 0,
+          "label_chars": 48,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "store",
+      "type": "VectorStore",
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "metric": "cosine",
+          "normalize": true
+        }
+      }
+    },
+    {
+      "id": "question",
+      "type": "TextInput",
+      "position": {
+        "x": 0,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "value": "What is a node in CodefyUI, and how do I run a graph?"
+        }
+      }
+    },
+    {
+      "id": "embed_q",
+      "type": "TextEmbedding",
+      "position": {
+        "x": 600,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "model": "intfloat/multilingual-e5-small",
+          "text": "",
+          "split_lines": false,
+          "prefix": "query: ",
+          "normalize": true,
+          "batch_size": 32,
+          "max_seq_length": 0,
+          "label_chars": 48,
+          "device": "auto"
+        }
+      }
+    },
+    {
+      "id": "retriever",
+      "type": "Retriever",
+      "position": {
+        "x": 1200,
+        "y": 200
+      },
+      "data": {
+        "params": {
+          "top_k": 3,
+          "min_score": 0.0
+        }
+      }
+    },
+    {
+      "id": "print_ctx",
+      "type": "Print",
+      "position": {
+        "x": 1500,
+        "y": 20
+      },
+      "data": {
+        "params": {
+          "label": "Retrieved contexts"
+        }
+      }
+    },
+    {
+      "id": "prompt",
+      "type": "PromptBuilder",
+      "position": {
+        "x": 1500,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "template": "Answer the question using only the context below. If the context does not contain the answer, say you do not know. Answer in the language of the question.\n\nContext:\n{context}\n\nQuestion: {question}\nAnswer:",
+          "separator": "blank_line",
+          "number_contexts": true,
+          "max_context_chars": 0
+        }
+      }
+    },
+    {
+      "id": "gen",
+      "type": "HFTextGenerate",
+      "position": {
+        "x": 1800,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "model": "Qwen/Qwen2.5-0.5B-Instruct",
+          "prompt": "",
+          "system_prompt": "You are a helpful assistant. Answer concisely and in the language of the question.",
+          "max_new_tokens": 160,
+          "temperature": 0.2,
+          "top_p": 0.9,
+          "top_k": 50,
+          "seed": 0,
+          "device": "auto",
+          "dtype": "auto"
+        }
+      }
+    },
+    {
+      "id": "print_ans",
+      "type": "Print",
+      "position": {
+        "x": 2100,
+        "y": 400
+      },
+      "data": {
+        "params": {
+          "label": "Answer"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "trig-loader",
+      "source": "start",
+      "target": "loader",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "trig-question",
+      "source": "start",
+      "target": "question",
+      "sourceHandle": "trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e1",
+      "source": "loader",
+      "target": "chunker",
+      "sourceHandle": "documents",
+      "targetHandle": "documents"
+    },
+    {
+      "id": "e2",
+      "source": "chunker",
+      "target": "embed_docs",
+      "sourceHandle": "chunks",
+      "targetHandle": "texts"
+    },
+    {
+      "id": "e3",
+      "source": "embed_docs",
+      "target": "store",
+      "sourceHandle": "embeddings",
+      "targetHandle": "embeddings"
+    },
+    {
+      "id": "e4",
+      "source": "chunker",
+      "target": "store",
+      "sourceHandle": "chunks",
+      "targetHandle": "chunks"
+    },
+    {
+      "id": "e5",
+      "source": "chunker",
+      "target": "store",
+      "sourceHandle": "metadata",
+      "targetHandle": "metadata"
+    },
+    {
+      "id": "e6",
+      "source": "question",
+      "target": "embed_q",
+      "sourceHandle": "text",
+      "targetHandle": "text"
+    },
+    {
+      "id": "e7",
+      "source": "embed_q",
+      "target": "retriever",
+      "sourceHandle": "embeddings",
+      "targetHandle": "query"
+    },
+    {
+      "id": "e8",
+      "source": "store",
+      "target": "retriever",
+      "sourceHandle": "index",
+      "targetHandle": "index"
+    },
+    {
+      "id": "e9",
+      "source": "retriever",
+      "target": "print_ctx",
+      "sourceHandle": "contexts",
+      "targetHandle": "value"
+    },
+    {
+      "id": "e10",
+      "source": "retriever",
+      "target": "prompt",
+      "sourceHandle": "contexts",
+      "targetHandle": "contexts"
+    },
+    {
+      "id": "e11",
+      "source": "retriever",
+      "target": "prompt",
+      "sourceHandle": "sources",
+      "targetHandle": "sources"
+    },
+    {
+      "id": "e12",
+      "source": "question",
+      "target": "prompt",
+      "sourceHandle": "text",
+      "targetHandle": "question"
+    },
+    {
+      "id": "e13",
+      "source": "prompt",
+      "target": "gen",
+      "sourceHandle": "prompt",
+      "targetHandle": "prompt"
+    },
+    {
+      "id": "e14",
+      "source": "gen",
+      "target": "print_ans",
+      "sourceHandle": "text",
+      "targetHandle": "value"
+    }
+  ]
+}

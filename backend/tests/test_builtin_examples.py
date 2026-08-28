@@ -58,11 +58,12 @@ assert _GRAPHS, "builtin example smoke suite discovered no examples"
 # Node types that pull a real dataset, train for multiple epochs, or load/save
 # weights — longer than a few seconds or dependent on prior runs.
 # test_chapter_examples.py carries the same list minus ``TextCorpusDataset``,
-# which no plugin example uses. This correctly skips execution for eight
+# which no plugin example uses. This correctly skips execution for ten
 # graphs: the six training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
 # ResNet-18 baseline, the TinyStories LM and VLA-PushWorld), the MNIST
 # inference example, which needs weights from a prior training run, and the
-# zh-TW Sentence Similarity example, whose encoder is a pack download.
+# three pack-backed LLM examples (zh-TW Sentence Similarity, RAG-Local-Offline
+# and RAG-LLMChat-API), whose encoder and generator are pack downloads.
 # Everything else — including all Model_Architecture graphs — must execute.
 _SLOW_NODE_TYPES = {
     "Dataset",
@@ -91,8 +92,9 @@ _SLOW_NODE_TYPES = {
     # would spend minutes of the fast smoke suite generating an answer.
     "HFTextGenerate",
     # One API call per run: a network round trip, a key CI does not have, and
-    # somebody's money. No shipped example wires it today; it is listed so one
-    # added tomorrow cannot start billing from the smoke suite.
+    # somebody's money. RAG-LLMChat-API wires it (to a local Ollama by
+    # default, to a hosted provider once someone switches the dropdown), so
+    # this entry is what keeps the smoke suite from opening that socket.
     "LLMChat",
 }
 
