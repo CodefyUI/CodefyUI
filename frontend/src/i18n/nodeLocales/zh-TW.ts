@@ -1066,6 +1066,22 @@ const zhTW: NodeTranslations = {
       min_chunk_chars: '最後一塊若短於這個長度，就併進前一塊。',
     },
   },
+  VectorStore: {
+    description:
+      '把各塊的嵌入向量與文字打包成一個可搜尋的索引。這就是 RAG 系統的「資料庫」：一個 [N, D] 矩陣加上 N 段文字，預設用 cosine 當度量（每列存成單位長度，搜尋就只是一次矩陣乘法）。把 index 接到 Retriever。只存在記憶體裡；重新執行時會從快取的嵌入在幾毫秒內重建。',
+    params: {
+      metric: 'cosine 忽略向量長度，是句子嵌入訓練時所用的度量；dot 是原始內積，給長度本身有意義的嵌入用。',
+      normalize: '把每列存成單位長度（此時 cosine 等於 dot）。metric 為 dot 時忽略。',
+    },
+  },
+  Retriever: {
+    description:
+      '找出與問題最相似的幾塊文字。把索引裡每一塊都跟問題向量算分（一次矩陣乘法，跟 CosineSimilarity 是同一個核心），留下 top_k，再丟掉低於 min_score 的，最後把文字交給 PromptBuilder。留意分數：最高分只有 0.3 左右，通常代表語料裡根本沒有答案。',
+    params: {
+      top_k: '要撈回幾塊。',
+      min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {

@@ -12,7 +12,10 @@ the one a learner can read.
 Keeping it here rather than inside either node is what makes both nodes thin:
 ``VectorStore.execute`` is a call to :func:`build_index`, ``Retriever.execute``
 is a call to :meth:`VectorIndex.search`, and a later ``VectorStoreFile`` node
-is :meth:`save` / :meth:`load` with a path widget.
+is :meth:`save` / :meth:`load` with a path widget. ``search`` is itself
+:meth:`VectorIndex.scores` plus a ``topk``, and the split is public because
+``Retriever``'s verbose trace shows the whole ``[Q, N]`` matrix: the chunks
+that lost are half of what makes a top score readable.
 
 Four decisions worth knowing about.
 
@@ -26,7 +29,7 @@ fix.
 
 **``normalize`` is stored, not just applied.** Unit rows make a cosine search
 a plain ``q @ V.T``, so it is worth doing once at build time rather than on
-every query. But ``search`` normalises anyway when the metric is cosine: an
+every query. But ``scores`` normalises anyway when the metric is cosine: an
 index assembled by hand, or loaded from a file somebody wrote with
 ``normalize=False``, must still answer cosine questions correctly. Normalising
 a unit vector is a no-op, so the defensive pass costs one kernel launch and
@@ -108,16 +111,21 @@ class VectorIndex:
         """Vector width D. 0 for a degenerate index, so ``repr`` never raises."""
         return int(self.vectors.shape[1]) if self.vectors.ndim >= 2 else 0
 
-    def search(self, query: torch.Tensor, top_k: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Score every chunk against *query* and return the best *top_k*.
+    def scores(self, query: torch.Tensor) -> torch.Tensor:
+        """Similarity of every chunk to every query row: the whole ``[Q, N]``.
 
-        Returns ``(scores, indices)``, both ``[Q, k]`` and both sorted best
-        first; ``indices`` is int64 and indexes into ``chunks``. A ``[D]``
-        query counts as one question and comes back as ``[1, k]``.
+        The search itself, before anything is thrown away. ``Retriever``
+        shows this matrix in its verbose trace for a small corpus, because
+        the chunks that did NOT win are half of what a learner is looking at
+        -- a top hit of 0.71 means one thing when the runners-up are at 0.68
+        and another when they are at 0.20.
 
-        *top_k* is clamped to ``[1, N]``: asking for three chunks from a
-        two-chunk corpus is a reasonable thing for a default parameter to do,
-        and ``torch.topk`` would raise instead.
+        Every coercion and every check lives here rather than in
+        :meth:`search`, so the two cannot disagree about what a query is: a
+        ``[D]`` row becomes one question, the dtype and device are settled
+        (CPU float32, matching ``vectors``, which is why the nodes can leave
+        ``align_inputs`` off), and a query from the wrong encoder is refused
+        with the message that names the fix.
         """
         q = torch.as_tensor(query).detach().float().cpu()
         if q.ndim == 1:
@@ -141,10 +149,22 @@ class VectorIndex:
             # by zero and poisoning the whole score column with NaN.
             q = torch.nn.functional.normalize(q, dim=1, eps=1e-12)
             vectors = torch.nn.functional.normalize(vectors, dim=1, eps=1e-12)
-        scores = q @ vectors.T  # [Q, N]
+        return q @ vectors.T  # [Q, N]
 
+    def search(self, query: torch.Tensor, top_k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Score every chunk against *query* and return the best *top_k*.
+
+        Returns ``(scores, indices)``, both ``[Q, k]`` and both sorted best
+        first; ``indices`` is int64 and indexes into ``chunks``. A ``[D]``
+        query counts as one question and comes back as ``[1, k]``.
+
+        *top_k* is clamped to ``[1, N]``: asking for three chunks from a
+        two-chunk corpus is a reasonable thing for a default parameter to do,
+        and ``torch.topk`` would raise instead.
+        """
+        matrix = self.scores(query)
         k = max(1, min(int(top_k), len(self)))
-        values, indices = torch.topk(scores, k=k, dim=1)
+        values, indices = torch.topk(matrix, k=k, dim=1)
         return values, indices
 
     def save(self, path: Path) -> None:
@@ -179,8 +199,18 @@ class VectorIndex:
         ``allow_pickle=False`` is the point of the JSON blob: nothing in the
         archive can execute, so an index file from somewhere else is data and
         not code.
+
+        The two checks at the end are the same ones :func:`build_index`
+        applies at the other door into this class. A file is not a value some
+        node just produced -- it can be truncated, hand-edited, or written by
+        something that is not this class -- and both faults are silent
+        otherwise: a short ``chunks`` list raises ``IndexError`` from inside
+        ``Retriever``, which points the learner at the wrong node, and an
+        unknown metric falls through to the dot branch and answers a question
+        nobody asked.
         """
-        with np.load(Path(path), allow_pickle=False) as data:
+        path = Path(path)
+        with np.load(path, allow_pickle=False) as data:
             # Read INSIDE the context -- an NpzFile fetches a member when it is
             # asked for one, and the zip closes on the way out.
             matrix = np.asarray(data[_KEY_VECTORS], dtype=np.float32)
@@ -189,12 +219,29 @@ class VectorIndex:
             payload = data[_KEY_TEXTS].tobytes().decode("utf-8")
 
         texts = json.loads(payload)
+        chunks = [str(c) for c in texts.get("chunks", [])]
+        metadata = [dict(m) if isinstance(m, dict) else {}
+                    for m in texts.get("metadata", [])]
+        rows = int(matrix.shape[0]) if matrix.ndim >= 1 else 0
+        if len(chunks) != rows or len(metadata) != rows:
+            raise ValueError(
+                f"{path} holds {rows} vectors but {len(chunks)} chunks and "
+                f"{len(metadata)} metadata entries -- the archive is "
+                "truncated or was not written by VectorIndex.save"
+            )
+        if metric not in METRICS:
+            raise ValueError(
+                f"{path} declares metric {metric!r}, which must be one of "
+                f"{', '.join(METRICS)} -- the archive was not written by "
+                "VectorIndex.save"
+            )
+
         return cls(
             # ``torch.tensor`` rather than ``from_numpy``: it copies, so the
             # index does not alias a buffer numpy may have handed out read-only.
             vectors=torch.tensor(matrix, dtype=torch.float32),
-            chunks=[str(c) for c in texts.get("chunks", [])],
-            metadata=[dict(m) if isinstance(m, dict) else {} for m in texts.get("metadata", [])],
+            chunks=chunks,
+            metadata=metadata,
             metric=metric,
             normalized=normalized,
         )

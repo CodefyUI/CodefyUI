@@ -496,6 +496,8 @@ TRANSLATED_NODES = (
     "TextEmbedding",
     "DocumentLoader",
     "TextChunker",
+    "VectorStore",
+    "Retriever",
     "Optimizer",
     "Loss",
     "DataLoader",

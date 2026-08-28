@@ -48,11 +48,46 @@ def test_dimension_mismatch_error_mentions_same_model():
     with pytest.raises(ValueError) as excinfo:
         index.search(torch.zeros(1, 3), 1)
 
-    message = str(excinfo.value)
-    assert "query dimension 3" in message
-    assert "index dimension 4" in message
-    # The actionable half: the two sides have to come from one encoder.
-    assert "same model" in message
+    # The whole string, not three substrings: this message is mandated word
+    # for word, and a substring check still passes after its actionable half
+    # -- the two sides have to come from one encoder -- has been reworded
+    # around the two words the assertion happens to name.
+    assert str(excinfo.value) == (
+        "query dimension 3 does not match the index dimension 4 -- embed the "
+        "question with the same model the documents were embedded with"
+    )
+
+    # The check lives in ``scores``, which is why it reads the same whether
+    # the caller asked for the best few or for the whole matrix.
+    with pytest.raises(ValueError) as direct:
+        index.scores(torch.zeros(1, 3))
+    assert str(direct.value) == str(excinfo.value)
+
+
+def test_scores_returns_full_matrix():
+    index = _small_index()
+
+    matrix = index.scores(_EAST)
+
+    # [Q, N], not [Q, k]: this is what Retriever's verbose trace shows, so a
+    # learner can see the chunks that did NOT win alongside the ones that did.
+    assert matrix.shape == (1, 3)
+    assert matrix[0].tolist() == pytest.approx([0.0, 0.70710678, 1.0], abs=1e-6)
+
+    # ``search`` is topk over exactly this matrix, so the two must agree --
+    # a trace showing different numbers from the results below it would be
+    # worse than no trace.
+    scores, indices = index.search(_EAST, 2)
+    assert torch.allclose(scores, matrix[:, indices[0]], atol=1e-6)
+
+    # One row per query, in the order the queries arrived.
+    both = index.scores(torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+    assert both.shape == (2, 3)
+    assert both[0, 2].item() == pytest.approx(1.0, abs=1e-6)
+    assert both[1, 0].item() == pytest.approx(1.0, abs=1e-6)
+
+    # Same coercion as search: a [D] question is one row of answers.
+    assert index.scores(torch.tensor([1.0, 0.0])).shape == (1, 3)
 
 
 def test_top_k_is_clamped_to_size():
@@ -104,10 +139,13 @@ def test_build_index_length_mismatch_names_both_counts():
     with pytest.raises(ValueError) as excinfo:
         build_index(torch.zeros(37, 4), ["chunk"] * 36, None, metric="cosine", normalize=True)
 
-    message = str(excinfo.value)
-    assert "37 embeddings" in message
-    assert "36 chunks" in message
-    assert "TextChunker" in message
+    # Mandated word for word, like the dimension message above, and pinned
+    # the same way: the counts alone do not tell the learner which of their
+    # two edges to go and look at.
+    assert str(excinfo.value) == (
+        "VectorStore got 37 embeddings but 36 chunks; both must come from "
+        "the same TextChunker output"
+    )
 
 
 def test_build_index_fills_missing_metadata():
@@ -153,8 +191,27 @@ def test_build_index_rejects_empty():
 
 
 def test_build_index_rejects_unknown_metric():
-    with pytest.raises(ValueError, match="cosine"):
+    # "must be one of", not "cosine": the metric being REJECTED could itself
+    # be spelled "cosine-ish" and satisfy the loose pattern, and what the
+    # message has to carry is the list of the two that work.
+    with pytest.raises(ValueError, match="must be one of"):
         build_index(_NORTH_NE_EAST, ["a", "b", "c"], None, metric="euclidean", normalize=True)
+
+
+def test_build_index_coerces_non_dict_metadata():
+    # Metadata is decoration -- Retriever falls back to "?" for a missing
+    # source -- so a list that is the right LENGTH but holds the wrong thing
+    # (a bare source string, a None from a hand-built graph) loses the label
+    # rather than failing a run that has already paid for the embeddings.
+    index = build_index(
+        _NORTH_NE_EAST,
+        ["a", "b", "c"],
+        ["one.md", None, {"source": "three.md"}],
+        metric="cosine",
+        normalize=True,
+    )
+
+    assert index.metadata == [{}, {}, {"source": "three.md"}]
 
 
 def test_build_index_accepts_a_single_vector():
@@ -213,6 +270,48 @@ def test_save_and_load_round_trip_keeps_a_dot_index_unnormalised(tmp_path):
     assert loaded.metric == "dot"
     assert loaded.normalized is False
     assert torch.allclose(loaded.vectors, torch.tensor([[3.0, 0.0], [0.0, 1.0]]))
+
+
+def test_load_rejects_a_file_whose_lists_disagree(tmp_path):
+    index = build_index(torch.eye(3), ["a", "b", "c"], None, metric="cosine", normalize=True)
+    # Three rows, two texts -- what a truncated write, a hand-edited archive
+    # or a file from some other tool looks like from in here. Unchecked it
+    # loads happily and raises IndexError deep inside Retriever, which points
+    # the learner at the wrong node entirely.
+    index.chunks = ["a", "b"]
+    path = tmp_path / "short.npz"
+    index.save(path)
+
+    with pytest.raises(ValueError) as excinfo:
+        VectorIndex.load(path)
+
+    message = str(excinfo.value)
+    assert "3 vectors" in message
+    assert "2 chunks" in message
+
+    # Metadata is checked the same way and for the same reason: the class
+    # promises metadata[i] is always safe to index, and load is the one
+    # constructor that could hand out an object where it is not.
+    thin = build_index(torch.eye(2), ["a", "b"], None, metric="cosine", normalize=True)
+    thin.metadata = [{"source": "a.md"}]
+    thin_path = tmp_path / "thin.npz"
+    thin.save(thin_path)
+
+    with pytest.raises(ValueError, match="1 metadata entries"):
+        VectorIndex.load(thin_path)
+
+
+def test_load_rejects_an_unknown_metric(tmp_path):
+    index = build_index(torch.eye(2), ["a", "b"], None, metric="cosine", normalize=True)
+    index.metric = "euclidean"
+    path = tmp_path / "odd.npz"
+    index.save(path)
+
+    # The same guard build_index applies, at the other door into the class:
+    # an unknown metric would otherwise fall through to the dot branch and
+    # silently answer a question nobody asked.
+    with pytest.raises(ValueError, match="must be one of"):
+        VectorIndex.load(path)
 
 
 def test_repr_is_short_and_summarisable():
