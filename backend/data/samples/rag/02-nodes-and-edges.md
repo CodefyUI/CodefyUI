@@ -10,10 +10,11 @@ caught right there, before anything runs.
 Edges come in two flavours. A data edge carries a value from an output port to
 an input port, and it is what makes a node's result available to the next node.
 A trigger edge carries no value at all -- it only says "run this next". Trigger
-edges start at a Start node, and they are how the graph decides what actually
-executes. A node that produces data but has no trigger path to it stays idle,
-which is intentional: it lets you park half-built branches on the canvas
-without them slowing every run down.
+edges start at a Start node, and together with the data edges they are how the
+graph decides what actually executes: a node runs when the trigger reaches it,
+or when something it feeds is going to run. A branch connected to nothing that
+runs stays idle, which is intentional: it lets you park half-built branches on
+the canvas without them slowing every run down.
 
 To run a graph, press Run in the toolbar. Nodes light up as they execute, and a
 node that fails turns red and shows its error message in place, so you can see
@@ -37,10 +38,10 @@ Model 輸出接到 Tensor 輸入上。大部分初學者的錯誤在這一步就
 開始跑。
 
 邊有兩種。資料邊把值從輸出埠帶到輸入埠，讓一個節點的結果能被下一個節點用到。
-觸發邊則完全不帶值 -- 它只說「接下來跑這個」。觸發邊從 Start 節點出發，圖要執行
-哪些節點就是由它決定的。一個會產生資料、但沒有任何觸發路徑連到它的節點會保持不
-動，這是刻意的設計：你可以把做到一半的分支先擱在畫布上，而不會讓每次執行都被它
-拖慢。
+觸發邊則完全不帶值 -- 它只說「接下來跑這個」。觸發邊從 Start 節點出發，和資料邊
+一起決定圖要執行哪些節點：一個節點會被執行，可能是因為觸發訊號到得了它，也可能
+是因為它餵給的節點即將執行。一條沒有連到任何會執行的東西的分支則會保持不動，這
+是刻意的設計：你可以把做到一半的分支先擱在畫布上，而不會讓每次執行都被它拖慢。
 
 要執行一張圖，按工具列上的執行。節點會在輪到它時亮起來，失敗的節點會變紅並就地
 顯示錯誤訊息，所以你看得出是哪一步壞掉，不必從錯誤堆疊的最底下往回讀。想看某個

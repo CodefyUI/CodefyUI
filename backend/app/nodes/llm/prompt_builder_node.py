@@ -268,6 +268,12 @@ def _drop_blank_contexts(
     reach the ``(no context retrieved)`` branch and its warning rather than
     build a prompt out of punctuation and look like it retrieved something.
 
+    Blank means ``.strip()``-blank, the same test :func:`_template` applies
+    to a connected template. A chunk of three spaces reads as empty to
+    everyone looking at the prompt, and treating it as content only because
+    it is not ``""`` would put a numbered entry with nothing under it in
+    front of the model.
+
     The two lists are filtered AS A PAIR, which is the whole point of doing
     it here rather than inside :func:`_string_list`. They are paired by
     INDEX -- ``sources[i]`` is the citation for ``contexts[i]`` -- so
@@ -281,7 +287,7 @@ def _drop_blank_contexts(
     ``sources`` stays empty: an unwired port must not start printing
     ``(?)`` on every line.
     """
-    kept = [index for index, chunk in enumerate(contexts) if chunk]
+    kept = [index for index, chunk in enumerate(contexts) if chunk.strip()]
     if not sources:
         return [contexts[index] for index in kept], []
     return ([contexts[index] for index in kept],

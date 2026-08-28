@@ -17,7 +17,10 @@ three least-unrelated paragraphs with a straight face, and the generator
 downstream will write a confident answer out of them. The score is the only
 signal that this happened -- a top hit near 0.3 means the corpus does not
 contain the answer -- so ``scores`` and ``indices`` are ports a learner can
-read, and every hit is listed with its score in the node's log.
+read, and every hit that CLEARS ``min_score`` is listed with its score in the
+node's log. The ones the floor dropped are not: they are still on the
+``scores`` port, and the log would otherwise read as a list of chunks that
+went into the prompt when they did not.
 
 **Why ``min_score`` filters the texts and not the numbers.** Dropping a
 weak hit from ``contexts`` keeps it out of the prompt, which is the point.
@@ -71,9 +74,11 @@ MIN_SCORE_DEFAULT = 0.0
 MIN_SCORE_MIN = -1.0
 MIN_SCORE_MAX = 1.0
 
-#: How many chunks the verbose trace will show the full ``[Q, N]`` score
-#: matrix for. Past this it is a payload rather than a picture: the step
-#: tensors ride the run event stream, and 4096 float32 scores per query is
+#: The largest N -- the corpus size, the second axis of the ``[Q, N]`` score
+#: matrix -- the verbose trace will record the whole matrix for. Past this it
+#: is a payload rather than a picture: a step tensor is kept in the
+#: ``RunOutputStore``, which is byte-budgeted and hands the value over only
+#: when the Inspector asks for it, and 4096 float32 scores per query row is
 #: already 16 KB of numbers nobody is going to read one by one.
 MAX_TRACE_SCORES = 4096
 

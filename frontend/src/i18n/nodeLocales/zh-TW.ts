@@ -1063,7 +1063,7 @@ const zhTW: NodeTranslations = {
       strategy: 'characters：固定長度的字元視窗。sentences：以句號、問號、驚嘆號切句再打包。paragraphs：以空行切段再打包。',
       chunk_size: '每一塊的字元數（所有策略共用的上限）。',
       chunk_overlap: '相鄰兩塊共享的字元數，讓被切在中間的句子至少會完整出現在其中一塊；必須小於 chunk_size。',
-      min_chunk_chars: '最後一塊若短於這個長度，就併進前一塊。',
+      min_chunk_chars: '最後一塊若短於這個長度，就併進前一塊。合併後的最後一塊最多可能超過 chunk_size 達 min_chunk_chars - 1 個字元。',
     },
   },
   VectorStore: {
@@ -1094,11 +1094,11 @@ const zhTW: NodeTranslations = {
   },
   HFTextGenerate: {
     description:
-      '用一個在本機執行的小型指令微調開源模型回答提示詞：Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB，來自 rag 套件包）。對話模板會自動套用，token 會一邊生成一邊串流到畫布上。筆電 CPU 大約每秒幾個 token，GPU 快很多。與 TextGenerate 不同：那個節點是用你在畫布上訓練的模型接續文字，這個節點是載入預訓練權重並聽從指令。',
+      '用一個在本機執行的小型指令微調開源模型回答提示詞：Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB，來自 rag 套件包）。對話模板會自動套用，節點會逐個 token 回報進度。筆電 CPU 大約每秒幾個 token，GPU 快很多。與 TextGenerate 不同：那個節點是用你在畫布上訓練的模型接續文字，這個節點是載入預訓練權重並聽從指令。',
     params: {
       model: '要載入的模型。灰掉的選項需要先到套件中心安裝 rag 套件包。',
       prompt: '當沒有 `prompt` 輸入連線時使用的提示詞。',
-      system_prompt: '放在使用者訊息前面的系統指令。留空就不送。',
+      system_prompt: '放在使用者訊息前面的系統指令。留空就用模型內建的預設系統提示。',
       max_new_tokens: '最多生成幾個 token；決定本節點要跑多久。',
       temperature: '取樣前先把分數除以這個值：0 = greedy（永遠取最可能的 token，可重現）；越高越有變化。',
       top_p: 'Nucleus 取樣：只從累積機率達到 p 的最可能 token 中取樣（1 = 關閉）。',

@@ -398,6 +398,30 @@ def test_blank_chunks_are_not_chunks():
     assert cited["context"] == "[1] (?) first\n\n[2] (b.md) second"
 
 
+def test_a_whitespace_only_chunk_is_blank_too():
+    """Three spaces read as empty to everyone looking at the prompt.
+
+    ``_template`` already calls a whitespace-only connected template blank;
+    a chunk of spaces is the same thing arriving on a different port, and
+    counting it as content spends a ``[2]`` on nothing and pushes the real
+    passages down a number.
+    """
+    result = _run(inputs={"contexts": ["first", "   ", "third"],
+                          "sources": ["a.md", "b.md", "c.md"]})
+
+    assert result["context"] == (
+        "[1] (a.md) first"
+        "\n\n"
+        "[2] (c.md) third"
+    )
+    assert "b.md" not in result["context"]
+
+    # Every chunk whitespace-only is a retrieval that retrieved nothing.
+    empty = _run(inputs={"contexts": ["  ", "\n", "\t"]})
+    assert empty["context"] == "(no context retrieved)"
+    assert "no chunks reached this node" in empty["__log__"]
+
+
 def test_blank_context_does_not_shift_citations():
     """A dropped chunk takes its own citation with it.
 

@@ -146,9 +146,10 @@ silently and shows up only as a retrieval result nobody can explain.
 ## Continuous integration
 
 `backend/tests/test_rag_examples.py` holds this graph to its shape without
-downloading anything: that the card names the rag pack inside the 80 characters
-the gallery shows, that both encoders share one model with the right prefixes,
-that the question reaches both consumers, and that this README exists.
+downloading anything: that the card names both pack ids -- `rag` and
+`sentence-embeddings` -- inside the 80 characters the gallery shows, that both
+encoders share one model with the right prefixes, that the question reaches
+both consumers, and that this README exists.
 
 `backend/tests/test_builtin_examples.py` validates the graph structurally and
 **skips executing it** -- `HFTextGenerate` and `TextEmbedding` are both in
@@ -162,9 +163,13 @@ CODEFYUI_PACK_NETWORK_TESTS=1 pytest tests/test_pack_examples_real.py -q -s
 ```
 
 `test_rag_local_example_answers_for_real` skips unless both pack items are
-installed, then runs this graph and asserts the closest chunk to the shipped
-question came from `02-nodes-and-edges.md` and that the generated answer is not
-empty.
+installed, then runs this graph and asserts that the top three chunks all come
+from the two notes that contain the answer -- `01-what-is-codefyui.md` and
+`02-nodes-and-edges.md` -- that `02-nodes-and-edges.md` is among them, and that
+the generated answer is not empty. On the reference box the retrieval is
+`['01', '01', '02']`: the shipped question asks two things at once, so which of
+the two notes takes a given slot is a near-tie, and pinning one file to the top
+would be pinning noise.
 
 ## Provenance
 

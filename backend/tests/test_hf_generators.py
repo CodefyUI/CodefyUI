@@ -22,6 +22,8 @@ accumulate one resident copy per flip.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 
 import pytest
 import torch
@@ -307,6 +309,62 @@ def test_generator_cache_holds_one_model(fake_transformers):
     generators.clear_generator_cache()
     generators.load_causal_lm(QWEN, "cpu", "float32")
     assert len(loads) == 4
+
+
+def test_concurrent_loads_of_the_same_model_construct_it_once(
+        fake_transformers, monkeypatch):
+    """The lock, observed rather than assumed.
+
+    Nodes run on worker threads (``MAX_PARALLEL_NODES = 4``), so a graph
+    with two generator nodes really can have two threads inside this
+    function at the same moment. Without the lock they would both miss the
+    cache and both load a gigabyte of weights -- twice the wait and twice
+    the RAM, with one of the two copies immediately orphaned by the other's
+    write into a cache that holds exactly one.
+
+    The barrier makes all four threads arrive together instead of hoping
+    they do, and the delay inside ``from_pretrained`` keeps the first one
+    in the critical section while the rest queue up.
+    """
+    loaded = fake_transformers.AutoModelForCausalLM.from_pretrained
+
+    def slow_from_pretrained(path, **kwargs):
+        time.sleep(0.05)
+        return loaded(path, **kwargs)
+
+    monkeypatch.setattr(fake_transformers.AutoModelForCausalLM,
+                        "from_pretrained", slow_from_pretrained)
+
+    workers = 4
+    ready = threading.Barrier(workers)
+    results: list = []
+    errors: list = []
+
+    def load_once():
+        try:
+            ready.wait(timeout=10)
+            results.append(generators.load_causal_lm(QWEN, "cpu", "float32"))
+        except Exception as exc:  # noqa: BLE001 -- reported by the assert
+            errors.append(exc)
+
+    threads = [threading.Thread(target=load_once) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert [thread.is_alive() for thread in threads] == [False] * workers, (
+        "a load never returned -- the lock is not being released")
+    loads = fake_transformers.model_loads
+    assert len(loads) == 1, (
+        f"{workers} threads asked for one generator and it was loaded "
+        f"{len(loads)} times")
+    assert len(results) == workers
+    tokenizer, model = results[0]
+    assert all(entry[0] is tokenizer and entry[1] is model
+               for entry in results), (
+        "the threads were handed different objects for one cache key")
 
 
 # ── the stop tokens ──────────────────────────────────────────────────────

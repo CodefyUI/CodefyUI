@@ -128,8 +128,8 @@ class HFTextGenerateNode(BaseNode):
     DESCRIPTION = (
         "Answer a prompt with a small instruction-tuned open model that runs "
         "locally: Qwen2.5-0.5B-Instruct (Apache-2.0, about 1 GB, from the rag "
-        "pack). The chat template is applied for you, and tokens stream to "
-        "the canvas as they are produced. Expect a few tokens per second on a "
+        "pack). The chat template is applied for you, and the node reports "
+        "progress token by token. Expect a few tokens per second on a "
         "laptop CPU; a GPU is much faster. Unlike TextGenerate, which "
         "continues text with a model you trained on the canvas, this one "
         "loads pre-trained weights and follows instructions."
@@ -215,7 +215,7 @@ class HFTextGenerateNode(BaseNode):
                 ),
                 description=(
                     "System instruction placed before the user message. Leave "
-                    "empty to send none."
+                    "empty to use the model's own default system prompt."
                 ),
             ),
             ParamDefinition(

@@ -154,6 +154,28 @@ def test_a_window_that_strips_to_its_predecessor_is_dropped():
         (0, 2), (62, 64)]
 
 
+def test_a_window_that_strips_INSIDE_its_predecessor_is_dropped():
+    """The duplicate is not always an exact twin -- it can be a suffix.
+
+    Three characters in the middle of seventy blanks, a 50-character window
+    and a 32-character step: the first window strips to ``xyz``, and the
+    second one starts one character later, so it strips to ``z`` -- text
+    already emitted, arriving as a SUFFIX rather than as an equal span. An
+    equality test lets it through and the search then returns a citation
+    with one letter under it.
+    """
+    text = " " * 30 + "xyz" + " " * 40
+
+    assert _character_spans(text, 0, len(text), size=50, step=32) == [(30, 33)]
+
+    result = _run(inputs={"text": text}, strategy="characters",
+                  chunk_size=50, chunk_overlap=18, min_chunk_chars=1)
+
+    assert result["chunks"] == ["xyz"]
+    assert result["count"] == 1
+    _assert_offsets_select_the_chunks(text, result)
+
+
 def test_overlap_must_be_smaller_than_chunk_size():
     """Equal is already broken: the window never advances."""
     with pytest.raises(ValueError) as excinfo:
@@ -172,6 +194,20 @@ def test_overlap_must_be_smaller_than_chunk_size():
                   strategy="sentences", chunk_size=100, chunk_overlap=100,
                   min_chunk_chars=1)
     assert packed["count"] >= 1
+
+    # And it is not even PARSED there. A hidden param can hold anything a
+    # hand-edited graph put in it; refusing to run over a value no code
+    # reads would name a field that is not on the screen to fix.
+    nonsense = _run(inputs={"text": "One. Two. Three."},
+                    strategy="sentences", chunk_size=100,
+                    chunk_overlap="wide", min_chunk_chars=1)
+    assert nonsense["chunks"] == packed["chunks"]
+
+    # Under `characters`, where it IS read, the same value is refused.
+    with pytest.raises(ValueError) as bad:
+        _run(inputs={"text": "One. Two. Three."},
+             strategy="characters", chunk_size=100, chunk_overlap="wide")
+    assert "chunk_overlap" in str(bad.value)
 
 
 def test_short_tail_is_merged():

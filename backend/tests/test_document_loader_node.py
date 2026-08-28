@@ -22,7 +22,10 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.nodes.llm.document_loader_node import DocumentLoaderNode
+from app.nodes.llm.document_loader_node import (
+    DocumentLoaderNode,
+    _resolve_document_path,
+)
 
 
 def _run(**params) -> dict:
@@ -144,7 +147,10 @@ def test_a_bom_never_reaches_a_chunk(tmp_path):
         "notepad.md", "plain.md"]
     assert [d["text"] for d in result["documents"]] == [
         "What is CodefyUI?", "No mark here."]
-    assert not any("﻿" in d["text"] for d in result["documents"])
+    # Spelled with the escape on purpose: the literal character is invisible
+    # in every editor, so a raw one here would be a test nobody can read and
+    # that a careless reformat could silently delete.
+    assert not any("\ufeff" in d["text"] for d in result["documents"])
 
 
 def test_no_matching_files_raises_friendly_error(tmp_path):
@@ -232,6 +238,27 @@ def test_unknown_source_lists_the_two():
         "of ['directory', 'uploaded_file'].")
 
 
+def test_documents_sort_case_sensitively_by_their_posix_source(tmp_path):
+    """Sorted by the citation string, not by ``Path`` order.
+
+    ``Path`` comparison folds case on Windows and does not on Linux, so a
+    folder with mixed-case names loads in one order there and the opposite
+    one here -- and ``max_docs`` then keeps DIFFERENT documents depending on
+    the machine, which is the same graph giving two answers.
+    """
+    for name in ("apple.md", "Banana.md", "Cherry.md", "date.md"):
+        _write(tmp_path / name, f"content of {name}")
+
+    result = _run(directory=str(tmp_path))
+
+    # Plain ASCII order: every capital sorts before every lower-case letter.
+    assert [d["source"] for d in result["documents"]] == [
+        "Banana.md", "Cherry.md", "apple.md", "date.md"]
+    capped = _run(directory=str(tmp_path), max_docs=2)
+    assert [d["source"] for d in capped["documents"]] == [
+        "Banana.md", "Cherry.md"]
+
+
 def test_max_docs_caps_in_name_order(tmp_path):
     for name in ("a.md", "b.md", "c.md", "d.md"):
         _write(tmp_path / name, f"content of {name}")
@@ -260,6 +287,44 @@ def test_uploaded_file_resolves_against_data_files_dir(tmp_path, monkeypatch):
     assert result["documents"] == [
         {"text": "one uploaded note", "source": "uploaded.txt"}]
     assert result["count"] == 1
+
+
+def test_a_blank_uploaded_file_says_the_file_is_blank(tmp_path, monkeypatch):
+    """One picked file that is empty is not "zero documents loaded".
+
+    The folder case already refuses a corpus of blanks; a single blank file
+    is the same dead end with an even clearer culprit, so it gets the same
+    answer instead of quietly handing an empty list to the chunker.
+    """
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path)
+    _write(tmp_path / "empty.txt", "   \n\n\t")
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        _run(source="uploaded_file", file="empty.txt")
+
+    message = str(excinfo.value)
+    assert "empty.txt" in message
+    assert "the file is blank" in message
+
+
+def test_an_uploaded_file_of_the_wrong_kind_names_the_suffixes(
+        tmp_path, monkeypatch):
+    """The upload button takes anything; this node reads two suffixes.
+
+    Read as text a PDF is a page of binary noise, and it would chunk, embed
+    and be retrieved exactly like a real passage -- so the suffix is refused
+    by name, with the two that do work in the same sentence.
+    """
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", tmp_path)
+    _write(tmp_path / "report.pdf", "%PDF-1.4 pretend binary")
+
+    with pytest.raises(ValueError) as excinfo:
+        _run(source="uploaded_file", file="report.pdf")
+
+    message = str(excinfo.value)
+    assert "report.pdf" in message
+    assert ".pdf" in message
+    assert ".md and .txt" in message
 
 
 # -- path safety ---------------------------------------------------------
@@ -305,6 +370,72 @@ def test_project_mode_refuses_a_dotted_path_wearing_the_samples_prefix(
     # normalises backslashes before it looks.
     with pytest.raises(ValueError):
         _run(directory="data\\samples\\..\\..\\..\\outside")
+
+
+def test_dot_paths_never_reach_the_uploads_directory(tmp_path, monkeypatch):
+    """``"."`` and ``".."`` are not bare filenames, whatever pathlib says.
+
+    ``Path(".").name`` is ``""`` and ``Path("..").name`` is ``".."``, and
+    both have ``"."`` for a parent -- so the upload-dropdown rule used to
+    accept them and hand back ``DATA_FILES_DIR`` itself (every file anyone
+    ever uploaded) or the folder above it, BEFORE the project guard could
+    object.
+    """
+    uploads = tmp_path / "uploads"
+    _write(uploads / "someone-elses.md", "private upload")
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", uploads)
+
+    project = tmp_path / "project"
+    _write(project / "own-note.md", "inside the project")
+    monkeypatch.setattr(settings, "PROJECT_DIR", project)
+
+    # ".." leaves the project, so it is refused by name.
+    with pytest.raises(ValueError) as excinfo:
+        _run(directory="..")
+    message = str(excinfo.value)
+    assert "escapes the project directory" in message
+    assert "DocumentLoader: directory" in message
+    assert "'..'" in message
+
+    # "." IS the project directory -- legitimately inside it -- so it
+    # resolves there rather than to the uploads folder.
+    result = _run(directory=".")
+    assert [d["source"] for d in result["documents"]] == ["own-note.md"]
+
+
+def test_a_dot_directory_outside_project_mode_is_the_working_directory(
+        tmp_path, monkeypatch):
+    """The same rule with no project: ``"."`` means the cwd, as typed."""
+    uploads = tmp_path / "uploads"
+    _write(uploads / "someone-elses.md", "private upload")
+    monkeypatch.setattr(settings, "DATA_FILES_DIR", uploads)
+    monkeypatch.setattr(settings, "PROJECT_DIR", None)
+
+    here = tmp_path / "here"
+    _write(here / "local.md", "beside the server")
+    monkeypatch.chdir(here)
+
+    result = _run(directory=".")
+
+    assert [d["source"] for d in result["documents"]] == ["local.md"]
+
+
+def test_a_windows_spelling_of_a_relative_folder_resolves(
+        tmp_path, monkeypatch):
+    """``data\\samples\\rag`` is the same folder as ``data/samples/rag``.
+
+    A graph saved on Windows carries the backslash spelling, and on POSIX
+    ``Path("data\\samples\\rag")`` is ONE component whose name happens to
+    contain backslashes -- so without normalising before resolving, the
+    shipped example opens on a Linux machine and finds nothing.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    resolved = _resolve_document_path("data\\samples\\rag", kind="directory")
+
+    assert resolved.is_dir()
+    assert resolved.parts[-3:] == ("data", "samples", "rag")
+    assert _run(directory="data\\samples\\rag")["count"] == 5
 
 
 def test_project_mode_still_allows_the_bundled_samples(tmp_path, monkeypatch):

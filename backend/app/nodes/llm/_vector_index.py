@@ -83,7 +83,7 @@ _KEY_NORMALIZED = "normalized"
 _KEY_TEXTS = "texts_json"
 
 
-@dataclass
+@dataclass(eq=False)
 class VectorIndex:
     """An in-memory corpus: ``vectors[i]`` is the embedding of ``chunks[i]``.
 
@@ -95,6 +95,15 @@ class VectorIndex:
     Every field is required, deliberately. A default for ``metadata`` would
     hand out indexes whose three lists disagree about N, and :func:`build_index`
     exists precisely so nobody has to assemble one by hand.
+
+    ``eq=False`` because a field is a tensor. The generated ``__eq__`` compares
+    the fields as a tuple, and ``tensor == tensor`` gives an elementwise tensor
+    whose truth value RAISES -- so ``index_a == index_b`` would blow up inside
+    anything that merely checks whether a port's value changed, and defining
+    ``__eq__`` at all would set ``__hash__`` to None and make the object
+    unusable as a dict key or in a set. Identity is the right answer anyway:
+    one build produces one index, and two indexes are the same one or they are
+    not.
     """
 
     vectors: torch.Tensor

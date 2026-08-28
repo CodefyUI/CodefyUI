@@ -39,8 +39,11 @@ run has finished.
 that asks ``from_pretrained`` for a precision was renamed (``torch_dtype``
 -> ``dtype``) between transformers 4 and 5, so passing either one pins this
 code to a library version the pack installer is free to move. ``.to(dtype=)``
-on the loaded module means the same thing in every version, at the cost of
-briefly holding the fp32 weights.
+on the loaded module means the same thing in every version. Left to itself
+transformers 5 defaults to ``dtype="auto"``, so the weights land in the
+CHECKPOINT's precision -- bfloat16 for Qwen2.5 -- and the cast then moves
+them to the resolved one: an upcast to float32 on CPU, and on a CUDA card
+with bfloat16 no work at all, because that is what the weights already are.
 
 Imports here stay cheap on purpose: this module is reached at startup
 through the node modules the registry scans, so ``transformers`` is

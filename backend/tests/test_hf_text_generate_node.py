@@ -294,6 +294,47 @@ def test_an_older_transformers_drops_the_keyword_once(fake_transformers,
             for call in fake_transformers.models[0].calls] == [0, 0, 0, 0]
 
 
+def test_an_unrelated_type_error_is_not_swallowed(fake_transformers,
+                                                  monkeypatch):
+    """The retry above is for ONE keyword, not for TypeErrors in general.
+
+    A ``TypeError`` from inside the model is a bug in the model, and the
+    catch is one indentation level away from turning it into a silent
+    fallback: the node would drop ``logits_to_keep``, call forward again,
+    crash again, and the only visible symptom of the real fault would be a
+    log line blaming the library. So the re-raise branch is pinned by the
+    call COUNT -- exactly one forward pass happened, which is only true if
+    nothing was retried.
+    """
+    loaded = fake_transformers.AutoModelForCausalLM.from_pretrained
+    forwards: list[dict] = []
+
+    def load_a_broken_model(*args, **kwargs):
+        model = loaded(*args, **kwargs)
+
+        def forward(*call_args, **call_kwargs):
+            forwards.append(call_kwargs)
+            # Nothing to do with the keyword: the message must not mention
+            # it, or the retry branch is entitled to fire.
+            raise TypeError(
+                "unsupported operand type(s) for +: 'int' and 'str'")
+
+        model.forward = forward
+        return model
+
+    monkeypatch.setattr(fake_transformers.AutoModelForCausalLM,
+                        "from_pretrained", load_a_broken_model)
+
+    with pytest.raises(TypeError, match="unsupported operand"):
+        _run(max_new_tokens=4, temperature=0.0)
+
+    assert len(forwards) == 1, (
+        "the keyword retry fired on a TypeError that was not about it")
+    # And it was the FIRST pass, still carrying the keyword -- the failure
+    # happened before anything could have decided to drop it.
+    assert forwards[0].get("logits_to_keep") == 1
+
+
 def test_a_half_precision_model_samples_the_same_answer(fake_transformers):
     """A float16 model samples, and samples the same answer.
 

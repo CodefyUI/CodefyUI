@@ -367,6 +367,30 @@ def test_load_rejects_an_unknown_metric(tmp_path):
         VectorIndex.load(path)
 
 
+def test_two_indexes_compare_by_identity_and_stay_hashable():
+    """A dataclass with a tensor field must not generate ``__eq__``.
+
+    The generated one compares the fields as a tuple, and ``tensor ==
+    tensor`` is an elementwise tensor whose truth value RAISES -- so a
+    caller doing nothing more exotic than "did this port's value change?"
+    would get a RuntimeError out of a comparison. Defining ``__eq__`` also
+    sets ``__hash__`` to None, which would keep the index out of any dict or
+    set that wanted to hold one.
+    """
+    index = _small_index()
+    twin = _small_index()
+
+    # Same contents, different objects: not equal, and no exception on the
+    # way to that answer.
+    assert index != twin
+    assert index == index
+    assert bool(index != twin) is True
+
+    # Hashable, so it can be a dict key or live in a set.
+    assert hash(index) == hash(index)
+    assert len({index, twin, index}) == 2
+
+
 def test_repr_is_short_and_summarisable():
     index = _small_index()
 

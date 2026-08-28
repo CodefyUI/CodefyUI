@@ -18,7 +18,7 @@ Pressing **Run** with a pack missing stops that node with a sentence naming the 
 
 A stock install runs offline the moment it starts, and every lesson that can be taught without a download is. `WordVector` defaults to `demo-16d`, a hand-built 59-word vocabulary in 16 interpretable dimensions that ships inside the app: no download, and `king - man + woman = queen` comes out exact, because the vectors were written so that it would. That is the toy, and the toy is the point of it.
 
-Adding a pack changes nothing about the base install except which options light up. A SELECT option whose download is missing is greyed out and offers the install; a node whose every backend comes from one pack (`TextEmbedding`) is greyed out as a whole. What is already installed keeps working either way, and removing a pack puts the greying back.
+Adding a pack changes nothing about the base install except which options light up. A SELECT option whose download is missing is greyed out and offers the install; a node whose every backend comes from one pack (`TextEmbedding` and `HFTextGenerate`, both of which come only from packs) is greyed out as a whole. What is already installed keeps working either way, and removing a pack puts the greying back.
 
 ## The catalog
 
@@ -63,7 +63,7 @@ Run it with the server stopped.
 
 ## What changes on the canvas
 
-With a pack missing, the editor says so before anything runs: `TextEmbedding` is greyed out in the palette, and `WordVector`'s **backend** dropdown greys the options whose download is not there while `demo-16d` stays selectable. A greyed option carries the install with it, so the fix is one click away in the Package Center panel. On a build without the Package Center panel, `cdui packs list` shows the same information.
+With a pack missing, the editor says so before anything runs: `TextEmbedding` and `HFTextGenerate` are greyed out in the palette -- the two nodes that come only from a pack -- and `WordVector`'s **backend** dropdown greys the options whose download is not there while `demo-16d` stays selectable. A greyed option carries the install with it, so the fix is one click away in the Package Center panel. On a build without the Package Center panel, `cdui packs list` shows the same information.
 
 A run that reaches a node needing something missing stops at that node with the sentence that names it:
 
@@ -130,7 +130,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 
 **Answer only from the context is the whole teaching point.** A 0.5B model knows almost nothing about CodefyUI. Shown five notes about it, it answers correctly anyway -- not because it was fine-tuned, but because the right paragraphs were pasted in front of the question. That gap is the argument for retrieval, and the template is what keeps it honest: ask something the corpus cannot answer and the `Retriever` still returns its nearest chunks, because "nearest" is always defined, while the instruction is what makes the model say it does not know instead of inventing something from them.
 
-**What CPU generation feels like.** A few tokens per second on a laptop, so the 160-token answer the local example asks for is roughly 20 to 40 seconds, plus a few seconds on the first run to read the weights off disk. Tokens stream to the canvas as they arrive, so the node is visibly working rather than merely pending. A GPU is much faster; `device` follows the global selector unless you set it on the node.
+**What CPU generation feels like.** A few tokens per second on a laptop, so an answer takes anywhere from a few seconds to tens of seconds -- the local example stops when the model ends its turn, which for the shipped question is well short of its 160-token ceiling -- plus a few seconds on the first run to read the weights off disk. Those are estimates from the model size, not stopwatch figures. The node reports progress token by token, so it is visibly working rather than merely pending. A GPU is much faster; `device` follows the global selector unless you set it on the node.
 
 Both graphs are in the [Examples Gallery](./examples-gallery.md), with a `README.md` beside each one. **RAG, fully local** (`examples/LLM/RAG-Local-Offline`) needs both downloads -- `qwen2.5-0.5b-instruct` and `multilingual-e5-small` -- and then sends nothing off the machine. **RAG with a chat API** (`examples/LLM/RAG-LLMChat-API`) is the same retrieval chain node for node, with `LLMChat` in the last box, so it needs only the encoder plus a running Ollama or a provider key. Running both on one question is the comparison worth making: the retrieved contexts are identical, so every difference in the answer is the generator.
 

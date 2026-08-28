@@ -493,12 +493,14 @@ def test_rag_examples_share_the_retrieval_chain():
 def test_rag_readmes_exist_and_corpus_has_five_documents():
     """Each RAG graph has its README, and the corpus behind them is intact.
 
-    Both descriptions end by pointing at "README.md beside this graph", so a
-    missing file makes the card lie. The corpus count is the other half:
-    both cards say five notes, both READMEs list the five by subject, and
-    the opt-in real run next door asserts which of the five wins the search
-    -- a sixth file dropped into ``backend/data/samples/rag`` makes all
-    three wrong and breaks none of them on its own.
+    The chat-API card ends by pointing at "README.md beside this graph" and
+    neither example is documented anywhere else, so a missing file leaves
+    the reader with a graph and no explanation. The corpus count is the
+    other half: the local card says five notes, both READMEs list the five
+    by subject, and the opt-in real run next door asserts which TWO of the
+    five fill the top three of the search -- a sixth file dropped into
+    ``backend/data/samples/rag`` makes all three wrong and breaks none of
+    them on its own.
     """
     for graph_path in (_RAG_LOCAL_EXAMPLE, _RAG_LLMCHAT_EXAMPLE):
         readme = graph_path.parent / "README.md"

@@ -157,10 +157,13 @@ def _character_spans(text: str, start: int, end: int, *,
     skipped. The walk stops as soon as a window reaches *end* rather than
     stepping once more, because a final window that begins inside its
     predecessor and ends at the same place is a duplicate. And a window that
-    STRIPS down to the span before it is the same duplicate arrived at
+    STRIPS down INSIDE the span before it is the same duplicate arrived at
     differently: with a high overlap and a run of whitespace -- a
     front-matter block, an ASCII diagram, an indented code sample -- two
-    consecutive windows can trim to the same handful of characters. Either
+    consecutive windows can trim into the same handful of characters, the
+    second one a suffix of the first rather than its twin. Containment, not
+    equality, is therefore the test: windows only ever move forwards, so a
+    window that ends at or before the previous end says nothing new. Either
     one would otherwise be embedded, stored and retrieved a second time, and
     the search would then return one passage twice.
     """
@@ -168,7 +171,7 @@ def _character_spans(text: str, start: int, end: int, *,
     cursor = start
     while cursor < end:
         window = _strip_span(text, cursor, min(cursor + size, end))
-        if window is not None and (not spans or window != spans[-1]):
+        if window is not None and (not spans or window[1] > spans[-1][1]):
             spans.append(window)
         if cursor + size >= end:
             break
@@ -395,7 +398,8 @@ class TextChunkerNode(BaseNode):
                 min_value=1,
                 description=(
                     "A trailing chunk shorter than this is merged into the "
-                    "previous one."
+                    "previous one. The merged last chunk may then exceed "
+                    "chunk_size by up to min_chunk_chars - 1 characters."
                 ),
                 advanced=True,
             ),
@@ -416,17 +420,21 @@ class TextChunkerNode(BaseNode):
                 f"`strategy` param to one of {STRATEGIES}.")
 
         chunk_size = _integer(params, "chunk_size", 400, minimum=1)
-        chunk_overlap = _integer(params, "chunk_overlap", 80, minimum=0)
         min_chunk_chars = _integer(params, "min_chunk_chars", 40, minimum=1)
-        # Only where the param is visible -- see the module docstring. A
-        # graph switched to sentences still carries whatever overlap the
-        # canvas wrote onto the node, and failing on a value nothing reads
-        # would name a field the learner cannot even see.
-        if strategy == "characters" and chunk_overlap >= chunk_size:
-            raise ValueError(
-                f"TextChunker: chunk_overlap ({chunk_overlap}) must be "
-                f"smaller than chunk_size ({chunk_size}); at or above it the "
-                f"window never advances and the same text repeats forever.")
+        # Read at all only where the param is visible -- see the module
+        # docstring. A graph switched to sentences still carries whatever
+        # overlap the canvas wrote onto the node, and nothing downstream
+        # looks at it, so neither PARSING it nor comparing it may fail a run
+        # over a field the learner cannot even see.
+        chunk_overlap = 0
+        if strategy == "characters":
+            chunk_overlap = _integer(params, "chunk_overlap", 80, minimum=0)
+            if chunk_overlap >= chunk_size:
+                raise ValueError(
+                    f"TextChunker: chunk_overlap ({chunk_overlap}) must be "
+                    f"smaller than chunk_size ({chunk_size}); at or above it "
+                    f"the window never advances and the same text repeats "
+                    f"forever.")
 
         documents = self._resolve_documents(inputs)
 

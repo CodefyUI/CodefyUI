@@ -65,9 +65,12 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
 
     1. An ABSOLUTE path is used exactly as typed.
     2. A BARE FILENAME is what the DATA_FILE upload dropdown produces, so it
-       resolves against ``DATA_FILES_DIR`` when something is actually there --
-       picking an uploaded file must not depend on the server's working
-       directory.
+       resolves against ``DATA_FILES_DIR`` when something of the right shape
+       is actually there -- picking an uploaded file must not depend on the
+       server's working directory. It has to be a real NAME: ``"."`` has an
+       empty ``Path.name`` and ``".."`` has ``".."``, so both would otherwise
+       walk into this rule and hand back the uploads directory itself, or its
+       parent, before rule 3 below ever gets a say.
     3. In PROJECT MODE a relative path resolves inside the project directory
        and may not escape it, so a graph shared between machines does not
        reach outside the project by accident. (It is not a sandbox: an
@@ -91,25 +94,37 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     if path.is_absolute():
         return path
 
-    if path.parent == Path("."):
+    # A real name only. Without the second half of this test ``"."`` reads
+    # every file anyone ever uploaded and ``".."`` reads the folder above
+    # the uploads directory -- both BEFORE the project guard below.
+    if path.parent == Path(".") and path.name not in ("", ".", ".."):
         candidate = settings.DATA_FILES_DIR / path.name
-        if candidate.exists():
+        # Matched by kind rather than by mere existence: a bare name is the
+        # dropdown's answer only when what sits there is the shape the param
+        # asks for, so an uploaded FILE never answers for `directory`.
+        found = (candidate.is_dir() if kind == "directory"
+                 else candidate.is_file())
+        if found:
             return candidate
 
     # Backslashes normalised first: a Windows editor may well have written
     # ``data\samples\rag`` into the param, and that is the same bundled
-    # corpus as the POSIX spelling.
+    # corpus as the POSIX spelling. The normalised spelling is also what
+    # gets RESOLVED below -- on POSIX ``Path("data\samples\rag")`` is a
+    # single component whose NAME contains backslashes, so a graph saved on
+    # Windows would otherwise find nothing on a Linux machine.
     normalised = path_str.replace("\\", "/")
+    relative = Path(normalised)
     # The prefix is not enough on its own: ``data/samples/../../elsewhere``
     # starts with it and ends outside the install, so the exemption also
     # requires that the path only ever goes downwards.
     is_bundled_sample = (
         normalised.startswith("data/samples/")
-        and ".." not in Path(normalised).parts)
+        and ".." not in relative.parts)
 
     if settings.PROJECT_DIR is not None and not is_bundled_sample:
         project = settings.PROJECT_DIR.resolve()
-        resolved = (project / path).resolve()
+        resolved = (project / relative).resolve()
         if not resolved.is_relative_to(project):
             raise ValueError(
                 f"DocumentLoader: {kind} {path_str!r} escapes the project "
@@ -117,10 +132,10 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
                 f"file and pick it from the dropdown.")
         return resolved
 
-    from_cwd = Path.cwd() / path
+    from_cwd = Path.cwd() / relative
     if from_cwd.exists():
         return from_cwd
-    from_backend = _BACKEND_DIR / path
+    from_backend = _BACKEND_DIR / relative
     if from_backend.exists():
         return from_backend
     # Neither exists: hand back the working-directory reading, which is the
@@ -358,9 +373,15 @@ class DocumentLoaderNode(BaseNode):
                 f"DocumentLoader: no folder at {root}. Check `directory`.")
 
         walk = root.rglob if bool(params.get("recursive", False)) else root.glob
+        # Sorted by the SOURCE string each path will carry, not by ``Path``
+        # order: comparing paths on Windows folds case, so ``Notes.md`` and
+        # ``apple.md`` come out in one order there and the opposite one on
+        # Linux -- and ``max_docs`` then keeps different documents depending
+        # on the machine. The posix spelling is also what a citation prints.
         paths = sorted(
-            p for p in walk("*")
-            if p.is_file() and p.suffix.lower() in TEXT_SUFFIXES
+            (p for p in walk("*")
+             if p.is_file() and p.suffix.lower() in TEXT_SUFFIXES),
+            key=lambda p: p.relative_to(root).as_posix(),
         )
         if not paths:
             raise FileNotFoundError(
@@ -411,8 +432,29 @@ class DocumentLoaderNode(BaseNode):
             raise FileNotFoundError(
                 f"DocumentLoader: no file at {path}. Check `file`.")
 
+        # The upload button takes anything; this node reads two suffixes.
+        # Refused by name rather than decoded hopefully, because a PDF read
+        # as text is a page of binary noise that chunks, embeds and gets
+        # retrieved like any other passage.
+        suffix = path.suffix.lower()
+        if suffix not in TEXT_SUFFIXES:
+            allowed = " and ".join(sorted(TEXT_SUFFIXES))
+            named = suffix if suffix else "no suffix"
+            raise ValueError(
+                f"DocumentLoader: {path.name} is not plain text ({named}); "
+                f"this node reads {allowed} only. Convert it once outside "
+                f"the graph and upload the text.")
+
         text = _read_document(path)
-        documents = [] if text is None else [{"text": text, "source": path.name}]
+        if text is None:
+            # The same outcome as a folder whose files are all blank, so the
+            # same exception and the same shape of sentence: there is
+            # nothing here to read, said about the thing that was picked
+            # rather than about an empty matrix two nodes downstream.
+            raise FileNotFoundError(
+                f"DocumentLoader: the file is blank -- {path.name} is empty "
+                "or whitespace only, so there is nothing to chunk.")
+        documents = [{"text": text, "source": path.name}]
         if limit:
             documents = documents[:limit]
         return documents, path.name

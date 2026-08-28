@@ -113,22 +113,24 @@ received — each links to the release it was published as.
 - **A retrieval chain on the canvas: six nodes that answer a question out of
   your own documents instead of out of the model's memory.**
   `DocumentLoader` reads every `.md` and `.txt` in a folder as
-  `{text, source}` so a citation survives to the end; `TextChunker` cuts
-  them into pieces small enough to embed (character windows, sentences or
-  paragraphs, all capped by `chunk_size`) carrying the source and the
-  character offsets, with `text[start_char:end_char]` guaranteed to be
-  exactly the chunk; `VectorStore` stacks the vectors `TextEmbedding`
-  produced into one `[N, D]` matrix with the chunk texts and their sources
-  beside them, so a cosine search over the whole corpus is a single
-  matrix multiply; `Retriever` scores a question against every row, keeps
-  `top_k` and drops anything under `min_score`, printing the score of each
-  hit; and `PromptBuilder` pastes the winners into a template that instructs
-  the model to answer only from that context. `HFTextGenerate` closes the
-  chain with Qwen2.5-0.5B-Instruct from the `rag` pack, applying the model's
-  chat template and streaming tokens to the canvas as they are produced, and
-  `LLMChat` is the drop-in alternative that sends the same prompt to a
-  server. Only two boxes in the chain need a download, so the head of it
-  runs on any install.
+  `{text, source}` so a citation survives to the end, stripping the UTF-8
+  byte-order mark Notepad writes rather than letting an invisible character
+  ride into the first chunk, its embedding and the first citation;
+  `TextChunker` cuts them into pieces small enough to embed (character
+  windows, sentences or paragraphs, all capped by `chunk_size`) carrying
+  the source and the character offsets, with `text[start_char:end_char]`
+  guaranteed to be exactly the chunk; `VectorStore` stacks the vectors
+  `TextEmbedding` produced into one `[N, D]` matrix with the chunk texts
+  and their sources beside them, so a cosine search over the whole corpus
+  is a single matrix multiply; `Retriever` scores a question against every
+  row, keeps `top_k` and drops anything under `min_score`, printing the
+  score of each hit that clears the floor; and `PromptBuilder` pastes the
+  winners into a template that instructs the model to answer only from that
+  context. `HFTextGenerate` closes the chain with Qwen2.5-0.5B-Instruct from
+  the `rag` pack, applying the model's chat template and reporting progress
+  token by token, and `LLMChat` is the drop-in alternative that sends the
+  same prompt to a server. Only two boxes in the chain need a download, so
+  the head of it runs on any install.
 
 - **Two RAG gallery examples, and the corpus they read.** **RAG, fully
   local** (`examples/LLM/RAG-Local-Offline`) retrieves and generates on this
@@ -154,8 +156,9 @@ received — each links to the release it was published as.
   `test_rag_local_example_answers_for_real` joins it for the fully local RAG
   graph, asking twice — the encoder and the generator are separate downloads,
   and one being absent must not hide the other — then running the graph and
-  asserting that the chunk closest to the shipped question came from
-  `02-nodes-and-edges.md` and that the generated answer is not empty.
+  asserting that the top three chunks all come from the two notes that contain
+  the answer and that `02-nodes-and-edges.md` is among them, and that the
+  generated answer is not empty.
 
 - **An Optional Packs page in the docs**, English and Traditional Chinese
   (`docs/docs/usage/optional-packs.md`) — the catalog with sizes
