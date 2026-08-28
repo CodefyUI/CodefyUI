@@ -262,14 +262,20 @@ async def make_service(store):
     the policy it is testing (``gpu=1`` and a five-deep queue is the whole
     acceptance criterion) instead of depending on a default that config is
     free to change.
+
+    ``shutdown_grace_s`` is a named parameter for the same reason, and
+    because a test that actually drains a run through ``shutdown`` should
+    be free to say "however long a loaded runner needs" rather than inherit
+    a five-second budget it never meant to assert (#318).
     """
     built: list[RunService] = []
 
     def _make(*, cpu: int = 2, gpu: int = 1, interactive: int = 2,
               overrides: tuple[tuple[str, int], ...] = (),
+              shutdown_grace_s: float = 5.0,
               **kwargs: Any) -> RunService:
         service = RunService(
-            store, shutdown_grace_s=5.0,
+            store, shutdown_grace_s=shutdown_grace_s,
             limits=QueueLimits(cpu=cpu, gpu=gpu, interactive=interactive,
                                overrides=overrides),
             **kwargs)
@@ -960,13 +966,56 @@ async def test_shutdown_retires_the_whole_queue_as_interrupted(make_service,
 
     Identical to what the next boot's ``recover_interrupted`` would write for
     the same rows — the two paths converge, this one just does not wait.
-    """
-    service = make_service()
-    running = await _submit(service, "running", device="cuda:0", seconds=0.05)
-    waiting = [await _submit(service, f"waiting-{i}", device="cuda:0",
-                             seconds=0.05) for i in range(3)]
 
-    await service.shutdown()
+    Everything below rests on one precondition: the three runs behind
+    ``running`` must still be WAITING at the moment ``shutdown`` starts. A
+    0.05s sleep only made that likely, which is #318 — measured on this
+    branch, 0.1s of extra delay between the last submit and the shutdown
+    call is already enough for the slot to free, promote ``waiting-0`` and
+    fail ``started_at is None``; at 0.3s the whole queue has drained and
+    every row comes back ``succeeded``. A loaded runner spends 0.1s without
+    noticing, which is how this failed once on Windows under load and then
+    passed four times in a row.
+
+    So ``running`` is held open on a gate (#187) instead: it provably
+    cannot finish until this test says so, and the hold is released only
+    after ``shutdown`` has been observed retiring the queue.
+    """
+    # The grace covers the drain of one released probe node with room to
+    # spare. Past it ``shutdown`` hard-cancels, a hard-cancelled task skips
+    # ``_finalize`` entirely, and the row keeps ``finished_at`` NULL — so
+    # the default five seconds would leave the last assertion here as one
+    # more thing measuring the runner's load.
+    service = make_service(shutdown_grace_s=30.0)
+    release_running = probe.hold("running")
+    stopping = None
+    try:
+        # ``seconds`` is omitted: a gated label never reaches the sleep.
+        running = await _submit(service, "running", device="cuda:0")
+        waiting = [await _submit(service, f"waiting-{i}", device="cuda:0",
+                                 seconds=0.05) for i in range(3)]
+        # Provably occupying the only cuda:0 slot, so the three behind it
+        # are provably still queued rather than merely expected to be.
+        await probe.wait_entered("running")
+        assert service.queue_snapshot() == {
+            "cuda:0": [result.run_id for result in waiting]}
+
+        stopping = asyncio.create_task(service.shutdown())
+        # ``shutdown`` sets ``_shutting_down`` and empties both queue
+        # indexes before its first await, and ``_pump`` refuses to promote
+        # anything once that flag is set — so an empty snapshot is the
+        # observable "the queue has been retired", and releasing the hold
+        # after it cannot start a fourth run. Polled against a deadline, so
+        # load costs this test time and nothing else.
+        await _wait_until(lambda: not service.queue_snapshot(),
+                          what="the shutdown retired the queue")
+    finally:
+        # However this exits: the hold must be let go, or ``shutdown`` sits
+        # out its whole grace waiting for a task that cannot finish and the
+        # real failure arrives half a minute late behind a timeout.
+        release_running.set()
+        if stopping is not None:
+            await stopping
 
     for result in waiting:
         row = await store.get_run(result.run_id)
