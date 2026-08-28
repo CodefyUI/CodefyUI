@@ -234,9 +234,13 @@ class _Body:
 
     def __init__(self, text: str) -> None:
         self._text = text.encode("utf-8")
+        self.closed = False
 
     def read(self) -> bytes:
         return self._text
+
+    def close(self) -> None:
+        self.closed = True
 
 
 # ── --detach ──────────────────────────────────────────────────────────────

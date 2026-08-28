@@ -48,21 +48,33 @@ def _yielding(*dists: _FakeDist):
 # ── reading this interpreter ─────────────────────────────────────────────
 
 
-def test_pins_every_installed_distribution_with_local_tag():
-    """The pin has to carry the LOCAL version tag.
+def test_pins_torch_at_the_version_uv_resolves_against():
+    """The pin has to match what uv's resolver sees, not what torch reports.
 
-    ``2.11.0+cu128`` and ``2.11.0+cpu`` are the same version to a resolver
-    that only sees ``2.11.0``: pinning the short form lets an install "keep"
-    torch while silently replacing a CUDA build with a CPU one, which is the
-    single worst thing this file exists to prevent.
+    ``installed_distributions()`` reads ``importlib.metadata`` -- the same
+    place uv resolves constraints against -- so its value has to be the
+    metadata version, never ``torch.__version__`` itself: the two only
+    coincide for an index wheel (e.g. a developer box's ``2.11.0+cu128``,
+    where the local build tag is part of the metadata version too). PyPI's
+    own torch wheels carry the local tag ONLY in ``torch.__version__``
+    (``2.13.0+cu130`` on Linux, ``2.13.0+cpu`` on Windows) while their
+    metadata version is the bare ``2.13.0`` -- so a pin built from
+    ``torch.__version__`` would not match what uv already has installed and
+    every subsequent resolve would fail. Either family is fine; the pin just
+    has to be the version uv itself would report.
     """
     import torch
 
     dists = installed_distributions()
 
-    assert dists["torch"] == torch.__version__
+    assert dists["torch"] == importlib.metadata.version("torch")
     if "+" in torch.__version__:
-        assert "+" in dists["torch"], "the local build tag was stripped off"
+        public_part = torch.__version__.split("+", 1)[0]
+        assert dists["torch"] in (torch.__version__, public_part), (
+            "torch's metadata version is neither the full local version "
+            "(index wheels) nor its public part before the local tag "
+            "(PyPI wheels)"
+        )
 
 
 def test_names_are_pep503_canonical():
