@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 title: Licensing FAQ
-description: What AGPL-3.0 actually requires of CodefyUI users, whether running it internally triggers section 13, how custom nodes and plugins are treated, and what the commercial license covers.
+description: What AGPL-3.0 actually requires of CodefyUI users, whether running it internally triggers section 13, how custom nodes and plugins are treated, what the commercial license covers, and what contributors agree to.
 ---
 
 # Licensing FAQ
@@ -82,6 +82,16 @@ The one thing to keep separate is the training *data* you feed in and any pretra
 **What it does not do:** it does not take anything away from the open source path, and it is not a support contract. Terms and pricing are negotiated per case.
 
 Start the conversation on the [issue tracker](https://github.com/CodefyUI/CodefyUI/issues). See also [COMMERCIAL-LICENSE.md](https://github.com/CodefyUI/CodefyUI/blob/main/COMMERCIAL-LICENSE.md).
+
+## What do contributors agree to? Do they share in commercial revenue?
+
+Three ground rules, stated in full in [CONTRIBUTING.md](https://github.com/CodefyUI/CodefyUI/blob/main/CONTRIBUTING.md):
+
+- **Every contributor is credited.** The git history keeps each contributor's name and email permanently, GitHub's contributors graph is derived from it, and contributors retain copyright in their own work.
+- **The grant is voluntary and royalty-free.** Contributions are licensed to the project on both paths — AGPL-3.0-only and the commercial license. When the copyright holder sells a commercial license that includes contributed code, no royalty, revenue share, or other compensation is owed to the contributors whose code is in it.
+- **Outstanding contributions can be discussed.** A contributor who believes a contribution is substantial enough that different recognition or terms should apply can raise it with the maintainers, before or after contributing. Anything beyond the defaults requires explicit written agreement with the copyright holder.
+
+For a commercial licensee this means a single licensor, and a license that carries no payment claims from individual contributors.
 
 ## Third-party components
 
