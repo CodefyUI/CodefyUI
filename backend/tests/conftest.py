@@ -1,10 +1,14 @@
 """Shared pytest fixtures for CodefyUI backend tests."""
 
+import hashlib
+import importlib.machinery
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -229,3 +233,160 @@ async def app_db(tmp_path):
             delattr(app.state, "db")
         if hasattr(app.state, "app_locks"):
             delattr(app.state, "app_locks")
+
+
+# ── offline sentence-transformers ────────────────────────────────────────
+#
+# The Sentence embeddings pack is 90 MB of model on top of a pip install that
+# drags in transformers. No test may download either, so the nodes that use
+# it are tested against the fake below: same call shape, arithmetic instead
+# of a neural network.
+
+#: Width of the fake's embeddings. Narrow enough that a failed assertion
+#: prints a readable row. It must stay <= 64: one digest byte becomes one
+#: dimension below, and blake2b will not produce more than 64 of them.
+_FAKE_EMBED_DIM = 32
+
+#: What a character weighs against a word. Tuned, not guessed: sweeping it
+#: over a dozen English and a dozen Chinese sentences, 0.5 is where "shares
+#: at least one word" stays above "shares nothing" for English (worst pair
+#: 0.64 against a 0.49 ceiling) while "shares most of its characters" stays
+#: above it for Chinese (0.32 against 0.27). Lower and Chinese inverts --
+#: every CJK sentence is ONE whitespace token, so characters are the only
+#: signal there; higher and English inverts, because unrelated English
+#: sentences share nearly every letter of the alphabet.
+_FAKE_CHAR_WEIGHT = 0.5
+
+
+def _hashed_direction(piece: str, dim: int) -> np.ndarray:
+    """The fixed unit vector that stands for one word or one character."""
+    digest = hashlib.blake2b(piece.encode("utf-8"), digest_size=dim).digest()
+    # Bytes run 0..255; centring them points the direction anywhere instead
+    # of into the all-positive corner, where everything looks alike.
+    vector = np.frombuffer(digest, dtype=np.uint8).astype(np.float64) - 127.5
+    return vector / np.linalg.norm(vector)
+
+
+def _hashed_bag(text: str, dim: int) -> np.ndarray:
+    """A deterministic bag-of-(words + characters) vector for *text*.
+
+    Each distinct piece gets a pseudo-random direction out of its digest and
+    the text is their weighted sum. Two decisions worth the words:
+
+    * blake2b rather than ``hash()``, which is salted per process -- two runs
+      of the suite have to agree, or a cached-embedding test passes and fails
+      at random;
+    * a whole direction per piece rather than one bucket per piece. In 32
+      buckets, two unrelated words collide about once in thirty; a single
+      collision would make two unrelated texts look nearly identical, which
+      is exactly the assertion a node test is about to make.
+
+    Distinct pieces, not a multiset: counting repeats would rank two English
+    sentences by how often they say "the".
+
+    Coarse, and deliberately so: 32 dimensions puts unrelated texts around
+    0.2-0.5 cosine rather than at 0. Assert on the ORDER of similarities,
+    never on an absolute threshold.
+    """
+    vector = np.zeros(dim, dtype=np.float64)
+    for word in set(text.split()):
+        vector += _hashed_direction(word, dim)
+    for char in {char for char in text if not char.isspace()}:
+        vector += _FAKE_CHAR_WEIGHT * _hashed_direction(char, dim)
+    return vector
+
+
+class _FakeSentenceTransformer:
+    """Stands in for ``sentence_transformers.SentenceTransformer``.
+
+    Records what it was asked for -- ``init_kwargs`` (was the model loaded
+    from the local snapshot, on the device the node chose?) and ``calls``
+    (which texts, how many times, in which order) -- because that is what a
+    node test can assert about a model it never trained.
+    """
+
+    def __init__(self, path, **kwargs):
+        self.path = path
+        self.init_kwargs = dict(kwargs)
+        # Mutable, like the real one: nodes clamp it to the token budget the
+        # user picked, and a test should see the value they set.
+        self.max_seq_length = 128
+        self.calls: list[list[str]] = []
+
+    def encode(self, texts, batch_size=32, convert_to_numpy=True,
+               normalize_embeddings=False, show_progress_bar=False):
+        """Deterministic embeddings, shaped like the real return value.
+
+        ``batch_size`` and ``show_progress_bar`` are accepted and ignored --
+        there is nothing to batch. ``convert_to_numpy`` is accepted and the
+        result is always a numpy array: the torch return path is not
+        modelled, because none of these nodes asks for it.
+        """
+        single = isinstance(texts, str)
+        items = [texts] if single else list(texts)
+        self.calls.append(list(items))
+
+        if items:
+            matrix = np.stack(
+                [_hashed_bag(text, _FAKE_EMBED_DIM) for text in items])
+        else:
+            matrix = np.zeros((0, _FAKE_EMBED_DIM), dtype=np.float64)
+
+        if normalize_embeddings:
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            # An empty text hashes to the zero vector; dividing it by its own
+            # norm would hand the node a row of NaN instead of a row of zeros.
+            matrix = matrix / np.where(norms == 0.0, 1.0, norms)
+
+        matrix = matrix.astype(np.float32)
+        return matrix[0] if single else matrix
+
+
+@pytest.fixture
+def fake_sentence_transformers(monkeypatch, tmp_path):
+    """Install the fake library AND pretend its pack is downloaded.
+
+    Both halves are needed for a node test to reach its own logic: without
+    the pack patch the node stops at ``require_pack`` before it ever imports
+    anything. Everything is undone by ``monkeypatch`` when the test ends, so
+    the rest of the suite still sees whether sentence-transformers is really
+    installed on this machine.
+
+    Yields the fake MODULE; ``module.SentenceTransformer`` is the class.
+    """
+    module = types.ModuleType("sentence_transformers")
+    # A bare ModuleType has ``__spec__ = None``, and ``find_spec`` -- how
+    # packs/state.py decides whether a pack's packages are importable --
+    # raises ValueError on exactly that. Give the fake a spec so a probe
+    # running alongside it answers "installed" rather than exploding.
+    module.__spec__ = importlib.machinery.ModuleSpec(
+        "sentence_transformers", loader=None)
+    module.SentenceTransformer = _FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    model_path = tmp_path / "model"
+    model_path.mkdir(parents=True, exist_ok=True)
+    # Enough for code that sanity-checks the snapshot before loading it.
+    (model_path / "config.json").write_text("{}", encoding="utf-8")
+
+    from app.nodes.llm import _packs_bridge
+
+    monkeypatch.setattr(_packs_bridge, "pack_available",
+                        lambda pack_id, item_id=None: True)
+    monkeypatch.setattr(_packs_bridge, "require_pack",
+                        lambda pack_id, item_id=None: None)
+    monkeypatch.setattr(_packs_bridge, "model_dir", lambda repo_id: model_path)
+
+    try:
+        yield module
+    finally:
+        # The loaded-model cache is process-wide and keyed by path; a fake
+        # model cached under this test's tmp_path would be handed to the
+        # next test, after the directory it was loaded from is gone. Guarded
+        # because the cache module arrives in a later task than this fixture.
+        try:
+            from app.nodes.llm import _sentence_models
+        except ImportError:
+            pass
+        else:
+            _sentence_models.clear_model_cache()
