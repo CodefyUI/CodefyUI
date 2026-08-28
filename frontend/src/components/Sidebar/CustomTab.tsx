@@ -3,13 +3,27 @@ import {
   listCustomNodes,
   listPlugins,
   type CustomNodeInfo,
+  type PackSummary,
   type PluginSummary,
 } from '../../api/rest';
 import { useI18n } from '../../i18n';
+import { usePackStore } from '../../store/packStore';
+import { useUIStore } from '../../store/uiStore';
 import { CustomNodeManager } from '../CustomNodeManager/CustomNodeManager';
+import { StatusPill } from '../PackCenter/PackCard';
+import { catalogKey } from '../PackCenter/packStatus';
 import { RefreshIcon } from '../shared/Icons';
 import styles from './NodePalette.module.css';
 import tabStyles from './CustomTab.module.css';
+
+type PackStoreState = ReturnType<typeof usePackStore.getState>;
+
+// Module-scope selectors, so each subscription compares the SAME function's
+// output frame to frame. Only two, and neither moves while a download runs:
+// `packs` is replaced when the catalog is re-read or a status changes, which
+// is exactly when these rows have something new to say.
+const selectPacks = (state: PackStoreState): PackSummary[] => state.packs;
+const selectPacksUnsupported = (state: PackStoreState): boolean => state.unsupported;
 
 /**
  * Everything the user has added to this install: uploaded custom-node files
@@ -23,6 +37,12 @@ import tabStyles from './CustomTab.module.css';
  *
  * Both lists are fetched together on mount, and re-fetched when the manager
  * modal closes (an upload or a toggle changes what belongs here).
+ *
+ * Optional packs sit between the two, and are the one section that owns no
+ * fetch: the catalog is read once by the sidebar shell this tab lives in
+ * (`usePackCatalogBootstrap`) and kept in `packStore`, because an install
+ * outlives the tab that started it. The rows are a pure view of it, and the
+ * only way to change anything is the Package Center itself.
  */
 export function CustomTab() {
   const [customNodes, setCustomNodes] = useState<CustomNodeInfo[]>([]);
@@ -31,6 +51,10 @@ export function CustomTab() {
   const [error, setError] = useState<string | null>(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const { t } = useI18n();
+
+  const packs = usePackStore(selectPacks);
+  const packsUnsupported = usePackStore(selectPacksUnsupported);
+  const openPackCenter = useUIStore((s) => s.openPackCenter);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -57,6 +81,32 @@ export function CustomTab() {
     load();
   }, [load]);
 
+  // The Refresh button means "re-read everything this tab shows", and the
+  // pack catalog is now part of that — it is also the retry for a boot read
+  // that never arrived. Mount does NOT go through here: the shell has already
+  // read the catalog by the time this tab can be selected.
+  const refreshAll = useCallback(() => {
+    load();
+    void usePackStore.getState().refresh();
+  }, [load]);
+
+  /** A pack's name and one-line description, preferring this build's copy. */
+  const packCopy = (pack: PackSummary): { title: string; desc: string } => {
+    const titleKey = catalogKey(pack.id, 'title');
+    const descKey = catalogKey(pack.id, 'desc');
+    return {
+      title: titleKey !== null ? t(titleKey) : pack.title,
+      desc: descKey !== null ? t(descKey) : pack.description,
+    };
+  };
+
+  // A server with no Package Center answers with no catalog at all, so an
+  // empty list and an unsupported server are the same sentence here. The
+  // count is taken from the same list the rows are, so a stale catalog left
+  // over from a previous server cannot make the header disagree with them.
+  const visiblePacks = packsUnsupported ? [] : packs;
+  const packsInstalled = visiblePacks.filter((pack) => pack.status === 'installed').length;
+
   return (
     <>
       <div className={styles.header}>
@@ -65,7 +115,7 @@ export function CustomTab() {
           <button
             type="button"
             className={styles.toolbarButton}
-            onClick={load}
+            onClick={refreshAll}
             aria-label={t('sidebar.refresh')}
             title={t('sidebar.refresh')}
           >
@@ -123,6 +173,39 @@ export function CustomTab() {
                   )}
                 </div>
               ))
+            )}
+
+            {/* ── Optional packs ── */}
+            <div className={tabStyles.sectionHeader}>
+              <span className={tabStyles.sectionTitle}>{t('customTab.section.packs')}</span>
+              <span className={tabStyles.sectionCount}>{packsInstalled}</span>
+              <button
+                type="button"
+                className={tabStyles.manageButton}
+                onClick={() => openPackCenter()}
+              >
+                {t('customTab.packs.open')}
+              </button>
+            </div>
+
+            {visiblePacks.length === 0 ? (
+              <div className={tabStyles.sectionEmpty}>
+                <div>{t('customTab.packs.empty')}</div>
+                <div className={tabStyles.sectionHint}>{t('customTab.packs.hint')}</div>
+              </div>
+            ) : (
+              visiblePacks.map((pack) => {
+                const copy = packCopy(pack);
+                return (
+                  <div key={pack.id} className={tabStyles.row}>
+                    <div className={tabStyles.rowTitle}>
+                      <span className={tabStyles.rowName}>{copy.title}</span>
+                      <StatusPill status={pack.status} />
+                    </div>
+                    {copy.desc && <div className={tabStyles.rowDesc}>{copy.desc}</div>}
+                  </div>
+                );
+              })
             )}
 
             {/* ── Plugin packs ── */}
