@@ -263,10 +263,10 @@ async def make_service(store):
     acceptance criterion) instead of depending on a default that config is
     free to change.
 
-    ``shutdown_grace_s`` is a named parameter for the same reason, and
-    because a test that actually drains a run through ``shutdown`` should
-    be free to say "however long a loaded runner needs" rather than inherit
-    a five-second budget it never meant to assert (#318).
+    ``shutdown_grace_s`` is a named parameter for the same reason: a test
+    that actually drains a run through ``shutdown`` can set the budget a
+    loaded runner needs, and the five-second default stays with the tests
+    that never meant to assert it (#318).
     """
     built: list[RunService] = []
 
@@ -977,8 +977,8 @@ async def test_shutdown_retires_the_whole_queue_as_interrupted(make_service,
     noticing, which is how this failed once on Windows under load and then
     passed four times in a row.
 
-    So ``running`` is held open on a gate (#187) instead: it provably
-    cannot finish until this test says so, and the hold is released only
+    So ``running`` is held open on a gate (#187): it provably cannot
+    finish until this test says so, and the hold is released only
     after ``shutdown`` has been observed retiring the queue.
     """
     # The grace covers the drain of one released probe node with room to

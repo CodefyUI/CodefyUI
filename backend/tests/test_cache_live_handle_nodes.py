@@ -818,7 +818,7 @@ async def test_a_network_constructor_hands_out_a_fresh_network_every_run(
     edges = _trigger("net")
 
     cache = ExecutionCache()
-    # The MODULES, not their ``id()``s (#307). An id is unique only among
+    # Keep the modules themselves (#307). An id is unique only among
     # objects that are alive at the same moment: recording ``id(model)``
     # and then rebinding ``model`` on the next iteration left the previous
     # network collectable, and CPython hands the next allocation the
