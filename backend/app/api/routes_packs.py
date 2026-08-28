@@ -198,6 +198,12 @@ def _item_payload(item: ModelItem, probed: ItemState,
         "repo_id": item.repo_id,
         "url": item.url,
         "size_bytes": item.approx_bytes,
+        # What the install writes BESIDE the download (the GloVe npz), as
+        # its own field and deliberately NOT folded into `size_bytes` or
+        # `size_bytes_total`: those two answer "what comes down the wire",
+        # which is what a progress bar and a download prompt are about. A UI
+        # that wants to say "and N MB more on disk" has the number here.
+        "derived_bytes": item.derived_bytes,
         "license": item.license,
         "status": _item_status(probed, active),
     }

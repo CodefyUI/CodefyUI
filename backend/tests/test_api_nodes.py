@@ -435,6 +435,29 @@ async def test_param_option_packs_round_trip(test_client, packed_node):
 
 
 @pytest.mark.asyncio
+async def test_text_embedding_declares_its_pack_on_the_wire(test_client):
+    """The real node the synthetic one above stands in for.
+
+    ``_PackedTest`` proves the plumbing exists; this proves a node a learner
+    actually sees is plugged into it. Both halves matter and they are read
+    by different parts of the editor: ``requires_pack`` greys the node out
+    in the palette, and the per-option map greys out the models THIS install
+    has not downloaded inside a node it can otherwise run.
+    """
+    node = (await test_client.get("/api/nodes/TextEmbedding")).json()
+    assert node["requires_pack"] == "sentence-embeddings"
+
+    listed = {n["node_name"]: n
+              for n in (await test_client.get("/api/nodes")).json()}
+    assert listed["TextEmbedding"]["requires_pack"] == "sentence-embeddings"
+
+    model = {p["name"]: p for p in node["params"]}["model"]
+    assert set(model["option_packs"]) == set(model["options"])
+    assert all(value.startswith("sentence-embeddings:")
+               for value in model["option_packs"].values())
+
+
+@pytest.mark.asyncio
 async def test_every_param_carries_the_option_packs_key(test_client):
     """The key is on the WIRE, not just on the Python dataclass -- the same
     hand-copied mirror that ``advanced`` had to be threaded through."""
@@ -459,8 +482,18 @@ async def test_every_param_carries_the_option_packs_key(test_client):
 #: written for. ``Conv2dExplicit`` is #367's: #362 gave it three new
 #: user-facing params in English on the node that C1-3 §C1.3.4.1 teaches
 #: from, so it was translated and moved up here out of the debt list below.
+#: ``WordVector`` was in NEITHER list: it had a zh-TW block, so the ratchet
+#: below was satisfied and nothing checked its params -- and its four
+#: translations were rewritten for the real GloVe and sentence backends
+#: without a test that would have noticed a fifth param arriving in English.
+#: ``TextEmbedding`` ships in the same PR and is pinned from birth rather
+#: than translated and then forgotten: all nine of its params are knobs a
+#: learner turns, and the ratchet below would have been satisfied by the
+#: block alone.
 TRANSLATED_NODES = (
     "Conv2dExplicit",
+    "WordVector",
+    "TextEmbedding",
     "Optimizer",
     "Loss",
     "DataLoader",

@@ -878,13 +878,12 @@ const zhTW: NodeTranslations = {
   },
   WordVector: {
     description:
-      '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
+      '為每個輸入單字查一條向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。demo-16d 是手工打造的 59 字玩具詞彙表，隨安裝附帶、完全離線，類比在它上面是精確成立的；glove-50d 是真正的 40 萬字 GloVe 表（需要 word-vectors 套件包），類比只是近似；sentence-transformer 後端（需要 sentence-embeddings 套件包）會把每個字丟進現代的編碼器，對單一個字來說更「毛躁」，但那正是真實檢索系統在用的東西。',
     params: {
-      backend:
-        '向量來源。demo-16d 是手工打造的玩具詞彙、完全離線可跑；glove-* 會在第一次使用時下載真實 GloVe 向量；minilm-sentence-384d 需要安裝 [llm-sentence] 額外相依套件。',
+      backend: '向量來源。灰掉的選項需要先到套件中心安裝對應的套件包；執行圖的時候永遠不會自動下載。',
       words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
       normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
-      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
+      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。只對表格型後端（demo-16d、glove-50d）有意義；句子模型會為每個字都算出向量。',
     },
   },
   EmbeddingScatter: {
@@ -1029,6 +1028,21 @@ const zhTW: NodeTranslations = {
       top_p: 'Nucleus 取樣：從機率最高的 token 開始累加，直到總和達到 p，就只從這些 token 取樣（1 = 關閉）。與 top_k 不同的是這個切點會自動調整 — 模型有把握時就窄，沒把握時就寬。',
       seed: '取樣所用的隨機種子。同樣的種子加上同樣的模型，在任何裝置上都會得到同樣的文字，所以比較兩個 temperature 時，差異就只來自 temperature。',
       device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
+    },
+  },
+  TextEmbedding: {
+    description:
+      '用預訓練的 sentence-transformer 把每段文字變成一條稠密向量，意思相近的文字向量會靠得很近（cosine 接近 1）。這就是語意搜尋與 RAG 背後的編碼器：先把文件各自嵌入一次，再把問題嵌入，然後比較。需要從套件中心安裝 sentence-embeddings 套件包；內附的四個模型都很小（22M 到 118M 參數），純 CPU 也跑得動。',
+    params: {
+      model: 'all-MiniLM-L6-v2：最小、英文。paraphrase-multilingual-MiniLM-L12-v2：支援 50 多種語言（含繁體中文），不需要前綴。bge-small-zh-v1.5：中文專用。multilingual-e5-small：檢索效果最好，但需要 "query: " / "passage: " 前綴（見 prefix）。',
+      text: '沒有任何輸入連線時使用的備用文字。',
+      split_lines: '把文字輸入的每一個非空白行當成一段獨立的文字。若要讓一整份多行文件變成一條向量，請關閉。',
+      prefix: '編碼前加在每段文字前面的字串。multilingual-e5 訓練時問題用 "query: "、文件用 "passage: "；其他模型會忽略它。',
+      normalize: 'L2 正規化，讓下游的點積等於 cosine similarity。',
+      batch_size: '一次前向傳播處理幾段文字。只影響速度與記憶體。',
+      max_seq_length: '每段文字的 token 上限（0 = 模型自己的預設：paraphrase-multilingual 128、all-MiniLM 256、bge/e5 512）。超過的部分會被截掉，切塊時請把長度控制在範圍內。',
+      label_chars: 'labels 輸出中每段文字保留的字元數。',
+      device: '在哪個裝置上編碼（auto 表示跟隨全域裝置）。',
     },
   },
 

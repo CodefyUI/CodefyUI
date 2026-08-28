@@ -371,7 +371,7 @@ async def test_cancel_marks_the_job_cancelled_and_a_second_cancel_is_false():
 async def test_needs_restart_ends_with_the_command_to_type():
     flow = ScriptedFlow()
     flow.fail(PackNeedsRestart("cannot replace torch in place",
-                               command="cdui packs install gpu-torch --restart",
+                               command="uv pip install --python /venv/bin/python torch",
                                hint="No solution found"))
     service = PackService(run_flow=flow)
     job = await service.submit_install(get_pack(SENTENCE), [],
@@ -380,8 +380,8 @@ async def test_needs_restart_ends_with_the_command_to_type():
 
     assert status == "needs_restart"
     assert events[-1]["type"] == "needs_restart"
-    assert events[-1]["command"] == "cdui packs install gpu-torch --restart"
-    assert job.restart_command == "cdui packs install gpu-torch --restart"
+    assert events[-1]["command"] == "uv pip install --python /venv/bin/python torch"
+    assert job.restart_command == "uv pip install --python /venv/bin/python torch"
 
 
 async def test_install_error_ends_with_its_message_and_hint():

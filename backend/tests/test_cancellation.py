@@ -28,6 +28,7 @@ import torch
 import torch.nn as nn
 
 from app.config import settings
+from app.core.cache import ExecutionCache
 from app.core.execution_context import (
     INTERRUPTED_KEY,
     CancellationError,
@@ -976,3 +977,94 @@ def test_map_node_stops_between_items():
 
     assert result[INTERRUPTED_KEY]["batch"] == 0
     assert result["results"] == []
+
+
+# ── a stopped node is never cached ────────────────────────────────────────
+
+
+class _InterruptedOnceNode(BaseNode):
+    """Interrupted on its first execute, whole on every one after.
+
+    Cacheable, like the real nodes this is about: ``TextEmbedding`` stopped
+    before its first batch returns a ``(0, 0)`` tensor and the marker saying
+    so. What is under test is what the ENGINE does with that, not how the
+    node produced it.
+    """
+
+    NODE_NAME = "_InterruptedOnce"
+    CATEGORY = "Test"
+    DESCRIPTION = "Returns a partial, interrupted result the first time only"
+    cacheable = True
+
+    #: Class-level: the engine builds a fresh instance per node execution,
+    #: so an instance attribute could not tell the second run from the first.
+    calls = 0
+
+    @classmethod
+    def define_inputs(cls) -> list[PortDefinition]:
+        return []
+
+    @classmethod
+    def define_outputs(cls) -> list[PortDefinition]:
+        return [PortDefinition(name="value", data_type=DataType.ANY)]
+
+    @classmethod
+    def define_params(cls) -> list[ParamDefinition]:
+        return [ParamDefinition(name="val", param_type=ParamType.STRING,
+                                default="whole")]
+
+    def execute(self, inputs, params):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            # The shape ``interrupted_result`` produces: what was paid for,
+            # plus the marker saying it is not all of it.
+            return {"value": "partial", INTERRUPTED_KEY: {"batch": 0}}
+        return {"value": params.get("val", "whole")}
+
+
+@pytest.fixture
+def interrupted_once():
+    _InterruptedOnceNode.calls = 0
+    registry._nodes["_InterruptedOnce"] = _InterruptedOnceNode
+    yield _InterruptedOnceNode
+    registry._nodes.pop("_InterruptedOnce", None)
+    _InterruptedOnceNode.calls = 0
+
+
+@pytest.mark.asyncio
+async def test_interrupted_result_is_not_cached(interrupted_once):
+    """A stopped node re-runs; it does not come back as ``cached``.
+
+    The cache stores what a node returned and nothing about how much of the
+    work it represents, so a partial result put there is served on the next
+    Run as the finished answer -- silently, under a green ``cached`` badge,
+    to somebody who pressed Stop once and has no way to tell.
+    """
+    cache = ExecutionCache()
+    nodes = [
+        _start_node(),
+        {"id": "1", "type": "_InterruptedOnce",
+         "data": {"params": {"val": "whole"}}},
+    ]
+    edges = [_trigger("et", "start", "1")]
+
+    first: list[tuple[str, str]] = []
+    second: list[tuple[str, str]] = []
+
+    def _recorder(into):
+        async def on_progress(node_id, status, data):
+            into.append((node_id, status))
+        return on_progress
+
+    await execute_graph(nodes, edges, on_progress=_recorder(first), cache=cache)
+    results = await execute_graph(
+        nodes, edges, on_progress=_recorder(second), cache=cache)
+
+    assert interrupted_once.calls == 2, (
+        "the second run was served from the cache, so the partial result of "
+        "the first is now the answer to every run after it")
+    assert ("1", "interrupted") in first
+    assert ("1", "completed") in second
+    assert ("1", "cached") not in second
+    assert results["1"]["value"] == "whole", (
+        "the second run returned the partial value, not the whole one")

@@ -22,7 +22,7 @@ See all shortcuts in **[Key Bindings](./keybindings)**.
 The left sidebar lists every node, grouped by category and searchable. Categories are color-coded to match the nodes on the canvas. The **Node category mode** setting toggles between:
 
 - **Basic** — only the essential categories a newcomer needs.
-- **All** — every category (121 built-in nodes across 15 categories — see the [Node Reference](./node-reference)).
+- **All** — every category (146 built-in nodes across 16 categories — see the [Node Reference](./node-reference)).
 
 Installed [plugin packs](/advanced/plugins) add their own nodes here too, namespaced like `foundations:Edu-KNN`.
 
