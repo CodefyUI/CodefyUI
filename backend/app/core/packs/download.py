@@ -16,8 +16,13 @@ Three things this module is careful about:
   and downloading all of them costs four times the bytes for one usable model.
 * **Stop works mid-file.** ``hf_hub_download`` is one blocking call per file
   and a 400 MB file is minutes of it, so the cancel check lives inside the
-  progress hook: raising from ``tqdm.update`` aborts the transfer where a
-  between-files check would not have been reached until it finished.
+  progress hook, where a between-files check would not have been reached
+  until the file finished. Getting out from there takes two different
+  things on the two transports, and both are needed: raising from
+  ``tqdm.update`` unwinds the classic HTTP download, while the hf_xet fast
+  path discards anything raised in its callback and has to be aborted
+  explicitly -- see :func:`abort_xet_transfer`, and
+  ``tests/test_packs_network.py``, which proves it against the real hub.
 * **``HF_HOME`` is never touched.** That variable is the whole machine's
   Hugging Face cache, shared with every other tool its owner runs. Packs
   download into CodefyUI's own cache via ``cache_dir=``, so uninstalling a
@@ -205,6 +210,49 @@ class _ByteMeter:
         self._emit_throttled()
 
 
+def abort_xet_transfer() -> None:
+    """Cancel whatever the hf_xet runtime is currently downloading.
+
+    Raising from the progress hook is NOT enough on the Xet fast path, and
+    this was measured rather than assumed: hf_xet drives that hook from its
+    Rust download group, and an exception raised inside it is caught there,
+    printed, and DISCARDED. The transfer runs to completion; the
+    ``PackCancelled`` is only noticed by the next check in Python, which is
+    after the file has finished. Pressing Stop on a 470 MB model would wait
+    for all 470 MB -- the exact failure the mid-file check was written to
+    prevent -- and neither the exception TYPE nor a ``BaseException`` makes
+    any difference: ``KeyboardInterrupt`` is swallowed the same way.
+
+    ``abort_xet_session`` is the escape hatch huggingface_hub uses for its
+    own Ctrl-C handling in ``file_download.xet_get``. It is thread-safe and
+    it is safe to call from inside the progress callback (both were measured:
+    the transfer stops within a few hundredths of a second and leaves no blob
+    behind). What comes back OUT of ``hf_hub_download`` afterwards is a Rust
+    ``RuntimeError('Operation cancelled: ...')``, which
+    :func:`download_hf_item` translates back into ``PackCancelled``.
+
+    The session is process-wide, so this ends every hf_xet transfer in
+    flight, not only this item's. That is what makes it acceptable here and
+    nowhere else: the Package Center runs one job at a time and a graph run
+    never downloads, so the only transfer there can be IS the cancelled one.
+    Nothing is left broken either way -- the next call builds a fresh session
+    (``tests/test_packs_network.py`` downloads a second model right after the
+    cancel to prove a stopped install does not poison the ones after it).
+
+    Private API, so every failure here is swallowed: on a hub version that
+    does not have it, cancelling still works -- it just waits for the current
+    file, which is what it did before this existed.
+    """
+    try:
+        from huggingface_hub.utils._xet import abort_xet_session
+    except Exception:
+        return
+    try:
+        abort_xet_session()
+    except Exception:
+        pass
+
+
 def make_tqdm_class(meter: _ByteMeter) -> type:
     """A ``tqdm`` subclass that feeds *meter* and draws nothing.
 
@@ -243,7 +291,16 @@ def make_tqdm_class(meter: _ByteMeter) -> type:
         def update(self, n=1):
             # Before ``super()``: a disabled tqdm returns early without
             # touching ``n``, so this is the only place the bytes exist.
-            meter.add(n or 0)
+            try:
+                meter.add(n or 0)
+            except PackCancelled:
+                # The raise alone stops the classic HTTP path. The Xet path
+                # discards it, so the transfer has to be told separately --
+                # see :func:`abort_xet_transfer`. Still raised afterwards,
+                # because on the path that DOES honour it that is what
+                # unwinds the download.
+                abort_xet_transfer()
+                raise
             return super().update(n)
 
         def update_transfer(self, n=1, *args, **kwargs):
@@ -342,13 +399,29 @@ def download_hf_item(
             raise PackCancelled(f"download of {item.item_id} cancelled")
         # Everything the bars for THIS file report is capped at its size.
         meter.begin_file(accounted, size)
-        returned = hf_hub_download(
-            repo_id=item.repo_id,
-            filename=path,
-            revision=item.revision,
-            cache_dir=str(cache),
-            tqdm_class=tqdm_class,
-        )
+        try:
+            returned = hf_hub_download(
+                repo_id=item.repo_id,
+                filename=path,
+                revision=item.revision,
+                cache_dir=str(cache),
+                tqdm_class=tqdm_class,
+            )
+        except PackCancelled:
+            raise
+        except Exception as exc:
+            # A cancelled Xet transfer comes back as the Rust runtime's own
+            # ``RuntimeError('Operation cancelled: ...')`` -- see
+            # :func:`abort_xet_transfer`. Deciding on ``cancel_check()``
+            # rather than on the message means no error TEXT has to be
+            # matched, and a genuine failure that happens to land while Stop
+            # is held is reported as what the user asked for. Only the middle
+            # of the hierarchy is caught: a real Ctrl-C stays a
+            # ``KeyboardInterrupt``.
+            if cancel_check():
+                raise PackCancelled(
+                    f"download of {item.item_id} cancelled") from exc
+            raise
         accounted += size
         # A file already in the cache transfers nothing and so reports
         # nothing; count it here or the bar never reaches the end.

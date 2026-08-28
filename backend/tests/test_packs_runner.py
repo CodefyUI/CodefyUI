@@ -134,6 +134,25 @@ def test_pip_install_argv_defaults_to_this_interpreter(monkeypatch):
                     "--no-progress", "a"]
 
 
+def test_pip_install_argv_dry_run_is_opt_in(monkeypatch):
+    """``--dry-run`` appears only when asked for, and BEFORE the specs.
+
+    Nothing in the app passes it -- ``tests/test_packs_network.py`` does, to
+    ask a live index whether a pack would resolve here without installing
+    anything into the interpreter running the question. A flag that leaked
+    into the default would turn every real install into a no-op that reported
+    success, which is the one failure this test exists to keep impossible.
+    """
+    monkeypatch.setattr(runner, "find_uv", lambda: None)
+
+    assert "--dry-run" not in runner.pip_install_argv(
+        ("a",), constraints_path=None)
+    assert runner.pip_install_argv(("a",), constraints_path=None,
+                                   dry_run=True) == [
+        "uv", "pip", "install", "--python", sys.executable,
+        "--no-progress", "--dry-run", "a"]
+
+
 def test_run_pip_streams_log_lines(monkeypatch):
     """Every output line becomes a log event; blank lines and newlines do not."""
     proc = _FakeProc(["Resolved 3 packages\n", "\n", "Installed 3 packages\n"])

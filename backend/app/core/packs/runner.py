@@ -93,6 +93,7 @@ def pip_install_argv(
     *,
     constraints_path: Path | None,
     python: str = sys.executable,
+    dry_run: bool = False,
 ) -> list[str]:
     """The full command line for installing *specs*.
 
@@ -100,12 +101,20 @@ def pip_install_argv(
     nobody should have to run to find out what it is. ``uv`` falls back to
     the bare name when it is not on PATH: the resulting ``FileNotFoundError``
     is what :func:`run_pip` turns into a reportable 127.
+
+    ``dry_run=True`` adds uv's ``--dry-run``: it resolves the specs against
+    the constraints and prints what it WOULD do without writing anything to
+    the interpreter. Nothing in the app passes it -- it exists so
+    ``tests/test_packs_network.py`` can ask "would this pack install on this
+    machine?" without mutating the venv the question is about, which is the
+    only honest way to run that check against a live index.
     """
     return [
         find_uv() or "uv",
         "pip", "install",
         "--python", python,
         "--no-progress",
+        *(["--dry-run"] if dry_run else []),
         *(["-c", str(constraints_path)] if constraints_path is not None else []),
         *specs,
     ]

@@ -116,10 +116,14 @@ CATALOG: tuple[Pack, ...] = (
                     "download/glove-wiki-gigaword-50/glove-wiki-gigaword-50.gz"
                 ),
                 filename="glove-wiki-gigaword-50.gz",
-                # None until a later task records the real digest; the
-                # downloader must treat "no digest" as "cannot verify",
-                # never as "verified".
-                sha256=None,
+                # Measured off the release asset itself (69 182 535 bytes on
+                # the wire, 400k words x 50 dimensions once unzipped), then
+                # confirmed by a second independent download.
+                # ``tests/test_packs_network.py`` re-checks it against the
+                # live URL whenever a maintainer runs the opt-in suite; that
+                # is also the test that PRINTS a digest to record when an
+                # asset item has none yet.
+                sha256="5c55f98957aa9fed8d2ac5fb1dcff57af3b23c5a3ee7af3f7945f8d49198eb24",
                 approx_bytes=66_000_000,
                 license="PDDL-1.0",
             ),

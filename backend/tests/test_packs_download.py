@@ -597,6 +597,76 @@ def test_download_hf_item_cancel_between_files(fake_api, monkeypatch):
     assert not state.item_state(pack, item).present
 
 
+def test_tqdm_hook_aborts_the_xet_transfer_when_cancelled(monkeypatch):
+    """Raising from the progress hook is not enough on the hf_xet path.
+
+    hf_xet drives that hook from its Rust download group and DISCARDS
+    whatever is raised inside it -- the transfer then runs to completion and
+    Stop is only noticed once the file has finished, which for a 470 MB model
+    is the whole download. So the hook has to abort the transfer explicitly
+    as well, and it must do that BEFORE it raises: the raise is what unwinds
+    the classic HTTP path, and by then it is too late to call anything.
+    """
+    aborts: list[int] = []
+    monkeypatch.setattr(download, "abort_xet_transfer",
+                        lambda: aborts.append(len(aborts)))
+    stop = {"now": False}
+    meter = download._ByteMeter(emit=lambda event: None, item_id="x",
+                                total=1000, cancel_check=lambda: stop["now"],
+                                min_interval_s=0)
+    bar = download.make_tqdm_class(meter)(total=1000)
+
+    bar.update(10)
+    assert aborts == [], "nothing to abort while the download is wanted"
+
+    stop["now"] = True
+    with pytest.raises(PackCancelled):
+        bar.update(10)
+    assert aborts == [0]
+
+
+def test_download_hf_item_translates_a_cancelled_transfer(fake_api,
+                                                          monkeypatch):
+    """An aborted Xet transfer surfaces from ``hf_hub_download`` as the Rust
+    runtime's own RuntimeError. It is the user pressing Stop, so it has to
+    reach the caller as ``PackCancelled`` -- anything else is reported to
+    them as an install FAILURE for an install they cancelled themselves.
+
+    The same error while nothing is cancelled is a real failure and is left
+    exactly as it is.
+    """
+    import huggingface_hub
+
+    pack = get_pack("sentence-embeddings")
+    item = get_item(pack, "all-MiniLM-L6-v2")
+    fake_api(("model.safetensors", 600))
+    stop = {"now": False}
+
+    def _download(*, cancelled: bool, **kwargs):
+        # The transfer was already running when Stop arrived -- which is the
+        # only way the loop's between-files check can be past.
+        stop["now"] = cancelled
+        raise RuntimeError("Operation cancelled: Task cancelled: task 29")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download",
+                        lambda **kwargs: _download(cancelled=True, **kwargs))
+
+    with pytest.raises(PackCancelled) as cancelled:
+        download.download_hf_item(pack, item, emit=lambda event: None,
+                                  cancel_check=lambda: stop["now"])
+    assert isinstance(cancelled.value.__cause__, RuntimeError)
+    assert not state.item_state(pack, item).present
+
+    stop["now"] = False
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download",
+                        lambda **kwargs: _download(cancelled=False, **kwargs))
+    with pytest.raises(RuntimeError) as failed:
+        download.download_hf_item(pack, item, emit=lambda event: None,
+                                  cancel_check=lambda: stop["now"])
+    assert not isinstance(failed.value, PackCancelled)
+    assert "Operation cancelled" in str(failed.value)
+
+
 def test_download_hf_item_without_matching_files_is_an_error(fake_api):
     """A repo whose every file was filtered out has nothing to run, and must
     not leave a sentinel claiming otherwise."""
@@ -649,11 +719,16 @@ def test_download_asset_item_good_and_bad_sha256(served):
 
 
 def test_download_asset_logs_sha256_when_unrecorded(served):
-    """The GloVe table's digest is not in the catalog yet. The install must
-    print the one it computed -- that is how it gets recorded -- and must say
-    that nothing was verified."""
-    pack = get_pack("word-vectors")
-    item = get_item(pack, "glove-50d")
+    """An asset the catalog has no digest for: the install must print the one
+    it computed -- that is how a digest gets recorded -- and must say, in the
+    log, that nothing was verified.
+
+    Uses a synthetic item because no SHIPPED asset is in that state any more:
+    the GloVe table was the last one, and its digest is now in ``catalog.py``
+    (see ``test_every_asset_item_records_a_digest``). The behaviour still has
+    to work, because it is what the next asset item added to the catalog will
+    be run through before its digest exists."""
+    pack, item = _asset_pack(None)
     assert item.sha256 is None, "this test is about the unrecorded case"
     served(PAYLOAD)
     events: list[dict] = []
@@ -666,8 +741,31 @@ def test_download_asset_logs_sha256_when_unrecorded(served):
     assert any(f"sha256 {DIGEST}" in line for line in logs), logs
     assert any("not verified" in line.lower() for line in logs), logs
 
-    recorded = state.read_sentinel(sentinel_path("word-vectors", "glove-50d"))
+    recorded = state.read_sentinel(sentinel_path(pack.pack_id, item.item_id))
     assert recorded["sha256"] == DIGEST
+
+
+def test_download_asset_verifies_the_recorded_glove_digest(served):
+    """The shipped GloVe item now carries a digest, so its download is a
+    VERIFIED one: the "not verified" log line must not appear, and bytes that
+    do not match are refused.
+
+    The digest itself is checked against the live URL by the opt-in
+    ``tests/test_packs_network.py``; what this pins is that recording it
+    changed the code path the installer takes."""
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    assert item.sha256 is not None, "the digest is recorded in catalog.py"
+    served(PAYLOAD)
+
+    # PAYLOAD is not the GloVe table, so the recorded digest must reject it.
+    with pytest.raises(PackInstallError) as failure:
+        download.download_asset_item(pack, item, emit=lambda event: None,
+                                     cancel_check=lambda: False)
+
+    assert "sha256" in str(failure.value)
+    assert not (asset_dir() / item.filename).exists()
+    assert not state.item_state(pack, item).present
 
 
 def test_download_asset_item_cancel_mid_download(served):

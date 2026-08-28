@@ -118,6 +118,33 @@ def test_hf_items_have_repo_ids_and_asset_items_have_urls():
             assert item.license
 
 
+def test_every_asset_item_records_a_digest():
+    """No asset SHIPS unverified.
+
+    An ``hf`` item is content-addressed by the hub, which checks it. A plain
+    HTTPS asset has nothing behind it but this string: without a digest the
+    installer has to fall back to ``allow_unverified=True`` and write whatever
+    arrives into the cache, which is a very long way to spell "trust the
+    network". Recording one is a two-minute job -- run
+
+        CODEFYUI_PACK_NETWORK_TESTS=1 pytest tests/test_packs_network.py -q
+
+    and the GloVe test prints the digest of anything that has none -- so this
+    is a gate rather than an aspiration.
+    """
+    for pack in iter_packs():
+        for item in pack.items:
+            if item.kind != "asset":
+                continue
+            assert item.sha256, (
+                f"asset item {item.item_id!r} in pack {pack.pack_id!r} has no "
+                f"sha256; download it once and record the digest it reports")
+            assert len(item.sha256) == 64, item.sha256
+            assert item.sha256 == item.sha256.lower().strip()
+            assert all(character in "0123456789abcdef"
+                       for character in item.sha256), item.sha256
+
+
 def test_item_ids_unique_within_pack():
     for pack in iter_packs():
         ids = [item.item_id for item in pack.items]
