@@ -1,6 +1,6 @@
 {
   "name": "Word Embedding Analogy: king − man + woman ≈ queen",
-  "description": "The canonical demonstration that pre-trained word vectors carry interpretable semantic geometry. We pull vectors for `king`, `man`, and `woman` from the offline demo-16d vocabulary, compose the analogy vector via two Add nodes (one with alpha=-1 to subtract `man`), and ask CosineSimilarity which word in the full vocabulary is closest to that target. With `king,man,woman` excluded from the top-k, the answer is `queen`. The EmbeddingScatter on the right projects the entire 16-D vocabulary down to 2D so you can see the royalty cluster sit apart from the mammal / vehicle / weather clusters.",
+  "description": "Runs offline on the toy demo-16d vocab. Switch backend to glove-50d for real GloVe. We pull vectors for king, man and woman, compose the analogy with two Add nodes (alpha=-1 subtracts man), and ask CosineSimilarity which of the 59 listed words is closest; with king, man and woman excluded, the answer is queen. On demo-16d the analogy is exact by construction; on glove-50d (word-vectors pack, 400k real words) queen still wins here but other analogies get approximate, which is the point. The EmbeddingScatter projects the vocabulary to 2D.",
   "nodes": [
     { "id": "start-1", "type": "Start", "position": { "x": -260, "y": 40 }, "data": { "params": {} } },
     { "id": "wv_king",  "type": "WordVector", "position": { "x": 0,   "y": -120 }, "data": { "params": { "backend": "demo-16d", "words": "king",  "normalize": false, "keep_oov": false } } },

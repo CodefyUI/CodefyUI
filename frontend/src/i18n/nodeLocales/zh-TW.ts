@@ -878,13 +878,12 @@ const zhTW: NodeTranslations = {
   },
   WordVector: {
     description:
-      '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
+      '為每個輸入單字查一條向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。demo-16d 是手工打造的 59 字玩具詞彙表，隨安裝附帶、完全離線，類比在它上面是精確成立的；glove-50d 是真正的 40 萬字 GloVe 表（需要 word-vectors 套件包），類比只是近似；sentence-transformer 後端（需要 sentence-embeddings 套件包）會把每個字丟進現代的編碼器，對單一個字來說更「毛躁」，但那正是真實檢索系統在用的東西。',
     params: {
-      backend:
-        '向量來源。demo-16d 是手工打造的玩具詞彙、完全離線可跑；glove-* 會在第一次使用時下載真實 GloVe 向量；minilm-sentence-384d 需要安裝 [llm-sentence] 額外相依套件。',
+      backend: '向量來源。灰掉的選項需要先到套件中心安裝對應的套件包；執行圖的時候永遠不會自動下載。',
       words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
       normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
-      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
+      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。只對表格型後端（demo-16d、glove-50d）有意義；句子模型會為每個字都算出向量。',
     },
   },
   EmbeddingScatter: {
