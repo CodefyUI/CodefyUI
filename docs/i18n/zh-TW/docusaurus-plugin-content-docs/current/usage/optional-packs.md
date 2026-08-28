@@ -120,7 +120,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 | `VectorStore` | 把切塊的向量疊成一個 `[N, D]` 矩陣，並把切塊的文字與 metadata 放在旁邊。這就是 RAG 系統裡的那個「資料庫」；每一列都以單位長度儲存，所以一次餘弦搜尋就只是一次矩陣相乘。它只存在記憶體裡，重跑時用快取好的嵌入在幾毫秒內重建 | 不需要 |
 | `Retriever` | 拿問題和每一列算分數，留下最接近的 `top_k` 個，把低於 `min_score` 的丟掉，再把切塊的文字連同它們各自來自哪個檔案交給下一棒。它的紀錄行會印出每一個命中的分數 | 不需要 |
 | `PromptBuilder` | 把檢索到的切塊和問題貼進一個範本，而這個範本會要求模型「只」根據那些內容回答。範本必須包含 `{context}` 與 `{question}`；想自己寫的話，接一個 `TextInput` 到 `template` 輸入 | 不需要 |
-| `HFTextGenerate` | 由 Qwen2.5-0.5B-Instruct 在本機作答，chat template 會自動幫你套用，token 也會邊產生邊串流到畫布上 | `rag` |
+| `HFTextGenerate` | 由 Qwen2.5-0.5B-Instruct 在本機作答，chat template 會自動幫你套用，並逐個 token 回報進度 | `rag` |
 
 最後一棒也可以換成 `LLMChat`：同一份提示詞，改送給本機的 Ollama 或某個雲端供應商，而不是載進這個行程裡，而且它完全不需要任何套件包。
 
@@ -155,7 +155,7 @@ DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore -> Retriever -> Pr
 - **「reports installed but `sentence_transformers` cannot be imported」** —— 紀錄檔說套件包裝好了，直譯器卻不同意，這是安裝壞掉，而不是少下載。請從套件中心重新安裝，或執行 `cdui packs install sentence-embeddings --yes`。
 - **「Model ... is not downloaded」** —— Python 那一半在，但那一個模型不在。四個模型是互相替代的，裝了一個絕不會順便裝其他的：請在套件中心下載它，或執行 `cdui packs install sentence-embeddings --items multilingual-e5-small`。
 - **CPU 上的速度。** 這些都是小模型（22M 到 118M 參數），CPU 本來就是它們預期要跑的地方。一次工作階段裡的第一次編碼要花幾秒把權重從磁碟讀進來，之後幾句話的編碼遠低於一秒。GloVe 則要付一次性的轉檔成本：把下載回來的文字表轉成 npz，大約十秒，而且過程中會有一行進度說明；之後每個行程載入它大約一秒。
-- **生成很慢。** `HFTextGenerate` 是一個 token 一個 token 解碼的，0.5B 的模型在筆電 CPU 上一秒只能吐出幾個，所以一個答案要等上幾十秒，這裡沒有什麼壞掉的東西要修。可以動的地方，由便宜到貴：把 `max_new_tokens` 調小（它是「這個節點最久會跑多久」的上限，不是目標值）；把 `Retriever` 的 `top_k` 調小，或用 `PromptBuilder` 的 `max_context_chars` 設個上限，因為每一個檢索回來的字元都要先被讀過，模型才會寫出第一個 token；有 GPU 的話把 `device` 設成 `cuda`。把最後一棒換成 `LLMChat`，則是直接把生成整個移出這個行程。
+- **生成很慢。** `HFTextGenerate` 是一個 token 一個 token 解碼的，0.5B 的模型在筆電 CPU 上一秒只能吐出幾個，所以較長的答案可能要等上幾十秒，這裡沒有什麼壞掉的東西要修。可以動的地方，由便宜到貴：把 `max_new_tokens` 調小（它是「這個節點最久會跑多久」的上限，不是目標值）；把 `Retriever` 的 `top_k` 調小，或用 `PromptBuilder` 的 `max_context_chars` 設個上限，因為每一個檢索回來的字元都要先被讀過，模型才會寫出第一個 token；有 GPU 的話把 `device` 設成 `cuda`。把最後一棒換成 `LLMChat`，則是直接把生成整個移出這個行程。
 - **答案沒有理會上下文。** 先看 `Retriever` 的紀錄行再怪模型 —— 它會印出每一個命中的分數。最高分只有 0.3 左右，通常表示語料裡根本沒有這個答案，換什麼提示詞都救不回來。如果命中看起來是對的、答案卻在亂飄，就把 `top_k` 調大，好讓真正回答問題的那一段確實進到提示詞裡。如果什麼都沒回來，那是 `min_score` 濾掉的：這時 `PromptBuilder` 會寫進 `(no context retrieved)` 並發出警告，把門檻調低（0 表示全部保留）就會把切塊放回來。如果連分數本身都像是隨便給的，請檢查兩個 `TextEmbedding` 節點是不是指定了同一個模型 —— 這個錯誤產生的是聽起來很合理的胡說，而不是一個錯誤訊息。
 - **Windows 的路徑。** Hugging Face 的 snapshot 目錄層數很深。如果快取本來就位在一條很長的路徑底下，請開啟長路徑支援，或用 `CODEFYUI_USER_DATA_DIR` 把它指到淺一點的地方。另外在 Windows 上，移除有可能回報「紀錄已清除，但檔案還在磁碟上」，因為有程式正開著它們：請停掉伺服器，再手動刪掉那個目錄。
 - **「cannot be installed while the server is running」。** 每一次線上安裝都跑在一份 constraints 檔底下，它把這個直譯器裡已經有的每一個發行套件都釘在目前的版本，所以安裝只能「增加」—— 執行中的伺服器已經載入的東西，不可能在它腳下被換掉。若某個套件包非得換掉某個東西，它會直接停下來（用 CLI 時的離開碼是 3）而不是換到一半，並印出一行要在伺服器停掉之後執行的 `uv pip install` 指令。請用 `cdui stop` 停掉伺服器、執行那一行，再重新啟動。GPU 套件包永遠屬於這一類：它是用 `cdui install --gpu <variant>` 安裝的，不是 `cdui packs install`。

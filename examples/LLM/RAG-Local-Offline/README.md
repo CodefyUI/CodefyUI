@@ -60,7 +60,7 @@ edge. Everything else is reached along data edges from those two.
 | Disk | About 1.5 GB for those two items: roughly 1.0 GB for Qwen2.5-0.5B-Instruct (Apache-2.0) plus 470 MB for `multilingual-e5-small` (MIT). Installing all of Sentence embeddings instead is about 1.1 GB of models. |
 | Network | Needed **once**, for the download. The run itself is offline -- no request leaves the machine, which is the difference between this example and `RAG-LLMChat-API` next door. |
 | GPU | Not required. Set `gen.device` and `embed_docs.device` / `embed_q.device` to `cuda` if you have one; `auto` follows the global device selector. |
-| Time | The first run also pays a few seconds to read the weights off disk; both models stay cached afterwards. Generating 160 tokens from a 0.5B model on a laptop CPU is roughly 20-40 seconds. **That figure is an estimate from the model size and the token budget, not a recorded measurement** -- see [Provenance](#provenance). |
+| Time | The first run also pays a few seconds to read the weights off disk; both models stay cached afterwards. The shipped question ends after about 30 tokens: 2-3 seconds on a desktop CPU in the recorded run, and a laptop CPU with the full 160-token budget could take tens of seconds. **The laptop figure is an estimate from the model size and the token budget** -- see [Provenance](#provenance). |
 
 Nothing is downloaded by pressing Run: a missing pack stops the graph with an
 error naming the pack, rather than fetching a gigabyte behind your back.
@@ -173,9 +173,13 @@ would be pinning noise.
 
 ## Provenance
 
-No measured run is recorded for this example. The timing in "Before you run it"
-is an estimate from the model size and `max_new_tokens`, not a stopwatch. If you
-run it, the wall clock and the machine belong here.
+Recorded run (2026-08-29, Windows 11 desktop with an RTX 4080): the
+shipped question retrieved `01-what-is-codefyui.md` twice and
+`02-nodes-and-edges.md` once, and Qwen2.5-0.5B-Instruct answered in 32 tokens --
+2.0-2.4 s at 13-16 tokens per second on the CPU, and 5.3 s for the whole graph
+on the GPU. The laptop figure in "Before you run it" is an estimate from the
+model size and `max_new_tokens`, not a stopwatch; if you run it, your wall clock
+and machine belong here too.
 
 Qwen2.5-0.5B-Instruct is Qwen Team, Alibaba Cloud (Apache-2.0);
 `intfloat/multilingual-e5-small` is Wang et al., *Multilingual E5 Text
