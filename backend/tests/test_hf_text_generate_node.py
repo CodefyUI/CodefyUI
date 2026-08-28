@@ -294,7 +294,7 @@ def test_an_older_transformers_drops_the_keyword_once(fake_transformers,
             for call in fake_transformers.models[0].calls] == [0, 0, 0, 0]
 
 
-def test_half_precision_logits_are_upcast(fake_transformers):
+def test_a_half_precision_model_samples_the_same_answer(fake_transformers):
     """A float16 model samples, and samples the same answer.
 
     ``auto`` loads half precision on CUDA and an explicit ``float16`` does

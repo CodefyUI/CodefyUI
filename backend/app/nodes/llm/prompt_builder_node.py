@@ -125,8 +125,8 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else str(value)
 
 
-def _string_list(value: Any, *, drop_blanks: bool = True) -> list[str]:
-    """A LIST port's value as strings, blank entries dropped.
+def _string_list(value: Any) -> list[str]:
+    """A LIST port's value as strings, in the order it arrived.
 
     The bare-string guard is not paranoia about the canvas, which type-checks
     LIST against STRING; it is about ``run_graph.py`` and exported scripts,
@@ -135,16 +135,13 @@ def _string_list(value: Any, *, drop_blanks: bool = True) -> list[str]:
     numbered one letter at a time -- a wrong answer that looks like a
     formatting bug rather than a wiring one.
 
-    A blank entry is not a chunk. It would spend a ``[2]`` and a separator
-    saying nothing, and -- the case that matters -- a ``contexts`` port
-    carrying ``""`` or a list of nothing but blanks has to reach the
-    ``(no context retrieved)`` branch and its warning, rather than build a
-    prompt out of punctuation and look like it retrieved something.
+    ``""`` is an EMPTY list rather than a list holding one blank: a port
+    carrying nothing is a port carrying nothing, and a ``contexts`` of ``""``
+    has to reach the ``(no context retrieved)`` branch while a ``sources`` of
+    ``""`` has to stay un-cited rather than print ``(?)`` on every line.
 
-    ``drop_blanks=False`` is for ``sources``, the one list this node reads
-    POSITIONALLY: see :func:`_source_at`. Closing a gap there would slide
-    every later citation up and print a real filename under the wrong
-    passage, which is a worse lie than one label reading ``?``.
+    Nothing is dropped here, deliberately -- blanks are removed by
+    :func:`_drop_blank_contexts`, which removes each one's SOURCE with it.
     """
     if value is None:
         return []
@@ -154,8 +151,7 @@ def _string_list(value: Any, *, drop_blanks: bool = True) -> list[str]:
         items = list(value)
     except TypeError:
         return [str(value)]
-    texts = [_text(item) for item in items]
-    return [text for text in texts if text] if drop_blanks else texts
+    return [_text(item) for item in items]
 
 
 def _fill(template: str, *, context: str, question: str) -> str:
@@ -260,6 +256,36 @@ def _source_at(sources: list[str], position: int) -> str:
     """
     source = sources[position] if position < len(sources) else ""
     return source or UNKNOWN_SOURCE
+
+
+def _drop_blank_contexts(
+    contexts: list[str], sources: list[str],
+) -> tuple[list[str], list[str]]:
+    """Remove blank chunks and the citation belonging to each one.
+
+    A blank entry is not a chunk: it would spend a ``[2]`` and a separator
+    saying nothing, and a ``contexts`` port carrying only blanks has to
+    reach the ``(no context retrieved)`` branch and its warning rather than
+    build a prompt out of punctuation and look like it retrieved something.
+
+    The two lists are filtered AS A PAIR, which is the whole point of doing
+    it here rather than inside :func:`_string_list`. They are paired by
+    INDEX -- ``sources[i]`` is the citation for ``contexts[i]`` -- so
+    dropping a context without dropping its source renumbers one side and
+    not the other, and every citation after the gap ends up under the wrong
+    passage. That is the failure ``_source_at`` exists to prevent, and it is
+    strictly worse than the blank chunk it was trying to remove.
+
+    The surviving sources are resolved through :func:`_source_at`, so a
+    short or ragged list still fills its gaps IN PLACE with ``?``. An empty
+    ``sources`` stays empty: an unwired port must not start printing
+    ``(?)`` on every line.
+    """
+    kept = [index for index, chunk in enumerate(contexts) if chunk]
+    if not sources:
+        return [contexts[index] for index in kept], []
+    return ([contexts[index] for index in kept],
+            [_source_at(sources, index) for index in kept])
 
 
 def _render(
@@ -419,10 +445,14 @@ class PromptBuilderNode(BaseNode):
         _validate(template)
 
         question = _text(inputs.get("question"))
-        contexts = _string_list(inputs.get("contexts"))
-        # Blanks KEPT here: ``sources`` is paired with ``contexts`` by index
-        # and ``_source_at`` turns a gap into ``?`` in place.
-        sources = _string_list(inputs.get("sources"), drop_blanks=False)
+        # Coerced first, filtered together second. The two lists are paired
+        # by index, so a blank chunk has to take its own citation with it --
+        # dropping one side alone slides every later citation onto the wrong
+        # passage, which is the exact lie ``_source_at`` exists to prevent.
+        contexts, sources = _drop_blank_contexts(
+            _string_list(inputs.get("contexts")),
+            _string_list(inputs.get("sources")),
+        )
         limit = _max_context_chars(params)
 
         warning = None

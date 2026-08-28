@@ -398,6 +398,52 @@ def test_blank_chunks_are_not_chunks():
     assert cited["context"] == "[1] (?) first\n\n[2] (b.md) second"
 
 
+def test_blank_context_does_not_shift_citations():
+    """A dropped chunk takes its own citation with it.
+
+    The two lists are paired by index, so filtering one and not the other
+    renumbers one side only: ``['first', '', 'third']`` against
+    ``['a.md', 'b.md', 'c.md']`` then prints ``third`` under ``b.md``. That
+    is worse than the blank chunk the filter was removing -- a citation
+    under the wrong passage is exactly the failure the whole RAG chain
+    carries ``source`` around to prevent, and nothing on screen shows it.
+    """
+    shifted = _run(inputs={"contexts": ["first", "", "third"],
+                           "sources": ["a.md", "b.md", "c.md"]})
+
+    assert shifted["context"] == (
+        "[1] (a.md) first"
+        "\n\n"
+        "[2] (c.md) third"
+    )
+    assert "b.md" not in shifted["context"], (
+        "the citation of the dropped chunk survived it")
+
+    # An unwired ``sources`` stays unwired: dropping a chunk must not start
+    # printing ``(?)`` on every line.
+    assert _run(inputs={"contexts": ["first", "", "third"]})["context"] == (
+        "[1] first\n\n[2] third")
+
+    # A SHORT sources list still fills its gaps by position, after the pair
+    # has been filtered: 'third' was index 2, which the list does not reach.
+    short = _run(inputs={"contexts": ["first", "", "third"],
+                         "sources": ["a.md"]})
+    assert short["context"] == "[1] (a.md) first\n\n[2] (?) third"
+
+    # And the mirror image, restated here because it is the reason the
+    # filter cannot simply drop blanks from both lists: a blank in SOURCES
+    # alone keeps its slot and prints ``?`` without moving its neighbours.
+    only_source_blank = _run(inputs={"contexts": ["first", "second", "third"],
+                                     "sources": ["a.md", "", "c.md"]})
+    assert only_source_blank["context"] == (
+        "[1] (a.md) first"
+        "\n\n"
+        "[2] (?) second"
+        "\n\n"
+        "[3] (c.md) third"
+    )
+
+
 def test_step_trace_when_verbose():
     result = _run(inputs={"sources": list(_SOURCES)},
                   context=FakeContext(verbose=True))
