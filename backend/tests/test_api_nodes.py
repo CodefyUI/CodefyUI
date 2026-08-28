@@ -499,6 +499,7 @@ TRANSLATED_NODES = (
     "VectorStore",
     "Retriever",
     "PromptBuilder",
+    "HFTextGenerate",
     "Optimizer",
     "Loss",
     "DataLoader",

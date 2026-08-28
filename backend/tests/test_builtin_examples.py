@@ -84,6 +84,16 @@ _SLOW_NODE_TYPES = {
     # rather than run -- and a machine that DOES have the pack would load
     # half a gigabyte of weights inside the fast smoke suite.
     "TextEmbedding",
+    # Reads a gigabyte of Qwen2.5 weights out of the rag pack and then decodes
+    # on the CPU at a few tokens a second. Same gate as TextEmbedding above --
+    # CI has no pack cache, so an example using this node would stop at the
+    # missing pack rather than run -- and a machine that DOES have the pack
+    # would spend minutes of the fast smoke suite generating an answer.
+    "HFTextGenerate",
+    # One API call per run: a network round trip, a key CI does not have, and
+    # somebody's money. No shipped example wires it today; it is listed so one
+    # added tomorrow cannot start billing from the smoke suite.
+    "LLMChat",
 }
 
 

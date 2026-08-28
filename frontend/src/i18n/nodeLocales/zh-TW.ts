@@ -1092,6 +1092,22 @@ const zhTW: NodeTranslations = {
       max_context_chars: '把合併後的內容區塊截到這個字元數（0 = 不限制）。小型本機模型超過幾千字就會明顯變慢。',
     },
   },
+  HFTextGenerate: {
+    description:
+      '用一個在本機執行的小型指令微調開源模型回答提示詞：Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB，來自 rag 套件包）。對話模板會自動套用，token 會一邊生成一邊串流到畫布上。筆電 CPU 大約每秒幾個 token，GPU 快很多。與 TextGenerate 不同：那個節點是用你在畫布上訓練的模型接續文字，這個節點是載入預訓練權重並聽從指令。',
+    params: {
+      model: '要載入的模型。灰掉的選項需要先到套件中心安裝 rag 套件包。',
+      prompt: '當沒有 `prompt` 輸入連線時使用的提示詞。',
+      system_prompt: '放在使用者訊息前面的系統指令。留空就不送。',
+      max_new_tokens: '最多生成幾個 token；決定本節點要跑多久。',
+      temperature: '取樣前先把分數除以這個值：0 = greedy（永遠取最可能的 token，可重現）；越高越有變化。',
+      top_p: 'Nucleus 取樣：只從累積機率達到 p 的最可能 token 中取樣（1 = 關閉）。',
+      top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。',
+      seed: '取樣的隨機種子。同樣的種子與模型會得到同樣的答案。',
+      device: '在哪個裝置上生成（auto 表示跟隨全域裝置）。',
+      dtype: '權重精度。auto 在 CUDA 上用 bfloat16/float16、在 CPU 與 MPS 上用 float32。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {

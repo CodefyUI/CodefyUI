@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from httpx import ASGITransport, AsyncClient
 
 # Make scripts/ importable so CLI tests can `import plugins`.
@@ -452,3 +453,272 @@ def fake_sentence_transformers(monkeypatch, tmp_path):
             pass
         else:
             _sentence_models.clear_model_cache()
+
+
+# ── offline transformers (a local causal LM) ─────────────────────────────
+#
+# The RAG stack pack is a gigabyte of Qwen2.5 weights on top of a
+# transformers install that arrives with the Sentence embeddings pack. No
+# test may download either, so ``HFTextGenerate`` and ``_hf_generators`` are
+# tested against the fake below: the same call shape, arithmetic instead of
+# a transformer.
+
+#: The fake vocabulary. Ids ARE code points, so a generated string can be
+#: read straight off them -- and 128 keeps that mapping inside ASCII, where
+#: a failed assertion prints something legible.
+_FAKE_VOCAB = 128
+
+#: The id the fake calls end-of-turn. 0 because it decodes to NUL, which no
+#: test text contains: an eos leaking into the output is visible rather than
+#: plausible.
+_FAKE_EOS_ID = 0
+
+#: The score the fake puts on the token it wants. Large enough that softmax
+#: gives it ~1.0 even at temperature 2, so a SAMPLED run is as predictable
+#: as a greedy one -- a test can then assert the exact text either way, and
+#: still exercise the multinomial draw.
+_FAKE_LOGIT = 30.0
+
+
+class _FakeKVCache:
+    """Opaque stand-in for a transformers ``Cache`` object.
+
+    The node under test is required to treat this as a black box -- take it
+    off one forward pass and hand it to the next -- so it carries nothing
+    but the bookkeeping that proves this happened.
+    """
+
+    def __init__(self, length: int):
+        #: How many tokens the model had seen once it produced this.
+        self.length = length
+        #: Set by the model when this object is handed back to it.
+        self.fed_back = False
+
+
+class _FakeCausalOutput:
+    """What the fake's forward returns: ``.logits`` and ``.past_key_values``."""
+
+    __slots__ = ("logits", "past_key_values")
+
+    def __init__(self, logits, past_key_values):
+        self.logits = logits
+        self.past_key_values = past_key_values
+
+
+class _FakeGenerationConfig:
+    """Only the one field a generator node reads off a real config."""
+
+    def __init__(self, eos_token_id):
+        self.eos_token_id = eos_token_id
+
+
+class _FakeCausalLM(torch.nn.Module):
+    """A causal LM whose next token is always ``(last id + 1) % vocab``.
+
+    Deterministic and readable by eye: fed "abc" it continues "defg...".
+    That is the whole point -- a randomly initialised transformer would make
+    every assertion about the decode loop a coin toss, while this one lets a
+    test write the expected string down.
+
+    ``eos_at_step`` is which forward call (0-based) puts its mass on the
+    end-of-turn id instead, i.e. how many tokens the model chooses to emit
+    before it stops. None means "never stop on your own".
+    """
+
+    def __init__(self):
+        super().__init__()
+        #: Which forward call OF ONE GENERATION emits end-of-turn, i.e.
+        #: how many tokens the model chooses to write. Counted per
+        #: generation and not per instance: the loader caches the model, so
+        #: a second run reuses this object and a running counter would make
+        #: the second answer stop at a different length than the first.
+        self.eos_at_step: int | None = None
+        self.step = 0
+        #: One dict per forward call: the ids it was fed, the cache it was
+        #: handed, and whether it was asked to keep one.
+        self.calls: list[dict[str, Any]] = []
+        #: ``(args, kwargs)`` of every ``.to()`` -- which device and which
+        #: precision the loader asked for.
+        self.to_calls: list[tuple[tuple, dict]] = []
+        self.eval_calls = 0
+        self.generation_config = _FakeGenerationConfig([_FAKE_EOS_ID])
+
+    def to(self, *args, **kwargs):
+        self.to_calls.append((args, dict(kwargs)))
+        return super().to(*args, **kwargs)
+
+    def eval(self):
+        self.eval_calls += 1
+        return super().eval()
+
+    def forward(self, input_ids=None, *, past_key_values=None,
+                use_cache=False, **_ignored):
+        # A generation starts with no cache, and that is what resets the
+        # step counter -- see `eos_at_step`.
+        self.step = 0 if past_key_values is None else self.step + 1
+        step = self.step
+        self.calls.append({
+            "input_ids": input_ids.tolist(),
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+        })
+        if past_key_values is not None:
+            past_key_values.fed_back = True
+
+        fed = [int(token) for token in input_ids[0].tolist()]
+        logits = torch.zeros(1, len(fed), _FAKE_VOCAB)
+        for position, token in enumerate(fed):
+            logits[0, position, (token + 1) % _FAKE_VOCAB] = _FAKE_LOGIT
+        if self.eos_at_step is not None and step == self.eos_at_step:
+            # The LAST position only: the earlier rows predict tokens the
+            # caller already has, and a decode loop never reads them.
+            logits[0, -1, :] = 0.0
+            logits[0, -1, _FAKE_EOS_ID] = _FAKE_LOGIT
+
+        seen = past_key_values.length if past_key_values is not None else 0
+        return _FakeCausalOutput(logits, _FakeKVCache(seen + len(fed)))
+
+
+class _FakeCausalTokenizer:
+    """Ids are code points, so a generated string reads off the ids.
+
+    ``apply_chat_template`` renders the messages as ``<role>content`` runs
+    followed by an empty ``<assistant>`` turn: close enough in shape to a
+    real chat template that a test can assert the system message is there
+    (or absent) without this file pretending to be Qwen's Jinja.
+
+    Strict on purpose, like ``_FakeSentenceTransformer``: everything after
+    the first argument is keyword-only and every accepted keyword is one a
+    node may really pass, so a call that would MISBEHAVE against the real
+    library fails here instead of passing.
+    """
+
+    def __init__(self, path, **init_kwargs):
+        self.path = path
+        self.init_kwargs = init_kwargs
+        self.eos_token_id = _FAKE_EOS_ID
+        #: One dict per ``apply_chat_template`` call.
+        self.chat_calls: list[dict[str, Any]] = []
+        #: Every string that was tokenized, in order.
+        self.encoded: list[str] = []
+
+    def apply_chat_template(self, messages, *, tokenize=False,
+                            add_generation_prompt=False):
+        rendered = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+        if add_generation_prompt:
+            rendered += "<assistant>"
+        self.chat_calls.append({
+            "messages": [dict(message) for message in messages],
+            "tokenize": tokenize,
+            "add_generation_prompt": add_generation_prompt,
+            "rendered": rendered,
+        })
+        return rendered
+
+    def __call__(self, text, *, return_tensors=None):
+        self.encoded.append(text)
+        ids = [ord(char) % _FAKE_VOCAB for char in text]
+        return {"input_ids": torch.tensor([ids], dtype=torch.int64)}
+
+    def decode(self, ids, *, skip_special_tokens=False):
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        return "".join(
+            chr(int(token)) for token in ids
+            if not (skip_special_tokens and int(token) == _FAKE_EOS_ID))
+
+
+@pytest.fixture
+def fake_transformers(monkeypatch, tmp_path):
+    """Install a fake ``transformers`` AND pretend the rag pack is downloaded.
+
+    Both halves are needed for a node test to reach its own logic: without
+    the pack patch the node stops at ``require_pack`` before it ever imports
+    anything. The ``sys.modules`` entry is written with ``monkeypatch``, so
+    it WINS over a real transformers install for the duration of the test
+    and is put back (or removed) afterwards -- the rest of the suite still
+    sees whether the library is really installed on this machine.
+
+    Yields the fake MODULE, carrying everything a test asserts on:
+    ``AutoTokenizer`` / ``AutoModelForCausalLM``, the ``tokenizers`` and
+    ``models`` it handed out in creation order, the ``(path, kwargs)`` of
+    every ``from_pretrained``, ``model_path`` (the tmp snapshot), and
+    ``required`` -- the ``(pack_id, item_id)`` pairs the code under test
+    asked the gate about, in order.
+    """
+    _invalidate_pack_probe_cache()
+
+    module = types.ModuleType("transformers")
+    # A bare ModuleType has ``__spec__ = None``, which makes ``find_spec``
+    # raise -- swallowed by ``state._module_available``, but swallowed AS
+    # "not importable". A real spec is what makes the rag pack's probe read
+    # "installed" alongside the fake.
+    module.__spec__ = importlib.machinery.ModuleSpec("transformers", loader=None)
+    module.tokenizer_loads = []
+    # Stamped onto every model the fake hands out, so a test can choose how
+    # many tokens the model writes BEFORE the node loads it.
+    module.eos_at_step = None
+    module.model_loads = []
+    module.tokenizers = []
+    module.models = []
+    # (pack_id, item_id) pairs, in the order the gate was asked about them.
+    module.required = []
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(path, *, local_files_only=False):
+            module.tokenizer_loads.append(
+                (path, {"local_files_only": local_files_only}))
+            tokenizer = _FakeCausalTokenizer(
+                path, local_files_only=local_files_only)
+            module.tokenizers.append(tokenizer)
+            return tokenizer
+
+    class AutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(path, *, local_files_only=False):
+            module.model_loads.append(
+                (path, {"local_files_only": local_files_only}))
+            model = _FakeCausalLM()
+            model.path = path
+            model.eos_at_step = module.eos_at_step
+            module.models.append(model)
+            return model
+
+    module.AutoTokenizer = AutoTokenizer
+    module.AutoModelForCausalLM = AutoModelForCausalLM
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+    model_path = tmp_path / "generator"
+    model_path.mkdir(parents=True, exist_ok=True)
+    # Enough for code that sanity-checks the snapshot before loading it.
+    (model_path / "config.json").write_text("{}", encoding="utf-8")
+    module.model_path = model_path
+
+    def fake_pack_available(pack_id, item_id=None):
+        module.required.append((pack_id, item_id))
+        return True
+
+    def fake_require_pack(pack_id, item_id=None):
+        module.required.append((pack_id, item_id))
+        return None
+
+    from app.nodes.llm import _packs_bridge
+
+    monkeypatch.setattr(_packs_bridge, "pack_available", fake_pack_available)
+    monkeypatch.setattr(_packs_bridge, "require_pack", fake_require_pack)
+    monkeypatch.setattr(_packs_bridge, "model_dir", lambda repo_id: model_path)
+
+    try:
+        yield module
+    finally:
+        # NOT redundant with the call on the way in: anything that probed
+        # during the test cached an answer taken while the fake was
+        # installed, and that answer must not outlive it.
+        _invalidate_pack_probe_cache()
+        # The loaded-generator cache is process-wide; a fake model cached
+        # under this test's tmp_path would be handed to the next test after
+        # the directory it was loaded from is gone.
+        from app.nodes.llm import _hf_generators
+
+        _hf_generators.clear_generator_cache()
