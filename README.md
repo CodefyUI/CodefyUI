@@ -12,7 +12,7 @@ A visual, node-based deep learning pipeline builder. Design CNN, RNN, Transforme
 ## Features
 
 - **Visual Graph Editor** — Drag-and-drop nodes, connect ports with type-safe edges, real-time validation
-- **94 Built-in Nodes** across 15 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM, Classical, Diffusion)
+- **146 Built-in Nodes** across 16 categories (CNN, RNN, Transformer, RL, Data, Data Flow, Training, IO, Control, Utility, Normalization, Tensor Operations, LLM, Classical, Diffusion, VLA)
 - **Teaching Inspector** — Record full per-node outputs, inspect input→output tensor diffs side-by-side, and wrap a subgraph with the **Compare Segment** bubble to focus on just head-input vs tail-output. Drop in a `TensorInput` node with an inline grid editor to feed the pipeline and watch each transformation
 - **Preset System** — Pre-built model templates for quick start; export your own subgraphs as reusable presets
 - **Multi-Tab Workspace** — Multiple independent canvases, each with its own execution context

@@ -77,6 +77,12 @@ This should return something like `{"status":"ok","nodes_loaded":94,"presets_loa
 
 Then open the frontend, load the **Train CNN on MNIST** example, and click **Run**. You should see training progress appear in the bottom panel.
 
+## Optional packs
+
+The install above is deliberately small, so the large extras some lessons need — `sentence-transformers`, the embedding models (90 MB to 470 MB each), the 69 MB GloVe word-vector table — are not in it; install the ones you want from the **Package Center** (toolbar > Settings > Optional packs) or with `cdui packs install <id>`. Nothing else changes: a graph run never downloads pack contents on its own, so a node whose pack is missing stops with a message naming it instead of pulling half a gigabyte mid-run.
+
+See **[Optional Packs](/usage/optional-packs)** for the catalog, where the files land, and which embedding model to pick.
+
 ## Updating
 
 ```bash
