@@ -552,7 +552,7 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
       break;
     case 'failed':
       toast(
-        `${t('packs.toast.installFailed')}: ${settled?.error?.message ?? ''}`,
+        t('packs.toast.installFailed', { message: settled?.error?.message ?? '' }),
         'error',
       );
       void store.refresh();
@@ -713,7 +713,15 @@ export const usePackStore = create<PackState>((set, get) => ({
       setPackStatus(packId, 'installing');
       startFollowing(job_id, packId, 0);
     } catch (err) {
-      if (err instanceof PackApiError && err.status === 409) {
+      if (err instanceof PackApiError && typeof err.body?.command === 'string') {
+        // A refusal that hands back a command is not a collision — it is the
+        // server saying "not from in here, run this". Both 409 shapes carry a
+        // `detail`, and only this one carries `command`, so the command is
+        // what tells them apart. Checked FIRST: every restart-mode install
+        // (the GPU pack, today) lands here, and "another install is already
+        // running" would be a plain lie about a server sitting idle.
+        toast(t('packs.toast.needsCli', { command: err.body.command }), 'warning');
+      } else if (err instanceof PackApiError && err.status === 409) {
         // Somebody else got there first — this tab, another tab, or the CLI.
         // The refresh adopts whatever the server IS running, which is more
         // useful than the refusal.
@@ -727,7 +735,7 @@ export const usePackStore = create<PackState>((set, get) => ({
         const first = String(err.body.blocked_by[0]);
         toast(t('packs.toast.blocked', { pack: packTitle(first) }), 'warning');
       } else {
-        toast(`${t('packs.toast.installFailed')}: ${errorMessage(err)}`, 'error');
+        toast(t('packs.toast.installFailed', { message: errorMessage(err) }), 'error');
       }
     } finally {
       set((s) => {
@@ -749,8 +757,10 @@ export const usePackStore = create<PackState>((set, get) => ({
       // download that is still writing bytes.
       await cancelPackJob(job.jobId);
     } catch (err) {
-      toast(`${useI18n.getState().t('packs.toast.cancelFailed')}: ${errorMessage(err)}`,
-        'error');
+      toast(
+        useI18n.getState().t('packs.toast.cancelFailed', { message: errorMessage(err) }),
+        'error',
+      );
     } finally {
       set({ cancelling: false });
     }
@@ -776,8 +786,11 @@ export const usePackStore = create<PackState>((set, get) => ({
         toast(t('packs.item.removed', { item: itemId }), 'success');
       }
     } catch (err) {
+      // A separate key from the `removed: false` warning above, which has no
+      // message to append: putting `{message}` in that one would leave a
+      // dangling separator on the commonest of the two outcomes.
       toast(
-        `${t('packs.item.removeFailed', { item: itemId })}: ${errorMessage(err)}`,
+        t('packs.item.removeError', { item: itemId, message: errorMessage(err) }),
         'error',
       );
     }
@@ -815,13 +828,17 @@ export const usePackStore = create<PackState>((set, get) => ({
     // the identity of the process is what a "the server came back" decision
     // is actually made of.
     let bootIdAtStart: string | undefined;
+    let sawDown = false;
     try {
       bootIdAtStart = (await fetchHealth()).boot_id;
     } catch {
-      // Already down. `sawDown` picks it up on the first turn.
+      // The server was already going down when we looked. An outage observed
+      // is an outage: without recording it here the loop would wait for a
+      // SECOND one that has no reason to happen, and call a restart that
+      // worked perfectly a no-show thirty seconds later.
+      sawDown = true;
     }
 
-    let sawDown = false;
     while (generation === restartGeneration) {
       // Wall clock, never a tick count: a sleeping laptop fires no timers,
       // and an overlay that counts turns would still be up an hour later.
@@ -863,6 +880,20 @@ export const usePackStore = create<PackState>((set, get) => ({
     inProgressChecked = true;
 
     await get().refresh();
+    if (!get().loaded) {
+      // No answer arrived — `refresh` reports a network error and leaves
+      // `loaded` false precisely so a later mount can try again. The flag
+      // exists to keep two same-tick mounts from both fetching, NOT to make
+      // one dropped packet permanent, so it is released here.
+      //
+      // The restart breadcrumb is untouched for the same reason: it is read
+      // against `last_restart_job`, which only a catalog that ARRIVED can
+      // carry. Consuming it now would swallow the one report a user who just
+      // sat through a server restart is waiting for.
+      inProgressChecked = false;
+      return;
+    }
+
     const { t } = useI18n.getState();
 
     // A download the user started before reloading is still going, and the

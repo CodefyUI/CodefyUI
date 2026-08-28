@@ -199,6 +199,47 @@ describe('reducePackEvents', () => {
     expect(next.items.glove).toEqual({ bytesDone: 9, bytesTotal: null, percent: null });
   });
 
+  it('clamps a percent the server reported outside 0..100, both ways', () => {
+    // A converter that reports 100.4 % on the last chunk, or a negative
+    // remainder mid-stream, must not push a bar past its own track.
+    const next = reducePackEvents(seededJob(), eventsPage({
+      cursor: 2,
+      events: [
+        {
+          type: 'progress', cursor: 1, ts: 't', item: 'high',
+          bytes_done: 10, bytes_total: 10, percent: 140,
+        },
+        {
+          type: 'progress', cursor: 2, ts: 't', item: 'low',
+          bytes_done: 0, bytes_total: 10, percent: -8,
+        },
+      ],
+    }));
+
+    expect(next.items.high.percent).toBe(100);
+    expect(next.items.low.percent).toBe(0);
+  });
+
+  it('closes a still-running step when the job finishes', () => {
+    // Every step the backend finishes gets its own `step_done`; a step that
+    // ended by raising does not, and a spinner on a job that is over is the
+    // one thing the panel must never show.
+    const started = reducePackEvents(seededJob(), eventsPage({
+      cursor: 1,
+      events: [{ type: 'step_started', cursor: 1, ts: 't', step: 'verify', label: 'Verifying' }],
+    }));
+    expect(started.steps[0].state).toBe('running');
+
+    const next = reducePackEvents(started, eventsPage({
+      status: 'done',
+      cursor: 2,
+      events: [{ type: 'job_done', cursor: 2, ts: 't' }],
+    }));
+
+    expect(next.steps).toEqual([{ step: 'verify', label: 'Verifying', state: 'done' }]);
+    expect(next.log[next.log.length - 1]).toMatchObject({ kind: 'step', text: 'done' });
+  });
+
   it('never turns a progress event into a log line', () => {
     // A 2 GB download emits thousands of these. One line each would bury
     // every message that actually says something.
@@ -323,6 +364,12 @@ describe('reducePackEvents', () => {
 // ── the catalog ───────────────────────────────────────────────────────────
 
 describe('packStore — refresh', () => {
+  // Faked because adoption starts a follower: its `FOLLOW_IDLE_MS` sleep is a
+  // real timer that would otherwise outlive the test that created it.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
   it('loads the catalog and indexes it by id', async () => {
     api.listPacks.mockResolvedValue(catalog({
       packs: [makePack({ id: 'word-vectors', title: 'Word vectors' })],
@@ -382,7 +429,8 @@ describe('packStore — refresh', () => {
     expect(usePackStore.getState().job).toMatchObject({
       jobId: 'j9', packId: 'word-vectors', status: 'running',
     });
-    await vi.waitFor(() => expect(api.getPackJobEvents).toHaveBeenCalled());
+    // The follower is started inside `refresh`, so the request is already out.
+    expect(api.getPackJobEvents).toHaveBeenCalledTimes(1);
     expect(api.getPackJobEvents.mock.calls[0][0]).toBe('j9');
     expect(api.getPackJobEvents.mock.calls[0][1]).toMatchObject({
       cursor: 0, wait: EVENT_WAIT_S,
@@ -430,7 +478,10 @@ describe('packStore — refresh', () => {
 // ── starting an install ───────────────────────────────────────────────────
 
 describe('packStore — install', () => {
+  // A successful install starts a follower too, and the 409 case adopts one
+  // through `refresh`; faked so neither leaves a live idle timer behind.
   beforeEach(() => {
+    vi.useFakeTimers();
     usePackStore.setState({
       packs: [makePack({ id: 'word-vectors', title: 'Word vectors' })],
       byId: { 'word-vectors': makePack({ id: 'word-vectors', title: 'Word vectors' }) },
@@ -489,6 +540,25 @@ describe('packStore — install', () => {
 
     expect(lastToast()).toMatchObject({ type: 'warning' });
     expect(usePackStore.getState().job).toMatchObject({ jobId: 'j-elsewhere', packId: 'rag' });
+  });
+
+  it('prints the command when a 409 refuses the install and hands one back', async () => {
+    // `RestartUnavailable` — every restart-mode install until the supervisor
+    // lands. It answers 409 like a collision does, but with `command` instead
+    // of `job_id`, and "another install is already running" would be a plain
+    // lie about a server sitting idle.
+    const err = new PackApiError(409, 'gpu-torch cannot be installed while the server runs');
+    err.body = { detail: 'refused', command: 'cdui install --gpu cu128' };
+    api.installPack.mockRejectedValue(err);
+
+    await usePackStore.getState().install('word-vectors', { mode: 'restart' });
+
+    expect(lastToast()).toMatchObject({ type: 'warning' });
+    expect(lastToast().message).toBe(
+      'This pack cannot be installed from inside the app yet. Run: cdui install --gpu cu128',
+    );
+    // Not a collision: nothing to adopt, so no catalog re-read is triggered.
+    expect(api.listPacks).not.toHaveBeenCalled();
   });
 
   it('says installing is local-only on a 403', async () => {
@@ -707,6 +777,31 @@ describe('packStore — the follower', () => {
     expect(usePackStore.getState().job!.status).toBe('running');
   });
 
+  it('resumes from the cursor already applied when a stopped job is re-adopted', async () => {
+    // Re-adoption is not a fresh start: replaying from 0 would re-fetch every
+    // event of an install that is already minutes in, and only the reducer's
+    // cursor guard would stop the log from doubling.
+    api.getPackJobEvents.mockResolvedValue(eventsPage({
+      job_id: 'j9',
+      status: 'running',
+      cursor: 7,
+      events: [{ type: 'log', cursor: 7, ts: 't', line: 'seven' }],
+    }));
+    usePackStore.getState().followJob('j9', 'word-vectors', 0);
+    await settle();
+    expect(usePackStore.getState().job!.cursor).toBe(7);
+
+    usePackStore.getState().stopFollowing();
+    api.getPackJobEvents.mockClear();
+    api.listPacks.mockResolvedValue(catalog({
+      active_job: { job_id: 'j9', pack_id: 'word-vectors' },
+    }));
+
+    await usePackStore.getState().refresh();
+
+    expect(api.getPackJobEvents.mock.calls[0][1]).toMatchObject({ cursor: 7 });
+  });
+
   it('drops a page for a job that is no longer the open one', async () => {
     api.getPackJobEvents.mockResolvedValue(eventsPage({
       cursor: 1, events: [{ type: 'log', cursor: 1, ts: 't', line: 'stale' }],
@@ -869,6 +964,19 @@ describe('packStore — cancel, remove and dismiss', () => {
     });
   });
 
+  it('reports the reason when the remove request itself fails', async () => {
+    api.removePackItem.mockRejectedValue(new PackApiError(500, 'permission denied'));
+
+    await usePackStore.getState().removeItem('word-vectors', 'glove');
+
+    // The separator lives in the locale string, not in a template literal:
+    // zh-TW wants a full-width colon here.
+    expect(lastToast()).toMatchObject({
+      type: 'error', message: 'Could not remove glove: permission denied',
+    });
+    expect(api.listPacks).toHaveBeenCalled();
+  });
+
   it('dismisses a finished job but not a running one', () => {
     usePackStore.setState({ job: seededJob({ status: 'running' }) });
     usePackStore.getState().dismissJob();
@@ -922,6 +1030,22 @@ describe('packStore — restartFlow', () => {
     // The loop is over: no second reload however long the page sits there.
     await vi.advanceTimersByTimeAsync(RESTART_TIMEOUT_MS);
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts an outage it saw on the very first read', async () => {
+    // The supervisor can win the race: by the time the flow reads health for
+    // the boot id, the old process is already gone. Waiting for a SECOND
+    // outage that has no reason to happen would call a restart that worked
+    // a no-show thirty seconds later.
+    api.fetchHealth
+      .mockRejectedValueOnce(new Error('connection refused'))
+      .mockResolvedValue(health({ boot_id: 'boot-b' }));
+
+    void usePackStore.getState().restartFlow('gpu-torch', 'cmd');
+    await settle();
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(usePackStore.getState().restart.phase).toBe('waiting');
   });
 
   it('reloads as soon as boot_id changes, even if it never saw the server down', async () => {
@@ -993,6 +1117,12 @@ describe('packStore — restartFlow', () => {
 // ── the once-per-page-load check ──────────────────────────────────────────
 
 describe('packStore — checkInProgress', () => {
+  // Faked for the same reason as the refresh block: adopting a job starts a
+  // follower whose idle sleep must not outlive the test.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
   it('reads the catalog once per page load', async () => {
     await usePackStore.getState().checkInProgress();
     await usePackStore.getState().checkInProgress();
@@ -1042,6 +1172,46 @@ describe('packStore — checkInProgress', () => {
     expect(lastToast().message).toBe(
       'The server restarted, but installing GPU PyTorch failed: uv exited 1',
     );
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
+
+  it('tries again after a boot read that never got an answer', async () => {
+    // The once-per-load flag exists to stop two same-tick mounts both
+    // fetching, not to make one dropped packet permanent: `refresh` leaves
+    // `loaded` false on a network error precisely so a later mount retries.
+    api.listPacks.mockRejectedValueOnce(new Error('Failed to fetch'));
+
+    await usePackStore.getState().checkInProgress();
+    expect(usePackStore.getState().loaded).toBe(false);
+
+    api.listPacks.mockResolvedValue(catalog({ packs: [makePack({ id: 'rag' })] }));
+    await usePackStore.getState().checkInProgress();
+
+    expect(api.listPacks).toHaveBeenCalledTimes(2);
+    expect(usePackStore.getState().loaded).toBe(true);
+    expect(usePackStore.getState().packs.map((pack) => pack.id)).toEqual(['rag']);
+  });
+
+  it('keeps the restart breadcrumb when the boot read fails, and reports it on the retry', async () => {
+    // The outcome is read off `last_restart_job`, which only a catalog that
+    // ARRIVED can carry. Consuming the key against no catalog would swallow
+    // the one report a user who just sat through a restart is waiting for.
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
+    api.listPacks.mockRejectedValueOnce(new Error('Failed to fetch'));
+
+    await usePackStore.getState().checkInProgress();
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('gpu-torch');
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: { status: 'ok' },
+    }));
+    await usePackStore.getState().checkInProgress();
+
+    expect(lastToast()).toMatchObject({
+      type: 'success', message: 'Server restarted. GPU PyTorch is ready.',
+    });
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
   });
 

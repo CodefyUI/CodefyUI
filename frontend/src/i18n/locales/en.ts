@@ -820,13 +820,16 @@ const en = {
     'Remove "{item}"? It will be downloaded again the next time it is installed.',
   'packs.item.removed': 'Removed {item}.',
   'packs.item.removeFailed': 'Could not remove {item}',
+  'packs.item.removeError': 'Could not remove {item}: {message}',
   'packs.restart.done': 'Server restarted. {pack} is ready.',
   'packs.restart.failed': 'The server restarted, but installing {pack} failed: {message}',
   'packs.toast.installed': '{pack} installed.',
-  'packs.toast.installFailed': 'Install failed',
+  'packs.toast.installFailed': 'Install failed: {message}',
   'packs.toast.cancelled': 'Install cancelled.',
-  'packs.toast.cancelFailed': 'Could not cancel the install',
+  'packs.toast.cancelFailed': 'Could not cancel the install: {message}',
   'packs.toast.busy': 'Another install is already running.',
+  'packs.toast.needsCli':
+    'This pack cannot be installed from inside the app yet. Run: {command}',
   'packs.toast.remoteNotAllowed':
     'Installing is only allowed on the computer that runs the server.',
   'packs.toast.blocked': 'Install {pack} first.',
