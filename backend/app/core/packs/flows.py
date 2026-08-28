@@ -239,12 +239,12 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
             emit(frame)
 
         npz_path = ensure_npz(gz_path, progress=_forward)
-        _record_derived(item_id, npz_path)
+        record_derived(_GLOVE[0], item_id, npz_path)
         emit({"type": "log", "line": f"GloVe vectors ready at {npz_path}"})
     emit({"type": "step_done", "step": f"convert:{item_id}"})
 
 
-def _record_derived(item_id: str, *paths: Path) -> None:
+def record_derived(pack_id: str, item_id: str, *paths: Path) -> None:
     """Note on the item's sentinel that the download now owns *paths* too.
 
     The npz the conversion writes is 83 MB that the CATALOG does not describe
@@ -259,8 +259,16 @@ def _record_derived(item_id: str, *paths: Path) -> None:
     to extend -- which cannot happen after a real download, since
     ``download_asset_item`` writes one before this step runs -- and inventing
     a partial one would be a worse answer than leaving it alone.
+
+    Public, and re-exported as ``packs.record_derived``, because the install
+    is no longer the only converter. ``WordVector`` reaches
+    ``_glove.load_glove_50d`` on a table the install never converted -- an
+    older install, or one whose convert step was skipped -- and a node that
+    writes 83 MB without recording it leaves exactly the orphan this
+    function exists to prevent. It takes *pack_id* for the same reason:
+    a second caller outside this module must not have to know that the one
+    pack with a derived file today is the one hardcoded here.
     """
-    pack_id = _GLOVE[0]
     sentinel = state.read_sentinel(sentinel_path(pack_id, item_id))
     if sentinel is None:
         log.warning("no sentinel for pack %s item %s; %s will not be removed "
@@ -473,7 +481,7 @@ def _asset_removal_target(item: ModelItem, recorded: str | None) -> Path | None:
 def _derived_removal_targets(sentinel: dict | None) -> list[Path]:
     """The extra files this item's sentinel says came with the download.
 
-    Written by ``_record_derived`` -- today just the converted GloVe npz.
+    Written by ``record_derived`` -- today just the converted GloVe npz.
     Checked exactly as strictly as the asset itself, and for exactly the same
     reason: this list is a string in a FILE on disk, so a corrupt or
     hand-edited sentinel must not be able to point a delete at the cache

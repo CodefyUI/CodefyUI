@@ -89,6 +89,27 @@ def asset_path(pack_id: str, filename: str) -> Path | None:
     return _impl(pack_id, filename)
 
 
+def record_derived(pack_id: str, item_id: str, path: Path) -> None:
+    """Say that *path* was made out of *item_id*'s download and goes with it.
+
+    The only WRITE on this bridge. A node that converts a download -- today
+    just ``_glove`` turning the GloVe gzip into an npz -- has to leave a
+    record, or ``remove_item`` deletes the 66 MB download, reports the space
+    as freed, and leaves 83 MB behind that nothing will ever find again.
+
+    A missing packs package is a no-op rather than an error, unlike the read
+    helpers' ``None``: the caller has already written the file and its work
+    is done, and an install with no packs package has no sentinel to record
+    against and no Package Center to uninstall from either. Failing here
+    would turn a bookkeeping gap into a failed graph run.
+    """
+    try:
+        from ...core.packs import record_derived as _impl
+    except ImportError:
+        return
+    _impl(pack_id, item_id, path)
+
+
 def requirement(pack_id: str, item_id: str | None = None) -> str:
     """The ``"pack"`` / ``"pack:item"`` string a node writes in
     ``REQUIRES_PACK`` or in an ``option_packs`` value.

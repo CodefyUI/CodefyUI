@@ -116,6 +116,24 @@ def _load_backend(backend: str) -> tuple[list[str], np.ndarray]:
     raise ValueError(f"Unknown WordVector backend: {backend!r}")
 
 
+@lru_cache(maxsize=8)
+def _vocab_index(backend: str) -> dict[str, int]:
+    """``word -> row`` for a table backend, built once per process.
+
+    Separate from :func:`_load_backend` and cached beside it because it is
+    the expensive half on the big table: 400,000 dict entries take longer to
+    build than the npz takes to read, and the example graph alone runs four
+    WordVector nodes against the same backend. Both caches are cleared
+    together in tests.
+
+    Handed out by reference and never mutated -- the lookup below only reads
+    it, and a caller that wrote to it would be editing every later run's
+    vocabulary.
+    """
+    vocab, _matrix = _load_backend(backend)
+    return {word: row for row, word in enumerate(vocab)}
+
+
 class WordVectorNode(BaseNode):
     NODE_NAME = "WordVector"
     CATEGORY = "LLM"
@@ -241,7 +259,8 @@ class WordVectorNode(BaseNode):
             vocab, matrix = _load_backend(backend)
             vocab_size = len(vocab)
             arr, labels, oov = self._look_up(
-                vocab, matrix, keys, normalize=normalize, keep_oov=keep_oov)
+                _vocab_index(backend), matrix, keys,
+                normalize=normalize, keep_oov=keep_oov)
             summary = (
                 f"Resolved {len(labels)} of {len(words)} words against "
                 f"backend vocab; {len(oov)} OOV.")
@@ -299,7 +318,7 @@ class WordVectorNode(BaseNode):
 
     @staticmethod
     def _look_up(
-        vocab: list[str],
+        index: dict[str, int],
         matrix: np.ndarray,
         keys: list[str],
         *,
@@ -311,8 +330,9 @@ class WordVectorNode(BaseNode):
         One path for both tables. An empty result still carries the table's
         width, because a downstream node reading ``[0, 50]`` knows what it
         was handed and one reading ``[0, 0]`` does not.
+
+        *index* is :func:`_vocab_index`'s cached dict and is read only.
         """
-        index = {word: row for row, word in enumerate(vocab)}
         dim = int(matrix.shape[1])
 
         rows: list[np.ndarray] = []

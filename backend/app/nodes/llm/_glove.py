@@ -8,10 +8,12 @@ the download and the node loads that instead.
 
 Four decisions are worth knowing about.
 
-**The npz lives beside the gz, and the install writes it down.** The catalog
-names one file per item, so nothing would ever delete an 83 MB npz on its
-own: the convert step adds it to the item's sentinel as a ``derived`` file
-and ``remove_item`` deletes what that list names before the download itself.
+**The npz lives beside the gz, and whoever converts writes it down.** The
+catalog names one file per item, so nothing would ever delete an 83 MB npz on
+its own: whichever of the two converters ran -- the install's convert step, or
+``load_glove_50d`` here on a table that never got one -- adds it to the item's
+sentinel as a ``derived`` file, and ``remove_item`` deletes what that list
+names before the download itself.
 Sitting beside the gz is what makes the list checkable -- every entry has to
 resolve to a direct child of the asset directory or it is refused -- and it
 is why uninstalling the pack does not leave a table behind, still answering
@@ -378,4 +380,33 @@ def load_glove_50d() -> tuple[list[str], np.ndarray]:
             "The GloVe word vector table is not downloaded. Open Package "
             "Center > Word vectors (GloVe) and download it; graph runs never "
             "download pack contents")
-    return load_npz(ensure_npz(gz_path))
+    npz_path = ensure_npz(gz_path)
+    _record_npz(npz_path)
+    return load_npz(npz_path)
+
+
+def _record_npz(npz_path: Path) -> None:
+    """Tell the Package Center the npz goes with the download it came from.
+
+    The install records this itself (``flows._convert_glove_step``), so on a
+    normal machine this call writes back what is already there -- which is
+    exactly why it is unconditional: the case it exists for is the one where
+    the install did NOT, and that case is indistinguishable from here
+    without reading the sentinel a second time. Writing the same list twice
+    costs one small file write, once per process; getting it wrong costs
+    83 MB that survives uninstalling the pack it came from, with nothing on
+    disk left to name it.
+
+    Bookkeeping, so it never fails a run. The table has already been read by
+    the time anything here can go wrong, and a learner who cannot look a word
+    up because the sentinel could not be rewritten would be paying for a
+    problem that is not theirs. The log line is how a maintainer finds out.
+    """
+    try:
+        # "glove-50d" is the catalog item id the download is recorded under;
+        # ``test_asset_names_match_the_catalog`` is what pins it.
+        _packs_bridge.record_derived(GLOVE_PACK, "glove-50d", npz_path)
+    except Exception:  # noqa: BLE001 - bookkeeping must not fail a graph run
+        logger.warning("could not record %s as derived from the %s pack; it "
+                       "will not be removed with the download",
+                       npz_path, GLOVE_PACK, exc_info=True)

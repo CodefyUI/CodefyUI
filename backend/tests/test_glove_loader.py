@@ -35,8 +35,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.core.packs import PackMissingError
+from app.core.packs import PackMissingError, state
 from app.core.packs.catalog import get_item, get_pack
+from app.core.packs.paths import asset_dir, sentinel_path
 from app.nodes.llm import _glove
 from app.nodes.llm import _packs_bridge as bridge
 
@@ -73,6 +74,23 @@ def _write_gz(path: Path, lines: list[str], *, header: bool = False) -> Path:
         body.insert(0, f"{len(lines)} {_glove.GLOVE_DIM}")
     path.write_bytes(gzip.compress(("\n".join(body) + "\n").encode("utf-8")))
     return path
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_data(tmp_path, monkeypatch):
+    """Point the pack cache at this test's own throwaway root.
+
+    ``load_glove_50d`` WRITES now -- it records the npz it converted on the
+    item's sentinel -- and a developer running this suite may well have the
+    real word-vectors pack installed. Without this, a test here would rewrite
+    their sentinel to name a file inside a directory pytest is about to
+    delete, and their next uninstall would leave the 83 MB table behind:
+    exactly the bug the recording exists to prevent.
+    """
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "user-data"))
+    state.invalidate()
+    yield
+    state.invalidate()
 
 
 @pytest.fixture
@@ -383,6 +401,73 @@ def test_load_glove_50d_reads_the_downloaded_asset(glove_gz, monkeypatch):
     assert asked == [(_glove.GLOVE_PACK, _glove.GLOVE_50D_ASSET)]
     assert words == WORDS
     assert matrix.shape == (len(WORDS), _glove.GLOVE_DIM)
+
+
+def test_a_lazy_conversion_records_the_npz_so_the_uninstall_finds_it():
+    """A table the INSTALL never converted still leaves a record behind.
+
+    ``flows._convert_glove_step`` records the npz it makes, but it is not the
+    only converter any more: ``WordVector`` reaches ``load_glove_50d`` on an
+    older install, or one whose convert step was skipped, and writes 83 MB of
+    its own. The catalog names one file per item, so nothing else on disk can
+    tie that file to the download -- an unrecorded npz survives the uninstall
+    that was supposed to free it, and nothing is left that names it.
+
+    Run against the real seam rather than a patched ``asset_path``: the
+    recording has to survive the sentinel, the removal checks and the path
+    rules, and every one of those is a place a plausible-looking record could
+    stop being one.
+    """
+    from app.core.packs import flows
+
+    pack = get_pack(_glove.GLOVE_PACK)
+    item = get_item(pack, "glove-50d")
+    asset_dir().mkdir(parents=True, exist_ok=True)
+    gz_path = _write_gz(asset_dir() / item.filename, _table_lines())
+    state.write_sentinel(pack.pack_id, item.item_id, {
+        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+        "kind": "asset", "url": item.url, "path": str(gz_path),
+        "bytes": gz_path.stat().st_size, "sha256": None,
+        "at": "2026-08-28T00:00:00Z",
+    })
+
+    words, _matrix = _glove.load_glove_50d()
+    npz_path = _glove.npz_path_for(gz_path)
+
+    assert words == WORDS
+    assert npz_path.is_file()
+
+    sentinel = state.read_sentinel(sentinel_path(pack.pack_id, item.item_id))
+    assert sentinel is not None
+    assert sentinel["derived"] == [str(npz_path)]
+    # Extended, not replaced: the download's own record is what makes the
+    # item readable as present at all.
+    assert sentinel["path"] == str(gz_path)
+
+    assert flows.remove_item(pack, item.item_id) is True
+    assert not npz_path.exists()
+    assert not gz_path.exists()
+
+
+def test_a_lazy_conversion_with_no_sentinel_still_loads(glove_gz, monkeypatch,
+                                                        caplog):
+    """Nothing to record on is not a reason to refuse a lookup.
+
+    The mirror of ``test_packs_flows``' equivalent, from the node's side. A
+    learner asking for a word vector gets one whatever the bookkeeping did:
+    the table has already been read by the time anything can go wrong here,
+    and the log line is how a maintainer finds out that this npz will not be
+    removed with the pack.
+    """
+    from app.core.packs import flows
+
+    monkeypatch.setattr(bridge, "asset_path", lambda *args, **kwargs: glove_gz)
+
+    with caplog.at_level(logging.WARNING, logger=flows.__name__):
+        words, _matrix = _glove.load_glove_50d()
+
+    assert words == WORDS
+    assert "will not be removed" in caplog.text
 
 
 def test_load_glove_50d_without_pack_raises_pack_missing_error(monkeypatch):

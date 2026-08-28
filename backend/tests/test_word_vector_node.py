@@ -15,6 +15,7 @@ Nothing here downloads anything. The GloVe tests build a four-word gzip in
 from __future__ import annotations
 
 import gzip
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,13 +26,18 @@ from app.core.packs import PackMissingError, parse_requirement
 from app.core.packs.catalog import get_item, get_pack
 from app.nodes.llm import _glove, word_vector_node
 from app.nodes.llm import _packs_bridge as bridge
+from app.nodes.llm._demo_vectors import DEMO_VECTORS
 from app.nodes.llm._demo_vectors import DIM as DEMO_DIM
 from app.nodes.llm._sentence_models import (
     SENTENCE_MODELS,
     SENTENCE_PACK,
     option_packs_for_models,
 )
-from app.nodes.llm.word_vector_node import WordVectorNode, _load_backend
+from app.nodes.llm.word_vector_node import (
+    WordVectorNode,
+    _load_backend,
+    _vocab_index,
+)
 
 #: One of the four sentence backends, spelled as the SELECT spells it.
 MINI = "sentence-transformers/all-MiniLM-L6-v2"
@@ -55,16 +61,20 @@ def _run(words=None, *, context=None, progress_callback=None, **params):
 
 @pytest.fixture(autouse=True)
 def _no_table_survives_a_test():
-    """Start and end every test with an empty backend cache.
+    """Start and end every test with empty backend caches.
 
-    ``_load_backend`` is process-wide and ``lru_cache``d, so a GloVe table
-    read from one test's ``tmp_path`` would otherwise be handed to the next
-    test after that directory is gone -- and a test that patched the bridge
-    would be answered from a cache filled before the patch.
+    ``_load_backend`` and ``_vocab_index`` are process-wide and
+    ``lru_cache``d, so a GloVe table read from one test's ``tmp_path`` would
+    otherwise be handed to the next test after that directory is gone -- and
+    a test that patched the bridge would be answered from a cache filled
+    before the patch. Both are cleared, because clearing only the first would
+    leave an index built from a table that is no longer there.
     """
     _load_backend.cache_clear()
+    _vocab_index.cache_clear()
     yield
     _load_backend.cache_clear()
+    _vocab_index.cache_clear()
 
 
 def _write_glove_gz(path: Path, words: list[str]) -> Path:
@@ -84,10 +94,19 @@ def _write_glove_gz(path: Path, words: list[str]) -> Path:
 
 @pytest.fixture
 def glove_pack(tmp_path, monkeypatch) -> Path:
-    """Pretend the word-vectors pack is downloaded, with a four-word table."""
+    """Pretend the word-vectors pack is downloaded, with a four-word table.
+
+    ``record_derived`` is stubbed out along with the read: loading the table
+    records the npz it converts on the item's sentinel, and on a machine that
+    really has the pack installed that write would land in the developer's
+    own cache, naming a file inside a directory pytest is about to delete.
+    What it records is ``test_glove_loader``'s subject, not this file's.
+    """
     gz = _write_glove_gz(tmp_path / _glove.GLOVE_50D_ASSET,
                          ["king", "queen", "man", "woman"])
     monkeypatch.setattr(bridge, "asset_path", lambda pack_id, filename: gz)
+    monkeypatch.setattr(bridge, "record_derived",
+                        lambda pack_id, item_id, path: None)
     return gz
 
 
@@ -372,3 +391,85 @@ def test_backend_options_and_option_packs_agree():
         # KeyError here means the value names a pack or an item that is not
         # in the catalog -- a typo nothing else would report.
         get_item(get_pack(pack_id), item_id)
+
+
+# -- the verbose step trace ------------------------------------------------
+
+
+def test_verbose_trace_names_the_table_size():
+    """A table backend knows how many words it searched, and says so."""
+    res = _run(["king"], context=SimpleNamespace(verbose=True))
+
+    steps = {step.name: step for step in res["__steps__"]}
+    assert f"D={DEMO_DIM}" in steps["input_words"].description
+    assert f"V={len(DEMO_VECTORS)}" in steps["input_words"].description
+    assert steps["input_words"].scalars["vocab_size"] == float(len(DEMO_VECTORS))
+    assert "against backend vocab" in steps["lookup"].description
+
+
+def test_verbose_trace_says_an_encoder_has_no_vocabulary(
+        fake_sentence_transformers):
+    """``V=n/a``, not ``V=0``.
+
+    A sentence model has no vocabulary to size. Zero would read as an empty
+    one -- and, as a scalar, would be plotted as a point on a chart -- so the
+    number is absent from both the sentence and the scalars.
+    """
+    res = _run(["king"], backend=MINI, context=SimpleNamespace(verbose=True))
+
+    steps = {step.name: step for step in res["__steps__"]}
+    assert "V=n/a" in steps["input_words"].description
+    assert f"D={FAKE_DIM}" in steps["input_words"].description
+    assert "vocab_size" not in steps["input_words"].scalars
+    assert steps["input_words"].scalars["input_count"] == 1.0
+    assert "nothing is OOV" in steps["lookup"].description
+
+
+# -- the example graph this node is the subject of -------------------------
+
+#: ``EmptyCanvasOverlay.tsx`` renders a gallery card's description as
+#: ``description.slice(0, 80) + '...'`` with no ``title`` attribute, so those
+#: 80 characters are the whole of what a learner reads before pressing Run.
+#: Mirrors ``test_builtin_examples._CARD_VISIBLE_CHARS``.
+_CARD_VISIBLE_CHARS = 80
+
+_ANALOGY_EXAMPLE = (Path(__file__).resolve().parents[2] / "examples" / "LLM" /
+                    "Word-Embedding-Analogy" / "graph.json")
+
+
+def test_the_analogy_example_card_says_what_runs_offline():
+    """Both facts that decide whether this example runs survive the card cut.
+
+    That it works offline on ``demo-16d`` and that ``glove-50d`` is where the
+    real vectors are: a learner without the word-vectors pack needs the
+    first, and one wondering what the toy table is for needs the second.
+    Asserted against the truncated string, because the whole one is not what
+    anybody reads.
+
+    Where the cut LANDS is the other half, and it is a separate assertion
+    because the two come apart: a description can carry both facts inside 80
+    characters and still be cut in the middle of the word after them. The
+    card appends its own ellipsis, so "...for real Glo..." does not read as a
+    summary -- it reads as the bug it very nearly was.
+    """
+    payload = json.loads(_ANALOGY_EXAMPLE.read_text(encoding="utf-8"))
+    description = payload["description"]
+    visible = description[:_CARD_VISIBLE_CHARS]
+
+    assert "offline" in visible
+    assert "glove-50d" in visible
+
+    # A boundary, not a length: the cut is clean when the text ends there, or
+    # when a space sits on either side of it. Anything else splits a word.
+    clean_cut = (len(description) <= _CARD_VISIBLE_CHARS
+                 or description[_CARD_VISIBLE_CHARS].isspace()
+                 or description[_CARD_VISIBLE_CHARS - 1].isspace())
+    assert clean_cut, (
+        f"the card renders {visible!r} and nothing more, cutting a word in "
+        f"half; end the opening sentence inside {_CARD_VISIBLE_CHARS} "
+        f"characters")
+
+    # And the opening sentence is what has to fit, not just any 80 characters
+    # of it: the rest of the description is written for the sidebar tooltip.
+    first_sentence = description[:description.index(". ") + 1]
+    assert len(first_sentence) <= _CARD_VISIBLE_CHARS

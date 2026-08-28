@@ -72,16 +72,26 @@ def test_bridge_reports_nothing_available_when_packs_package_is_missing(
     cannot pass merely because the machine running it has no packs installed
     -- every assertion below is False/None only if the import never happened.
     """
+    recorded: list = []
     monkeypatch.setattr(packs, "pack_available", lambda *args: True)
     monkeypatch.setattr(packs, "require_pack", lambda *args: None)
     monkeypatch.setattr(packs, "model_dir", lambda *args: Path("models"))
     monkeypatch.setattr(packs, "asset_path", lambda *args: Path("assets"))
+    monkeypatch.setattr(packs, "record_derived",
+                        lambda *args: recorded.append(args))
     monkeypatch.setitem(sys.modules, "app.core.packs", None)
 
     assert bridge.pack_available("rag") is False
     assert bridge.pack_available("sentence-embeddings", "bge-small-zh-v1.5") is False
     assert bridge.model_dir("Qwen/Qwen2.5-0.5B-Instruct") is None
     assert bridge.asset_path("word-vectors", "glove-wiki-gigaword-50.gz") is None
+
+    # A no-op, not a raise: the caller has already written the file it is
+    # trying to record, and an install with no packs package has neither a
+    # sentinel to write on nor a Package Center to uninstall from.
+    assert bridge.record_derived("word-vectors", "glove-50d",
+                                 Path("glove-50d.npz")) is None
+    assert recorded == []
 
     # Same shape as PackMissingError, because the message is what the editor
     # reads the pack id back off: a bare RuntimeError here would show the
@@ -109,12 +119,16 @@ def test_bridge_delegates_to_packs(monkeypatch):
     monkeypatch.setattr(packs, "require_pack", recorder("require_pack", None))
     monkeypatch.setattr(packs, "model_dir", recorder("model_dir", Path("models")))
     monkeypatch.setattr(packs, "asset_path", recorder("asset_path", Path("assets")))
+    monkeypatch.setattr(packs, "record_derived",
+                        recorder("record_derived", None))
 
     assert bridge.pack_available("rag") is True
     assert bridge.pack_available("sentence-embeddings", "bge-small-zh-v1.5") is True
     assert bridge.require_pack("sentence-embeddings", "multilingual-e5-small") is None
     assert bridge.model_dir("BAAI/bge-small-zh-v1.5") == Path("models")
     assert bridge.asset_path("word-vectors", "glove-wiki-gigaword-50.gz") == Path("assets")
+    assert bridge.record_derived("word-vectors", "glove-50d",
+                                 Path("glove-50d.npz")) is None
 
     assert calls == [
         ("pack_available", ("rag", None), {}),
@@ -122,6 +136,10 @@ def test_bridge_delegates_to_packs(monkeypatch):
         ("require_pack", ("sentence-embeddings", "multilingual-e5-small"), {}),
         ("model_dir", ("BAAI/bge-small-zh-v1.5",), {}),
         ("asset_path", ("word-vectors", "glove-wiki-gigaword-50.gz"), {}),
+        # The item id has to arrive too: a record written against the pack
+        # instead of the item would name a sentinel that does not exist.
+        ("record_derived",
+         ("word-vectors", "glove-50d", Path("glove-50d.npz")), {}),
     ]
 
 

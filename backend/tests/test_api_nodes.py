@@ -459,8 +459,13 @@ async def test_every_param_carries_the_option_packs_key(test_client):
 #: written for. ``Conv2dExplicit`` is #367's: #362 gave it three new
 #: user-facing params in English on the node that C1-3 §C1.3.4.1 teaches
 #: from, so it was translated and moved up here out of the debt list below.
+#: ``WordVector`` was in NEITHER list: it had a zh-TW block, so the ratchet
+#: below was satisfied and nothing checked its params -- and its four
+#: translations were rewritten for the real GloVe and sentence backends
+#: without a test that would have noticed a fifth param arriving in English.
 TRANSLATED_NODES = (
     "Conv2dExplicit",
+    "WordVector",
     "Optimizer",
     "Loss",
     "DataLoader",
