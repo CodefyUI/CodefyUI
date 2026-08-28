@@ -10,12 +10,15 @@ pack requirements) sit at the end.
 Nothing here downloads anything. The GloVe tests build a four-word gzip in
 ``tmp_path`` and point the packs bridge at it; the sentence tests use the
 ``fake_sentence_transformers`` fixture from ``conftest``.
+
+The example graph this node is the subject of is checked in
+``test_rag_examples.py``, next to the other shipped cards that promise a
+pack, and run for real in ``test_pack_examples_real.py``.
 """
 
 from __future__ import annotations
 
 import gzip
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -423,53 +426,3 @@ def test_verbose_trace_says_an_encoder_has_no_vocabulary(
     assert "vocab_size" not in steps["input_words"].scalars
     assert steps["input_words"].scalars["input_count"] == 1.0
     assert "nothing is OOV" in steps["lookup"].description
-
-
-# -- the example graph this node is the subject of -------------------------
-
-#: ``EmptyCanvasOverlay.tsx`` renders a gallery card's description as
-#: ``description.slice(0, 80) + '...'`` with no ``title`` attribute, so those
-#: 80 characters are the whole of what a learner reads before pressing Run.
-#: Mirrors ``test_builtin_examples._CARD_VISIBLE_CHARS``.
-_CARD_VISIBLE_CHARS = 80
-
-_ANALOGY_EXAMPLE = (Path(__file__).resolve().parents[2] / "examples" / "LLM" /
-                    "Word-Embedding-Analogy" / "graph.json")
-
-
-def test_the_analogy_example_card_says_what_runs_offline():
-    """Both facts that decide whether this example runs survive the card cut.
-
-    That it works offline on ``demo-16d`` and that ``glove-50d`` is where the
-    real vectors are: a learner without the word-vectors pack needs the
-    first, and one wondering what the toy table is for needs the second.
-    Asserted against the truncated string, because the whole one is not what
-    anybody reads.
-
-    Where the cut LANDS is the other half, and it is a separate assertion
-    because the two come apart: a description can carry both facts inside 80
-    characters and still be cut in the middle of the word after them. The
-    card appends its own ellipsis, so "...for real Glo..." does not read as a
-    summary -- it reads as the bug it very nearly was.
-    """
-    payload = json.loads(_ANALOGY_EXAMPLE.read_text(encoding="utf-8"))
-    description = payload["description"]
-    visible = description[:_CARD_VISIBLE_CHARS]
-
-    assert "offline" in visible
-    assert "glove-50d" in visible
-
-    # A boundary, not a length: the cut is clean when the text ends there, or
-    # when a space sits on either side of it. Anything else splits a word.
-    clean_cut = (len(description) <= _CARD_VISIBLE_CHARS
-                 or description[_CARD_VISIBLE_CHARS].isspace()
-                 or description[_CARD_VISIBLE_CHARS - 1].isspace())
-    assert clean_cut, (
-        f"the card renders {visible!r} and nothing more, cutting a word in "
-        f"half; end the opening sentence inside {_CARD_VISIBLE_CHARS} "
-        f"characters")
-
-    # And the opening sentence is what has to fit, not just any 80 characters
-    # of it: the rest of the description is written for the sidebar tooltip.
-    first_sentence = description[:description.index(". ") + 1]
-    assert len(first_sentence) <= _CARD_VISIBLE_CHARS
