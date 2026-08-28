@@ -35,7 +35,13 @@ afterEach(() => {
     value: originalLocation,
     configurable: true,
   });
-  _resetPackStoreForTesting();
+  // Inside act(): this hook runs BEFORE Testing Library's cleanup, so the
+  // overlay is still mounted and subscribed when the reset puts `restart`
+  // back to idle. Unwrapped, that printed an "update was not wrapped in
+  // act(...)" line for every case that rendered one.
+  act(() => {
+    _resetPackStoreForTesting();
+  });
   vi.useRealTimers();
 });
 

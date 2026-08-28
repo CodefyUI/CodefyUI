@@ -263,7 +263,10 @@ describe('PackCard — when it cannot install', () => {
     renderCard({ pack: p });
     fireEvent.click(screen.getByLabelText('sentence-transformers/all-MiniLM-L6-v2'));
     expect(installBtn()).toBeDisabled();
-    expect(installBtn()).toHaveAttribute('title', 'Select all missing');
+    // An instruction, not the neighbouring button's label: "Select all
+    // missing" on a dead Install button reads as a description of the button
+    // rather than of what is stopping it.
+    expect(installBtn()).toHaveAttribute('title', 'Tick at least one item to install');
   });
 
   it('points at the missing dependency and jumps to its card', () => {

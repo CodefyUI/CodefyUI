@@ -10,7 +10,13 @@ import { useI18n } from '../../i18n';
 // Mock the REST file backends used by the model_file / image_file / data_file
 // variants so we can drive list/upload/download success + failure paths
 // deterministically.
-vi.mock('../../api/rest', () => ({
+vi.mock('../../api/rest', async (importOriginal) => ({
+  // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
+  // catalog read with `err instanceof PackApiError`, and an undefined export
+  // makes that line throw a TypeError instead of reporting the 404 an older
+  // server answers with. This file pulls `packStore` in through
+  // `usePackAvailability`, so the class has to survive the mock.
+  PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   validateScript: vi.fn(),
   listModelFiles: vi.fn(),
   uploadModelFile: vi.fn(),
@@ -21,6 +27,10 @@ vi.mock('../../api/rest', () => ({
   listDataFiles: vi.fn(),
   uploadDataFile: vi.fn(),
   downloadDataFile: vi.fn(),
+  // Nothing here opens the Package Center, but the pack catalog is one
+  // `refresh()` away through the store these tests seed, and an unstubbed
+  // export would reach the network rather than fail loudly.
+  listPacks: vi.fn(),
 }));
 
 import {
@@ -686,7 +696,13 @@ describe('ParamField — select options gated on an optional pack', () => {
     const hint = hintFor(select);
     expect(hint.className).toContain('hintWarning');
     expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors pack.');
-    expect(within(hint).getByRole('button', { name: 'Install pack' })).toBeInTheDocument();
+    // The accessible name carries the pack, because a node with two gated
+    // selects shows two of these and "Install pack, Install pack" is not a
+    // choice anyone can make from a list of controls.
+    const link = within(hint).getByRole('button', { name: 'Install pack: Word vectors' });
+    // The visible label stays short — the pack is already named in the
+    // sentence this button sits at the end of.
+    expect(link).toHaveTextContent('Install pack');
   });
 
   it('names the model in the warning for a pack:item requirement on the current value', () => {
@@ -731,7 +747,9 @@ describe('ParamField — select options gated on an optional pack', () => {
     seedPacks(wordVectors());
     render(<ParamField param={embeddingParam()} value="demo-16d" onChange={() => {}} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Install pack' }));
+    // The value is fine here; it is a SIBLING option that needs the pack, and
+    // the link still names the one it would install.
+    fireEvent.click(screen.getByRole('button', { name: 'Install pack: Word vectors' }));
 
     expect(useUIStore.getState().packCenterOpen).toBe(true);
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
@@ -752,7 +770,7 @@ describe('ParamField — select options gated on an optional pack', () => {
     expect(options.map((o) => o.textContent)).toEqual(['demo-16d', 'glove-50d']);
     expect(options.some((o) => o.disabled)).toBe(false);
     expect(screen.getByRole('combobox')).not.toHaveAttribute('aria-describedby');
-    expect(screen.queryByRole('button', { name: 'Install pack' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Install pack/ })).toBeNull();
   });
 
   it('renders plain options while no catalog has arrived', () => {

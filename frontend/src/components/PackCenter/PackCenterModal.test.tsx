@@ -11,7 +11,7 @@ import {
 import { useToastStore } from '../../store/toastStore';
 import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
-import { PackCenterModal } from './PackCenterModal';
+import { HIGHLIGHT_MS, PackCenterModal } from './PackCenterModal';
 
 function item(over: Partial<PackItem> & { id: string }): PackItem {
   return {
@@ -132,12 +132,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useUIStore.setState({
-    packCenterOpen: false,
-    packCenterFocusPackId: null,
-    shortcutsModalOpen: false,
+  // Inside act(): this hook runs BEFORE Testing Library's own cleanup, so the
+  // panel is still mounted and subscribed when `packCenterOpen` goes false —
+  // closing it here is a real React update, and unwrapped it printed an
+  // "update was not wrapped in act(...)" line for every case in this file.
+  act(() => {
+    useUIStore.setState({
+      packCenterOpen: false,
+      packCenterFocusPackId: null,
+      shortcutsModalOpen: false,
+    });
+    useDialogStore.setState({ active: null });
   });
-  useDialogStore.setState({ active: null });
   vi.restoreAllMocks();
 });
 
@@ -336,6 +342,25 @@ describe('PackCenterModal — a pack that needs another one', () => {
     expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
     expect(cardFor('word-vectors').className).toContain('cardHighlighted');
     expect(cardFor('sentence-embeddings').className).not.toContain('cardHighlighted');
+  });
+
+  it('drops the ring after HIGHLIGHT_MS so it reads as a pointer, not a state', () => {
+    seed({ packs: [embeddings, words] });
+    vi.useFakeTimers();
+    try {
+      open('word-vectors');
+      render(<PackCenterModal />);
+      expect(cardFor('word-vectors').className).toContain('cardHighlighted');
+
+      // The constant, not a copy of it: a ring that outlived its exported
+      // duration would still pass a hard-coded 2000.
+      act(() => {
+        vi.advanceTimersByTime(HIGHLIGHT_MS);
+      });
+      expect(cardFor('word-vectors').className).not.toContain('cardHighlighted');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('waits for the catalog before deciding it cannot find the pack', () => {

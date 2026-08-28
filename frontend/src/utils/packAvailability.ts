@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { usePackStore } from '../store/packStore';
 import type { PackSummary } from '../api/rest';
+import type { TranslationKey } from '../i18n';
 import type { NodeDefinition, ParamDefinition } from '../types';
 
 /**
@@ -19,7 +20,10 @@ import type { NodeDefinition, ParamDefinition } from '../types';
  *
  * The import graph is deliberately one-way: `packAvailability -> packStore ->
  * rest / toastStore / i18n`. Nothing in the store or in `nodeDefStore` imports
- * this file back.
+ * this file back. The `i18n` import below is `import type` and so is erased
+ * entirely at build time -- this module still has no runtime edge to the
+ * translation layer, and `requirementSentence` takes its `t` as an argument
+ * rather than reaching for the store.
  *
  * ── Why every unknown resolves to "available" ──────────────────────────
  * The failure modes are not symmetric. Wrongly greying an option out hides a
@@ -167,6 +171,31 @@ export function packTitle(byId: PackIndex, packId: string): string {
  */
 export function itemTitle(byId: PackIndex, req: PackRequirement): string {
   return req.itemId ?? packTitle(byId, req.packId);
+}
+
+/** Signature of `useI18n`'s `t`, so this stays callable outside React. */
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/**
+ * The one sentence that says why a chosen value cannot run.
+ *
+ * Lives here rather than in either component because BOTH say it: the node
+ * card writes it into the `needs pack` marker's tooltip and the config panel
+ * writes it under the select. They are two views of one parameter, and a
+ * reader who hovers the card and then opens the panel must not be told two
+ * different stories about what is missing -- which is exactly what a second
+ * copy of these four lines eventually produces.
+ */
+export function requirementSentence(
+  t: Translate,
+  byId: PackIndex,
+  option: string,
+  req: PackRequirement,
+): string {
+  const pack = packTitle(byId, req.packId);
+  return req.itemId === null
+    ? t('paramField.packHint', { option, pack })
+    : t('paramField.modelHint', { option, pack, item: itemTitle(byId, req) });
 }
 
 type PackStoreState = ReturnType<typeof usePackStore.getState>;

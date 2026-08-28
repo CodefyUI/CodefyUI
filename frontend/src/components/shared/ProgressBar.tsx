@@ -44,7 +44,7 @@ export function ProgressBar({
   const rootClass = [styles.root, styles[size], className].filter(Boolean).join(' ');
   const fillClass = [
     styles.fill,
-    styles[`tone-${tone}`],
+    styles[`tone_${tone}`],
     indeterminate ? styles.indeterminate : '',
   ]
     .filter(Boolean)

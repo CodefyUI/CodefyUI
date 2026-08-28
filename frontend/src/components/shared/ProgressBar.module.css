@@ -33,29 +33,35 @@
   transition: width var(--transition);
 }
 
-.tone-accent {
+/* Underscores, not hyphens, matching the repo's other tone scale
+   (RunsPanel.module.css). A hyphenated CSS-module key cannot be reached with
+   `styles.tone_accent` at all, so every reader of one is forced through a
+   string index whether or not the tone is dynamic. */
+.tone_accent {
   background: var(--accent);
 }
 
-.tone-info {
+.tone_info {
   background: var(--status-info);
 }
 
-.tone-success {
+.tone_success {
   background: var(--status-success);
 }
 
-.tone-warning {
+.tone_warning {
   background: var(--status-warning);
 }
 
-.tone-error {
+.tone_error {
   background: var(--status-error);
 }
 
 /* Indeterminate: a third of the track sliding end to end. The component sets
-   no inline width here, so the rule below owns it. */
-.indeterminate {
+   no inline width here, so this rule owns it — and it says `.fill` as well,
+   so the override outranks `.fill`'s own width and transition on specificity
+   rather than on which of them a bundler happened to emit last. */
+.fill.indeterminate {
   width: 30%;
   transition: none;
   animation: progressSlide 1.4s ease-in-out infinite;
@@ -74,7 +80,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .indeterminate {
+  /* Matches the selector above, not a weaker `.indeterminate`: a one-class
+     rule cannot turn off an animation a two-class rule switched on. */
+  .fill.indeterminate {
     /* tokens.css only zeroes --transition, so the keyframe needs its own
        opt-out. The bar stops moving; the caller's status line is what says
        "still working" (aria-busy carries it for assistive tech). */

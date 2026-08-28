@@ -73,14 +73,14 @@ describe('ProgressBar', () => {
     const root = container.firstElementChild as HTMLElement;
     expect(root.className).toContain('sm');
     expect(root.className).toContain('extra');
-    expect(fillOf().className).toContain('tone-warning');
+    expect(fillOf().className).toContain('tone_warning');
 
     // Defaults: medium track, accent fill.
     rerender(<ProgressBar value={50} label="Downloading" />);
     const defaults = container.firstElementChild as HTMLElement;
     expect(defaults.className).toContain('md');
     expect(defaults.className).not.toContain('extra');
-    expect(fillOf().className).toContain('tone-accent');
+    expect(fillOf().className).toContain('tone_accent');
   });
 
   it('uses the accessible label', () => {

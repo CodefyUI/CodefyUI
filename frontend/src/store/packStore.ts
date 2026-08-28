@@ -894,6 +894,17 @@ export const usePackStore = create<PackState>((set, get) => ({
       return;
     }
 
+    if (get().unsupported) {
+      // A 404 IS an answer, so the once-per-load flag stays set and nothing
+      // refetches — but it is not an answer about the RESTART. The outcome is
+      // read off `last_restart_job`, which rides on the catalog this server
+      // does not serve, so consuming the breadcrumb here would silently drop
+      // the report a user who just sat through a restart is owed. It costs
+      // nothing to leave: the key is scoped to this tab and dies with it, and
+      // a server that can answer gets to report it instead.
+      return;
+    }
+
     const { t } = useI18n.getState();
 
     // A download the user started before reloading is still going, and the

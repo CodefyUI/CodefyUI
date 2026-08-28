@@ -14,15 +14,13 @@ import { useUIStore } from '../../store/uiStore';
 import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
-import { useI18n, type TranslationKey } from '../../i18n';
+import { useI18n } from '../../i18n';
 import {
-  itemTitle,
   missingRequirementForOption,
   nodeMissingPack,
   packTitle,
+  requirementSentence,
   usePackAvailability,
-  type PackIndex,
-  type PackRequirement,
 } from '../../utils/packAvailability';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAISED } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
@@ -74,28 +72,6 @@ function CodePreview({ source }: { source: string }) {
       )}
     </div>
   );
-}
-
-type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
-
-/**
- * The sentence behind the card's "needs pack" marker.
- *
- * Deliberately the same one the config panel shows under the select (see
- * `ParamField`'s `packSentence`): the card and the panel are two views of one
- * parameter, and a reader who hovers the card and then opens the panel must
- * not be told two different stories about what is missing.
- */
-function paramPackSentence(
-  t: Translate,
-  byId: PackIndex,
-  option: string,
-  req: PackRequirement,
-): string {
-  const pack = packTitle(byId, req.packId);
-  return req.itemId === null
-    ? t('paramField.packHint', { option, pack })
-    : t('paramField.modelHint', { option, pack, item: itemTitle(byId, req) });
 }
 
 /**
@@ -351,6 +327,11 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
               // the Package Center opens.
               useUIStore.getState().openPackCenter(missingPack.packId);
             }}
+            // `dblclick` is a SEPARATE event from the two `click`s that
+            // precede it, so stopping the clicks does not stop it: an
+            // impatient double-press on the badge opened the Package Center
+            // AND the Node Detail Modal behind it.
+            onDoubleClick={(e) => e.stopPropagation()}
           >
             {t('node.needsPack')}
           </button>
@@ -516,7 +497,7 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                     {paramMissing !== null && (
                       <span
                         className={styles.paramNeedsPack}
-                        title={paramPackSentence(t, byId, String(val), paramMissing)}
+                        title={requirementSentence(t, byId, String(val), paramMissing)}
                       >
                         {t('node.paramNeedsPack')}
                       </span>

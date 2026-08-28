@@ -104,7 +104,13 @@ function PackCenterBody() {
   // the catalog has answered, and clearing it early would lose the jump.
   useEffect(() => {
     if (focusPackId === null) return;
-    const card = cardRefs.current[focusPackId];
+    // Own keys only. The map is a bare object keyed by pack id, so a node
+    // asking for `constructor` or `toString` would otherwise get a FUNCTION
+    // back — truthy, and `scrollIntoView` is not one of its methods, so the
+    // panel would die of a TypeError instead of quietly not finding the card.
+    const card = Object.prototype.hasOwnProperty.call(cardRefs.current, focusPackId)
+      ? cardRefs.current[focusPackId]
+      : null;
     if (!card) return;
     card.scrollIntoView({ block: 'nearest' });
     setHighlighted(focusPackId);

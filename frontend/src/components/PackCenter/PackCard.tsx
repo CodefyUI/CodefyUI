@@ -6,7 +6,7 @@ import type {
   PackStatus,
   PackSummary,
 } from '../../api/rest';
-import type { PackJob } from '../../store/packStore';
+import type { PackItemProgress, PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 import { packTitle, type PackIndex } from '../../utils/packAvailability';
 import { GpuPackDetails } from './GpuPackDetails';
@@ -131,7 +131,10 @@ export function PackCard({
     : blockedBy.length > 0
       ? t('packs.dependsOnMissing', { pack: displayTitle(t, byId, blockedBy[0]) })
       : chosen.length === 0
-        ? t('packs.selectAll')
+        // Its own sentence, not the "Select all missing" button's label: a
+        // tooltip explaining why a button is dead has to say what to DO, and
+        // naming another button is not that.
+        ? t('packs.selectSomething')
         : undefined;
 
   const toggle = (itemId: string) =>
@@ -221,7 +224,7 @@ export function PackCard({
                   onToggle={toggle}
                   // Only this pack's job describes this pack's items; a job on
                   // another pack must not paint bars on these rows.
-                  progress={(jobHere && job.items[item.id]) || null}
+                  progress={jobHere ? itemProgress(job, item.id) : null}
                   disabled={locked}
                   onRemove={onRemoveItem}
                 />
@@ -255,6 +258,20 @@ export function PackCard({
       )}
     </div>
   );
+}
+
+/**
+ * One item's bar out of the running job, treating an inherited member as absent.
+ *
+ * `job.items` is a bare object keyed by whatever ids the catalog ships, so an
+ * item called `constructor` or `toString` would come back as a FUNCTION from a
+ * plain index — truthy, and `PackItemRow` would read byte counts off it and
+ * paint a NaN bar instead of no bar at all.
+ */
+function itemProgress(job: PackJob, itemId: string): PackItemProgress | null {
+  return Object.prototype.hasOwnProperty.call(job.items, itemId)
+    ? job.items[itemId]
+    : null;
 }
 
 /** Everything with bytes still to fetch — what a fresh card starts ticked. */

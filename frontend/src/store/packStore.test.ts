@@ -1224,4 +1224,32 @@ describe('packStore — checkInProgress', () => {
 
     expect(useToastStore.getState().toasts).toHaveLength(0);
   });
+
+  it('keeps the restart breadcrumb for a server with no Package Center', async () => {
+    // A 404 is a definite answer about the catalog and no answer at all about
+    // the restart: the outcome is read off `last_restart_job`, which rides on
+    // a catalog this build does not serve. Consuming the key here would report
+    // nothing and then guarantee that nothing is ever reported.
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
+    api.listPacks.mockRejectedValue(new PackApiError(404, 'Not Found'));
+
+    await usePackStore.getState().checkInProgress();
+
+    expect(usePackStore.getState().unsupported).toBe(true);
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('gpu-torch');
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+
+    // And it is still there for the first server that CAN answer.
+    _resetPackStoreForTesting();
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: { status: 'ok' },
+    }));
+    await usePackStore.getState().checkInProgress();
+
+    expect(lastToast()).toMatchObject({
+      type: 'success', message: 'Server restarted. GPU PyTorch is ready.',
+    });
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
 });

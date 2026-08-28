@@ -18,6 +18,7 @@ import {
   itemTitle,
   missingRequirementForOption,
   packTitle,
+  requirementSentence,
   usePackAvailability,
   type PackIndex,
   type PackRequirement,
@@ -385,11 +386,14 @@ function SelectField({
   // What the current value needs comes first: it is the thing standing
   // between this node and a run. The others are a footnote.
   const focus = currentMissing ?? otherMissing;
+  // Deliberately keyed on `focus`, not on the hint text: they are non-null
+  // together by construction (`focus` is picked from the two requirements the
+  // two arms describe), and saying so HERE is what lets the button below name
+  // its pack outright instead of a `?.` that would quietly open an unfocused
+  // panel if the invariant ever broke.
   const hint = currentMissing
-    ? packSentence(t, byId, currentValue, currentMissing)
-    : otherMissing
-      ? t('paramField.packHintOthers')
-      : null;
+    ? requirementSentence(t, byId, currentValue, currentMissing)
+    : t('paramField.packHintOthers');
 
   return (
     <div>
@@ -398,7 +402,7 @@ function SelectField({
         value={selected}
         onChange={(e) => onChange(param.name, e.target.value)}
         className={`${styles.input} ${styles.select}`}
-        aria-describedby={hint === null ? undefined : hintId}
+        aria-describedby={focus === null ? undefined : hintId}
       >
         {options.map(({ option, missing }) => (
           <option
@@ -411,7 +415,7 @@ function SelectField({
           </option>
         ))}
       </select>
-      {hint !== null && (
+      {focus !== null && (
         <span
           id={hintId}
           className={currentMissing ? `${styles.hint} ${styles.hintWarning}` : styles.hint}
@@ -420,10 +424,15 @@ function SelectField({
           <button
             type="button"
             className={styles.linkBtn}
+            // Named, because a node config panel can show several of these at
+            // once: two "Install pack" buttons are one list entry twice over
+            // to anyone navigating by control, and the visible label cannot
+            // carry the pack without turning a link into a sentence.
+            aria-label={`${t('paramField.installPack')}: ${packTitle(byId, focus.packId)}`}
             // `getState()` rather than a subscription: every select on the
             // canvas holds this component, and none of them re-render when
             // the Package Center opens.
-            onClick={() => useUIStore.getState().openPackCenter(focus?.packId)}
+            onClick={() => useUIStore.getState().openPackCenter(focus.packId)}
           >
             {t('paramField.installPack')}
           </button>
@@ -435,24 +444,17 @@ function SelectField({
 
 type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
 
-/** The short "needs ..." tag appended to an option that cannot be chosen. */
+/**
+ * The short "needs ..." tag appended to an option that cannot be chosen.
+ *
+ * Stays here, unlike the full sentence under the select
+ * (`requirementSentence`): this one is written into an `<option>`, which no
+ * other surface renders, so there is nothing to keep it in step with.
+ */
 function optionSuffix(t: Translate, byId: PackIndex, req: PackRequirement): string {
   return req.itemId === null
     ? t('paramField.needsPack', { pack: packTitle(byId, req.packId) })
     : t('paramField.needsModel', { item: itemTitle(byId, req) });
-}
-
-/** The full sentence under the select, when the CURRENT value is the problem. */
-function packSentence(
-  t: Translate,
-  byId: PackIndex,
-  option: string,
-  req: PackRequirement,
-): string {
-  const pack = packTitle(byId, req.packId);
-  return req.itemId === null
-    ? t('paramField.packHint', { option, pack })
-    : t('paramField.modelHint', { option, pack, item: itemTitle(byId, req) });
 }
 
 /**

@@ -853,6 +853,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.dependsOn': '需要先安裝：{packs}',
   'packs.dependsOnMissing': '請先安裝 {pack}',
   'packs.selectAll': '全選未下載的項目',
+  'packs.selectSomething': '請至少勾選一個項目',
   'packs.installSelected': '安裝選取的項目',
   'packs.installAll': '全部安裝',
   'packs.cancel': '取消安裝',

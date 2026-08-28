@@ -279,7 +279,11 @@ describe('NodeParamList', () => {
     // the params stay editable so a saved graph can still be read.
     expect(screen.getByTestId('field-lr')).toBeInTheDocument();
 
-    fireEvent.click(within(banner).getByRole('button', { name: 'Install pack' }));
+    // Named after the pack it installs: this banner and a gated select's
+    // hint can both be showing for one node, each with a bare "Install pack".
+    fireEvent.click(
+      within(banner).getByRole('button', { name: 'Install pack: Word vectors' }),
+    );
     expect(useUIStore.getState().packCenterOpen).toBe(true);
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
   });
@@ -295,7 +299,7 @@ describe('NodeParamList', () => {
     );
 
     expect(screen.queryByRole('note')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Install pack' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Install pack/ })).toBeNull();
   });
 
   it('omits it on a server with no Package Center', () => {

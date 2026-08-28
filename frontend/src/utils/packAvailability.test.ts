@@ -280,7 +280,13 @@ describe('usePackAvailability', () => {
   });
 
   afterEach(() => {
-    _resetPackStoreForTesting();
+    // Inside act(): this hook runs BEFORE Testing Library's cleanup, so the
+    // hook under test is still mounted and subscribed when the reset writes
+    // the store. Unwrapped, every case here printed an "update was not
+    // wrapped in act(...)" line.
+    act(() => {
+      _resetPackStoreForTesting();
+    });
   });
 
   it('answers for a raw requirement string, including the empty ones', () => {

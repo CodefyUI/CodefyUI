@@ -100,6 +100,11 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
           <button
             type="button"
             className={styles.packLink}
+            // Named, because this banner and a gated select's hint can both
+            // be on screen for the same node, each with its own "Install
+            // pack": two identically named controls in one list is a choice
+            // nobody navigating by control can make.
+            aria-label={`${t('paramField.installPack')}: ${packTitle(byId, missingPack.packId)}`}
             onClick={() => useUIStore.getState().openPackCenter(missingPack.packId)}
           >
             {t('paramField.installPack')}

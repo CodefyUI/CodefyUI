@@ -889,6 +889,9 @@ const en = {
   'packs.dependsOn': 'Requires: {packs}',
   'packs.dependsOnMissing': 'Install {pack} first',
   'packs.selectAll': 'Select all missing',
+  // Why the Install button is dead, on its tooltip. A sentence rather than the
+  // other button's label: a disabled control has to say what to DO next.
+  'packs.selectSomething': 'Tick at least one item to install',
   'packs.installSelected': 'Install selected',
   'packs.installAll': 'Install everything',
   'packs.cancel': 'Cancel install',

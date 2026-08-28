@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ReactFlow, ReactFlowProvider, type Edge, type Node, type NodeTypes } from '@xyflow/react';
 import { renderWithFlow } from '../../test/utils';
 import { useI18n } from '../../i18n';
@@ -1140,6 +1140,37 @@ describe('BaseNode — optional packs', () => {
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
   });
 
+  it('does not also open the Node Detail Modal when the badge is double-clicked', () => {
+    seedPacks(wordVectors());
+    // A fresh vi.fn() installed through setState, never a spy taken off
+    // getState(): a spy holds the action object it was made from, so its call
+    // history follows the module into the next test.
+    const realOpenNodeDetail = useTabStore.getState().openNodeDetail;
+    const openNodeDetail = vi.fn();
+    useTabStore.setState({ openNodeDetail });
+    try {
+      renderBody(baseData({ definition: makeDef({ requires_pack: 'word-vectors' }) }));
+
+      // `dblclick` is a separate event from the two `click`s before it, so
+      // the badge's stopPropagation on click does nothing for it: an
+      // impatient double-press opened the Package Center AND the detail
+      // modal behind it.
+      fireEvent.doubleClick(screen.getByRole('button', { name: 'PACK' }));
+      expect(openNodeDetail).not.toHaveBeenCalled();
+
+      // Counterfactual, so the assertion above is about the badge and not
+      // about the harness: the card itself still opens on a double-click.
+      fireEvent.doubleClick(screen.getByText('My Linear'));
+      expect(openNodeDetail).toHaveBeenCalledWith('n1');
+    } finally {
+      // Inside act(): the card subscribes to this action, so putting the real
+      // one back re-renders a still-mounted component.
+      act(() => {
+        useTabStore.setState({ openNodeDetail: realOpenNodeDetail });
+      });
+    }
+  });
+
   it('marks a select param whose value needs a missing model', () => {
     seedPacks(sentenceEmbeddings());
     renderBody(
@@ -1166,6 +1197,39 @@ describe('BaseNode — optional packs', () => {
     expect(screen.getByText('all-MiniLM-L6-v2')).toBeInTheDocument();
     // Only the CURRENT value is asked about: the other option being missing
     // is the config panel's business, not the card's.
+    expect(screen.queryByText('needs pack')).toBeNull();
+  });
+
+  it('never marks a non-select param, even one carrying option_packs', () => {
+    seedPacks(sentenceEmbeddings());
+    renderBody(
+      baseData({
+        definition: makeDef({
+          params: [
+            {
+              name: 'model',
+              // Not a select: the value is whatever was typed.
+              param_type: 'string',
+              default: 'all-mpnet-base-v2',
+              description: '',
+              options: [],
+              option_packs: {
+                'all-mpnet-base-v2': 'sentence-embeddings:all-mpnet-base-v2',
+              },
+              min_value: null,
+              max_value: null,
+            },
+          ],
+        }),
+        params: { model: 'all-mpnet-base-v2' },
+      }),
+    );
+
+    // `option_packs` is keyed by OPTION value, so it only means anything on a
+    // select. Reading it on a free-text field would mark whatever the user
+    // happened to type that collided with a key, and leave the same
+    // requirement unmarked the moment they typed it differently.
+    expect(screen.getByText('all-mpnet-base-v2')).toBeInTheDocument();
     expect(screen.queryByText('needs pack')).toBeNull();
   });
 
