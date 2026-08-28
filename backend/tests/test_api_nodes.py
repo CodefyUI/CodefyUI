@@ -498,6 +498,7 @@ TRANSLATED_NODES = (
     "TextChunker",
     "VectorStore",
     "Retriever",
+    "PromptBuilder",
     "Optimizer",
     "Loss",
     "DataLoader",

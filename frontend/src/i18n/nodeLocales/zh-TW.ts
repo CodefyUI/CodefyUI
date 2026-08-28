@@ -1082,6 +1082,16 @@ const zhTW: NodeTranslations = {
       min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
     },
   },
+  PromptBuilder: {
+    description:
+      '組出最後的提示詞：把撈回的文字塊貼進模板，連同問題與「只能根據這些內容回答」的指示。這就是 RAG 的全部訣竅：模型沒有被微調，只是被拿給它看對的段落。模板必須包含 {context} 與 {question}；想自己寫多行模板，把 TextInput 接到 template 輸入即可。',
+    params: {
+      template: '含 {context} 與 {question} 兩個佔位符的模板。連了 template 輸入時以輸入為準。',
+      separator: '各塊文字之間的分隔：blank_line 空一行、newline 換行、rule 一條分隔線。',
+      number_contexts: '在每一塊前面加上 [1]、[2]...，接了 sources 時也附上來源檔名。',
+      max_context_chars: '把合併後的內容區塊截到這個字元數（0 = 不限制）。小型本機模型超過幾千字就會明顯變慢。',
+    },
+  },
 
   // ── Diffusion ──
   GaussianNoise: {
