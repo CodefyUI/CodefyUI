@@ -72,6 +72,35 @@
   word-break: break-word;
 }
 
+/* The action button sits on the same saturated fill as the message, which
+   already carries --text-primary as ordinary text. So it borrows that ink and
+   draws itself as a translucent white wash of the fill underneath — the same
+   device .close below uses — rather than introducing a colour of its own: no
+   status or accent token is legible on all four fills, and a fifth literal
+   would be a fifth thing to keep in step with them. */
+.action {
+  flex-shrink: 0;
+  /* flex-start, like .close and .icon: on a message long enough to wrap, the
+     button belongs on the first line rather than floating halfway down it. */
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  padding: var(--sp-2) var(--sp-3);
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.action:hover {
+  background: rgba(255, 255, 255, 0.28);
+  border-color: var(--text-primary);
+}
+
 .close {
   flex-shrink: 0;
   background: none;

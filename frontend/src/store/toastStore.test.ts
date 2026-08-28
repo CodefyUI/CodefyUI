@@ -60,6 +60,32 @@ describe('useToastStore', () => {
       expect(Number(toasts[1].id)).toBeGreaterThan(Number(toasts[0].id));
     });
 
+    it('stores an optional action alongside the message', () => {
+      const onClick = vi.fn();
+      useToastStore.getState().addToast('needs a pack', 'error', {
+        action: { label: 'Open Package Center', onClick },
+      });
+      const toast = useToastStore.getState().toasts[0];
+      expect(toast.action?.label).toBe('Open Package Center');
+      toast.action?.onClick();
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the action undefined for the callers that pass no options', () => {
+      useToastStore.getState().addToast('plain', 'error');
+      expect(useToastStore.getState().toasts[0].action).toBeUndefined();
+      useToastStore.getState().addToast('also plain', 'error', {});
+      expect(useToastStore.getState().toasts[1].action).toBeUndefined();
+    });
+
+    it('an action does not stop a non-error toast from auto-dismissing', () => {
+      useToastStore.getState().addToast('with action', 'info', {
+        action: { label: 'Undo', onClick: vi.fn() },
+      });
+      vi.advanceTimersByTime(4000);
+      expect(useToastStore.getState().toasts).toHaveLength(0);
+    });
+
     it('the auto-dismiss timer only removes its own toast', () => {
       // Add a non-error (timed) toast, then an error (untimed) toast.
       useToastStore.getState().addToast('vanishes', 'success');

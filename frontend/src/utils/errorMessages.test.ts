@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { friendlyError } from './errorMessages';
+import { friendlyError, missingPackFromError } from './errorMessages';
 import { useI18n } from '../i18n';
+import { usePackStore } from '../store/packStore';
+import type { PackSummary } from '../api/rest';
 
 /**
  * These previously fed `friendlyError` strings like "KeyError: 'tensor'".
@@ -12,6 +14,9 @@ import { useI18n } from '../i18n';
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
+  // The pack rule reads the catalog for a human title; every case that does
+  // not seed one is asserting the id fallback.
+  usePackStore.setState({ byId: {} });
 });
 
 describe('friendlyError — payloads the backend actually sends', () => {
@@ -89,6 +94,66 @@ describe('friendlyError — untyped sources (run records, DEBUG tracebacks)', ()
     expect(friendlyError('ValueError:   too many values to unpack  ')).toBe(
       'too many values to unpack',
     );
+  });
+});
+
+// ── A node that needs an optional pack (PR 2) ────────────────────────────────
+// `require_pack` raises PackMissingError with a message that always ends in
+// `(pack=<id>)`; this is the exact wording the backend composes.
+const PACK_MISSING =
+  'Word vectors is not installed. Open Package Center (toolbar > Settings > ' +
+  'Optional packs) to install it; graph runs never download (pack=word-vectors)';
+
+describe('missingPackFromError — a node that needs an optional pack', () => {
+  it('maps PackMissingError to the friendly sentence and extracts the pack id', () => {
+    expect(missingPackFromError(PACK_MISSING, 'PackMissingError')).toBe('word-vectors');
+    expect(friendlyError(PACK_MISSING, 'PackMissingError')).toBe(
+      'This node needs the word-vectors pack. Install it from the Package Center.',
+    );
+  });
+
+  it('ignores a plain error mentioning pack=', () => {
+    const raw = "invoke() got an unexpected keyword argument 'pack=3'";
+    expect(missingPackFromError(raw, 'TypeError')).toBeNull();
+    expect(friendlyError(raw, 'TypeError')).toBe(raw);
+  });
+
+  it('recognises the untyped whole-run copy of the same message', () => {
+    // A fail-fast run re-raises the node's exception, so `execution_error`
+    // carries the identical `str(exc)` — with no `error_type` beside it. The
+    // message naming the Package Center is what identifies it there.
+    expect(missingPackFromError(PACK_MISSING)).toBe('word-vectors');
+  });
+
+  it('returns null when the type is right but the id is not in the message', () => {
+    expect(missingPackFromError('something went sideways', 'PackMissingError')).toBeNull();
+  });
+
+  it('returns null for an empty message', () => {
+    expect(missingPackFromError('', 'PackMissingError')).toBeNull();
+  });
+
+  it('names the pack by its catalog title once the store has one', () => {
+    usePackStore.setState({
+      byId: { 'word-vectors': { id: 'word-vectors', title: 'Word vectors' } as PackSummary },
+    });
+    expect(friendlyError(PACK_MISSING, 'PackMissingError')).toBe(
+      'This node needs the Word vectors pack. Install it from the Package Center.',
+    );
+  });
+
+  it('answers in Traditional Chinese under the zh-TW locale', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    const out = friendlyError(PACK_MISSING, 'PackMissingError');
+    expect(out).toContain('word-vectors');
+    expect(out).toMatch(/[一-鿿]/);
+  });
+
+  it('a second pass over the friendly sentence is a no-op', () => {
+    // The mapped sentence names the Package Center too, so it would loop if
+    // the `pack=` id were not also required.
+    const once = friendlyError(PACK_MISSING, 'PackMissingError');
+    expect(friendlyError(once)).toBe(once);
   });
 });
 

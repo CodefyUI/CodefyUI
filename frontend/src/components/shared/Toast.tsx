@@ -20,6 +20,21 @@ export function ToastContainer() {
         <div key={toast.id} className={`${styles.toast} ${styles[toast.type]}`}>
           <span className={styles.icon}>{TYPE_ICONS[toast.type]}</span>
           <span className={styles.message}>{toast.message}</span>
+          {toast.action && (
+            <button
+              type="button"
+              className={styles.action}
+              onClick={() => {
+                toast.action?.onClick();
+                // Dismiss after running, not instead of it. An action toast
+                // is an error one, so it never times out; leaving it up would
+                // offer to open a panel that is already on screen.
+                removeToast(toast.id);
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
           <button type="button" className={styles.close} onClick={() => removeToast(toast.id)}>
             &times;
           </button>

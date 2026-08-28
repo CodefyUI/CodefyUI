@@ -9,6 +9,8 @@ import {
 } from '../store/nodeUpdateQueue';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
+import { usePackStore } from '../store/packStore';
+import type { PackSummary } from '../api/rest';
 
 // Mock the REST layer — the hook calls validateGraph() before sending, and
 // getRun() on mount to decide whether to re-attach (#121). Each test drives
@@ -94,12 +96,23 @@ function setTabs(tabs: any[], activeTabId = tabs[0]?.id) {
   useTabStore.setState({ tabs, activeTabId });
 }
 
+/**
+ * What `require_pack` raises, word for word. The trailing `(pack=<id>)` is
+ * the contract PR 1 promises the frontend; the rest is the sentence the
+ * backend composes for a pack the catalog knows.
+ */
+const PACK_MISSING =
+  'Word vectors is not installed. Open Package Center (toolbar > Settings > ' +
+  'Optional packs) to install it; graph runs never download (pack=word-vectors)';
+
 beforeEach(() => {
   validateGraphMock.mockReset();
   validateGraphMock.mockResolvedValue({ valid: true, errors: [] });
   getRunMock.mockReset();
   getRunMock.mockResolvedValue(null);
   useToastStore.setState({ toasts: [] });
+  usePackStore.setState({ byId: {} });
+  useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
   // Default: one connected tab with a trigger edge so execute() proceeds.
   setTabs([
     makeTab('t1', {
@@ -312,6 +325,64 @@ describe('useGraphExecution - node_status handler', () => {
     });
     const log = tabById('t1').logs.find((l: any) => l.type === 'error');
     expect(log.message).toBe('Node Node One error: boom');
+  });
+
+  // PR 2. The log line already explains the failure, but the fix lives in a
+  // panel two menus away — so the toast carries the way there.
+  it('fires an actionable toast when a node fails with a missing pack', () => {
+    usePackStore.setState({
+      byId: {
+        'word-vectors': { id: 'word-vectors', title: 'Word vectors' } as PackSummary,
+      },
+    });
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'error',
+        error: PACK_MISSING,
+        error_type: 'PackMissingError',
+      });
+    });
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+    expect(toasts[0].message).toBe('This run needs the Word vectors pack.');
+    expect(toasts[0].action?.label).toBe('Open Package Center');
+
+    // ...and the log keeps its own, node-scoped sentence.
+    const log = tabById('t1').logs.find((l: any) => l.type === 'error');
+    expect(log.message).toContain('This node needs the Word vectors pack');
+
+    // The action opens the Package Center ON the pack that is missing.
+    act(() => toasts[0].action!.onClick());
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('falls back to the pack id when the catalog has not loaded', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'error',
+        error: PACK_MISSING,
+        error_type: 'PackMissingError',
+      });
+    });
+    expect(useToastStore.getState().toasts[0].message).toBe(
+      'This run needs the word-vectors pack.',
+    );
+  });
+
+  it('does not toast for an ordinary node failure', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => ws.emit('node_status', { node_id: 'n1', status: 'error', error: 'boom' }));
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 
   it('logs a non-terminal/non-error status (e.g. skipped) as info', () => {
@@ -676,6 +747,47 @@ describe('useGraphExecution - lifecycle events', () => {
     expect(toasts.length).toBe(1);
     expect(toasts[0].type).toBe('warning');
     expect(toasts[0].message).toContain('was not started');
+  });
+
+  // A fail-fast run re-raises the node's exception, so the whole-run frame
+  // carries the same `str(exc)` — with no `error_type` beside it.
+  it('mirrors the missing-pack toast on a whole-run execution_error', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => ws.emit('execution_error', { error: PACK_MISSING }));
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toBe('This run needs the word-vectors pack.');
+    expect(toasts[0].action?.label).toBe('Open Package Center');
+    // Still an ordinary run failure in every other respect.
+    expect(tabById('t1').status).toBe('error');
+  });
+
+  it('does not stack a second toast when the run echoes the node that failed', () => {
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => {
+      ws.emit('node_status', {
+        node_id: 'n1',
+        status: 'error',
+        error: PACK_MISSING,
+        error_type: 'PackMissingError',
+      });
+      ws.emit('execution_error', { error: PACK_MISSING });
+    });
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+  });
+
+  it('a rejected execution_error never toasts about a pack', () => {
+    // A refused submit did not run anything; its message is the server's,
+    // not a node's, so the pack rule must not fire on it.
+    const ws = tabById('t1').ws as FakeWs;
+    renderHook(() => useGraphExecution());
+    act(() => ws.emit('execution_error', { error: PACK_MISSING, rejected: true }));
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('warning');
+    expect(toasts[0].action).toBeUndefined();
   });
 
   it('execution_start sets status running and records run_id when a string', () => {
