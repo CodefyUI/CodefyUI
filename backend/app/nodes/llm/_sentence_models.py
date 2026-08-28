@@ -41,12 +41,15 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import numpy as np
 
 from ...core.loop_control import EVENT_BATCH, ProgressThrottle
 from . import _packs_bridge
+
+if TYPE_CHECKING:  # the runtime import is inside ``_pack_missing``
+    from ...core.packs import PackMissingError
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,8 @@ logger = logging.getLogger(__name__)
 SENTENCE_PACK = "sentence-embeddings"
 
 #: Hugging Face repo id -> the catalog item id it is downloaded under.
-#: Insertion order is the order the SELECT lists them in, cheapest first.
+#: Insertion order is catalog order, which is the order the SELECT lists
+#: them in.
 SENTENCE_MODELS: dict[str, str] = {
     "sentence-transformers/all-MiniLM-L6-v2": "all-MiniLM-L6-v2",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2":
@@ -86,7 +90,7 @@ def option_packs_for_models() -> dict[str, str]:
             for repo_id, item_id in SENTENCE_MODELS.items()}
 
 
-def _pack_missing(message: str) -> Exception:
+def _pack_missing(message: str) -> PackMissingError:
     """A ``PackMissingError`` for this pack, imported where it is used.
 
     Lazy for the same reason ``_packs_bridge`` is lazy: a node module must
@@ -105,11 +109,13 @@ def load_sentence_model(repo_id: str, device: str, *,
                         max_seq_length: int = 0) -> Any:
     """The loaded encoder for *repo_id* on *device*, from the pack cache.
 
-    *max_seq_length* is the caller's token cap, or 0 for "whatever the
-    model was trained with". It is applied on EVERY call, hit or miss: the
-    cap belongs to the node that asked, the model object belongs to the
-    process, and two nodes sharing one cached model with different caps
-    would otherwise silently inherit whichever loaded first.
+    *max_seq_length* is the caller's token cap, or 0 for "leave the cached
+    model's current cap as it is" -- on a cache HIT that is whatever the
+    previous caller set, not the value the model shipped with. A non-zero
+    cap is applied on EVERY call, hit or miss: the cap belongs to the node
+    that asked, the model object belongs to the process, and two nodes
+    sharing one cached model would otherwise silently inherit whichever
+    of them loaded it.
 
     Raises ``ValueError`` for an id that is not in ``SENTENCE_MODELS``, and
     ``PackMissingError`` (message ending in ``(pack=sentence-embeddings)``)
@@ -128,9 +134,16 @@ def load_sentence_model(repo_id: str, device: str, *,
     # is the seam node tests patch, and it is what keeps this import lazy.
     _packs_bridge.require_pack(SENTENCE_PACK, item_id)
 
-    # ``require_pack`` passing is not enough. The four models are
-    # ALTERNATIVES, so the pack counts as usable once any one of them is
-    # downloaded -- which says nothing about the one this call wants.
+    # Not a second opinion on the same question: ``require_pack(pack, item)``
+    # already asked about THIS model, and in production it is what refuses a
+    # model that was never downloaded. The two read different sources.
+    # ``pack_available`` reads ``state.probe_all()``, which is memoised for
+    # the whole process until something calls ``invalidate()``; ``model_dir``
+    # re-checks the sentinel and the bytes right now. So this rung covers the
+    # window where the cached probe still says "present" and the snapshot is
+    # not -- a cache someone cleaned out by hand, an uninstall, a half-
+    # finished download -- and turns it into the same actionable sentence
+    # rather than letting ``SentenceTransformer`` fail on a missing directory.
     path = _packs_bridge.model_dir(repo_id)
     if path is None:
         raise _pack_missing(
@@ -220,6 +233,13 @@ def encode_in_batches(
     ``passage: `` for the e5 models). *progress* may be None -- the export
     runner and most unit tests have no callback to throttle.
     """
+    if isinstance(texts, str):
+        # ``list("hello")`` is five one-character texts, and every layer
+        # below here would accept that: five rows come back, the shapes are
+        # right, nothing raises. The learner just gets nonsense embeddings.
+        raise ValueError(
+            "texts must be a sequence of strings, not a single string")
+
     items = list(texts)
     total = len(items)
     if total == 0:

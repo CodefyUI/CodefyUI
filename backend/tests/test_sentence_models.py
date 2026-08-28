@@ -21,6 +21,8 @@ per switch, and two nodes asking for the same model must not load it twice.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -54,7 +56,7 @@ def no_model_survives_a_test():
     sentence_models.clear_model_cache()
 
 
-def counting_transformer(module, loads):
+def counting_transformer(module, loads, delay=0.0):
     """Install a constructor-counting subclass of the fake, and return it.
 
     A subclass rather than a lambda: the fake's ``__init__`` is strict on
@@ -63,12 +65,17 @@ def counting_transformer(module, loads):
     here. Only the first positional argument is accepted positionally, so
     ``SentenceTransformer(path, "cpu")`` still fails the way it would
     upstream.
+
+    *delay* stretches the load into a window a second thread can be caught
+    inside, which is the only way to observe a lock that is doing its job.
     """
     real = module.SentenceTransformer
 
     class Counting(real):
         def __init__(self, path, **kwargs):
             loads.append((path, kwargs))
+            if delay:
+                time.sleep(delay)
             super().__init__(path, **kwargs)
 
     module.SentenceTransformer = Counting
@@ -159,11 +166,20 @@ def test_missing_pack_raises_pack_missing_error_naming_package_center(
 
 def test_missing_model_dir_names_the_model_and_keeps_suffix(
         fake_sentence_transformers, monkeypatch):
-    """The pack is installed but this one snapshot is not there.
+    """The cached probe says the snapshot is there and it is not.
 
-    ``require_pack`` cannot catch it on its own -- the four models are
-    alternatives, so the pack counts as usable once ANY of them is
-    downloaded -- which is why the loader checks the directory as well.
+    In PRODUCTION this rung is not what refuses a model nobody downloaded:
+    ``require_pack(pack, item)`` asks about that exact item and raises
+    first. What it cannot see is a change since the last probe --
+    ``pack_available`` reads ``state.probe_all()``, memoised for the whole
+    process, while ``model_dir`` re-checks the sentinel and the bytes now.
+    A cache cleaned out by hand, an uninstall or a half-finished download
+    lands here, and has to read as the same actionable sentence rather than
+    as ``SentenceTransformer`` failing on a missing directory.
+
+    The fixture patches both, so the test reaches the rung by making
+    ``model_dir`` answer None while the gate keeps saying yes -- which is
+    exactly the disagreement being described.
     """
     monkeypatch.setattr(bridge, "model_dir", lambda repo_id: None)
 
@@ -272,6 +288,52 @@ def test_cache_is_keyed_by_repo_and_device_and_bounded_to_two(
     assert len(loads) == 5
 
 
+def test_concurrent_loads_of_the_same_model_construct_it_once(
+        fake_sentence_transformers):
+    """The lock, observed rather than assumed.
+
+    Nodes run on worker threads (``MAX_PARALLEL_NODES = 4``), so a graph
+    with two embedding nodes really can have two threads inside this
+    function at the same moment. Without the lock they would both miss the
+    cache and both load the model -- twice the wait and twice the RAM, with
+    one of the two copies immediately orphaned by the other's write.
+
+    The barrier makes all four threads arrive together instead of hoping
+    they do, and the delay in the constructor keeps the first one inside
+    the critical section while the rest queue up.
+    """
+    loads: list = []
+    counting_transformer(fake_sentence_transformers, loads, delay=0.05)
+
+    workers = 4
+    ready = threading.Barrier(workers)
+    results: list = []
+    errors: list = []
+
+    def load_once():
+        try:
+            ready.wait(timeout=10)
+            results.append(sentence_models.load_sentence_model(MINI, "cpu"))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=load_once) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert [thread.is_alive() for thread in threads] == [False] * workers, (
+        "a load never returned -- the lock is not being released")
+    assert len(loads) == 1, (
+        f"{workers} threads asked for one model and it was loaded "
+        f"{len(loads)} times")
+    assert len(results) == workers
+    assert all(model is results[0] for model in results), (
+        "the threads were handed different objects for one cache key")
+
+
 def test_max_seq_length_is_applied_on_every_call(fake_sentence_transformers):
     """The cap is a per-NODE choice on a per-PROCESS object.
 
@@ -344,6 +406,26 @@ def test_encode_in_batches_emits_progress_and_honours_stop(
         {"event": EVENT_BATCH, "batch": 3, "total_batches": 3,
          "text": "Embedding 5/5"},
     ]
+
+
+def test_a_bare_string_is_rejected_instead_of_embedded_per_character(
+        fake_sentence_transformers):
+    """``list("hello")`` is five one-character texts.
+
+    Nothing downstream would object: five rows come back, the shapes are
+    right, the run succeeds. Only the embeddings are nonsense. A caller who
+    meant one text has to hear about it here, where the mistake is.
+    """
+    model = fake_sentence_transformers.SentenceTransformer("/x")
+
+    with pytest.raises(ValueError) as caught:
+        sentence_models.encode_in_batches(
+            model, "hello",
+            batch_size=2, normalize=False, prefix="",
+            progress=None, should_stop=lambda: False)
+
+    assert "sequence of strings" in str(caught.value)
+    assert model.calls == [], "characters reached the model"
 
 
 def test_prefix_is_prepended_to_every_text(fake_sentence_transformers):
