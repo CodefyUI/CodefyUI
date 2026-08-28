@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import shutil
 import types
@@ -595,6 +596,84 @@ def test_download_hf_item_cancel_between_files(fake_api, monkeypatch):
 
     assert fetched == ["config.json"]
     assert not state.item_state(pack, item).present
+
+
+def test_installed_huggingface_hub_still_exposes_the_xet_abort_hook():
+    """The one import that keeps mid-file cancellation working.
+
+    ``download.abort_xet_transfer`` reaches into
+    ``huggingface_hub.utils._xet`` -- private API, and deliberately so: it is
+    the only way to stop an hf_xet transfer, because that transport discards
+    whatever the progress hook raises. The call site swallows an
+    ImportError, which is right for a running server (cancel degrades, it
+    does not crash) and useless for CI, where a fresh huggingface_hub is
+    installed on every run and the degradation would be silent.
+
+    So the version check lives here, in the suite that fails the build. It
+    asserts nothing about behaviour -- the behaviour is proved against the
+    real hub by ``tests/test_packs_network.py`` -- only that the hook this
+    depends on is still there to be called.
+    """
+    try:
+        from huggingface_hub.utils._xet import abort_xet_session
+    except ImportError as exc:
+        raise AssertionError(
+            "huggingface_hub.utils._xet.abort_xet_session is gone "
+            f"({exc}). It is private API and this pins it on purpose: "
+            "without it, pressing Stop during a model download silently "
+            "stops being a mid-file cancel and becomes a wait for the "
+            "current file to finish -- up to 470 MB of ignoring the user. "
+            "Find the hub's replacement and teach "
+            "app.core.packs.download.abort_xet_transfer to call it; do not "
+            "delete this test.") from exc
+
+    assert callable(abort_xet_session)
+
+
+def test_abort_xet_transfer_says_what_else_it_is_stopping(monkeypatch, caplog):
+    """The abort is not surgical, so it has to be loud.
+
+    One hf_xet session serves the whole process, and three shipped nodes
+    fetch from the hub during a run (``TextCorpusDataset``,
+    ``HuggingFaceDataset``, ``Tokenizer``). Cancelling a pack download
+    truncates whichever of those is in flight, and that node reports a raw
+    Rust RuntimeError nobody could otherwise connect to the Stop button
+    somebody pressed in another tab. The log line is what connects them.
+    """
+    import huggingface_hub.utils._xet as hub_xet
+
+    calls: list[int] = []
+    monkeypatch.setattr(hub_xet, "abort_xet_session",
+                        lambda: calls.append(len(calls)))
+
+    with caplog.at_level(logging.WARNING, logger="app.core.packs.download"):
+        download.abort_xet_transfer()
+
+    assert calls == [0], "the session still has to be aborted"
+    warnings = [record.getMessage() for record in caplog.records
+                if record.levelno >= logging.WARNING]
+    assert warnings, caplog.records
+    assert any("Hugging Face transfer" in line for line in warnings), warnings
+
+
+def test_abort_xet_transfer_reports_a_missing_hook_once(monkeypatch, caplog):
+    """A hub that dropped the hook degrades quietly on purpose -- but leaves
+    a trace on the server that degraded, said once rather than once per
+    cancelled download."""
+    import huggingface_hub.utils._xet as hub_xet
+
+    monkeypatch.delattr(hub_xet, "abort_xet_session")
+    monkeypatch.setattr(download, "_warned_missing_xet_abort", False)
+
+    with caplog.at_level(logging.WARNING, logger="app.core.packs.download"):
+        download.abort_xet_transfer()
+        download.abort_xet_transfer()
+
+    warnings = [record.getMessage() for record in caplog.records
+                if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1, warnings
+    assert "abort_xet_session" in warnings[0]
+    assert "mid-file" in warnings[0]
 
 
 def test_tqdm_hook_aborts_the_xet_transfer_when_cancelled(monkeypatch):

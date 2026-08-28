@@ -33,6 +33,7 @@ Three things this module is careful about:
 from __future__ import annotations
 
 import fnmatch
+import logging
 import shutil
 import time
 from collections.abc import Callable, Iterable
@@ -45,6 +46,8 @@ from . import state
 from .catalog import ModelItem, Pack
 from .errors import PackCancelled, PackInstallError, PackInsufficientDisk
 from .paths import hf_cache_dir
+
+log = logging.getLogger(__name__)
 
 #: Minimum seconds between two progress events for one item. The UI redraws a
 #: bar; four frames a second is smooth to a human and is three orders of
@@ -210,6 +213,13 @@ class _ByteMeter:
         self._emit_throttled()
 
 
+#: True once :func:`abort_xet_transfer` has reported that huggingface_hub no
+#: longer has the hook it needs. Module state rather than a log filter: the
+#: message is worth saying once per process and worth NOT saying on every
+#: subsequent cancel.
+_warned_missing_xet_abort = False
+
+
 def abort_xet_transfer() -> None:
     """Cancel whatever the hf_xet runtime is currently downloading.
 
@@ -231,26 +241,57 @@ def abort_xet_transfer() -> None:
     ``RuntimeError('Operation cancelled: ...')``, which
     :func:`download_hf_item` translates back into ``PackCancelled``.
 
-    The session is process-wide, so this ends every hf_xet transfer in
-    flight, not only this item's. That is what makes it acceptable here and
-    nowhere else: the Package Center runs one job at a time and a graph run
-    never downloads, so the only transfer there can be IS the cancelled one.
-    Nothing is left broken either way -- the next call builds a fresh session
-    (``tests/test_packs_network.py`` downloads a second model right after the
-    cancel to prove a stopped install does not poison the ones after it).
+    The session is process-wide, and that has a cost this deliberately
+    accepts rather than avoids. Every hf_xet transfer in this interpreter
+    ends here, not only this item's -- and a graph run CAN have one:
+    ``TextCorpusDataset`` and ``HuggingFaceDataset`` fetch through
+    ``datasets.load_dataset``, and ``Tokenizer`` through
+    ``tokenizers.Tokenizer.from_pretrained``. Pressing Stop on a pack
+    install while one of those is streaming truncates it too, and that node
+    sees the raw ``RuntimeError('Operation cancelled: ...')`` with none of
+    the translation :func:`download_hf_item` does for its own call.
 
-    Private API, so every failure here is swallowed: on a hub version that
-    does not have it, cancelling still works -- it just waits for the current
-    file, which is what it did before this existed.
+    Accepted because the alternative is a Stop button that does nothing to
+    the four hundred megabytes it was pressed to stop. The damage is a run
+    the user can start again; nothing is corrupted and nothing stays broken,
+    because the next call builds a fresh session
+    (``tests/test_packs_network.py`` downloads a second model right after
+    the cancel to prove a stopped install does not poison the ones after
+    it). The abort says so in the log, so a truncated corpus fetch is
+    explained rather than mysterious.
+
+    ``abort_xet_session`` is PRIVATE API. Losing it is not fatal -- cancel
+    degrades to waiting for the file in flight, which is what it did before
+    this existed -- but it is silent, so the loss is logged here once, and
+    ``test_installed_huggingface_hub_still_exposes_the_xet_abort_hook``
+    fails the build the day a hub upgrade removes it.
     """
+    global _warned_missing_xet_abort
+
     try:
         from huggingface_hub.utils._xet import abort_xet_session
-    except Exception:
+    except Exception as exc:
+        if not _warned_missing_xet_abort:
+            # Once per process: a server whose user cancels ten downloads
+            # should say this once, not ten times.
+            _warned_missing_xet_abort = True
+            log.warning(
+                "huggingface_hub no longer exposes "
+                "utils._xet.abort_xet_session (%s), so cancelling a model "
+                "download now waits for the file in flight to finish "
+                "instead of stopping mid-file. See "
+                "app.core.packs.download.abort_xet_transfer.", exc)
         return
+
+    log.warning(
+        "Aborting the hf_xet session to stop this download. Any other "
+        "Hugging Face transfer this process has in flight -- a graph run "
+        "streaming a dataset or fetching a tokenizer -- is interrupted too.")
     try:
         abort_xet_session()
     except Exception:
-        pass
+        log.warning("abort_xet_session() failed; the download will run to "
+                    "the end of the file in flight", exc_info=True)
 
 
 def make_tqdm_class(meter: _ByteMeter) -> type:

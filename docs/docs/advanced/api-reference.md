@@ -33,7 +33,7 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/plugins/reload` | POST | Hot-reload all node and preset sources. |
 | `/api/packs` | GET | List every optional pack with what is installed, what a download would cost, and whether this machine can install it. |
 | `/api/packs/{id}/install` | POST | Start an install job — `202` with a `job_id`. One job runs at a time. |
-| `/api/packs/jobs/{job_id}/cancel` | POST | Ask the running job to stop. A download is aborted mid-file, not at the end of it. |
+| `/api/packs/jobs/{job_id}/cancel` | POST | Ask the running job to stop. A download is aborted mid-file, not at the end of it — which also interrupts any Hugging Face download a running graph happens to be doing at that moment (a dataset or tokenizer fetch), because the two share one transfer session. |
 | `/api/packs/jobs/{job_id}/events` | GET | A job's log and progress events after `?cursor=`; `?wait=` long-polls for up to 60s so the panel follows a job without a retry loop. |
 | `/api/packs/{id}/items/{item_id}` | DELETE | Delete one downloaded model and free its bytes. A pack's Python packages are not removable from the running server — see `cdui packs remove`. |
 | `/api/llm/chat` | POST | Stream a unified SSE chat completion from the configured provider (OpenAI / OpenRouter / Anthropic / OpenAI-Codex / custom OpenAI-compatible). |
