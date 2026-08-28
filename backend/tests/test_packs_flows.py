@@ -602,8 +602,40 @@ def test_restart_command_quotes_a_spec_a_shell_would_read_as_redirection():
     assert flows._shell_quote("uv") == "uv"
     assert flows._shell_quote("--python") == "--python"
     assert flows._shell_quote("/usr/bin/python3.12") == "/usr/bin/python3.12"
-    assert flows._shell_quote(r"C:\venv\Scripts\python.exe") == (
-        r"C:\venv\Scripts\python.exe")
+
+
+def test_restart_command_quotes_a_windows_path_so_bash_keeps_the_backslashes():
+    """An unquoted ``D:\\...\\python.exe`` runs under PowerShell and cmd, and
+    is destroyed by Git Bash -- which is a shell on the same machines.
+
+    bash strips the backslashes of an unquoted word, so uv is handed
+    ``D:GithubCodefyUI...python.exe`` and answers "No virtual environment
+    found". The path has no whitespace and no redirection character in it,
+    so neither earlier rule caught it; treating the backslash itself as
+    needing quotes is what does.
+
+    ``shlex.split(..., posix=True)`` is the same stripping, which makes it
+    the proof: on the QUOTED form the path comes back whole.
+    """
+    windows = r"C:\venv\Scripts\python.exe"
+
+    quoted = flows._shell_quote(windows)
+
+    assert quoted == f'"{windows}"'
+    assert shlex.split(quoted, posix=True) == [windows]
+    # The failure this replaces, spelled out: bare, the same parser eats
+    # every separator and hands back a path to nowhere.
+    assert shlex.split(windows, posix=True) == ["C:venvScriptspython.exe"]
+
+    # A POSIX interpreter path has no backslashes and stays bare.
+    assert flows._shell_quote("/usr/bin/python3.12") == "/usr/bin/python3.12"
+
+    # End to end, through the command the user is actually handed. Index 4
+    # is the argument after ``--python``; on a POSIX machine the path has no
+    # backslashes and goes out bare, which round-trips just as well.
+    command = flows._restart_command(get_pack("sentence-embeddings"))
+    assert shlex.split(command, posix=True)[4] == sys.executable, (
+        "the interpreter path did not survive being split back up")
 
 
 def test_ordinary_pip_failure_is_a_plain_install_error(installer, monkeypatch):

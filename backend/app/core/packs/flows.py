@@ -113,10 +113,12 @@ def _tail_text(lines: Sequence[str]) -> str:
 
 
 #: An argument every shell passes through untouched: letters, digits, and
-#: the punctuation that is never syntax in bash, cmd or PowerShell. The
-#: characters deliberately NOT in it are the ones that bite -- whitespace,
-#: and the ``<`` / ``>`` of a PEP 508 version spec.
-_BARE_ARGUMENT = re.compile(r"[A-Za-z0-9._/\\:+-]+")
+#: the punctuation that is never syntax in bash, cmd or PowerShell. Three
+#: characters are deliberately absent because each one breaks a real
+#: paste -- whitespace, the ``<`` / ``>`` of a PEP 508 version spec, and
+#: the backslash of a Windows path. Forward slashes stay, so a POSIX
+#: interpreter path is still rendered bare.
+_BARE_ARGUMENT = re.compile(r"[A-Za-z0-9._/:+-]+")
 
 
 def _shell_quote(part: str) -> str:
@@ -127,12 +129,21 @@ def _shell_quote(part: str) -> str:
     quoted string at all. Double quotes are what bash, cmd and PowerShell
     all read the same way, for a path and for a version spec alike.
 
-    Quoting only on whitespace was not enough, and the only pack that can
-    reach this path proves it: ``sentence-transformers>=3.0,<6`` has no
-    space in it, and a bare ``>`` is REDIRECTION in all three shells --
-    bash writes a file named ``=3.0,``, PowerShell refuses to parse, cmd
-    fails on ``6``. So the test is inverted: a part is left bare only when
-    every character in it is one no shell reads as syntax.
+    The test is INVERTED -- bare only for a part made entirely of characters
+    no shell reads as syntax -- because two narrower rules were each tried
+    and each shipped a command line that does not run:
+
+    * Quoting on whitespace alone left ``sentence-transformers>=3.0,<6``
+      bare, and an unquoted ``>`` is REDIRECTION in all three shells: bash
+      writes a file named ``=3.0,``, PowerShell refuses to parse the line,
+      cmd fails on ``6``.
+    * Treating the backslash as safe left ``D:\\...\\python.exe`` bare, which
+      PowerShell and cmd accept but **Git Bash does not**: bash strips the
+      backslashes of an unquoted word, so uv is handed
+      ``D:GithubCodefyUI...python.exe`` and answers "No virtual environment
+      found". Inside double quotes bash escapes only ``$``, a backtick,
+      ``"``, ``\\`` and a newline, so every other backslash survives -- and
+      PowerShell (backtick escape) and cmd keep them too.
     """
     return part if _BARE_ARGUMENT.fullmatch(part) else f'"{part}"'
 
@@ -145,6 +156,11 @@ def _restart_command(pack: Pack) -> str:
     user to an exit code instead of to a working install. The constraints
     file is deliberately absent -- it pins what THIS process has already
     imported, which is the very thing that has to be replaced.
+
+    Every part goes through :func:`_shell_quote`, so this has to survive
+    being pasted into a shell rather than merely being readable: the
+    interpreter path keeps its backslashes and the version spec keeps its
+    ``<``/``>``, in Git Bash as well as in PowerShell and cmd.
     """
     argv = ["uv", "pip", "install", "--python", sys.executable, *pack.pip]
     return " ".join(_shell_quote(part) for part in argv)
