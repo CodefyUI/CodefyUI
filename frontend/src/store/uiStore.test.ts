@@ -156,6 +156,21 @@ describe('useUIStore', () => {
       useUIStore.getState().closePackCenter();
       expect(localStorage.length).toBe(0);
     });
+
+    it('setPackCenterFocus re-points the open panel without closing it', () => {
+      useUIStore.getState().openPackCenter();
+
+      // A card's "Install X first" link jumps to the pack that is blocking it.
+      useUIStore.getState().setPackCenterFocus('sentence-embeddings');
+      expect(useUIStore.getState().packCenterFocusPackId).toBe('sentence-embeddings');
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+
+      // And the panel clears the request once it has honoured it, so a later
+      // render does not scroll the list out from under the reader again.
+      useUIStore.getState().setPackCenterFocus(null);
+      expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+      expect(useUIStore.getState().packCenterOpen).toBe(true);
+    });
   });
 
   describe('toggleBeginnerMode', () => {

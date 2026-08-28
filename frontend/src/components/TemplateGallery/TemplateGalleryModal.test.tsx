@@ -56,7 +56,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  useUIStore.setState({ templateGalleryOpen: false, shortcutsModalOpen: false });
+  useUIStore.setState({
+    templateGalleryOpen: false,
+    shortcutsModalOpen: false,
+    packCenterOpen: false,
+  });
   useDialogStore.setState({ active: null });
   vi.restoreAllMocks();
 });
@@ -251,6 +255,21 @@ describe('TemplateGalleryModal', () => {
     expect(useUIStore.getState().templateGalleryOpen).toBe(true);
     useDialogStore.setState({ active: null });
 
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useUIStore.getState().templateGalleryOpen).toBe(false);
+  });
+
+  it('leaves Escape alone while the Package Center is open', async () => {
+    render(<TemplateGalleryModal />);
+    await screen.findByText('No examples available');
+
+    // Same rule as the shortcuts modal above: the Package Center renders over
+    // this one, and Escape belongs to the surface the user is looking at.
+    useUIStore.setState({ packCenterOpen: true });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(useUIStore.getState().templateGalleryOpen).toBe(true);
+
+    useUIStore.setState({ packCenterOpen: false });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(useUIStore.getState().templateGalleryOpen).toBe(false);
   });

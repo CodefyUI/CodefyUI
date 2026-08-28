@@ -814,7 +814,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.close': '關閉套件中心',
   'packs.refresh': '重新整理套件狀態',
   'packs.list': '套件清單',
-  'packs.activity': '安裝進度',
+  'packs.activity': '安裝狀態',
   'packs.loading': '正在載入套件...',
   'packs.loadFail': '無法載入套件：{error}',
   'packs.unsupported': '這台伺服器不支援套件中心。請更新 CodefyUI 後重新啟動。',
@@ -892,7 +892,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
-  'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再在終端機執行：',
+  'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',

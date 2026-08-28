@@ -11,6 +11,8 @@ import { PresetConfigModal } from './components/PresetModal/PresetConfigModal';
 import { LayersEditorModal } from './components/LayersEditor/LayersEditorModal';
 import { NodeDetailModal } from './components/NodeDetailModal/NodeDetailModal';
 import { TemplateGalleryModal } from './components/TemplateGallery/TemplateGalleryModal';
+import { PackCenterModal } from './components/PackCenter/PackCenterModal';
+import { RestartOverlay } from './components/PackCenter/RestartOverlay';
 import { ToastContainer } from './components/shared/Toast';
 import { ShortcutsModal } from './components/shared/ShortcutsModal';
 import { DialogContainer } from './components/shared/DialogContainer';
@@ -157,10 +159,14 @@ function App() {
       <LayersEditorModal />
       <NodeDetailModal />
       <TemplateGalleryModal />
+      <PackCenterModal />
       <ToastContainer />
       <ShortcutsModal />
       <DialogContainer />
       <PluginHost />
+      {/* Last, and above everything: while the server is being restarted under
+          the page, nothing else on screen is still true. */}
+      <RestartOverlay />
     </div>
   );
 }

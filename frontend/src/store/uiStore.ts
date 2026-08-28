@@ -46,6 +46,12 @@ interface UIState {
   packCenterOpen: boolean;
   packCenterFocusPackId: string | null;
   openPackCenter: (packId?: string) => void;
+  /**
+   * Point the open panel at another pack -- or clear the request once it has
+   * been honoured, which is what keeps the highlight from firing again on
+   * every subsequent render.
+   */
+  setPackCenterFocus: (packId: string | null) => void;
   closePackCenter: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
@@ -173,6 +179,7 @@ export const useUIStore = create<UIState>((set) => ({
   packCenterFocusPackId: null,
   openPackCenter: (packId) =>
     set({ packCenterOpen: true, packCenterFocusPackId: packId ?? null }),
+  setPackCenterFocus: (packId) => set({ packCenterFocusPackId: packId }),
   closePackCenter: () =>
     set({ packCenterOpen: false, packCenterFocusPackId: null }),
   draggingSourceType: null,

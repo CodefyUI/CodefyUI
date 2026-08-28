@@ -248,6 +248,14 @@ describe('nodeMissingPack', () => {
     expect(nodeMissingPack(undefined, byId, true, false)).toBeNull();
     // Catalog not loaded -- no PACK badge on a guess.
     expect(nodeMissingPack(makeNode({ requires_pack: 'rag' }), byId, false, false)).toBeNull();
+    // `byId` is built from parsed JSON, so a pack id that names an
+    // Object.prototype member must read as UNKNOWN (available) rather than
+    // resolve to an inherited function and grey the node out for good.
+    expect(nodeMissingPack(makeNode({ requires_pack: 'toString' }), byId, true, false)).toBeNull();
+    expect(
+      nodeMissingPack(makeNode({ requires_pack: 'constructor:hasOwnProperty' }), byId, true, false),
+    ).toBeNull();
+    expect(packTitle(byId, 'toString')).toBe('toString');
   });
 });
 

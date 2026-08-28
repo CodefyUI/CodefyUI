@@ -65,6 +65,19 @@ export function parseRequirement(value: string): PackRequirement {
 }
 
 /**
+ * Read one pack out of the index by id, treating an inherited member as absent.
+ *
+ * `byId` is built from parsed JSON, so a plain `byId[id]` answers with a
+ * function for `toString`, `constructor` and the rest of `Object.prototype`.
+ * A node declaring `requires_pack: "toString"` would then be measured against
+ * `Function.prototype.usable` (undefined) and greyed out for good -- the exact
+ * "unknown pack" case this module promises to leave enabled.
+ */
+function lookupPack(byId: PackIndex, packId: string): PackSummary | undefined {
+  return Object.prototype.hasOwnProperty.call(byId, packId) ? byId[packId] : undefined;
+}
+
+/**
  * Tolerant on purpose: an unloaded catalog, an unsupported server, an unknown
  * pack or item never greys anything out.
  *
@@ -84,7 +97,7 @@ export function isRequirementAvailable(
   if (!req) return true;
   if (!loaded || unsupported) return true;
 
-  const pack = byId[req.packId];
+  const pack = lookupPack(byId, req.packId);
   if (!pack) return true;
   if (req.itemId === null) return pack.usable;
 
@@ -142,7 +155,7 @@ export function nodeMissingPack(
  * "install the word-vectors pack" is still a usable sentence.
  */
 export function packTitle(byId: PackIndex, packId: string): string {
-  return byId[packId]?.title ?? packId;
+  return lookupPack(byId, packId)?.title ?? packId;
 }
 
 /**
