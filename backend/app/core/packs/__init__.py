@@ -110,10 +110,16 @@ def pack_available(pack_id: str, item_id: str | None = None) -> bool:
 def require_pack(pack_id: str, item_id: str | None = None) -> None:
     """Refuse to run without this pack, in words the editor can act on.
 
-    A graph run NEVER downloads. Four hundred megabytes arriving mid-run, on
-    a classroom connection, with no progress bar and no way to cancel, is not
+    A graph run never downloads PACK CONTENTS -- the models and assets the
+    Package Center manages. Four hundred megabytes arriving mid-run, on a
+    classroom connection, with no progress bar and no way to cancel, is not
     a thing a "Run" button may do -- so the failure names the one place that
     can install it, and the run stops there.
+
+    Scoped deliberately, because it is not a claim about the hub in general:
+    ``TextCorpusDataset``, ``HuggingFaceDataset`` and ``Tokenizer`` do fetch
+    from Hugging Face during a run. Those are their own small downloads with
+    their own cache; what this function guards is the Package Center's.
     """
     if pack_available(pack_id, item_id):
         return

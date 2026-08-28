@@ -638,6 +638,31 @@ async def test_shutdown_with_no_job_is_a_no_op():
     assert service.current_job() is None
 
 
+async def test_shutdown_survives_a_flow_that_raised_a_base_exception():
+    """``_run`` records a ``BaseException`` and then RE-RAISES it, so it
+    travels out of the shielded task and into the await in ``shutdown`` --
+    the one inside the lifespan shutdown hook. A catch that only covered
+    ``Exception`` would let it out there and make "the server is coming
+    down" a traceback on the way out, for a job that already reached a
+    terminal state and told everyone watching.
+    """
+    class _OutOfBand(BaseException):
+        """Private on purpose: nothing else may catch it by accident."""
+
+    def _doomed_flow(pack, item_ids, *, emit, cancel_check):
+        raise _OutOfBand("the interpreter is going away")
+
+    service = PackService(run_flow=_doomed_flow)
+    job = await service.submit_install(get_pack(SENTENCE), [],
+                                       mode="live", variant=None)
+
+    await service.shutdown()
+
+    assert job.terminal
+    assert job.status == "failed"
+    assert "_OutOfBand" in job.error["message"]
+
+
 async def test_shutdown_is_bounded_when_the_flow_ignores_cancellation():
     """Server shutdown must not be held hostage by a stubborn install."""
     release = threading.Event()

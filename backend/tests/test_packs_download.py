@@ -462,6 +462,33 @@ def test_meter_without_a_known_size_is_not_clamped():
     assert meter.done == 4000
 
 
+def test_a_zero_size_file_cannot_drag_the_next_file_backwards():
+    """The two rules above meet here, and used to disagree.
+
+    A file the hub reports as zero bytes runs UNCAPPED, so by the time the
+    next file starts the meter can already be past the base that file is
+    handed. Setting that base + size as the ceiling would then pull the bar
+    DOWN -- and a progress bar that goes down is read as a restart, not as
+    accounting catching up.
+    """
+    events: list[dict] = []
+    meter = download._ByteMeter(emit=events.append, item_id="m", total=1000,
+                                min_interval_s=0.0)
+
+    meter.begin_file(0, 0)
+    meter.add(700)
+    assert meter.done == 700
+
+    # The hub reported nothing for the first file, so the second one's base
+    # is still 0 and its own size is well under what has been counted.
+    meter.begin_file(0, 400)
+    meter.add(10)
+
+    assert meter.done >= 700, "the ceiling clamped the bar backwards"
+    percents = [event["percent"] for event in _progress(events)]
+    assert percents == sorted(percents), percents
+
+
 # -- Hugging Face items ----------------------------------------------------
 
 

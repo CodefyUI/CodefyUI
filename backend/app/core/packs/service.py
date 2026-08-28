@@ -475,6 +475,14 @@ class PackService:
         The task is SHIELDED from the timeout -- cancelling it would not stop
         the worker thread anyway, and would leave the job with no terminal
         event at all.
+
+        Nothing the awaited task raises escapes. ``_run`` swallows every
+        ``Exception`` itself but deliberately RE-RAISES a ``BaseException``
+        (KeyboardInterrupt, SystemExit, CancelledError) after recording the
+        job, and this is the one place that await happens -- inside the
+        lifespan shutdown hook. Letting one through would turn "the server
+        is coming down" into a traceback on the way out, of an install that
+        has already reached a terminal state and told everyone watching.
         """
         job, task = self._job, self._task
         if job is not None and not job.terminal:
@@ -488,5 +496,8 @@ class PackService:
             log.warning("pack install job did not stop within %.0fs; "
                         "leaving it to the interpreter",
                         self._shutdown_timeout_s)
-        except Exception:  # pragma: no cover - _run swallows its own errors
+        except BaseException:
+            # BaseException, not Exception: _run re-raises those on purpose
+            # (see the docstring), so ``except Exception`` here catches only
+            # the cases _run already handled and misses the ones it forwards.
             log.exception("pack install job failed during shutdown")

@@ -22,6 +22,7 @@ No test here installs anything: each one injects a scripted flow into a
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import threading
 import time
 
@@ -32,7 +33,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api import routes_packs
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, session_token
-from app.core.packs import download, flows, restart, state
+from app.core.packs import download, flows, restart, runner, state
 from app.core.packs.errors import (
     PackInstallError,
     PackInsufficientDisk,
@@ -722,6 +723,38 @@ async def test_detect_gpu_matches_dev_py_on_apple_silicon(monkeypatch):
     monkeypatch.setattr(restart.platform, "machine", lambda: "arm64")
     assert restart.detect_gpu() == dev.detect_gpu() == (
         "Apple Silicon (MPS)", "mps")
+
+
+async def test_detect_gpu_probes_without_a_console_window(monkeypatch):
+    """The ANSWER mirrors dev.py; the way the probe is started must not.
+
+    dev.py runs in a console the user is already looking at. This copy runs
+    inside a server ``cdui start`` detached, so nvidia-smi gets exactly what
+    ``flows.verify_imports`` gives its probe: ``runner.creation_flags()`` --
+    without which a console flashes over the editor the first time somebody
+    opens the panel -- and no stdin to block on. ``creation_flags`` is
+    replaced with a sentinel here so this passes or fails on the WIRING
+    rather than on which OS the test happens to run on.
+    """
+    seen: dict = {}
+    flags = 0x0BADF00D
+
+    def _fake_run(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="NVIDIA GeForce RTX 4080, 610.74\n", stderr="")
+
+    monkeypatch.setattr(runner, "creation_flags", lambda: flags)
+    monkeypatch.setattr(restart.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(restart.shutil, "which", lambda name: "nvidia-smi.exe")
+    monkeypatch.setattr(restart.subprocess, "run", _fake_run)
+
+    assert restart.detect_gpu() == (
+        "NVIDIA GeForce RTX 4080 (driver 610.74)", "cu128")
+    assert seen["argv"][0] == "nvidia-smi"
+    assert seen["kwargs"]["creationflags"] == flags
+    assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
 
 
 async def test_gpu_info_falls_back_when_detection_explodes(monkeypatch):

@@ -311,9 +311,15 @@ def test_glove_convert_step_hands_the_converter_the_downloaded_file(
 def test_glove_progress_cannot_be_reported_against_another_item(
         installer, monkeypatch):
     """The converter's frames are stamped by the flow, not trusted from it:
-    a payload naming a different item would move the wrong bar."""
+    a payload naming a different item would move the wrong bar.
+
+    What the converter leaves out is filled in to the types the event
+    contract promises, not to a blanket ``None``: ``bytes_done`` is an int
+    there, so "nothing counted yet" is 0, where an unknown total and a
+    percent that cannot be computed genuinely are nothing.
+    """
     def _ensure_npz(gz_path, progress=None):
-        progress({"type": "log", "item": "all-MiniLM-L6-v2", "bytes_done": 1})
+        progress({"type": "log", "item": "all-MiniLM-L6-v2"})
         return Path(gz_path).with_name("glove-50d.npz")
 
     module = types.ModuleType("app.nodes.llm._glove")
@@ -323,9 +329,9 @@ def test_glove_progress_cannot_be_reported_against_another_item(
     _install("word-vectors", None, installer)
 
     forwarded = [event for event in installer.events
-                 if event.get("bytes_done") == 1]
+                 if event["type"] == "progress"]
     assert forwarded == [{"type": "progress", "item": "glove-50d",
-                          "bytes_done": 1, "bytes_total": None,
+                          "bytes_done": 0, "bytes_total": None,
                           "percent": None}]
 
 
@@ -349,6 +355,34 @@ def test_converter_whose_own_dependency_is_missing_fails_the_install(
     logs = [event["line"] for event in installer.events
             if event["type"] == "log"]
     assert not any("not available in this build" in line for line in logs), logs
+
+
+def test_converter_module_without_ensure_npz_fails_the_install(
+        installer, monkeypatch):
+    """The trap the exception sets for whoever reads it.
+
+    A converter module that is HERE but does not export ``ensure_npz``
+    raises ``ImportError("cannot import name 'ensure_npz' ...")`` whose
+    ``name`` is the converter's own module -- indistinguishable from the
+    module being missing if you believe ``exc.name``. Believing it reports a
+    GloVe pack that can never convert as installed, so presence is what
+    decides, and a module that is here has to explain itself.
+    """
+    module = types.ModuleType("app.nodes.llm._glove")  # no ensure_npz
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", module)
+
+    with pytest.raises(ImportError) as raised:
+        _install("word-vectors", None, installer)
+
+    # The shape the guard used to be fooled by, asserted so a future guard
+    # that leans on ``exc.name`` again fails here rather than in the field.
+    assert raised.value.name == "app.nodes.llm._glove"
+    assert "ensure_npz" in str(raised.value)
+
+    logs = [event["line"] for event in installer.events
+            if event["type"] == "log"]
+    assert not any("not available in this build" in line for line in logs), logs
+    assert "step_done convert:glove-50d" not in installer.steps
 
 
 def test_missing_converter_is_a_log_line_not_a_failed_install(installer):

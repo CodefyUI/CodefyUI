@@ -172,12 +172,17 @@ def _converter_absent(exc: ImportError) -> bool:
     "The converter has not been written" and "the converter is broken" are
     both ``ImportError``. The first is expected and may be shrugged off; the
     second is a GloVe pack that can never convert, and shrugging THAT off
-    would report the install as finished. So only an error naming the
-    converter's own module -- or a module that genuinely is not importable --
-    counts as absent, and everything else is re-raised.
+    would report the install as finished.
+
+    The exception cannot tell the two apart, which is why it is not asked:
+    a module that IS here but does not export ``ensure_npz`` raises an
+    ``ImportError`` whose ``name`` is the converter's own module -- exactly
+    what a missing module raises -- so trusting ``exc.name`` calls a broken
+    converter absent and finishes the install. PRESENCE is asked instead.
+    Already imported means present; importable means present; anything else
+    is a build that does not ship it yet. *exc* is kept in the signature so
+    the question reads as one about this import at the call site.
     """
-    if getattr(exc, "name", None) == _GLOVE_MODULE:
-        return True
     if _GLOVE_MODULE in sys.modules:
         return False
     try:
@@ -217,10 +222,14 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
         def _forward(payload: dict) -> None:
             # Every progress frame carries the same three keys whoever sent
             # it, so a consumer never has to ask which producer this one came
-            # from. Type and item are stamped LAST: whatever the converter
+            # from. ``bytes_done`` defaults to 0 rather than None because the
+            # event contract types it as an int -- "no bytes yet" is zero,
+            # where an unknown total and an uncomputable percent really are
+            # nothing. Type and item are stamped LAST: whatever the converter
             # reports, what leaves here is a frame for THIS item.
             frame = dict(payload)
-            for key in ("bytes_done", "bytes_total", "percent"):
+            frame.setdefault("bytes_done", 0)
+            for key in ("bytes_total", "percent"):
                 frame.setdefault(key, None)
             frame["type"] = "progress"
             frame["item"] = item_id

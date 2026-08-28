@@ -141,8 +141,14 @@ class _ByteMeter:
         With a known size this caps what the file may contribute; with an
         unknown one (the hub does not always report a size) there is no cap,
         because a ceiling of zero would freeze the bar instead of bounding it.
+
+        And never below what has already been counted. A file the hub
+        reported as zero bytes ran UNCAPPED and may well have moved the
+        meter past the *base* the next file is handed; a ceiling under
+        ``done`` would then clamp the bar BACKWARDS, and a progress bar that
+        goes down reads as a restart rather than as arithmetic.
         """
-        self._ceiling = base + size if size else None
+        self._ceiling = max(base + size, self.done) if size else None
         self._initial_seen = False
 
     def note_initial(self, initial: int) -> None:
@@ -284,9 +290,12 @@ def abort_xet_transfer() -> None:
         return
 
     log.warning(
-        "Aborting the hf_xet session to stop this download. Any other "
-        "Hugging Face transfer this process has in flight -- a graph run "
-        "streaming a dataset or fetching a tokenizer -- is interrupted too.")
+        "Aborting the hf_xet session to stop this download. This is called "
+        "on every cancel, including a classic HTTP one with no Xet session "
+        "to abort, so it is not a claim that anything was interrupted: what "
+        "it means is that any other Hugging Face transfer this process has "
+        "in flight -- a graph run streaming a dataset or fetching a "
+        "tokenizer -- is interrupted too, if there is one.")
     try:
         abort_xet_session()
     except Exception:

@@ -207,7 +207,12 @@ def test_validate_rejects_dependency_cycle():
     pytest.param((_pack(items=(_item(kind="asset", repo_id=None,
                                      url="https://x/f.gz"),)),),
                  id="asset-without-filename"),
-    pytest.param((_pack(items=(_item("dup"), _item("dup"))),), id="duplicate-item-id"),
+    # Distinct repo ids on purpose: the repo-id-uniqueness rule runs FIRST,
+    # so two items sharing ``_item``'s default repo would be rejected for
+    # that instead and this case would never reach the rule it is named for.
+    pytest.param((_pack(items=(_item("dup"),
+                               _item("dup", repo_id="org/other"))),),
+                 id="duplicate-item-id"),
     pytest.param((_pack("a", items=(_item("m"),)),
                   _pack("b", items=(_item("n"),))),
                  id="repo-id-shared-by-two-packs"),

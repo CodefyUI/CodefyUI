@@ -25,10 +25,12 @@ of items inside it. No pip spec, no repo id and no URL from a request body
 ever reaches a subprocess -- see ``core/packs/catalog.py``, which is the whole
 attack surface of the feature.
 
-There is no route for removing a pack's PACKAGES. Uninstalling pip packages
-from inside the process that imported them is how you get a half-loaded
-interpreter serving requests; ``cdui packs remove <id>`` does it from a
-terminal, with the server stopped.
+There is no route for removing a pack's PACKAGES, and no CLI command either:
+uninstalling pip packages from inside the process that imported them is how
+you get a half-loaded interpreter serving requests. ``cdui packs remove
+<pack_id> <item_id>`` deletes one downloaded MODEL and, for the packages,
+PRINTS the ``uv pip uninstall --python <venv python> ...`` line to run by
+hand, from a terminal, with the server stopped.
 """
 
 from __future__ import annotations
@@ -390,9 +392,12 @@ async def delete_pack_item(pack_id: str, item_id: str, request: Request):
     but on Windows a file another process holds open survives the delete, and
     the caller is entitled to know its disk did not come back.
 
-    Only ITEMS. A pack's pip packages are not removable from inside the
-    process that imported them -- ``cdui packs remove <id>`` does that with
-    the server stopped.
+    Only ITEMS. A pack's pip packages are not items, and nothing removes
+    them for you -- doing it from inside the process that imported them
+    leaves a half-loaded interpreter serving requests. ``cdui packs remove
+    <pack_id> <item_id>`` deletes one model and PRINTS the ``uv pip
+    uninstall --python <venv python> ...`` line for the packages, to run
+    from a terminal with the server stopped.
     """
     pack = _require_pack(pack_id)
     if not any(item.item_id == item_id for item in pack.items):

@@ -31,7 +31,7 @@ import platform
 import shutil
 import subprocess
 
-from . import state
+from . import runner, state
 from .catalog import Pack
 from .paths import last_restart_file
 
@@ -120,6 +120,13 @@ def detect_gpu() -> tuple[str, str]:
     in the default wheel), then nvidia-smi, then rocm-smi on Linux, then
     "CPU only". Detection failures collapse to ``("CPU only", "cpu")``
     rather than raising -- the caller is drawing a panel, not installing.
+
+    The ANSWERS mirror dev.py; how the probe is started does not, and must
+    not. dev.py runs in a console the user is looking at, while this runs
+    inside a server that ``cdui start`` detaches -- so nvidia-smi is given
+    the same treatment as ``flows.verify_imports``: no console window on
+    Windows (otherwise one flashes over the editor the first time somebody
+    opens the panel), and no stdin to block on.
     """
     if platform.system() == "Darwin":
         if platform.machine() in ("arm64", "aarch64"):
@@ -132,7 +139,8 @@ def detect_gpu() -> tuple[str, str]:
                 ["nvidia-smi", "--query-gpu=name,driver_version",
                  "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=_SMI_TIMEOUT_S,
-                check=True,
+                check=True, stdin=subprocess.DEVNULL,
+                creationflags=runner.creation_flags(),
             )
             first = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
             if first:
