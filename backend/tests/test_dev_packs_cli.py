@@ -295,6 +295,12 @@ def fake_flow(monkeypatch):
              "bytes_done": 12_600_000, "bytes_total": 30_000_000,
              "percent": 42.0},
             {"type": "step_done", "step": "download:all-MiniLM-L6-v2"},
+            # Not every progress frame counts bytes. The GloVe conversion
+            # counts LINES and says so in ``text``; 400,000 of them rendered
+            # as "0.4/0.4 MB" is a number with somebody else's unit on it.
+            {"type": "progress", "item": "glove-50d",
+             "bytes_done": 400_000, "bytes_total": 400_000, "percent": 100.0,
+             "text": "Converting GloVe text to npz (one-time)"},
         ],
     }
 
@@ -325,6 +331,11 @@ def test_cli_install_drives_flow_and_renders_progress(probed, fake_flow, capsys)
     assert "fetching config.json" in out            # the log line
     assert "42%" in out                             # the progress percentage
     assert "12.6/30.0 MB" in out
+    # A frame that says what it is doing says it INSTEAD of a size: the
+    # conversion counts lines, and "0.4/0.4 MB" would be those lines wearing
+    # a unit that belongs to a different quantity.
+    assert "Converting GloVe text to npz (one-time)" in out
+    assert "0.4/0.4 MB" not in out, "line counts rendered as megabytes"
     assert "[" in out and "#" in out                # the ASCII bar
     assert "\r" in out, "progress must redraw one line, not scroll"
     # The bar is closed before the summary, so the two never share a line.

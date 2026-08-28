@@ -8,10 +8,14 @@ the download and the node loads that instead.
 
 Four decisions are worth knowing about.
 
-**The npz lives beside the gz, not in a cache of our own.** ``remove_item``
-deletes the download; a converted copy stashed somewhere else would outlive
-the pack it came from and keep answering lookups for a table the learner
-believes they uninstalled.
+**The npz lives beside the gz, and the install writes it down.** The catalog
+names one file per item, so nothing would ever delete an 83 MB npz on its
+own: the convert step adds it to the item's sentinel as a ``derived`` file
+and ``remove_item`` deletes what that list names before the download itself.
+Sitting beside the gz is what makes the list checkable -- every entry has to
+resolve to a direct child of the asset directory or it is refused -- and it
+is why uninstalling the pack does not leave a table behind, still answering
+lookups for something the learner believes they removed.
 
 **The vocabulary is one UTF-8 byte blob.** 400k words in a numpy unicode array
 is 400k x (longest word) x 4 bytes -- around 160 MB of mostly padding. Joined
@@ -26,10 +30,16 @@ half-way leaves nothing that looks converted.
 **The progress dicts are a contract, not a convenience.**
 ``core.packs.flows._convert_glove_step`` forwards them verbatim as
 ``glove-50d`` progress events, so ``bytes_done`` / ``bytes_total`` /
-``percent`` are the Package Center's own keys and the UI needs to learn
-nothing new to draw this wait. ``bytes_done`` counts LINES here -- the unit
-the converter can actually measure -- which is why the bar it draws is the
-same bar and not the same number.
+``percent`` are the Package Center's own keys and every consumer can draw
+the bar without knowing which producer sent the frame.
+
+The NUMBER is the catch, and ``text`` is how it is handled. ``bytes_done``
+counts LINES here -- the unit the converter can actually measure -- so a
+consumer that appends "MB" to it, as ``scripts/packs.py`` did until this
+module existed, reports 400,000 lines as 0.4 MB: not a rounding error but a
+different quantity wearing somebody else's unit. Every frame therefore
+carries ``text`` saying what is happening, and a renderer showing that text
+must not also show a size.
 
 Imports stay cheap: this module is reached at startup through the node modules
 the registry scans, so there is no torch here and ``app.core.packs`` is
@@ -312,8 +322,11 @@ def ensure_npz(gz_path: Path, progress: Callable[[dict], None] | None = None
                 f"is not the GloVe-50d table. Remove the word vectors pack in "
                 f"Package Center and download it again")
 
-        _report(progress, lines, total, done=True)
         _save_npz(npz_path, words, rows)
+        # AFTER the save, not before it: writing and fsyncing 83 MB is the
+        # slowest part of this, and a bar that read 100% throughout it would
+        # be a finished conversion the learner watches do nothing.
+        _report(progress, lines, total, done=True)
         logger.info("converted %s to %s (%d words x %d dims)",
                     gz_path.name, npz_path.name, len(words), GLOVE_DIM)
     return npz_path

@@ -269,8 +269,19 @@ class _ConsoleReporter:
             bar = "#" * filled + "." * (self.BAR_WIDTH - filled)
             pct = f"{clamped:>3.0f}%"
 
-        sizes = (f"{_mb(done)}/{_mb(total)} MB" if total else f"{_mb(done)} MB")
-        line = f"    [{bar}] {pct} {sizes} {payload.get('item') or ''}".rstrip()
+        # A frame that describes itself is not counting bytes. The GloVe
+        # conversion counts LINES, and rendering 400,000 of those as
+        # "0.4/0.4 MB" is not a rounding error -- it is a different quantity
+        # with somebody else's unit on it. Such a frame gets its own words,
+        # and only a frame without them gets the megabytes.
+        text = str(payload.get("text") or "").strip()
+        if text:
+            tail = text
+        else:
+            sizes = (f"{_mb(done)}/{_mb(total)} MB" if total
+                     else f"{_mb(done)} MB")
+            tail = f"{sizes} {payload.get('item') or ''}"
+        line = f"    [{bar}] {pct} {tail}".rstrip()
         # Pad to the previous width: a carriage return moves the cursor back
         # but leaves whatever was longer on the line behind it.
         sys.stdout.write("\r" + line + " " * max(0, self._width - len(line)))

@@ -298,6 +298,24 @@ def test_the_last_frame_finishes_the_bar(tmp_path):
     assert frames[-1]["percent"] == 100.0
 
 
+def test_the_bar_only_reaches_100_once_the_file_is_there(tmp_path):
+    """100% means converted, not "finished reading".
+
+    Writing and fsyncing 83 MB is the slowest single step of a real
+    conversion. A bar that reached the end before it would leave the learner
+    watching a finished progress bar do nothing for several seconds, which is
+    what a hang looks like.
+    """
+    gz_path = _write_gz(tmp_path / "table.gz", _table_lines(), header=True)
+    npz_path = _glove.npz_path_for(gz_path)
+    seen: list[tuple] = []
+
+    _glove.ensure_npz(gz_path, progress=lambda frame: seen.append(
+        (frame["percent"], npz_path.is_file())))
+
+    assert seen[-1] == (100.0, True), seen
+
+
 def test_progress_without_a_header_has_no_total(glove_gz):
     """No header, no count, no percentage -- and None rather than a made-up
     number, which is what ``download.py`` reports for a server that sends no

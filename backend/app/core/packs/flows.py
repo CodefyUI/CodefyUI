@@ -239,8 +239,36 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
             emit(frame)
 
         npz_path = ensure_npz(gz_path, progress=_forward)
+        _record_derived(item_id, npz_path)
         emit({"type": "log", "line": f"GloVe vectors ready at {npz_path}"})
     emit({"type": "step_done", "step": f"convert:{item_id}"})
+
+
+def _record_derived(item_id: str, *paths: Path) -> None:
+    """Note on the item's sentinel that the download now owns *paths* too.
+
+    The npz the conversion writes is 83 MB that the CATALOG does not describe
+    -- it has one filename per item -- so ``remove_item`` would delete the
+    66 MB download, report the bytes as freed, and leave the larger file
+    behind forever. The sentinel is the file that already says this item was
+    downloaded, so it is where "and this came with it" belongs.
+
+    Extended, not replaced: everything the download recorded stays, and
+    ``derived`` is overwritten rather than appended to, so converting twice
+    does not list the same file twice. No sentinel means no download record
+    to extend -- which cannot happen after a real download, since
+    ``download_asset_item`` writes one before this step runs -- and inventing
+    a partial one would be a worse answer than leaving it alone.
+    """
+    pack_id = _GLOVE[0]
+    sentinel = state.read_sentinel(sentinel_path(pack_id, item_id))
+    if sentinel is None:
+        log.warning("no sentinel for pack %s item %s; %s will not be removed "
+                    "with it", pack_id, item_id,
+                    ", ".join(str(path) for path in paths))
+        return
+    sentinel["derived"] = [str(path) for path in paths]
+    state.write_sentinel(pack_id, item_id, sentinel)
 
 
 def verify_imports(pack: Pack, *, emit) -> None:
@@ -442,20 +470,63 @@ def _asset_removal_target(item: ModelItem, recorded: str | None) -> Path | None:
     return canonical if canonical.is_file() else None
 
 
+def _derived_removal_targets(sentinel: dict | None) -> list[Path]:
+    """The extra files this item's sentinel says came with the download.
+
+    Written by ``_record_derived`` -- today just the converted GloVe npz.
+    Checked exactly as strictly as the asset itself, and for exactly the same
+    reason: this list is a string in a FILE on disk, so a corrupt or
+    hand-edited sentinel must not be able to point a delete at the cache
+    root, at the directory the sentinels live in, or at anything that is not
+    a direct child of the asset directory.
+
+    Anything that fails a check is skipped rather than raised on. A removal
+    that refused to run because one line of one sentinel was odd would leave
+    the user with no way to free the space at all.
+    """
+    if sentinel is None:
+        return []
+    recorded = sentinel.get("derived")
+    if not isinstance(recorded, list):
+        return []
+
+    root = _resolved(asset_dir())
+    sentinels = _resolved(sentinel_dir())
+    targets: list[Path] = []
+    for value in recorded:
+        if not isinstance(value, str) or not value:
+            continue
+        candidate = _resolved(Path(value))
+        if root is None or candidate is None or candidate == root:
+            continue
+        if candidate.parent != root:
+            continue
+        if sentinels is not None and candidate.is_relative_to(sentinels):
+            continue
+        if candidate.is_file():
+            targets.append(candidate)
+    return targets
+
+
 def remove_item(pack: Pack, item_id: str) -> bool:
     """Delete one downloaded item and forget it. True if the BYTES went.
 
     For a Hugging Face item that is the repo folder, which is where the bytes
-    are; for an asset it is the one file in the asset directory. Both targets
-    come from the catalog and are checked before anything is deleted -- see
-    the two helpers above for what each refuses and why.
+    are; for an asset it is the one file in the asset directory, plus
+    whatever the install DERIVED from it -- the converted GloVe table is
+    bigger than the download it came from, and the catalog does not name it.
+    Every target comes from the catalog or from the item's own sentinel and
+    is checked before anything is deleted -- see the three helpers above for
+    what each refuses and why.
 
     The sentinel is removed either way, so an item whose files somebody
     cleaned out by hand stops reporting itself as downloaded. The RETURN
-    value is only about the bytes: on Windows a file another process holds
+    value is only about the item's OWN bytes: a derived file that could not
+    be deleted is logged, not reported here, because "the download is gone"
+    is the question the caller asked. On Windows a file another process holds
     open cannot be deleted and ``rmtree(ignore_errors=True)`` says nothing
     about it, so "we removed the record" must not be reported as "we freed
-    the space".
+    the space" either.
     """
     item = get_item(pack, item_id)
     sentinel = state.read_sentinel(sentinel_path(pack.pack_id, item_id))
@@ -468,6 +539,16 @@ def remove_item(pack: Pack, item_id: str) -> bool:
         target = _hf_removal_target(item)
     else:
         target = _asset_removal_target(item, recorded)
+        # Before the download itself, because the sentinel that names these
+        # goes away with it: a derived file left behind after its record has
+        # been deleted is one nothing will ever find again.
+        for extra in _derived_removal_targets(sentinel):
+            try:
+                extra.unlink()
+            except OSError:
+                log.warning("could not remove %s, which pack %s item %s "
+                            "derived; something is holding it open",
+                            extra, pack.pack_id, item_id)
 
     removed = False
     if target is not None:

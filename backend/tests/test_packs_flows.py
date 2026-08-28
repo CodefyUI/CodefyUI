@@ -61,6 +61,25 @@ def _glove_gz_bytes() -> bytes:
     return gzip.compress(f"the {row}\nking {row}\n".encode("utf-8"))
 
 
+def _asset_sentinel_for(pack, item, path, derived=()) -> None:
+    """Write the sentinel a finished asset download leaves behind.
+
+    The shape ``download.download_asset_item`` writes, because the convert
+    step now READS it back to record what it derived -- a fake download that
+    left no sentinel would test a situation production never reaches.
+    *derived* is for the tests that need a hand-written one; the real
+    download writes none and the convert step adds it.
+    """
+    payload = {
+        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
+        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
+    }
+    if derived:
+        payload["derived"] = [str(entry) for entry in derived]
+    state.write_sentinel(pack.pack_id, item.item_id, payload)
+
+
 @pytest.fixture(autouse=True)
 def user_data_dir(tmp_path, monkeypatch):
     """A throwaway cache root and a cold probe cache for every test."""
@@ -124,6 +143,7 @@ def installer(monkeypatch, tmp_path):
         target = asset_dir() / item.filename
         target.write_bytes(_glove_gz_bytes() if item.filename.endswith(".gz")
                            else b"data")
+        _asset_sentinel_for(pack, item, target)
         return target
 
     def _check_disk(items):
@@ -293,6 +313,51 @@ def test_asset_pack_downloads_then_converts(installer):
     assert _glove.npz_path_for(asset_dir() / item.filename).is_file()
     # No packages to probe, so no verify step to run.
     assert installer.probes == []
+
+
+def test_the_convert_step_records_the_npz_on_the_sentinel(installer):
+    """The conversion is bigger than the download and the catalog does not
+    name it, so the only thing that can tie the two together is the record of
+    the download itself. Without this line in the sentinel, uninstalling the
+    pack frees 66 MB and silently leaves 83 MB behind.
+
+    What the download wrote stays -- ``derived`` is added to the sentinel,
+    not written over it.
+    """
+    _install("word-vectors", None, installer)
+
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    gz_path = asset_dir() / item.filename
+    sentinel = state.read_sentinel(sentinel_path("word-vectors", "glove-50d"))
+
+    assert sentinel is not None
+    assert sentinel["derived"] == [str(_glove.npz_path_for(gz_path))]
+    assert sentinel["path"] == str(gz_path)
+    assert sentinel["sha256"] == "0" * 64
+
+
+def test_a_download_with_no_sentinel_still_converts(installer, monkeypatch):
+    """Nothing to record on is not a reason to fail the conversion.
+
+    Production always has a sentinel here -- the download writes one before
+    this step runs -- so this is about what happens when that invariant is
+    broken by a hand-cleaned cache: the table is still converted and the
+    server log says the npz will not be removed with the pack.
+    """
+    monkeypatch.setattr(state, "read_sentinel", lambda path: None)
+    written: list = []
+    monkeypatch.setattr(state, "write_sentinel",
+                        lambda pack_id, item_id, payload:
+                        written.append(payload))
+
+    _install("word-vectors", None, installer)
+
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert _glove.npz_path_for(asset_dir() / item.filename).is_file()
+    # The download's own sentinel is in there; nothing added a derived list
+    # to a record that could not be read back.
+    assert written and all("derived" not in payload for payload in written)
+    assert "step_done convert:glove-50d" in installer.steps
 
 
 def test_glove_convert_step_hands_the_converter_the_downloaded_file(
@@ -608,14 +673,6 @@ def _hf_sentinel_for(pack, item, snapshot_dir) -> None:
     })
 
 
-def _asset_sentinel_for(pack, item, path) -> None:
-    state.write_sentinel(pack.pack_id, item.item_id, {
-        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
-        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
-        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
-    })
-
-
 def test_remove_item_deletes_the_whole_repo_folder(installer):
     """Uninstalling one model has to free its BYTES.
 
@@ -685,6 +742,58 @@ def test_remove_item_deletes_an_asset_file(installer):
 
     assert not path.exists()
     assert asset_dir().exists(), "the cache root went with it"
+
+
+def test_remove_item_deletes_what_the_install_derived(installer):
+    """Uninstalling has to free the CONVERSION too.
+
+    The npz is the bigger of the two files -- 83 MB against the 66 MB it was
+    built from -- and it is the one nothing in the catalog names. Leaving it
+    behind while reporting the item removed is how a learner ends up with a
+    cache full of files no screen in the product mentions.
+    """
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    _install("word-vectors", None, installer)
+    gz_path = asset_dir() / item.filename
+    npz_path = _glove.npz_path_for(gz_path)
+    assert npz_path.is_file(), "the install did not convert"
+
+    assert flows.remove_item(pack, item.item_id) is True
+
+    assert not gz_path.exists()
+    assert not npz_path.exists(), "the converted table outlived the pack"
+    assert asset_dir().exists(), "the cache root went with it"
+
+
+@pytest.mark.parametrize("where", ["cache-root", "sentinel-dir", "outside"])
+def test_remove_item_refuses_a_derived_path_that_is_not_in_the_asset_dir(
+        installer, tmp_path, where):
+    """``derived`` is read off a FILE, so it gets the asset path's checks.
+
+    A hand-edited or corrupt sentinel must not be able to steer a delete at
+    the cache root, at the directory the sentinels live in, or at anything
+    outside the cache at all. What it CAN still reach is another download in
+    the same directory -- deliberately: that is a file the Package Center put
+    there and can fetch again, and narrowing it further would mean teaching
+    ``flows`` the name of a file only the GloVe converter knows.
+    """
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    asset = asset_dir() / item.filename
+    asset.write_bytes(b"data")
+    outside = tmp_path / "elsewhere.bin"
+    outside.write_bytes(b"data")
+    target = {"cache-root": asset_dir(), "sentinel-dir": sentinel_dir(),
+              "outside": outside}[where]
+    if where == "sentinel-dir":
+        target.mkdir(parents=True, exist_ok=True)
+    _asset_sentinel_for(pack, item, asset, derived=[target])
+
+    assert flows.remove_item(pack, item.item_id) is True
+
+    assert target.exists(), f"{where} was deleted"
+    assert not asset.exists(), "the download itself should still have gone"
 
 
 @pytest.mark.parametrize("where", ["cache-root", "sentinel-dir", "outside",
