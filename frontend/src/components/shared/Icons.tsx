@@ -194,3 +194,14 @@ export function RefreshIcon({ size }: { size?: number }) {
     </Icon>
   );
 }
+
+/** Copy a value to the clipboard — a pack id, or the command a hint told you
+ *  to run. Two overlapping sheets: the copy on top, the original behind. */
+export function CopyIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x={9} y={9} width={13} height={13} rx={2} />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Icon>
+  );
+}

@@ -1,0 +1,95 @@
+/* Shared progress bar. Colours, type and spacing come from tokens.css only. */
+
+.root {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.track {
+  flex: 1;
+  min-width: 0;
+  background: var(--border-base);
+  border-radius: var(--radius-pill);
+  /* Clips both the fill's own rounding and the indeterminate slide. */
+  overflow: hidden;
+}
+
+/* Density comes from the track height, never from the value's font size. */
+.sm .track {
+  height: 4px;
+}
+
+.md .track {
+  height: 8px;
+}
+
+.fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--radius-pill);
+  /* --transition is 0ms under prefers-reduced-motion, so this disables itself. */
+  transition: width var(--transition);
+}
+
+.tone-accent {
+  background: var(--accent);
+}
+
+.tone-info {
+  background: var(--status-info);
+}
+
+.tone-success {
+  background: var(--status-success);
+}
+
+.tone-warning {
+  background: var(--status-warning);
+}
+
+.tone-error {
+  background: var(--status-error);
+}
+
+/* Indeterminate: a third of the track sliding end to end. The component sets
+   no inline width here, so the rule below owns it. */
+.indeterminate {
+  width: 30%;
+  transition: none;
+  animation: progressSlide 1.4s ease-in-out infinite;
+}
+
+@keyframes progressSlide {
+  /* Percentages are of the fill's own 30% width: -100% parks it just off the
+     left edge, 334% just past the right one. */
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(334%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate {
+    /* tokens.css only zeroes --transition, so the keyframe needs its own
+       opt-out. The bar stops moving; the caller's status line is what says
+       "still working" (aria-busy carries it for assistive tech). */
+    animation: none;
+  }
+}
+
+.value {
+  flex: none;
+  /* Four characters wide so the row does not jitter from "5%" to "100%".
+     A text metric, not a step off the spacing scale. */
+  min-width: 4ch;
+  text-align: right;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
