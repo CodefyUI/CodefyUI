@@ -25,8 +25,11 @@ could restart it. ``cdui start``'s half of that lives in
 from __future__ import annotations
 
 import ast
+import io
+import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -586,3 +589,646 @@ def test_help_needs_no_backend_import():
     with pytest.raises(SystemExit) as exc:
         packs.main(["--help"])
     assert exc.value.code == 0
+
+
+# ══ `cdui packs-run-pending` — the half of a restart-mode install that runs
+# ══ while the server does not exist.
+#
+# The server writes down what it wanted, starts this command detached, and
+# exits. This command waits for that process to go, runs the install, records
+# what happened where the NEXT server will read it, and starts the server
+# again. It runs from the OUTER interpreter with nothing importable, because
+# for part of its run the venv it is installing into has no working torch in
+# it — which is also why everything it needs from `app.core.packs.restart` is
+# duplicated rather than imported.
+#
+# Two properties matter more than any other and are asserted several ways:
+#
+#   1. A pending file that is not ours is REFUSED and nothing is relaunched.
+#      The file names an interpreter, a package index and a program to start;
+#      it is read the way any other input is.
+#   2. Once the server has been taken down, it comes back — install failed,
+#      installer missing, disk full, does not matter. A user who asked for a
+#      package and got no server back has lost more than the package.
+
+
+def _restart_state():
+    """The names dev.py and app.core.packs.restart must agree on."""
+    from app.core.packs import restart
+
+    return restart
+
+
+def test_dev_and_restart_agree_on_the_restart_handshake():
+    """The handshake is duplicated on purpose (dev.py cannot import ``app``),
+    so the day the two copies drift, this is what says so.
+
+    Everything here is a value that crosses the process gap: two environment
+    variable names the server reads back, two schema numbers that decide
+    whether a file is understood, the subcommand name the server spawns, and
+    the two file names both halves open.
+    """
+    restart = _restart_state()
+    assert dev.LAUNCHER_ENV == restart.LAUNCHER_ENV
+    assert dev.RELAUNCH_ARGV_ENV == restart.RELAUNCH_ARGV_ENV
+    assert dev.PENDING_SCHEMA == restart.PENDING_SCHEMA
+    assert dev.OUTCOME_SCHEMA == restart.OUTCOME_SCHEMA
+    assert dev.HELPER_COMMAND == restart.HELPER_COMMAND
+    assert dev.STALE_PENDING_S == restart.STALE_PENDING_S
+
+
+def test_dev_and_restart_agree_on_where_the_two_files_live(tmp_path,
+                                                           monkeypatch):
+    """Not just the names — the whole path, derived from the same variable.
+    A helper that writes its outcome record where nobody reads it is a
+    restart that silently reports nothing."""
+    from app.core.packs import paths
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    assert dev._pending_restart_file() == paths.pending_restart_file()
+    assert dev._last_restart_file() == paths.last_restart_file()
+    assert dev._restart_log_file("abc123").parent == paths.job_log_dir()
+
+
+def test_packs_run_pending_is_in_commands_and_skips_venv_exec():
+    """Registered, and registered as a command that must NOT hop into the
+    venv: it exists to rewrite that venv, and on Windows an interpreter
+    cannot rewrite the directory it is running out of."""
+    assert dev.COMMANDS[dev.HELPER_COMMAND] is dev.packs_run_pending
+    assert dev.HELPER_COMMAND in dev._SKIP_VENV_EXEC
+    assert dev.HELPER_COMMAND not in dev.SUBCOMMAND_GROUPS
+
+
+def test_the_helper_does_not_let_the_uv_bootstrap_exit_for_it():
+    """`_ensure_uv` exits(1) when it cannot download uv, and an exit before
+    the relaunch is the one outcome this mechanism exists to prevent. The
+    helper looks for uv itself and records a failed job instead — which
+    relaunches (`test_run_pending_relaunches_when_uv_is_missing`).
+
+    Asserted through a helper rather than by running `__main__`, which is not
+    importable — the same reason `_subcommand_group` exists.
+    """
+    assert dev._needs_uv_bootstrap("start") is True
+    assert dev._needs_uv_bootstrap("install") is True
+    assert dev._needs_uv_bootstrap(dev.HELPER_COMMAND) is False
+
+
+def test_packs_run_pending_is_not_advertised_in_the_help():
+    """Deliberately undocumented. It is started by a server that is about to
+    exit and takes a file naming a process to wait for; run by hand against a
+    live server it would wait two minutes and then kill it."""
+    assert dev.HELPER_COMMAND not in dev.__doc__
+
+
+# ── the sandbox ───────────────────────────────────────────────────────────
+
+
+class _FakeInstall:
+    """Just enough of Popen for the installer: lines, then a return code."""
+
+    def __init__(self, lines, returncode):
+        self.stdout = io.StringIO("".join(f"{line}\n" for line in lines))
+        self._returncode = returncode
+
+    def wait(self):
+        return self._returncode
+
+
+class _FakeRelaunch:
+    pid = 9999
+
+
+class _Usage:
+    """`shutil.disk_usage`'s answer, as much of it as the check reads."""
+
+    def __init__(self, free):
+        self.total = free * 2
+        self.used = free
+        self.free = free
+
+
+@pytest.fixture
+def helper(tmp_path, monkeypatch):
+    """Sandbox `packs-run-pending`: a fake checkout, a fake uv, no waiting.
+
+    Returns a recorder. `rec["control"]` is the directory both control files
+    live in; set `rec["lines"]` / `rec["returncode"]` before the call to
+    script the installer.
+    """
+    root = tmp_path / "checkout"
+    backend = root / "backend"
+    venv = backend / ".venv"
+    venv.mkdir(parents=True)
+    data = tmp_path / "data"
+    control = data / "packs"
+    control.mkdir(parents=True)
+
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(data))
+    monkeypatch.setattr(dev, "ROOT", root)
+    monkeypatch.setattr(dev, "BACKEND_DIR", backend)
+    monkeypatch.setattr(dev, "VENV", venv)
+    monkeypatch.setattr(dev, "DIST_DIR", root / "frontend" / "dist")
+    # Wall-clock waits, shrunk. The deadlines are what production needs; a
+    # test that spent two real minutes proving one would never be run.
+    monkeypatch.setattr(dev, "RESTART_WAIT_S", 0.02)
+    monkeypatch.setattr(dev, "RESTART_KILL_GRACE_S", 0.02)
+    monkeypatch.setattr(dev, "RESTART_POLL_S", 0.0)
+
+    rec: dict = {
+        "control": control, "venv": venv,
+        "install": None, "install_kwargs": None,
+        "relaunch": None, "relaunch_kwargs": None,
+        "terminated": [], "alive_calls": [],
+        "lines": ["Resolved 2 packages", "Installed 2 packages"],
+        "returncode": 0,
+    }
+
+    def _fake_popen(cmd, **kw):
+        cmd = list(cmd)
+        if cmd[:1] == ["/fake/uv"]:
+            rec["install"] = cmd
+            rec["install_kwargs"] = kw
+            return _FakeInstall(rec["lines"], rec["returncode"])
+        rec["relaunch"] = cmd
+        rec["relaunch_kwargs"] = kw
+        return _FakeRelaunch()
+
+    def _fake_alive(pid):
+        rec["alive_calls"].append(pid)
+        return not rec["terminated"]        # gone once it has been stopped
+
+    monkeypatch.setattr(dev.shutil, "which",
+                        lambda name: "/fake/uv" if name == "uv" else None)
+    monkeypatch.setattr(dev.shutil, "disk_usage",
+                        lambda path: _Usage(50 * 1024 ** 3))
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(dev, "_terminate_pid",
+                        lambda pid: rec["terminated"].append(pid))
+    monkeypatch.setattr(dev.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(dev, "LANG", "en")
+    rec["alive"] = _fake_alive
+    return rec
+
+
+def _pending(helper, **overrides) -> Path:
+    """A pending file this installation's server could have written."""
+    data = {
+        "schema": 1,
+        "job_id": "job-1",
+        "pack_id": "gpu-torch",
+        "kind": "torch",
+        "index_url": "https://download.pytorch.org/whl/cu128",
+        "packages": ["torch", "torchvision"],
+        "specs": [],
+        "venv_python": str(helper["venv"] / "python"),
+        "server_pid": 4242,
+        "launcher": [sys.executable, str(Path(dev.__file__).resolve())],
+        "relaunch_argv": ["--host", "0.0.0.0", "--port", "9100"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    data.update(overrides)
+    path = helper["control"] / "pending_restart.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _outcome(helper) -> dict:
+    return json.loads(
+        (helper["control"] / "last_restart_job.json").read_text(encoding="utf-8"))
+
+
+# ── the happy path ────────────────────────────────────────────────────────
+
+
+def test_run_pending_installs_records_and_relaunches(helper):
+    path = _pending(helper)
+
+    assert dev._run_pending_job(path) == 0
+
+    record = _outcome(helper)
+    assert record["schema"] == dev.OUTCOME_SCHEMA
+    assert record["status"] == "ok"
+    assert record["returncode"] == 0
+    assert record["job_id"] == "job-1"
+    assert record["pack_id"] == "gpu-torch"
+    assert record["kind"] == "torch"
+    assert "Installed 2 packages" in record["log_tail"]
+    assert record["finished_at"]
+
+    # The claim is gone, or it would refuse the next install for 15 minutes.
+    assert not path.exists()
+    # And the server is back, on the address the browser is still pointing at.
+    assert helper["relaunch"] == [
+        sys.executable, str(Path(dev.__file__).resolve()), "start",
+        "--host", "0.0.0.0", "--port", "9100",
+    ]
+
+
+def test_run_pending_torch_and_pip_command_shapes(helper):
+    """Two kinds, two command lines, and the helper must not have to guess
+    which — that is what `kind` is in the file for."""
+    dev._run_pending_job(_pending(helper))
+    assert helper["install"] == [
+        "/fake/uv", "pip", "install",
+        "--python", str(helper["venv"] / "python"),
+        # Without --reinstall-package uv leaves a wheel whose version
+        # constraint is already satisfied alone, and a variant switch
+        # (cu124 -> cu128) becomes a no-op.
+        "--reinstall-package", "torch",
+        "--reinstall-package", "torchvision",
+        "torch", "torchvision",
+        "--index-url", "https://download.pytorch.org/whl/cu128",
+    ]
+    assert helper["install_kwargs"]["cwd"] == dev.BACKEND_DIR
+
+    helper["install"] = None
+    dev._run_pending_job(_pending(
+        helper, kind="pip", index_url=None, packages=[],
+        specs=["sentence-transformers>=3.0", "faiss-cpu"]))
+    # No constraints file, on purpose: this is the install that REPLACES what
+    # the server had loaded, and constraining it to what was already there
+    # would pin the versions it exists to move.
+    assert helper["install"] == [
+        "/fake/uv", "pip", "install",
+        "--python", str(helper["venv"] / "python"),
+        "sentence-transformers>=3.0", "faiss-cpu",
+    ]
+
+
+def test_run_pending_never_installs_package_names_it_read_off_disk(helper):
+    """`packages` describes the job; it is not spliced into an installer's
+    argv. The file is the one input that must not be able to widen what gets
+    installed."""
+    dev._run_pending_job(_pending(helper, packages=["torch", "evil-package"]))
+    assert "evil-package" not in helper["install"]
+    assert helper["install"][-4:-2] == ["torch", "torchvision"]
+
+
+# ── waiting for the server to go ──────────────────────────────────────────
+
+
+def test_run_pending_waits_for_the_pid_then_terminates(helper, monkeypatch,
+                                                       capsys):
+    """Installing while the old process still holds the files is the exact
+    failure a restart-mode install exists to avoid, so this is the one place
+    the helper is allowed to be slow — and the one place it is allowed to
+    stop being polite."""
+    monkeypatch.setattr(dev, "_pid_alive", helper["alive"])
+
+    assert dev._run_pending_job(_pending(helper)) == 0
+
+    assert helper["terminated"] == [4242], "the server had to be stopped"
+    assert helper["alive_calls"], "and it was asked nicely first"
+    assert helper["install"] is not None, "the install still ran afterwards"
+    assert "4242" in capsys.readouterr().out, "which branch happened is logged"
+
+
+def test_run_pending_does_not_terminate_a_server_that_left_on_its_own(helper,
+                                                                      capsys):
+    """The design: the server schedules a SIGINT at itself the moment the
+    helper is spawned. Killing it after that would skip its lifespan
+    shutdown — the database never closes and in-flight runs are never
+    retired."""
+    assert dev._run_pending_job(_pending(helper)) == 0
+    assert helper["terminated"] == []
+
+
+def test_run_pending_installs_anyway_when_the_server_will_not_die(
+        helper, monkeypatch, capsys):
+    """uv will most likely fail on locked files, and that failure is worth
+    recording. Giving up here would leave the user with neither the package
+    nor (until the relaunch) a server."""
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+
+    assert dev._run_pending_job(_pending(helper)) == 0
+    assert helper["terminated"] == [4242]
+    assert helper["install"] is not None
+    assert "still running" in capsys.readouterr().err
+
+
+# ── refusals: no install, and NO RELAUNCH ─────────────────────────────────
+
+
+@pytest.mark.parametrize("overrides, expected", [
+    ({"schema": 2}, "schema"),
+    ({"schema": True}, "schema"),
+    ({"kind": "conda"}, "kind"),
+    ({"server_pid": "4242"}, "server_pid"),
+    ({"server_pid": 0}, "server_pid"),
+    ({"launcher": []}, "launcher"),
+    ({"relaunch_argv": "--host 0.0.0.0"}, "relaunch_argv"),
+])
+def test_run_pending_refuses_a_file_it_does_not_recognise(helper, overrides,
+                                                          expected, capsys):
+    path = _pending(helper, **overrides)
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None, (
+        "a file that is not ours names a server we did not take down")
+    assert expected in capsys.readouterr().err
+    assert _outcome(helper)["status"] == "failed"
+
+
+def test_run_pending_refuses_a_foreign_venv_python(helper, capsys):
+    """The interpreter to install INTO is the one field that decides which
+    environment gets rewritten. A path outside this checkout's venv is a file
+    somebody else wrote."""
+    path = _pending(helper, venv_python="/usr/bin/python3")
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None
+    assert "venv_python" in capsys.readouterr().err
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert "refused" in record["message"]
+
+
+def test_run_pending_refuses_a_launcher_that_is_not_this_dev_py(helper, capsys):
+    """The launcher is the program the helper STARTS when it is done. A
+    pending file that names a different one is a request to run something
+    else entirely, on a machine that may well have two checkouts."""
+    path = _pending(helper, launcher=[sys.executable, "/somewhere/else/dev.py"])
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["relaunch"] is None
+    assert "launcher" in capsys.readouterr().err
+
+
+def test_run_pending_refuses_a_torch_index_that_is_not_pytorchs(helper, capsys):
+    """`--index-url` is where every wheel in the install comes from. It may
+    only ever be one of the URLs this launcher itself would have used."""
+    path = _pending(helper, index_url="https://evil.example/whl/cu128")
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None
+    assert "index_url" in capsys.readouterr().err
+
+
+def test_run_pending_accepts_every_index_this_launcher_would_have_used(helper):
+    """The allowlist is TORCH_INDEX_URLS itself, so a variant added to
+    `cdui install --gpu` is installable by restart on the same day."""
+    for variant, url in dev.TORCH_INDEX_URLS.items():
+        if not url or url == "__skip__":
+            continue
+        helper["install"] = None
+        assert dev._run_pending_job(_pending(helper, index_url=url)) == 0, variant
+        assert helper["install"][-1] == url
+
+
+def test_run_pending_refuses_a_file_that_is_not_there(helper, capsys):
+    assert dev._run_pending_job(helper["control"] / "nope.json") == 2
+    assert helper["relaunch"] is None
+
+
+def test_run_pending_refuses_a_file_that_is_not_text(helper, capsys):
+    path = helper["control"] / "pending_restart.json"
+    path.write_bytes(b"\xff\xfe\x00not utf-8")
+    assert dev._run_pending_job(path) == 2
+    assert helper["relaunch"] is None
+
+
+# ── failures that DO relaunch ─────────────────────────────────────────────
+
+
+def test_run_pending_relaunches_even_when_install_fails(helper):
+    """The single most important property in this file. Whatever went wrong
+    is in the outcome record, which the server that comes back reads and
+    shows; a user with no server has lost their queued runs and the page they
+    were looking at as well."""
+    helper["returncode"] = 1
+    helper["lines"] = ["error: no such package"]
+    path = _pending(helper)
+
+    assert dev._run_pending_job(path) == 1
+
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert record["returncode"] == 1
+    assert "no such package" in record["log_tail"]
+    assert helper["relaunch"][:3] == [
+        sys.executable, str(Path(dev.__file__).resolve()), "start"]
+    assert not path.exists(), "a failed job is still a finished job"
+
+
+def test_run_pending_relaunches_when_uv_is_missing(helper, monkeypatch):
+    monkeypatch.setattr(dev.shutil, "which", lambda name: None)
+    assert dev._run_pending_job(_pending(helper)) == 1
+    assert helper["install"] is None
+    assert helper["relaunch"] is not None
+    assert "uv" in _outcome(helper)["message"]
+
+
+def test_run_pending_relaunches_when_the_installer_cannot_be_started(
+        helper, monkeypatch):
+    """`Popen` itself raising — a uv that `which` found and the OS then
+    refused to execute."""
+    def _boom(cmd, **kw):
+        if list(cmd)[:1] == ["/fake/uv"]:
+            raise OSError("Exec format error")
+        helper["relaunch"] = list(cmd)
+        return _FakeRelaunch()
+
+    monkeypatch.setattr(dev.subprocess, "Popen", _boom)
+    assert dev._run_pending_job(_pending(helper)) == 1
+    assert helper["relaunch"] is not None
+    assert _outcome(helper)["status"] == "failed"
+
+
+def test_run_pending_relaunches_when_a_pip_job_lists_no_packages(helper):
+    """Our server refuses this before writing the file (twice over), so it is
+    a bug rather than a forgery — and the cure for a bug is a server the user
+    can still reach."""
+    assert dev._run_pending_job(
+        _pending(helper, kind="pip", index_url=None, specs=[])) == 1
+    assert helper["install"] is None
+    assert helper["relaunch"] is not None
+
+
+def test_run_pending_refuses_when_disk_is_short(helper, monkeypatch):
+    """A torch install that runs out of disk halfway leaves a venv with no
+    working torch in it — which is worse than the wheel the user already had.
+    Checked against the venv's own filesystem, which is not necessarily the
+    one the temp directory is on."""
+    seen: list = []
+
+    def _tight(path):
+        seen.append(Path(path))
+        return _Usage(int(1.2 * 1024 ** 3))
+
+    monkeypatch.setattr(dev.shutil, "disk_usage", _tight)
+
+    assert dev._run_pending_job(_pending(helper)) == 1
+
+    assert helper["install"] is None, "nothing was downloaded"
+    assert helper["relaunch"] is not None, "and the server still came back"
+    assert seen and seen[0] == helper["venv"]
+    message = _outcome(helper)["message"]
+    assert "1.2 GB free" in message
+    assert "3 GB" in message
+
+
+def test_a_pip_job_needs_less_disk_than_a_torch_job(helper, monkeypatch):
+    """A couple of hundred MB of wheels is not a multi-GB CUDA runtime, and
+    refusing it on a machine that has room for it would be a refusal nobody
+    could act on."""
+    monkeypatch.setattr(dev.shutil, "disk_usage",
+                        lambda path: _Usage(int(2 * 1024 ** 3)))
+
+    assert dev._run_pending_job(_pending(helper)) == 1          # torch: needs 3
+    assert helper["install"] is None
+
+    assert dev._run_pending_job(_pending(
+        helper, kind="pip", index_url=None, specs=["faiss-cpu"])) == 0
+    assert helper["install"] is not None
+
+
+def test_run_pending_installs_when_the_free_space_cannot_be_read(helper,
+                                                                 monkeypatch):
+    """An unknowable answer is not a "no". A network mount that will not
+    report its size must not cost the user their install."""
+    def _boom(path):
+        raise OSError("not supported")
+
+    monkeypatch.setattr(dev.shutil, "disk_usage", _boom)
+    assert dev._run_pending_job(_pending(helper)) == 0
+
+
+# ── the log tail ──────────────────────────────────────────────────────────
+
+
+def test_run_pending_log_tail_is_capped(helper):
+    """The record is read back by a browser. A full pip log is megabytes of
+    resolver output, and the last forty lines are the part that says why."""
+    helper["lines"] = [f"line {i}" for i in range(500)]
+    dev._run_pending_job(_pending(helper))
+
+    tail = _outcome(helper)["log_tail"].splitlines()
+    assert len(tail) == dev.RESTART_LOG_TAIL_LINES
+    assert tail[-1] == "line 499", "the END of the log, not the start"
+    assert "line 0" not in tail
+
+
+def test_run_pending_streams_the_installer_to_its_own_log(helper, capsys):
+    """stdout here IS the job log file (the server redirected it), and it is
+    the only record of an install nobody watched."""
+    helper["lines"] = ["Resolved 12 packages", "Downloading torch (2.4 GB)"]
+    dev._run_pending_job(_pending(helper))
+    out = capsys.readouterr().out
+    assert "Downloading torch (2.4 GB)" in out
+
+
+# ── the relaunch ──────────────────────────────────────────────────────────
+
+
+def test_the_relaunch_is_detached_and_logged(helper):
+    dev._run_pending_job(_pending(helper))
+    kwargs = helper["relaunch_kwargs"]
+    if sys.platform == "win32":
+        assert kwargs["creationflags"] & 0x00000008          # DETACHED_PROCESS
+        assert kwargs["creationflags"] & dev.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert kwargs["start_new_session"] is True
+    # Never a pipe: this process is about to exit, and a pipe with nobody
+    # left to read it fills up and blocks the server mid-start.
+    assert kwargs["stdout"] is not dev.subprocess.PIPE
+    assert (helper["control"] / "logs" / "restart-job-1.log").exists()
+
+
+def test_a_relaunch_that_cannot_start_does_not_mask_the_outcome(helper,
+                                                                monkeypatch):
+    """The `finally` must not raise over the return value the exit code is
+    built from."""
+    def _popen(cmd, **kw):
+        if list(cmd)[:1] == ["/fake/uv"]:
+            return _FakeInstall(["ok"], 0)
+        raise OSError("no such file")
+
+    monkeypatch.setattr(dev.subprocess, "Popen", _popen)
+    assert dev._run_pending_job(_pending(helper)) == 0
+    assert _outcome(helper)["status"] == "ok"
+
+
+# ── the command wrapper ───────────────────────────────────────────────────
+
+
+def test_packs_run_pending_exits_with_the_jobs_code(helper, monkeypatch):
+    path = _pending(helper)
+    monkeypatch.setattr(sys, "argv", ["dev.py", dev.HELPER_COMMAND, str(path)])
+    with pytest.raises(SystemExit) as exc:
+        dev.packs_run_pending()
+    assert exc.value.code == 0
+
+
+def test_packs_run_pending_without_a_file_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["dev.py", dev.HELPER_COMMAND])
+    with pytest.raises(SystemExit) as exc:
+        dev.packs_run_pending()
+    assert exc.value.code == 2
+    assert dev.HELPER_COMMAND in capsys.readouterr().err
+
+
+# ── `cdui status` says a restart happened while nobody was looking ────────
+
+
+def test_status_reports_a_pending_restart_and_a_recent_outcome(helper, capsys):
+    _pending(helper)
+    (helper["control"] / "last_restart_job.json").write_text(json.dumps({
+        "schema": 1, "job_id": "job-0", "pack_id": "gpu-torch", "kind": "torch",
+        "status": "failed", "returncode": 1,
+        "message": "the installer exited with 1", "log_tail": "",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }), encoding="utf-8")
+
+    dev._print_restart_notice()
+
+    out = capsys.readouterr().out
+    assert "gpu-torch" in out
+    assert "4242" in out, "which process the pending claim is waiting for"
+    assert "the installer exited with 1" in out
+
+
+def test_status_forgets_an_outcome_that_is_an_hour_old(helper, capsys):
+    old = datetime.now(timezone.utc) - timedelta(seconds=dev.RESTART_NOTICE_S + 60)
+    (helper["control"] / "last_restart_job.json").write_text(json.dumps({
+        "schema": 1, "pack_id": "gpu-torch", "status": "ok",
+        "message": "gpu-torch installed", "finished_at": old.isoformat(),
+    }), encoding="utf-8")
+
+    dev._print_restart_notice()
+    assert capsys.readouterr().out == ""
+
+
+def test_status_says_nothing_when_no_restart_has_ever_run(helper, capsys):
+    dev._print_restart_notice()
+    assert capsys.readouterr().out == ""
+
+
+def test_the_status_dashboard_prints_the_restart_notice(monkeypatch):
+    """Wiring, not rendering. A notice nothing calls is dead code, and the
+    one place it has to appear is the screen somebody opens when the page
+    did not come back."""
+    called: list = []
+    monkeypatch.setattr(dev, "_print_restart_notice", lambda: called.append(True))
+    monkeypatch.setattr(dev, "_gpu_stats", lambda: [])
+    monkeypatch.setattr(dev, "_running_server_pid", lambda: None)
+    monkeypatch.setattr(dev, "_server_health_info", lambda *a, **kw: None)
+
+    dev._render_dashboard(interval=0.0, first=False)
+
+    assert called == [True]
+
+
+def test_status_survives_a_control_file_it_cannot_read(helper, capsys):
+    """A dashboard that raises is a dashboard nobody can use to find out why
+    the server did not come back."""
+    (helper["control"] / "last_restart_job.json").write_bytes(b"\xff\xfe{")
+    (helper["control"] / "pending_restart.json").write_text("[]", encoding="utf-8")
+    dev._print_restart_notice()
+    assert capsys.readouterr().out == ""

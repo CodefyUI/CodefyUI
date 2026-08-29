@@ -24,8 +24,10 @@ real `frontend/` tree is untouched.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -46,9 +48,17 @@ def _real_frontend_survives():
 @pytest.fixture(autouse=True)
 def _restore_bind_env():
     """`start()` writes raw os.environ (monkeypatch cannot undo a write it
-    never saw) -- snapshot/restore the keys it touches."""
+    never saw) -- snapshot/restore the keys it touches.
+
+    The three restart keys are load-bearing beyond this file: a leaked
+    CODEFYUI_LAUNCHER makes `restart.restart_available()` answer True for
+    every test that runs afterwards, and a whole suite would then take a
+    branch nobody asked for.
+    """
     saved = {k: os.environ.get(k)
-             for k in ("CODEFYUI_HOST", "CODEFYUI_PORT", "CODEFYUI_MANAGED")}
+             for k in ("CODEFYUI_HOST", "CODEFYUI_PORT", "CODEFYUI_MANAGED",
+                       "CODEFYUI_LAUNCHER", "CODEFYUI_RELAUNCH_ARGV",
+                       "CODEFYUI_OUTER_PYTHON")}
     yield
     for k, v in saved.items():
         if v is None:
@@ -108,17 +118,24 @@ def started(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "LANG", "en")
 
     rec: dict = {"popen": None, "popen_kwargs": None, "run": None,
-                 "managed": None}
+                 "managed": None, "launcher": None, "relaunch": None}
+
+    def _snapshot() -> None:
+        """The environment AS THE CHILD SEES IT -- read at spawn time,
+        because that is when it is copied into the server."""
+        rec["managed"] = os.environ.get("CODEFYUI_MANAGED")
+        rec["launcher"] = os.environ.get("CODEFYUI_LAUNCHER")
+        rec["relaunch"] = os.environ.get("CODEFYUI_RELAUNCH_ARGV")
 
     def _fake_popen(cmd, **kw):
         rec["popen"] = list(cmd)
         rec["popen_kwargs"] = kw
-        rec["managed"] = os.environ.get("CODEFYUI_MANAGED")
+        _snapshot()
         return _FakeProc()
 
     def _fake_run(cmd, **kw):
         rec["run"] = list(cmd)
-        rec["managed"] = os.environ.get("CODEFYUI_MANAGED")
+        _snapshot()
 
     monkeypatch.setattr(dev.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(dev, "run", _fake_run)
@@ -346,3 +363,230 @@ def test_start_records_managed_env_on_the_foreground_path(started, monkeypatch):
     dev.start()
     assert started["run"] is not None
     assert started["managed"] == "start"
+
+
+# ── the restart handshake `cdui start` opens ──────────────────────────────
+#
+# A pack whose install replaces something the server has already imported can
+# only be installed by going away and coming back, and NOTHING in the server
+# knows how it was started. `cdui start` is the only process that does, so it
+# writes both halves of the answer into the child's environment: what to run
+# (CODEFYUI_LAUNCHER) and what to pass it (CODEFYUI_RELAUNCH_ARGV). Without
+# them `restart.restart_available()` is False and the Package Center refuses
+# the install with a command to type instead — which is the correct answer
+# for a `uvicorn app.main:app` somebody started by hand.
+
+
+def test_start_exports_launcher_and_relaunch_argv(started, monkeypatch):
+    """Both halves reach the child, as JSON, round-tripping exactly."""
+    _argv(monkeypatch, "--host", "0.0.0.0", "--port", "9100",
+          "--", "--proxy-headers")
+    dev.start()
+
+    launcher = json.loads(started["launcher"])
+    assert launcher == [dev._outer_python(), str(Path(dev.__file__).resolve())]
+    # An interpreter and a script, not a shell line: the helper is started
+    # with `Popen(argv)` and no shell anywhere.
+    assert Path(launcher[1]).name == "dev.py"
+
+    # The tail goes back behind its `--`, so the relaunched start splits it
+    # the same way this one did.
+    assert json.loads(started["relaunch"]) == [
+        "--host", "0.0.0.0", "--port", "9100", "--", "--proxy-headers",
+    ]
+
+
+def test_start_exports_json_so_a_path_with_spaces_survives(started, monkeypatch,
+                                                           tmp_path):
+    """The whole reason these are JSON and not space-joined strings."""
+    _argv(monkeypatch, "--project", str(tmp_path / "my proj"))
+    monkeypatch.setattr(dev, "_activate_project", lambda raw: None)
+    dev.start()
+    assert json.loads(started["relaunch"]) == [
+        "--project", str(tmp_path / "my proj")]
+
+
+@pytest.mark.parametrize("flag", ["-f", "--foreground"])
+def test_the_relaunch_is_always_a_daemon(started, monkeypatch, flag):
+    """`--foreground` is stripped: the helper that relaunches has no console
+    to hand over, and a foreground server parented by it would die with it."""
+    _argv(monkeypatch, flag, "--port", "9100")
+    dev.start()
+    assert started["run"] is not None, "this is still the foreground path"
+    assert json.loads(started["relaunch"]) == ["--port", "9100"]
+
+
+def test_the_foreground_path_still_opens_the_handshake(started, monkeypatch):
+    """A foreground server can be restarted too — it just comes back as a
+    daemon, which the stripped flag above is what makes true."""
+    _argv(monkeypatch, "-f")
+    dev.start()
+    assert started["launcher"] is not None
+    assert json.loads(started["relaunch"]) == []
+
+
+def test_start_with_no_arguments_relaunches_with_no_arguments(started,
+                                                              monkeypatch):
+    _argv(monkeypatch)
+    dev.start()
+    assert json.loads(started["relaunch"]) == []
+
+
+# ── the launcher is the OUTER interpreter ─────────────────────────────────
+#
+# `start` is not in _SKIP_VENV_EXEC, so by the time it runs this process has
+# already been re-exec'd as backend/.venv's python and `sys.executable` is
+# that. A restart-mode install REWRITES that venv, so the helper must be the
+# interpreter from outside it — which only exists if it was written down on
+# the way through.
+
+
+def test_the_venv_hop_records_the_outer_interpreter(monkeypatch, tmp_path):
+    venv = tmp_path / ".venv"
+    venv_py = venv / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("")
+    monkeypatch.setattr(dev, "VENV", venv)
+    monkeypatch.setattr(dev, "VENV_PY", venv_py)
+    monkeypatch.delenv(dev.OUTER_PYTHON_ENV, raising=False)
+
+    seen: dict = {}
+    monkeypatch.setattr(dev, "_reexec", lambda exe, argv: seen.update(
+        exe=exe, outer=os.environ.get(dev.OUTER_PYTHON_ENV)))
+
+    dev._exec_into_venv_if_available()
+
+    assert seen["exe"] == str(venv_py), "the hop still happens"
+    assert seen["outer"] == sys.executable, "recorded BEFORE the hop, not after"
+
+
+def test_the_re_execd_child_does_not_overwrite_the_recording(monkeypatch,
+                                                             tmp_path):
+    """The child runs this same function and IS inside the venv. Overwriting
+    there would replace the answer with the one value it must never be.
+
+    The recorded interpreter is deliberately NOT this test's own: an
+    assignment and a `setdefault` are indistinguishable when the value being
+    written happens to equal the value already there.
+    """
+    venv = tmp_path / ".venv"
+    venv_py = venv / "python"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("")
+    outer = tmp_path / "outer-python"                      # the parent's
+    outer.write_text("")
+    monkeypatch.setattr(dev, "VENV", venv)
+    monkeypatch.setattr(dev, "VENV_PY", venv_py)
+    monkeypatch.setattr(sys, "prefix", str(venv))          # we are inside it
+    monkeypatch.setenv(dev.OUTER_PYTHON_ENV, str(outer))
+    monkeypatch.setattr(dev, "_reexec", lambda exe, argv: pytest.fail(
+        "already inside the venv; there is nothing to hop into"))
+
+    dev._exec_into_venv_if_available()
+
+    assert os.environ[dev.OUTER_PYTHON_ENV] == str(outer)
+    assert dev._outer_python() == str(outer), "and it is what the launcher uses"
+
+
+def test_outer_python_falls_back_when_the_recorded_one_is_gone(monkeypatch,
+                                                               tmp_path):
+    """A stale value inherited from a shell, or an interpreter since removed.
+    A launcher that is not on disk is refused outright by
+    `restart.restart_available`, so answering with one is worse than
+    answering with the venv's python."""
+    monkeypatch.setenv(dev.OUTER_PYTHON_ENV, str(tmp_path / "not-a-python"))
+    assert dev._outer_python() == sys.executable
+
+
+def test_outer_python_prefers_the_recording_over_this_interpreter(monkeypatch,
+                                                                  tmp_path):
+    recorded = tmp_path / "outer-python"
+    recorded.write_text("")
+    monkeypatch.setenv(dev.OUTER_PYTHON_ENV, str(recorded))
+    assert dev._outer_python() == str(recorded)
+
+
+# ── the stale-pending preflight ───────────────────────────────────────────
+#
+# A claim left behind by a server that crashed between writing the file and
+# exiting refuses every future restart-mode install with "one is already
+# pending". The server clears one in its own lifespan; `cdui start` clears it
+# BEFORE the server exists, which is the case the lifespan cannot reach — a
+# claim whose writer never came back at all.
+
+
+def _write_pending(control: Path, *, pid: int, age_s: float = 0.0) -> Path:
+    control.mkdir(parents=True, exist_ok=True)
+    path = control / "pending_restart.json"
+    created = datetime.now(timezone.utc) - timedelta(seconds=age_s)
+    path.write_text(json.dumps({
+        "schema": 1, "job_id": "j1", "pack_id": "gpu-torch", "kind": "torch",
+        "index_url": "https://download.pytorch.org/whl/cu128",
+        "packages": ["torch", "torchvision"], "specs": [],
+        "venv_python": "/nowhere/python", "server_pid": pid,
+        "launcher": ["/py", "/dev.py"], "relaunch_argv": [],
+        "created_at": created.isoformat(),
+    }), encoding="utf-8")
+    return path
+
+
+def test_start_preflight_deletes_a_stale_pending_and_keeps_a_live_one(
+        started, monkeypatch, tmp_path, capsys):
+    control = tmp_path / "data" / "packs"
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    _argv(monkeypatch)
+
+    # 1. the writer is gone -> the claim is wreckage, and it is deleted.
+    path = _write_pending(control, pid=4242)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    dev.start()
+    assert not path.exists()
+    out = capsys.readouterr().out
+    assert "restart" in out.lower(), "a deletion the user cannot see is a mystery"
+
+    # 2. the writer is alive and the claim is fresh -> hands off. Another
+    #    server is mid-restart and its helper is about to read this file.
+    path = _write_pending(control, pid=4242)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+    dev.start()
+    assert path.exists()
+
+
+def test_start_preflight_deletes_a_claim_that_is_merely_too_old(
+        started, monkeypatch, tmp_path):
+    """The pid check cannot catch a machine that rebooted and handed the same
+    number to something else; the age can."""
+    control = tmp_path / "data" / "packs"
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+    _argv(monkeypatch)
+
+    path = _write_pending(control, pid=4242, age_s=dev.STALE_PENDING_S + 60)
+    dev.start()
+    assert not path.exists()
+
+
+def test_start_preflight_deletes_a_pending_file_nothing_can_read(
+        started, monkeypatch, tmp_path):
+    """Writes are atomic on both sides, so an unreadable file is not a
+    half-written claim — it is not a claim, and leaving it there would refuse
+    every install forever."""
+    control = tmp_path / "data" / "packs"
+    control.mkdir(parents=True)
+    path = control / "pending_restart.json"
+    path.write_bytes(b"\xff\xfe not json at all")
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    _argv(monkeypatch)
+
+    dev.start()
+    assert not path.exists()
+
+
+def test_start_says_nothing_when_there_is_no_pending_file(started, monkeypatch,
+                                                          tmp_path, capsys):
+    """The overwhelmingly common case. A launcher that reports on a file
+    that is not there teaches people to ignore it."""
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    _argv(monkeypatch)
+    dev.start()
+    assert "restart" not in capsys.readouterr().out.lower()
