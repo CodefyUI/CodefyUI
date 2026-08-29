@@ -110,18 +110,64 @@ received — each links to the release it was published as.
   model aligning languages. Needs the `sentence-embeddings` pack; runs
   offline on CPU in a few seconds once it is there.
 
+- **A retrieval chain on the canvas: six nodes that answer a question out of
+  your own documents instead of out of the model's memory.**
+  `DocumentLoader` reads every `.md` and `.txt` in a folder as
+  `{text, source}` so a citation survives to the end, stripping the UTF-8
+  byte-order mark Notepad writes rather than letting an invisible character
+  ride into the first chunk, its embedding and the first citation;
+  `TextChunker` cuts them into pieces small enough to embed (character
+  windows, sentences or paragraphs, all capped by `chunk_size`) carrying
+  the source and the character offsets, with `text[start_char:end_char]`
+  guaranteed to be exactly the chunk; `VectorStore` stacks the vectors
+  `TextEmbedding` produced into one `[N, D]` matrix with the chunk texts
+  and their sources beside them, so a cosine search over the whole corpus
+  is a single matrix multiply; `Retriever` scores a question against every
+  row, keeps `top_k` and drops anything under `min_score`, printing the
+  score of each hit that clears the floor; and `PromptBuilder` pastes the
+  winners into a template that instructs the model to answer only from that
+  context. `HFTextGenerate` closes the chain with Qwen2.5-0.5B-Instruct from
+  the `rag` pack, applying the model's chat template and reporting progress
+  token by token, and `LLMChat` is the drop-in alternative that sends the
+  same prompt to a server. Only two boxes in the chain need a download, so
+  the head of it runs on any install.
+
+- **Two RAG gallery examples, and the corpus they read.** **RAG, fully
+  local** (`examples/LLM/RAG-Local-Offline`) retrieves and generates on this
+  machine, and needs two downloads rather than one: `qwen2.5-0.5b-instruct`
+  from `rag` plus the `multilingual-e5-small` item of `sentence-embeddings`,
+  because the pack dependency brings that pack's Python packages and not an
+  encoder. **RAG with a chat API** (`examples/LLM/RAG-LLMChat-API`) is the
+  same retrieval chain node for node with `LLMChat` in the last box, aimed
+  at a local Ollama by default, so running both on one question compares
+  generators and nothing else — a test asserts the shared half stays
+  identical, and that no `SECRET` param is ever committed in the file. Both
+  read `backend/data/samples/rag`: five short notes about CodefyUI and ML
+  basics, each with an English and a Traditional Chinese half, so the
+  examples run with no setup and a multilingual encoder has something to
+  prove.
+
 - **`CODEFYUI_PACK_NETWORK_TESTS=1` runs the pack-backed examples for real.**
   A faked encoder returns whatever the fake was written to return, so the
-  suite that asks whether these two graphs still DO what their cards claim
-  runs against the downloaded models or not at all. It is opt-in twice over:
+  suite that asks whether these graphs still DO what their cards claim runs
+  against the downloaded models or not at all. It is opt-in twice over:
   the variable is the outer gate, and each test skips on its own if the exact
   model it needs is not in the cache. Nothing is downloaded either way.
+  `test_rag_local_example_answers_for_real` joins it for the fully local RAG
+  graph, asking twice — the encoder and the generator are separate downloads,
+  and one being absent must not hide the other — then running the graph and
+  asserting that the top three chunks all come from the two notes that contain
+  the answer and that `02-nodes-and-edges.md` is among them, and that the
+  generated answer is not empty.
 
 - **An Optional Packs page in the docs**, English and Traditional Chinese
   (`docs/docs/usage/optional-packs.md`) — the catalog with sizes
   and licences, both ways to install one, where the files land per OS, what
   changes on the canvas, which of the four embedding models to pick, and what
-  to do when a pack reports installed but will not import.
+  to do when a pack reports installed but will not import. It carries the RAG
+  chain too: one line per node, the sample corpus, the e5 prefix rule, what
+  CPU generation feels like, and what to try when generation is slow or the
+  answer ignores the context.
 
 - **The Package Center, on screen.** A panel that lists every optional pack
   with what is already on this machine, what a download would cost, and one
@@ -181,6 +227,14 @@ received — each links to the release it was published as.
   Similarity graph's shape without executing it: CI has no pack cache and
   would fail at the gate, and a machine that does have the pack would load
   half a gigabyte of weights inside a test that is supposed to be quick.
+
+- **`HFTextGenerate` and `LLMChat` join it.** `_SLOW_NODE_TYPES` now covers
+  the generation half of the chain as well, so the smoke suite validates
+  both RAG graphs structurally and executes neither: one would read a
+  gigabyte of Qwen2.5 weights and then decode on the CPU at a few tokens a
+  second, and the other would open a socket to Ollama or to a hosted
+  provider — a network round trip, a key CI does not have, and somebody's
+  money.
 
 ### Fixed
 
