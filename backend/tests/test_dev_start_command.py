@@ -582,14 +582,31 @@ def test_start_clears_a_claim_whose_helper_died(started, monkeypatch, control,
         "a deletion the user cannot see is a mystery")
 
 
-def test_start_clears_a_claim_that_is_too_old_even_with_a_live_helper(
+def test_start_stands_down_for_a_live_helper_past_the_fifteen_minutes(
         started, monkeypatch, control):
-    """(b) The fifteen-minute rule outranks everything else. It is the
-    guarantee that no state of this file can lock a user out of their own
-    server — including a pid that was recycled onto a live process."""
+    """(b') A LIVE helper outranks the clock. Fifteen minutes is nothing to a
+    torch download over a slow line, and an install still running at minute
+    sixteen is finishing, not abandoned — deleting its claim and starting a
+    second server would put two writers in one site-packages."""
     path = _write_pending(control, helper_pid=777,
-                          age_s=dev.STALE_PENDING_S + 60)
-    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+                          age_s=dev.STALE_PENDING_S + 300)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid == 777)
+    _argv(monkeypatch)
+
+    dev.start()
+
+    assert started["popen"] is None
+    assert path.exists()
+
+
+def test_start_clears_an_old_claim_whose_helper_is_gone(started, monkeypatch,
+                                                        control):
+    """(b'') The other half of the same rule: the age cap never rescues a
+    claim, it only condemns one. A pid that is no longer alive is a dead
+    install at any age, and the user gets their server back."""
+    path = _write_pending(control, helper_pid=777,
+                          age_s=dev.STALE_PENDING_S + 300)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
     _argv(monkeypatch)
 
     dev.start()
@@ -611,6 +628,15 @@ def test_start_stands_down_for_a_claim_whose_helper_has_not_written_its_pid(
 
     assert started["popen"] is None
     assert path.exists()
+
+
+def test_the_grace_for_a_helper_that_has_not_stamped_its_pid_is_a_minute():
+    """The number, not just the rule. Every other test here is written against
+    the constant, so it would follow the constant anywhere — and this window
+    is the exact length of time a user whose helper never started sits in
+    front of a launcher that refuses to give them a server. The docs quote it
+    (`optional-packs.md`, `cli-commands.md`), so it is part of the contract."""
+    assert dev.HELPER_START_GRACE_S == 60
 
 
 def test_start_clears_a_claim_whose_helper_never_arrived(started, monkeypatch,

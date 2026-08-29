@@ -616,6 +616,7 @@ def _fake_popen(monkeypatch, pid: int = 4242) -> dict:
 def test_spawn_helper_argv_flags_and_log_file(monkeypatch, tmp_path, launcher,
                                               cu128):
     monkeypatch.setenv("PYTHONPATH", "D:/Github/CodefyUI/backend")
+    monkeypatch.setenv("PYTHONHOME", "C:/uv/python/cpython-3.11-windows")
     monkeypatch.setenv("CODEFYUI_MARKER", "kept")
     path = restart.write_pending(restart.build_pending(
         get_pack("gpu-torch"), job_id="abc123", kind="torch"))
@@ -640,6 +641,13 @@ def test_spawn_helper_argv_flags_and_log_file(monkeypatch, tmp_path, launcher,
     assert kwargs["env"]["PYTHONUTF8"] == "1"
     assert "PYTHONPATH" not in kwargs["env"], (
         "the helper would import this repo's app package")
+    # The helper is the OUTER interpreter, and a uv-managed venv's python.exe
+    # runs this server with PYTHONHOME pointing at the base interpreter it was
+    # built from. Passing that down made the helper load the wrong stdlib and
+    # die on `import argparse` -- after the server had already scheduled its
+    # own shutdown, which is a box with no server and no helper on it.
+    assert "PYTHONHOME" not in kwargs["env"], (
+        "the helper would load this venv's base interpreter's stdlib")
     assert kwargs["env"]["CODEFYUI_MARKER"] == "kept", (
         "the environment is sanitised, not rebuilt")
     # The one variable the handshake actually depends on: the helper writes

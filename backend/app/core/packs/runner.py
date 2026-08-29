@@ -25,7 +25,10 @@ Four decisions here are not stylistic:
   the network and the cache lock.
 * **a sanitised environment**. ``PYTHONPATH`` is dropped: a developer shell
   that puts ``backend/`` on it would put this repo's ``app`` package inside
-  the installer's interpreter. ``PYTHONUTF8``/``PYTHONIOENCODING`` are set
+  the installer's interpreter. So are ``PYTHONHOME`` and the two variables
+  that move ``sys.executable`` -- see :data:`_STDLIB_POINTER_VARS`, which
+  exists because one of them really did make a child load another
+  interpreter's standard library. ``PYTHONUTF8``/``PYTHONIOENCODING`` are set
   because on a cp950 or cp1252 console uv's output is otherwise undecodable
   and the log events arrive as mojibake.
 """
@@ -130,16 +133,35 @@ def looks_like_resolver_conflict(lines: Sequence[str]) -> bool:
     return _CONFLICT_PATTERN.search("\n".join(lines).lower()) is not None
 
 
+#: Variables that tell a Python process where its standard library and its
+#: ``sys.executable`` are. Every one of them is a statement about THIS
+#: interpreter, and every child here is a different one.
+#:
+#: ``PYTHONHOME`` is not a theoretical risk: a uv-managed virtualenv's
+#: ``python.exe`` is a trampoline that runs the server with ``PYTHONHOME``
+#: set to the base interpreter it was built from, so a copied environment
+#: carries it. The restart helper -- the OUTER interpreter, a different
+#: version -- then loaded that base's stdlib and died on ``import argparse``
+#: with "AssertionError: SRE module mismatch", detached, after the server had
+#: already scheduled its own shutdown. ``PYTHONEXECUTABLE`` and the macOS
+#: framework launcher's ``__PYVENV_LAUNCHER__`` move ``sys.executable`` the
+#: same way, and ``site`` derives the rest of the paths from it.
+_STDLIB_POINTER_VARS = ("PYTHONHOME", "__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE")
+
+
 def pip_env() -> dict[str, str]:
     """This process's environment, minus what would confuse the child.
 
     Public because every subprocess the Package Center starts wants it --
-    the install itself and the import probe that checks the install worked.
+    the install itself, the import probe that checks the install worked, and
+    the restart helper.
     """
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env.pop("PYTHONPATH", None)
+    for name in _STDLIB_POINTER_VARS:
+        env.pop(name, None)
     return env
 
 

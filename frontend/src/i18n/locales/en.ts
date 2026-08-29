@@ -841,6 +841,13 @@ const en = {
   'packs.toast.remoteNotAllowed':
     'Installing is only allowed on the computer that runs the server.',
   'packs.toast.blocked': 'Install {pack} first.',
+  // The two refusals a server that CAN restart still makes. Both are 409s
+  // that carry a command, and `needsCli` — "cannot be installed from inside
+  // the app" — would be a lie about either: the button works, just not this
+  // second. So each says what is in the way and what ends it.
+  'packs.toast.restartRefusedRunning': 'A graph is running. Stop it, then install.',
+  'packs.toast.restartRefusedPending':
+    'A restart is already pending. Wait for the server to come back.',
   'packs.toast.devRestart':
     'This pack needs a server restart, which cdui dev cannot do by itself. Use the command shown in the Package Center.',
   'packs.toast.inProgress': 'A pack is still installing. Open the Package Center to watch it.',
@@ -931,6 +938,12 @@ const en = {
   'packs.activity.cancelled': 'Install cancelled.',
   'packs.activity.needsRestart':
     'Installed. The server has to restart before {pack} can be used.',
+  // The same status, the opposite story. A LIVE install that hit a resolver
+  // conflict stopped BEFORE it changed anything, so "Installed." would be
+  // false — and the restart is what would let it start, not what would let
+  // it be used.
+  'packs.activity.needsRestartConflict':
+    'The install stopped: it would replace a package the server has loaded. Restart the server to finish it.',
   'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
   'packs.activity.dismiss': 'Dismiss',
   // Offered only when the server said it can restart itself AND the job that
@@ -951,7 +964,12 @@ const en = {
   'packs.gpu.installed': 'Installed build: {variant}',
   'packs.gpu.recommended': 'Recommended build: {variant}',
   'packs.gpu.variant': 'PyTorch build',
-  'packs.gpu.restartNote': 'The server restarts after this install. Running graphs will stop.',
+  // What the button does, and the one condition under which it declines. It
+  // does NOT stop a running graph: the server refuses to start a restart
+  // while one is in flight, which is a promise worth making on the card the
+  // user is about to click.
+  'packs.gpu.restartNote':
+    'The server restarts after this install. It refuses to start one while a graph is running.',
   'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
   'packs.gpu.installRestart': 'Install and restart',
   'packs.gpu.devMode':

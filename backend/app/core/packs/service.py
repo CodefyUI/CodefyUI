@@ -278,12 +278,26 @@ class PackService:
     ) -> PackJob:
         """Start installing *pack*. Returns the job; raises before starting one.
 
+        A RESTART-mode install carries no model items: the helper installs
+        Python packages (or swaps the torch wheel) from an interpreter that
+        has none of this app's downloader in it. ``item_ids`` is ignored on
+        that path, and a pack whose models are also missing is finished with
+        an ordinary live install afterwards.
+
+        Only one thing here is awaited, and it is the branch that hands over
+        to :meth:`_submit_restart` -- which returns or raises. Everything on
+        the live path from the busy check to the ``self._job`` assignment
+        therefore runs without a suspension point between them, which is the
+        whole of what makes "one install at a time" true: two requests cannot
+        both pass the check before either takes the slot.
+
         :raises PackBusy: an install is already running.
         :raises RestartUnavailable: a restart-mode install on a server that
             cannot restart itself. ``command`` is what to type instead.
-        :raises RestartRefused: a restart-mode install this server COULD do,
-            but not right now -- a graph is running, or another restart is
-            already claimed. Nothing was written down.
+        :raises RestartRefused: a restart this server COULD do, but not right
+            now -- a graph is running, another restart is already claimed, or
+            (for a LIVE install) a restart is already pending and this process
+            is seconds from ending. Nothing was written down.
         :raises PackInstallError: the restart helper could not be started.
             The claim is withdrawn first, so a retry is not refused as "one
             is already pending".
@@ -306,6 +320,21 @@ class PackService:
         # takes this path whatever the client asked for.
         if mode == "restart" or pack.install_mode == "restart":
             return await self._submit_restart(pack, variant)
+
+        # A restart-mode job is TERMINAL from the moment it is made -- the
+        # check above waves the next install straight through -- but the
+        # server it would run in is half a second from raising SIGINT on
+        # itself. The flow would appear in the panel, start downloading and
+        # die unfinished with the process. Refused rather than queued: there
+        # is no queue to survive the restart, and the user can ask again on
+        # the server that comes back.
+        if (running is not None and running.mode == "restart"
+                and running.status == STATUS_NEEDS_RESTART):
+            raise RestartRefused(
+                f"{pack.title} cannot be installed right now: this server is "
+                f"restarting to finish another install",
+                reason="a restart is already pending",
+                command=running.restart_command or "")
 
         targets = self._targets(pack, item_ids)
         download.check_disk(targets)
@@ -335,6 +364,13 @@ class PackService:
         handshake, and the job it returns is already terminal
         (``needs_restart``) -- the SPA reads that status on a restart-mode
         job as "reload when the server answers again".
+
+        PACKAGES ONLY. The helper runs from an interpreter with none of this
+        app's downloader in it, so no model item can travel this path; the
+        pending file carries pip specs or the torch index and nothing else.
+        A pack that needs models as well is finished with an ordinary live
+        install once the server is back, which is why the job's ``items`` is
+        empty and there is no disk check here.
 
         The ORDER is not a preference. ``spawn_helper`` READS the pending
         file, so the claim is written first; the job is stored only after the
@@ -604,6 +640,13 @@ class PackService:
         thread hand-off. ``self._broadcast`` is still this job's generation:
         only a submit replaces it, and a submit is refused until the current
         job is terminal -- which is what this method is about to make true.
+
+        The other caller is ``_submit_restart``, where that argument runs the
+        other way round and still holds: the generation was replaced by the
+        submit itself, moments earlier and under the same lock, and this job
+        was terminal on arrival. It has no ``_run`` and no worker thread --
+        the install happens in another process, after this one is gone -- so
+        this is the only place its status is ever set.
         """
         with self._lock:
             self._store(event)

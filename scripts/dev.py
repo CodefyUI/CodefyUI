@@ -1891,11 +1891,12 @@ STALE_PENDING_S = 15 * 60
 #: How long a claim with no `helper_pid` in it yet is still believed. The
 #: helper is spawned detached and writes its pid in as its first act, so this
 #: only has to cover process creation -- but on a cold Windows box with a
-#: virus scanner in the way that is seconds, not milliseconds. Two minutes is
-#: far longer than it needs and still short enough that a server which died
-#: before its helper ever started is forgotten while the user is still
-#: looking at the terminal.
-HELPER_START_GRACE_S = 2 * 60
+#: virus scanner in the way that is seconds, not milliseconds. A minute is an
+#: order of magnitude more than that, and it is the whole cost of the case
+#: this window exists to cover being wrong: a helper that never started
+#: leaves the user with no server and a launcher that refuses, and every
+#: second of the grace is a second they spend not knowing why.
+HELPER_START_GRACE_S = 60
 
 #: The two control files, under `<user data>/packs`. Mirrors `packs.paths`.
 PENDING_FILE_NAME = "pending_restart.json"
@@ -2045,31 +2046,34 @@ def _pending_state(path: Path, data: "dict | None") -> str:
 
     The rules, in the order they are applied:
 
-    * Older than `STALE_PENDING_S` -> abandoned, whatever else it says. This
-      is the guarantee that a user can always get a server back: no state of
-      this file can lock `cdui start` out for longer than fifteen minutes.
-    * `helper_pid` present -> exactly whether that process is alive. The
-      helper writes its own pid in as its first act, so this is the real
-      answer whenever it exists.
+    * `helper_pid` present -> exactly whether that process is alive, at any
+      age. The helper writes its own pid in as its first act, so this is the
+      real answer whenever it exists -- and it OUTRANKS the clock, because a
+      torch download over a slow line is still going at minute sixteen and
+      that is an install finishing, not one abandoned. Calling it dead there
+      would start a second server into the venv `uv` is mid-way through
+      rewriting, which is the one outcome all of this exists to prevent.
     * No `helper_pid` and younger than `HELPER_START_GRACE_S` -> finishing.
       The helper is a detached process that was spawned seconds ago and has
       not written its pid yet; starting a second server into that window is
       how two `uv` runs end up in one site-packages.
     * No `helper_pid` and older than that -> abandoned. The server wrote the
-      claim and then died before its helper ever ran.
+      claim and then died before its helper ever ran. (`STALE_PENDING_S` is
+      the outer bound on the same case: an age nobody can read at all counts
+      as old, and so does one past the fifteen-minute mark.)
 
     A file nothing can parse is abandoned outright: both writers are atomic,
     so an unreadable file is not a half-written claim -- it is not a claim.
     """
     if data is None:
         return "abandoned"
-    age = _pending_age_seconds(path, data)
-    if age is None or age > STALE_PENDING_S:
-        return "abandoned"
     helper_pid = data.get("helper_pid")
     if (isinstance(helper_pid, int) and not isinstance(helper_pid, bool)
             and helper_pid > 0):
         return "finishing" if _pid_alive(helper_pid) else "abandoned"
+    age = _pending_age_seconds(path, data)
+    if age is None or age > STALE_PENDING_S:
+        return "abandoned"
     return "finishing" if age <= HELPER_START_GRACE_S else "abandoned"
 
 
@@ -2331,6 +2335,31 @@ def _pending_install_cmd(data: dict) -> "tuple[list | None, str]":
     return [uv, "pip", "install", "--python", python, *specs], ""
 
 
+def _restart_child_env() -> dict:
+    """This process's environment, minus the pointers to its own stdlib.
+
+    Sanitised, never rebuilt. `CODEFYUI_USER_DATA_DIR` is not something the
+    relaunched `start()` can rederive, and `CODEFYUI_OUTER_PYTHON` is how the
+    restart AFTER this one finds a launcher at all — handing a child a fresh
+    environment is how the second restart of a session refuses.
+
+    What does come out are the three variables that tell a Python process
+    where its standard library and its `sys.executable` are. Every one of
+    them is a statement about the interpreter that set it, and every child
+    started here is a different one: the installer runs against the venv, and
+    the relaunched server is the outer interpreter hopping into that venv.
+    A `PYTHONHOME` carried across that gap makes an `import` deep in the
+    startup path die with "AssertionError: SRE module mismatch", detached,
+    with a log file for its only witness. Mirrors `runner.pip_env`, which
+    drops the same three (and `PYTHONPATH`, which matters on the server side
+    and not here).
+    """
+    env = os.environ.copy()
+    for name in ("PYTHONHOME", "__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE"):
+        env.pop(name, None)
+    return env
+
+
 def _run_pending_install(cmd: list) -> "tuple[int, list]":
     """Run the installer, echo every line, and keep the tail of what it said.
 
@@ -2344,6 +2373,7 @@ def _run_pending_install(cmd: list) -> "tuple[int, list]":
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
+        env=_restart_child_env(),
     )
     assert proc.stdout is not None
     for raw in proc.stdout:
@@ -2454,13 +2484,14 @@ def _relaunch_server(launcher: list, relaunch_argv: list, log_path: Path) -> "in
     seconds later, and a pipe with nobody left to read it fills up and blocks
     the server mid-start.
 
-    No `env=`: the new server INHERITS this process's environment, which is
-    the environment the original `cdui start` exported and the server handed
-    down (`CODEFYUI_LAUNCHER`, `CODEFYUI_RELAUNCH_ARGV`,
-    `CODEFYUI_OUTER_PYTHON`, `CODEFYUI_USER_DATA_DIR`). `start()` re-exports
-    the first two from scratch anyway, but the user-data root is not one it
-    can rederive -- and handing over a scrubbed environment is how the SECOND
-    restart of a session finds no launcher and refuses.
+    The environment is this process's, minus the stdlib pointers -- see
+    `_restart_child_env`. Nearly all of it is carried over on purpose: it is
+    what the original `cdui start` exported and the server handed down
+    (`CODEFYUI_LAUNCHER`, `CODEFYUI_RELAUNCH_ARGV`, `CODEFYUI_OUTER_PYTHON`,
+    `CODEFYUI_USER_DATA_DIR`). `start()` re-exports the first two from scratch
+    anyway, but the user-data root is not one it can rederive -- and handing
+    over a scrubbed environment is how the SECOND restart of a session finds
+    no launcher and refuses.
     """
     cmd = [*launcher, "start", *relaunch_argv]
     detach: dict = {}
@@ -2478,6 +2509,7 @@ def _relaunch_server(launcher: list, relaunch_argv: list, log_path: Path) -> "in
                 cmd, cwd=ROOT,
                 stdin=subprocess.DEVNULL,
                 stdout=log_file, stderr=subprocess.STDOUT,
+                env=_restart_child_env(),
                 **detach,
             )
     except OSError as exc:
@@ -2663,8 +2695,12 @@ def _print_restart_notice() -> None:
             # The SAME predicate `cdui start` decides on, so the two commands
             # cannot describe one file differently to one confused user.
             if _pending_state(pending_path, pending) == "finishing":
+                # The word is `_pending_state`'s own, and the docs' -- three
+                # places name these two states and a user comparing them
+                # must not have to work out that "in progress" and
+                # "finishing" were ever the same thing.
                 _kv(t("重啟安裝", "Restart install"),
-                    f"{YELLOW}● {t('進行中', 'in progress')}{RESET}  "
+                    f"{YELLOW}● {t('收尾中', 'finishing')}{RESET}  "
                     f"{pending.get('pack_id')}  "
                     f"{DIM}{t('等待 PID', 'waiting for PID')} "
                     f"{pending.get('server_pid')}{RESET}")

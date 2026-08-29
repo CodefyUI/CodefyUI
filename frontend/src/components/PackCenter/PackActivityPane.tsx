@@ -302,7 +302,17 @@ function resultSentence(t: Translate, job: PackJob, title: string): string | nul
     case 'cancelled':
       return t('packs.activity.cancelled');
     case 'needs_restart':
-      return t('packs.activity.needsRestart', { pack: title });
+      // One status, two stories, and "Installed." is only true for one of
+      // them. A RESTART-mode job really did install: the helper is running
+      // and the server is on its way out. A LIVE job with this status stopped
+      // dead on a resolver conflict having changed nothing — telling that
+      // user their pack is installed is how they come back to report it
+      // missing. `retryMode` is the server's own word for "a restart is what
+      // would finish this", and a job whose mode is not `restart` is a live
+      // one whatever else it says.
+      return job.retryMode === 'restart' || job.mode !== 'restart'
+        ? t('packs.activity.needsRestartConflict')
+        : t('packs.activity.needsRestart', { pack: title });
     case 'lost':
       return t('packs.activity.lost');
     default:

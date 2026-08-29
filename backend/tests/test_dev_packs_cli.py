@@ -591,6 +591,26 @@ def test_help_needs_no_backend_import():
     assert exc.value.code == 0
 
 
+@pytest.mark.parametrize("module", ["dev", "packs"])
+def test_the_launcher_scripts_parse_on_the_oldest_python_we_support(module):
+    """`requires-python = ">=3.10"`, and these two scripts are the ONLY files
+    that have to prove it here rather than in CI.
+
+    Every other module in this repo is imported by a test, so a syntax error
+    stops the suite on any interpreter. `scripts/dev.py` and `scripts/packs.py`
+    are different: they are what a user runs BEFORE there is a venv, on
+    whatever Python they have, and this suite always runs on the venv's — so a
+    3.11+-only construct in either one passes every check here and fails on
+    the machine of the person trying to install. It has happened: a nested-
+    quote f-string (3.12) went in and only the 3.11 venv noticed.
+
+    `feature_version` makes the floor a fact this file states, on any
+    interpreter, without one of each installed.
+    """
+    source = Path(sys.modules[module].__file__).read_text(encoding="utf-8")
+    ast.parse(source, feature_version=(3, 10))
+
+
 # ══ `cdui packs-run-pending` — the half of a restart-mode install that runs
 # ══ while the server does not exist.
 #
@@ -1232,13 +1252,59 @@ def test_a_relaunch_that_worked_is_recorded_as_well(helper):
     assert _outcome(helper)["relaunch"] == "ok"
 
 
-def test_the_relaunch_inherits_this_processes_environment(helper):
-    """No `env=`. `CODEFYUI_USER_DATA_DIR` is not something `start()` can
-    rederive, and the launcher variables the server handed down reach the new
-    one the same way -- handing over a scrubbed environment is how the SECOND
-    restart of a session finds no launcher and refuses."""
+@pytest.mark.parametrize(
+    "name", ["PYTHONHOME", "__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE"])
+def test_restart_child_env_drops_the_stdlib_pointers(monkeypatch, name):
+    """A child must find its own standard library.
+
+    `_relaunch_server` starts the OUTER interpreter, which then hops into the
+    venv; a `PYTHONHOME` inherited from some earlier hop would aim both of
+    them at a third interpreter's stdlib. That failure is invisible until an
+    `import` deep in the startup path dies with "SRE module mismatch", in a
+    detached process whose only output is a log file.
+    """
+    monkeypatch.setenv(name, "C:/uv/python/cpython-3.11-windows")
+    assert name not in dev._restart_child_env()
+
+
+@pytest.mark.parametrize("name", ["CODEFYUI_USER_DATA_DIR",
+                                  "CODEFYUI_OUTER_PYTHON"])
+def test_restart_child_env_keeps_what_the_handshake_needs(monkeypatch, name):
+    """Sanitised, not rebuilt. `CODEFYUI_USER_DATA_DIR` is not something
+    `start()` can rederive -- the relaunched server would read its outcome
+    record out of a different directory than the one it was written in -- and
+    `CODEFYUI_OUTER_PYTHON` is how the next restart finds a launcher at all.
+    Handing over a scrubbed environment is how the SECOND restart of a session
+    refuses with "this server was launched without CODEFYUI_LAUNCHER"."""
+    monkeypatch.setenv(name, "kept")
+    assert dev._restart_child_env()[name] == "kept"
+
+
+def test_the_relaunch_carries_the_sanitised_environment(helper, monkeypatch):
+    """Not `os.environ` and not a fresh one: this process's, minus the three
+    variables that would point the new server at the wrong stdlib."""
+    monkeypatch.setenv("PYTHONHOME", "C:/uv/python/cpython-3.11-windows")
+    monkeypatch.setenv("CODEFYUI_MARKER", "kept")
+
     dev._run_pending_job(_pending(helper))
-    assert "env" not in helper["relaunch_kwargs"]
+
+    env = helper["relaunch_kwargs"]["env"]
+    assert "PYTHONHOME" not in env
+    assert env["CODEFYUI_MARKER"] == "kept"
+    assert env["CODEFYUI_USER_DATA_DIR"] == str(helper["control"].parent)
+
+
+def test_the_installer_gets_the_sanitised_environment_too(helper, monkeypatch):
+    """`uv` resolves `--python` itself, but everything it runs under that
+    interpreter inherits from here."""
+    monkeypatch.setenv("PYTHONHOME", "C:/uv/python/cpython-3.11-windows")
+    monkeypatch.setenv("CODEFYUI_MARKER", "kept")
+
+    dev._run_pending_job(_pending(helper))
+
+    env = helper["install_kwargs"]["env"]
+    assert "PYTHONHOME" not in env
+    assert env["CODEFYUI_MARKER"] == "kept"
 
 
 def test_the_outcome_is_written_before_the_claim_is_dropped(helper, monkeypatch):
@@ -1411,6 +1477,11 @@ def test_status_reports_a_pending_restart_and_a_recent_outcome(helper, capsys):
     assert "gpu-torch" in out
     assert "4242" in out, "which process the pending claim is waiting for"
     assert "the installer exited with 1" in out
+    # The state word, not a synonym of it. `_pending_state` returns
+    # "finishing"/"abandoned", `cdui start` says the same two, and the docs
+    # teach them as the two states a claim can be in -- a dashboard that says
+    # "in progress" instead makes a reader work out that they are one thing.
+    assert "finishing" in out
 
 
 def test_status_forgets_an_outcome_that_is_an_hour_old(helper, capsys):

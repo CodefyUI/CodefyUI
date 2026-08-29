@@ -219,7 +219,10 @@ describe('GpuPackDetails — installing and restarting', () => {
   it('offers install-and-restart, and asks first', async () => {
     const onInstall = renderCard({ restartAvailable: true });
     expect(
-      screen.getByText('The server restarts after this install. Running graphs will stop.'),
+      screen.getByText(
+        'The server restarts after this install. '
+        + 'It refuses to start one while a graph is running.',
+      ),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));

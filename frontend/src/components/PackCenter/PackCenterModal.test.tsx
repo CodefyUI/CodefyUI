@@ -587,6 +587,7 @@ describe('PackCenterModal — the activity pane', () => {
       gpu: gpuInfo,
       job: job({
         packId: 'gpu-torch',
+        mode: 'restart',
         status: 'needs_restart',
         restartCommand: 'cdui install --gpu cu128',
       }),
@@ -607,6 +608,54 @@ describe('PackCenterModal — the activity pane', () => {
     expect(
       within(banner).queryByRole('button', { name: 'Restart the server and install' }),
     ).toBeNull();
+  });
+
+  it('does not claim an install happened when a live one hit a conflict', () => {
+    // Same status, opposite fact. This job installed NOTHING: uv refused to
+    // replace a package the server has loaded, and the restart is what would
+    // let the install start rather than what would let the pack be used.
+    // "Installed." here is how a user comes back to report a missing pack.
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: true,
+      job: job({
+        packId: 'rag',
+        status: 'needs_restart',
+        restartCommand: 'cdui packs install rag --restart',
+        retryMode: 'restart',
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    expect(
+      within(banner).getByText(
+        'The install stopped: it would replace a package the server has loaded. '
+        + 'Restart the server to finish it.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(banner).queryByText(/^Installed\./)).toBeNull();
+  });
+
+  it('uses the conflict wording for any live job, even without a retry mode', () => {
+    // `retryMode` is only set when the server can offer a way forward. A live
+    // install that stopped on a server that cannot restart itself still
+    // installed nothing, and the job's own mode is what says so.
+    seed({
+      packs: [pack({ id: 'rag' })],
+      job: job({
+        packId: 'rag',
+        mode: 'live',
+        status: 'needs_restart',
+        restartCommand: 'cdui packs install rag --restart',
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    expect(within(banner).getByText(/^The install stopped:/)).toBeInTheDocument();
   });
 
   it('offers to restart and install when a live install stopped and both sides agree', async () => {

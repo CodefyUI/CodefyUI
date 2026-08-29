@@ -143,8 +143,12 @@ class _RestartCalls:
     def __init__(self) -> None:
         #: The pending file each ``spawn_helper`` call was handed.
         self.spawned: list[str] = []
-        #: The delay each ``schedule_self_shutdown`` call asked for.
-        self.shutdowns: list[float] = []
+        #: The delay each ``schedule_self_shutdown`` call asked for, ``None``
+        #: when it asked for none. NOT defaulted to the production 0.5: a
+        #: fixture that restates the default asserts its own signature, and
+        #: would go on passing if the service started naming a delay of its
+        #: own -- which is exactly the thing worth noticing.
+        self.shutdowns: list[float | None] = []
         #: Set by a test to make the next spawn fail.
         self.spawn_error: BaseException | None = None
 
@@ -168,7 +172,7 @@ def restart_ready(monkeypatch) -> _RestartCalls:
             raise calls.spawn_error
         return 4242
 
-    def _shutdown(loop, delay: float = 0.5):
+    def _shutdown(loop, delay: float | None = None):
         calls.shutdowns.append(delay)
 
     monkeypatch.setattr(restart, "restart_available", lambda: True)
@@ -556,7 +560,9 @@ async def test_restart_mode_starts_the_handshake(client, pack_service,
     # Written, THEN handed to the helper, and only then is this process asked
     # to go away -- the 202 above had already gone out.
     assert restart_ready.spawned == [settled["pending_path"]]
-    assert restart_ready.shutdowns == [0.5]
+    assert restart_ready.shutdowns == [None], (
+        "the delay is restart.schedule_self_shutdown's to choose; the service "
+        "asks for a shutdown, not for a particular number of seconds")
     assert not flow.started.is_set(), "no install ran inside this process"
 
     job = pack_service.current_job()
@@ -634,6 +640,51 @@ async def test_restart_refused_when_a_fresh_pending_exists(client,
     ).job_id == "already-here"
     assert restart_ready.spawned == []
     assert restart_ready.shutdowns == []
+
+
+async def test_a_live_install_is_refused_while_a_restart_is_pending(
+        client, restart_ready, flow):
+    """A restart job is terminal the MOMENT it is made, and "terminal" is what
+    the busy check reads -- so without this the next install sails through
+    into a server that is half a second from raising SIGINT on itself.
+
+    What the user would get is the worst of both: a job that appears in the
+    panel, starts downloading, and dies unfinished with the process, while
+    the restart it was racing carries on regardless.
+    """
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+    assert response.status_code == 202, response.text
+
+    response = await client.post(f"/api/packs/{SENTENCE}/install", json={})
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["reason"] == "a restart is already pending"
+    # The same escape hatch every other refusal carries: this one is over
+    # when the server comes back, and until then the terminal still works.
+    assert body["command"] == "cdui install --gpu cu128"
+    assert not flow.started.is_set(), "a flow started under a pending restart"
+
+
+async def test_an_ordinary_finished_job_does_not_refuse_the_next_install(
+        client, flow):
+    """The refusal above is scoped to a PENDING RESTART, not to "there is an
+    old job here". Only the most recent job is kept, and it stays on the
+    service after it ends -- so a guard that read "terminal" alone would
+    answer 409 to every install after the first one for the life of the
+    server, which is a far worse bug than the one it fixes.
+    """
+    job_id = await start_install(client)
+    flow.finish()
+    _, status = await drain(client, job_id)
+    assert status == "done"
+
+    flow.finish()
+    response = await client.post(f"/api/packs/{SENTENCE}/install", json={})
+
+    assert response.status_code == 202, response.text
+    await drain(client, response.json()["job_id"])
 
 
 async def test_spawn_failure_deletes_pending_and_returns_500(

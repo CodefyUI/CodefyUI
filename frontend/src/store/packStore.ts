@@ -18,7 +18,7 @@ import {
 import { confirm } from '../utils/dialog';
 import { localizedPackTitle } from '../utils/packAvailability';
 import { useToastStore } from './toastStore';
-import { useI18n } from '../i18n';
+import { useI18n, type TranslationKey } from '../i18n';
 
 /**
  * App-level state for the Package Center (optional model / library packs).
@@ -112,6 +112,28 @@ export const RESTART_TIMEOUT_MS = 600_000;
  * with it, which is exactly the lifetime of "the page I am about to reload".
  */
 export const RESTART_PENDING_KEY = 'codefyui-pack-restart-pending';
+
+/**
+ * The server's `reason` phrases, and the toast each one deserves.
+ *
+ * These 409s look identical to the "this server cannot restart itself" one —
+ * same status, same `command` — and only `reason` separates a permanent
+ * limitation from a wait of a few seconds. Keyed on the server's exact
+ * wording (a contract pinned on the backend side by
+ * `test_restart_refused_while_a_graph_runs` and its neighbours); anything not
+ * listed falls back to `needsCli`, whose command is always a true way through.
+ *
+ * A `Map` rather than an object literal, because the key comes off the wire:
+ * `{}['toString']` is a function, and a plain lookup would hand `t()` one.
+ */
+const REFUSAL_TOASTS = new Map<string, TranslationKey>([
+  ['a graph is running', 'packs.toast.restartRefusedRunning'],
+  // Two spellings of one condition: the first is another restart-mode submit
+  // colliding with a claim on disk, the second a LIVE install arriving while
+  // this server is already on its way out.
+  ['a restart-mode install is already pending', 'packs.toast.restartRefusedPending'],
+  ['a restart is already pending', 'packs.toast.restartRefusedPending'],
+]);
 
 /**
  * One line of an install job's log.
@@ -824,12 +846,24 @@ export const usePackStore = create<PackState>((set, get) => ({
     } catch (err) {
       if (err instanceof PackApiError && typeof err.body?.command === 'string') {
         // A refusal that hands back a command is not a collision — it is the
-        // server saying "not from in here, run this". Both 409 shapes carry a
-        // `detail`, and only this one carries `command`, so the command is
-        // what tells them apart. Checked FIRST: every restart-mode install
-        // (the GPU pack, today) lands here, and "another install is already
-        // running" would be a plain lie about a server sitting idle.
-        toast(t('packs.toast.needsCli', { command: err.body.command }), 'warning');
+        // server saying "not from in here" or "not right now". Both 409
+        // shapes carry a `detail`, and only this one carries `command`, so
+        // the command is what tells them apart. Checked FIRST: every
+        // restart-mode install (the GPU pack, today) lands here, and "another
+        // install is already running" would be a plain lie about a server
+        // sitting idle.
+        //
+        // `reason` then splits the passing conditions off from the permanent
+        // one. `needsCli` says the app cannot do this at all, which is true
+        // of a server that cannot restart itself and FALSE of these two: the
+        // button works, it just does not work this second, and what the user
+        // needs to hear is what to wait for. An unknown reason from a newer
+        // backend falls through to `needsCli`, which is wrong-ish but never
+        // misleading — the command in it does work.
+        const refusal = REFUSAL_TOASTS.get(String(err.body.reason ?? ''));
+        toast(refusal
+          ? t(refusal)
+          : t('packs.toast.needsCli', { command: err.body.command }), 'warning');
       } else if (err instanceof PackApiError && err.status === 409) {
         // Somebody else got there first — this tab, another tab, or the CLI.
         // The refresh adopts whatever the server IS running, which is more

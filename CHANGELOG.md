@@ -255,11 +255,11 @@ received — each links to the release it was published as.
   the log to read. The overlay gives up in two ways rather than spinning
   forever — after thirty seconds in which the server never even stopped
   answering ("The server did not restart. Run this command, then reload:"),
-  and after ten minutes — and both leave the command and a **Reload now**
-  button. Free space on the volume the venv is on is checked before the
-  install starts (3 GB for the torch wheel, 1 GB for a pack's Python
-  packages), and a shortfall is recorded as a failed job that still brings the
-  server back.
+  and after ten minutes — and both leave the command, when the server sent
+  one, and a **Reload now** button. Free space on the volume the venv is on
+  is checked before the install starts (3 GB for the torch wheel, 1 GB for a
+  pack's Python packages), and a shortfall is recorded as a failed job that
+  still brings the server back.
 
 ### Changed
 
@@ -275,10 +275,11 @@ received — each links to the release it was published as.
   to type, which remains the right answer for a `uvicorn app.main:app` somebody
   started by hand. `start` also learns about the claim file: while a restart
   install is *finishing* — the helper it recorded is alive, or the claim is
-  under two minutes old — it refuses to start a second server into the venv
-  that helper is rewriting, printing "a restart install is finishing; see cdui
-  status" and returning; once the helper is gone, or the claim is over fifteen
-  minutes old, it is *abandoned* and `start` deletes it and starts normally.
+  under sixty seconds old with no helper pid stamped into it yet — it refuses
+  to start a second server into the venv that helper is rewriting, reporting
+  that a restart install is finishing and pointing at `cdui status`; once the
+  helper is gone, or it never arrived and those sixty seconds have passed, the
+  claim is *abandoned* and `start` deletes it and starts normally.
   And a server always comes back from a restart-mode install as a background
   daemon, even one started in the foreground with `cdui start -f`, because the
   helper that relaunches it has no console to hand over.

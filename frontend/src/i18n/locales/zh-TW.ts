@@ -803,6 +803,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
   'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
+  'packs.toast.restartRefusedRunning': '有圖正在執行。請先停止，再安裝。',
+  'packs.toast.restartRefusedPending': '已經有一個重新啟動在進行中，請等伺服器回來。',
   'packs.toast.devRestart':
     '這個套件需要重新啟動伺服器，cdui dev 模式無法自動處理。請使用套件中心顯示的指令。',
   'packs.toast.inProgress': '有套件仍在安裝中，可在套件中心查看進度。',
@@ -882,6 +884,8 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',
   'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
+  'packs.activity.needsRestartConflict':
+    '安裝停住了：它得替換伺服器已載入的套件。重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
   'packs.activity.dismiss': '關閉',
   'packs.activity.restartAndInstall': '重新啟動伺服器並安裝',
@@ -895,7 +899,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
-  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動，執行中的圖會被中止。',
+  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動；有圖在執行時會拒絕開始。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':

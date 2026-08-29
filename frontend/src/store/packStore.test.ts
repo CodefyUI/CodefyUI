@@ -616,6 +616,26 @@ describe('packStore — install', () => {
     expect(lastToast().message).toContain('cdui dev');
   });
 
+  it('refuses before the request when the PACK is the restart-mode one', async () => {
+    // The pre-flight resolves the mode exactly as the server would — the
+    // pack's own `install_mode` counts, not just an explicit `opts.mode`. A
+    // click on the GPU card under `cdui dev` sends no `mode` at all, and
+    // without this it would reach a server that answers 409 after the fact.
+    const gpu = makePack({ id: 'gpu-torch', title: 'GPU PyTorch' });
+    gpu.install_mode = 'restart';
+    usePackStore.setState({
+      packs: [gpu], byId: { 'gpu-torch': gpu }, launchMode: 'dev',
+    });
+
+    await usePackStore.getState().install('gpu-torch');
+
+    expect(api.installPack).not.toHaveBeenCalled();
+    expect(lastToast().message).toBe(
+      'This pack needs a server restart, which cdui dev cannot do by itself. '
+      + 'Use the command shown in the Package Center.',
+    );
+  });
+
   it('refuses when a job is already running, without asking the server', async () => {
     usePackStore.setState({ job: seededJob({ status: 'running' }) });
 
@@ -657,6 +677,60 @@ describe('packStore — install', () => {
     // Not a collision: nothing to adopt, so no catalog re-read is triggered.
     expect(api.listPacks).not.toHaveBeenCalled();
   });
+
+  it('says what to wait for when a graph is what blocks the restart', async () => {
+    // Same 409, same `command`, and `needsCli` — "cannot be installed from
+    // inside the app yet" — would be false: it can, once the run finishes.
+    // `reason` is the only thing that separates the two.
+    const err = new PackApiError(409, 'gpu-torch cannot be installed while a graph is running');
+    err.body = {
+      detail: 'refused',
+      reason: 'a graph is running',
+      command: 'cdui install --gpu cu128',
+    };
+    api.installPack.mockRejectedValue(err);
+
+    await usePackStore.getState().install('word-vectors', { mode: 'restart' });
+
+    expect(lastToast()).toMatchObject({ type: 'warning' });
+    expect(lastToast().message).toBe('A graph is running. Stop it, then install.');
+  });
+
+  it.each([
+    'a restart-mode install is already pending',
+    'a restart is already pending',
+  ])('tells the user to wait when the reason is %s', async (reason) => {
+    // Two server-side spellings of one situation: another restart-mode submit
+    // colliding with a claim on disk, and a live install arriving while this
+    // server is already on its way out. The user's move is the same.
+    const err = new PackApiError(409, 'refused');
+    err.body = { detail: 'refused', reason, command: 'cdui install --gpu cu128' };
+    api.installPack.mockRejectedValue(err);
+
+    await usePackStore.getState().install('word-vectors', { mode: 'restart' });
+
+    expect(lastToast().message).toBe(
+      'A restart is already pending. Wait for the server to come back.',
+    );
+  });
+
+  it.each(['the moon is in the wrong phase', 'toString'])(
+    'falls back to the command for the unknown reason %s', async (reason) => {
+      // A newer server with a refusal this build has no wording for. The
+      // command in the body is always a true way through, so the fallback is
+      // wrong-ish rather than misleading — and the user is never stuck.
+      // `toString` is the same case wearing a hat: the reason arrives off the
+      // wire, and an object-literal lookup would answer it with a function.
+      const err = new PackApiError(409, 'refused');
+      err.body = { detail: 'refused', reason, command: 'cdui install --gpu cu128' };
+      api.installPack.mockRejectedValue(err);
+
+      await usePackStore.getState().install('word-vectors', { mode: 'restart' });
+
+      expect(lastToast().message).toBe(
+        'This pack cannot be installed from inside the app yet. Run: cdui install --gpu cu128',
+      );
+    });
 
   it('says installing is local-only on a 403', async () => {
     api.installPack.mockRejectedValue(new PackApiError(403, 'remote install refused'));

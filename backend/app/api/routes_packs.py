@@ -85,7 +85,8 @@ class InstallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: Which items to fetch. Omitted means "the whole pack, minus what is
-    #: already downloaded".
+    #: already downloaded". Ignored by a restart-mode install, which installs
+    #: packages only -- the models are downloaded afterwards, live.
     items: list[str] | None = None
     mode: Literal["live", "restart"] | None = None
     #: Only meaningful for the GPU pack: which torch wheel to install.
@@ -302,6 +303,12 @@ async def install_pack(pack_id: str, request: Request,
     later. The client follows the job's events exactly as it would a live
     one -- it just reaches the terminal event immediately, and then waits for
     the server to come back.
+
+    A restart-mode install carries NO model items -- only the pack's Python
+    packages, or the torch wheel. The helper runs outside this app and has no
+    downloader in it, so ``items`` is ignored on that path; download the
+    models afterwards with an ordinary install, on the server that comes
+    back.
     """
     pack = _require_pack(pack_id)
     service = _service(request)
