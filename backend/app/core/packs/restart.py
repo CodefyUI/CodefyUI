@@ -821,14 +821,26 @@ def _read_pending(path: Path) -> "PendingRestart | None":
 
 
 def _age_seconds(pending: PendingRestart) -> "float | None":
-    """How long ago the claim was made, or None when it does not say."""
+    """How long ago the claim was made, or None when it does not say.
+
+    A stamp in the FUTURE does not say either. It gives a negative age,
+    which :func:`_is_stale` would read as "very young" -- so a clock that
+    stepped back would refuse every restart-mode install with "one is
+    already pending" until the wall clock caught up, with no deadline. Both
+    the writer and the reader are processes on this machine, so a future
+    stamp is a clock that moved rather than a claim that is young; None,
+    which the rules below already read as "old", and no skew tolerance.
+
+    Mirrored by ``dev._iso_age_seconds``.
+    """
     try:
         created = datetime.fromisoformat(pending.created_at)
     except ValueError:
         return None
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - created).total_seconds()
+    age = (datetime.now(timezone.utc) - created).total_seconds()
+    return None if age < 0 else age
 
 
 def _is_stale(pending: PendingRestart) -> bool:

@@ -705,6 +705,48 @@ def test_dev_and_restart_agree_on_which_claims_are_still_alive(
         restart.PendingRestart.from_json(json.dumps(claim))) is not live
 
 
+def test_a_claim_stamped_in_the_future_is_not_believed_forever(monkeypatch,
+                                                               tmp_path):
+    """A clock that moved BACK must not wedge a claim until it catches up.
+
+    A ``created_at`` in the future gives a negative age, and both sides used
+    to read that as young: ``age <= HELPER_START_GRACE_S`` is true on the
+    dev side, ``age > HELPER_START_GRACE_S`` is false on the backend side.
+    So ``cdui start`` stood down and every restart-mode install was refused
+    with "one is already pending", with no deadline -- until the wall clock
+    caught up, which for a clock stepped back an hour is an hour.
+
+    A negative age is treated exactly like an unreadable one: None, which
+    every caller on both sides already reads as "old". No skew tolerance,
+    because a stamp written by a process on THIS machine and read by
+    another one on this machine is not a stamp that needs one -- and a
+    tolerance would be a number with no correct value.
+    """
+    restart = _restart_state()
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: False)
+
+    claim = {
+        "schema": 1, "job_id": "j1", "pack_id": "gpu-torch", "kind": "torch",
+        "index_url": "https://download.pytorch.org/whl/cu128",
+        "packages": ["torch"], "specs": [],
+        "venv_python": "/nowhere/python", "server_pid": 4242,
+        "launcher": ["/py", "/dev.py"], "relaunch_argv": [],
+        "created_at": (datetime.now(timezone.utc)
+                       + timedelta(hours=1)).isoformat(),
+    }
+    path = tmp_path / "pending_restart.json"
+    path.write_text(json.dumps(claim), encoding="utf-8")
+    # The dev side falls back to the file's MTIME when created_at answers
+    # None, and that clock is the safer of the two -- so it has to be old
+    # for this to be about created_at at all.
+    os.utime(path, (0, 0))
+
+    assert dev._pending_state(path, claim) == "abandoned"
+    assert restart._is_stale(
+        restart.PendingRestart.from_json(json.dumps(claim))) is True
+
+
 def test_dev_and_restart_agree_on_where_the_two_files_live(tmp_path,
                                                            monkeypatch):
     """Not just the names — the whole path, derived from the same variable.
@@ -1130,12 +1172,22 @@ def test_run_pending_refuses_a_launcher_that_did_not_start_this_helper(
     assert helper["install"] is None
     assert helper["relaunch"] is None
     assert "interpreter" in capsys.readouterr().err
+    # The third ownership check, left alone for the same reason as the
+    # other two: another interpreter's claim is another install's claim.
+    assert path.exists()
+    assert not (helper["control"] / "last_restart_job.json").exists()
 
 
 def test_run_pending_refuses_a_foreign_venv_python(helper, capsys):
     """The interpreter to install INTO is the one field that decides which
     environment gets rewritten. A path outside this checkout's venv is a file
-    somebody else wrote."""
+    somebody else wrote.
+
+    An OWNERSHIP refusal, so the file is left exactly as found and no
+    outcome record is written -- see
+    ``test_a_claim_from_another_checkout_is_refused_but_left_alone`` for
+    why. The refusal reaches the user through the console only.
+    """
     path = _pending(helper, venv_python="/usr/bin/python3")
 
     assert dev._run_pending_job(path) == 2
@@ -1143,9 +1195,8 @@ def test_run_pending_refuses_a_foreign_venv_python(helper, capsys):
     assert helper["install"] is None
     assert helper["relaunch"] is None
     assert "venv_python" in capsys.readouterr().err
-    record = _outcome(helper)
-    assert record["status"] == "failed"
-    assert "refused" in record["message"]
+    assert path.exists()
+    assert not (helper["control"] / "last_restart_job.json").exists()
 
 
 def test_run_pending_refuses_a_launcher_that_is_not_this_dev_py(helper, capsys):
@@ -1824,6 +1875,64 @@ def test_the_helper_arms_the_sigterm_handler_before_it_runs_anything(
     assert order == ["armed", "ran"]
 
 
+def test_the_atomic_write_retries_a_sharing_violation(tmp_path, monkeypatch):
+    """A momentary Windows sharing violation is not a lost record.
+
+    CPython's `open()` on Windows does not request `FILE_SHARE_DELETE`, so
+    `os.replace` over a file another process merely has OPEN raises
+    `PermissionError`. The helper stamps `helper_pid` and then
+    `installer_pid` into the claim while a `cdui status` may be reading it,
+    and the loser of that sub-millisecond race is the claim: an unwritten
+    `helper_pid` makes the next `cdui start` read a live restart as
+    abandoned.
+
+    Only the replace is retried -- the write into the temp file is this
+    process's own file and has no such race.
+    """
+    calls: list = []
+    real = os.replace
+
+    def flaky(src, dst):
+        calls.append((src, dst))
+        if len(calls) < 3:
+            raise PermissionError(32, "being used by another process")
+        return real(src, dst)
+
+    monkeypatch.setattr(dev.os, "replace", flaky)
+    monkeypatch.setattr(dev.time, "sleep", lambda seconds: None)
+    path = tmp_path / "pending_restart.json"
+
+    assert dev._write_json_atomic(path, {"schema": 1}) is True
+
+    assert len(calls) == 3, calls
+    assert json.loads(path.read_text(encoding="utf-8")) == {"schema": 1}
+
+
+def test_the_atomic_write_still_gives_up_eventually(tmp_path, monkeypatch):
+    """Bounded, and still never raising. A destination that is genuinely
+    unwritable -- a read-only directory, not a passing reader -- must not
+    turn the helper into a process that sits there sleeping: the caller is
+    on its way to starting a server again and a record nobody could write
+    is not a reason to skip that."""
+    calls: list = []
+    slept: list = []
+
+    def always_locked(src, dst):
+        calls.append((src, dst))
+        raise PermissionError(32, "being used by another process")
+
+    monkeypatch.setattr(dev.os, "replace", always_locked)
+    monkeypatch.setattr(dev.time, "sleep", slept.append)
+    path = tmp_path / "pending_restart.json"
+
+    assert dev._write_json_atomic(path, {"schema": 1}) is False
+
+    assert len(calls) == dev.ATOMIC_REPLACE_ATTEMPTS, calls
+    assert sum(slept) <= 0.15, slept
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == [], "the temp file was left behind"
+
+
 def test_a_refused_claim_is_never_stamped_with_a_helper_pid(helper,
                                                             monkeypatch):
     """It is not ours. Writing into it would be claiming a job this process
@@ -1840,6 +1949,35 @@ def test_a_refused_claim_is_never_stamped_with_a_helper_pid(helper,
 
     assert path not in written, "the helper claimed a job that was not its own"
     assert written, "and the outcome record was still filed"
+
+
+def test_a_claim_from_another_checkout_is_refused_but_left_alone(helper,
+                                                                 capsys):
+    """A refusal that says "this is not mine" must not then act on it.
+
+    The three OWNERSHIP checks -- the launcher script, the launcher
+    interpreter and venv_python -- answer "did THIS installation write
+    this?", and a no means another installation did. Deleting that claim
+    takes it away from the live helper still acting on it, and that
+    installation's next `cdui start` then sees no claim and starts a second
+    server into a venv `uv` is mid-way through rewriting.
+
+    The outcome record goes the same way, and for a sharper reason: it lives
+    NEXT TO the claim, in the other installation's control directory, so
+    writing one would overwrite that install's last real report with a
+    refusal it did not ask for. A foreign claim gets a printed refusal and
+    nothing else.
+    """
+    path = _pending(helper, launcher=["/other/python", "/other/dev.py"])
+
+    assert dev._run_pending_job(path) == 2
+
+    assert "launcher" in capsys.readouterr().err
+    assert path.exists(), "the other installation's claim was deleted"
+    assert not (helper["control"] / "last_restart_job.json").exists(), (
+        "the other installation's last report was overwritten")
+    assert helper["install"] is None
+    assert helper["relaunch"] is None
 
 
 def test_a_refused_claim_is_deleted_rather_than_left_behind(helper):
