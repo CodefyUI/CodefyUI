@@ -204,15 +204,25 @@ jobs:
       # instead. The header is emitted once, at the first primitive execution,
       # as `onednn_verbose,v1,info,cpu,isa:<description>`.
       #
+      # The probe does two ops. The bf16 `F.linear` is the operation that
+      # crashes. The fp32 conv2d is there because the bf16 one is not enough on
+      # its own: ATen only hands a CPU bf16 GEMM to oneDNN on machines whose
+      # bf16 support it recognises, so on an AMD runner it stays in ATen's own
+      # kernels, oneDNN is never entered and no isa line appears (observed on
+      # this job's first green run, an EPYC 7763). A CPU fp32 convolution goes
+      # through `mkldnn_convolution` on every machine as long as the shapes
+      # clear the heuristics in ATen's `use_mkldnn()` -- batch 2 and a 5x5
+      # kernel clear both of its clauses -- so the header prints wherever the
+      # job lands.
+      #
       # A positive AMX match is the only thing that fails the step. A missing
-      # isa line means the bf16 GEMM never reached oneDNN (an AVX2-only runner,
-      # or ATen keeping the op in its own kernels); that is reported as [WARN]
-      # and left alone, so a change in oneDNN's verbose format cannot turn this
-      # job red on its own. The trailing `exit 0` is what makes that true: the
-      # runner appends `exit $LASTEXITCODE` to every pwsh step, so a probe that
-      # died would otherwise decide the step's result. A probe that dies is
-      # reported as [WARN] and left for the pytest step below to fail on, which
-      # is the same crash under the same conditions.
+      # isa line is reported as [WARN] and left alone, so a change in oneDNN's
+      # verbose format cannot turn this job red on its own. The trailing
+      # `exit 0` is what makes that true: the runner appends
+      # `exit $LASTEXITCODE` to every pwsh step, so a probe that died would
+      # otherwise decide the step's result. A probe that dies is reported as
+      # [WARN] and left for the pytest step below to fail on, which is the same
+      # crash under the same conditions.
       - name: Report the runner CPU and the oneDNN ISA actually in effect
         working-directory: backend
         run: |
@@ -220,7 +230,7 @@ jobs:
           if (-not $cpu) { $cpu = '<unavailable>' }
           Write-Host "[INFO] CPU: $cpu"
           Write-Host "[INFO] ONEDNN_MAX_CPU_ISA=$env:ONEDNN_MAX_CPU_ISA"
-          $probe = 'import torch; print("[INFO] torch", torch.__version__); print("[INFO] mkldnn available:", torch.backends.mkldnn.is_available()); x = torch.randn(256, 512).bfloat16(); w = torch.randn(512, 512).bfloat16(); y = torch.nn.functional.linear(x, w); print("[INFO] bf16 linear ->", tuple(y.shape), y.dtype, "finite:", bool(torch.isfinite(y.float()).all()))'
+          $probe = 'import torch; print("[INFO] torch", torch.__version__); print("[INFO] mkldnn available:", torch.backends.mkldnn.is_available()); x = torch.randn(256, 512).bfloat16(); w = torch.randn(512, 512).bfloat16(); y = torch.nn.functional.linear(x, w); print("[INFO] bf16 linear ->", tuple(y.shape), y.dtype, "finite:", bool(torch.isfinite(y.float()).all())); c = torch.nn.functional.conv2d(torch.randn(2, 8, 32, 32), torch.randn(8, 8, 5, 5)); print("[INFO] fp32 conv2d ->", tuple(c.shape), c.dtype, "finite:", bool(torch.isfinite(c).all()))'
           $env:ONEDNN_VERBOSE = '1'
           $out = & .venv\Scripts\python.exe -c $probe
           $code = $LASTEXITCODE
