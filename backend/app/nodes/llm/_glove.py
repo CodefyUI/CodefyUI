@@ -1,10 +1,11 @@
 """The GloVe-50d table: from the gzip the Package Center downloads to a matrix.
 
 The ``word-vectors`` pack fetches ``glove-wiki-gigaword-50.gz`` -- 400,000
-words by 50 dimensions, as gzipped TEXT. Reading it is roughly ten seconds of
-splitting strings and parsing floats, which is fine to pay once and absurd to
-pay on every graph run, so the install converts it to a ``.npz`` sitting beside
-the download and the node loads that instead.
+words by 50 dimensions, as gzipped TEXT. Reading it is seconds of splitting
+strings and parsing floats -- a few on a modern machine, more on a slow disk
+-- which is fine to pay once and absurd to pay on every graph run, so the
+install converts it to a ``.npz`` sitting beside the download and the node
+loads that instead.
 
 Five decisions are worth knowing about.
 
