@@ -138,16 +138,17 @@ function PackCenterBody() {
     [install],
   );
 
-  // The job is read at CLICK time, not closed over: this callback is handed
-  // to a banner that outlives several catalog polls, and the pack it names
-  // has to be the one the banner is currently describing. No variant — the
-  // conflict this retries is a live install of a pack that has no builds to
-  // choose between, and the server picks for the GPU pack anyway.
-  const onRestartInstall = useCallback(() => {
-    const current = usePackStore.getState().job;
-    if (current === null) return;
-    void install(current.packId, { mode: 'restart' });
-  }, [install]);
+  // The pack comes from the banner that asked, not from the store: a confirm
+  // dialog stays open across catalog polls, and a `refresh` that adopts
+  // another tab's job mid-dialog must not redirect this install to it. No
+  // variant — the conflict this retries is a live install of a pack that has
+  // no builds to choose between, and the server picks for the GPU pack.
+  const onRestartInstall = useCallback(
+    (packId: string) => {
+      void install(packId, { mode: 'restart' });
+    },
+    [install],
+  );
 
   // `byId` is built from parsed JSON, so a bare index answers with an
   // inherited member for a pack id like `constructor`.
@@ -259,6 +260,7 @@ function PackCenterBody() {
               pack={jobPack}
               restartAvailable={restartAvailable}
               canInstall={remoteInstallAllowed}
+              busy={job !== null && busy[job.packId] === true}
               cancelling={cancelling}
               onCancel={() => void cancel()}
               onDismiss={dismissJob}

@@ -649,6 +649,32 @@ describe('PackCenterModal — the activity pane', () => {
     );
   });
 
+  it('retries the pack whose banner asked, not whatever job arrived meanwhile', async () => {
+    // A confirm stays open across catalog polls, and `refresh` adopts a job
+    // started in another tab the moment it sees one. The pack the user
+    // agreed to reinstall is the one they were reading about.
+    seed({
+      packs: [pack({ id: 'rag' }), embeddings],
+      restartAvailable: true,
+      job: job({ packId: 'rag', status: 'needs_restart', retryMode: 'restart' }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart the server and install' }));
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+
+    act(() => {
+      usePackStore.setState({
+        job: { ...job({ packId: 'sentence-embeddings' }), jobId: 'j-elsewhere' },
+      });
+    });
+    act(() => useDialogStore.getState().close(true));
+
+    await waitFor(() => expect(actions.install).toHaveBeenCalled());
+    expect(actions.install).toHaveBeenCalledWith('rag', { mode: 'restart' });
+  });
+
   it('installs nothing when the restart retry is declined', async () => {
     seed({
       packs: [pack({ id: 'rag' })],
@@ -664,6 +690,46 @@ describe('PackCenterModal — the activity pane', () => {
 
     await waitFor(() => expect(useDialogStore.getState().active).toBeNull());
     expect(actions.install).not.toHaveBeenCalled();
+  });
+
+  it('hides the retry when the job never said a restart would finish it', () => {
+    // A restart-capable server and a `needs_restart` job that carried no
+    // `retry_mode`: the GPU pack's own ending, which is not a retry of
+    // anything — the install got as far as a restart-mode install goes, and
+    // offering to run it again would start the whole thing over.
+    seed({
+      packs: [pack({ id: 'gpu-torch', install_mode: 'restart' })],
+      gpu: gpuInfo,
+      restartAvailable: true,
+      job: job({
+        packId: 'gpu-torch',
+        status: 'needs_restart',
+        restartCommand: 'cdui install --gpu cu128',
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    expect(
+      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+    ).toBeNull();
+    expect(within(banner).getByText('cdui install --gpu cu128')).toBeInTheDocument();
+  });
+
+  it('disables the retry while this pack already has a request in flight', () => {
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: true,
+      busy: { rag: true },
+      job: job({ packId: 'rag', status: 'needs_restart', retryMode: 'restart' }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    expect(
+      screen.getByRole('button', { name: 'Restart the server and install' }),
+    ).toBeDisabled();
   });
 
   it('disables the retry for a browser the server refuses installs from', () => {

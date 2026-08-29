@@ -647,10 +647,19 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
         // pack to report on — the job itself does not survive the reload.
         writePending(packId);
         void store.restartFlow(packId, command);
+      } else if (store.launchMode === 'dev') {
+        // `cdui dev` reloads in place; nothing relaunches it, so no catalog
+        // it serves will ever say otherwise. Its own sentence, because
+        // "not from inside the app YET" would be a promise about a future
+        // release when the actual answer is "not the way you started this
+        // one" — and it points at the command block the banner is already
+        // rendering rather than repeating the command inline.
+        toast(t('packs.toast.devRestart'), 'warning');
       } else {
-        // Nothing here can finish this install: either no supervisor exists
-        // (`cdui dev`) or none was asked for. The job STAYS on screen — its
-        // banner is what renders the command block this names.
+        // Nothing here can finish this install: no supervisor was asked for,
+        // or the one that exists cannot promise to come back. The job STAYS
+        // on screen — its banner is what renders the command block this
+        // names.
         toast(t('packs.toast.needsCli', { command: command ?? '' }), 'warning');
       }
       break;

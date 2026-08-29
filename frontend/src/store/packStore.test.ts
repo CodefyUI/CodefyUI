@@ -1030,20 +1030,24 @@ describe('packStore — a job settling', () => {
     expect(usePackStore.getState().job!.status).toBe('needs_restart');
   });
 
-  it('shows the command instead of restarting when the server cannot', async () => {
-    // A RESTART-mode job — so the mode half of the gate is satisfied — on a
-    // server that never said it can come back: `cdui dev` reloads in place,
-    // and there is nothing to relaunch it. This is the half the launch mode
-    // used to stand in for, and the server is the one that knows.
+  /** A restart-mode job for `word-vectors`, so the mode half of the gate holds. */
+  function restartModePack(): void {
     usePackStore.setState({
       byId: {
         'word-vectors': makePack({
           id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
         }),
       },
-      launchMode: 'dev',
-      restartAvailable: false,
     });
+  }
+
+  it('shows the command instead of restarting when the server cannot', async () => {
+    // Started with `cdui start` — so the launch mode alone would have said
+    // yes — and the server still says no: its launcher has been moved off
+    // disk, or the kill switch is thrown. This is the half the launch mode
+    // used to stand in for, and the server is the one that knows.
+    restartModePack();
+    usePackStore.setState({ launchMode: 'start', restartAvailable: false });
     terminal({
       status: 'needs_restart',
       events: [{ type: 'needs_restart', cursor: 1, ts: 't', command: 'cdui install --gpu cu128' }],
@@ -1053,14 +1057,38 @@ describe('packStore — a job settling', () => {
     await settle();
 
     expect(usePackStore.getState().job!.mode).toBe('restart');
-
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
     expect(usePackStore.getState().restart.phase).toBe('idle');
     expect(lastToast()).toMatchObject({ type: 'warning' });
-    // The command, not a sentence about `cdui dev`: it is the only thing
-    // that finishes this install, and nothing here is hiding it.
+    // The command, because nothing else here can finish this install.
     expect(lastToast().message).toContain('cdui install --gpu cu128');
     // The job stays on screen so the command block has something to describe.
+    expect(usePackStore.getState().job!.restartCommand).toBe('cdui install --gpu cu128');
+  });
+
+  it('names cdui dev when a restart-mode job ends on a server that reloads in place', async () => {
+    // `cdui dev` has no supervisor to relaunch it, so no catalog it serves
+    // will ever report `restart_available`. Its own sentence rather than the
+    // generic one: "not from inside the app yet" reads as a missing feature,
+    // when the answer is "not the way you started this server". The command
+    // is not lost — the sentence points at the banner, which is rendering it.
+    restartModePack();
+    usePackStore.setState({ launchMode: 'dev', restartAvailable: false });
+    terminal({
+      status: 'needs_restart',
+      events: [{ type: 'needs_restart', cursor: 1, ts: 't', command: 'cdui install --gpu cu128' }],
+    });
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+    expect(usePackStore.getState().restart.phase).toBe('idle');
+    expect(lastToast()).toMatchObject({
+      type: 'warning',
+      message:
+        'This pack needs a server restart, which cdui dev cannot do by itself. Use the command shown in the Package Center.',
+    });
     expect(usePackStore.getState().job!.restartCommand).toBe('cdui install --gpu cu128');
   });
 });

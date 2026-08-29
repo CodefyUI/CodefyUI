@@ -23,11 +23,20 @@ export interface PackActivityPaneProps {
   restartAvailable: boolean;
   /** False when the server refuses installs from this browser (remote). */
   canInstall: boolean;
+  /** This job's pack already has an install request in flight. */
+  busy: boolean;
   onCancel: () => void;
   onDismiss: () => void;
-  /** Install this pack again in restart mode. Only ever called from the
-   *  `needs_restart` banner, and only when the retry was offered. */
-  onRestartInstall: () => void;
+  /**
+   * Install *packId* again in restart mode. Only ever called from the
+   * `needs_restart` banner, and only when the retry was offered.
+   *
+   * The id is an ARGUMENT rather than something the handler looks up, because
+   * a confirm dialog is open across several catalog polls and `refresh` can
+   * adopt another tab's job while it is: the pack that gets installed has to
+   * be the one whose banner the user was reading.
+   */
+  onRestartInstall: (packId: string) => void;
   cancelling: boolean;
 }
 
@@ -47,6 +56,7 @@ export function PackActivityPane({
   pack,
   restartAvailable,
   canInstall,
+  busy,
   onCancel,
   onDismiss,
   onRestartInstall,
@@ -135,6 +145,7 @@ export function PackActivityPane({
           title={title}
           restartAvailable={restartAvailable}
           canInstall={canInstall}
+          busy={busy}
           onRestartInstall={onRestartInstall}
         />
       )}
@@ -167,13 +178,15 @@ function ResultBanner({
   title,
   restartAvailable,
   canInstall,
+  busy,
   onRestartInstall,
 }: {
   job: PackJob;
   title: string;
   restartAvailable: boolean;
   canInstall: boolean;
-  onRestartInstall: () => void;
+  busy: boolean;
+  onRestartInstall: (packId: string) => void;
 }) {
   const { t } = useI18n();
   const tone = BANNER_TONE[job.status] ?? 'neutral';
@@ -205,8 +218,12 @@ function ResultBanner({
       variant: 'danger',
     });
     if (!ok) return;
-    onRestartInstall();
-  }, [onRestartInstall, t]);
+    // This banner's own pack, captured before the dialog opened — not
+    // whatever job the store holds now. A `refresh` between the click and the
+    // answer can adopt an install started in another tab, and reinstalling
+    // THAT one is not what the user just agreed to.
+    onRestartInstall(job.packId);
+  }, [job.packId, onRestartInstall, t]);
 
   return (
     <div className={styles.resultBanner} role="status" data-tone={tone}>
@@ -227,14 +244,15 @@ function ResultBanner({
 
       {canRetry && (
         <div className={styles.cardActions}>
-          {/* Shown-but-disabled for a remote browser, exactly like the GPU
-              card's button: the server refuses an install from anywhere but
-              its own machine, and a live button here would spend a confirm
-              and a restart warning on a 403. */}
+          {/* Disabled on the same two counts as the GPU card's button: a
+              remote browser, whose install the server refuses from anywhere
+              but its own machine, and a request already in flight for this
+              pack — a live button in either case would spend a confirm and a
+              restart warning on a refusal. */}
           <button
             type="button"
             className={styles.primaryBtn}
-            disabled={!canInstall}
+            disabled={!canInstall || busy}
             title={canInstall ? undefined : t('packs.remoteDisabled')}
             onClick={() => void retry()}
           >
