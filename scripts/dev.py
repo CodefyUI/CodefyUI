@@ -1331,6 +1331,23 @@ def update() -> None:
     # this process already imported the old dev.py either way.
     gpu, dev = _resolve_update_options(sys.argv[2:])
 
+    # A restart-mode install is a detached helper running `uv pip install`
+    # into the very venv the lines below rewrite -- two writers in one
+    # site-packages, and the loser is whichever finishes second. Same claim
+    # file `cdui start` reads (`_packs_control_dir` resolves to one path for
+    # every command in one checkout), and it clears an abandoned one on the
+    # way, so a helper that died cannot wedge `update` either.
+    #
+    # Exit 1 where `start()` exits 0. `start()` stands down because the user
+    # asked for a running server and one is on its way -- their request is
+    # being satisfied by somebody else. Nobody else is going to run this
+    # user's update, so the honest answer is a refusal, and it matches the
+    # "a server is running" refusal immediately below that scripts already
+    # gate on. After option parsing, so `--help` still answers; before the
+    # git work, which is the first irreversible thing here.
+    if not _restart_preflight():
+        sys.exit(1)
+
     # Nothing below this line is survivable by a running server: the checkout
     # is hard-realigned under it, the frontend/dist it is serving is deleted,
     # and its dependencies are rewritten in the venv it imported from. The
@@ -3537,6 +3554,13 @@ def dev() -> None:
         sys.exit(1)
     _install_frontend_deps_if_needed()
     _apply_dev_env()
+    # After `_apply_dev_env`, which is what points `CODEFYUI_USER_DATA_DIR`
+    # at this checkout's `.codefyui_dev` -- the same claim file every other
+    # command here reads. `cdui dev` starts a `--reload` uvicorn out of the
+    # venv a restart helper may be mid-way through replacing; exit 1 for the
+    # same reason `update` does, and an abandoned claim is cleared on the way.
+    if not _restart_preflight():
+        sys.exit(1)
     project = _parse_project(sys.argv[2:])
     if project is not None:
         _activate_project(project)
