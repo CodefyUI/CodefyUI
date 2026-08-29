@@ -118,9 +118,11 @@ curl -s -X POST "http://127.0.0.1:8000/api/apps/classifier/invoke" \
 Every invoke that resolves to an app version writes one row (status, error code, device, `total_s`, per-node timings, capped inputs/outputs, key id). Pre-resolution rejections (`invalid_key`, `app_not_found`, `app_unpublished`) write nothing. Recording is best-effort: a storage failure after execution is logged and the run result is still returned.
 
 ```text
-GET /api/apps/{slug}/runs?limit=50&before=<iso>   -- newest-first metadata only
-GET /api/apps/{slug}/runs/{run_id}                -- the full row incl. inputs/outputs/node_timings
+GET /api/apps/{slug}/runs?limit=50&before=<created_at>&before_id=<run_id>   -- newest-first metadata only
+GET /api/apps/{slug}/runs/{run_id}                                         -- the full row incl. inputs/outputs/node_timings
 ```
+
+`before` and `before_id` are the `created_at` and the `run_id` of the last row of the previous page. Together they name one row in the newest-first ordering, so a page boundary that falls inside a group of runs recorded in the same timestamp tick resumes at the right place. Sending only `before` is still accepted for clients written against the earlier contract, and keeps its original meaning: rows strictly older than that timestamp, which skips any run sharing it.
 
 Reads accept EITHER a valid API key or the editor session token (the editor UI reads runs without ever holding an API key), and reject requests with neither.
 

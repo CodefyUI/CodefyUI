@@ -163,6 +163,33 @@ async def _run_rows(db: Database) -> list[dict[str, Any]]:
     return await db.run(_select)
 
 
+async def _invokes_at(client, token: str, stamps: list[str], monkeypatch,
+                      slug: str = SLUG) -> list[str]:
+    """One invoke per stamp, with each run's ``created_at`` pinned to it.
+
+    Returns the run_ids in insertion order. ``_record_run`` reads the clock
+    exactly once per recorded run, so the stamps line up one-for-one with
+    the invokes. Call this AFTER ``_publish`` -- the publish routes read the
+    same clock through the same name.
+    """
+    clock = iter(stamps)
+    monkeypatch.setattr("app.api.routes_apps.utc_now_iso",
+                        lambda: next(clock))
+    ids: list[str] = []
+    for n in range(len(stamps)):
+        resp = await client.post(f"/api/apps/{slug}/invoke",
+                                 json={"inputs": {"x": f"v{n}"}},
+                                 headers=_bearer(token))
+        assert resp.status_code == 200, resp.text
+        ids.append(resp.json()["run_id"])
+    return ids
+
+
+def _cursor(row: dict[str, Any]) -> str:
+    """The keyset cursor query string built from the last row of a page."""
+    return f"before={row['created_at']}&before_id={row['run_id']}"
+
+
 # ── envelope value rules + happy path ────────────────────────────────────
 
 
@@ -782,16 +809,21 @@ async def test_invoke_succeeds_after_queued_timeout(
 async def test_runs_list_metadata_only_newest_first(
     test_client, app_db, api_key, monkeypatch,
 ):
-    """Ordering, field set, and the limit/before cursor on distinct stamps.
+    """Ordering, field set, and the legacy ``before``-alone cursor.
 
-    The clock is stepped rather than left real. Two invokes this close
-    together often land in one ``created_at`` tick, and the `before` cursor
-    is keyed on ``created_at`` alone (``created_at < ?``) -- so on a tie the
-    cursor below excludes BOTH rows and this test fails with an empty list.
-    That is a real defect in the endpoint, tracked separately; it is not what
-    this test is about, and leaving it to chance made this file fail on CI at
-    random. Ordering under a genuine tie has its own test above
-    (``test_two_invokes_in_one_timestamp_tick_still_list_newest_first``).
+    ``before`` without ``before_id`` keeps the semantics it shipped with:
+    ``created_at < ?``, which skips every row sharing the cursor's
+    timestamp. The clock is stepped here so the two runs land in different
+    ticks and that cursor is exact -- two invokes this close together often
+    share a tick, and leaving it to chance made this file fail on CI at
+    random.
+
+    The composite ``before``/``before_id`` cursor is what pages through a
+    shared timestamp, in
+    ``test_runs_list_pages_through_runs_sharing_one_timestamp`` and the
+    three tests beside it (#372). Ordering under a genuine tie has its own
+    test above, in
+    ``test_two_invokes_in_one_timestamp_tick_still_list_newest_first``.
     """
     await _publish(test_client, SLUG, _echo_graph())
 
@@ -852,7 +884,8 @@ async def test_runs_list_tie_breaks_on_insertion_order_when_created_at_equal(
     ``rowid`` rises with insertion, so it is both deterministic AND the real
     answer to "which happened last" -- and it is what the same query in
     ``run_store.py`` (lines 520, 695, 1174) already tie-breaks on. The
-    ``before`` cursor stays keyed on ``created_at`` alone, unchanged.
+    ``before``/``before_id`` cursor added by #372 keys on these same two
+    columns, so the cursor keys and the sort keys are one tuple.
 
     The ids below are deliberately NOT in lexicographic order: inserted
     aaa, zzz, mmm, a run_id sort would answer zzz/mmm/aaa, and only an
@@ -919,6 +952,161 @@ async def test_two_invokes_in_one_timestamp_tick_still_list_newest_first(
     assert [r["run_id"] for r in rows] == [
         second.json()["run_id"], first.json()["run_id"],
     ]
+
+
+# ── keyset cursor: before + before_id (#372) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_runs_list_pages_through_runs_sharing_one_timestamp(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """Three runs in ONE ``created_at`` tick page through one at a time.
+
+    ``before`` alone is keyed on ``created_at`` and its predicate is
+    ``created_at < ?``, so it excludes every row sharing the cursor's
+    timestamp -- including the ones the client has not seen yet. Page 2 of
+    this walk used to come back empty and the other two runs were
+    unreachable through the API (#372). The composite cursor keys on the
+    same ``(created_at, rowid)`` tuple the ORDER BY sorts on, so each run is
+    visited exactly once.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    stamp = "2026-04-04T00:00:00.000000Z"
+    ids = await _invokes_at(test_client, api_key["token"], [stamp] * 3,
+                            monkeypatch)
+
+    rows = (await test_client.get(f"/api/apps/{SLUG}/runs")).json()
+    assert {r["created_at"] for r in rows} == {stamp}, (
+        "the frozen clock did not take -- the tie this test exists for "
+        "never happened")
+
+    seen: list[str] = []
+    query = f"/api/apps/{SLUG}/runs?limit=1"
+    for page_no in (1, 2, 3):
+        page = (await test_client.get(query)).json()
+        assert len(page) == 1, f"page {page_no} came back as {page}"
+        seen.append(page[0]["run_id"])
+        query = f"/api/apps/{SLUG}/runs?limit=1&{_cursor(page[0])}"
+
+    assert seen == list(reversed(ids))   # newest first, each run exactly once
+    assert (await test_client.get(query)).json() == []
+
+
+@pytest.mark.asyncio
+async def test_runs_list_cursor_walks_mixed_and_shared_timestamps(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """Four runs across two ticks; one query exercises both halves of the
+    predicate.
+
+    Page 2 anchors on the older of the two runs in the newer tick. That one
+    query has to keep the newer tick's other run out through
+    ``created_at = :ts AND rowid < ...`` and let both runs from the older
+    tick in through ``created_at < :ts``.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    older = "2026-05-05T00:00:00.000000Z"
+    newer = "2026-05-05T00:00:01.000000Z"
+    r1, r2, r3, r4 = await _invokes_at(
+        test_client, api_key["token"], [older, older, newer, newer],
+        monkeypatch)
+
+    page1 = (await test_client.get(f"/api/apps/{SLUG}/runs?limit=2")).json()
+    assert [r["run_id"] for r in page1] == [r4, r3]
+
+    page2 = (await test_client.get(
+        f"/api/apps/{SLUG}/runs?limit=2&{_cursor(page1[-1])}")).json()
+    assert [r["run_id"] for r in page2] == [r2, r1]
+
+    assert (await test_client.get(
+        f"/api/apps/{SLUG}/runs?limit=2&{_cursor(page2[-1])}")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_runs_list_cursor_survives_a_pruned_anchor_row(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """A cursor whose anchor row is gone falls back to ``created_at < ts``.
+
+    Retention deletes with ``created_at < cutoff``, so it takes a timestamp
+    whole. When the anchor is one of the rows that went, every row sharing
+    its timestamp went with it, and ``created_at < ts`` is then the exact
+    next page. The subselect resolves a missing anchor to NULL and
+    ``rowid < NULL`` is NULL, so the fallback needs no branch in Python.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    older = "2026-06-06T00:00:00.000000Z"
+    newer = "2026-06-06T00:00:01.000000Z"
+    r1, r2, r3 = await _invokes_at(
+        test_client, api_key["token"], [older, newer, newer], monkeypatch)
+
+    page1 = (await test_client.get(f"/api/apps/{SLUG}/runs?limit=2")).json()
+    assert [r["run_id"] for r in page1] == [r3, r2]
+    cursor = _cursor(page1[-1])                   # anchored on r2
+
+    def _prune(conn: sqlite3.Connection) -> None:
+        conn.execute("DELETE FROM runs WHERE created_at = ?", (newer,))
+
+    await app_db.run(_prune)
+
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs?limit=2&{cursor}")
+    assert resp.status_code == 200
+    assert [r["run_id"] for r in resp.json()] == [r1]
+
+
+@pytest.mark.asyncio
+async def test_runs_list_ignores_a_before_id_from_another_app(
+    test_client, app_db, api_key, monkeypatch,
+):
+    """``before_id`` resolves only inside the app being listed.
+
+    The subselect carries ``AND app_id = :app_id``, so another app's run_id
+    -- or one that never existed -- resolves to NULL and the cursor falls
+    back to ``created_at < ts``. The two runs below share a timestamp, which
+    is what makes the difference visible: this app's own run_id pages to the
+    second run, anything else pages to nothing.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    other_slug = "other-app"
+    await _publish(test_client, other_slug, _echo_graph(name="other-src"))
+    token = api_key["token"]
+    stamp = "2026-07-07T00:00:00.000000Z"
+    r1, r2 = await _invokes_at(test_client, token, [stamp] * 2, monkeypatch)
+    foreign = (await _invokes_at(test_client, token, [stamp], monkeypatch,
+                                 slug=other_slug))[0]
+
+    own = await test_client.get(
+        f"/api/apps/{SLUG}/runs?before={stamp}&before_id={r2}")
+    assert [r["run_id"] for r in own.json()] == [r1]
+
+    cross = await test_client.get(
+        f"/api/apps/{SLUG}/runs?before={stamp}&before_id={foreign}")
+    assert cross.status_code == 200
+    assert cross.json() == []
+
+    unknown = await test_client.get(
+        f"/api/apps/{SLUG}/runs?before={stamp}&before_id=never-ran")
+    assert unknown.json() == []
+
+    # The fallback is exactly what `before` alone answers.
+    assert (await test_client.get(
+        f"/api/apps/{SLUG}/runs?before={stamp}")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_runs_list_rejects_before_id_without_before(
+    test_client, app_db, api_key,
+):
+    """``before_id`` alone has no timestamp to anchor against -> 422.
+
+    The management error shape this file uses everywhere, so the code is
+    machine-matchable the same way the endpoint's own ``app_not_found`` is.
+    """
+    await _publish(test_client, SLUG, _echo_graph())
+    resp = await test_client.get(f"/api/apps/{SLUG}/runs?before_id=whatever")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "incomplete_cursor"
 
 
 @pytest.mark.asyncio

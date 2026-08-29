@@ -393,6 +393,23 @@ received — each links to the release it was published as.
   traceback happens to name the class in its last line. The message itself
   never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
 
+- **Paging through `GET /api/apps/{slug}/runs` no longer drops every run that
+  shares a timestamp with the cursor** ([#372]). The `before` cursor carried
+  the previous page's own `created_at` into `AND created_at < ?`, so a page
+  boundary landing inside a group of runs recorded in the same microsecond
+  tick excluded that whole group — including the runs the client had not seen
+  yet. Two invokes in quick succession share a tick often enough that this
+  endpoint's own test hit it about one run in five, and the affected rows were
+  unreachable through the API entirely: no page ever returned them. The list
+  now takes a composite keyset cursor, `before` plus `before_id`, which are
+  the `created_at` and `run_id` of the last row of the previous page and name
+  one row in the `created_at DESC, rowid DESC` ordering [#371] settled. An
+  anchor that no longer resolves — pruned by retention, or belonging to
+  another app — degrades to the old `created_at < ?`, which stays exact for
+  the retention case because retention deletes a timestamp whole. `before`
+  alone still works for clients written against the earlier contract and keeps
+  its original meaning; `before_id` without `before` is a 422.
+
 - **A follow-up pass over the Package Center installer and its launcher**
   ([#380]). The catalog now validates what its tests had only assumed; the
   byte meter cannot freeze a bar or pass 100%; an asset's sentinel is
@@ -2453,7 +2470,12 @@ Release candidates before 1.0.0 are on the
 [#357]: https://github.com/CodefyUI/CodefyUI/pull/357
 [#359]: https://github.com/CodefyUI/CodefyUI/pull/359
 [#360]: https://github.com/CodefyUI/CodefyUI/issues/360
+<<<<<<< HEAD
 [#380]: https://github.com/CodefyUI/CodefyUI/issues/380
+=======
+[#371]: https://github.com/CodefyUI/CodefyUI/pull/371
+[#372]: https://github.com/CodefyUI/CodefyUI/issues/372
+>>>>>>> origin/main
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
