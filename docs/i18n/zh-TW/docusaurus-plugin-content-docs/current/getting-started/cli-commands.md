@@ -15,7 +15,7 @@ description: cdui 啟動器指令 —— install、start、status、dev、build�
 | `cdui install` | 安裝後端依賴；下載預編好的前端（若有 `pnpm` 則改在本地 build）。 |
 | `cdui update` | 更新到最新 release（prebuilt 路徑），或拉取 `main`（原始碼建置）並重新同步前端。不會詢問任何問題 —— 除非用 `--gpu` / `--dev` 覆蓋，否則沿用 venv 中既有的 PyTorch 變體與 dev 工具。伺服器還在執行時會拒絕（它會刪掉那台伺服器正在服務的 `frontend/dist`）—— 請先 `cdui stop`。 |
 | `cdui start` | 正式模式 —— 單一 uvicorn 跑 `:8000`，在背景執行（不需要 Node）。`--foreground`／`-f` 改為前景執行。 |
-| `cdui status` | btop／k9s 風格的儀表板：CPU、記憶體、磁碟、GPU、前幾名程序，外加伺服器的 PID 與健康狀態。即時刷新（每 2 秒；`Ctrl+C` 離開）。傳入一個數字可設定間隔（`cdui status 1`），或用 `--once` 只顯示單一畫面。 |
+| `cdui status` | btop／k9s 風格的儀表板：CPU、記憶體、磁碟、GPU、前幾名程序，外加伺服器的 PID 與健康狀態。即時刷新（每 2 秒；`Ctrl+C` 離開）。傳入一個數字可設定間隔（`cdui status 1`），或用 `--once` 只顯示單一畫面。它也會回報會重新啟動伺服器的套件包安裝：只要認領單還在就會多出一行 `Restart install` —— 輔助程式還在做事時顯示「收尾中」，不在了則顯示「被遺棄」—— 結束後的一小時內則會多出一行 `Last restart`。 |
 | `cdui dev` | 開發者模式 —— 後端 `:8000` + Vite HMR `:5173`（需要 Node + pnpm）。 |
 | `cdui build` | 在本地建置前端 bundle（需要 Node + pnpm）。 |
 | `cdui stop` | 停止**這個安裝**的服務：pidfile 記錄的背景伺服器，加上從這個目錄啟動的殘留行程（前景 `cdui start`、`cdui dev` 的 Vite、遺留 worker）。加上 `--all` 則改為停止整台機器上所有 CodefyUI 與 Vite 行程 —— 那會波及其他使用者的伺服器與無關的 Vite dev server，共用主機請勿使用。 |
@@ -48,6 +48,8 @@ description: cdui 啟動器指令 —— install、start、status、dev、build�
 | `cdui packs remove <id> <item-id>` | 刪除一個已下載的模型並清掉紀錄。套件包的 Python 套件不會一併移除；能移除它們的 `uv pip uninstall` 指令會印出來，請在伺服器停掉後自行執行。 |
 
 離開碼（給腳本用）：`0` 完成、`1` 安裝失敗或在確認時選了不要、`2` 還沒開始就拒絕（id 不存在、相依未滿足、沒有終端可確認）、`3` 伺服器執行中無法進行 —— 會印出改用的指令、`130` 以 `Ctrl+C` 中斷。
+
+**會重新啟動伺服器的安裝。** 用 `cdui start` 啟動的伺服器，可以靠「先離開、再回來」把 GPU PyTorch 套件包裝好 —— 線上安裝撞到相依衝突的套件包也一樣：它會先把要裝什麼寫下來，以分離的方式啟動 `cdui packs-run-pending`，然後把自己關掉；那個輔助程式會等這個行程真的消失，執行安裝，記下結果，再用這次 `cdui start` 收到的參數把伺服器啟動回來。`packs-run-pending` 是**內部指令**，而且刻意不出現在說明文字裡 —— 交給它的檔案指名了一個「要等它結束」的行程，所以拿去對著執行中的伺服器手動跑，只會等兩分鐘然後把它停掉。若某台機器上重新啟動回不來，用 `CODEFYUI_ENABLE_RESTART_INSTALL=0` 可以把整條路徑關掉。而在一次重新啟動安裝還在「收尾中」時 —— 它記下的輔助程式還活著，或那張認領單還不到兩分鐘 —— `cdui start` 不會在那個輔助程式正在改寫的 venv 上再起第二台伺服器：它會印出 `a restart install is finishing; see cdui status` 然後返回。等輔助程式不在了，或認領單超過十五分鐘，它就算「被遺棄」，這時 `cdui start` 會刪掉它並照常啟動。詳見 **[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)**。
 
 ## 背景與前景
 
