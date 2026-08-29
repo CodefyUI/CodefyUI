@@ -1,6 +1,6 @@
 """How a pack install fails, in terms the UI can act on.
 
-An install can fail in five shapes, and they lead to five different next
+An install can fail in six shapes, and they lead to six different next
 steps for the person watching. Collapsing them into one ``RuntimeError``
 would put that decision back on the frontend, which would then have to
 match on message text:
@@ -22,6 +22,10 @@ match on message text:
   run, claimed by a server process that is still alive. Nothing failed yet
   and nothing was overwritten; the next step is to wait for that one, not
   to retry this one.
+* :class:`RestartRefused` -- this server COULD restart itself to finish the
+  install, and will not do it right now. ``reason`` says what is in the way
+  and ``command`` is the way round it. Nothing has been changed, and the
+  same request usually succeeds a minute later.
 
 Stdlib only, and imported by ``packs/__init__.py``: node code catches these
 without dragging the installer's machinery into a graph run.
@@ -86,3 +90,31 @@ class PendingExists(PackInstallError):
     already under way (``restart.clear_stale_pending`` removes the claim of
     a server that died holding it).
     """
+
+
+class RestartRefused(PackInstallError):
+    """A restart this server could have done, and will not do NOW.
+
+    Not :class:`~app.core.packs.service.RestartUnavailable`, and the
+    difference is the user's next move. "Unavailable" is a property of how
+    the server was started and will not change while it runs, so the only
+    way forward is the terminal. This is a passing condition -- a graph
+    running, another restart already claimed -- so the answer is "not yet",
+    and the same button works a minute later.
+
+    ``reason`` is a short phrase naming what is in the way, for a UI that
+    wants to say more than "409"; ``command`` is the same full line every
+    other refusal carries, because a user who does not want to wait is
+    entitled to do it from a terminal instead.
+
+    A subclass of :class:`PackInstallError` for the same reason
+    :class:`PendingExists` is (which is one of the conditions this reports):
+    a caller that only knows "install errors" must not miss it. The routes
+    map it BEFORE the generic 500 branch -- nothing failed here.
+    """
+
+    def __init__(self, message: str, *, reason: str, command: str,
+                 hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.reason = reason
+        self.command = command

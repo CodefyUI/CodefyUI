@@ -1,6 +1,6 @@
 """The Package Center's REST surface: ``/api/packs`` and the job long poll.
 
-Three promises are tested here rather than in the service tests, because they
+Four promises are tested here rather than in the service tests, because they
 only exist once there is a request in front of the job:
 
 * **the read is open, the writes are not.** ``GET /api/packs`` is what the
@@ -14,17 +14,26 @@ only exist once there is a request in front of the job:
 * **the long poll behaves like the runs one.** It returns at once on a
   finished job, wakes on the next event rather than on a timer, and refuses
   an out-of-range ``wait`` with 422.
+* **a restart-mode install answers before it goes away.** The 202 and the
+  terminal ``needs_restart`` event are the last things the client hears from
+  this process, so everything it needs -- the command, the kind, the pending
+  file -- has to be in them, and every refusal has to happen before anything
+  is written down.
 
-No test here installs anything: each one injects a scripted flow into a
-``PackService`` on ``app.state`` and drives it from the test thread.
+No test here installs anything, and none of them restarts anything: each
+injects a scripted flow into a ``PackService`` on ``app.state`` and drives it
+from the test thread, and the two irreversible steps of the handshake (the
+detached helper, the SIGINT) are faked by the ``restart_ready`` fixture.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.routing import APIRoute
@@ -34,11 +43,13 @@ from app.api import routes_packs
 from app.config import settings
 from app.core.auth import TOKEN_HEADER, session_token
 from app.core.packs import download, flows, restart, runner, state
+from app.core.packs.catalog import get_pack
 from app.core.packs.errors import (
     PackInstallError,
     PackInsufficientDisk,
     PackNeedsRestart,
 )
+from app.core.packs.paths import pending_restart_file
 from app.core.packs.service import PackService
 from app.main import _AUTH_EXEMPT_PREFIXES, _prefix_exempt, app
 
@@ -50,7 +61,7 @@ SENTENCE = "sentence-embeddings"
 #: Every top-level key ``GET /api/packs`` returns. Additive is a decision:
 #: a new key should break this once, on purpose.
 TOP_KEYS = {"packs", "active_job", "last_restart_job", "remote_install_allowed",
-            "launch_mode", "gpu"}
+            "launch_mode", "restart_available", "gpu"}
 PACK_KEYS = {"id", "title", "description", "install_mode", "status",
              "pip_ready", "usable", "depends_on", "blocked_by", "pip", "items",
              "size_bytes_total", "install_command"}
@@ -62,8 +73,17 @@ GPU_KEYS = {"detected_label", "recommended_variant", "installed_variant",
 
 @pytest.fixture(autouse=True)
 def isolated_cache(tmp_path, monkeypatch):
-    """A throwaway cache root and a cold probe cache for every test."""
+    """A throwaway cache root, a cold probe cache, and no launch environment.
+
+    The launch variables are DELETED rather than left alone: every restart
+    decision below reads ``os.environ`` at call time, so a suite run from a
+    shell that had itself run ``cdui start`` would take the available branch
+    and refuse nothing.
+    """
     monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    for name in ("CODEFYUI_MANAGED", restart.ENABLE_ENV,
+                 restart.LAUNCHER_ENV, restart.RELAUNCH_ARGV_ENV):
+        monkeypatch.delenv(name, raising=False)
     state.invalidate()
     yield tmp_path
     state.invalidate()
@@ -76,12 +96,16 @@ def flow() -> ScriptedFlow:
 
 @pytest.fixture
 async def pack_service(flow):
-    """A PackService on ``app.state``, torn down like the lifespan does.
+    """A PackService on ``app.state``, wired and torn down like the lifespan.
 
     The lifespan does not run under httpx's ASGITransport, so the service is
-    installed by hand (the ``run_service`` precedent in test_api_runs.py).
+    installed by hand (the ``run_service`` precedent in test_api_runs.py) --
+    including the ``runs_active`` closure ``main.py`` builds, so a restart is
+    refused here for the same reason it is in production: something on
+    ``app.state.run_service`` says a graph is in flight.
     """
-    service = PackService(run_flow=flow)
+    service = PackService(run_flow=flow,
+                          runs_active=lambda: restart.runs_active(app))
     previous = getattr(app.state, "pack_service", None)
     app.state.pack_service = service
     try:
@@ -111,6 +135,46 @@ async def anon_client(pack_service):
         transport=ASGITransport(app=app), base_url=BASE_URL,
     ) as http:
         yield http
+
+
+class _RestartCalls:
+    """What the handshake did, without letting it do any of it."""
+
+    def __init__(self) -> None:
+        #: The pending file each ``spawn_helper`` call was handed.
+        self.spawned: list[str] = []
+        #: The delay each ``schedule_self_shutdown`` call asked for.
+        self.shutdowns: list[float] = []
+        #: Set by a test to make the next spawn fail.
+        self.spawn_error: BaseException | None = None
+
+
+@pytest.fixture
+def restart_ready(monkeypatch) -> _RestartCalls:
+    """A server that CAN restart, with the two irreversible steps faked.
+
+    ``write_pending`` is deliberately the REAL one: it writes into the
+    throwaway user-data root, and the file it leaves is the whole contract
+    with dev.py's helper -- a test that faked it would prove nothing about
+    the handshake. The other two are not survivable in a test process: one
+    starts a detached install that would outlive the suite, the other raises
+    the SIGINT that ends it.
+    """
+    calls = _RestartCalls()
+
+    def _spawn(pending_path):
+        calls.spawned.append(str(pending_path))
+        if calls.spawn_error is not None:
+            raise calls.spawn_error
+        return 4242
+
+    def _shutdown(loop, delay: float = 0.5):
+        calls.shutdowns.append(delay)
+
+    monkeypatch.setattr(restart, "restart_available", lambda: True)
+    monkeypatch.setattr(restart, "spawn_helper", _spawn)
+    monkeypatch.setattr(restart, "schedule_self_shutdown", _shutdown)
+    return calls
 
 
 async def start_install(client, pack_id=SENTENCE, **body) -> str:
@@ -368,7 +432,18 @@ async def test_insufficient_disk_is_507(client, monkeypatch):
     assert "disk" in body["detail"]
 
 
-async def test_restart_mode_refused_with_command_409(client):
+async def test_restart_mode_is_refused_with_command_when_unavailable(client):
+    """Nothing launched this process that knows how to launch it again.
+
+    The condition is stated rather than inherited: ``isolated_cache`` clears
+    the three launch variables for every test in this file, so this passes or
+    fails on the code and not on whether the shell running pytest had itself
+    run ``cdui start``. A refusal that does not name the line to type leaves
+    the user guessing at a CLI they have never run, so the command is the
+    part that matters.
+    """
+    assert restart.restart_available() is False
+
     gpu = await client.post("/api/packs/gpu-torch/install",
                             json={"mode": "restart", "variant": "cu128"})
     assert gpu.status_code == 409
@@ -434,13 +509,195 @@ async def test_install_rejects_an_unknown_variant_422(client):
 
 
 async def test_install_command_for_refuses_an_unknown_variant():
-    from app.core.packs.catalog import get_pack
-
     with pytest.raises(ValueError, match="unknown torch variant"):
         restart.install_command_for(get_pack("gpu-torch"), "; rm -rf /")
     # A known one is still fine, and a pack that ignores the variant too.
     assert restart.install_command_for(
         get_pack("gpu-torch"), "cu128") == "cdui install --gpu cu128"
+
+
+# ── the restart handshake ─────────────────────────────────────────────────
+
+
+async def test_restart_mode_starts_the_handshake(client, pack_service,
+                                                 restart_ready, flow):
+    """The 202 the SPA gets back, and the claim the helper will read.
+
+    Everything the panel needs is in the terminal event -- the command, the
+    kind of install and the file that carries it -- because the next thing
+    that happens to this process is that it stops existing.
+    """
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+    assert response.status_code == 202, response.text
+    job_id = response.json()["job_id"]
+
+    events, status = await drain(client, job_id)
+    assert status == "needs_restart"
+    assert types_of(events) == ["job_started", "needs_restart"]
+    assert events[0]["pack_id"] == "gpu-torch"
+    assert events[0]["items"] == []
+
+    settled = events[-1]
+    assert settled["command"] == "cdui install --gpu cu128"
+    assert settled["kind"] == "torch"
+    assert Path(settled["pending_path"]) == pending_restart_file()
+
+    # The file dev.py's helper reads names the job the client is watching, so
+    # the outcome it writes afterwards can be matched to it.
+    pending = restart.PendingRestart.from_json(
+        pending_restart_file().read_text(encoding="utf-8"))
+    assert pending.job_id == job_id
+    assert pending.pack_id == "gpu-torch"
+    assert pending.kind == "torch"
+    assert pending.index_url == restart.TORCH_INDEX_URLS["cu128"]
+    assert pending.server_pid == os.getpid()
+
+    # Written, THEN handed to the helper, and only then is this process asked
+    # to go away -- the 202 above had already gone out.
+    assert restart_ready.spawned == [settled["pending_path"]]
+    assert restart_ready.shutdowns == [0.5]
+    assert not flow.started.is_set(), "no install ran inside this process"
+
+    job = pack_service.current_job()
+    assert job.job_id == job_id
+    # What the SPA's reload handshake keys on: the JOB's mode is "restart"
+    # even when the client never asked for one (a gpu-torch install with no
+    # mode at all still ends here).
+    assert job.mode == "restart"
+    assert job.status == "needs_restart"
+    assert job.restart_command == "cdui install --gpu cu128"
+    assert (await client.get("/api/packs")).json()["active_job"] is None
+
+
+async def test_a_restart_mode_pack_starts_the_handshake_without_being_asked(
+        client, restart_ready):
+    """The PACK's mode decides. A gpu-torch install with no ``mode`` at all
+    is a restart, because a live one would change nothing and report success.
+    """
+    response = await client.post("/api/packs/gpu-torch/install", json={})
+    assert response.status_code == 202, response.text
+    events, status = await drain(client, response.json()["job_id"])
+    assert status == "needs_restart"
+    assert events[-1]["command"].startswith("cdui install --gpu ")
+    assert restart_ready.spawned
+
+
+async def test_restart_refused_while_a_graph_runs(client, restart_ready,
+                                                  monkeypatch):
+    """A restart ends this process, and a run that dies with it is minutes or
+    hours of somebody's training thrown away with no output. Veto, not hint.
+    """
+    class _Busy:
+        def active_run_ids(self):
+            return ["run-1"]
+
+        def queue_snapshot(self):
+            return {}
+
+    monkeypatch.setattr(app.state, "run_service", _Busy(), raising=False)
+
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["reason"] == "a graph is running"
+    assert body["command"] == "cdui install --gpu cu128"
+    assert "run" in body["detail"]
+
+    # Refused BEFORE anything was written down or started.
+    assert not pending_restart_file().exists()
+    assert restart_ready.spawned == []
+    assert restart_ready.shutdowns == []
+
+
+async def test_restart_refused_when_a_fresh_pending_exists(client,
+                                                           restart_ready):
+    """Two claims on one site-packages is the corruption the whole feature
+    exists to avoid, so the second install is refused rather than allowed to
+    overwrite the first."""
+    restart.write_pending(restart.build_pending(
+        get_pack("gpu-torch"), job_id="already-here", kind="torch",
+        variant="cu128"))          # this process's own pid: alive, and fresh
+
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+    assert response.status_code == 409
+    body = response.json()
+    assert "already-here" in body["detail"]
+    assert body["reason"] == "a restart-mode install is already pending"
+    assert body["command"] == "cdui install --gpu cu128"
+
+    # The live claim is exactly as it was, and nothing else was started.
+    assert restart.PendingRestart.from_json(
+        pending_restart_file().read_text(encoding="utf-8")
+    ).job_id == "already-here"
+    assert restart_ready.spawned == []
+    assert restart_ready.shutdowns == []
+
+
+async def test_spawn_failure_deletes_pending_and_returns_500(
+        client, pack_service, restart_ready):
+    """Nothing was installed and nothing is pending.
+
+    The claim is withdrawn before the failure is reported: leaving it behind
+    would refuse every future restart with "one is already pending", on a
+    server that is still running and could have tried again.
+    """
+    restart_ready.spawn_error = OSError("cannot find the launcher")
+
+    response = await client.post("/api/packs/gpu-torch/install",
+                                 json={"mode": "restart", "variant": "cu128"})
+    assert response.status_code == 500
+    assert "helper" in response.json()["detail"]
+
+    assert restart_ready.spawned, "the helper was never even attempted"
+    assert not pending_restart_file().exists(), "the claim was left behind"
+    assert restart_ready.shutdowns == [], "the server was stopped anyway"
+    assert pack_service.current_job() is None, "a job outlived the failure"
+    assert (await client.get("/api/packs")).json()["active_job"] is None
+
+
+async def test_restart_mode_for_a_pack_with_nothing_to_install_is_400(
+        client, restart_ready):
+    """word-vectors ships data and no packages, so there is no pip command a
+    helper could run for it -- and a restart that installs nothing would end
+    the server for no reason."""
+    response = await client.post("/api/packs/word-vectors/install",
+                                 json={"mode": "restart"})
+    assert response.status_code == 400
+    assert "word-vectors" in response.json()["detail"]
+    assert not pending_restart_file().exists()
+    assert restart_ready.spawned == []
+
+
+async def test_catalog_reports_restart_available(client, monkeypatch):
+    """The panel draws the restart button off this one key."""
+    assert (await client.get("/api/packs")).json()["restart_available"] is False
+
+    monkeypatch.setattr(restart, "restart_available", lambda: True)
+    assert (await client.get("/api/packs")).json()["restart_available"] is True
+
+
+async def test_live_conflict_event_carries_retry_mode_when_restart_is_available(
+        client, flow, monkeypatch):
+    """A live install stopped by the resolver can now be RETRIED as a restart.
+
+    The terminal event says so, so the UI can offer that button instead of
+    only the command to paste -- but only on a server that could actually do
+    it (see the unavailable half in
+    ``test_needs_restart_flow_ends_with_needs_restart_status_and_command``).
+    """
+    monkeypatch.setattr(restart, "restart_available", lambda: True)
+    flow.fail(PackNeedsRestart("cannot replace a package already in use",
+                               command="uv pip install --python /venv/bin/python torch"))
+    job_id = await start_install(client)
+    events, status = await drain(client, job_id)
+
+    assert status == "needs_restart"
+    assert events[-1]["retry_mode"] == "restart"
+    assert events[-1]["command"] == (
+        "uv pip install --python /venv/bin/python torch")
 
 
 async def test_install_emits_job_started_then_flow_events_then_job_done(
@@ -484,6 +741,10 @@ async def test_needs_restart_flow_ends_with_needs_restart_status_and_command(
     assert status == "needs_restart"
     assert events[-1]["type"] == "needs_restart"
     assert events[-1]["command"] == "uv pip install --python /venv/bin/python torch"
+    # No in-app retry to offer on a server that cannot restart itself: the
+    # key is absent rather than null, so "can I offer the button?" is one
+    # check on the client instead of two.
+    assert "retry_mode" not in events[-1]
 
 
 # ── the job routes ────────────────────────────────────────────────────────
@@ -789,7 +1050,3 @@ async def test_read_last_restart_ignores_a_corrupt_file(isolated_cache):
                     encoding="utf-8")
     assert restart.read_last_restart() == {"pack_id": "gpu-torch",
                                            "status": "done"}
-
-
-async def test_restart_is_not_available_in_this_release():
-    assert restart.restart_available() is False

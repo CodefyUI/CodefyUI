@@ -82,3 +82,55 @@ async def test_lifespan_wires_dotenv_provenance_and_pin_warning(
     assert pin_record.levelno == logging.WARNING
     # The loader logs the COUNT only -- a secret VALUE must never be logged.
     assert all("from-dotenv" not in m for m in messages)
+
+
+async def test_lifespan_clears_a_stale_pending_and_wires_runs_active(
+        lifespan_project, caplog, monkeypatch):
+    """Startup owns both halves of the restart handshake's safety net.
+
+    A pending file still here at startup is the wreckage of a restart that
+    did not happen -- the process it named is gone -- and leaving the claim
+    behind would refuse every future restart-mode install with "one is
+    already pending". The pack service is separately handed the question "is
+    a graph running?", which is the veto that keeps a restart from ending
+    somebody's training run; a service built without it would answer "no"
+    forever, so the wiring is asserted through the refusal it produces
+    rather than by reading the attribute back.
+    """
+    from app.core.packs import restart
+    from app.core.packs.catalog import get_pack
+    from app.core.packs.errors import RestartRefused
+    from app.core.packs.paths import pending_restart_file
+
+    class _BusyRuns:
+        def active_run_ids(self):
+            return ["run-1"]
+
+        def queue_snapshot(self):
+            return {}
+
+    pending = pending_restart_file()
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    # Unreadable, so it is not a claim anybody has to honour -- and no test
+    # process has to be killed to make one look abandoned.
+    pending.write_text("{half written", encoding="utf-8")
+
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        async with main_mod.lifespan(main_mod.app):
+            assert not pending.exists(), "the wreckage was left behind"
+            assert any("pending restart" in r.getMessage()
+                       for r in caplog.records if r.name == "app.main")
+
+            service = main_mod.app.state.pack_service
+            previous = main_mod.app.state.run_service
+            monkeypatch.setattr(restart, "restart_available", lambda: True)
+            main_mod.app.state.run_service = _BusyRuns()
+            try:
+                with pytest.raises(RestartRefused) as excinfo:
+                    await service.submit_install(get_pack("gpu-torch"), None,
+                                                 mode="restart",
+                                                 variant="cu128")
+            finally:
+                main_mod.app.state.run_service = previous
+            assert excinfo.value.reason == "a graph is running"
+            assert not pending.exists(), "a refusal wrote a claim"
