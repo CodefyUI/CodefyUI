@@ -334,7 +334,12 @@ class PackService:
                 f"{pack.title} cannot be installed right now: this server is "
                 f"restarting to finish another install",
                 reason="a restart is already pending",
-                command=running.restart_command or "")
+                # THIS pack's command, not the pending restart's. Every
+                # refusal carries the line that gets the user what they just
+                # asked for; ``running.restart_command`` installs the other
+                # pack, and handing somebody a command for a package they
+                # did not ask for is worse than handing them none.
+                command=restart.install_command_for(pack))
 
         targets = self._targets(pack, item_ids)
         download.check_disk(targets)

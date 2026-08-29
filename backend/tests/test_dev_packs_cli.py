@@ -28,6 +28,7 @@ import ast
 import io
 import json
 import os
+import signal
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -655,6 +656,53 @@ def test_dev_and_restart_agree_on_the_restart_handshake():
     assert dev.OUTCOME_SCHEMA == restart.OUTCOME_SCHEMA
     assert dev.HELPER_COMMAND == restart.HELPER_COMMAND
     assert dev.STALE_PENDING_S == restart.STALE_PENDING_S
+    assert dev.HELPER_START_GRACE_S == restart.HELPER_START_GRACE_S
+
+
+@pytest.mark.parametrize("helper_pid, installer_pid, alive, live", [
+    (777, None, {777}, True),      # the helper is installing
+    (777, None, set(), False),     # it died before it finished
+    (777, 888, set(), False),      # and so did the uv it started
+    (777, 888, {888}, True),       # helper killed, uv still rewriting the venv
+    (None, 888, {888}, True),      # a claim read between the two stamps
+    (777, 888, {777}, True),       # uv has finished; the helper is relaunching
+])
+def test_dev_and_restart_agree_on_which_claims_are_still_alive(
+        monkeypatch, tmp_path, helper_pid, installer_pid, alive, live):
+    """The rule itself, from both sides, because it is duplicated code.
+
+    A claim names up to three processes, and by the time one is being
+    installed the server that wrote it is DEAD -- so the question "is this
+    restart still happening?" is answered by the helper and the installer,
+    and it is yes while EITHER is alive. The backend refuses a second
+    install on that answer and `cdui start` stands down on it; the two
+    reading one file differently is a second `uv` in one site-packages.
+    """
+    restart = _restart_state()
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid in alive)
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: pid in alive)
+
+    claim = {
+        "schema": 1, "job_id": "j1", "pack_id": "gpu-torch", "kind": "torch",
+        "index_url": "https://download.pytorch.org/whl/cu128",
+        "packages": ["torch", "torchvision"], "specs": [],
+        "venv_python": "/nowhere/python", "server_pid": 4242,
+        "launcher": ["/py", "/dev.py"], "relaunch_argv": [],
+        # Older than every clock-based rule either side has, so only the
+        # pids can be what answers.
+        "created_at": (datetime.now(timezone.utc)
+                       - timedelta(seconds=dev.STALE_PENDING_S + 300)).isoformat(),
+    }
+    if helper_pid is not None:
+        claim["helper_pid"] = helper_pid
+    if installer_pid is not None:
+        claim["installer_pid"] = installer_pid
+    path = tmp_path / "pending_restart.json"
+    path.write_text(json.dumps(claim), encoding="utf-8")
+
+    assert (dev._pending_state(path, claim) == "finishing") is live
+    assert restart._is_stale(
+        restart.PendingRestart.from_json(json.dumps(claim))) is not live
 
 
 def test_dev_and_restart_agree_on_where_the_two_files_live(tmp_path,
@@ -704,7 +752,14 @@ def test_packs_run_pending_is_not_advertised_in_the_help():
 
 
 class _FakeInstall:
-    """Just enough of Popen for the installer: lines, then a return code."""
+    """Just enough of Popen for the installer: a pid, lines, a return code.
+
+    The pid is not decoration: the helper writes it into the claim as soon as
+    the process exists, so that a helper somebody kills does not leave a
+    running `uv` that nothing can be told about.
+    """
+
+    pid = 5150
 
     def __init__(self, lines, returncode):
         self.stdout = io.StringIO("".join(f"{line}\n" for line in lines))
@@ -748,6 +803,13 @@ def helper(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "BACKEND_DIR", backend)
     monkeypatch.setattr(dev, "VENV", venv)
     monkeypatch.setattr(dev, "DIST_DIR", root / "frontend" / "dist")
+    # The helper DELETES these once the server it was waiting for is gone, so
+    # they are redirected for the same reason the control directory is: the
+    # suite must not reach into the developer's own `.codefyui_dev`.
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(dev, "SERVER_PIDFILE", state / "server.pid")
+    monkeypatch.setattr(dev, "SERVER_ADDRFILE", state / "server.addr")
     # Wall-clock waits, shrunk. The deadlines are what production needs; a
     # test that spent two real minutes proving one would never be run.
     monkeypatch.setattr(dev, "RESTART_WAIT_S", 0.02)
@@ -913,6 +975,49 @@ def test_run_pending_does_not_terminate_a_server_that_left_on_its_own(helper,
     assert helper["terminated"] == []
 
 
+def test_the_helper_forgets_the_server_it_watched_exit(helper, monkeypatch):
+    """Nothing else clears the pidfile when a server shuts ITSELF down.
+
+    The relaunched `start()` consults it first, and a pid the OS has since
+    handed to something else reads as alive: it prints "already running",
+    returns 0, and the outcome record says `relaunch: ok` -- with no server
+    anywhere. Deleting both files here is safe because `_restart_preflight`
+    keeps any other `cdui start` from writing new ones while a restart is
+    finishing.
+    """
+    dev.SERVER_PIDFILE.write_text("4242", encoding="utf-8")
+    dev.SERVER_ADDRFILE.write_text("0.0.0.0:9100", encoding="utf-8")
+    seen: dict = {}
+    fake_popen = dev.subprocess.Popen
+
+    def _spy(cmd, **kw):
+        if list(cmd)[:1] == ["/fake/uv"]:
+            seen["pid_gone"] = not dev.SERVER_PIDFILE.exists()
+            seen["addr_gone"] = not dev.SERVER_ADDRFILE.exists()
+        return fake_popen(cmd, **kw)
+
+    monkeypatch.setattr(dev.subprocess, "Popen", _spy)
+
+    assert dev._run_pending_job(_pending(helper)) == 0
+
+    assert seen == {"pid_gone": True, "addr_gone": True}, (
+        "the files must be gone before the install, not after the relaunch")
+
+
+def test_the_helper_keeps_the_pidfile_of_a_server_that_would_not_die(
+        helper, monkeypatch):
+    """The one case where the pidfile is still TRUE: the server outlived both
+    the wait and the kill, and it is still the process that pid names."""
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+    dev.SERVER_PIDFILE.write_text("4242", encoding="utf-8")
+    dev.SERVER_ADDRFILE.write_text("0.0.0.0:9100", encoding="utf-8")
+
+    dev._run_pending_job(_pending(helper))
+
+    assert dev.SERVER_PIDFILE.exists()
+    assert dev.SERVER_ADDRFILE.exists()
+
+
 def test_run_pending_installs_anyway_when_the_server_will_not_die(
         helper, monkeypatch, capsys):
     """uv will most likely fail on locked files, and that failure is worth
@@ -1007,6 +1112,26 @@ def test_run_pending_refuses_a_launcher_interpreter_that_is_gone(helper, capsys)
     assert "interpreter" in capsys.readouterr().err
 
 
+def test_run_pending_refuses_a_launcher_that_did_not_start_this_helper(
+        helper, capsys, tmp_path):
+    """`spawn_helper` runs `[launcher[0], dev.py, packs-run-pending, <file>]`
+    -- so the interpreter named in a claim this process is acting on is the
+    interpreter this process IS. "Some python exists at that path" accepts
+    any of them, including another checkout's venv, and the relaunch would
+    then start the server on an environment that is not the one just
+    installed into."""
+    other = tmp_path / "another-python.exe"
+    other.write_text("", encoding="utf-8")
+    path = _pending(helper,
+                    launcher=[str(other), str(Path(dev.__file__).resolve())])
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None
+    assert "interpreter" in capsys.readouterr().err
+
+
 def test_run_pending_refuses_a_foreign_venv_python(helper, capsys):
     """The interpreter to install INTO is the one field that decides which
     environment gets rewritten. A path outside this checkout's venv is a file
@@ -1033,6 +1158,73 @@ def test_run_pending_refuses_a_launcher_that_is_not_this_dev_py(helper, capsys):
 
     assert helper["relaunch"] is None
     assert "launcher" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("specs, named", [
+    # `specs` is spliced into uv's argv verbatim, so anything uv reads as a
+    # FLAG is a way to widen the install -- the same widening the helper
+    # already refuses for `packages` and `index_url`.
+    (["--index-url", "https://evil.example/simple", "torch"], "--index-url"),
+    (["-r", "C:/x/requirements.txt"], "-r"),
+    (["-e", "C:/evil"], "-e"),
+    # ...and a bare path is a local build: uv runs setup.py out of a
+    # directory the file names.
+    (["C:/evil"], "C:/evil"),
+    (["torch --index-url https://evil.example"], "--index-url"),
+    (["torch;os.system('rm -rf /')"], "os.system"),
+])
+def test_run_pending_refuses_a_spec_that_is_not_a_package_requirement(
+        helper, capsys, specs, named):
+    """The catalog's only shape is a name with a version range. Everything
+    else in this list is somebody's flag wearing a package's clothes."""
+    path = _pending(helper, kind="pip", index_url=None, packages=[],
+                    specs=specs)
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None, "a file that is not ours took nothing down"
+    err = capsys.readouterr().err
+    assert "spec" in err
+    assert named in err, "the refusal has to name what it refused"
+
+
+@pytest.mark.parametrize("spec", [
+    "sentence-transformers>=3.0,<6",      # the catalog's own shape
+    "faiss-cpu",
+    "torch==2.4.1",
+    "uvicorn[standard]>=0.30",
+    "ruff!=0.14.0",
+    "numpy~=2.1",
+    "some.pkg_name-2>=1.0.0rc1",
+    "pkg===1.0",
+    "pkg>=1.*",
+])
+def test_a_plain_package_requirement_is_accepted(spec):
+    assert dev._is_plain_requirement(spec) is True, spec
+
+
+def test_every_spec_the_catalog_ships_passes_the_helper(helper):
+    """The validator and the catalog are edited in different files, and a
+    spec the catalog adds that this refuses is a restart-mode install that
+    takes the server down and comes back having installed nothing. Run the
+    REAL specs through it, so that day is a failure here instead."""
+    from app.core.packs.catalog import CATALOG
+
+    checked = 0
+    for pack in CATALOG:
+        for spec in pack.pip:
+            assert dev._is_plain_requirement(spec) is True, (
+                f"{pack.pack_id} ships a spec its own helper would refuse: "
+                f"{spec!r}")
+            checked += 1
+    assert checked, "no pack ships a pip spec; this test proves nothing"
+
+    # And end to end, through the helper that would run them.
+    specs = [spec for pack in CATALOG for spec in pack.pip]
+    assert dev._run_pending_job(_pending(
+        helper, kind="pip", index_url=None, packages=[], specs=specs)) == 0
+    assert helper["install"][-len(specs):] == specs
 
 
 def test_run_pending_refuses_a_torch_index_that_is_not_pytorchs(helper, capsys):
@@ -1200,6 +1392,67 @@ def test_run_pending_streams_the_installer_to_its_own_log(helper, capsys):
     assert "Downloading torch (2.4 GB)" in out
 
 
+@pytest.mark.parametrize("platform, hidden", [("win32", True),
+                                              ("linux", False)])
+def test_the_installer_gets_no_console_window_of_its_own(helper, monkeypatch,
+                                                         platform, hidden):
+    """The helper is spawned DETACHED, so it has no console to lend `uv`.
+
+    Windows gives a console-less parent's child a console of its OWN: a
+    window pops up over whatever the user is looking at while their server is
+    away, for the whole install -- and closing it sends CTRL_CLOSE_EVENT to
+    `uv` in the middle of rewriting the venv, which is the exact corruption
+    this whole mechanism exists to prevent. `runner.creation_flags()` already
+    passes this for live installs.
+    """
+    monkeypatch.setattr(sys, "platform", platform)
+    # POSIX has no such constant, and this test states the branch rather
+    # than inheriting it from the machine it runs on.
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+
+    dev._run_pending_job(_pending(helper))
+
+    kwargs = helper["install_kwargs"]
+    if hidden:
+        assert kwargs["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
+    else:
+        assert "creationflags" not in kwargs, (
+            "a Windows creation flag would be rejected off Windows")
+
+
+@pytest.mark.parametrize("platform, hidden", [("win32", True),
+                                              ("linux", False)])
+def test_terminating_a_process_does_not_flash_a_console_window(monkeypatch,
+                                                               platform,
+                                                               hidden):
+    """`taskkill` is a console program, and the helper calls it from a
+    process that has no console -- one window, over the user's screen, every
+    time a server has to be stopped the hard way."""
+    seen: dict = {}
+
+    class _Done:
+        stdout = b""
+        returncode = 0
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+    monkeypatch.setattr(dev.subprocess, "run",
+                        lambda cmd, **kw: seen.update(cmd=list(cmd), **kw)
+                        or _Done())
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(dev.os, "kill", lambda pid, sig: None)
+
+    dev._terminate_pid(4242)
+
+    if hidden:
+        assert seen["cmd"][:1] == ["taskkill"]
+        assert seen["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
+    else:
+        assert "cmd" not in seen, "POSIX signals a pid; it runs no program"
+
+
 # ── the relaunch ──────────────────────────────────────────────────────────
 
 
@@ -1352,12 +1605,162 @@ def test_the_helper_writes_its_own_pid_into_the_claim(helper, monkeypatch):
     assert seen["claim"]["launcher"][1] == str(Path(dev.__file__).resolve())
 
 
-def test_a_refused_claim_is_never_stamped_with_a_helper_pid(helper):
+class _RunningInstall:
+    """An installer that is still going when the helper is killed."""
+
+    pid = 5150
+
+    def __init__(self, exc: BaseException):
+        self.stdout = self
+        self._exc = exc
+
+    def __iter__(self):
+        yield "Resolved 2 packages\n"
+        raise self._exc
+
+    def wait(self):                                  # pragma: no cover
+        raise AssertionError("the loop above never returns")
+
+
+def _installer(helper, monkeypatch, proc):
+    """Hand *proc* to the helper as its installer; keep the fake relaunch."""
+    fake = dev.subprocess.Popen
+
+    def _popen(cmd, **kw):
+        if list(cmd)[:1] == ["/fake/uv"]:
+            return proc
+        return fake(cmd, **kw)
+
+    monkeypatch.setattr(dev.subprocess, "Popen", _popen)
+
+
+def test_the_helper_stamps_the_installers_pid_into_the_claim(helper,
+                                                             monkeypatch):
+    """The claim's `helper_pid` is not the whole answer to "is this restart
+    still happening?". A helper that is killed -- Task Manager, a closed
+    console -- does not take its `uv` with it: that install carries on as an
+    orphan, rewriting the venv, while the pid in the claim is dead. Reading
+    that as abandoned is how `cdui start` puts a server into a live rewrite.
+    """
+    path = _pending(helper)
+    seen: dict = {}
+
+    class _Watched(_FakeInstall):
+        pid = 5150
+
+        def wait(self):
+            seen["claim"] = json.loads(path.read_text(encoding="utf-8"))
+            return super().wait()
+
+    _installer(helper, monkeypatch, _Watched(["ok"], 0))
+
+    assert dev._run_pending_job(path) == 0
+
+    assert seen["claim"]["installer_pid"] == 5150, (
+        "the pid must be on disk while uv is running, not after")
+    assert seen["claim"]["helper_pid"] == os.getpid(), "and nothing was lost"
+    # And the rule both halves read it by: a dead helper with a live
+    # installer is a restart still happening.
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid == 5150)
+    assert dev._pending_state(path, seen["claim"]) == "finishing"
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+def test_a_helper_killed_mid_install_stops_uv_and_records_it(helper,
+                                                             monkeypatch, exc):
+    """POSIX Ctrl-C raises inside the install loop, and the SIGTERM handler
+    makes "End task" do the same. Either way the helper is on its way out
+    while `uv` is mid-rewrite: without this it walks straight into the
+    `finally`, relaunches a server onto a venv being replaced, and leaves the
+    claim saying an install is under way that nothing is doing.
+    """
+    proc = _RunningInstall(exc("stopped"))
+    _installer(helper, monkeypatch, proc)
+    path = _pending(helper)
+
+    with pytest.raises(exc):
+        dev._run_pending_job(path)
+
+    assert helper["terminated"] == [proc.pid], "uv was left rewriting the venv"
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert "interrupted" in record["message"]
+    assert not path.exists(), "the claim outlived the job it described"
+    # The one promise this whole mechanism makes: whatever happened, there is
+    # a server again. One that comes back and reports beats none at all.
+    assert helper["relaunch"] is not None
+    assert record["relaunch"] == "ok"
+
+
+def test_a_sigterm_at_the_helper_raises_the_way_a_ctrl_c_does(monkeypatch):
+    """`End task`, a service stop, a shell's cleanup: POSIX default action is
+    to die on the spot, which skips every `except` and `finally` the helper
+    has -- no outcome record, no relaunch, a claim left behind and a `uv`
+    still writing."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    seen: dict = {}
+    monkeypatch.setattr(signal, "signal",
+                        lambda sig, handler: seen.update(sig=sig,
+                                                         handler=handler))
+
+    dev._raise_on_sigterm()
+
+    assert seen["sig"] == signal.SIGTERM
+    with pytest.raises(KeyboardInterrupt):
+        seen["handler"](signal.SIGTERM, None)
+
+
+def test_the_helper_arms_the_sigterm_handler_before_it_runs_anything(
+        helper, monkeypatch):
+    """Armed by the command, not by the job: a signal that arrives while the
+    claim is being read must land in the same place as one that arrives
+    during the install."""
+    order: list = []
+    monkeypatch.setattr(dev, "_raise_on_sigterm",
+                        lambda: order.append("armed"))
+    monkeypatch.setattr(dev, "_run_pending_job",
+                        lambda path: order.append("ran") or 0)
+    monkeypatch.setattr(sys, "argv",
+                        ["dev.py", dev.HELPER_COMMAND, str(_pending(helper))])
+
+    with pytest.raises(SystemExit):
+        dev.packs_run_pending()
+
+    assert order == ["armed", "ran"]
+
+
+def test_a_refused_claim_is_never_stamped_with_a_helper_pid(helper,
+                                                            monkeypatch):
     """It is not ours. Writing into it would be claiming a job this process
-    has no business finishing."""
+    has no business finishing -- and since the claim is deleted on the way
+    out (below), watching the writes is the only way to see that."""
+    written: list = []
+    real = dev._write_json_atomic
+    monkeypatch.setattr(
+        dev, "_write_json_atomic",
+        lambda path, data: written.append(Path(path)) or real(path, data))
     path = _pending(helper, schema=99)
+
     dev._run_pending_job(path)
-    assert "helper_pid" not in json.loads(path.read_text(encoding="utf-8"))
+
+    assert path not in written, "the helper claimed a job that was not its own"
+    assert written, "and the outcome record was still filed"
+
+
+def test_a_refused_claim_is_deleted_rather_than_left_behind(helper):
+    """A refusal writes no `helper_pid`, so a claim left there reads as "a
+    helper is about to start" for the whole of `HELPER_START_GRACE_S`: the
+    next `cdui start` stands down and tells the user a server is on its way
+    from a helper that has already refused to run it. The outcome record is
+    written first, so the refusal is still reportable."""
+    path = _pending(helper, schema=99)
+
+    assert dev._run_pending_job(path) == 2
+
+    assert not path.exists()
+    assert _outcome(helper)["status"] == "failed"
+    assert dev._restart_preflight() is True, (
+        "`cdui start` would have stood down for a claim nobody is acting on")
 
 
 def test_every_outcome_ends_the_log_with_its_exit_code(helper, capsys):

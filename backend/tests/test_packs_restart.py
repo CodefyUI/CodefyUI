@@ -101,7 +101,9 @@ def test_restart_available_needs_start_mode_and_launcher(tmp_path, monkeypatch):
     """The decision is three facts wide, and every one of them can say no."""
     real = tmp_path / "outer-python.exe"
     real.write_text("", encoding="utf-8")
-    ok = json.dumps([str(real), str(tmp_path / "dev.py")])
+    script = tmp_path / "dev.py"
+    script.write_text("", encoding="utf-8")
+    ok = json.dumps([str(real), str(script)])
 
     cases = [
         # managed, launcher, kill switch, expected, why
@@ -116,6 +118,13 @@ def test_restart_available_needs_start_mode_and_launcher(tmp_path, monkeypatch):
         ("start", ok, "0", False, "the kill switch is on"),
         ("start", json.dumps([str(tmp_path / "gone.exe")]), None, False,
          "the launcher is not on disk any more"),
+        # EVERY element, not just the first. A checkout moved out from under
+        # a running server keeps its interpreter (that one is uv's, or the
+        # system's) and loses its dev.py -- and a launcher whose script is
+        # gone offers a restart the helper can never start, which strands the
+        # user with a server that went away and did not come back.
+        ("start", json.dumps([str(real), str(tmp_path / "moved" / "dev.py")]),
+         None, False, "the launcher's script is not on disk any more"),
         ("start", json.dumps([str(tmp_path)]), None, False,
          "a directory is not an interpreter"),
         ("start", "[]", None, False, "an empty launcher launches nothing"),
@@ -337,6 +346,54 @@ def test_from_json_ignores_keys_it_does_not_know(launcher, cu128):
     assert set(json.loads(parsed.to_json())) == PENDING_KEYS
 
 
+def test_pending_round_trips_the_helper_and_installer_pids(launcher, cu128):
+    """The two pids a claim GROWS after the server that wrote it is gone.
+
+    dev.py's helper stamps its own pid into the file as its first act, and
+    the installer's the moment ``uv`` starts: those are what say "this
+    restart is still happening" once the process that made the claim no
+    longer exists. This reader has to keep them rather than drop them the
+    way it drops an unknown key -- a backend judging liveness by a dead
+    server pid alone would call its own helper's claim abandoned.
+
+    Unset they are ABSENT from the file, not null: ``PENDING_KEYS`` is a
+    key-set equality and dev.py reads the same file with no dataclass.
+    """
+    original = restart.build_pending(get_pack("gpu-torch"), job_id="job-1",
+                                     kind="torch")
+    assert original.helper_pid is None
+    assert original.installer_pid is None
+    assert set(json.loads(original.to_json())) == PENDING_KEYS
+
+    raw = json.loads(original.to_json())
+    raw["helper_pid"] = 777
+    raw["installer_pid"] = 888
+    parsed = restart.PendingRestart.from_json(json.dumps(raw))
+    assert parsed.helper_pid == 777
+    assert parsed.installer_pid == 888
+
+    written = json.loads(parsed.to_json())
+    assert written["helper_pid"] == 777
+    assert written["installer_pid"] == 888
+    assert restart.PendingRestart.from_json(parsed.to_json()) == parsed
+
+    # An explicit null is the same fact as an absent key: nobody has
+    # stamped one yet.
+    raw["helper_pid"] = None
+    raw["installer_pid"] = None
+    assert restart.PendingRestart.from_json(json.dumps(raw)) == original
+
+    # Checked like every other pid, for the same reason: ``isinstance(True,
+    # int)`` is True and ``True == 1``, which on POSIX is init -- a claim
+    # nothing could ever clear.
+    for key in ("helper_pid", "installer_pid"):
+        for bad in ("777", 0, -1, True, 3.5):
+            broken = json.loads(original.to_json())
+            broken[key] = bad
+            with pytest.raises(ValueError, match=key):
+                restart.PendingRestart.from_json(json.dumps(broken))
+
+
 def test_build_pending_refuses_a_pip_pack_with_nothing_to_install(launcher,
                                                                   cu128):
     """A pip restart for a pack with no specs restarts the server for nothing.
@@ -369,9 +426,25 @@ def test_write_pending_refuses_a_fresh_live_one_and_overwrites_a_stale_one(
     assert isinstance(exc.value, PackInstallError), (
         "the route's error mapping is written against PackInstallError")
     assert _pending_on_disk().job_id == "first", "the live claim was clobbered"
+    assert str(pending_restart_file()) in str(exc.value), (
+        "the one way out of a claim nothing else can clear is to delete it, "
+        "and nobody can delete a file the refusal does not name")
 
-    # The same claim, once the server that made it is gone.
+    # The server that made it is gone -- but the claim is SECONDS old, and
+    # its helper is a detached process that may not have reached its first
+    # statement yet. Overwriting here is how two `uv` runs end up in one
+    # site-packages.
     monkeypatch.setattr(restart, "_pid_alive", lambda pid: False)
+    with pytest.raises(PendingExists):
+        restart.write_pending(second)
+    assert _pending_on_disk().job_id == "first"
+
+    # Past the start grace with still no helper pid: the server wrote the
+    # claim and died before its helper ever ran, so nobody is coming.
+    path.write_text(
+        dataclasses.replace(
+            first, created_at=_iso_ago(restart.HELPER_START_GRACE_S + 30)
+        ).to_json(), encoding="utf-8")
     restart.write_pending(second)
     assert _pending_on_disk().job_id == "second"
 
@@ -392,6 +465,112 @@ def test_write_pending_refuses_a_fresh_live_one_and_overwrites_a_stale_one(
     assert _pending_on_disk().job_id == "fourth"
 
 
+def _claim_with(pending, **fields) -> restart.PendingRestart:
+    """Put one claim on disk, with *fields* overridden. Returns it."""
+    claim = dataclasses.replace(pending, **fields)
+    path = pending_restart_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(claim.to_json(), encoding="utf-8")
+    return claim
+
+
+def test_write_pending_refuses_a_claim_whose_helper_is_still_working(
+        monkeypatch, launcher, cu128):
+    """The case the server pid alone gets exactly backwards.
+
+    By the time a helper is installing, the server that wrote the claim is
+    DEAD -- that is the whole design, the helper waits for it to go. Judging
+    liveness by that pid would call every restart in progress abandoned,
+    overwrite its claim, and put a second `uv` into the site-packages the
+    first one is halfway through rewriting.
+    """
+    pack = get_pack("gpu-torch")
+    first = restart.build_pending(pack, job_id="first", kind="torch")
+    _claim_with(first, helper_pid=777,
+                created_at=_iso_ago(restart.STALE_PENDING_S + 300))
+    # Dead server, dead installer (uv has not started, or has finished), and
+    # a helper that is alive: at any age, this restart is still happening.
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: pid == 777)
+
+    with pytest.raises(PendingExists, match="first"):
+        restart.write_pending(restart.build_pending(pack, job_id="second",
+                                                    kind="torch"))
+    assert _pending_on_disk().job_id == "first"
+
+
+def test_write_pending_refuses_a_claim_whose_installer_is_still_working(
+        monkeypatch, launcher, cu128):
+    """The other half, and the one a killed helper leaves behind.
+
+    "End task" on the helper does not stop the `uv` it started: the install
+    carries on as an orphan, rewriting the venv, while the pid in the claim
+    is dead. Reading that as abandoned would start a server into a live
+    rewrite -- so a claim is live while ANY pid it names is.
+    """
+    pack = get_pack("gpu-torch")
+    first = restart.build_pending(pack, job_id="first", kind="torch")
+    _claim_with(first, helper_pid=777, installer_pid=888,
+                created_at=_iso_ago(restart.STALE_PENDING_S + 300))
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: pid == 888)
+
+    with pytest.raises(PendingExists, match="first"):
+        restart.write_pending(restart.build_pending(pack, job_id="second",
+                                                    kind="torch"))
+    assert _pending_on_disk().job_id == "first"
+
+
+def test_clear_stale_pending_keeps_a_claim_any_of_whose_pids_is_alive(
+        monkeypatch, launcher, cu128):
+    """`cdui start`'s side of the same predicate, at server startup.
+
+    A restart's helper relaunches the server, and that server calls this on
+    its way up -- while the helper (or the `uv` it started) may still be
+    finishing. Clearing there would release the claim the next install reads
+    as "nothing in progress".
+    """
+    pack = get_pack("gpu-torch")
+    base = restart.build_pending(pack, job_id="live", kind="torch")
+    path = pending_restart_file()
+
+    _claim_with(base, helper_pid=777)
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: pid == 777)
+    assert restart.clear_stale_pending() is False
+    assert path.exists(), "the helper still needs its own claim"
+
+    _claim_with(base, helper_pid=777, installer_pid=888)
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: pid == 888)
+    assert restart.clear_stale_pending() is False
+    assert path.exists(), "uv is still rewriting the venv"
+
+    # Both gone: nothing will ever finish this install, and leaving the file
+    # would refuse every later one for fifteen minutes.
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: False)
+    assert restart.clear_stale_pending() is True
+    assert not path.exists()
+
+
+def test_a_claim_with_no_pids_yet_gets_the_helper_start_grace(
+        monkeypatch, launcher, cu128):
+    """The gap between "the server wrote the claim" and "the helper stamped
+    its pid": a detached process that has not reached its first statement.
+
+    Thirty seconds in, that is a restart about to happen; ninety seconds in,
+    the helper was never started and the user is owed their server back.
+    """
+    pack = get_pack("gpu-torch")
+    base = restart.build_pending(pack, job_id="first", kind="torch")
+    path = pending_restart_file()
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: False)
+
+    _claim_with(base, created_at=_iso_ago(30))
+    assert restart.clear_stale_pending() is False
+    assert path.exists()
+
+    _claim_with(base, created_at=_iso_ago(90))
+    assert restart.clear_stale_pending() is True
+    assert not path.exists()
+
+
 def test_clear_stale_pending(monkeypatch, launcher, cu128):
     pack = get_pack("gpu-torch")
     path = pending_restart_file()
@@ -399,11 +578,14 @@ def test_clear_stale_pending(monkeypatch, launcher, cu128):
     assert restart.clear_stale_pending() is False, "there was nothing to clear"
 
     monkeypatch.setattr(restart, "_pid_alive", lambda pid: True)
-    restart.write_pending(restart.build_pending(pack, job_id="live",
-                                                kind="torch"))
+    live = restart.build_pending(pack, job_id="live", kind="torch")
+    restart.write_pending(live)
     assert restart.clear_stale_pending() is False
     assert path.exists(), "a live claim was deleted"
 
+    # Dead writer, and past the window in which a helper it spawned could
+    # still be on its way (see the grace test above).
+    _claim_with(live, created_at=_iso_ago(restart.HELPER_START_GRACE_S + 30))
     monkeypatch.setattr(restart, "_pid_alive", lambda pid: False)
     assert restart.clear_stale_pending() is True
     assert not path.exists()
@@ -724,6 +906,24 @@ def test_spawn_helper_refuses_a_launcher_that_is_gone(monkeypatch, launcher,
     with pytest.raises(PackInstallError, match="launcher"):
         restart.spawn_helper(path)
     assert not seen, "a helper was started from an interpreter that is gone"
+
+
+def test_spawn_helper_refuses_a_launcher_whose_script_is_gone(monkeypatch,
+                                                              launcher, cu128):
+    """The SECOND element too. Checking only the interpreter passes on POSIX
+    for a checkout that has been moved: ``/usr/bin/python3`` is still there,
+    ``dev.py`` is not, and ``Popen`` starts an interpreter that exits
+    immediately with "can't open file" -- after the server has scheduled its
+    own shutdown, so nothing is left to say so.
+    """
+    path = restart.write_pending(restart.build_pending(
+        get_pack("gpu-torch"), job_id="j", kind="torch"))
+    seen = _fake_popen(monkeypatch)
+    Path(launcher[1]).unlink()
+
+    with pytest.raises(PackInstallError, match="dev.py"):
+        restart.spawn_helper(path)
+    assert not seen, "a helper was started from a script that is gone"
 
 
 # -- going away ------------------------------------------------------------

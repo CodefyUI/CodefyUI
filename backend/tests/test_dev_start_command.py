@@ -105,6 +105,13 @@ def started(tmp_path, monkeypatch):
     monkeypatch.setattr(dev, "SERVER_ADDRFILE", tmp_path / "state" / "server.addr")
     monkeypatch.setattr(dev, "SERVER_LOG", tmp_path / "state" / "server.log")
     monkeypatch.setattr(dev, "DEV_LOCKFILE", tmp_path / "state" / "installed.json")
+    # The sixth state file, and the only one not reached through a module
+    # constant: `_restart_preflight` derives the claim's path from this
+    # variable, and it DELETES what it finds there. Without this the tests
+    # below that do not take `control` run against the developer's own
+    # `<repo>/.codefyui_dev/packs/pending_restart.json`. The same directory
+    # `control` uses, so the two fixtures cannot disagree in either order.
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
 
     monkeypatch.setattr(dev, "_require_venv_tool", lambda name: f"/fake/{name}")
     monkeypatch.setattr(dev, "_running_server_pid", lambda: None)
@@ -407,6 +414,51 @@ def test_start_exports_json_so_a_path_with_spaces_survives(started, monkeypatch,
         "--project", str(tmp_path / "my proj")]
 
 
+@pytest.mark.parametrize("flag", ["--project {}", "--project={}"])
+def test_a_relative_project_is_absolutised_for_the_relaunch(
+        started, monkeypatch, tmp_path, flag):
+    """`cdui start --project ./lab`, restarted, must find the same lab.
+
+    The helper relaunches with `cwd=ROOT` and `_activate_project` resolves
+    against the current directory, so a relative path typed anywhere else
+    names `<repo>/lab` on the way back: either nothing at all (exit 1, and
+    the server never comes back from a restart-mode install) or, on a box
+    that happens to have one, somebody else's project. What goes into
+    `CODEFYUI_RELAUNCH_ARGV` is the directory `_activate_project` actually
+    opened.
+    """
+    proj = tmp_path / "lab"
+    proj.mkdir()
+    (proj / "codefyui.project.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    _argv(monkeypatch, *flag.format("./lab").split(" "))
+
+    dev.start()
+
+    argv = json.loads(started["relaunch"])
+    value = (argv[1] if argv[0] == "--project"
+             else argv[0].split("=", 1)[1])
+    assert Path(value).is_absolute(), "a relative path relaunches somewhere else"
+    assert Path(value) == proj.resolve()
+    assert len(argv) == (2 if argv[0] == "--project" else 1), (
+        "the flag was duplicated rather than rewritten")
+
+
+def test_an_absolute_project_reaches_the_relaunch_unchanged(started,
+                                                            monkeypatch,
+                                                            tmp_path):
+    """The overwhelmingly common case, and the one that must not be mangled
+    into a different directory by the rewrite above."""
+    proj = tmp_path / "lab"
+    proj.mkdir()
+    (proj / "codefyui.project.toml").write_text("", encoding="utf-8")
+    _argv(monkeypatch, "--project", str(proj))
+
+    dev.start()
+
+    assert Path(json.loads(started["relaunch"])[1]) == proj.resolve()
+
+
 @pytest.mark.parametrize("flag", ["-f", "--foreground"])
 def test_the_relaunch_is_always_a_daemon(started, monkeypatch, flag):
     """`--foreground` is stripped: the helper that relaunches has no console
@@ -489,6 +541,76 @@ def test_the_re_execd_child_does_not_overwrite_the_recording(monkeypatch,
     assert dev._outer_python() == str(outer), "and it is what the launcher uses"
 
 
+def _reexeced(monkeypatch, *, console: bool) -> dict:
+    """Run `_reexec`'s Windows branch with the console probe pinned."""
+    seen: dict = {}
+
+    class _Done:
+        returncode = 0
+
+    def _run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["kwargs"] = kwargs
+        return _Done()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    # POSIX has no such constant, and this test states the branch rather than
+    # inheriting it from the machine it runs on.
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+    monkeypatch.setattr(dev.subprocess, "run", _run)
+    monkeypatch.setattr(dev, "_has_console_window", lambda: console)
+
+    with pytest.raises(SystemExit) as exc:
+        dev._reexec("C:/py/python.exe", ["dev.py", "start"])
+
+    assert exc.value.code == 0
+    assert seen["cmd"] == ["C:/py/python.exe", "dev.py", "start"]
+    return seen
+
+
+def test_the_windows_hop_hands_the_child_the_parents_own_stdio(monkeypatch):
+    """Windows has no real exec, so `_reexec` runs the child and forwards its
+    exit code -- and a child given no stdio arguments does NOT inherit a
+    console-less parent's handles: it attaches to a new console of its own.
+
+    From the restart helper (detached, stdout redirected into the job log)
+    that means every line the relaunched `start()` prints -- the reach lines,
+    "the server exited right after start", the log tail it prints to explain
+    why -- goes to a window that closes with the process. The log ends up
+    holding the helper's own lines and nothing else, which is exactly the
+    moment somebody is reading it.
+    """
+    seen = _reexeced(monkeypatch, console=True)
+
+    kwargs = seen["kwargs"]
+    assert kwargs["stdin"] is sys.stdin
+    assert kwargs["stdout"] is sys.stdout
+    assert kwargs["stderr"] is sys.stderr
+
+
+def test_the_windows_hop_opens_no_console_when_the_parent_has_none(monkeypatch):
+    """...and while it is at it, does not open a WINDOW either.
+
+    Only when there is no console to keep: an interactive `cdui` run owns
+    one, and taking it away would break the `[y/N]` prompt in
+    `cdui plugin install` all over again (this function's whole docstring).
+    """
+    seen = _reexeced(monkeypatch, console=False)
+    assert seen["kwargs"]["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
+
+    seen = _reexeced(monkeypatch, console=True)
+    assert "creationflags" not in seen["kwargs"], (
+        "an interactive parent keeps its console, and its input()")
+
+
+def test_the_console_probe_answers_rather_than_raising():
+    """It decides whether a user's terminal keeps its console. Anything it
+    cannot answer must read as "there is one" -- the behaviour every `cdui`
+    run had before this flag existed."""
+    assert isinstance(dev._has_console_window(), bool)
+
+
 def test_outer_python_falls_back_when_the_recorded_one_is_gone(monkeypatch,
                                                                tmp_path):
     """A stale value inherited from a shell, or an interpreter since removed.
@@ -548,6 +670,16 @@ def _write_pending(control: Path, *, pid: int = 4242, age_s: float = 0.0,
         claim["helper_pid"] = helper_pid
     path.write_text(json.dumps(claim), encoding="utf-8")
     return path
+
+
+def test_the_sandbox_keeps_the_preflight_out_of_the_real_user_data(started,
+                                                                   tmp_path):
+    """Every `start()` runs `_restart_preflight`, and that reads -- and
+    DELETES -- `<user data>/packs/pending_restart.json`. Asserted once, here,
+    because without it every test in this file that does not take `control`
+    judges the developer's own claim in `<repo>/.codefyui_dev`, and an
+    abandoned real one gets deleted by running the suite."""
+    assert dev._pending_restart_file().is_relative_to(tmp_path)
 
 
 def test_start_stands_down_while_a_helper_is_still_running(

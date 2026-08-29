@@ -655,6 +655,60 @@ async def test_a_restart_is_refused_while_a_graph_runs(monkeypatch, available):
     assert job.status == "needs_restart"
 
 
+async def test_a_live_install_that_lands_during_the_probe_beats_the_restart(
+        monkeypatch, available):
+    """The busy check AFTER the await, which is the only one that can see it.
+
+    ``install_command_for`` is run on a thread because naming the GPU pack's
+    command means asking nvidia-smi, and that is seconds from a cold cache.
+    Every suspension point is a chance for another request to land, and the
+    one that lands here is a LIVE install: a download that would die
+    unfinished with the process this restart is about to stop. So the check
+    is repeated on the other side of the await, and it refuses the restart
+    rather than the install that is already running.
+    """
+    probing = threading.Event()
+    release = threading.Event()
+    real_command = restart.install_command_for
+
+    def _parked(pack, variant=None):
+        probing.set()
+        assert release.wait(10), "the probe was never released"
+        return real_command(pack, variant)
+
+    monkeypatch.setattr(restart, "install_command_for", _parked)
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: pytest.fail(
+        "a helper was started while a live install was running"))
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: pytest.fail(
+                            "the server was stopped out from under a live "
+                            "install"))
+    flow = ScriptedFlow()
+    service = PackService(run_flow=flow)
+
+    restarting = asyncio.create_task(service.submit_install(
+        get_pack("gpu-torch"), None, mode="restart", variant="cu128"))
+    while not probing.is_set():
+        await asyncio.sleep(0.01)   # parked on its own thread, loop free
+
+    live = await service.submit_install(get_pack(SENTENCE), [],
+                                        mode="live", variant=None)
+    await wait_started(flow)
+    release.set()
+
+    with pytest.raises(PackBusy) as excinfo:
+        await restarting
+    assert excinfo.value.job_id == live.job_id, (
+        "the refusal has to name the job that is actually running")
+    assert not pending_restart_file().exists(), (
+        "a claim was written over a live install")
+    assert service.current_job() is live, "the live job lost its slot"
+
+    flow.finish()
+    events, status = await drain(service, live.job_id)
+    assert status == "done", "the install the user was already watching"
+
+
 async def test_a_spawn_that_fails_withdraws_the_claim_and_starts_no_job(
         monkeypatch, available):
     """The failure is reported by the server that is still running, so it has

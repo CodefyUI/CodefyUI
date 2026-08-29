@@ -285,6 +285,27 @@ RELEASE_ASSET = "frontend-dist.tar.gz"
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 
+def _has_console_window() -> bool:
+    """Windows: does this process own a console window?
+
+    A `cdui` run typed at a terminal does. The restart helper does not: it is
+    spawned DETACHED by a server that is about to exit, precisely so that
+    closing the console it came from cannot take it with it.
+
+    Never raises, and an unanswerable probe reads as "there is one" -- that
+    is the behaviour every `cdui` run had before this question was asked, and
+    the cost of the wrong answer is a console window rather than a launcher
+    that no longer works.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes  # noqa: PLC0415 — Windows-only, and only on this path
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
 def _reexec(executable: str, argv: list) -> None:
     """Replace the current process with ``executable argv...`` (cross-platform).
 
@@ -301,9 +322,24 @@ def _reexec(executable: str, argv: list) -> None:
     prompt and dropped back to the command line. So on Windows we run the child
     synchronously and forward its exit code: one clean chain, one owner of the
     console at a time.
+
+    The child is handed THIS process's own stdio, because a Windows child
+    given none does not inherit a console-less parent's handles -- it
+    attaches to a new console instead. The parent that has none is the
+    restart helper, whose stdout IS the job log: without this, every line the
+    relaunched ``start()`` prints (the reach lines, "the server exited right
+    after start", the log tail explaining why) goes to a window that closes
+    with it, and the log a person opens holds the helper's fourteen lines and
+    nothing else. ``CREATE_NO_WINDOW`` goes with it in that case, and ONLY in
+    that case: an interactive run owns its console, and taking it away is how
+    the ``[y/N]`` bug above comes back.
     """
     if sys.platform == "win32":
-        sys.exit(subprocess.run([executable, *argv]).returncode)
+        forwarded: dict = {"stdin": sys.stdin, "stdout": sys.stdout,
+                           "stderr": sys.stderr}
+        if not _has_console_window():
+            forwarded["creationflags"] = subprocess.CREATE_NO_WINDOW
+        sys.exit(subprocess.run([executable, *argv], **forwarded).returncode)
     os.execv(executable, [executable, *argv])
 
 
@@ -2070,20 +2106,28 @@ def _pending_state(path: Path, data: "dict | None") -> str:
     start a server on it and `cdui status` decides what to call it, and those
     two must never disagree in front of a user comparing them.
 
+    Mirrors `app.core.packs.restart._is_stale`, which the SERVER decides the
+    same question with -- see the parity test in `test_dev_packs_cli.py`.
+
     The rules, in the order they are applied:
 
-    * `helper_pid` present -> exactly whether that process is alive, at any
-      age. The helper writes its own pid in as its first act, so this is the
-      real answer whenever it exists -- and it OUTRANKS the clock, because a
-      torch download over a slow line is still going at minute sixteen and
-      that is an install finishing, not one abandoned. Calling it dead there
-      would start a second server into the venv `uv` is mid-way through
-      rewriting, which is the one outcome all of this exists to prevent.
-    * No `helper_pid` and younger than `HELPER_START_GRACE_S` -> finishing.
+    * `helper_pid` and/or `installer_pid` present -> finishing while ANY of
+      them is alive, abandoned once all of them are dead, at any age. The
+      helper writes its own pid in as its first act and the installer's the
+      moment `uv` starts, so between them they are the real answer whenever
+      one exists -- and they OUTRANK the clock, because a torch download
+      over a slow line is still going at minute sixteen and that is an
+      install finishing, not one abandoned. Calling it dead there would
+      start a second server into the venv `uv` is mid-way through rewriting,
+      which is the one outcome all of this exists to prevent. Both pids and
+      not just the helper's, because a helper that was killed (`End task`,
+      a closed console) does not take its `uv` with it: that install carries
+      on as an orphan, rewriting the venv, with a dead pid in the claim.
+    * No pid at all and younger than `HELPER_START_GRACE_S` -> finishing.
       The helper is a detached process that was spawned seconds ago and has
       not written its pid yet; starting a second server into that window is
       how two `uv` runs end up in one site-packages.
-    * No `helper_pid` and older than that -> abandoned. The server wrote the
+    * No pid at all and older than that -> abandoned. The server wrote the
       claim and then died before its helper ever ran. (`STALE_PENDING_S` is
       the outer bound on the same case: an age nobody can read at all counts
       as old, and so does one past the fifteen-minute mark.)
@@ -2093,10 +2137,10 @@ def _pending_state(path: Path, data: "dict | None") -> str:
     """
     if data is None:
         return "abandoned"
-    helper_pid = data.get("helper_pid")
-    if (isinstance(helper_pid, int) and not isinstance(helper_pid, bool)
-            and helper_pid > 0):
-        return "finishing" if _pid_alive(helper_pid) else "abandoned"
+    pids = [pid for pid in (data.get("helper_pid"), data.get("installer_pid"))
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0]
+    if pids:
+        return "finishing" if any(_pid_alive(pid) for pid in pids) else "abandoned"
     age = _pending_age_seconds(path, data)
     if age is None or age > STALE_PENDING_S:
         return "abandoned"
@@ -2161,11 +2205,46 @@ def _restart_relaunch_argv(own_argv: list, uvicorn_extra: list) -> list:
     a process that is about to exit would go with it. The forwarded tail is
     put back behind its `--`, so the relaunched start splits it the same way
     this one did.
+
+    `--project` is the one argument that cannot be replayed verbatim -- see
+    `_absolutise_project`.
     """
-    argv = [a for a in own_argv if a not in ("-f", "--foreground")]
+    argv = _absolutise_project(
+        [a for a in own_argv if a not in ("-f", "--foreground")])
     if uvicorn_extra:
         argv += ["--", *uvicorn_extra]
     return argv
+
+
+def _absolutise_project(argv: list) -> list:
+    """Replace a `--project` value with the directory it actually opened.
+
+    Everything else in the argv means the same thing from anywhere;
+    `--project ./lab` does not. `_relaunch_server` runs the new `cdui start`
+    with `cwd=ROOT` and `_activate_project` resolves against the current
+    directory, so a relative path typed in any other directory comes back
+    meaning `<repo>/lab`: usually nothing (the manifest check exits 1 and
+    the server never returns from the restart) and, on a box that happens to
+    have one there, somebody else's project.
+
+    The value used is the one `_activate_project` computed and exported --
+    not a second resolution here, which could differ from it. Nothing to
+    rewrite when it never ran (no `--project`, or a caller that stubbed it),
+    and the flag's two spellings are both handled because `_parse_project`
+    accepts both.
+    """
+    resolved = os.environ.get("CODEFYUI_PROJECT_DIR")
+    if not resolved:
+        return argv
+    out = list(argv)
+    for i, arg in enumerate(out):
+        if arg == "--project" and i + 1 < len(out):
+            out[i + 1] = resolved
+            return out
+        if arg.startswith("--project="):
+            out[i] = f"--project={resolved}"
+            return out
+    return out
 
 
 def _export_restart_env(own_argv: list, uvicorn_extra: list) -> None:
@@ -2184,6 +2263,40 @@ def _export_restart_env(own_argv: list, uvicorn_extra: list) -> None:
         [_outer_python(), str(Path(__file__).resolve())])
     os.environ[RELAUNCH_ARGV_ENV] = json.dumps(
         _restart_relaunch_argv(own_argv, uvicorn_extra))
+
+
+#: A PEP 508 requirement, and nothing else: a name, optional extras, and an
+#: optional comma-joined version range. An ALLOWLIST, because the alternative
+#: -- banning the shapes we thought of -- is a list somebody adds a package
+#: manager flag to next year. It excludes by construction everything the
+#: review named: a leading `-` (uv would read `--index-url`, `-r`, `-e` as
+#: flags), whitespace (one string carrying two arguments), and `/ \ @ ; #`
+#: (a path, a local build, a URL, a shell line).
+_REQUIREMENT_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"           # name
+    r"(?:\[[A-Za-z0-9._-]+(?:,[A-Za-z0-9._-]+)*\])?"         # extras
+    r"(?:(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+"        # a specifier
+    r"(?:,(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+)*)?$"  # ...and more
+)
+
+
+def _is_plain_requirement(spec: str) -> bool:
+    """Is *spec* a package requirement, rather than an argument to uv?
+
+    `specs` is the one field of the pending file that reaches an installer's
+    argv verbatim -- it is the pack's package list and there is nowhere else
+    for it to come from -- so it is also the one field that could widen what
+    gets installed. `["--index-url", "https://evil.example/simple", "torch"]`
+    is three strings uv reads as a flag, its value and a package; `["-r",
+    "req.txt"]` installs a file; `["-e", "."]` or a bare path builds whatever
+    is in a directory the file names.
+
+    The catalog's only shape is `sentence-transformers>=3.0,<6`, and
+    `test_every_spec_the_catalog_ships_passes_the_helper` runs the real
+    catalog through this so a spec added there cannot silently start being
+    refused.
+    """
+    return bool(isinstance(spec, str) and _REQUIREMENT_RE.match(spec))
 
 
 def _validate_pending(data: "dict | None") -> "str | None":
@@ -2220,14 +2333,22 @@ def _validate_pending(data: "dict | None") -> "str | None":
     if not mine:
         return f"launcher {launcher[1]!r} is not this installation's dev.py"
     try:
-        runnable = Path(launcher[0]).is_file()
-    except OSError:
+        # THIS interpreter, not merely one that exists. `spawn_helper` starts
+        # the helper as `[launcher[0], dev.py, packs-run-pending, <file>]`, so
+        # a claim this process is acting on names the interpreter running it;
+        # `is_file()` alone accepts any python on the box, including another
+        # checkout's venv, and the relaunch would then bring the server back
+        # on an environment that is not the one just installed into.
+        # `samefile` also answers the older question -- it raises
+        # FileNotFoundError for a path that is gone, which is the case
+        # `restart_available` checked when the panel was DRAWN and which
+        # minutes may have since changed.
+        runnable = os.path.samefile(launcher[0], sys.executable)
+    except (OSError, ValueError):
         runnable = False
     if not runnable:
-        # `restart_available` checked this when the panel was DRAWN. Minutes
-        # may have passed. Starting the install anyway would take the server
-        # down and then discover there is nothing to bring it back with.
-        return f"launcher {launcher[0]!r} is not an interpreter on this disk"
+        return (f"launcher {launcher[0]!r} is not the interpreter this helper "
+                f"is running on")
 
     relaunch = data.get("relaunch_argv")
     if (not isinstance(relaunch, list)
@@ -2268,6 +2389,11 @@ def _validate_pending(data: "dict | None") -> "str | None":
         if (not isinstance(specs, list)
                 or not all(isinstance(s, str) and s for s in specs)):
             return "specs is not a list of package requirements"
+        for spec in specs:
+            if not _is_plain_requirement(spec):
+                return (f"spec {spec!r} is not a package requirement; only a "
+                        f"name with an optional version range is installed "
+                        f"from here")
     return None
 
 
@@ -2299,6 +2425,30 @@ def _wait_for_server_exit(pid: int) -> str:
         if time.monotonic() >= deadline:
             return "alive"
         time.sleep(RESTART_POLL_S)
+
+
+def _forget_stopped_server() -> None:
+    """Drop the pidfile and address of the server this helper just outlived.
+
+    Nothing else does. A server that shuts ITSELF down (which is exactly what
+    a restart-mode install asks it to do) leaves both files behind, and the
+    `start()` this helper is about to run consults the pidfile FIRST: a pid
+    the OS has since handed to something else reads as alive, so it prints
+    "already running", returns 0, and the outcome record says `relaunch: ok`
+    with no server anywhere.
+
+    Safe here and nowhere else: this is the window in which
+    `_restart_preflight` stands every other `cdui start` down, so no other
+    process can be writing files this would delete out from under it.
+    """
+    for path in (SERVER_PIDFILE, SERVER_ADDRFILE):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # Not worth a word to the user: the relaunch below is what they
+            # are waiting for, and a leftover file costs at most one
+            # "already running" they can act on with `cdui status`.
+            pass
 
 
 def _restart_disk_shortfall(kind: str) -> "str | None":
@@ -2392,21 +2542,67 @@ def _restart_child_env() -> dict:
     return env
 
 
-def _run_pending_install(cmd: list) -> "tuple[int, list]":
+def _raise_on_sigterm() -> None:
+    """Make a SIGTERM at this helper raise, the way a Ctrl-C already does.
+
+    POSIX kills a process on SIGTERM by default -- no `except`, no `finally`,
+    no last words. For this helper that is the worst possible exit: `uv` is
+    left rewriting the venv as an orphan, the claim on disk still says an
+    install is under way, and no server is ever started again. Raising
+    instead puts a `kill`, a service stop and a Ctrl-C on the one path that
+    stops the installer, records the failure and relaunches.
+
+    Windows has nothing to arm (its SIGTERM is never delivered; a Task
+    Manager "End task" is a TerminateProcess nothing can intercept), and a
+    handler can only be installed from the main thread -- neither is worth a
+    word to a user, so both simply do nothing.
+    """
+    if sys.platform == "win32":
+        return
+    import signal  # noqa: PLC0415 — POSIX only, and only on this path
+
+    def _stop(signum, frame):
+        raise KeyboardInterrupt("the restart helper was asked to stop")
+
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (OSError, ValueError):
+        pass
+
+
+def _run_pending_install(cmd: list, on_started=None) -> "tuple[int, list]":
     """Run the installer, echo every line, and keep the tail of what it said.
 
     stdout here IS the job log file -- the server redirected it when it
     spawned this process -- so echoing is what makes an install nobody watched
     reviewable afterwards.
+
+    `CREATE_NO_WINDOW` because this helper was spawned DETACHED and has no
+    console to lend: Windows gives such a child a console of its OWN, so a
+    window sits over whatever the user is looking at for the length of the
+    install -- and closing it sends CTRL_CLOSE_EVENT to `uv` mid-rewrite,
+    which is the corruption the whole mechanism exists to prevent.
+    `runner.creation_flags()` passes the same flag for live installs.
+
+    *on_started* is called with the process the moment it exists, and before
+    a single line is read: it is how the caller writes the installer's pid
+    into the claim, which is the only thing that says "this restart is still
+    happening" once the helper itself has been killed.
     """
     tail: list = []
+    quiet: dict = {}
+    if sys.platform == "win32":
+        quiet["creationflags"] = subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(
         cmd, cwd=BACKEND_DIR,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         env=_restart_child_env(),
+        **quiet,
     )
+    if on_started is not None:
+        on_started(proc)
     assert proc.stdout is not None
     for raw in proc.stdout:
         line = raw.rstrip()
@@ -2591,6 +2787,19 @@ def _run_pending_steps(pending_path: Path) -> int:
             _write_restart_outcome(
                 pending_path.parent / OUTCOME_FILE_NAME, data, status="failed",
                 returncode=None, message=f"refused: {problem}", log_tail=[])
+        # And the claim goes too. A refusal stamps no `helper_pid`, so a file
+        # left here reads as "a helper is on its way" for the whole start
+        # grace: the next `cdui start` stands down and tells the user a
+        # server is coming from a helper that has already refused to run.
+        # After the outcome record, for the same reason `_finish_pending_job`
+        # writes in that order -- the claim is what stops a second install,
+        # and it must not be released before there is something to read in
+        # its place.
+        try:
+            pending_path.unlink(missing_ok=True)
+        except OSError:
+            warn("無法刪除這個被拒絕的重啟安裝紀錄",
+                 "could not delete the refused restart-install record")
         return 2
 
     section(f"重啟安裝：{data.get('pack_id')}（{data['kind']}）",
@@ -2622,6 +2831,8 @@ def _run_pending_steps(pending_path: Path) -> int:
 
     try:
         how = _wait_for_server_exit(data["server_pid"])
+        if how != "alive":
+            _forget_stopped_server()
         if how == "exited":
             print(t("    伺服器已結束，開始安裝",
                     "    the server has exited; installing"), flush=True)
@@ -2645,14 +2856,44 @@ def _run_pending_steps(pending_path: Path) -> int:
             return 1
 
         print("    " + " ".join(cmd), flush=True)
+        installer: list = []
+
+        def _stamp(proc) -> None:
+            """Name the installer in the claim, while it is running.
+
+            `helper_pid` alone is not the answer to "is this restart still
+            happening?": a helper that is killed does not take its `uv` with
+            it, and that orphan keeps rewriting the venv. Both `cdui start`
+            and the server read the claim as live while EITHER pid is.
+            """
+            installer.append(proc)
+            data["installer_pid"] = proc.pid
+            if not _write_json_atomic(pending_path, data):
+                warn("無法在重啟紀錄中登記安裝程式 PID",
+                     "could not record the installer's PID in the pending file")
+
         try:
-            code, tail = _run_pending_install(cmd)
+            code, tail = _run_pending_install(cmd, on_started=_stamp)
         except OSError as exc:
             message = f"could not run the installer: {exc}"
             err(f"無法執行安裝程式：{exc}", message)
             _finish(status="failed", returncode=None, message=message,
                     log_tail=[])
             return 1
+        except BaseException:
+            # Ctrl-C, a SIGTERM (see `_raise_on_sigterm`), a closed console:
+            # this process is going, and `uv` is not -- it is mid-way through
+            # replacing the packages the next server has to import. Stop it,
+            # say so where the panel and `cdui status` will read it, and let
+            # the exception out: the `finally` below still relaunches, and a
+            # server that comes back and reports beats none at all.
+            for proc in installer:
+                _terminate_pid(proc.pid)
+            message = "the install was interrupted before it finished"
+            err("安裝被中斷，已停止安裝程式", message)
+            _finish(status="failed", returncode=None, message=message,
+                    log_tail=[])
+            raise
 
         if code == 0:
             _finish(status="ok", returncode=0,
@@ -2688,6 +2929,10 @@ def packs_run_pending() -> None:
         sys.stdout.reconfigure(line_buffering=True)
     except (AttributeError, OSError):
         pass
+    # Before anything is read or waited on: a signal that arrives while the
+    # claim is being parsed has to land in the same place as one that
+    # arrives during the install.
+    _raise_on_sigterm()
 
     argv = sys.argv[2:]
     if len(argv) != 1:
@@ -3402,7 +3647,13 @@ def _terminate_pid(pid: int) -> None:
     """
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True)
+                       capture_output=True,
+                       # The restart helper calls this from a DETACHED
+                       # process with no console of its own, and without
+                       # this Windows opens one for `taskkill` -- a window
+                       # over the user's screen at the one moment they are
+                       # already waiting on a server that went away.
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         return
     import signal  # noqa: PLC0415 — only needed here, POSIX only
     try:

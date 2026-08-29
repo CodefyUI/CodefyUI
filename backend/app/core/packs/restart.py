@@ -102,6 +102,14 @@ OUTCOME_SCHEMA = 1
 #: power does not block the next attempt forever.
 STALE_PENDING_S = 15 * 60
 
+#: How long a claim naming no helper and no installer is still believed when
+#: the server that wrote it is gone. Mirror of ``dev.py``'s constant of the
+#: same name (``test_dev_and_restart_agree_on_the_restart_handshake``): the
+#: helper is spawned detached and stamps its pid in as its first act, so this
+#: only has to cover process creation -- but on a cold Windows box with a
+#: virus scanner in the way that is seconds, not milliseconds.
+HELPER_START_GRACE_S = 60
+
 #: The ``dev.py`` subcommand that finishes the install once this process has
 #: exited.
 HELPER_COMMAND = "packs-run-pending"
@@ -181,9 +189,12 @@ def restart_available() -> bool:
       not relaunch; a bare ``uvicorn`` has nobody at all, and promising
       either of them a restart strands the user with a server that went away
       and never came back.
-    * :data:`LAUNCHER_ENV` names a file that is STILL THERE. The launcher is
-      what brings the server back, and a checkout that has been moved or
-      deleted since ``cdui start`` ran cannot.
+    * :data:`LAUNCHER_ENV` names files that are STILL THERE -- every one of
+      them, because every element of the launcher is a path (the outer
+      interpreter and ``dev.py``) and either one being gone is a restart
+      that cannot happen. Checking only the first passes on POSIX for a
+      checkout that has been MOVED: the interpreter is uv's or the system's
+      and is still where it was, while the ``dev.py`` beside it is not.
     * the kill switch (:data:`ENABLE_ENV`) is not thrown.
 
     Never raises, for the same reason :func:`gpu_info` does not: the caller
@@ -195,7 +206,8 @@ def restart_available() -> bool:
         if os.environ.get(ENABLE_ENV, "1") == "0":
             return False
         launcher = _env_argv(LAUNCHER_ENV)
-        return bool(launcher) and Path(launcher[0]).is_file()
+        return bool(launcher) and all(
+            Path(part).is_file() for part in launcher)
     except Exception:  # pragma: no cover - is_file() eats its own OSErrors
         log.warning("the restart availability check failed", exc_info=True)
         return False
@@ -496,6 +508,19 @@ def _require_pid(data: dict, key: str) -> int:
     return value
 
 
+def _require_optional_pid(data: dict, key: str) -> int | None:
+    """A pid that the writer may not have stamped yet.
+
+    Absent and ``null`` are one fact -- nobody has written it -- and anything
+    else is checked exactly like a required pid. A field that is only
+    SOMETIMES there is still a field whose value decides whether a live
+    install is overwritten, so "missing" is the only leniency it gets.
+    """
+    if data.get(key) is None:
+        return None
+    return _require_pid(data, key)
+
+
 @dataclass(frozen=True)
 class PendingRestart:
     """What a restart-mode install asked for: the file the helper reads.
@@ -519,11 +544,17 @@ class PendingRestart:
       is the outer one, which is a different environment entirely.
     * ``server_pid`` -- who to wait for. Replacing packages while this
       process still has them imported is the failure the restart exists to
-      avoid, and it is also how :func:`write_pending` tells a live claim
-      from an abandoned one.
+      avoid.
     * ``launcher`` / ``relaunch_argv`` -- how to bring the server back, on
       the same address the browser is still pointing at.
     * ``created_at`` -- how :data:`STALE_PENDING_S` is measured.
+    * ``helper_pid`` / ``installer_pid`` -- written LATER, by dev.py's
+      helper, and the only honest answer to "is this restart still
+      happening?" once it is under way: by then the server that wrote the
+      claim is dead on purpose. Absent until they are stamped, and absent
+      from the JSON while they are (see :meth:`to_json`), so a file written
+      by a server that never got a helper has exactly the keys it always
+      had.
 
     Nothing here is trusted by the helper on the strength of being in the
     file: it validates ``venv_python`` against ``backend/.venv`` and
@@ -544,10 +575,23 @@ class PendingRestart:
     launcher: tuple[str, ...]
     relaunch_argv: tuple[str, ...]
     created_at: str
+    #: Stamped by the helper, not by this server. Optional so that a claim
+    #: being built has nothing to say about them yet.
+    helper_pid: int | None = None
+    installer_pid: int | None = None
 
     def to_json(self) -> str:
         """The file's exact contents. Indented: a person debugging a restart
-        that did not come back reads this file with an editor."""
+        that did not come back reads this file with an editor.
+
+        The two late pids are emitted only once they have a value. A key
+        that is present and null would be a third state ("known to be
+        unset") that neither reader has a use for, and the file's key set is
+        a contract two implementations are checked against.
+        """
+        late = {name: value for name, value in
+                (("helper_pid", self.helper_pid),
+                 ("installer_pid", self.installer_pid)) if value is not None}
         return json.dumps({
             "schema": self.schema,
             "job_id": self.job_id,
@@ -561,6 +605,7 @@ class PendingRestart:
             "launcher": list(self.launcher),
             "relaunch_argv": list(self.relaunch_argv),
             "created_at": self.created_at,
+            **late,
         }, indent=2)
 
     @classmethod
@@ -609,6 +654,8 @@ class PendingRestart:
             launcher=_require_text_tuple(data, "launcher"),
             relaunch_argv=_require_text_tuple(data, "relaunch_argv"),
             created_at=_require_text(data, "created_at"),
+            helper_pid=_require_optional_pid(data, "helper_pid"),
+            installer_pid=_require_optional_pid(data, "installer_pid"),
         )
 
 
@@ -785,17 +832,42 @@ def _age_seconds(pending: PendingRestart) -> "float | None":
 
 
 def _is_stale(pending: PendingRestart) -> bool:
-    """Has this claim been abandoned -- dead writer, or too old to be real?
+    """Has this claim been abandoned, or is a restart still happening on it?
 
-    Either fact is enough. The pid catches the ordinary case (a server that
-    crashed between writing the file and exiting); the age catches the one
-    the pid cannot -- a machine that rebooted and handed the same number to
-    something else, which would otherwise read as alive forever.
+    THE predicate, and it is written twice: ``dev.py``'s ``_pending_state``
+    is the same rule for ``cdui start``, and the two describing one file
+    differently is a second ``uv`` in one site-packages (or a launcher that
+    refuses to give a user their server back). ``test_dev_and_restart_agree_
+    on_which_claims_are_still_alive`` runs both over one claim.
+
+    A claim names up to three processes, and which of them is the honest
+    witness changes as the restart proceeds -- which is why this is three
+    rules and not one:
+
+    * ``helper_pid`` and/or ``installer_pid`` present -> live while ANY of
+      them is alive, abandoned once all of them are dead, AT ANY AGE. Once a
+      restart is under way the server that wrote the claim is dead by
+      design, so its pid says nothing; the helper (or the ``uv`` it started
+      and may have been killed by) is the whole answer. A helper still
+      downloading torch at minute sixteen is finishing, not abandoned, and a
+      helper that was "End task"ed leaves ``uv`` rewriting the venv as an
+      orphan.
+    * else the writer is still alive -> the old fifteen-minute cap. It
+      catches what a live pid cannot: a machine that rebooted and handed the
+      same number to something else.
+    * else (dead writer, no helper and no installer yet) -> abandoned only
+      past :data:`HELPER_START_GRACE_S`. This is the gap between "the server
+      spawned its helper and exited" and "the helper reached its first
+      statement", and an age nobody can read at all counts as past it.
     """
-    if not _pid_alive(pending.server_pid):
-        return True
+    pids = [pid for pid in (pending.helper_pid, pending.installer_pid)
+            if pid is not None]
+    if pids:
+        return not any(_pid_alive(pid) for pid in pids)
     age = _age_seconds(pending)
-    return age is not None and age > STALE_PENDING_S
+    if _pid_alive(pending.server_pid):
+        return age is not None and age > STALE_PENDING_S
+    return age is None or age > HELPER_START_GRACE_S
 
 
 def write_pending(pending: PendingRestart) -> Path:
@@ -805,19 +877,23 @@ def write_pending(pending: PendingRestart) -> Path:
     process that may look at any moment: a half-written file would be a
     restart the helper refuses, on a server that has already gone away.
 
-    :raises PendingExists: a claim is already there, made by a process that
-        is still alive, and recent enough to still be under way. Two claims
-        means two ``uv`` runs over one site-packages. A STALE claim -- dead
-        writer, or older than :data:`STALE_PENDING_S` -- is overwritten
-        without ceremony, and so is one that cannot be parsed.
+    :raises PendingExists: a claim is already there and a restart is still
+        happening on it (:func:`_is_stale` decides, and its docstring says
+        by what). Two claims means two ``uv`` runs over one site-packages. A
+        STALE claim is overwritten without ceremony, and so is one that
+        cannot be parsed.
     """
     path = pending_restart_file()
     existing = _read_pending(path)
     if existing is not None and not _is_stale(existing):
+        # The path, because a live pid has no deadline: a helper pid reads
+        # as alive whenever the OS has recycled that number, and deleting
+        # the file is then the only way out. A refusal that does not name it
+        # is one nobody can act on.
         raise PendingExists(
             f"a restart-mode install is already pending for "
-            f"{existing.pack_id} (job {existing.job_id}), waiting for "
-            f"process {existing.server_pid} to exit",
+            f"{existing.pack_id} (job {existing.job_id}); its claim is "
+            f"{path}",
             hint="wait for that restart to finish before starting another")
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -904,16 +980,24 @@ def spawn_helper(pending_path: Path) -> int:
         raise PackInstallError(
             "cannot start the restart helper: this server was launched "
             f"without {LAUNCHER_ENV}")
-    if not Path(pending.launcher[0]).is_file():
-        # ``restart_available`` checked this when the PANEL was drawn.
-        # Minutes may have passed, and this file may have been written by an
-        # older server whose checkout has since been moved or deleted --
-        # after which Popen raises FileNotFoundError, or worse, starts
-        # whatever now sits at that path. Either way the server would go
-        # down with nothing left to bring it back.
-        raise PackInstallError(
-            "cannot start the restart helper: the launcher "
-            f"{pending.launcher[0]!r} is no longer on disk")
+    for part in pending.launcher:
+        if not Path(part).is_file():
+            # ``restart_available`` checked this when the PANEL was drawn.
+            # Minutes may have passed, and this file may have been written by
+            # an older server whose checkout has since been moved or deleted
+            # -- after which Popen raises FileNotFoundError, or worse, starts
+            # whatever now sits at that path. Either way the server would go
+            # down with nothing left to bring it back.
+            #
+            # EVERY element, because every one of them is a path: a moved
+            # checkout on POSIX keeps the interpreter (uv's, or the system's)
+            # and loses the ``dev.py`` next to it, and an interpreter handed
+            # a script that is not there exits at once with "can't open
+            # file" -- into a log nobody is watching, after this server has
+            # gone.
+            raise PackInstallError(
+                "cannot start the restart helper: the launcher "
+                f"{part!r} is no longer on disk")
 
     argv = [*pending.launcher, HELPER_COMMAND, str(pending_path)]
     log_dir = job_log_dir()

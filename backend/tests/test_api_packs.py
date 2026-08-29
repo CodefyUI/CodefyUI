@@ -663,7 +663,11 @@ async def test_a_live_install_is_refused_while_a_restart_is_pending(
     assert body["reason"] == "a restart is already pending"
     # The same escape hatch every other refusal carries: this one is over
     # when the server comes back, and until then the terminal still works.
-    assert body["command"] == "cdui install --gpu cu128"
+    # It is the command for the pack the USER just asked for -- the pending
+    # restart's own command installs something else entirely, and a refusal
+    # that hands somebody a line for a different package is worse than one
+    # that hands them nothing.
+    assert body["command"] == f"cdui packs install {SENTENCE}"
     assert not flow.started.is_set(), "a flow started under a pending restart"
 
 
