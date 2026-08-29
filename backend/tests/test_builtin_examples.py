@@ -58,11 +58,13 @@ assert _GRAPHS, "builtin example smoke suite discovered no examples"
 # Node types that pull a real dataset, train for multiple epochs, or load/save
 # weights — longer than a few seconds or dependent on prior runs.
 # test_chapter_examples.py carries the same list minus ``TextCorpusDataset``,
-# which no plugin example uses. This correctly skips execution for six graphs:
-# the five training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
-# ResNet-18 baseline and the TinyStories LM) and the MNIST inference example,
-# which needs weights from a prior training run. Everything else — including
-# all Model_Architecture graphs — must execute.
+# which no plugin example uses. This correctly skips execution for ten
+# graphs: the six training examples (CNN-MNIST, GPT-Mini, ResNet-CIFAR10, the
+# ResNet-18 baseline, the TinyStories LM and VLA-PushWorld), the MNIST
+# inference example, which needs weights from a prior training run, and the
+# three pack-backed LLM examples (zh-TW Sentence Similarity, RAG-Local-Offline
+# and RAG-LLMChat-API), whose encoder and generator are pack downloads.
+# Everything else — including all Model_Architecture graphs — must execute.
 _SLOW_NODE_TYPES = {
     "Dataset",
     "DataLoader",
@@ -78,6 +80,22 @@ _SLOW_NODE_TYPES = {
     # trains — so an LLM example that only prepares data cannot start
     # downloading in CI by being added.
     "TextCorpusDataset",
+    # Needs the sentence-embeddings pack; graphs are still validated. CI has
+    # no pack cache, so an example using this node would fail at the gate
+    # rather than run -- and a machine that DOES have the pack would load
+    # half a gigabyte of weights inside the fast smoke suite.
+    "TextEmbedding",
+    # Reads a gigabyte of Qwen2.5 weights out of the rag pack and then decodes
+    # on the CPU at a few tokens a second. Same gate as TextEmbedding above --
+    # CI has no pack cache, so an example using this node would stop at the
+    # missing pack rather than run -- and a machine that DOES have the pack
+    # would spend minutes of the fast smoke suite generating an answer.
+    "HFTextGenerate",
+    # One API call per run: a network round trip, a key CI does not have, and
+    # somebody's money. RAG-LLMChat-API wires it (to a local Ollama by
+    # default, to a hosted provider once someone switches the dropdown), so
+    # this entry is what keeps the smoke suite from opening that socket.
+    "LLMChat",
 }
 
 

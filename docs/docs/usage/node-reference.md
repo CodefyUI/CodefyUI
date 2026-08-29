@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: Node Reference
-description: Every built-in node — 127 nodes across 15 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
+description: Every built-in node — 152 nodes across 16 categories, from CNN and Transformer layers to RL, LLM, Diffusion, and classical ML.
 ---
 
 # Node Reference
 
-CodefyUI ships **127 built-in nodes** across **15 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
+CodefyUI ships **152 built-in nodes** across **16 categories**. Installed [plugin packs](/advanced/plugins) and your own [custom nodes](/advanced/custom-nodes) add more.
 
 :::tip
 This list is the source of truth at the time of writing, but the backend is authoritative: the live palette and `GET /api/nodes` always reflect exactly what your install has. Use the in-app search (double-click the canvas) to find a node fast.
@@ -17,18 +17,19 @@ This list is the source of truth at the time of writing, but the backend is auth
 | **CNN** | Conv2d, Conv1d, Conv2dExplicit, ConvTranspose2d, MaxPool2d, AvgPool2d, AdaptiveAvgPool2d, BatchNorm2d, Dropout, Activation | 10 |
 | **RNN** | LSTM, GRU, RNNCell | 3 |
 | **Transformer** | MultiHeadAttention, TransformerEncoder, TransformerDecoder, MoELayer | 4 |
-| **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence | 5 |
-| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, TrainTestSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform | 26 |
+| **RL** | DQN, PPO, EnvWrapper, RewardModel, KLDivergence, PolicyRollout, PPOClipObjective, GroupRelativeAdvantage, Discount, GridWorldEnv, PreferenceDataset, BradleyTerryLoss, BradleyTerryTrain | 13 |
+| **Data** | Dataset, ImageFolderDataset, DataLoader, DatasetBatch, Transform, HuggingFaceDataset, KaggleDataset, TensorInput, TextInput, CSVReader, ColumnSelector, RowSelector, Normalize, SyntheticDataset, SyntheticShapes, SyntheticSegmentation, SyntheticSequence, TrainTestSplit, ResizeTransform, ToTensorTransform, NormalizeTransform, RandomCrop, RandomHorizontalFlip, RandomRotation, ColorJitter, RandAugment, ComposeTransform | 27 |
 | **Data Flow** | Map, Reduce, Switch | 3 |
 | **Training** | Optimizer, Loss, TrainingLoop, EvaluateModel, LRScheduler, SequentialModel, BackwardOnce | 7 |
-| **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput | 11 |
+| **IO** | ImageReader, ImageWriter, ImageBatchReader, FileReader, CheckpointSaver, CheckpointLoader, ModelLoader, ModelSaver, Inference, GraphInput, GraphOutput, VideoLoad, VideoWrite | 13 |
 | **Control** | Start | 1 |
 | **Utility** | Print, Reshape, Concat, Flatten, Linear, Visualize, Embedding, PythonScript, ScatterPlot2D, DecisionBoundary | 10 |
 | **Normalization** | BatchNorm1d, LayerNorm, GroupNorm, InstanceNorm2d | 4 |
-| **Tensor Operations** | Add, MatMul, Mean, Multiply, ScalarMultiply, Permute, Softmax, Argmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze | 13 |
-| **LLM** | LLMChat, Tokenizer, WordVector, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding, CausalLMModel, LMCrossEntropyLoss, LMTokenizer, TextCorpusDataset, LMTokenizedDataset, PerplexityEvaluate, TextGenerate | 15 |
+| **Tensor Operations** | Add, MatMul, Mean, Multiply, ScalarMultiply, Permute, Softmax, Argmax, Split, Squeeze, Stack, TensorCreate, Unsqueeze, MaskedFill | 14 |
+| **LLM** | LLMChat, Tokenizer, WordVector, TextEmbedding, EmbeddingScatter, CosineSimilarity, AttentionMask, AttentionHeatmap, PositionalEncoding, CausalLMModel, LMCrossEntropyLoss, LMTokenizer, TextCorpusDataset, LMTokenizedDataset, DataMixDataset, PerplexityEvaluate, TextGenerate, DocumentLoader, TextChunker, VectorStore, Retriever, PromptBuilder, HFTextGenerate | 23 |
 | **Classical** | KNN, LinearRegression, LogisticRegression, DecisionTreeClassifier, RandomForestClassifier, SVMClassifier, MLPClassifier, Accuracy | 8 |
 | **Diffusion** | Upsample, TimestepEmbedding, Lerp, GaussianNoise, DDPMSampler, DiffusionUNet, DiffusionTrainingLoop | 7 |
+| **VLA** | VLAModel, VLARollout, VLAActionEval, PushWorldEnv, PushWorldDemos | 5 |
 
 ## Notable nodes
 
@@ -39,7 +40,9 @@ This list is the source of truth at the time of writing, but the backend is auth
 - **`TrainingLoop`** (Training) — drives training and emits the live loss chart in the Results panel. Its Advanced section holds the memory levers (`precision`, `accumulate_steps`); see [Training Memory](/advanced/training-memory).
 - **`EmbeddingScatter`** (LLM) — projects embeddings to 2D (PCA / t-SNE) for a zoomable scatter plot.
 - **`AttentionHeatmap`** (LLM) — renders attention matrices as images.
+- **Pack-backed backends** (LLM) — `WordVector`'s `glove-50d` and sentence-encoder options, and the whole of `TextEmbedding`, read models that the Package Center downloaded; the options that are missing one are greyed out, and a run never downloads anything itself. What each pack costs, where the files land and which encoder to pick: [Optional Packs](./optional-packs).
 - **The language-model chain** (LLM) — seven nodes that pretrain a GPT-style decoder from scratch on the canvas: `TextCorpusDataset` (raw text rows from the Hugging Face Hub or a local `.txt`) → `LMTokenizedDataset` (packs them into fixed-length next-token blocks) → `DataLoader` → `TrainingLoop`, with `CausalLMModel` as the model, `LMCrossEntropyLoss` as the loss, and `LMTokenizer` supplying one tokenizer object to every node that needs one. Afterwards `PerplexityEvaluate` scores a held-out split and `TextGenerate` samples text from the trained weights. `CausalLMModel`'s defaults describe a 203,668,480-parameter model; shrink `d_model` and `n_layers` for something a laptop can train in a lesson. The **Train a Causal LM on TinyStories** example wires the whole chain up — see [Examples Gallery](./examples-gallery).
+- **The RAG chain** (LLM) — seven nodes that answer a question out of your own documents rather than out of the model's memory: `DocumentLoader` (every `.md` and `.txt` in a folder, each as `{text, source}`) → `TextChunker` (pieces small enough to embed, each carrying its source and its character offsets, so a citation is checkable) → `TextEmbedding` → `VectorStore` (one `[N, D]` matrix with the chunk texts beside it, searched with a single matrix multiply) → `Retriever` (the `top_k` nearest chunks, with the score of each) → `PromptBuilder` (chunks and question in a template that says to answer only from that context) → `HFTextGenerate` (Qwen2.5-0.5B-Instruct, local and slow but usable on a CPU), or `LLMChat` to send the same prompt to Ollama or a hosted provider instead. Only two of the seven need a download: `TextEmbedding` wants the `sentence-embeddings` pack and `HFTextGenerate` the `rag` pack. The **RAG, fully local** and **RAG with a chat API** examples wire both variants up — see [Examples Gallery](./examples-gallery) and [Optional Packs](./optional-packs).
 - **`ModelSaver` / `ModelLoader`** (IO) — write and read model files. Each has a `state_dict` mode (tensors; the default and the one with no conditions attached) and a `full_model` mode (the pickled module itself, read under a restricted unpickler that admits torch's and CodefyUI's own layer classes, the two torch activation functions its transformer layers store, and nothing else). Which to pick, and what a `full_model` file needs in order to load: [Saving and Loading Models](./model-files).
 - **`Switch`** (Data Flow) — conditional routing so only one branch executes.
 

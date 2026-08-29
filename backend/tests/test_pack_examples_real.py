@@ -1,0 +1,260 @@
+"""The pack-backed gallery examples, executed against the real models.
+
+``test_rag_examples.py`` holds these graphs to their shape; this file is the
+only place that asks whether they still DO what their cards claim. Every one
+of those claims is about a downloaded model and nothing else can stand in
+for it: a faked encoder returns whatever the fake was written to return, so
+a test built on one proves the wiring and re-states the author's assumption
+about the model instead of checking it.
+
+That makes the suite OPT-IN twice over::
+
+    CODEFYUI_PACK_NETWORK_TESTS=1 pytest tests/test_pack_examples_real.py -q -s
+
+The variable is the outer gate, shared with ``test_packs_network.py`` so one
+switch turns on everything that needs more than an offline runner. The inner
+gate is per test: each one asks ``pack_available`` for the exact item it
+needs and SKIPS when it is missing, because "the maintainer has the
+sentence encoder" and "the maintainer has GloVe" are different facts and
+one of them being false must not hide the other test's result. The RAG test
+asks twice, for the two different downloads its two halves need.
+
+Nothing here redirects ``CODEFYUI_USER_DATA_DIR``. Every other pack test
+does, to keep bytes out of the developer's cache; these read that cache on
+purpose, because the question is whether what a user INSTALLED runs the
+examples that user is about to open. Nothing is downloaded either way -- a
+graph run never fetches pack contents (``require_pack`` refuses instead), so
+a missing model skips rather than pulling half a gigabyte.
+
+Run with ``-s`` to see the timings each test prints; the encode is a few
+seconds on CPU and the whole point of ``TextEmbedding`` being in
+``test_builtin_examples._SLOW_NODE_TYPES``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+from app.core.graph_engine import execute_graph
+from app.core.packs import pack_available, state
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("CODEFYUI_PACK_NETWORK_TESTS") != "1",
+    reason="set CODEFYUI_PACK_NETWORK_TESTS=1 to run the pack-backed "
+           "examples for real")
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+_EXAMPLES_ROOT = Path(__file__).resolve().parents[2] / "examples"
+
+_SENTENCE_EXAMPLE = (
+    _EXAMPLES_ROOT / "LLM" / "Sentence-Similarity-zhTW" / "graph.json")
+_ANALOGY_EXAMPLE = (
+    _EXAMPLES_ROOT / "LLM" / "Word-Embedding-Analogy" / "graph.json")
+_RAG_LOCAL_EXAMPLE = (
+    _EXAMPLES_ROOT / "LLM" / "RAG-Local-Offline" / "graph.json")
+
+#: The pack item each example is written against, spelled the way the
+#: catalog spells it -- ``pack_available`` answers False for an id it does
+#: not know, so a typo here reads as "not installed" and skips forever.
+_SENTENCE_PACK = ("sentence-embeddings",
+                  "paraphrase-multilingual-MiniLM-L12-v2")
+_VECTOR_PACK = ("word-vectors", "glove-50d")
+#: RAG-Local-Offline needs BOTH: the retrieval half encodes with
+#: multilingual-e5-small (a different item from the one
+#: Sentence-Similarity-zhTW uses, so having that one installed is not
+#: enough), and the generation half reads Qwen2.5 out of the rag pack.
+_RAG_ENCODER_PACK = ("sentence-embeddings", "multilingual-e5-small")
+_RAG_GENERATOR_PACK = ("rag", "qwen2.5-0.5b-instruct")
+
+#: The bundled notes that can answer the question the example ships with
+#: ("What is a node in CodefyUI, and how do I run a graph?").
+#: 02-nodes-and-edges.md is the note titled "Nodes, Ports and Edges" and the
+#: only one that writes "To run a graph, press Run in the toolbar";
+#: 01-what-is-codefyui.md opens by defining a node and by saying you press
+#: Run. Both contain the answer, so the whole top 3 has to come from these
+#: two -- and which of them takes first place is decided by where the
+#: chunker's 400-character boundaries happen to fall, not by anything a
+#: test should pin.
+_ANSWER_BEARING_SOURCES = {"01-what-is-codefyui.md", "02-nodes-and-edges.md"}
+#: The one that is not optional: only this note actually says how to run a
+#: graph, so an answer to the second half of the question cannot be
+#: retrieved without it.
+_REQUIRED_SOURCE = "02-nodes-and-edges.md"
+
+#: Which sentence is which one's partner: four pairs, in the order the
+#: TextInput lists them (weather, food, the stock market, and machine
+#: learning across Chinese and English).
+_PARTNER = {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4, 6: 7, 7: 6}
+
+
+def _require(pack_id: str, item_id: str) -> None:
+    # A pack installed since this process started is on disk and invisible:
+    # ``pack_available`` answers from a cached probe, and find_spec answers
+    # from a directory listing made before the install. Both are dropped
+    # here, so the gate reads the disk as it is now.
+    state.invalidate()
+    if not pack_available(pack_id, item_id):
+        pytest.skip(
+            f"{pack_id}:{item_id} is not installed -- get it from Package "
+            f"Center, or `cdui packs install {pack_id} --items {item_id}`")
+
+
+def _load(graph_path: Path) -> tuple[list[dict], list[dict]]:
+    payload = json.loads(graph_path.read_text(encoding="utf-8"))
+    return payload["nodes"], payload["edges"]
+
+
+def _execute(nodes: list[dict], edges: list[dict], label: str) -> dict:
+    """Run a graph the way ``test_builtin_examples`` does, and time it.
+
+    ``os.chdir`` for the same reason it does: example graphs name data files
+    relative to ``backend/``, and a contributor running pytest from the repo
+    root would otherwise hit a FileNotFoundError in a test about embeddings.
+    """
+    previous = Path.cwd()
+    os.chdir(_BACKEND_DIR)
+    started = time.monotonic()
+    try:
+        results = asyncio.run(
+            execute_graph(nodes, edges, error_mode="fail_fast"))
+    finally:
+        os.chdir(previous)
+    print(f"\n[{label}] executed in {time.monotonic() - started:.1f}s")
+    return results
+
+
+def test_sentence_similarity_example_pairs_up_for_real():
+    """Every sentence's nearest neighbour after itself is its partner.
+
+    This is the example's entire claim, and it cannot be checked any other
+    way: that 今天天氣很好 and 天氣晴朗 come back adjacent while sharing
+    two characters, and that a Chinese sentence about training a model lands
+    next to an English one, is a property of the multilingual encoder rather
+    than of the graph. The graph only decides whether that property is
+    visible.
+
+    Rank 1 is asserted as well as rank 2. It is trivially true -- every row
+    is its own nearest neighbour at cosine 1.0 -- which is exactly why it is
+    worth one line: a run where row i's top hit is NOT i means queries and
+    keys are no longer the same tensor, and every rank-2 assertion below
+    would then be testing something other than what it says.
+    """
+    _require(*_SENTENCE_PACK)
+
+    nodes, edges = _load(_SENTENCE_EXAMPLE)
+    results = _execute(nodes, edges, "Sentence-Similarity-zhTW")
+
+    labels = results["embed"]["labels"]
+    top_indices = results["similarity"]["top_k_indices"]
+    top_labels = results["similarity"]["top_k_labels"]
+    assert len(top_indices) == len(_PARTNER) == len(labels), (
+        f"expected one row per sentence, got {len(top_indices)} rows for "
+        f"{len(labels)} labels")
+
+    for row, neighbours in enumerate(top_indices):
+        assert neighbours[0] == row, (
+            f"sentence {row} ({labels[row]!r}) is not its own nearest "
+            f"neighbour; queries and keys are not the same tensor")
+        assert neighbours[1] == _PARTNER[row], (
+            f"sentence {row} ({labels[row]!r}) pairs with "
+            f"{labels[neighbours[1]]!r} instead of "
+            f"{labels[_PARTNER[row]]!r} -- the model no longer groups this "
+            f"example by meaning")
+        # Checked before the index: an empty row would raise IndexError and
+        # the sentence below -- the one that says what actually broke --
+        # would never be printed.
+        assert top_labels[row], (
+            f"row {row} has no top-k labels at all, so key_labels never "
+            f"reached CosineSimilarity")
+        assert top_labels[row][0] == labels[row], (
+            "key_labels are not the embedding's labels, so the printed "
+            "top-k names the wrong sentences")
+
+
+def test_wordvector_glove_analogy_is_queen():
+    """king - man + woman is queen on the real 400k-word table.
+
+    The shipped graph runs on ``demo-16d``, where the analogy is exact by
+    construction -- the toy table was BUILT so that it works, so running it
+    proves nothing about GloVe. Overriding the backend is what turns the
+    example into a claim about real vectors, and it is the claim the card
+    makes ("on glove-50d queen still wins here").
+    """
+    _require(*_VECTOR_PACK)
+
+    nodes, edges = _load(_ANALOGY_EXAMPLE)
+    switched = [node["id"] for node in nodes if node["type"] == "WordVector"]
+    for node in nodes:
+        if node["type"] == "WordVector":
+            node["data"]["params"]["backend"] = "glove-50d"
+    assert switched, (
+        "the analogy example has no WordVector nodes left, so this test "
+        "would silently run the demo table it was written to bypass")
+
+    results = _execute(nodes, edges, "Word-Embedding-Analogy (glove-50d)")
+
+    top_labels = results["similarity"]["top_k_labels"]
+    assert top_labels[0][0] == "queen", (
+        f"the analogy's top hit on glove-50d is {top_labels[0][0]!r}, not "
+        f"'queen'; the whole top-k was {top_labels[0]}")
+
+
+def test_rag_local_example_answers_for_real():
+    """The shipped question retrieves the right note, and Qwen answers it.
+
+    Two claims in one run, because they are one run: a RAG example is only
+    honest if the retrieval finds the passage that contains the answer AND
+    the generator then says something. Either half can fail silently. A
+    prefix typo or a mismatched encoder still returns three chunks -- just
+    the wrong three -- and the model will happily write a fluent paragraph
+    off them. An empty generation, equally, leaves a graph that ran green
+    and printed nothing.
+
+    The SET of retrieved sources is asserted rather than the answer's
+    wording: which documents can answer the question is a property of the
+    corpus and the encoder, while what a 0.5B model writes about them is
+    not, and a test that pinned the prose would fail on a temperature
+    nobody changed. Which of the two answer-bearing notes takes first place
+    is not pinned either -- both contain the answer, and the winner depends
+    on where the chunker's 400-character boundaries fall inside them.
+
+    Both gates are checked -- the encoder item and the generator model are
+    different downloads from different packs, and skipping on the one that
+    is missing has to name the right one.
+    """
+    _require(*_RAG_ENCODER_PACK)
+    _require(*_RAG_GENERATOR_PACK)
+
+    nodes, edges = _load(_RAG_LOCAL_EXAMPLE)
+    results = _execute(nodes, edges, "RAG-Local-Offline")
+
+    sources = results["retriever"]["sources"]
+    contexts = results["retriever"]["contexts"]
+    assert sources, (
+        "the Retriever returned nothing at all, so min_score or the query "
+        "wiring dropped every hit before the prompt was built")
+    assert len(contexts) == len(sources) == 3, (
+        f"top_k is 3 in the shipped graph but the run brought back "
+        f"{len(contexts)} contexts / {len(sources)} sources")
+    assert set(sources) <= _ANSWER_BEARING_SOURCES, (
+        f"the retrieval was {sources}, which reaches outside the two notes "
+        f"that contain the answer ({sorted(_ANSWER_BEARING_SOURCES)}). "
+        f"Either the corpus changed or the two encoders are no longer the "
+        f"same model with the right e5 prefixes.")
+    assert _REQUIRED_SOURCE in sources, (
+        f"{_REQUIRED_SOURCE!r} is not in the top 3 ({sources}); it is the "
+        f"only note that says how to run a graph, so the second half of the "
+        f"question cannot be answered from what was retrieved.")
+
+    answer = results["gen"]["text"]
+    assert answer.strip(), (
+        "HFTextGenerate produced an empty answer, so the example prints a "
+        "blank Print node after a minute of CPU")
+    print(f"[RAG-Local-Offline] sources: {sources}")
+    print(f"[RAG-Local-Offline] answer: {answer.strip()[:200]}")

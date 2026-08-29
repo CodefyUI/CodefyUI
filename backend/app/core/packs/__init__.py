@@ -41,6 +41,7 @@ __all__ = [
     "model_dir",
     "pack_available",
     "parse_requirement",
+    "record_derived",
     "require_pack",
 ]
 
@@ -172,3 +173,24 @@ def asset_path(pack_id: str, filename: str) -> Path | None:
         if item.kind == "asset" and item.filename == filename:
             return state.item_state(pack, item).snapshot_dir
     return None
+
+
+def record_derived(pack_id: str, item_id: str, path: Path) -> None:
+    """Record that *path* came out of *item_id*'s download and goes with it.
+
+    The one write in this module, and it exists because a node can make a
+    file the install did not: ``WordVector`` converts the GloVe table on
+    first use when the install's convert step never ran, and 83 MB written
+    without a record is 83 MB that survives uninstalling the pack it came
+    from. Everything else about it -- what the record looks like, what
+    ``remove_item`` will do with it, what happens when there is no sentinel
+    to extend -- belongs to ``flows.record_derived``, which is where the
+    install writes the same record from.
+
+    Imported inside the function like every other call here, so
+    ``from app.core.packs import PackMissingError`` stays the stdlib-only
+    import the module docstring promises.
+    """
+    from .flows import record_derived as _impl
+
+    _impl(pack_id, item_id, path)

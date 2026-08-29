@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -64,8 +65,9 @@ PROBE_TIMEOUT_S = 120
 #: The pack and item whose download needs a conversion pass afterwards.
 _GLOVE = ("word-vectors", "glove-50d")
 
-#: The module that pass lives in. A LATER PR adds it; until then its absence
-#: is expected and its presence-but-broken is not -- see ``_converter_absent``.
+#: The module that pass lives in. It ships with the backend, so its absence
+#: now means a trimmed or partial build -- which is survivable -- while its
+#: presence-but-broken is not. See ``_converter_absent``.
 _GLOVE_MODULE = "app.nodes.llm._glove"
 
 #: What huggingface_hub names a repo's directory. Checked before deleting
@@ -110,6 +112,60 @@ def _tail_text(lines: Sequence[str]) -> str:
     return "\n".join(lines).strip()
 
 
+#: An argument every shell passes through untouched: letters, digits, and
+#: the punctuation that is never syntax in bash, cmd or PowerShell. Three
+#: characters are deliberately absent because each one breaks a real
+#: paste -- whitespace, the ``<`` / ``>`` of a PEP 508 version spec, and
+#: the backslash of a Windows path. Forward slashes stay, so a POSIX
+#: interpreter path is still rendered bare.
+_BARE_ARGUMENT = re.compile(r"[A-Za-z0-9._/:+-]+")
+
+
+def _shell_quote(part: str) -> str:
+    """One argument of a command line a human is going to paste.
+
+    ``shlex.quote`` is POSIX in its choice of quote character, and one of
+    the parts here is usually a Windows path, where ``'C:\\...'`` is not a
+    quoted string at all. Double quotes are what bash, cmd and PowerShell
+    all read the same way, for a path and for a version spec alike.
+
+    The test is INVERTED -- bare only for a part made entirely of characters
+    no shell reads as syntax -- because two narrower rules were each tried
+    and each shipped a command line that does not run:
+
+    * Quoting on whitespace alone left ``sentence-transformers>=3.0,<6``
+      bare, and an unquoted ``>`` is REDIRECTION in all three shells: bash
+      writes a file named ``=3.0,``, PowerShell refuses to parse the line,
+      cmd fails on ``6``.
+    * Treating the backslash as safe left ``D:\\...\\python.exe`` bare, which
+      PowerShell and cmd accept but **Git Bash does not**: bash strips the
+      backslashes of an unquoted word, so uv is handed
+      ``D:GithubCodefyUI...python.exe`` and answers "No virtual environment
+      found". Inside double quotes bash escapes only ``$``, a backtick,
+      ``"``, ``\\`` and a newline, so every other backslash survives -- and
+      PowerShell (backtick escape) and cmd keep them too.
+    """
+    return part if _BARE_ARGUMENT.fullmatch(part) else f'"{part}"'
+
+
+def _restart_command(pack: Pack) -> str:
+    """The command that finishes this install with the server stopped.
+
+    Spelled out in full rather than pointing at a ``cdui packs`` flag: no
+    flag installs a pack into a stopped server, so naming one would send the
+    user to an exit code instead of to a working install. The constraints
+    file is deliberately absent -- it pins what THIS process has already
+    imported, which is the very thing that has to be replaced.
+
+    Every part goes through :func:`_shell_quote`, so this has to survive
+    being pasted into a shell rather than merely being readable: the
+    interpreter path keeps its backslashes and the version spec keeps its
+    ``<``/``>``, in Git Bash as well as in PowerShell and cmd.
+    """
+    argv = ["uv", "pip", "install", "--python", sys.executable, *pack.pip]
+    return " ".join(_shell_quote(part) for part in argv)
+
+
 def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
     """Install *pack*'s packages, or explain why it could not be done here."""
     emit({"type": "step_started", "step": "pip",
@@ -133,11 +189,12 @@ def _run_pip_step(pack: Pack, *, emit, cancel_check) -> None:
     if returncode != 0:
         detail = _tail_text(tail)
         if runner.looks_like_resolver_conflict(tail):
+            command = _restart_command(pack)
             raise PackNeedsRestart(
                 f"{pack.title} cannot be installed while the server is "
                 f"running: it would have to replace a package already in use",
-                command=f"cdui packs install {pack.pack_id} --restart",
-                hint=detail)
+                command=command,
+                hint=f"stop the server, then run:\n{command}\n\n{detail}")
         raise PackInstallError(
             f"installing {pack.title} failed (uv exited {returncode})",
             hint=detail)
@@ -167,10 +224,10 @@ def _download_step(pack: Pack, item: ModelItem, *, emit, cancel_check) -> Path:
 
 
 def _converter_absent(exc: ImportError) -> bool:
-    """Did the import fail because the converter is not here YET?
+    """Did the import fail because the converter is not in this build?
 
-    "The converter has not been written" and "the converter is broken" are
-    both ``ImportError``. The first is expected and may be shrugged off; the
+    "The converter is not in this build" and "the converter is broken" are
+    both ``ImportError``. The first is survivable and may be shrugged off; the
     second is a GloVe pack that can never convert, and shrugging THAT off
     would report the install as finished.
 
@@ -203,9 +260,11 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
     -- the UI already knows how to draw those, and to a learner this is the
     same wait as the download that came before it.
 
-    The converter arrives in a later PR. Until then the download is still
-    worth having -- so a missing converter is a log line and a finished step,
-    not a failed install that throws away 66 MB somebody just waited for.
+    The converter ships with the backend, so a build without it is a trimmed
+    or partial one rather than a version that predates it. The download is
+    still worth having there -- so an absent converter is a log line and a
+    finished step, not a failed install that throws away 69 MB somebody just
+    waited for.
     """
     item_id = _GLOVE[1]
     emit({"type": "step_started", "step": f"convert:{item_id}",
@@ -236,8 +295,44 @@ def _convert_glove_step(gz_path: Path, *, emit) -> None:
             emit(frame)
 
         npz_path = ensure_npz(gz_path, progress=_forward)
+        record_derived(_GLOVE[0], item_id, npz_path)
         emit({"type": "log", "line": f"GloVe vectors ready at {npz_path}"})
     emit({"type": "step_done", "step": f"convert:{item_id}"})
+
+
+def record_derived(pack_id: str, item_id: str, *paths: Path) -> None:
+    """Note on the item's sentinel that the download now owns *paths* too.
+
+    The npz the conversion writes is 83 MB that the CATALOG does not describe
+    -- it has one filename per item -- so ``remove_item`` would delete the
+    69 MB download, report the bytes as freed, and leave the larger file
+    behind forever. The sentinel is the file that already says this item was
+    downloaded, so it is where "and this came with it" belongs.
+
+    Extended, not replaced: everything the download recorded stays, and
+    ``derived`` is overwritten rather than appended to, so converting twice
+    does not list the same file twice. No sentinel means no download record
+    to extend -- which cannot happen after a real download, since
+    ``download_asset_item`` writes one before this step runs -- and inventing
+    a partial one would be a worse answer than leaving it alone.
+
+    Public, and re-exported as ``packs.record_derived``, because the install
+    is no longer the only converter. ``WordVector`` reaches
+    ``_glove.load_glove_50d`` on a table the install never converted -- an
+    older install, or one whose convert step was skipped -- and a node that
+    writes 83 MB without recording it leaves exactly the orphan this
+    function exists to prevent. It takes *pack_id* for the same reason:
+    a second caller outside this module must not have to know that the one
+    pack with a derived file today is the one hardcoded here.
+    """
+    sentinel = state.read_sentinel(sentinel_path(pack_id, item_id))
+    if sentinel is None:
+        log.warning("no sentinel for pack %s item %s; %s will not be removed "
+                    "with it", pack_id, item_id,
+                    ", ".join(str(path) for path in paths))
+        return
+    sentinel["derived"] = [str(path) for path in paths]
+    state.write_sentinel(pack_id, item_id, sentinel)
 
 
 def verify_imports(pack: Pack, *, emit) -> None:
@@ -439,20 +534,63 @@ def _asset_removal_target(item: ModelItem, recorded: str | None) -> Path | None:
     return canonical if canonical.is_file() else None
 
 
+def _derived_removal_targets(sentinel: dict | None) -> list[Path]:
+    """The extra files this item's sentinel says came with the download.
+
+    Written by ``record_derived`` -- today just the converted GloVe npz.
+    Checked exactly as strictly as the asset itself, and for exactly the same
+    reason: this list is a string in a FILE on disk, so a corrupt or
+    hand-edited sentinel must not be able to point a delete at the cache
+    root, at the directory the sentinels live in, or at anything that is not
+    a direct child of the asset directory.
+
+    Anything that fails a check is skipped rather than raised on. A removal
+    that refused to run because one line of one sentinel was odd would leave
+    the user with no way to free the space at all.
+    """
+    if sentinel is None:
+        return []
+    recorded = sentinel.get("derived")
+    if not isinstance(recorded, list):
+        return []
+
+    root = _resolved(asset_dir())
+    sentinels = _resolved(sentinel_dir())
+    targets: list[Path] = []
+    for value in recorded:
+        if not isinstance(value, str) or not value:
+            continue
+        candidate = _resolved(Path(value))
+        if root is None or candidate is None or candidate == root:
+            continue
+        if candidate.parent != root:
+            continue
+        if sentinels is not None and candidate.is_relative_to(sentinels):
+            continue
+        if candidate.is_file():
+            targets.append(candidate)
+    return targets
+
+
 def remove_item(pack: Pack, item_id: str) -> bool:
     """Delete one downloaded item and forget it. True if the BYTES went.
 
     For a Hugging Face item that is the repo folder, which is where the bytes
-    are; for an asset it is the one file in the asset directory. Both targets
-    come from the catalog and are checked before anything is deleted -- see
-    the two helpers above for what each refuses and why.
+    are; for an asset it is the one file in the asset directory, plus
+    whatever the install DERIVED from it -- the converted GloVe table is
+    bigger than the download it came from, and the catalog does not name it.
+    Every target comes from the catalog or from the item's own sentinel and
+    is checked before anything is deleted -- see the three helpers above for
+    what each refuses and why.
 
     The sentinel is removed either way, so an item whose files somebody
     cleaned out by hand stops reporting itself as downloaded. The RETURN
-    value is only about the bytes: on Windows a file another process holds
+    value is only about the item's OWN bytes: a derived file that could not
+    be deleted is logged, not reported here, because "the download is gone"
+    is the question the caller asked. On Windows a file another process holds
     open cannot be deleted and ``rmtree(ignore_errors=True)`` says nothing
     about it, so "we removed the record" must not be reported as "we freed
-    the space".
+    the space" either.
     """
     item = get_item(pack, item_id)
     sentinel = state.read_sentinel(sentinel_path(pack.pack_id, item_id))
@@ -465,6 +603,16 @@ def remove_item(pack: Pack, item_id: str) -> bool:
         target = _hf_removal_target(item)
     else:
         target = _asset_removal_target(item, recorded)
+        # Before the download itself, because the sentinel that names these
+        # goes away with it: a derived file left behind after its record has
+        # been deleted is one nothing will ever find again.
+        for extra in _derived_removal_targets(sentinel):
+            try:
+                extra.unlink()
+            except OSError:
+                log.warning("could not remove %s, which pack %s item %s "
+                            "derived; something is holding it open",
+                            extra, pack.pack_id, item_id)
 
     removed = False
     if target is not None:

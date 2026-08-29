@@ -878,13 +878,12 @@ const zhTW: NodeTranslations = {
   },
   WordVector: {
     description:
-      '為每個輸入單字查找預訓練向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。預設 `demo-16d` 後端隨安裝附帶；`glove-*` 後端會在第一次使用時下載真實 GloVe 向量。',
+      '為每個輸入單字查一條向量。預訓練嵌入會把語意相近的字放在一起，所以 $king - man + woman \\approx queen$。demo-16d 是手工打造的 59 字玩具詞彙表，隨安裝附帶、完全離線，類比在它上面是精確成立的；glove-50d 是真正的 40 萬字 GloVe 表（需要 word-vectors 套件包），類比只是近似；sentence-transformer 後端（需要 sentence-embeddings 套件包）會把每個字丟進現代的編碼器，對單一個字來說更「毛躁」，但那正是真實檢索系統在用的東西。',
     params: {
-      backend:
-        '向量來源。demo-16d 是手工打造的玩具詞彙、完全離線可跑；glove-* 會在第一次使用時下載真實 GloVe 向量；minilm-sentence-384d 需要安裝 [llm-sentence] 額外相依套件。',
+      backend: '向量來源。灰掉的選項需要先到套件中心安裝對應的套件包；執行圖的時候永遠不會自動下載。',
       words: '以空白或逗號分隔的單字列表。當沒有 `tokens` 輸入連線時使用此欄位。',
       normalize: '對每個向量做 L2 正規化。下游若要用點積算 cosine similarity，請打開此選項。',
-      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。',
+      keep_oov: '對詞彙表外的字輸出零向量，而不是直接略過。只對表格型後端（demo-16d、glove-50d）有意義；句子模型會為每個字都算出向量。',
     },
   },
   EmbeddingScatter: {
@@ -1029,6 +1028,84 @@ const zhTW: NodeTranslations = {
       top_p: 'Nucleus 取樣：從機率最高的 token 開始累加，直到總和達到 p，就只從這些 token 取樣（1 = 關閉）。與 top_k 不同的是這個切點會自動調整 — 模型有把握時就窄，沒把握時就寬。',
       seed: '取樣所用的隨機種子。同樣的種子加上同樣的模型，在任何裝置上都會得到同樣的文字，所以比較兩個 temperature 時，差異就只來自 temperature。',
       device: '在哪個裝置上生成（auto 表示跟隨全域裝置，所以在 GPU 上訓練的模型也會在 GPU 上生成）。',
+    },
+  },
+  TextEmbedding: {
+    description:
+      '用預訓練的 sentence-transformer 把每段文字變成一條稠密向量，意思相近的文字向量會靠得很近（cosine 接近 1）。這就是語意搜尋與 RAG 背後的編碼器：先把文件各自嵌入一次，再把問題嵌入，然後比較。需要從套件中心安裝 sentence-embeddings 套件包；內附的四個模型都很小（22M 到 118M 參數），純 CPU 也跑得動。',
+    params: {
+      model: 'all-MiniLM-L6-v2：最小、英文。paraphrase-multilingual-MiniLM-L12-v2：支援 50 多種語言（含繁體中文），不需要前綴。bge-small-zh-v1.5：中文專用。multilingual-e5-small：檢索效果最好，但需要 "query: " / "passage: " 前綴（見 prefix）。',
+      text: '沒有任何輸入連線時使用的備用文字。',
+      split_lines: '把文字輸入的每一個非空白行當成一段獨立的文字。若要讓一整份多行文件變成一條向量，請關閉。',
+      prefix: '編碼前加在每段文字前面的字串。multilingual-e5 訓練時問題用 "query: "、文件用 "passage: "；其他模型會忽略它。',
+      normalize: 'L2 正規化，讓下游的點積等於 cosine similarity。',
+      batch_size: '一次前向傳播處理幾段文字。只影響速度與記憶體。',
+      max_seq_length: '每段文字的 token 上限（0 = 模型自己的預設：paraphrase-multilingual 128、all-MiniLM 256、bge/e5 512）。超過的部分會被截掉，切塊時請把長度控制在範圍內。',
+      label_chars: 'labels 輸出中每段文字保留的字元數。',
+      device: '在哪個裝置上編碼（auto 表示跟隨全域裝置）。',
+    },
+  },
+  DocumentLoader: {
+    description:
+      '從一個資料夾或一個上傳的檔案讀入純文字文件（.txt 與 .md）。每份文件會以 {text, source} 的形式輸出，讓後面的節點能標註答案出自哪裡。內附的 data/samples/rag 資料夾放了五篇關於 CodefyUI 與機器學習基礎的中英雙語短文，所以 RAG 範例不需要任何設定就能跑。RAG 鏈的第一個節點：DocumentLoader -> TextChunker -> TextEmbedding -> VectorStore。',
+    params: {
+      source: '文件來源：一個資料夾，或一個你上傳的檔案。',
+      directory: '放 .txt/.md 檔的資料夾。相對路徑先以後端工作目錄解析，再以 CodefyUI 後端資料夾解析（所以內附範例在任何目錄下都找得到）；專案模式下相對路徑必須留在專案目錄內。',
+      recursive: '也讀取子資料夾。',
+      file: '你用旁邊按鈕上傳的 .txt 檔。',
+      max_docs: '最多保留這麼多份文件，依檔名排序（0 = 全部）。',
+    },
+  },
+  TextChunker: {
+    description:
+      '把文件切成有重疊的小塊，小到能嵌入、也放得進提示詞。檢索是以「塊」為單位而不是整份檔案：一個問題應該撈回能回答它的那一段，而不是整份五頁的文件。characters 與語言無關、中文沒有空格也適用；sentences 與 paragraphs 會保留自然的邊界，再把它們塞滿到 chunk_size。',
+    params: {
+      strategy: 'characters：固定長度的字元視窗。sentences：以句號、問號、驚嘆號切句再打包。paragraphs：以空行切段再打包。',
+      chunk_size: '每一塊的字元數（所有策略共用的上限）。',
+      chunk_overlap: '相鄰兩塊共享的字元數，讓被切在中間的句子至少會完整出現在其中一塊；必須小於 chunk_size。',
+      min_chunk_chars: '最後一塊若短於這個長度，就併進前一塊。合併後的最後一塊最多可能超過 chunk_size 達 min_chunk_chars - 1 個字元。',
+    },
+  },
+  VectorStore: {
+    description:
+      '把各塊的嵌入向量與文字打包成一個可搜尋的索引。這就是 RAG 系統的「資料庫」：一個 [N, D] 矩陣加上 N 段文字，預設用 cosine 當度量（每列存成單位長度，搜尋就只是一次矩陣乘法）。把 index 接到 Retriever。只存在記憶體裡；重新執行時會從快取的嵌入在幾毫秒內重建。',
+    params: {
+      metric: 'cosine 忽略向量長度，是句子嵌入訓練時所用的度量；dot 是原始內積，給長度本身有意義的嵌入用。',
+      normalize: '把每列存成單位長度（此時 cosine 等於 dot）。metric 為 dot 時忽略。',
+    },
+  },
+  Retriever: {
+    description:
+      '找出與問題最相似的幾塊文字。把索引裡每一塊都跟問題向量算分（一次矩陣乘法，跟 CosineSimilarity 是同一個核心），留下 top_k，再丟掉低於 min_score 的，最後把文字交給 PromptBuilder。留意分數：最高分只有 0.3 左右，通常代表語料裡根本沒有答案。',
+    params: {
+      top_k: '要撈回幾塊。',
+      min_score: '低於這個分數的結果會被丟掉（cosine 的範圍是 -1 到 1）。0 表示全部保留；用 e5/MiniLM 時 0.3 到 0.5 是合理的門檻。',
+    },
+  },
+  PromptBuilder: {
+    description:
+      '組出最後的提示詞：把撈回的文字塊貼進模板，連同問題與「只能根據這些內容回答」的指示。這就是 RAG 的全部訣竅：模型沒有被微調，只是被拿給它看對的段落。模板必須包含 {context} 與 {question}；想自己寫多行模板，把 TextInput 接到 template 輸入即可。',
+    params: {
+      template: '含 {context} 與 {question} 兩個佔位符的模板。連了 template 輸入時以輸入為準。',
+      separator: '各塊文字之間的分隔：blank_line 空一行、newline 換行、rule 一條分隔線。',
+      number_contexts: '在每一塊前面加上 [1]、[2]...，接了 sources 時也附上來源檔名。',
+      max_context_chars: '把合併後的內容區塊截到這個字元數（0 = 不限制）。小型本機模型超過幾千字就會明顯變慢。',
+    },
+  },
+  HFTextGenerate: {
+    description:
+      '用一個在本機執行的小型指令微調開源模型回答提示詞：Qwen2.5-0.5B-Instruct（Apache-2.0，約 1 GB，來自 rag 套件包）。對話模板會自動套用，節點會逐個 token 回報進度。筆電 CPU 大約每秒幾個 token，GPU 快很多。與 TextGenerate 不同：那個節點是用你在畫布上訓練的模型接續文字，這個節點是載入預訓練權重並聽從指令。',
+    params: {
+      model: '要載入的模型。灰掉的選項需要先到套件中心安裝 rag 套件包。',
+      prompt: '當沒有 `prompt` 輸入連線時使用的提示詞。',
+      system_prompt: '放在使用者訊息前面的系統指令。留空就用模型內建的預設系統提示。',
+      max_new_tokens: '最多生成幾個 token；決定本節點要跑多久。',
+      temperature: '取樣前先把分數除以這個值：0 = greedy（永遠取最可能的 token，可重現）；越高越有變化。',
+      top_p: 'Nucleus 取樣：只從累積機率達到 p 的最可能 token 中取樣（1 = 關閉）。',
+      top_k: '只從分數最高的 k 個 token 中取樣（0 = 關閉）。',
+      seed: '取樣的隨機種子。同樣的種子與模型會得到同樣的答案。',
+      device: '在哪個裝置上生成（auto 表示跟隨全域裝置）。',
+      dtype: '權重精度。auto 在 CUDA 上用 bfloat16/float16、在 CPU 與 MPS 上用 float32。',
     },
   },
 
