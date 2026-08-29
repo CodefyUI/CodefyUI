@@ -2914,9 +2914,16 @@ def _run_pending_steps(pending_path: Path) -> int:
     # Declared out here because the handler below is: an interrupt has to be
     # able to stop an installer that HAS started, from a phase that has not.
     installer: list = []
+    # Whether the wait for the old server ever ANSWERED. False only while an
+    # interrupt is inside it, and the `finally` needs to know: relaunching
+    # over a server that is still on its way out is how a user ends up with
+    # none. `alive` counts as answered -- that case is decided here, on
+    # purpose, and its pidfile is still true.
+    waited = False
 
     try:
         how = _wait_for_server_exit(data["server_pid"])
+        waited = True
         if how != "alive":
             _forget_stopped_server()
         if how == "exited":
@@ -2977,7 +2984,7 @@ def _run_pending_steps(pending_path: Path) -> int:
         _finish(status="failed", returncode=code,
                 message=f"the installer exited with {code}", log_tail=tail)
         return 1
-    except BaseException:
+    except BaseException as exc:
         # Ctrl-C, a SIGTERM (see `_raise_on_sigterm`), a closed console: this
         # process is going. It covers the WHOLE run, not just the install,
         # because `_raise_on_sigterm` does -- the server wait alone is up to
@@ -2988,14 +2995,40 @@ def _run_pending_steps(pending_path: Path) -> int:
         # status` will read it, and let the exception out: the `finally`
         # below still relaunches, and a server that comes back and reports
         # beats none at all.
+        #
+        # And it says WHICH of those happened. `BaseException` also catches a
+        # KeyError on a claim field, a MemoryError, any genuine traceback --
+        # all of which used to be written up as "interrupted", sending the
+        # user to look for a Ctrl-C they never typed.
         for proc in installer:
             _terminate_pid(proc.pid)
-        message = "the install was interrupted before it finished"
-        err("安裝被中斷，已停止安裝程式", message)
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            message = "the install was interrupted before it finished"
+            err("安裝被中斷，已停止安裝程式", message)
+        else:
+            message = f"the restart helper failed: {exc!r}"
+            err(f"重啟安裝程式發生錯誤：{exc!r}", message)
         _finish(status="failed", returncode=None, message=message,
                 log_tail=[])
         raise
     finally:
+        if not waited:
+            # The wait never answered -- an interrupt landed inside it -- so
+            # the old server may well still be on its way out. Relaunching
+            # now would find its pidfile, print "already running", exit 0
+            # and record `relaunch: ok`; the old server would then finish
+            # exiting and leave nothing behind it. The SAME wait, not a
+            # shorter one: what it is waiting for has not changed, and a
+            # bespoke grace would be a second rule for one file.
+            #
+            # Wrapped, because this runs in a `finally` on the way out of an
+            # exception that is already travelling: an error here would
+            # replace it, and the user would be told about the wrong thing.
+            try:
+                if _wait_for_server_exit(data["server_pid"]) != "alive":
+                    _forget_stopped_server()
+            except BaseException:
+                pass
         pid = _relaunch_server(list(data["launcher"]),
                                list(data["relaunch_argv"]), log_path)
         if record:

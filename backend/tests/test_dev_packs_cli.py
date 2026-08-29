@@ -1838,6 +1838,81 @@ def test_a_helper_killed_before_the_install_records_it_too(helper, monkeypatch,
     assert record["relaunch"] == "ok"
 
 
+def test_an_interrupt_during_the_server_wait_still_waits_before_relaunching(
+        helper, monkeypatch):
+    """The one interrupt that can leave a user with NO server at all.
+
+    The `finally` relaunches whatever happened -- but if the interrupt
+    landed inside `_wait_for_server_exit`, the old server is still there.
+    The relaunched `cdui start` then finds the pidfile, prints "already
+    running", exits 0, and the outcome record says `relaunch: ok` -- and
+    moments later the old server finishes exiting and there is no server
+    anywhere.
+
+    So the interrupt path waits for the old pid too, with the SAME wait: the
+    reason the first one exists (installing while the server still holds the
+    files open is the failure this whole mechanism prevents) is unchanged by
+    an interrupt, and a second, shorter grace would be a second rule for one
+    file. `_forget_stopped_server` follows it exactly as on the happy path,
+    or the relaunch reads a pidfile for a server that is gone.
+    """
+    order: list = []
+    real_relaunch = dev._relaunch_server
+
+    def _wait(pid):
+        order.append(("wait", pid))
+        if len(order) == 1:
+            raise KeyboardInterrupt("stopped")
+        return "exited"
+
+    def _counted(launcher, argv, log_path):
+        order.append(("relaunch", None))
+        return real_relaunch(launcher, argv, log_path)
+
+    monkeypatch.setattr(dev, "_wait_for_server_exit", _wait)
+    monkeypatch.setattr(dev, "_relaunch_server", _counted)
+    dev.SERVER_PIDFILE.write_text("4242", encoding="utf-8")
+    dev.SERVER_ADDRFILE.write_text("http://127.0.0.1:8000", encoding="utf-8")
+    path = _pending(helper)
+
+    with pytest.raises(KeyboardInterrupt):
+        dev._run_pending_job(path)
+
+    assert order == [("wait", 4242), ("wait", 4242), ("relaunch", None)]
+    assert not dev.SERVER_PIDFILE.exists(), "the relaunch would read a dead pid"
+    assert not dev.SERVER_ADDRFILE.exists()
+    assert helper["relaunch"] is not None
+
+
+def test_a_crash_in_the_helper_is_not_reported_as_an_interrupt(helper,
+                                                               monkeypatch,
+                                                               capsys):
+    """`except BaseException` catches everything, and everything used to be
+    written up as "the install was interrupted before it finished".
+
+    A KeyError on a claim field, a MemoryError, any genuine traceback: the
+    user read "interrupted" and went looking for the Ctrl-C they never
+    typed. The message now names the exception, and only a real
+    KeyboardInterrupt or SystemExit says interrupted.
+    """
+    def _boom(data):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(dev, "_pending_install_cmd", _boom)
+    path = _pending(helper)
+
+    with pytest.raises(RuntimeError):
+        dev._run_pending_job(path)
+
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert "RuntimeError" in record["message"], record["message"]
+    assert "interrupted" not in record["message"], record["message"]
+    assert "RuntimeError" in capsys.readouterr().err
+    # The promise the handler exists to keep, kept for a crash too.
+    assert helper["relaunch"] is not None
+
+
 def test_a_sigterm_at_the_helper_raises_the_way_a_ctrl_c_does(monkeypatch):
     """`End task`, a service stop, a shell's cleanup: POSIX default action is
     to die on the spot, which skips every `except` and `finally` the helper
