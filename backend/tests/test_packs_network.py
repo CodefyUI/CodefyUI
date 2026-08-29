@@ -108,7 +108,7 @@ def _logs(events: list[dict]) -> list[str]:
 
 def test_real_glove_download_verifies_sha256_and_reports_progress(
         isolated_cache):
-    """66 MB off a GitHub release: it lands, the bar reaches the end, and the
+    """69 MB off a GitHub release: it lands, the bar reaches the end, and the
     digest in the catalog is the digest of the bytes that arrived.
 
     The first time this runs the catalog has no digest, so the assertion that
@@ -128,8 +128,11 @@ def test_real_glove_download_verifies_sha256_and_reports_progress(
     assert path.is_file()
     size = path.stat().st_size
     print(f"\nglove-50d: {size} bytes in {elapsed:.1f}s -> {path}")
-    # The catalog calls it 66 MB; anything an order of magnitude off is a
-    # redirect page or a truncated transfer wearing the right filename.
+    # The catalog's ``approx_bytes`` calls it 69 MB, which is the download
+    # and so the right number to check a downloaded file against; the npz
+    # the convert step writes beside it is ``derived_bytes`` and has not
+    # been written yet. Anything an order of magnitude off is a redirect
+    # page or a truncated transfer wearing the right filename.
     assert 50_000_000 < size < 90_000_000, size
 
     progress = _progress(events)

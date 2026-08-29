@@ -8,9 +8,11 @@ import {
 } from '../store/nodeUpdateQueue';
 import { useToastStore } from '../store/toastStore';
 import { useUIStore } from '../store/uiStore';
+import { usePackStore } from '../store/packStore';
 import { getRun, validateGraph } from '../api/rest';
 import { findEntryPoints } from '../utils/findEntryPoints';
-import { friendlyError } from '../utils/errorMessages';
+import { localizedPackTitle } from '../utils/packAvailability';
+import { friendlyError, missingPackFromError } from '../utils/errorMessages';
 import { useI18n } from '../i18n';
 import { RECONNECTED_EVENT, type ExecutionWebSocket } from '../api/ws';
 
@@ -52,6 +54,47 @@ const TERMINAL_TAB_STATUS: Record<string, ExecutionStatus> = {
  * unmount is still a send to a live socket about a live run.
  */
 const reattached = new Set<string>();
+
+/**
+ * A run stopped because an optional pack is not installed: say so, and offer
+ * the one place that can fix it.
+ *
+ * Worth a toast on top of the log line because the fix is not on this screen.
+ * The log explains the failure where the user is already looking; the Package
+ * Center is behind the toolbar's Settings menu, and a beginner who has just
+ * been told "install it from the Package Center" should not then have to find
+ * it. The action opens it ON the pack, so the install is one more click.
+ *
+ * Says it once per pack, by looking at the toasts already up rather than by
+ * remembering anything. A fail-fast run re-raises the node's exception, so
+ * the SAME message arrives twice — once on `node_status`, once as the run's
+ * own `execution_error` — and two identical toasts stacked on each other
+ * read as two problems. Missing-pack toasts are errors, so they never time
+ * out and the first is still up when the second frame lands. Two DIFFERENT
+ * packs still get a toast each, which is right: a continue-mode run can be
+ * short two of them.
+ */
+function toastMissingPack(rawError: unknown, errorType?: unknown): void {
+  if (typeof rawError !== 'string' || !rawError) return;
+  const packId = missingPackFromError(
+    rawError,
+    typeof errorType === 'string' ? errorType : undefined,
+  );
+  if (!packId) return;
+
+  const t = useI18n.getState().t;
+  const message = t('packs.toast.missingPack', {
+    pack: localizedPackTitle(t, usePackStore.getState().byId, packId),
+  });
+  const store = useToastStore.getState();
+  if (store.toasts.some((toast) => toast.message === message)) return;
+  store.addToast(message, 'error', {
+    action: {
+      label: t('packs.toast.openCenter'),
+      onClick: () => useUIStore.getState().openPackCenter(packId),
+    },
+  });
+}
 
 /** Connect if needed; false when the server is unreachable. */
 async function ensureConnected(ws: ExecutionWebSocket): Promise<boolean> {
@@ -149,6 +192,12 @@ export function useGraphExecution() {
           // the panels only ever see the composed line, and the type cannot be
           // recovered from `str(exc)` afterwards.
           const detail = data.error ? friendlyError(data.error, data.error_type) : '';
+
+          // Only on the terminal `error` frame, so this runs once per failing
+          // node rather than on every status this node reports.
+          if (data.status === 'error') {
+            toastMissingPack(data.error, data.error_type);
+          }
 
           store.addTabLog(tabId, {
             nodeId: data.node_id,
@@ -257,6 +306,12 @@ export function useGraphExecution() {
         }
         store.setTabStatus(tabId, 'error');
         store.addTabLog(tabId, { message: `Execution error: ${data.error}`, type: 'error' });
+        // A fail-fast run re-raises the node's exception, so a missing pack
+        // reaches the client here too — untyped, which is why the message
+        // has to identify itself. Deliberately after the `rejected` return
+        // above: a refused submit ran nothing, and its message is the
+        // server's rather than a node's.
+        toastMissingPack(data.error);
       };
 
       const onExecutionStart = (raw: unknown) => {

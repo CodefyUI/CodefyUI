@@ -105,3 +105,29 @@
   margin-top: var(--sp-2);
   line-height: var(--lh-normal);
 }
+
+/* The same hint when it is about the value the node is ACTUALLY set to —
+   i.e. this node will not run until the pack is installed. Warning rather
+   than error: nothing is broken yet, and one click fixes it. */
+.hintWarning {
+  color: var(--status-warning);
+}
+
+/* Inline "Install pack" affordance. A button, not an anchor: it opens a modal
+   in this app rather than navigating anywhere, so there is no href to give an
+   <a> and a link would lie to a screen reader about what happens next. */
+.linkBtn {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.linkBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--sp-1);
+  border-radius: var(--radius-sm);
+}

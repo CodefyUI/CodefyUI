@@ -741,8 +741,8 @@ def _truncate_strings(payload: dict[str, Any], *, cap_bytes: int) -> dict[str, A
     be if the key count were open-ended. It is not: every payload reaching
     here is built by ``_progress_bridge`` or ``_finalize`` and has at most a
     handful of top-level keys (``node_id``, ``status``, ``error``,
-    ``outputs``, ``reason``, ``run_id``). Nothing a client sends becomes a
-    key here.
+    ``error_type``, ``outputs``, ``reason``, ``run_id``). Nothing a client
+    sends becomes a key here.
     """
     keys = sorted((k for k, v in payload.items() if isinstance(v, str)),
                   key=lambda k: len(payload[k]), reverse=True)
@@ -2006,6 +2006,16 @@ class RunService:
 
         The message body is byte-for-byte what ``ws_execution`` puts on the
         wire minus its ``type`` key — see the event-vocabulary block above.
+        A ``node_status`` payload is ``{"node_id", "status"}`` plus, on an
+        error frame only, ``error`` and (when the engine named the class)
+        ``error_type``; plus ``outputs`` whenever the node produced any.
+
+        ``error_type`` is copied out rather than left in ``result`` because
+        ``str(exc)`` never contains the class name — ``str(KeyError('x'))``
+        is ``"'x'"`` — so a client that wants to say something kinder than
+        the raw message for one exception KIND has nothing else to key on.
+        Absent when the engine did not supply one, so a client can tell "no
+        type" from a type it does not recognise.
         """
         media_ports = declared_media_ports(nodes)
 
@@ -2015,6 +2025,9 @@ class RunService:
             message: dict[str, Any] = {"node_id": node_id, "status": status}
             if result and status == "error":
                 message["error"] = result.get("error", "")
+                error_type = result.get("error_type")
+                if isinstance(error_type, str) and error_type:
+                    message["error_type"] = error_type
             entries = build_node_output_entries(
                 status, result, media_ports.get(node_id))
             if entries:

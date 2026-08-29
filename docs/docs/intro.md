@@ -13,7 +13,7 @@ description: A visual, node-based deep learning pipeline builder. Design CNN, RN
 
 ## What you can do
 
-- **Build models visually** — drag-and-drop nodes, connect ports with type-safe edges, get real-time validation. **121 built-in nodes** across 15 categories (CNN, RNN, Transformer, RL, Data, Training, LLM, Diffusion, Classical ML, and more).
+- **Build models visually** — drag-and-drop nodes, connect ports with type-safe edges, get real-time validation. **152 built-in nodes** across 16 categories (CNN, RNN, Transformer, RL, Data, Training, LLM, Diffusion, Classical ML, and more).
 - **Watch the tensors flow** — the **Teaching Inspector** records every node's output so you can inspect input→output diffs cell-by-cell, capture gradients, and wrap a subgraph to compare just its head input and tail output.
 - **Run in real time** — a WebSocket stream reports per-node progress, live training-loss charts, and `Print` output as the graph executes.
 - **Extend it** — save subgraphs as reusable **presets**, drop in **custom nodes** (`.py` files), or install **plugin packs** of educational nodes.

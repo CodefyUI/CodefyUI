@@ -812,6 +812,192 @@ const en = {
   'chart.unknownKind': 'This chart kind ({kind}) needs a newer editor',
   'chart.malformed': 'This {kind} chart arrived without its data',
   'nodeDetail.captures.charts': 'Charts ({count})',
+
+  // Package Center — the keys the pack store toasts with (the panel's own
+  // strings land with the panel).
+  'packs.item.remove': 'Remove',
+  // The accessible name, because a pack card carries one Remove button per
+  // downloaded model and "Remove" three times over is one control repeated to
+  // anyone navigating by name. The visible label stays the short word.
+  'packs.item.removeNamed': 'Remove {item}',
+  'packs.item.removeConfirm':
+    'Remove "{item}"? It will be downloaded again the next time it is installed.',
+  'packs.item.removed': 'Removed {item}.',
+  'packs.item.removeFailed': 'Could not remove {item}',
+  'packs.item.removeError': 'Could not remove {item}: {message}',
+  'packs.restart.done': 'Server restarted. {pack} is ready.',
+  'packs.restart.failed': 'The server restarted, but installing {pack} failed: {message}',
+  'packs.toast.installed': '{pack} installed.',
+  'packs.toast.installFailed': 'Install failed: {message}',
+  'packs.toast.cancelled': 'Install cancelled.',
+  'packs.toast.cancelFailed': 'Could not cancel the install: {message}',
+  'packs.toast.busy': 'Another install is already running.',
+  'packs.toast.needsCli':
+    'This pack cannot be installed from inside the app yet. Run: {command}',
+  'packs.toast.remoteNotAllowed':
+    'Installing is only allowed on the computer that runs the server.',
+  'packs.toast.blocked': 'Install {pack} first.',
+  'packs.toast.devRestart':
+    'This pack needs a server restart, which cdui dev cannot do by itself. Use the command shown in the Package Center.',
+  'packs.toast.inProgress': 'A pack is still installing. Open the Package Center to watch it.',
+  'packs.toast.openCenter': 'Open Package Center',
+
+  // Package Center — the panel itself: its chrome, the catalog copy, the
+  // activity pane and the restart overlay. (The toast keys the pack store
+  // fires are the block directly above.)
+  'packs.title': 'Package Center',
+  'packs.subtitle':
+    'Install optional models and libraries so LLM nodes can use real implementations',
+  'packs.close': 'Close Package Center',
+  'packs.refresh': 'Refresh pack status',
+  'packs.list': 'Pack list',
+  'packs.activity': 'Install activity',
+  'packs.loading': 'Loading packs...',
+  'packs.loadFail': 'Failed to load packs: {error}',
+  'packs.unsupported':
+    'This server does not support the Package Center. Update CodefyUI and restart it.',
+  'packs.empty': 'No optional packs are available',
+
+  // Catalog copy, keyed by pack id. A pack this build has no string for is
+  // not a bug: the panel falls back to the title and description the server
+  // sent, so a newer backend still renders.
+  'packs.catalog.sentence-embeddings.title': 'Sentence embeddings',
+  'packs.catalog.sentence-embeddings.desc':
+    'sentence-transformers plus four small embedding models (English, multilingual, Chinese) for TextEmbedding and WordVector',
+  'packs.catalog.word-vectors.title': 'Word vectors (GloVe)',
+  'packs.catalog.word-vectors.desc':
+    'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
+  'packs.catalog.rag.title': 'RAG stack',
+  'packs.catalog.rag.desc':
+    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate; needs Sentence embeddings first',
+  'packs.catalog.gpu-torch.title': 'GPU PyTorch',
+  'packs.catalog.gpu-torch.desc':
+    'Switch PyTorch to the CUDA/ROCm build that matches this machine; the server restarts',
+
+  // Pack and item state, keyed by the value the API sends.
+  'packs.status.not_installed': 'Not installed',
+  'packs.status.partial': 'Partly installed',
+  'packs.status.installed': 'Installed',
+  'packs.status.installing': 'Installing',
+  'packs.status.needs_restart': 'Restart needed',
+  'packs.status.failed': 'Failed',
+  'packs.item.missing': 'Not downloaded',
+  'packs.item.present': 'Downloaded',
+  'packs.item.downloading': 'Downloading',
+  'packs.item.license': 'License: {license}',
+
+  // What a pack costs, and the buttons that spend it.
+  'packs.pip': 'Python packages: {specs}',
+  // Said next to the specs, because the pip half can be missing while every
+  // model file is already on disk — which is the only reason Install is alive
+  // on a card with nothing ticked.
+  'packs.pipReady': 'Python packages installed',
+  'packs.pipMissing': 'Python packages not installed',
+  'packs.size': 'Download size: {size}',
+  'packs.sizeSelected': '{size} selected',
+  'packs.dependsOn': 'Requires: {packs}',
+  'packs.dependsOnMissing': 'Install {pack} first',
+  'packs.selectAll': 'Select all missing',
+  // Why the Install button is dead, on its tooltip. A sentence rather than the
+  // other button's label: a disabled control has to say what to DO next.
+  'packs.selectSomething': 'Tick at least one item to install',
+  'packs.installSelected': 'Install selected',
+  'packs.installAll': 'Install everything',
+  'packs.cancel': 'Cancel install',
+  'packs.cancelling': 'Cancelling...',
+  'packs.remoteDisabled': 'Installing is only allowed from the computer that runs the server.',
+
+  // Activity pane. `packs.activity.step.*` is keyed by the step id the job
+  // sends, so an unknown step falls back to the server's own English label.
+  'packs.activity.idle': 'Nothing is installing right now.',
+  'packs.activity.idleHint':
+    'Pick a pack on the left. Downloads keep going if you close this window.',
+  'packs.activity.job': 'Installing {pack}',
+  'packs.activity.step': 'Step {index}: {label}',
+  'packs.activity.step.pip': 'Installing Python packages',
+  'packs.activity.step.download': 'Downloading {item}',
+  'packs.activity.step.convert': 'Preparing {item}',
+  'packs.activity.step.verify': 'Verifying the installation',
+  'packs.activity.overall': 'Overall progress',
+  'packs.activity.progressAria': 'Install progress',
+  'packs.activity.log': 'Install log',
+  'packs.activity.logEmpty': 'Waiting for the first message...',
+  'packs.activity.done': 'Installed {pack}.',
+  'packs.activity.failed': 'Install failed: {message}',
+  'packs.activity.cancelled': 'Install cancelled.',
+  'packs.activity.needsRestart':
+    'Installed. The server has to restart before {pack} can be used.',
+  'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
+  'packs.activity.dismiss': 'Dismiss',
+
+  // GPU PyTorch pack — the one install that swaps the wheel under the running
+  // interpreter, so the user may have to run a command themselves.
+  'packs.gpu.detected': 'Detected GPU: {label}',
+  'packs.gpu.none': 'No GPU detected. The CPU build of PyTorch is already installed.',
+  'packs.gpu.installed': 'Installed build: {variant}',
+  'packs.gpu.recommended': 'Recommended build: {variant}',
+  'packs.gpu.variant': 'PyTorch build',
+  'packs.gpu.restartNote': 'The server restarts after this install. Running graphs will stop.',
+  'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
+  'packs.gpu.installRestart': 'Install and restart',
+  'packs.gpu.devMode':
+    'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
+  'packs.gpu.notYet':
+    'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
+  'packs.gpu.noCommand':
+    'The server did not provide an install command. See the README for the GPU install steps.',
+  'packs.copy': 'Copy command',
+  'packs.copied': 'Copied to clipboard.',
+  'packs.copyFailed': 'Could not copy. Select the text and copy it by hand.',
+
+  // Restart overlay (`packs.restart.done` / `.failed` are with the toasts above).
+  'packs.restart.title': 'Server restarting',
+  'packs.restart.body': 'Waiting for the server to come back. This page reloads by itself.',
+  'packs.restart.elapsed': 'Waiting for {seconds} s',
+  'packs.restart.timeout': 'The server has not come back after 10 minutes.',
+  'packs.restart.notStarted': 'The server did not restart. Run this command, then reload:',
+  'packs.restart.reload': 'Reload now',
+
+  // The one pack toast fired from outside the pack store: a run stopped
+  // because a node needs a pack that is not installed.
+  'packs.toast.missingPack': 'This run needs the {pack} pack.',
+
+  // Where the Package Center is opened from.
+  'toolbar.settings.section.packs': 'Optional packs',
+  'settings.packs.name': 'Package Center',
+  'settings.packs.desc': 'Download models and libraries for the LLM nodes.',
+  'settings.packs.summary': '{installed} of {total} packs installed',
+  'settings.packs.summaryInstalling': 'Installing {pack}...',
+  'settings.packs.unsupported': 'Not available on this server',
+  'settings.packs.action': 'Open',
+  'customTab.section.packs': 'Optional packs',
+  'customTab.packs.open': 'Package Center...',
+  'customTab.packs.empty': 'No optional packs available',
+  'customTab.packs.hint':
+    'Models and libraries for LLM nodes are installed from the Package Center',
+
+  // "This needs a pack" — said on a select option, a node, a palette entry
+  // and a refused run. Every one of them names the pack, because "needs a
+  // pack" without a name is not something a user can act on.
+  'paramField.needsPack': 'needs pack: {pack}',
+  'paramField.needsModel': 'needs model: {item}',
+  'paramField.packHint': '"{option}" needs the {pack} pack.',
+  'paramField.modelHint': '"{option}" needs the model {item} from the {pack} pack.',
+  'paramField.packHintOthers': 'Greyed-out options need an optional pack.',
+  'paramField.installPack': 'Install pack',
+  // The accessible name for the same button: one config panel can show two of
+  // them, and "Install pack" twice is one entry repeated to anyone navigating
+  // by control. A key rather than a hardcoded "label: pack", because the
+  // separator is punctuation and punctuation is translated.
+  'paramField.installPackFor': 'Install pack: {pack}',
+  'config.needsPack': 'This node needs the {pack} pack.',
+  'palette.needsPack': 'Needs pack',
+  'palette.needsPack.title':
+    'Needs the {pack} pack. You can drag it now and install the pack from the Package Center.',
+  'node.needsPack': 'PACK',
+  'node.needsPack.title': 'Needs the {pack} pack. Click to open the Package Center.',
+  'node.paramNeedsPack': 'needs pack',
+  'error.missingPack': 'This node needs the {pack} pack. Install it from the Package Center.',
 } as const;
 
 export type TranslationKey = keyof typeof en;

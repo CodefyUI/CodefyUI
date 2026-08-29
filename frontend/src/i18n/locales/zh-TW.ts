@@ -783,6 +783,167 @@ const zhTW: Record<TranslationKey, string> = {
   'chart.unknownKind': '這種圖表類型（{kind}）需要更新版的編輯器',
   'chart.malformed': '這張 {kind} 圖表沒有帶資料',
   'nodeDetail.captures.charts': '圖表（{count}）',
+
+  // Package Center — the keys the pack store toasts with (the panel's own
+  // strings land with the panel).
+  'packs.item.remove': '移除',
+  'packs.item.removeNamed': '移除 {item}',
+  'packs.item.removeConfirm': '要移除「{item}」嗎？下次安裝時會重新下載。',
+  'packs.item.removed': '已移除 {item}。',
+  'packs.item.removeFailed': '無法移除 {item}',
+  'packs.item.removeError': '無法移除 {item}：{message}',
+  'packs.restart.done': '伺服器已重新啟動，{pack} 可以使用了。',
+  'packs.restart.failed': '伺服器已重新啟動，但安裝 {pack} 失敗：{message}',
+  'packs.toast.installed': '已安裝 {pack}。',
+  'packs.toast.installFailed': '安裝失敗：{message}',
+  'packs.toast.cancelled': '已取消安裝。',
+  'packs.toast.cancelFailed': '無法取消安裝：{message}',
+  'packs.toast.busy': '已經有另一個安裝在進行中。',
+  'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
+  'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
+  'packs.toast.blocked': '請先安裝 {pack}。',
+  'packs.toast.devRestart':
+    '這個套件需要重新啟動伺服器，cdui dev 模式無法自動處理。請使用套件中心顯示的指令。',
+  'packs.toast.inProgress': '有套件仍在安裝中，可在套件中心查看進度。',
+  'packs.toast.openCenter': '開啟套件中心',
+
+  // Package Center — the panel itself: its chrome, the catalog copy, the
+  // activity pane and the restart overlay. (The toast keys the pack store
+  // fires are the block directly above.)
+  'packs.title': '套件中心',
+  'packs.subtitle': '安裝選用的模型與函式庫，讓 LLM 節點使用真正的實作',
+  'packs.close': '關閉套件中心',
+  'packs.refresh': '重新整理套件狀態',
+  'packs.list': '套件清單',
+  'packs.activity': '安裝狀態',
+  'packs.loading': '正在載入套件...',
+  'packs.loadFail': '無法載入套件：{error}',
+  'packs.unsupported': '這台伺服器不支援套件中心。請更新 CodefyUI 後重新啟動。',
+  'packs.empty': '目前沒有可安裝的套件',
+
+  // Catalog copy, keyed by pack id. A pack this build has no string for is
+  // not a bug: the panel falls back to the title and description the server
+  // sent, so a newer backend still renders.
+  'packs.catalog.sentence-embeddings.title': '句向量模型',
+  'packs.catalog.sentence-embeddings.desc':
+    'sentence-transformers 加上四個小型嵌入模型（英文、多語、中文），供 TextEmbedding 與 WordVector 使用',
+  'packs.catalog.word-vectors.title': '詞向量（GloVe）',
+  'packs.catalog.word-vectors.desc': '給 WordVector 用的真實 40 萬字 GloVe-50d 表；不需要額外 Python 套件',
+  'packs.catalog.rag.title': 'RAG 檢索堆疊',
+  'packs.catalog.rag.desc':
+    '給 HFTextGenerate 用的本機生成模型 Qwen2.5-0.5B-Instruct；需要先安裝句向量模型',
+  'packs.catalog.gpu-torch.title': 'GPU 版 PyTorch',
+  'packs.catalog.gpu-torch.desc': '把 PyTorch 換成符合這台機器的 CUDA/ROCm 版本；伺服器會重新啟動',
+
+  // Pack and item state, keyed by the value the API sends.
+  'packs.status.not_installed': '未安裝',
+  'packs.status.partial': '部分安裝',
+  'packs.status.installed': '已安裝',
+  'packs.status.installing': '安裝中',
+  'packs.status.needs_restart': '需要重新啟動',
+  'packs.status.failed': '失敗',
+  'packs.item.missing': '尚未下載',
+  'packs.item.present': '已下載',
+  'packs.item.downloading': '下載中',
+  'packs.item.license': '授權：{license}',
+
+  // What a pack costs, and the buttons that spend it.
+  'packs.pip': 'Python 套件：{specs}',
+  'packs.pipReady': 'Python 套件已安裝',
+  'packs.pipMissing': 'Python 套件尚未安裝',
+  'packs.size': '下載大小：{size}',
+  'packs.sizeSelected': '已選 {size}',
+  'packs.dependsOn': '需要先安裝：{packs}',
+  'packs.dependsOnMissing': '請先安裝 {pack}',
+  'packs.selectAll': '全選未下載的項目',
+  'packs.selectSomething': '請至少勾選一個項目',
+  'packs.installSelected': '安裝選取的項目',
+  'packs.installAll': '全部安裝',
+  'packs.cancel': '取消安裝',
+  'packs.cancelling': '正在取消...',
+  'packs.remoteDisabled': '只能在執行伺服器的那台電腦上安裝。',
+
+  // Activity pane. `packs.activity.step.*` is keyed by the step id the job
+  // sends, so an unknown step falls back to the server's own English label.
+  'packs.activity.idle': '目前沒有進行中的安裝。',
+  'packs.activity.idleHint': '請在左側選擇套件。關閉這個視窗後，下載仍會繼續。',
+  'packs.activity.job': '正在安裝 {pack}',
+  'packs.activity.step': '步驟 {index}：{label}',
+  'packs.activity.step.pip': '正在安裝 Python 套件',
+  'packs.activity.step.download': '正在下載 {item}',
+  'packs.activity.step.convert': '正在整理 {item}',
+  'packs.activity.step.verify': '正在驗證安裝結果',
+  'packs.activity.overall': '整體進度',
+  'packs.activity.progressAria': '安裝進度',
+  'packs.activity.log': '安裝紀錄',
+  'packs.activity.logEmpty': '等待第一則訊息...',
+  'packs.activity.done': '已安裝 {pack}。',
+  'packs.activity.failed': '安裝失敗：{message}',
+  'packs.activity.cancelled': '已取消安裝。',
+  'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
+  'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
+  'packs.activity.dismiss': '關閉',
+
+  // GPU PyTorch pack — the one install that swaps the wheel under the running
+  // interpreter, so the user may have to run a command themselves.
+  'packs.gpu.detected': '偵測到的 GPU：{label}',
+  'packs.gpu.none': '未偵測到 GPU。目前已安裝 CPU 版的 PyTorch。',
+  'packs.gpu.installed': '目前安裝：{variant}',
+  'packs.gpu.recommended': '建議安裝：{variant}',
+  'packs.gpu.variant': 'PyTorch 版本',
+  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動，執行中的圖會被中止。',
+  'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
+  'packs.gpu.installRestart': '安裝並重新啟動',
+  'packs.gpu.devMode':
+    '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
+  'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
+  'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
+  'packs.copy': '複製指令',
+  'packs.copied': '已複製到剪貼簿。',
+  'packs.copyFailed': '無法複製，請手動選取文字後複製。',
+
+  // Restart overlay (`packs.restart.done` / `.failed` are with the toasts above).
+  'packs.restart.title': '伺服器重新啟動中',
+  'packs.restart.body': '正在等待伺服器恢復，完成後頁面會自動重新載入。',
+  'packs.restart.elapsed': '已等待 {seconds} 秒',
+  'packs.restart.timeout': '等了 10 分鐘，伺服器還沒恢復。',
+  'packs.restart.notStarted': '伺服器沒有重新啟動。請執行下面的指令後重新載入：',
+  'packs.restart.reload': '立即重新載入',
+
+  // The one pack toast fired from outside the pack store: a run stopped
+  // because a node needs a pack that is not installed.
+  'packs.toast.missingPack': '這次執行需要 {pack} 套件。',
+
+  // Where the Package Center is opened from.
+  'toolbar.settings.section.packs': '選用套件',
+  'settings.packs.name': '套件中心',
+  'settings.packs.desc': '下載 LLM 節點需要的模型與函式庫。',
+  'settings.packs.summary': '已安裝 {installed}/{total} 個套件',
+  'settings.packs.summaryInstalling': '正在安裝 {pack}...',
+  'settings.packs.unsupported': '這台伺服器不支援',
+  'settings.packs.action': '開啟',
+  'customTab.section.packs': '選用套件',
+  'customTab.packs.open': '套件中心...',
+  'customTab.packs.empty': '沒有可安裝的套件',
+  'customTab.packs.hint': 'LLM 節點的模型與函式庫可在套件中心安裝',
+
+  // "This needs a pack" — said on a select option, a node, a palette entry
+  // and a refused run. Every one of them names the pack, because "needs a
+  // pack" without a name is not something a user can act on.
+  'paramField.needsPack': '需要套件：{pack}',
+  'paramField.needsModel': '需要模型：{item}',
+  'paramField.packHint': '「{option}」需要 {pack} 套件。',
+  'paramField.modelHint': '「{option}」需要 {pack} 套件裡的模型 {item}。',
+  'paramField.packHintOthers': '灰色的選項需要另外安裝套件。',
+  'paramField.installPack': '安裝套件',
+  'paramField.installPackFor': '安裝套件：{pack}',
+  'config.needsPack': '這個節點需要 {pack} 套件。',
+  'palette.needsPack': '需要套件',
+  'palette.needsPack.title': '需要 {pack} 套件。可以先拖曳到畫布，再到套件中心安裝。',
+  'node.needsPack': '需套件',
+  'node.needsPack.title': '需要 {pack} 套件。點一下開啟套件中心。',
+  'node.paramNeedsPack': '需套件',
+  'error.missingPack': '這個節點需要 {pack} 套件，請到套件中心安裝。',
 };
 
 export default zhTW;

@@ -23,6 +23,9 @@ download functions and ``subprocess.run`` are all replaced.
 
 from __future__ import annotations
 
+import gzip
+import importlib.util
+import shlex
 import subprocess
 import sys
 import types
@@ -43,6 +46,39 @@ from app.core.packs.paths import (
     sentinel_dir,
     sentinel_path,
 )
+from app.nodes.llm import _glove
+
+
+def _glove_gz_bytes() -> bytes:
+    """Two words of GloVe, gzipped -- the shape of the real 400k-word file.
+
+    The convert step is no longer a stub: ``app.nodes.llm._glove`` ships with
+    the backend, so a download named ``.gz`` has to BE one or every install
+    below fails inside a converter this file is not about. Two lines is enough
+    for that; what the converter does with 400,000 belongs to
+    ``test_glove_loader``.
+    """
+    row = " ".join(["0.1"] * _glove.GLOVE_DIM)
+    return gzip.compress(f"the {row}\nking {row}\n".encode("utf-8"))
+
+
+def _asset_sentinel_for(pack, item, path, derived=()) -> None:
+    """Write the sentinel a finished asset download leaves behind.
+
+    The shape ``download.download_asset_item`` writes, because the convert
+    step now READS it back to record what it derived -- a fake download that
+    left no sentinel would test a situation production never reaches.
+    *derived* is for the tests that need a hand-written one; the real
+    download writes none and the convert step adds it.
+    """
+    payload = {
+        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
+        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
+    }
+    if derived:
+        payload["derived"] = [str(entry) for entry in derived]
+    state.write_sentinel(pack.pack_id, item.item_id, payload)
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +142,9 @@ def installer(monkeypatch, tmp_path):
             raise PackCancelled("cancelled")
         fake.downloaded.append(item.item_id)
         target = asset_dir() / item.filename
-        target.write_bytes(b"data")
+        target.write_bytes(_glove_gz_bytes() if item.filename.endswith(".gz")
+                           else b"data")
+        _asset_sentinel_for(pack, item, target)
         return target
 
     def _check_disk(items):
@@ -257,7 +295,12 @@ def test_item_ids_none_installs_everything_not_already_present(
 
 
 def test_asset_pack_downloads_then_converts(installer):
-    """GloVe arrives as a gzip and is converted once, after it lands."""
+    """GloVe arrives as a gzip and is converted once, after it lands.
+
+    End to end against the REAL converter, so the npz at the end is the file
+    ``WordVector`` will open: the two halves are written in different modules
+    and nothing else runs them together.
+    """
     outcome = _install("word-vectors", None, installer)
 
     assert installer.steps == [
@@ -267,8 +310,55 @@ def test_asset_pack_downloads_then_converts(installer):
         "step_done convert:glove-50d",
     ]
     assert outcome.items_done == ("glove-50d",)
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert _glove.npz_path_for(asset_dir() / item.filename).is_file()
     # No packages to probe, so no verify step to run.
     assert installer.probes == []
+
+
+def test_the_convert_step_records_the_npz_on_the_sentinel(installer):
+    """The conversion is bigger than the download and the catalog does not
+    name it, so the only thing that can tie the two together is the record of
+    the download itself. Without this line in the sentinel, uninstalling the
+    pack frees 69 MB and silently leaves 83 MB behind.
+
+    What the download wrote stays -- ``derived`` is added to the sentinel,
+    not written over it.
+    """
+    _install("word-vectors", None, installer)
+
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    gz_path = asset_dir() / item.filename
+    sentinel = state.read_sentinel(sentinel_path("word-vectors", "glove-50d"))
+
+    assert sentinel is not None
+    assert sentinel["derived"] == [str(_glove.npz_path_for(gz_path))]
+    assert sentinel["path"] == str(gz_path)
+    assert sentinel["sha256"] == "0" * 64
+
+
+def test_a_download_with_no_sentinel_still_converts(installer, monkeypatch):
+    """Nothing to record on is not a reason to fail the conversion.
+
+    Production always has a sentinel here -- the download writes one before
+    this step runs -- so this is about what happens when that invariant is
+    broken by a hand-cleaned cache: the table is still converted and the
+    server log says the npz will not be removed with the pack.
+    """
+    monkeypatch.setattr(state, "read_sentinel", lambda path: None)
+    written: list = []
+    monkeypatch.setattr(state, "write_sentinel",
+                        lambda pack_id, item_id, payload:
+                        written.append(payload))
+
+    _install("word-vectors", None, installer)
+
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert _glove.npz_path_for(asset_dir() / item.filename).is_file()
+    # The download's own sentinel is in there; nothing added a derived list
+    # to a record that could not be read back.
+    assert written and all("derived" not in payload for payload in written)
+    assert "step_done convert:glove-50d" in installer.steps
 
 
 def test_glove_convert_step_hands_the_converter_the_downloaded_file(
@@ -385,15 +475,46 @@ def test_converter_module_without_ensure_npz_fails_the_install(
     assert "step_done convert:glove-50d" not in installer.steps
 
 
-def test_missing_converter_is_a_log_line_not_a_failed_install(installer):
-    """The GloVe converter lands in a later PR. Until it does, the download
-    is still worth having, and the install must say so rather than fail."""
+def test_a_build_without_the_converter_logs_and_finishes(
+        installer, monkeypatch):
+    """A build that does not ship ``_glove`` keeps the download.
+
+    69 MB somebody just waited for is still worth having, and converting it
+    is something a later run can do -- so the step logs and finishes rather
+    than failing the install.
+
+    Both halves are patched because in THIS build the converter really is
+    here: ``None`` in ``sys.modules`` is how the import layer spells "not
+    there", and the presence check that decides what to make of it is pinned
+    on the real module by the test below.
+    """
+    monkeypatch.setitem(sys.modules, "app.nodes.llm._glove", None)
+    monkeypatch.setattr(flows, "_converter_absent", lambda exc: True)
+
     _install("word-vectors", None, installer)
 
     logs = [event["line"] for event in installer.events
             if event["type"] == "log"]
-    assert any("glove" in line.lower() for line in logs), logs
+    assert any("not available in this build" in line for line in logs), logs
     assert "step_done convert:glove-50d" in installer.steps
+
+
+def test_the_converter_that_ships_is_never_called_absent(monkeypatch):
+    """``_converter_absent`` asks about PRESENCE, and the converter is present.
+
+    Two ways in, because the guard has two: already imported, and importable.
+    An answer of True on either would turn a broken converter into a shrugged
+    -off step and report a GloVe pack that can never convert as installed.
+    """
+    exc = ImportError("cannot import name 'ensure_npz'",
+                      name="app.nodes.llm._glove")
+
+    assert "app.nodes.llm._glove" in sys.modules  # imported at the top
+    assert flows._converter_absent(exc) is False
+
+    monkeypatch.delitem(sys.modules, "app.nodes.llm._glove")
+    assert flows._converter_absent(exc) is False
+    assert importlib.util.find_spec("app.nodes.llm._glove") is not None
 
 
 # -- failures --------------------------------------------------------------
@@ -402,7 +523,13 @@ def test_missing_converter_is_a_log_line_not_a_failed_install(installer):
 def test_resolver_conflict_becomes_needs_restart_with_command(
         installer, monkeypatch):
     """uv refusing to satisfy the pins means "not while the server is
-    running" -- and the message has to say what to type instead."""
+    running" -- and the message has to say what to type instead.
+
+    What it says has to be RUNNABLE. The command names uv directly rather
+    than a ``cdui packs install ... --restart``: no such flag exists, so a
+    user who followed that hint would get a usage error and a pack still not
+    installed.
+    """
     monkeypatch.setattr(state, "pip_ready", lambda pack: False)
     installer.pip_returncode = 1
     installer.pip_output = [
@@ -414,11 +541,101 @@ def test_resolver_conflict_becomes_needs_restart_with_command(
     with pytest.raises(PackNeedsRestart) as failure:
         _install("sentence-embeddings", ["all-MiniLM-L6-v2"], installer)
 
-    assert failure.value.command == (
-        "cdui packs install sentence-embeddings --restart")
+    command = failure.value.command
+    assert command.startswith("uv pip install --python ")
+    assert sys.executable in command, (
+        "the command must name THIS interpreter, not whichever python uv "
+        "would find on PATH")
+    for spec in get_pack("sentence-embeddings").pip:
+        # WITH its quotes -- see the shell-metacharacter test below.
+        assert f'"{spec}"' in command
+    assert "--restart" not in command, (
+        "no CLI flag installs a pack into a stopped server")
+    # A pure command line: the words around it live in the hint, so the
+    # panel and the CLI can present it as something to paste.
+    assert "\n" not in command
+    assert failure.value.hint.startswith("stop the server, then run:")
+    assert command in failure.value.hint
     assert "No solution found" in failure.value.hint
     assert installer.downloaded == [], "downloaded despite a failed pip run"
     assert installer.invalidated == 1
+
+
+def test_restart_command_quotes_an_interpreter_path_with_spaces(monkeypatch):
+    """``C:\\Program Files\\...\\python.exe`` is the common Windows case, and
+    unquoted it is two arguments neither of which is an interpreter."""
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\py\python.exe")
+
+    command = flows._restart_command(get_pack("sentence-embeddings"))
+
+    assert '"C:\\Program Files\\py\\python.exe"' in command
+    assert command.startswith("uv pip install --python ")
+
+
+def test_restart_command_quotes_a_spec_a_shell_would_read_as_redirection():
+    """``sentence-transformers>=3.0,<6`` unquoted is not a version range.
+
+    It has no whitespace in it, so quoting on whitespace alone left it bare
+    -- and a bare ``>`` is REDIRECTION in every shell the user might paste
+    into: bash writes a file named ``=3.0,``, PowerShell refuses to parse
+    the line, cmd fails on ``6``. The only pack that can reach this path is
+    the one carrying that spec, so unquoted the feature's one restart
+    message runs in no shell at all.
+
+    Proved by splitting the rendered line back up: the spec has to come back
+    as ONE token, spelled the way the catalog spells it.
+    """
+    pack = get_pack("sentence-embeddings")
+    spec = pack.pip[0]
+    assert "<" in spec and ">" in spec, (
+        "this test is about shell metacharacters and the pack no longer "
+        "has any; pick a spec that still does")
+
+    command = flows._restart_command(pack)
+
+    assert f'"{spec}"' in command
+    tokens = shlex.split(command, posix=True)
+    assert tokens[-1] == spec, tokens
+
+    # And a part made only of safe characters is still left bare, so the
+    # common case reads as a command line rather than as quoted noise.
+    assert flows._shell_quote("uv") == "uv"
+    assert flows._shell_quote("--python") == "--python"
+    assert flows._shell_quote("/usr/bin/python3.12") == "/usr/bin/python3.12"
+
+
+def test_restart_command_quotes_a_windows_path_so_bash_keeps_the_backslashes():
+    """An unquoted ``D:\\...\\python.exe`` runs under PowerShell and cmd, and
+    is destroyed by Git Bash -- which is a shell on the same machines.
+
+    bash strips the backslashes of an unquoted word, so uv is handed
+    ``D:GithubCodefyUI...python.exe`` and answers "No virtual environment
+    found". The path has no whitespace and no redirection character in it,
+    so neither earlier rule caught it; treating the backslash itself as
+    needing quotes is what does.
+
+    ``shlex.split(..., posix=True)`` is the same stripping, which makes it
+    the proof: on the QUOTED form the path comes back whole.
+    """
+    windows = r"C:\venv\Scripts\python.exe"
+
+    quoted = flows._shell_quote(windows)
+
+    assert quoted == f'"{windows}"'
+    assert shlex.split(quoted, posix=True) == [windows]
+    # The failure this replaces, spelled out: bare, the same parser eats
+    # every separator and hands back a path to nowhere.
+    assert shlex.split(windows, posix=True) == ["C:venvScriptspython.exe"]
+
+    # A POSIX interpreter path has no backslashes and stays bare.
+    assert flows._shell_quote("/usr/bin/python3.12") == "/usr/bin/python3.12"
+
+    # End to end, through the command the user is actually handed. Index 4
+    # is the argument after ``--python``; on a POSIX machine the path has no
+    # backslashes and goes out bare, which round-trips just as well.
+    command = flows._restart_command(get_pack("sentence-embeddings"))
+    assert shlex.split(command, posix=True)[4] == sys.executable, (
+        "the interpreter path did not survive being split back up")
 
 
 def test_ordinary_pip_failure_is_a_plain_install_error(installer, monkeypatch):
@@ -553,14 +770,6 @@ def _hf_sentinel_for(pack, item, snapshot_dir) -> None:
     })
 
 
-def _asset_sentinel_for(pack, item, path) -> None:
-    state.write_sentinel(pack.pack_id, item.item_id, {
-        "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
-        "kind": "asset", "url": item.url, "path": str(path), "bytes": 4,
-        "sha256": "0" * 64, "at": "2026-08-28T00:00:00Z",
-    })
-
-
 def test_remove_item_deletes_the_whole_repo_folder(installer):
     """Uninstalling one model has to free its BYTES.
 
@@ -630,6 +839,58 @@ def test_remove_item_deletes_an_asset_file(installer):
 
     assert not path.exists()
     assert asset_dir().exists(), "the cache root went with it"
+
+
+def test_remove_item_deletes_what_the_install_derived(installer):
+    """Uninstalling has to free the CONVERSION too.
+
+    The npz is the bigger of the two files -- 83 MB against the 69 MB it was
+    built from -- and it is the one nothing in the catalog names. Leaving it
+    behind while reporting the item removed is how a learner ends up with a
+    cache full of files no screen in the product mentions.
+    """
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    _install("word-vectors", None, installer)
+    gz_path = asset_dir() / item.filename
+    npz_path = _glove.npz_path_for(gz_path)
+    assert npz_path.is_file(), "the install did not convert"
+
+    assert flows.remove_item(pack, item.item_id) is True
+
+    assert not gz_path.exists()
+    assert not npz_path.exists(), "the converted table outlived the pack"
+    assert asset_dir().exists(), "the cache root went with it"
+
+
+@pytest.mark.parametrize("where", ["cache-root", "sentinel-dir", "outside"])
+def test_remove_item_refuses_a_derived_path_that_is_not_in_the_asset_dir(
+        installer, tmp_path, where):
+    """``derived`` is read off a FILE, so it gets the asset path's checks.
+
+    A hand-edited or corrupt sentinel must not be able to steer a delete at
+    the cache root, at the directory the sentinels live in, or at anything
+    outside the cache at all. What it CAN still reach is another download in
+    the same directory -- deliberately: that is a file the Package Center put
+    there and can fetch again, and narrowing it further would mean teaching
+    ``flows`` the name of a file only the GloVe converter knows.
+    """
+    pack = get_pack("word-vectors")
+    item = get_item(pack, "glove-50d")
+    asset = asset_dir() / item.filename
+    asset.write_bytes(b"data")
+    outside = tmp_path / "elsewhere.bin"
+    outside.write_bytes(b"data")
+    target = {"cache-root": asset_dir(), "sentinel-dir": sentinel_dir(),
+              "outside": outside}[where]
+    if where == "sentinel-dir":
+        target.mkdir(parents=True, exist_ok=True)
+    _asset_sentinel_for(pack, item, asset, derived=[target])
+
+    assert flows.remove_item(pack, item.item_id) is True
+
+    assert target.exists(), f"{where} was deleted"
+    assert not asset.exists(), "the download itself should still have gone"
 
 
 @pytest.mark.parametrize("where", ["cache-root", "sentinel-dir", "outside",

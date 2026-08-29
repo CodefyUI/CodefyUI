@@ -106,6 +106,31 @@ describe('useKeyboardShortcuts', () => {
     expect(e.defaultPrevented).toBe(true);
   });
 
+  it('leaves Ctrl+C and Ctrl+V alone while text is selected', () => {
+    // Selecting the install command in the Package Center's <pre> and
+    // pressing Ctrl+C used to copy the selected NODES and put nothing on the
+    // clipboard — which is exactly what the "could not copy, select it and
+    // copy it by hand" toast tells the user to do.
+    const selection = { toString: () => 'cdui install --gpu cu128' } as Selection;
+    const getSelection = vi.spyOn(window, 'getSelection').mockReturnValue(selection);
+    renderHook(() => useKeyboardShortcuts());
+
+    const copy = dispatchKey({ key: 'c', ctrlKey: true });
+    expect(copySelectedNodes).not.toHaveBeenCalled();
+    // Not prevented either: the browser's own copy is what has to happen.
+    expect(copy.defaultPrevented).toBe(false);
+
+    const paste = dispatchKey({ key: 'v', ctrlKey: true });
+    expect(pasteNodes).not.toHaveBeenCalled();
+    expect(paste.defaultPrevented).toBe(false);
+
+    // A collapsed selection is not a selection: the canvas shortcut is back.
+    getSelection.mockReturnValue({ toString: () => '' } as Selection);
+    const again = dispatchKey({ key: 'c', ctrlKey: true });
+    expect(copySelectedNodes).toHaveBeenCalledTimes(1);
+    expect(again.defaultPrevented).toBe(true);
+  });
+
   it('Ctrl+S saves in project mode and prevents the browser default', () => {
     useProjectStore.setState({ projectDir: '/proj', projectName: 'proj', loaded: true });
     renderHook(() => useKeyboardShortcuts());

@@ -54,6 +54,12 @@ _SLOW_NODE_TYPES = {
     "HuggingFaceDataset",
     "KaggleDataset",
     "Inference",
+    # Needs the sentence-embeddings pack; graphs are still validated. Listed
+    # even though no chapter example uses it yet -- CI has no pack cache, so
+    # a pack example added later would fail at the gate rather than run, and
+    # a machine that DOES have the pack would load half a gigabyte of weights
+    # inside the fast smoke suite.
+    "TextEmbedding",
 }
 
 

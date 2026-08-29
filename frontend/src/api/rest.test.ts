@@ -40,6 +40,12 @@ import {
   downloadRunMetricsCsv,
   ACTIVE_RUN_STATUSES,
   TERMINAL_RUN_STATUSES,
+  listPacks,
+  installPack,
+  cancelPackJob,
+  getPackJobEvents,
+  removePackItem,
+  PackApiError,
 } from './rest';
 import { _setSessionTokenForTesting } from './_auth';
 
@@ -335,6 +341,19 @@ describe('fetchHealth', () => {
     expect(Object.keys(out.caches)).toEqual([
       'execution_cache', 'run_output_store', 'node_state_store',
     ]);
+  });
+
+  // The Package Center's restart flow polls /api/health to tell "the server
+  // answered again" from "a NEW server came up": only a changed boot_id
+  // proves the second one, so the field has to survive the normalization.
+  it('exposes boot_id when present, and undefined when the server predates it', async () => {
+    mockFetch(200, {
+      status: 'ok', nodes_loaded: 3, presets_loaded: 1, boot_id: 'boot-abc',
+    });
+    expect((await fetchHealth()).boot_id).toBe('boot-abc');
+
+    mockFetch(200, { status: 'ok', nodes_loaded: 3, presets_loaded: 1 });
+    expect((await fetchHealth()).boot_id).toBeUndefined();
   });
 
   it('throws on a non-ok response', async () => {
@@ -978,6 +997,230 @@ describe('run endpoints', () => {
       } as unknown as Response;
       g.fetch = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
       await expect(downloadRunMetricsCsv('r1')).rejects.toThrow(/Download failed/);
+    });
+  });
+});
+
+// ── Optional packs / Package Center ──────────────────────────────────────
+
+describe('pack endpoints', () => {
+  /** Await a call that must fail, and hand back the PackApiError it threw. */
+  async function packError(call: Promise<unknown>): Promise<PackApiError> {
+    const err = await call.then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PackApiError);
+    return err as PackApiError;
+  }
+
+  describe('listPacks', () => {
+    // The panel polls this route and maps over `packs`, `items`, `pip` and
+    // `blocked_by` on every render, so an absent key has to arrive as an
+    // empty list rather than as a crash halfway through a repaint.
+    it('normalizes a sparse payload', async () => {
+      const fetchMock = mockFetch(200, {
+        packs: [{
+          id: 'word-vectors', title: 'Word vectors',
+          description: 'GloVe embeddings', install_mode: 'live',
+        }],
+        launch_mode: 'systemd',
+      });
+      const out = await listPacks();
+      expect(fetchMock).toHaveBeenCalledWith('/api/packs');
+      expect(out).toEqual({
+        packs: [{
+          id: 'word-vectors',
+          title: 'Word vectors',
+          description: 'GloVe embeddings',
+          install_mode: 'live',
+          status: 'not_installed',
+          pip_ready: false,
+          usable: false,
+          depends_on: [],
+          blocked_by: [],
+          pip: [],
+          items: [],
+          size_bytes_total: 0,
+          install_command: null,
+        }],
+        active_job: null,
+        last_restart_job: null,
+        // Absent is read as "allowed": the server is what actually refuses a
+        // remote install, with a 403 the panel then reports.
+        remote_install_allowed: true,
+        // A launch mode outside {start, dev} is one nothing here can act on.
+        launch_mode: 'unknown',
+        gpu: null,
+      });
+    });
+
+    // The other half of normalizing: a mapped payload is also a payload a
+    // forgotten key can silently vanish from.
+    it('carries a full payload through unchanged', async () => {
+      mockFetch(200, {
+        packs: [{
+          id: 'gpu-torch', title: 'GPU PyTorch', description: 'CUDA wheels',
+          install_mode: 'restart', status: 'partial', pip_ready: true,
+          usable: false, depends_on: ['word-vectors'], blocked_by: ['word-vectors'],
+          pip: [{ spec: 'torch==2.6.0' }],
+          items: [{
+            id: 'glove-6b-100d', kind: 'hf', repo_id: 'stanfordnlp/glove',
+            url: null, size_bytes: 347116733, license: 'PDDL', status: 'downloading',
+          }],
+          size_bytes_total: 347116733,
+          install_command: 'cdui install --gpu cu128',
+        }],
+        active_job: { job_id: 'j1', pack_id: 'gpu-torch' },
+        last_restart_job: { job_id: 'j0', status: 'done' },
+        remote_install_allowed: false,
+        launch_mode: 'dev',
+        gpu: {
+          detected_label: 'NVIDIA GeForce RTX 4080', recommended_variant: 'cu128',
+          installed_variant: 'cpu', variants: ['cpu', 'cu128'],
+          install_command: 'cdui install --gpu cu128',
+        },
+      });
+      const out = await listPacks();
+      expect(out.packs[0].items[0].status).toBe('downloading');
+      expect(out.packs[0].pip).toEqual([{ spec: 'torch==2.6.0' }]);
+      expect(out.packs[0].blocked_by).toEqual(['word-vectors']);
+      expect(out.active_job).toEqual({ job_id: 'j1', pack_id: 'gpu-torch' });
+      expect(out.last_restart_job).toEqual({ job_id: 'j0', status: 'done' });
+      expect(out.remote_install_allowed).toBe(false);
+      expect(out.launch_mode).toBe('dev');
+      expect(out.gpu?.recommended_variant).toBe('cu128');
+    });
+
+    it('throws PackApiError with the status on 404', async () => {
+      // What a server with no `/api/packs` route at all answers: FastAPI's
+      // own not-found body. It is the ONE status the store reads as "this
+      // build predates the Package Center".
+      mockFetch(404, { detail: 'Not Found' });
+      const err = await packError(listPacks());
+      expect(err.status).toBe(404);
+      expect(err.message).toBe('Not Found');
+    });
+
+    it('throws a plain PackApiError when the route exists but is disabled', async () => {
+      // The 503 the backend raises when the Package Center is switched off:
+      // a route that EXISTS and refused, which is an error to report rather
+      // than a server to treat as pack-less.
+      mockFetch(503, { detail: 'Package Center is not available' });
+      const err = await packError(listPacks());
+      expect(err.status).toBe(503);
+      expect(err.message).toBe('Package Center is not available');
+    });
+  });
+
+  describe('installPack', () => {
+    it('posts the token header and omits undefined body keys', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j1' });
+      // `items: undefined` is what a caller spreading a partly filled options
+      // object sends; it must not reach the wire as `items: null`.
+      expect(
+        await installPack('gpu-torch', {
+          items: undefined, mode: 'restart', variant: 'cu128',
+        }),
+      ).toEqual({ job_id: 'j1' });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/packs/gpu-torch/install');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+      // No `items` key at all: omitting it is what means "the whole pack",
+      // and the backend's InstallRequest forbids anything it did not declare.
+      expect(JSON.parse(init.body)).toEqual({ mode: 'restart', variant: 'cu128' });
+    });
+
+    it('sends an empty object when the caller narrows nothing', async () => {
+      const fetchMock = mockFetch(202, { job_id: 'j1' });
+      await installPack('word-vectors');
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+    });
+
+    it('surfaces 409 as PackApiError carrying the body', async () => {
+      const body = { detail: 'an install is already running', job_id: 'j-running' };
+      mockFetch(409, body);
+      const err = await packError(installPack('word-vectors'));
+      expect(err.status).toBe(409);
+      expect(err.message).toBe('an install is already running');
+      // The panel offers "follow that job instead", which needs its id.
+      expect(err.body).toEqual(body);
+    });
+
+    it('falls back to the status text when the error body is not JSON', async () => {
+      mockFetchJsonThrows(500);
+      const err = await packError(installPack('word-vectors'));
+      expect(err.status).toBe(500);
+      expect(err.message).toBe('mock');
+      expect(err.body).toBeNull();
+    });
+  });
+
+  describe('cancelPackJob', () => {
+    it('POSTs to the job with the session token', async () => {
+      const fetchMock = mockFetch(200, { job_id: 'j1', cancelled: true });
+      expect(await cancelPackJob('j1')).toEqual({ job_id: 'j1', cancelled: true });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/packs/jobs/j1/cancel');
+      expect(init.method).toBe('POST');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('throws PackApiError when the job is already forgotten', async () => {
+      mockFetch(404, { detail: "job 'j1' not found" });
+      expect((await packError(cancelPackJob('j1'))).status).toBe(404);
+    });
+  });
+
+  describe('getPackJobEvents', () => {
+    it('passes cursor, wait, limit and the signal', async () => {
+      const fetchMock = mockFetch(200, {
+        job_id: 'j1', status: 'running', events: [], cursor: 7,
+      });
+      const controller = new AbortController();
+      await getPackJobEvents('j1', {
+        cursor: 7, wait: 25, limit: 100, signal: controller.signal,
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/packs/jobs/j1/events?cursor=7&wait=25&limit=100',
+        { signal: controller.signal },
+      );
+    });
+
+    it('sends no query when following from the beginning', async () => {
+      const fetchMock = mockFetch(200, {
+        job_id: 'j1', status: 'done', events: [], cursor: 0,
+      });
+      const page = await getPackJobEvents('j1');
+      expect(fetchMock).toHaveBeenCalledWith('/api/packs/jobs/j1/events', {
+        signal: undefined,
+      });
+      expect(page.status).toBe('done');
+    });
+
+    it('throws PackApiError when the job is gone mid-follow', async () => {
+      mockFetch(404, { detail: "job 'j1' not found" });
+      expect((await packError(getPackJobEvents('j1'))).status).toBe(404);
+    });
+  });
+
+  describe('removePackItem', () => {
+    it('issues DELETE', async () => {
+      const fetchMock = mockFetch(200, {
+        pack_id: 'word-vectors', item_id: 'glove-6b-100d', removed: true,
+      });
+      expect(await removePackItem('word-vectors', 'glove-6b-100d')).toEqual({
+        pack_id: 'word-vectors', item_id: 'glove-6b-100d', removed: true,
+      });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('/api/packs/word-vectors/items/glove-6b-100d');
+      expect(init.method).toBe('DELETE');
+      expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('test-token');
+    });
+
+    it('surfaces the 409 sent while a job targets the pack', async () => {
+      mockFetch(409, { detail: 'an install is running', job_id: 'j1' });
+      const err = await packError(removePackItem('word-vectors', 'glove-6b-100d'));
+      expect(err.status).toBe(409);
+      expect(err.body).toEqual({ detail: 'an install is running', job_id: 'j1' });
     });
   });
 });

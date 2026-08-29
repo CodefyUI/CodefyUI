@@ -58,8 +58,9 @@ received — each links to the release it was published as.
   option.** `/api/nodes` now carries `requires_pack` on each node definition
   and `option_packs` on each SELECT param (option value → pack id), so an
   editor can show that an option is one download away instead of letting the
-  run find out. No shipped node sets either field yet — the nodes that will
-  are what the packs exist for — but the gate behind them is already here:
+  run find out. The first nodes to set them ship in this same release —
+  `WordVector`'s new backends and `TextEmbedding`, below — and what the
+  editor shows is only half of the promise:
   `require_pack()` raises naming the pack, and a graph run never downloads
   — four hundred megabytes arriving mid-run, on a classroom connection, with
   no progress bar and no way to cancel, is not something a Run button may do.
@@ -69,6 +70,171 @@ received — each links to the release it was published as.
   from "it never went down" by whether the route answers; a changed `boot_id`
   is the only proof, and a restart-mode pack install is the first thing that
   needs to know.
+
+- **`WordVector` looks words up in real embeddings, not only the toy table.**
+  The `backend` dropdown gained `glove-50d` — the actual 400,000-word GloVe
+  table out of the `word-vectors` pack — and the four sentence-transformer
+  encoders out of `sentence-embeddings`, beside the `demo-16d` vocabulary
+  that still ships inline, still needs no download, and still makes
+  `king - man + woman = queen` come out exact because its 59 words were
+  written so that it would. That gap is the lesson: the same analogy is only
+  approximate on real GloVe, and messier still through an encoder built for
+  sentences rather than single words. Each option carries the download it
+  needs, so an install without the pack sees it greyed out rather than
+  finding out at run time, and the 400k-word text table is converted to an
+  `.npz` once on install — ten seconds of parsing that no longer happens on
+  every run. Two backend names from an early preview are retired: a graph
+  still carrying `glove-100d` or `minilm-sentence-384d` gets a plain error
+  naming the option to pick instead (`glove-50d`,
+  `sentence-transformers/all-MiniLM-L6-v2`), because no download fixes a name
+  that no longer exists.
+
+- **`TextEmbedding`** — one dense vector per text from a real
+  sentence-transformer, so texts that mean the same thing come back pointing
+  the same way. This is the encoder semantic search and RAG are built on:
+  embed the documents once, embed the question, compare. It takes a list
+  (`texts`) or a single string (`text`, one text per line unless
+  `split_lines` is off), reports progress and honours Stop between batches —
+  keeping the rows it already has — and carries the `prefix` the e5 models
+  were trained with (`query: ` / `passage: `). Its four models are the
+  `sentence-embeddings` pack's, so the whole node is greyed out until that
+  pack is installed, and two loaded encoders stay resident at a time, which
+  is what comparing an English model against a multilingual one costs.
+
+- **Sentence Similarity (zh-TW), a gallery example that runs on meaning
+  rather than spelling.** Eight Traditional Chinese sentences in four pairs —
+  weather, food, the stock market, machine learning, the last pair split
+  across Chinese and English — encoded, ranked by `CosineSimilarity` and
+  projected to 2D by `EmbeddingScatter`. Rank 2 is each sentence's partner
+  though the two share few characters, and the zh/en pair shows the
+  model aligning languages. Needs the `sentence-embeddings` pack; runs
+  offline on CPU in a few seconds once it is there.
+
+- **A retrieval chain on the canvas: six nodes that answer a question out of
+  your own documents instead of out of the model's memory.**
+  `DocumentLoader` reads every `.md` and `.txt` in a folder as
+  `{text, source}` so a citation survives to the end, stripping the UTF-8
+  byte-order mark Notepad writes rather than letting an invisible character
+  ride into the first chunk, its embedding and the first citation;
+  `TextChunker` cuts them into pieces small enough to embed (character
+  windows, sentences or paragraphs, all capped by `chunk_size`) carrying
+  the source and the character offsets, with `text[start_char:end_char]`
+  guaranteed to be exactly the chunk; `VectorStore` stacks the vectors
+  `TextEmbedding` produced into one `[N, D]` matrix with the chunk texts
+  and their sources beside them, so a cosine search over the whole corpus
+  is a single matrix multiply; `Retriever` scores a question against every
+  row, keeps `top_k` and drops anything under `min_score`, printing the
+  score of each hit that clears the floor; and `PromptBuilder` pastes the
+  winners into a template that instructs the model to answer only from that
+  context. `HFTextGenerate` closes the chain with Qwen2.5-0.5B-Instruct from
+  the `rag` pack, applying the model's chat template and reporting progress
+  token by token, and `LLMChat` is the drop-in alternative that sends the
+  same prompt to a server. Only two boxes in the chain need a download, so
+  the head of it runs on any install.
+
+- **Two RAG gallery examples, and the corpus they read.** **RAG, fully
+  local** (`examples/LLM/RAG-Local-Offline`) retrieves and generates on this
+  machine, and needs two downloads rather than one: `qwen2.5-0.5b-instruct`
+  from `rag` plus the `multilingual-e5-small` item of `sentence-embeddings`,
+  because the pack dependency brings that pack's Python packages and not an
+  encoder. **RAG with a chat API** (`examples/LLM/RAG-LLMChat-API`) is the
+  same retrieval chain node for node with `LLMChat` in the last box, aimed
+  at a local Ollama by default, so running both on one question compares
+  generators and nothing else — a test asserts the shared half stays
+  identical, and that no `SECRET` param is ever committed in the file. Both
+  read `backend/data/samples/rag`: five short notes about CodefyUI and ML
+  basics, each with an English and a Traditional Chinese half, so the
+  examples run with no setup and a multilingual encoder has something to
+  prove.
+
+- **`CODEFYUI_PACK_NETWORK_TESTS=1` runs the pack-backed examples for real.**
+  A faked encoder returns whatever the fake was written to return, so the
+  suite that asks whether these graphs still DO what their cards claim runs
+  against the downloaded models or not at all. It is opt-in twice over:
+  the variable is the outer gate, and each test skips on its own if the exact
+  model it needs is not in the cache. Nothing is downloaded either way.
+  `test_rag_local_example_answers_for_real` joins it for the fully local RAG
+  graph, asking twice — the encoder and the generator are separate downloads,
+  and one being absent must not hide the other — then running the graph and
+  asserting that the top three chunks all come from the two notes that contain
+  the answer and that `02-nodes-and-edges.md` is among them, and that the
+  generated answer is not empty.
+
+- **An Optional Packs page in the docs**, English and Traditional Chinese
+  (`docs/docs/usage/optional-packs.md`) — the catalog with sizes
+  and licences, both ways to install one, where the files land per OS, what
+  changes on the canvas, which of the four embedding models to pick, and what
+  to do when a pack reports installed but will not import. It carries the RAG
+  chain too: one line per node, the sample corpus, the e5 prefix rule, what
+  CPU generation feels like, and what to try when generation is slow or the
+  answer ignores the context.
+
+- **The Package Center, on screen.** A panel that lists every optional pack
+  with what is already on this machine, what a download would cost, and one
+  button that changes it: per-model progress bars driven by the byte counts
+  the long poll carries, a live install log beside them, a Cancel that stops a
+  download mid-file, and a Remove that deletes one model and gives the disk
+  back. It is a pure view of a store that lives above it, so closing the
+  window — or opening a graph, or switching tabs — does not interrupt a
+  two-gigabyte download, and a job started in another browser tab is adopted
+  rather than duplicated. The GPU/accelerated-PyTorch pack gets a card of its
+  own: it cannot be installed while the server is running, so instead of a
+  button that would fail it names the detected card, the build this venv
+  currently has, and the exact `cdui install --gpu` line to run, ready to
+  copy. Reachable from Settings (with an at-a-glance "2 of 4 packs
+  installed") and from the sidebar's Custom tab.
+
+- **A dropdown says which of its options are one download away.** A SELECT
+  whose options declare `option_packs` greys out exactly the ones that are not
+  installed, suffixes each with the pack or model it needs, and puts an
+  "Install pack" link under the field that opens the Package Center already
+  scrolled to that pack. The value the node currently holds is never disabled
+  — a `<select>` whose selected option is disabled has its selection dropped
+  by the browser, which would silently rewrite a saved graph the moment its
+  config panel opened — so it stays selectable and gets the warning instead.
+  A node with a whole-pack requirement gets the same treatment as a banner
+  above its parameters, which stay editable: a graph saved where the pack was
+  installed still has to be readable where it is not.
+
+- **Badges where the node is, not where the failure is.** A palette entry
+  whose node needs a missing pack carries a "Needs pack" chip, and the node
+  card on the canvas carries a `PACK` button in its header that opens the
+  Package Center focused on what it needs. Everything above answers through
+  one helper with one rule, and every unknown resolves to *available*: an
+  unloaded catalog, a pack id this build has never heard of, and a server
+  with no Package Center at all grey out nothing, because wrongly hiding a
+  feature that works costs more than one clear error naming the pack.
+
+- **A run that dies of a missing pack says so, and offers the fix.** The
+  backend's `PackMissingError` becomes "This node needs the Word vectors
+  pack. Install it from the Package Center." on the node and in the run log,
+  and the failure toast carries an "Open Package Center" button that lands on
+  the right card — rather than a Python exception naming a module the reader
+  has no way to install.
+
+### Changed
+
+- **The Word Embedding Analogy example says what each backend teaches.** Its
+  description explained the analogy on `demo-16d` and said nothing about the
+  real thing; it now says the toy vocabulary is 59 words and makes the
+  analogy exact by construction, and that `backend=glove-50d` swaps in
+  400,000 real words, where queen still wins but other analogies go
+  approximate — which is the point of running it twice. It is also short
+  enough now that the gallery card stops cutting it off mid-word.
+
+- **`TextEmbedding` counts as a slow node in the example test suite.**
+  `_SLOW_NODE_TYPES` gains it, so the fast smoke suite validates the Sentence
+  Similarity graph's shape without executing it: CI has no pack cache and
+  would fail at the gate, and a machine that does have the pack would load
+  half a gigabyte of weights inside a test that is supposed to be quick.
+
+- **`HFTextGenerate` and `LLMChat` join it.** `_SLOW_NODE_TYPES` now covers
+  the generation half of the chain as well, so the smoke suite validates
+  both RAG graphs structurally and executes neither: one would read a
+  gigabyte of Qwen2.5 weights and then decode on the CPU at a few tokens a
+  second, and the other would open a socket to Ollama or to a hosted
+  provider — a network round trip, a key CI does not have, and somebody's
+  money.
 
 ### Fixed
 
@@ -143,6 +309,16 @@ received — each links to the release it was published as.
   new `ExecutionCache.upstream_ref`, so the sort still normalises the order
   edges are listed in while the ports stay part of the identity. Cold runs were
   always correct; only re-runs were wrong, which is why this survived so long.
+
+- **A typed failure keeps its type on the way to the browser.** `node_status`
+  error frames now carry `error_type`, the exception's class name, which the
+  engine had recorded and the run service then dropped. Every rule that maps a
+  raw Python exception into a sentence a beginner can act on keys off that
+  field — the missing-pack sentence with its "Open Package Center" button, and
+  the pre-existing `KeyError` ("this node needs an input on `<port>`") and
+  `ValueError` rules — so all of them were unreachable outside DEBUG, where a
+  traceback happens to name the class in its last line. The message itself
+  never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
 
 ## [2.4.1] — 2026-08-22
 

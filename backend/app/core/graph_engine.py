@@ -2302,7 +2302,16 @@ async def execute_graph(
                     # The empty initial port name yields keys like
                     # ``(node_id, "tensor")`` for ``result["tensor"]`` —
                     # see attach_retain_grad's recursion through dict keys.
-                if cache is not None and node_cacheable and node_id in node_cache_keys:
+                # A node that stopped on ``context.should_stop()`` returns
+                # partial outputs and says so. Computed HERE, above the put,
+                # because a partial result must never be cached: the cache
+                # has no idea it is partial, so the next Run would serve
+                # those few rows as ``cached`` -- reading, to the learner,
+                # as the finished answer to a graph that was never finished.
+                interrupted = (isinstance(result, dict)
+                               and bool(result.get(INTERRUPTED_KEY)))
+                if (cache is not None and node_cacheable
+                        and node_id in node_cache_keys and not interrupted):
                     # ``node_id`` is carried so an out-of-memory failure can
                     # drop exactly this node's cached results (#135) rather
                     # than the whole cache or nothing at all.
@@ -2334,11 +2343,9 @@ async def execute_graph(
                                     "tensor_keys": list(step.tensors.keys()),
                                 },
                             )
-                # A node that stopped on ``context.should_stop()`` returns
-                # partial outputs and says so; it did not complete.
-                terminal = ("interrupted"
-                            if isinstance(result, dict)
-                            and result.get(INTERRUPTED_KEY) else "completed")
+                # Same flag, one decision: what was not cached is exactly
+                # what did not complete.
+                terminal = "interrupted" if interrupted else "completed"
                 await _emit_preset_aware(node_id, terminal, result)
                 return
             except Exception as e:
