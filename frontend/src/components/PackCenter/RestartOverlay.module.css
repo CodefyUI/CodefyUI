@@ -20,6 +20,12 @@
 .card {
   width: 440px;
   max-width: 100%;
+  /* The backdrop is `position: fixed` and centres this, so a card taller than
+     the viewport overflows in BOTH directions and its top - the title and the
+     phase - becomes unreachable with nothing left to scroll. It carries its
+     own scroll instead. */
+  max-height: 100%;
+  overflow-y: auto;
   background: var(--surface-raised);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-xl);

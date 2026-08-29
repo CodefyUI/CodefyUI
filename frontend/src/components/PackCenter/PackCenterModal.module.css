@@ -208,6 +208,10 @@
   font-weight: var(--fw-semibold);
   line-height: var(--lh-snug);
   min-width: 0;
+  /* `min-width: 0` lets the flex item shrink; this is what lets the TEXT
+     break once it has. A title from a newer catalog with no spaces in it
+     would otherwise run past the card edge. */
+  overflow-wrap: anywhere;
 }
 
 .cardSize {
@@ -609,7 +613,9 @@
   flex-shrink: 0;
   border-left: 1px solid var(--border-base);
   background: var(--surface-panel);
-  padding: var(--sp-5) var(--sp-5) var(--sp-6);
+  /* Top padding matches `.list`, so the pane's first line and the first
+     card's top edge start together instead of 4 px apart. */
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -664,6 +670,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+  /* The server's own words land here verbatim in a 340 px column: a Windows
+     path or a wheel URL has no break opportunity of its own. */
+  overflow-wrap: anywhere;
 }
 
 .resultBanner[data-tone='success'] {
@@ -690,6 +699,7 @@
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
 }
 
 /* ── Log tail ───────────────────────────────────────────────────────────── */
@@ -739,5 +749,19 @@
     border-left: none;
     border-top: 1px solid var(--border-base);
     max-height: 46%;
+    /* `flex-shrink: 0` is right in the side-by-side layout, where it protects
+       the 340 px column. Stacked under a `max-height` it is what cut the
+       Cancel / Dismiss row off: the pane's content outgrew its cap and the
+       modal's `overflow: hidden` took the difference. It shrinks and scrolls
+       here instead. */
+    flex-shrink: 1;
+    overflow-y: auto;
+  }
+
+  /* The log's 120 px floor is the other half of the same overflow: with the
+     bar, the banner and the button row above it, that floor alone can beat
+     the pane's cap on a short window. */
+  .log {
+    min-height: 72px;
   }
 }
