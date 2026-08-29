@@ -15,6 +15,13 @@ import { useTabStore } from '../../store/tabStore';
 import { useToastStore } from '../../store/toastStore';
 import { downloadModelFile } from '../../api/rest';
 import { useI18n } from '../../i18n';
+import {
+  localizedPackTitle,
+  missingRequirementForOption,
+  nodeMissingPack,
+  requirementSentence,
+  usePackAvailability,
+} from '../../utils/packAvailability';
 import { CATEGORY_COLORS, STATUS_COLORS, NODE_HEADER_TINT, mixColor, SURFACE_RAISED } from '../../styles/theme';
 import { MathText } from '../shared/MathText';
 import { subgraphIdOf } from '../../utils/subgraph';
@@ -108,6 +115,12 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   // scripts/check-contrast.mjs.
   const headerFill = mixColor(SURFACE_RAISED, headerColor, NODE_HEADER_TINT);
   const { t, tn } = useI18n();
+  // One subscription per card, to three slices that change only when a
+  // catalog refresh lands — so a canvas full of nodes pays a selector compare
+  // each and nothing per frame. (No ResizeObserver, no measuring: the badge
+  // is text in the header's flex row.)
+  const { byId, loaded, unsupported } = usePackAvailability();
+  const missingPack = nodeMissingPack(def, byId, loaded, unsupported);
 
   const isSequentialModel = data.type === 'SequentialModel';
   // core#137: a subgraph instance opens its definition on double-click, the
@@ -297,6 +310,34 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             {t('node.bypassed')}
           </span>
         )}
+        {/* The one place on the canvas that says a node cannot run yet, and
+            the shortest route to fixing it. A button, not a decorated span:
+            it does something. `nodrag` keeps the press from starting a node
+            drag, and stopPropagation keeps the click off the card underneath
+            (which selects, and on a second click opens the detail modal). */}
+        {missingPack !== null && (
+          <button
+            type="button"
+            className={`${styles.packBadge} nodrag`}
+            title={t('node.needsPack.title', {
+              pack: localizedPackTitle(t, byId, missingPack.packId),
+            })}
+            onClick={(e) => {
+              e.stopPropagation();
+              // `getState()` rather than a subscription: every card on the
+              // canvas holds this, and none of them need to re-render when
+              // the Package Center opens.
+              useUIStore.getState().openPackCenter(missingPack.packId);
+            }}
+            // `dblclick` is a SEPARATE event from the two `click`s that
+            // precede it, so stopping the clicks does not stop it: an
+            // impatient double-press on the badge opened the Package Center
+            // AND the Node Detail Modal behind it.
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {t('node.needsPack')}
+          </button>
+        )}
         {/* Full-strength hue on its tinted header — keeps the category
             identifiable at a glance without the low-contrast opacity dimming
             this used to carry (was 1.47-1.78:1). */}
@@ -437,14 +478,32 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                 p.param_type === 'secret' && String(val ?? '') !== ''
                   ? '••••••••'
                   : String(val);
+              // Only a SELECT, and only about the value this node actually
+              // holds: the card is the at-a-glance summary, and "one of the
+              // options you did not pick needs a download" is the config
+              // panel's business, not something to write on the graph.
+              const paramMissing =
+                p.param_type === 'select'
+                  ? missingRequirementForOption(p, String(val), byId, loaded, unsupported)
+                  : null;
               return (
                 <div key={p.name} className={styles.paramRow}>
                   <span className={styles.paramName}>{p.name}</span>
-                  <span
-                    className={styles.paramValue}
-                    title={display}
-                  >
-                    {display}
+                  <span className={styles.paramValueCell}>
+                    <span
+                      className={styles.paramValue}
+                      title={display}
+                    >
+                      {display}
+                    </span>
+                    {paramMissing !== null && (
+                      <span
+                        className={styles.paramNeedsPack}
+                        title={requirementSentence(t, byId, String(val), paramMissing)}
+                      >
+                        {t('node.paramNeedsPack')}
+                      </span>
+                    )}
                   </span>
                 </div>
               );

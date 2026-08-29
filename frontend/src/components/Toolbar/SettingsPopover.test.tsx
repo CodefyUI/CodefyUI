@@ -14,10 +14,24 @@ import {
   startCodexLogin,
   logoutCodex,
   fetchHealth,
+  listPacks,
+  PackApiError,
+  type PackCatalog,
+  type PackSummary,
 } from '../../api/rest';
+import {
+  _resetPackStoreForTesting,
+  emptyPackJob,
+  usePackStore,
+} from '../../store/packStore';
 import { computeSegmentNodes } from '../../utils/segmentPath';
 
-vi.mock('../../api/rest', () => ({
+vi.mock('../../api/rest', async (importOriginal) => ({
+  // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
+  // catalog read with `err instanceof PackApiError`, and an undefined export
+  // makes that line throw a TypeError instead of reporting the 404 an older
+  // server answers with.
+  PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   resetWeights: vi.fn(),
   // The "This Server" section reads /api/health when the popover opens
   // (#193 item 2); its own behaviour is covered in HealthSection.test.tsx.
@@ -40,6 +54,10 @@ vi.mock('../../api/rest', () => ({
       ],
     }),
   ),
+  // The packs row is a view of `packStore`, which reads the catalog through
+  // this call. Stubbed so the one case that lets the popover bootstrap it
+  // has something to resolve with, and so the rest never touch the network.
+  listPacks: vi.fn(),
 }));
 
 vi.mock('../../utils/segmentPath', () => ({
@@ -51,6 +69,48 @@ const mockedFetchCodexStatus = vi.mocked(fetchCodexStatus);
 const mockedStartCodexLogin = vi.mocked(startCodexLogin);
 const mockedLogoutCodex = vi.mocked(logoutCodex);
 const mockedComputeSegment = vi.mocked(computeSegmentNodes);
+const mockedListPacks = vi.mocked(listPacks);
+
+const EMPTY_CATALOG: PackCatalog = {
+  packs: [],
+  active_job: null,
+  last_restart_job: null,
+  remote_install_allowed: true,
+  launch_mode: 'start',
+  gpu: null,
+};
+
+function packSummary(overrides: Partial<PackSummary> = {}): PackSummary {
+  return {
+    id: 'word-vectors',
+    title: 'Word vectors',
+    description: 'A GloVe table',
+    install_mode: 'live',
+    status: 'not_installed',
+    pip_ready: true,
+    usable: false,
+    depends_on: [],
+    blocked_by: [],
+    pip: [],
+    items: [],
+    size_bytes_total: 0,
+    install_command: null,
+    ...overrides,
+  };
+}
+
+/** Put a catalog in the store, the way a finished `refresh()` would. */
+function seedPacks(
+  packs: PackSummary[],
+  extra: Partial<ReturnType<typeof usePackStore.getState>> = {},
+) {
+  usePackStore.setState({
+    loaded: true,
+    packs,
+    byId: Object.fromEntries(packs.map((pack) => [pack.id, pack])),
+    ...extra,
+  });
+}
 
 function makeTriggerRef() {
   const ref = createRef<HTMLButtonElement>();
@@ -104,7 +164,15 @@ describe('SettingsPopover', () => {
       beginnerMode: false,
       globalDevice: 'cpu',
       edgeStyle: 'circuit',
+      packCenterOpen: false,
+      packCenterFocusPackId: null,
     });
+    _resetPackStoreForTesting();
+    mockedListPacks.mockReset();
+    mockedListPacks.mockResolvedValue(EMPTY_CATALOG);
+    // An empty catalog that has already ARRIVED: the popover only bootstraps
+    // one nobody has read yet, so every case but that one stays offline.
+    seedPacks([]);
     vi.mocked(fetchHealth).mockReset();
     vi.mocked(fetchHealth).mockResolvedValue({
       status: 'ok', version: '2.2.0', nodes_loaded: 137, presets_loaded: 12,
@@ -128,6 +196,9 @@ describe('SettingsPopover', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // The pack store is reset in `beforeEach`, NOT here: the panel is still
+    // mounted at this point, and writing to a store it subscribes to would
+    // re-render it outside `act`.
     document.body.innerHTML = '';
   });
 
@@ -195,6 +266,120 @@ describe('SettingsPopover', () => {
 
     await waitFor(() => expect(mockedLogoutCodex).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+  });
+
+  // ── Optional packs (the Package Center entry point) ───────────────
+
+  it('summarises installed packs and opens the Package Center, closing the popover', () => {
+    seedPacks([
+      packSummary({ id: 'word-vectors', status: 'installed' }),
+      packSummary({ id: 'rag', status: 'not_installed' }),
+    ]);
+    const onClose = vi.fn();
+    render(<SettingsPopover open onClose={onClose} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Optional packs')).toBeInTheDocument();
+    expect(screen.getByText('Package Center')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 packs installed')).toBeInTheDocument();
+    // The row is a VIEW of the store: a catalog that is already here is
+    // never re-read just because the popover opened.
+    expect(mockedListPacks).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    // No pack is focused: this is the "show me everything" entry point, and
+    // the click handler must not pass its event through as a pack id.
+    expect(useUIStore.getState().packCenterFocusPackId).toBeNull();
+  });
+
+  it('says unsupported on an older server', () => {
+    seedPacks([], { unsupported: true });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Not available on this server')).toBeInTheDocument();
+    expect(screen.queryByText('0 of 0 packs installed')).toBeNull();
+  });
+
+  it('reaches that verdict from the 404 an older server actually answers with', async () => {
+    // The store narrows the failure with `err instanceof PackApiError`. This
+    // is the case that proves the class reaching it is the real one — a
+    // stubbed-away export makes that line throw a TypeError, and the row
+    // would be stuck on "no catalog yet" forever.
+    _resetPackStoreForTesting();
+    mockedListPacks.mockRejectedValueOnce(new PackApiError(404, 'Not Found'));
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(await screen.findByText('Not available on this server')).toBeInTheDocument();
+    expect(usePackStore.getState().unsupported).toBe(true);
+    // Reported silently: the user did nothing wrong by running an older
+    // server, so nothing is toasted about it.
+    expect(usePackStore.getState().error).toBeNull();
+  });
+
+  it('shows the installing summary while a job runs', () => {
+    seedPacks([packSummary({ id: 'word-vectors', status: 'installing' })], {
+      job: emptyPackJob('job-1', 'word-vectors'),
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    // Named from THIS build's catalog copy ("Word vectors (GloVe)"), not from
+    // the server's own title ("Word vectors").
+    expect(screen.getByText('Installing Word vectors (GloVe)...')).toBeInTheDocument();
+  });
+
+  it('names an installing pack the server ships and this build has no copy for', () => {
+    seedPacks([packSummary({ id: 'from-the-future', title: 'Newer pack' })], {
+      job: emptyPackJob('job-2', 'from-the-future'),
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Installing Newer pack...')).toBeInTheDocument();
+  });
+
+  it('falls back to the pack id when neither this build nor the catalog names it', () => {
+    // A job adopted from another tab can name a pack the catalog in hand does
+    // not list yet; the id is still a usable sentence.
+    seedPacks([], { job: emptyPackJob('job-3', 'mystery-pack') });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('Installing mystery-pack...')).toBeInTheDocument();
+  });
+
+  it('ignores a job that is no longer running', () => {
+    seedPacks([packSummary({ id: 'word-vectors', status: 'installed' })], {
+      job: { ...emptyPackJob('job-4', 'word-vectors'), status: 'done' },
+    });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+
+    expect(screen.getByText('1 of 1 packs installed')).toBeInTheDocument();
+  });
+
+  it('reads the catalog when the popover opens, and not while it is closed', async () => {
+    _resetPackStoreForTesting();
+    const triggerRef = makeTriggerRef();
+    const { rerender } = render(
+      <SettingsPopover open={false} onClose={vi.fn()} triggerRef={triggerRef} />,
+    );
+    expect(mockedListPacks).not.toHaveBeenCalled();
+    // Nothing has answered yet, so the row explains itself instead of
+    // claiming "0 of 0 packs installed".
+    rerender(<SettingsPopover open onClose={vi.fn()} triggerRef={triggerRef} />);
+    expect(
+      screen.getByText('Download models and libraries for the LLM nodes.'),
+    ).toBeInTheDocument();
+
+    await waitFor(() => expect(usePackStore.getState().loaded).toBe(true));
+    expect(mockedListPacks).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('0 of 0 packs installed')).toBeInTheDocument();
+  });
+
+  it('does not start a second catalog read while one is in flight', () => {
+    _resetPackStoreForTesting();
+    usePackStore.setState({ loading: true });
+    render(<SettingsPopover open onClose={vi.fn()} triggerRef={makeTriggerRef()} />);
+    expect(mockedListPacks).not.toHaveBeenCalled();
   });
 
   // ── Execution: global device selector ─────────────────────────────

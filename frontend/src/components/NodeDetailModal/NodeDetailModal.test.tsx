@@ -163,7 +163,11 @@ function activeTab() {
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
-  useUIStore.setState({ isCanvasPanning: false, shortcutsModalOpen: false });
+  useUIStore.setState({
+    isCanvasPanning: false,
+    shortcutsModalOpen: false,
+    packCenterOpen: false,
+  });
   useDialogStore.setState({ active: null });
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('t');
@@ -577,6 +581,26 @@ describe('NodeDetailModal — close paths', () => {
   it('Esc closes the modal', () => {
     seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
     render(<NodeDetailModal />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+  });
+
+  it('leaves Escape alone while the Package Center is open', () => {
+    seedTab({ nodes: [node('n1')], nodeDetailNodeId: 'n1' });
+    render(<NodeDetailModal />);
+
+    // The Package Center opens OVER this modal (a node's PACK badge is one of
+    // the ways in), so Escape belongs to the surface on top.
+    useUIStore.setState({ packCenterOpen: true });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(activeTab().nodeDetailNodeId).toBe('n1');
+
+    // Its arrow-key navigation is stood down for the same reason: a select
+    // inside the panel must not page through the nodes behind it.
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(activeTab().nodeDetailNodeId).toBe('n1');
+
+    useUIStore.setState({ packCenterOpen: false });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(activeTab().nodeDetailNodeId).toBeNull();
   });

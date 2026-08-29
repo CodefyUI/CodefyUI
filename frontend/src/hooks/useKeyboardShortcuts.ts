@@ -15,6 +15,16 @@ const NO_DETAIL_NODE_TYPES = new Set(['noteNode']);
  */
 const ENTER_OWNING_TAGS = new Set(['BUTTON', 'A', 'SELECT', 'SUMMARY']);
 
+/**
+ * Is the user holding a selection of ordinary page text?
+ *
+ * A collapsed selection (a caret, or nothing at all) is not one, and
+ * `getSelection` is absent in enough embeddings to be worth guarding.
+ */
+function hasTextSelection(): boolean {
+  return (window.getSelection?.()?.toString() ?? '') !== '';
+}
+
 export function useKeyboardShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -47,14 +57,24 @@ export function useKeyboardShortcuts() {
       }
 
       // Ctrl+C / Cmd+C — Copy
+      //
+      // Yields to a real text selection. The guard above only skips inputs and
+      // textareas, so selecting ordinary page text — the install command in
+      // the Package Center's <pre>, which the "could not copy" toast tells the
+      // user to copy by hand — and pressing Ctrl+C copied the SELECTED NODES
+      // instead and put nothing on the clipboard. A non-empty selection means
+      // the user is copying text, which is the browser's job, not ours.
       if (mod && !e.shiftKey && e.key === 'c') {
+        if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().copySelectedNodes();
         return;
       }
 
-      // Ctrl+V / Cmd+V — Paste
+      // Ctrl+V / Cmd+V — Paste. Same yield: a selection is the user working
+      // with text, and pasting nodes over it is not what they asked for.
       if (mod && !e.shiftKey && e.key === 'v') {
+        if (hasTextSelection()) return;
         e.preventDefault();
         useTabStore.getState().pasteNodes();
         return;

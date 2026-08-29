@@ -33,6 +33,26 @@ interface UIState {
   templateGalleryOpen: boolean;
   openTemplateGallery: () => void;
   closeTemplateGallery: () => void;
+  /**
+   * Package Center modal. Same rules as the template gallery above:
+   * workspace-global and deliberately NOT persisted.
+   *
+   * `packCenterFocusPackId` is the pack the panel should scroll to and
+   * expand -- set when the modal is opened FROM something that needs a
+   * specific pack (a node badge, a greyed-out select option) rather than
+   * from the menu. Cleared with the modal so the next open starts at the top
+   * of the list instead of wherever the last one landed.
+   */
+  packCenterOpen: boolean;
+  packCenterFocusPackId: string | null;
+  openPackCenter: (packId?: string) => void;
+  /**
+   * Point the open panel at another pack -- or clear the request once it has
+   * been honoured, which is what keeps the highlight from firing again on
+   * every subsequent render.
+   */
+  setPackCenterFocus: (packId: string | null) => void;
+  closePackCenter: () => void;
   draggingSourceType: string | null;
   setDraggingSourceType: (type: string | null) => void;
   /** Endpoint of the edge currently being detached during an edge-reconnect
@@ -155,6 +175,13 @@ export const useUIStore = create<UIState>((set) => ({
   templateGalleryOpen: false,
   openTemplateGallery: () => set({ templateGalleryOpen: true }),
   closeTemplateGallery: () => set({ templateGalleryOpen: false }),
+  packCenterOpen: false,
+  packCenterFocusPackId: null,
+  openPackCenter: (packId) =>
+    set({ packCenterOpen: true, packCenterFocusPackId: packId ?? null }),
+  setPackCenterFocus: (packId) => set({ packCenterFocusPackId: packId }),
+  closePackCenter: () =>
+    set({ packCenterOpen: false, packCenterFocusPackId: null }),
   draggingSourceType: null,
   setDraggingSourceType: (type) => set({ draggingSourceType: type }),
   reconnectingHandle: null,

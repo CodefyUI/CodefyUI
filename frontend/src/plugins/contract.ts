@@ -42,6 +42,9 @@ export interface ParamDefinition {
   visible_when?: Record<string, unknown> | null;
   /** Collected behind the collapsed "Advanced" section. Absent = basic. */
   advanced?: boolean;
+  /** Package Center: maps a SELECT option to the optional pack it needs,
+   *  `"<pack_id>"` or `"<pack_id>:<item_id>"`. Absent = every option works. */
+  option_packs?: Record<string, string> | null;
 }
 
 export interface NodeDefinition {
@@ -51,6 +54,9 @@ export interface NodeDefinition {
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];
+  /** Package Center: the optional pack this node needs before it can run at
+   *  all. Absent / null = covered by the base install. */
+  requires_pack?: string | null;
 }
 
 /** A batch operation accepted by `api.graph.applyOperations`. Field names are exact. */
