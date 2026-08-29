@@ -426,8 +426,12 @@ def test_a_lazy_conversion_records_the_npz_so_the_uninstall_finds_it():
     gz_path = _write_gz(asset_dir() / item.filename, _table_lines())
     state.write_sentinel(pack.pack_id, item.item_id, {
         "schema": 1, "pack_id": pack.pack_id, "item_id": item.item_id,
+        # The catalog's digest, which is what a real install records: the
+        # download stores the digest it computed off the bytes that
+        # arrived, and ``state.item_state`` re-checks the sentinel against
+        # the catalog entry the way it does an hf item's revision.
         "kind": "asset", "url": item.url, "path": str(gz_path),
-        "bytes": gz_path.stat().st_size, "sha256": None,
+        "bytes": gz_path.stat().st_size, "sha256": item.sha256,
         "at": "2026-08-28T00:00:00Z",
     })
 

@@ -206,6 +206,19 @@ def item_state(pack: Pack, item: ModelItem) -> ItemState:
             return absent
         recorded = data.get("snapshot_dir")
     else:
+        # The same re-check the hf branch does, against what an asset item
+        # is identified BY. A catalog entry may move to a new URL, and the
+        # downloaded file cannot say where it came from -- it has no hub
+        # behind it, only this sentinel -- so without this the old bytes go
+        # on reporting themselves as the new item's model.
+        if data.get("url") != item.url:
+            return absent
+        # An install done before a digest was recorded wrote the digest it
+        # COMPUTED off the bytes that arrived, which is the one the catalog
+        # then records -- so recording a digest invalidates nothing already
+        # downloaded, and a mismatch really is different bytes.
+        if item.sha256 is not None and data.get("sha256") != item.sha256:
+            return absent
         recorded = data.get("path")
 
     if not isinstance(recorded, str) or not recorded:
