@@ -1191,6 +1191,25 @@ describe('BaseNode — optional packs', () => {
     expect(screen.queryByText('PACK')).toBeNull();
   });
 
+  it('says it once: the header badge, not the header badge and a param chip', () => {
+    // Both chips read the same two words and mean different things — "this
+    // node's pack is missing" and "this VALUE's model is missing". A node
+    // whose whole pack is absent has already said so at the top, and the
+    // param chip under it is the same fact in the same words.
+    seedPacks(wordVectors(), sentenceEmbeddings());
+    renderBody(
+      baseData({
+        definition: makeDef({ ...embeddingDef(), requires_pack: 'word-vectors' }),
+        params: { model: 'all-mpnet-base-v2' },
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: 'PACK' })).toBeInTheDocument();
+    // The value itself still shows; only the chip beside it goes.
+    expect(screen.getByText('all-mpnet-base-v2')).toBeInTheDocument();
+    expect(screen.queryByText('needs pack')).toBeNull();
+  });
+
   it('leaves the sibling value that IS downloaded unmarked', () => {
     seedPacks(sentenceEmbeddings());
     renderBody(

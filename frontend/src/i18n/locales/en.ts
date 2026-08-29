@@ -1019,8 +1019,11 @@ const en = {
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
-  'paramField.needsPack': 'needs pack: {pack}',
-  'paramField.needsModel': 'needs model: {item}',
+  // Short on purpose: this goes inside an `<option>` in a full-width select,
+  // which clips with no ellipsis when the current value is a gated one. The
+  // sentence under the select still spells out "pack" and "model".
+  'paramField.needsPack': 'needs {pack}',
+  'paramField.needsModel': 'needs {item}',
   'paramField.packHint': '"{option}" needs the {pack} pack.',
   'paramField.modelHint': '"{option}" needs the model {item} from the {pack} pack.',
   'paramField.packHintOthers': 'Greyed-out options need an optional pack.',

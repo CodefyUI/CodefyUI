@@ -643,7 +643,9 @@ describe('ParamField — select options gated on an optional pack', () => {
     // The reason travels with the option: a learner reading the list should
     // not have to open the Package Center to find out why one is greyed.
     expect(options[1].disabled).toBe(true);
-    expect(options[1].textContent).toBe('glove-50d — needs pack: Word vectors (GloVe)');
+    // Short, because it has to fit a closed 100 %-width select with no
+    // ellipsis; the full sentence under the select still spells out "pack".
+    expect(options[1].textContent).toBe('glove-50d — needs Word vectors (GloVe)');
   });
 
   it('suffixes the model id for a pack:item requirement', () => {
@@ -680,7 +682,7 @@ describe('ParamField — select options gated on an optional pack', () => {
     expect(options[0].disabled).toBe(false);
     expect(options[0].textContent).toBe('all-MiniLM-L6-v2');
     expect(options[1].disabled).toBe(true);
-    expect(options[1].textContent).toBe('all-mpnet-base-v2 — needs model: all-mpnet-base-v2');
+    expect(options[1].textContent).toBe('all-mpnet-base-v2 — needs all-mpnet-base-v2');
   });
 
   it('keeps the current value selectable even when its requirement is missing and shows the install link', () => {
@@ -706,6 +708,20 @@ describe('ParamField — select options gated on an optional pack', () => {
     // The visible label stays short — the pack is already named in the
     // sentence this button sits at the end of.
     expect(link).toHaveTextContent('Install pack');
+  });
+
+  it('drops its install button when the caller already shows one for this node', () => {
+    // `NodeParamList` puts a banner above the fields with its own Install
+    // pack button for the same pack. The sentence here is option-specific and
+    // stays; a second button to the same place is the duplicate.
+    seedPacks(wordVectors());
+    render(
+      <ParamField param={embeddingParam()} value="glove-50d" onChange={() => {}} hidePackAction />,
+    );
+
+    const hint = hintFor(screen.getByRole('combobox') as HTMLSelectElement);
+    expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors (GloVe) pack.');
+    expect(within(hint).queryByRole('button')).toBeNull();
   });
 
   it('names the model in the warning for a pack:item requirement on the current value', () => {

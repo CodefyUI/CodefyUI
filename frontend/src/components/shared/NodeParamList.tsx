@@ -75,6 +75,10 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
         value={params[param.name]}
         onChange={handleChange}
         siblingParams={params}
+        // The banner below is already this node's route to the Package
+        // Center; a gated select would otherwise add a second button to the
+        // same place, a few rows further down.
+        hidePackAction={missingPack !== null}
       />
       {param.description && (
         <div className={styles.paramHint}>

@@ -936,8 +936,8 @@ const zhTW: Record<TranslationKey, string> = {
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
-  'paramField.needsPack': '需要套件：{pack}',
-  'paramField.needsModel': '需要模型：{item}',
+  'paramField.needsPack': '需要 {pack}',
+  'paramField.needsModel': '需要 {item}',
   'paramField.packHint': '「{option}」需要 {pack} 套件。',
   'paramField.modelHint': '「{option}」需要 {pack} 套件裡的模型 {item}。',
   'paramField.packHintOthers': '灰色的選項需要另外安裝套件。',
