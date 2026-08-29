@@ -77,8 +77,10 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
         siblingParams={params}
         // The banner below is already this node's route to the Package
         // Center; a gated select would otherwise add a second button to the
-        // same place, a few rows further down.
-        hidePackAction={missingPack !== null}
+        // same place, a few rows further down. The pack ID, not a flag: the
+        // banner opens exactly one pack, and an option needing a different
+        // one still has to offer its own way there.
+        hidePackActionFor={missingPack?.packId}
       />
       {param.description && (
         <div className={styles.paramHint}>

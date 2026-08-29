@@ -884,11 +884,14 @@ const en = {
   'packs.catalog.word-vectors.desc':
     'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
   'packs.catalog.rag.title': 'RAG stack',
+  // Neither of these names what the row under it already says: the dependency
+  // line carries "Requires: Sentence embeddings" with its live state, and the
+  // button two rows below the GPU description reads "Install and restart".
   'packs.catalog.rag.desc':
-    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate; needs Sentence embeddings first',
+    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate',
   'packs.catalog.gpu-torch.title': 'GPU PyTorch',
   'packs.catalog.gpu-torch.desc':
-    'Switch PyTorch to the CUDA/ROCm build that matches this machine; the server restarts',
+    'Switch PyTorch to the CUDA/ROCm build that matches this machine',
 
   // Pack and item state, keyed by the value the API sends.
   'packs.status.not_installed': 'Not installed',

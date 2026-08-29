@@ -391,9 +391,14 @@
   white-space: nowrap;
 }
 
+/* All of the shrink goes to the NAME, which has a tooltip that gives it back;
+   the licence has none, so `apach…` on a narrow row would be a fact lost. The
+   `max-width` is the guard against the other extreme — a licence string long
+   enough to take the row on its own still yields the name its share. */
 .itemLicense {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 40%;
   color: var(--text-muted);
   font-size: var(--fs-2xs);
   font-family: system-ui, sans-serif;

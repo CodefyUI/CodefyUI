@@ -833,10 +833,11 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.catalog.word-vectors.title': '詞向量（GloVe）',
   'packs.catalog.word-vectors.desc': '給 WordVector 用的真實 40 萬字 GloVe-50d 表；不需要額外 Python 套件',
   'packs.catalog.rag.title': 'RAG 檢索堆疊',
-  'packs.catalog.rag.desc':
-    '給 HFTextGenerate 用的本機生成模型 Qwen2.5-0.5B-Instruct；需要先安裝句向量模型',
+  // 兩句都不再重複下一列已經寫過的事：相依列會帶著即時狀態說「需要先安裝：
+  // 句向量模型」，GPU 說明再往下兩列的按鈕就寫著「安裝並重新啟動」。
+  'packs.catalog.rag.desc': '給 HFTextGenerate 用的本機生成模型 Qwen2.5-0.5B-Instruct',
   'packs.catalog.gpu-torch.title': 'GPU 版 PyTorch',
-  'packs.catalog.gpu-torch.desc': '把 PyTorch 換成符合這台機器的 CUDA/ROCm 版本；伺服器會重新啟動',
+  'packs.catalog.gpu-torch.desc': '把 PyTorch 換成符合這台機器的 CUDA/ROCm 版本',
 
   // Pack and item state, keyed by the value the API sends.
   'packs.status.not_installed': '未安裝',

@@ -38,12 +38,16 @@ interface ParamFieldProps {
    */
   siblingParams?: Record<string, any>;
   /**
-   * The caller already shows an Install pack button for this node, so a gated
-   * select must not add a second one to the same place. Only `NodeParamList`
-   * sets it, and only when its own banner is up; every other caller renders
-   * the button as before.
+   * The pack the caller ALREADY offers an Install button for, so a gated
+   * select does not add a second one to the same place.
+   *
+   * A pack id rather than a flag: a node whose `requires_pack` is one pack can
+   * hold a select whose option needs another, and the caller's banner opens
+   * only the first. Suppressing on "there is a banner" would leave the second
+   * pack with no route out of the panel. Only `NodeParamList` sets it; every
+   * other caller renders the button as before.
    */
-  hidePackAction?: boolean;
+  hidePackActionFor?: string;
 }
 
 interface FileFieldBackend {
@@ -199,7 +203,7 @@ export function ParamField({
   onChange,
   label,
   siblingParams,
-  hidePackAction,
+  hidePackActionFor,
 }: ParamFieldProps) {
   const displayLabel = label ?? param.name;
 
@@ -275,7 +279,7 @@ export function ParamField({
         value={value}
         onChange={onChange}
         displayLabel={displayLabel}
-        hidePackAction={hidePackAction}
+        hidePackActionFor={hidePackActionFor}
       />
     );
   }
@@ -369,13 +373,13 @@ function SelectField({
   value,
   onChange,
   displayLabel,
-  hidePackAction,
+  hidePackActionFor,
 }: {
   param: ParamDefinition;
   value: any;
   onChange: (name: string, value: any) => void;
   displayLabel: string;
-  hidePackAction?: boolean;
+  hidePackActionFor?: string;
 }) {
   const { t } = useI18n();
   const { byId, loaded, unsupported } = usePackAvailability();
@@ -445,12 +449,14 @@ function SelectField({
             ? requirementSentence(t, byId, currentValue, currentMissing)
             : t('paramField.packHintOthers')}
           {/* The sentence always; the button only when nobody above us is
-              already offering one for this node. `NodeParamList` puts a
-              banner over the fields naming the same pack with the same
-              button — two routes to one place, on one panel. The SENTENCE
-              still earns its place there: it is about this option, which the
-              node-level banner cannot say. */}
-          {!hidePackAction && (
+              already offering THIS pack. `NodeParamList` puts a banner over
+              the fields naming the node's own pack with the same button —
+              two routes to one place, on one panel. Compared by id rather
+              than by "is there a banner", because a banner for a different
+              pack is not this button's duplicate; it goes somewhere else.
+              The SENTENCE still earns its place either way: it is about this
+              option, which the node-level banner cannot say. */}
+          {focus.packId !== hidePackActionFor && (
             <>
               {' '}
               <button

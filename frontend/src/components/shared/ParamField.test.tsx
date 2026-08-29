@@ -710,18 +710,43 @@ describe('ParamField — select options gated on an optional pack', () => {
     expect(link).toHaveTextContent('Install pack');
   });
 
-  it('drops its install button when the caller already shows one for this node', () => {
+  it('drops its install button when the caller already offers THIS pack', () => {
     // `NodeParamList` puts a banner above the fields with its own Install
     // pack button for the same pack. The sentence here is option-specific and
     // stays; a second button to the same place is the duplicate.
     seedPacks(wordVectors());
     render(
-      <ParamField param={embeddingParam()} value="glove-50d" onChange={() => {}} hidePackAction />,
+      <ParamField
+        param={embeddingParam()}
+        value="glove-50d"
+        onChange={() => {}}
+        hidePackActionFor="word-vectors"
+      />,
     );
 
     const hint = hintFor(screen.getByRole('combobox') as HTMLSelectElement);
     expect(hint).toHaveTextContent('"glove-50d" needs the Word vectors (GloVe) pack.');
     expect(within(hint).queryByRole('button')).toBeNull();
+  });
+
+  it('keeps it when the caller offers a DIFFERENT pack', () => {
+    // A node whose own `requires_pack` is one pack, with an option needing
+    // another: the banner above opens the first, so hiding this button would
+    // leave the second with no route out of the panel at all.
+    seedPacks(wordVectors());
+    render(
+      <ParamField
+        param={embeddingParam()}
+        value="glove-50d"
+        onChange={() => {}}
+        hidePackActionFor="sentence-embeddings"
+      />,
+    );
+
+    const hint = hintFor(screen.getByRole('combobox') as HTMLSelectElement);
+    expect(
+      within(hint).getByRole('button', { name: 'Install pack: Word vectors (GloVe)' }),
+    ).toBeInTheDocument();
   });
 
   it('names the model in the warning for a pack:item requirement on the current value', () => {

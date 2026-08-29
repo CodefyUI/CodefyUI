@@ -1195,7 +1195,26 @@ describe('BaseNode — optional packs', () => {
     // Both chips read the same two words and mean different things — "this
     // node's pack is missing" and "this VALUE's model is missing". A node
     // whose whole pack is absent has already said so at the top, and the
-    // param chip under it is the same fact in the same words.
+    // param chip under it is the same fact in the same words — but only when
+    // the two name the SAME pack, which is what this node does.
+    seedPacks(sentenceEmbeddings());
+    renderBody(
+      baseData({
+        definition: makeDef({ ...embeddingDef(), requires_pack: 'sentence-embeddings' }),
+        params: { model: 'all-mpnet-base-v2' },
+      }),
+    );
+
+    expect(screen.getByRole('button', { name: 'PACK' })).toBeInTheDocument();
+    // The value itself still shows; only the chip beside it goes.
+    expect(screen.getByText('all-mpnet-base-v2')).toBeInTheDocument();
+    expect(screen.queryByText('needs pack')).toBeNull();
+  });
+
+  it('keeps the chip when the badge above is about a DIFFERENT pack', () => {
+    // The badge opens `word-vectors`; the value needs a model out of
+    // `sentence-embeddings`. Two facts, not one said twice — and the chip is
+    // the only thing on the card that carries the second.
     seedPacks(wordVectors(), sentenceEmbeddings());
     renderBody(
       baseData({
@@ -1205,9 +1224,9 @@ describe('BaseNode — optional packs', () => {
     );
 
     expect(screen.getByRole('button', { name: 'PACK' })).toBeInTheDocument();
-    // The value itself still shows; only the chip beside it goes.
-    expect(screen.getByText('all-mpnet-base-v2')).toBeInTheDocument();
-    expect(screen.queryByText('needs pack')).toBeNull();
+    expect(screen.getByText('needs pack').getAttribute('title')).toBe(
+      '"all-mpnet-base-v2" needs the model all-mpnet-base-v2 from the Sentence embeddings pack.',
+    );
   });
 
   it('leaves the sibling value that IS downloaded unmarked', () => {

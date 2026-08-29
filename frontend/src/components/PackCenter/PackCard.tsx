@@ -13,6 +13,7 @@ import { GpuPackDetails } from './GpuPackDetails';
 import { PackItemRow } from './PackItemRow';
 import {
   catalogKey,
+  currentStep,
   formatBytes,
   missingItems,
   statusKey,
@@ -153,14 +154,15 @@ export function PackCard({
       {pack.pip.length > 0 && (
         <div className={styles.cardMeta}>
           {t('packs.pip', { specs: pack.pip.map((entry) => entry.spec).join(', ') })}
-          {/* Said out loud in exactly one case: every model is already on disk
-              and the libraries are not, which is why the Install button is
-              alive with no box ticked. In every other state the pack's status
-              pill already says 未安裝 / 已安裝 and this would repeat it. Each
-              part keeps its own element so the specs and the state are each
-              one phrase to a reader — and to a query — rather than a run-on.
-              The dash between them is punctuation, not information. */}
-          {pipMissing && missingItems(pack).length === 0 && (
+          {/* Said out loud in exactly one case: this pack HAS files, every one
+              of them is already on disk, and the libraries are not — which is
+              why the Install button is alive with no box ticked. In every
+              other state the pack's status pill already says 未安裝 / 已安裝
+              and this would repeat it, a pack that is only libraries most of
+              all. Each part keeps its own element so the specs and the state
+              are each one phrase to a reader — and to a query — rather than a
+              run-on. The dash between them is punctuation, not information. */}
+          {pipMissing && pack.items.length > 0 && missingItems(pack).length === 0 && (
             <>
               {' '}
               <span aria-hidden="true">—</span>{' '}
@@ -232,11 +234,7 @@ export function PackCard({
                   // seeded with a zero-byte entry and a settled job keeps its
                   // items, so a cancel before the first byte otherwise left an
                   // empty bar reading "0 B" on rows nothing ever downloaded.
-                  progress={
-                    jobHere && job.status === 'running'
-                      ? itemProgress(job, item.id)
-                      : null
-                  }
+                  progress={running ? itemProgress(job, item.id) : null}
                   disabled={locked}
                   onRemove={onRemoveItem}
                 />
@@ -247,21 +245,30 @@ export function PackCard({
           {/* One primary action and what it costs. There was a "Select all
               missing" button here; the card already OPENS with exactly that
               selection ticked, so it was a control whose first click could
-              only ever be a no-op. */}
-          <div className={styles.cardActions}>
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              disabled={disabled}
-              title={reason}
-              onClick={() => onInstall(chosen.map((item) => item.id), 'live')}
-            >
-              {t('packs.installSelected')}
-            </button>
-            <span className={styles.selectedSize}>
-              {t('packs.sizeSelected', { size: formatBytes(chosenBytes) })}
-            </span>
-          </div>
+              only ever be a no-op.
+
+              The whole row goes when this pack has nothing left to install:
+              a permanently dead button over "0 B selected" is two elements
+              saying no. `pipMissing` is the exception and not an oversight —
+              a pack whose files are all here and whose libraries are not
+              still has an install to run, and this button is the only thing
+              that runs it. Remove stays on the item rows either way. */}
+          {(missingItems(pack).length > 0 || pipMissing) && (
+            <div className={styles.cardActions}>
+              <button
+                type="button"
+                className={styles.primaryBtn}
+                disabled={disabled}
+                title={reason}
+                onClick={() => onInstall(chosen.map((item) => item.id), 'live')}
+              >
+                {t('packs.installSelected')}
+              </button>
+              <span className={styles.selectedSize}>
+                {t('packs.sizeSelected', { size: formatBytes(chosenBytes) })}
+              </span>
+            </div>
+          )}
         </>
       )}
     </div>
@@ -269,7 +276,8 @@ export function PackCard({
 }
 
 /**
- * One item's bar out of the running job, treating an inherited member as absent.
+ * One item's bar out of the running job — null for anything not started yet,
+ * and treating an inherited member as absent.
  *
  * `job.items` is a bare object keyed by whatever ids the catalog ships, so an
  * item called `constructor` or `toString` would come back as a FUNCTION from a
@@ -281,9 +289,32 @@ function itemProgress(job: PackJob, itemId: string): PackItemProgress | null {
   // an item this pack does not list — or one whose key was explicitly set to
   // undefined — would otherwise hand back `undefined` under a `| null` type
   // and put the row one property access away from a crash.
-  return Object.prototype.hasOwnProperty.call(job.items, itemId)
+  const progress = Object.prototype.hasOwnProperty.call(job.items, itemId)
     ? job.items[itemId] ?? null
     : null;
+  return progress !== null && hasStarted(job, itemId, progress) ? progress : null;
+}
+
+/**
+ * Whether the job has actually reached this item.
+ *
+ * Every requested item is seeded at install time, so without this the four
+ * models of the embeddings pack all grew a bar the moment the FIRST one began
+ * — three of them empty, captioned "0 B", and claiming to be happening now. A
+ * queued item keeps the plain row it already had, which says what it is.
+ *
+ * Three ways to have started, because a download can announce itself in any
+ * of them: bytes on the wire, a size the request came back with, or the job
+ * naming this item as the step it is on — which is the only signal a convert
+ * step gives, having no bytes of its own.
+ */
+function hasStarted(job: PackJob, itemId: string, progress: PackItemProgress): boolean {
+  if (progress.bytesDone > 0 || progress.bytesTotal !== null) return true;
+  const step = currentStep(job);
+  return (
+    step !== null
+    && (step.step === `download:${itemId}` || step.step === `convert:${itemId}`)
+  );
 }
 
 /** Everything with bytes still to fetch — what a fresh card starts ticked. */
