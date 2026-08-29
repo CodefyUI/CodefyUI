@@ -84,6 +84,8 @@ Both `install.sh`/`install.ps1` and `cdui install` (after first install) accept 
 | — | `CODEFYUI_FORCE_BUILD` | `1` | Skip the prebuilt-dist download and build locally with pnpm. |
 
 > This quick start assumes an **NVIDIA GPU with CUDA 12.4**. For CPU, Apple Silicon, AMD, or detailed troubleshooting, see the [GPU & Device Setup guide](https://docs.codefyui.com/getting-started/gpu-device).
+>
+> Switching build later needs no terminal: on a server started with `cdui start`, the **GPU PyTorch** card in the Package Center installs the matching wheel and restarts the server for you, keeping the `cdui install --gpu` line on the card for when you would rather run it yourself. See [Installs that restart the server](https://docs.codefyui.com/usage/optional-packs#installs-that-restart-the-server).
 
 ### CLI Execution
 

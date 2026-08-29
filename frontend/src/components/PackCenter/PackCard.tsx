@@ -20,16 +20,6 @@ import {
 } from './packStatus';
 import styles from './PackCenterModal.module.css';
 
-/**
- * Whether the server can install a restart-mode pack and relaunch itself.
- *
- * FALSE for the whole of this PR: the backend answers a restart-mode install
- * with 409 and the command to run by hand, so offering an "Install and
- * restart" button would offer a button that cannot work. PR 5 lands the
- * supervisor handshake and flips this one constant.
- */
-export const RESTART_INSTALL_AVAILABLE = false;
-
 export function StatusPill({ status }: { status: PackStatus }) {
   const { t } = useI18n();
   const tone = statusTone(status);
@@ -57,6 +47,8 @@ export interface PackCardProps {
   /** False when the server refuses installs from this browser (remote). */
   canInstall: boolean;
   launchMode: LaunchMode;
+  /** The server's own answer to "can I install this and come back?". */
+  restartAvailable: boolean;
   gpu: PackGpuInfo | null;
   onInstall: (items: string[] | undefined, mode: PackInstallMode, variant?: string) => void;
   onRemoveItem: (itemId: string) => void;
@@ -79,6 +71,7 @@ export function PackCard({
   highlighted,
   canInstall,
   launchMode,
+  restartAvailable,
   gpu,
   onInstall,
   onRemoveItem,
@@ -212,7 +205,7 @@ export function PackCard({
           launchMode={launchMode}
           canInstall={canInstall}
           busy={locked}
-          restartAvailable={RESTART_INSTALL_AVAILABLE}
+          restartAvailable={restartAvailable}
           onInstall={(variant) => onInstall(undefined, 'restart', variant)}
         />
       ) : (

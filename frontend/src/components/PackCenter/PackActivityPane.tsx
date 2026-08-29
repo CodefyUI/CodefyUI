@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { PackSummary } from '../../api/rest';
 import type { PackJob, PackJobPhase } from '../../store/packStore';
 import { useI18n } from '../../i18n';
+import { confirm } from '../../utils/dialog';
 import { localizedPackTitle } from '../../utils/packAvailability';
 import { ProgressBar } from '../shared/ProgressBar';
 import { CommandBlock } from './CommandBlock';
@@ -18,8 +19,24 @@ export interface PackActivityPaneProps {
   job: PackJob | null;
   /** The catalog row for `job.packId`, for the byte weights and the name. */
   pack: PackSummary | undefined;
+  /** The server's own answer to "can I install this and come back?". */
+  restartAvailable: boolean;
+  /** False when the server refuses installs from this browser (remote). */
+  canInstall: boolean;
+  /** This job's pack already has an install request in flight. */
+  busy: boolean;
   onCancel: () => void;
   onDismiss: () => void;
+  /**
+   * Install *packId* again in restart mode. Only ever called from the
+   * `needs_restart` banner, and only when the retry was offered.
+   *
+   * The id is an ARGUMENT rather than something the handler looks up, because
+   * a confirm dialog is open across several catalog polls and `refresh` can
+   * adopt another tab's job while it is: the pack that gets installed has to
+   * be the one whose banner the user was reading.
+   */
+  onRestartInstall: (packId: string) => void;
   cancelling: boolean;
 }
 
@@ -37,8 +54,12 @@ type BannerTone = 'success' | 'warning' | 'error' | 'neutral';
 export function PackActivityPane({
   job,
   pack,
+  restartAvailable,
+  canInstall,
+  busy,
   onCancel,
   onDismiss,
+  onRestartInstall,
   cancelling,
 }: PackActivityPaneProps) {
   const { t, locale } = useI18n();
@@ -119,7 +140,14 @@ export function PackActivityPane({
           />
         </>
       ) : (
-        <ResultBanner job={job} title={title} />
+        <ResultBanner
+          job={job}
+          title={title}
+          restartAvailable={restartAvailable}
+          canInstall={canInstall}
+          busy={busy}
+          onRestartInstall={onRestartInstall}
+        />
       )}
 
       <PackLogTail lines={job.log} ariaLabel={t('packs.activity.log')} />
@@ -145,13 +173,57 @@ export function PackActivityPane({
 }
 
 /** How a finished job is reported: one toned banner, and what to do next. */
-function ResultBanner({ job, title }: { job: PackJob; title: string }) {
+function ResultBanner({
+  job,
+  title,
+  restartAvailable,
+  canInstall,
+  busy,
+  onRestartInstall,
+}: {
+  job: PackJob;
+  title: string;
+  restartAvailable: boolean;
+  canInstall: boolean;
+  busy: boolean;
+  onRestartInstall: (packId: string) => void;
+}) {
   const { t } = useI18n();
   const tone = BANNER_TONE[job.status] ?? 'neutral';
 
   // The same sentence the live region announces, by construction rather than
   // by two copies of the same five `t()` calls.
   const sentence = resultSentence(t, job, title);
+
+  // BOTH flags, and they answer different questions. `retryMode` is this
+  // job's own: the server said a restart-mode install is what would get past
+  // whatever stopped this one (a resolver conflict against the constraints
+  // file). `restartAvailable` is the server's: it can actually perform one.
+  // Either alone would offer a button that ends in a 409.
+  const canRetry = job.status === 'needs_restart'
+    && job.retryMode === 'restart'
+    && restartAvailable;
+
+  // The body is about what the restart DOES, not just that it happens: the
+  // helper installs packages only — it runs from an interpreter with none of
+  // this app's downloader in it — so a pack with models comes back with them
+  // still missing, and an ordinary install afterwards is what fetches them.
+  // Being told that before the server goes away is the difference between a
+  // second install and a bug report.
+  const retry = useCallback(async () => {
+    const ok = await confirm({
+      title: t('packs.activity.restartAndInstall'),
+      message: t('packs.activity.restartAndInstallNote'),
+      confirmText: t('packs.activity.restartAndInstall'),
+      variant: 'danger',
+    });
+    if (!ok) return;
+    // This banner's own pack, captured before the dialog opened — not
+    // whatever job the store holds now. A `refresh` between the click and the
+    // answer can adopt an install started in another tab, and reinstalling
+    // THAT one is not what the user just agreed to.
+    onRestartInstall(job.packId);
+  }, [job.packId, onRestartInstall, t]);
 
   return (
     <div className={styles.resultBanner} role="status" data-tone={tone}>
@@ -163,8 +235,30 @@ function ResultBanner({ job, title }: { job: PackJob; title: string }) {
         <span className={styles.resultHint}>{job.error.hint}</span>
       )}
 
+      {/* Kept even when the button is there: the command is the same install
+          in a terminal, and a user who was just told the server will restart
+          is entitled to do it themselves instead. */}
       {job.status === 'needs_restart' && job.restartCommand !== null && (
         <CommandBlock command={job.restartCommand} />
+      )}
+
+      {canRetry && (
+        <div className={styles.cardActions}>
+          {/* Disabled on the same two counts as the GPU card's button: a
+              remote browser, whose install the server refuses from anywhere
+              but its own machine, and a request already in flight for this
+              pack — a live button in either case would spend a confirm and a
+              restart warning on a refusal. */}
+          <button
+            type="button"
+            className={styles.primaryBtn}
+            disabled={!canInstall || busy}
+            title={canInstall ? undefined : t('packs.remoteDisabled')}
+            onClick={() => void retry()}
+          >
+            {t('packs.activity.restartAndInstall')}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -208,7 +302,17 @@ function resultSentence(t: Translate, job: PackJob, title: string): string | nul
     case 'cancelled':
       return t('packs.activity.cancelled');
     case 'needs_restart':
-      return t('packs.activity.needsRestart', { pack: title });
+      // One status, two stories, and "Installed." is only true for one of
+      // them. A RESTART-mode job really did install: the helper is running
+      // and the server is on its way out. A LIVE job with this status stopped
+      // dead on a resolver conflict having changed nothing — telling that
+      // user their pack is installed is how they come back to report it
+      // missing. `retryMode` is the server's own word for "a restart is what
+      // would finish this", and a job whose mode is not `restart` is a live
+      // one whatever else it says.
+      return job.retryMode === 'restart' || job.mode !== 'restart'
+        ? t('packs.activity.needsRestartConflict')
+        : t('packs.activity.needsRestart', { pack: title });
     case 'lost':
       return t('packs.activity.lost');
     default:

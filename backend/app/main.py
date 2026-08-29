@@ -76,6 +76,7 @@ from .core.db import Database
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
+from .core.packs import restart as pack_restart
 from .core.packs.service import PackService
 from .core.port_stats import PortStatsCache
 from .core.version import get_version
@@ -365,7 +366,21 @@ async def lifespan(app: FastAPI):
     # ── Package Center: one optional-pack install at a time ────────────
     # Same lifetime rules as the run service above: it owns an asyncio.Task
     # and a worker thread, so it is drained in the shutdown block below.
-    pack_service = PackService()
+    #
+    # A pending restart file still on disk at startup is the wreckage of a
+    # restart-mode install that did not happen -- the process that claimed it
+    # is gone -- and leaving it there would refuse every future one with "an
+    # install is already pending". A claim whose process is still alive is
+    # left exactly where it is: that is another server, mid-handshake.
+    if pack_restart.clear_stale_pending():
+        logger.info("Cleared a stale pending restart file (the install it "
+                    "claimed never ran)")
+    # `runs_active` is the veto on ending this process for an install: a
+    # graph run dies with the server, and that is minutes or hours of
+    # somebody's training thrown away. Passed as a closure so the service
+    # asks the question without holding the application.
+    pack_service = PackService(
+        runs_active=lambda: pack_restart.runs_active(app))
     app.state.pack_service = pack_service
 
     yield

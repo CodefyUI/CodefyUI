@@ -46,7 +46,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from ..config import settings
 from ..core.packs import catalog, flows, restart, state
 from ..core.packs.catalog import ModelItem, Pack
-from ..core.packs.errors import PackInsufficientDisk
+from ..core.packs.errors import (
+    PackInstallError,
+    PackInsufficientDisk,
+    RestartRefused,
+)
 from ..core.packs.service import (
     PackBusy,
     PackJob,
@@ -81,7 +85,8 @@ class InstallRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: Which items to fetch. Omitted means "the whole pack, minus what is
-    #: already downloaded".
+    #: already downloaded". Ignored by a restart-mode install, which installs
+    #: packages only -- the models are downloaded afterwards, live.
     items: list[str] | None = None
     mode: Literal["live", "restart"] | None = None
     #: Only meaningful for the GPU pack: which torch wheel to install.
@@ -267,6 +272,12 @@ async def list_packs(request: Request) -> dict:
         "last_restart_job": restart.read_last_restart(),
         "remote_install_allowed": remote_install_allowed(),
         "launch_mode": launch_mode if launch_mode in _LAUNCH_MODES else "unknown",
+        # Whether the panel may offer "install and restart" at all, rather
+        # than only the command to paste. Narrower than ``launch_mode``: it
+        # also wants the launcher still on disk and the kill switch off, and
+        # it stays on the loop deliberately -- it is one ``stat`` of a local
+        # path, not the subprocess ``gpu_info`` above needs a thread for.
+        "restart_available": restart.restart_available(),
         "gpu": gpu,
     }
 
@@ -284,7 +295,20 @@ async def install_pack(pack_id: str, request: Request,
     than reported as a failed job thirty seconds later: an unknown item, a
     dependency that is not ready, an install already running, a disk that
     cannot hold the download, and a restart-mode request this server cannot
-    honour. A 202 means the job exists and is running.
+    honour or cannot honour yet. A 202 means the job exists.
+
+    For a RESTART-mode install the 202 is the last thing this process says:
+    the job it names is already ``needs_restart``, the helper that will
+    finish the install is running, and the server stops itself half a second
+    later. The client follows the job's events exactly as it would a live
+    one -- it just reaches the terminal event immediately, and then waits for
+    the server to come back.
+
+    A restart-mode install carries NO model items -- only the pack's Python
+    packages, or the torch wheel. The helper runs outside this app and has no
+    downloader in it, so ``items`` is ignored on that path; download the
+    models afterwards with an ordinary install, on the server that comes
+    back.
     """
     pack = _require_pack(pack_id)
     service = _service(request)
@@ -320,11 +344,30 @@ async def install_pack(pack_id: str, request: Request,
         return JSONResponse(status_code=409,
                             content={"detail": str(exc),
                                      "command": exc.command})
+    except RestartRefused as exc:
+        # Also a 409, and deliberately the same shape plus ``reason``: to the
+        # client both mean "not from in here, not now", and the command is
+        # the way round either. Caught BEFORE PackInsufficientDisk and the
+        # generic branch below -- all three are PackInstallError subclasses,
+        # and nothing failed here.
+        return JSONResponse(status_code=409,
+                            content={"detail": str(exc), "reason": exc.reason,
+                                     "command": exc.command})
     except PackInsufficientDisk as exc:
         # 507 Insufficient Storage: the request was fine, the disk is not.
         return JSONResponse(status_code=507,
                             content={"detail": str(exc), "needed": exc.needed,
                                      "free": exc.free})
+    except PackInstallError as exc:
+        # The restart helper could not be started. Nothing was installed, no
+        # job exists to follow, and the message is the only thing anyone has
+        # -- so it travels rather than becoming an anonymous 500 page.
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        # A request the catalog cannot honour: an item id this pack does not
+        # have, or a restart-mode install of a pack with no packages in it.
+        # The client's fault, and nothing was started.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     return {"job_id": job.job_id}
 
 

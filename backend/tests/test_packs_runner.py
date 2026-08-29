@@ -225,6 +225,30 @@ def test_run_pip_env_sanitised(monkeypatch):
     assert env["CODEFYUI_MARKER"] == "kept"
 
 
+@pytest.mark.parametrize(
+    "name", ["PYTHONHOME", "__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE"])
+def test_run_pip_env_drops_the_stdlib_pointers(monkeypatch, name):
+    """A child must find its OWN standard library, not this process's.
+
+    Not hypothetical, and not cheap to debug: a uv-managed virtualenv's
+    ``python.exe`` is a trampoline that runs the server with ``PYTHONHOME``
+    pointing at the base interpreter it was built from. Handing that down
+    made a Python 3.13 child load a 3.11 stdlib and die on ``import
+    argparse`` with "AssertionError: SRE module mismatch" -- before it could
+    say anything, in a detached process nobody was watching.
+
+    All three are the same mistake in different spellings: ``PYTHONHOME``
+    relocates the stdlib, ``PYTHONEXECUTABLE`` and the macOS framework
+    launcher's ``__PYVENV_LAUNCHER__`` relocate ``sys.executable``, off
+    which ``site`` derives the rest.
+    """
+    monkeypatch.setenv(name, "C:/uv/python/cpython-3.11-windows-x86_64-none")
+
+    _, _, seen = _run(_FakeProc([]), monkeypatch)
+
+    assert name not in seen["kwargs"]["env"]
+
+
 def test_run_pip_cancel_terminates_the_process_tree_on_windows(monkeypatch):
     """Windows: kill the whole tree, because uv's children hold the download.
 

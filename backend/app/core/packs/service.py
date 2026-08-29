@@ -19,6 +19,15 @@ environment or a deadlock. A second submit is refused with the id of the job
 already running, which is what the UI needs to show "an install is already
 in progress" and offer to follow it.
 
+A RESTART-MODE install has no flow and no thread at all. It cannot run inside
+this process -- it would replace packages this process has already imported --
+so ``_submit_restart`` writes down what to install, hands it to a detached
+helper, records a job that is ALREADY terminal (``needs_restart``) and asks
+the server to stop. The job exists so that the client has the same thing to
+follow as for a live install: one id, one event stream, one terminal event
+saying what happens next. What it follows afterwards is the server coming
+back.
+
 The finished job STAYS. The last thing a client asks for is the tail of a job
 that just ended -- the failure message, the final log lines -- so the job and
 its events live until the next submit replaces them.
@@ -43,7 +52,13 @@ from datetime import datetime, timezone
 
 from . import download, flows, restart, state
 from .catalog import ModelItem, Pack, get_item
-from .errors import PackCancelled, PackInstallError, PackNeedsRestart
+from .errors import (
+    PackCancelled,
+    PackInstallError,
+    PackNeedsRestart,
+    PendingExists,
+    RestartRefused,
+)
 
 log = logging.getLogger(__name__)
 
@@ -156,11 +171,23 @@ class PackService:
         self,
         *,
         run_flow: Callable[..., object] = flows.install_pack_live,
+        runs_active: Callable[[], bool] | None = None,
         shutdown_timeout_s: float = SHUTDOWN_TIMEOUT_S,
     ) -> None:
         # Injectable so tests never run a real install, and so the CLI could
         # reuse the runner with a different flow.
         self._run_flow = run_flow
+        # "Is a graph running?", which vetoes a restart-mode install -- see
+        # ``_submit_restart``. INJECTED rather than answered from an
+        # application object this class would then have to hold: the question
+        # belongs to ``restart.runs_active(app)``, and ``main.py``'s lifespan
+        # passes exactly that closure. Left out, the answer is "nothing is
+        # running", which is what a service with no application behind it
+        # (every test, and any future CLI use) is honestly entitled to say --
+        # and it is the same answer ``restart.runs_active`` gives for an app
+        # whose run service has not been built yet.
+        self._runs_active = runs_active if runs_active is not None else (
+            lambda: False)
         self._shutdown_timeout_s = shutdown_timeout_s
         # Guards the buffer, the cursor and every mutation of the current
         # job's status. Held by both the loop and the flow's worker thread,
@@ -251,14 +278,35 @@ class PackService:
     ) -> PackJob:
         """Start installing *pack*. Returns the job; raises before starting one.
 
+        A RESTART-mode install carries no model items: the helper installs
+        Python packages (or swaps the torch wheel) from an interpreter that
+        has none of this app's downloader in it. ``item_ids`` is ignored on
+        that path, and a pack whose models are also missing is finished with
+        an ordinary live install afterwards.
+
+        Only one thing here is awaited, and it is the branch that hands over
+        to :meth:`_submit_restart` -- which returns or raises. Everything on
+        the live path from the busy check to the ``self._job`` assignment
+        therefore runs without a suspension point between them, which is the
+        whole of what makes "one install at a time" true: two requests cannot
+        both pass the check before either takes the slot.
+
         :raises PackBusy: an install is already running.
-        :raises RestartUnavailable: ``mode="restart"`` on a server that
-            cannot restart itself (every server, in this release).
+        :raises RestartUnavailable: a restart-mode install on a server that
+            cannot restart itself. ``command`` is what to type instead.
+        :raises RestartRefused: a restart this server COULD do, but not right
+            now -- a graph is running, another restart is already claimed, or
+            (for a LIVE install) a restart is already pending and this process
+            is seconds from ending. Nothing was written down.
+        :raises PackInstallError: the restart helper could not be started.
+            The claim is withdrawn first, so a retry is not refused as "one
+            is already pending".
         :raises PackInsufficientDisk: the disk cannot hold what was asked
             for. Checked HERE rather than in the job so the client is told
             by the response to its own request -- a 507 it can act on,
             instead of a job that starts, appears in the panel, and fails.
-        :raises ValueError: an item id this pack does not have.
+        :raises ValueError: an item id this pack does not have, or a
+            restart-mode install with no packages to install.
         """
         running = self._job
         if running is not None and not running.terminal:
@@ -268,31 +316,30 @@ class PackService:
         # marked restart-mode is one whose install replaces something this
         # process has already imported, and running it live does not fail --
         # it succeeds having changed nothing, and the panel then reports a
-        # GPU PyTorch install that never happened. So a restart-mode pack is
-        # refused whatever the client asked for.
-        if ((mode == "restart" or pack.install_mode == "restart")
-                and not restart.restart_available()):
-            # PR 5 replaces this branch with the real restart handshake.
-            #
-            # Off the loop. Naming the GPU pack's command means asking which
-            # wheel this machine should have, and answering that from a cold
-            # cache runs nvidia-smi with a five second timeout. Since the
-            # condition above widened to the pack's own mode, this branch is
-            # reached by every POST to gpu-torch rather than only by a client
-            # that explicitly asked for restart mode -- so what used to be a
-            # rare stall would now be one on the ordinary path.
-            #
-            # This is the only ``await`` in this method, and it is inside a
-            # branch that always raises. The busy check above and the
-            # assignment of ``self._job`` below therefore still run without a
-            # suspension point between them, which is what makes "one job at
-            # a time" hold against two submits arriving together.
-            command = await asyncio.to_thread(
-                restart.install_command_for, pack, variant)
-            raise RestartUnavailable(
-                f"{pack.title} cannot be installed from inside the running "
-                f"server; run the command instead",
-                command=command)
+        # GPU PyTorch install that never happened. So a restart-mode pack
+        # takes this path whatever the client asked for.
+        if mode == "restart" or pack.install_mode == "restart":
+            return await self._submit_restart(pack, variant)
+
+        # A restart-mode job is TERMINAL from the moment it is made -- the
+        # check above waves the next install straight through -- but the
+        # server it would run in is half a second from raising SIGINT on
+        # itself. The flow would appear in the panel, start downloading and
+        # die unfinished with the process. Refused rather than queued: there
+        # is no queue to survive the restart, and the user can ask again on
+        # the server that comes back.
+        if (running is not None and running.mode == "restart"
+                and running.status == STATUS_NEEDS_RESTART):
+            raise RestartRefused(
+                f"{pack.title} cannot be installed right now: this server is "
+                f"restarting to finish another install",
+                reason="a restart is already pending",
+                # THIS pack's command, not the pending restart's. Every
+                # refusal carries the line that gets the user what they just
+                # asked for; ``running.restart_command`` installs the other
+                # pack, and handing somebody a command for a package they
+                # did not ask for is worse than handing them none.
+                command=restart.install_command_for(pack))
 
         targets = self._targets(pack, item_ids)
         download.check_disk(targets)
@@ -313,6 +360,156 @@ class PackService:
         # a client that polls from cursor 0 always sees it first.
         self._task = asyncio.create_task(self._run(job, pack, loop, broadcast))
         return job
+
+    async def _submit_restart(self, pack: Pack, variant: str | None) -> PackJob:
+        """Write the install down, start the helper, and stop the server.
+
+        The one install that finishes by ending the process that started it.
+        There is no flow and no worker thread: this method's whole job is the
+        handshake, and the job it returns is already terminal
+        (``needs_restart``) -- the SPA reads that status on a restart-mode
+        job as "reload when the server answers again".
+
+        PACKAGES ONLY. The helper runs from an interpreter with none of this
+        app's downloader in it, so no model item can travel this path; the
+        pending file carries pip specs or the torch index and nothing else.
+        A pack that needs models as well is finished with an ordinary live
+        install once the server is back, which is why the job's ``items`` is
+        empty and there is no disk check here.
+
+        The ORDER is not a preference. ``spawn_helper`` READS the pending
+        file, so the claim is written first; the job is stored only after the
+        helper is running, so a spawn that fails leaves no job in the panel
+        for an install that will never happen; and the shutdown is scheduled
+        last, delayed, so the 202 carrying the job id is out the door before
+        the SIGINT lands.
+
+        Every refusal happens BEFORE the pending file is written, and the one
+        failure that can happen after it (the spawn) withdraws the claim on
+        its way out. The alternative -- a pending file for a helper that was
+        never started -- refuses every later restart with "one is already
+        pending" until it goes stale fifteen minutes later.
+        """
+        # Off the loop, and first. Naming the GPU pack's command means asking
+        # which wheel this machine should have, and answering that from a
+        # cold cache runs nvidia-smi with a five second timeout. Every branch
+        # below wants the answer -- each refusal quotes it and the terminal
+        # event carries it -- so it is paid for exactly once here, which also
+        # warms the memoised probe ``build_pending`` would otherwise run on
+        # the loop thread.
+        command = await asyncio.to_thread(
+            restart.install_command_for, pack, variant)
+
+        if not restart.restart_available():
+            raise RestartUnavailable(
+                f"{pack.title} cannot be installed from inside the running "
+                f"server; run the command instead",
+                command=command)
+
+        kind = self._restart_kind(pack)
+
+        # Nothing from here to the end of the method awaits, so the checks
+        # below and the assignment of ``self._job`` cannot be interleaved
+        # with another submit -- the same property that makes "one job at a
+        # time" hold in ``submit_install``. The busy check is repeated
+        # because the probe above IS a suspension point: a live install may
+        # have started during it, and stopping the server would kill it.
+        running = self._job
+        if running is not None and not running.terminal:
+            raise PackBusy(running.job_id)
+
+        if self._runs_active():
+            raise RestartRefused(
+                f"{pack.title} cannot be installed while a graph is running: "
+                f"the server has to restart, and the run would go with it",
+                reason="a graph is running", command=command)
+
+        loop = asyncio.get_running_loop()
+        job = PackJob(job_id=uuid.uuid4().hex, pack_id=pack.pack_id,
+                      items=(), mode="restart")
+        # No items: the helper installs PACKAGES and nothing else -- it runs
+        # from an interpreter with none of this app's downloader in it -- so
+        # there is no download to disk-check and nothing to report progress
+        # for. A pack whose models are also missing is installed live for
+        # those, before or after.
+        pending = restart.build_pending(pack, job_id=job.job_id, kind=kind,
+                                        variant=variant)
+        try:
+            pending_path = restart.write_pending(pending)
+        except PendingExists as exc:
+            # Somebody else's claim, still live. Nothing has been changed and
+            # nothing is lost; the next step is to wait for that one.
+            raise RestartRefused(
+                str(exc), reason="a restart-mode install is already pending",
+                command=command, hint=exc.hint) from exc
+
+        try:
+            helper_pid = restart.spawn_helper(pending_path)
+        except Exception as exc:
+            # Withdraw the claim before saying anything: this server is still
+            # running and can be retried, and a file nobody will act on would
+            # refuse that retry for the next fifteen minutes.
+            pending_path.unlink(missing_ok=True)
+            log.exception("the restart helper for pack %s did not start",
+                          pack.pack_id)
+            raise PackInstallError(
+                f"the restart helper could not be started, and nothing was "
+                f"installed: {exc}") from exc
+
+        log.info("restart-mode install of %s handed to helper pid %s (job %s)",
+                 pack.pack_id, helper_pid, job.job_id)
+        job.restart_command = command
+        # There is no task for this job. Leaving the previous job's finished
+        # one in place would have ``shutdown`` await something that belongs
+        # to a job nobody can read any more.
+        self._task = None
+
+        broadcast = _Broadcast()
+        with self._lock:
+            self._job = job
+            self._events.clear()
+            self._cursor = 0
+            self._broadcast = broadcast
+            self._store({"type": "job_started", "pack_id": pack.pack_id,
+                         "items": []})
+        # Terminal immediately, and under the lock like every other terminal
+        # event: a client that sees ``needs_restart`` has already been handed
+        # the event that names the command, the kind and the file.
+        self._finish(job, STATUS_NEEDS_RESTART,
+                     {"type": "needs_restart", "command": command,
+                      "kind": kind, "pending_path": str(pending_path)})
+
+        restart.schedule_self_shutdown(loop)
+        return job
+
+    @staticmethod
+    def _restart_kind(pack: Pack) -> str:
+        """``"torch"`` for the wheel swap, ``"pip"`` for a package install.
+
+        The helper runs the two with different command lines -- one carries
+        ``--index-url``, the other a list of PEP 508 specs -- and it has no
+        catalog to look the pack up in, so the decision is made here and
+        written into the pending file.
+
+        ``restart._GPU_TORCH_PACK_ID`` rather than a second copy of the
+        literal: ``restart`` is already where "which pack is the wheel swap"
+        is decided (``install_command_for`` asks the same question), and one
+        pack id spelled in two files is one spelling too many.
+
+        :raises ValueError: the pack has no packages to install. Stopping the
+            server to install nothing is worse than refusing -- and it would
+            report success, which is how a panel comes to claim an install
+            that never happened. ``restart.build_pending`` refuses the same
+            case; this one runs first, before a job id has even been minted,
+            so the client is answered by its own request.
+        """
+        if pack.pack_id == restart._GPU_TORCH_PACK_ID:
+            return "torch"
+        if not pack.pip:
+            raise ValueError(
+                f"pack {pack.pack_id!r} has no packages to install, so a "
+                f"restart-mode install would stop the server to do nothing")
+        return "pip"
 
     @staticmethod
     def _targets(pack: Pack, item_ids: Sequence[str] | None) -> list[ModelItem]:
@@ -369,8 +566,16 @@ class PackService:
             # Checked before PackInstallError: it is a subclass, and "not
             # while the server is running" is not a failure.
             job.restart_command = exc.command
-            self._finish(job, STATUS_NEEDS_RESTART,
-                         {"type": "needs_restart", "command": exc.command})
+            event = {"type": "needs_restart", "command": exc.command}
+            if restart.restart_available():
+                # There is a button for this, not only a command to paste:
+                # the same install, submitted with ``mode="restart"``, is
+                # exactly what this server would do about it. The key is
+                # ABSENT rather than null where there is no such button, so
+                # the client's question is "is retry_mode set?" and not "is
+                # it set and also not null".
+                event["retry_mode"] = "restart"
+            self._finish(job, STATUS_NEEDS_RESTART, event)
         except PackInstallError as exc:
             self._fail(job, str(exc), exc.hint)
         except Exception as exc:
@@ -440,6 +645,13 @@ class PackService:
         thread hand-off. ``self._broadcast`` is still this job's generation:
         only a submit replaces it, and a submit is refused until the current
         job is terminal -- which is what this method is about to make true.
+
+        The other caller is ``_submit_restart``, where that argument runs the
+        other way round and still holds: the generation was replaced by the
+        submit itself, moments earlier and under the same lock, and this job
+        was terminal on arrival. It has no ``_run`` and no worker thread --
+        the install happens in another process, after this one is gone -- so
+        this is the only place its status is ever set.
         """
         with self._lock:
             self._store(event)

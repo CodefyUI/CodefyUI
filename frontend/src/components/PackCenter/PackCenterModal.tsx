@@ -41,6 +41,7 @@ function PackCenterBody() {
   const unsupported = usePackStore((s) => s.unsupported);
   const remoteInstallAllowed = usePackStore((s) => s.remoteInstallAllowed);
   const launchMode = usePackStore((s) => s.launchMode);
+  const restartAvailable = usePackStore((s) => s.restartAvailable);
   const gpu = usePackStore((s) => s.gpu);
   const job = usePackStore((s) => s.job);
   const busy = usePackStore((s) => s.busy);
@@ -137,6 +138,18 @@ function PackCenterBody() {
     [install],
   );
 
+  // The pack comes from the banner that asked, not from the store: a confirm
+  // dialog stays open across catalog polls, and a `refresh` that adopts
+  // another tab's job mid-dialog must not redirect this install to it. No
+  // variant — the conflict this retries is a live install of a pack that has
+  // no builds to choose between, and the server picks for the GPU pack.
+  const onRestartInstall = useCallback(
+    (packId: string) => {
+      void install(packId, { mode: 'restart' });
+    },
+    [install],
+  );
+
   // `byId` is built from parsed JSON, so a bare index answers with an
   // inherited member for a pack id like `constructor`.
   const jobPack =
@@ -229,6 +242,7 @@ function PackCenterBody() {
                   highlighted={highlighted === pack.id}
                   canInstall={remoteInstallAllowed}
                   launchMode={launchMode}
+                  restartAvailable={restartAvailable}
                   gpu={gpu}
                   onInstall={(items, mode, variant) =>
                     onInstall(pack.id, items, mode, variant)
@@ -244,9 +258,13 @@ function PackCenterBody() {
             <PackActivityPane
               job={job}
               pack={jobPack}
+              restartAvailable={restartAvailable}
+              canInstall={remoteInstallAllowed}
+              busy={job !== null && busy[job.packId] === true}
               cancelling={cancelling}
               onCancel={() => void cancel()}
               onDismiss={dismissJob}
+              onRestartInstall={onRestartInstall}
             />
           </aside>
         </div>

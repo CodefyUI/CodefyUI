@@ -3,12 +3,18 @@
 Two halves, and they are here together because the Package Center asks them
 in one breath ("can I switch PyTorch, and to which wheel?"):
 
-* the RESTART half is a stub in this release. ``restart_available()`` is
-  ``False``, so a ``mode="restart"`` install is refused with the exact command
-  to type instead. A later PR replaces the body with the real supervisor
-  check; nothing else in the feature has to change when it does, because
-  every caller already goes through :func:`install_command_for` for the
-  command and through the refusal for the decision.
+* the RESTART half answers "can this server finish an install that would
+  have to replace something it has already imported?" -- by going away and
+  coming back. It is offered only to a process ``cdui start`` launched
+  (:func:`restart_available`), and it runs as a handshake across the gap
+  where this process does not exist: write down what to install
+  (:func:`write_pending`), start a helper that outlives us
+  (:func:`spawn_helper`), then ask uvicorn to shut down gracefully
+  (:func:`schedule_self_shutdown`). The helper waits for this pid to go,
+  reinstalls, records the outcome where :func:`read_last_restart` will find
+  it, and relaunches the server. Where a restart is NOT available the
+  install is refused with the exact command to type, through
+  :func:`install_command_for`, which works today.
 * the GPU half MIRRORS ``scripts/dev.py``. The installer CLI and this server
   have to agree about which CUDA wheel a driver can load -- a panel that
   recommends ``cu128`` while ``cdui install --gpu auto`` picks ``cu124`` is
@@ -17,6 +23,15 @@ in one breath ("can I switch PyTorch, and to which wheel?"):
   cannot be imported from here; the mapping is copied instead and
   ``test_gpu_info_never_raises_and_mirrors_dev_py`` fails the day the two
   drift apart.
+
+Two files carry the restart half across the gap, and both are read by
+``scripts/dev.py``'s helper, which runs from an interpreter that has none of
+this installed and so cannot import a line of it. Their SCHEMAS are the
+contract, written down here (:class:`PendingRestart` and
+:func:`write_last_restart`) because this is where they are designed; dev.py
+duplicates the twenty lines that read and write them rather than importing
+the app, which is the price of a helper that can run while the app's
+packages are being replaced under it.
 
 :func:`gpu_info` never raises. It is read by ``GET /api/packs``, which is the
 route that draws the whole panel -- a machine whose ``nvidia-smi`` hangs, or
@@ -27,18 +42,82 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
+import re
 import shutil
+import signal
 import subprocess
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 
 from . import runner, state
 from .catalog import Pack
-from .paths import last_restart_file
+from .errors import PackInstallError, PendingExists
+from .paths import job_log_dir, last_restart_file, pending_restart_file
 
 log = logging.getLogger(__name__)
 
 #: The pack whose install is a wheel swap rather than a download.
 _GPU_TORCH_PACK_ID = "gpu-torch"
+
+#: Kill switch. ``"0"`` refuses restart-mode installs even under
+#: ``cdui start``; anything else (including unset) leaves them on. A kill
+#: switch rather than an opt-in because the thing it guards against -- a
+#: server that goes away and does not come back on some particular machine
+#: -- is discovered by an operator who then needs to turn it off for a whole
+#: classroom without downgrading, and because a feature nobody can reach by
+#: default is a feature nobody tests.
+ENABLE_ENV = "CODEFYUI_ENABLE_RESTART_INSTALL"
+
+#: JSON list: the OUTER interpreter and ``scripts/dev.py``, exported by
+#: ``cdui start``. NOT the ``cdui`` shim -- the shim's whole job is to FIND
+#: that interpreter, and asking a detached child to find it again is a
+#: second chance to find a different one (a venv that moved, a PATH that
+#: changed). The first element is checked for existence before a restart is
+#: offered, because a checkout that has been deleted cannot bring anything
+#: back.
+LAUNCHER_ENV = "CODEFYUI_LAUNCHER"
+
+#: JSON list: the arguments ``cdui start`` was given (host, port, project,
+#: extras). The helper relaunches with exactly these, so the server comes
+#: back on the address the browser is still pointing at.
+RELAUNCH_ARGV_ENV = "CODEFYUI_RELAUNCH_ARGV"
+
+#: Version of the pending-restart file. dev.py's helper reads that file
+#: without importing this module, so the number is the handshake: a helper
+#: from an older install refuses a file it does not understand instead of
+#: guessing at it.
+PENDING_SCHEMA = 1
+
+#: Version of the outcome record -- see :func:`write_last_restart`.
+OUTCOME_SCHEMA = 1
+
+#: How long a pending file may sit before it is treated as abandoned. A
+#: restart is a few seconds of shutdown plus however long uv takes; fifteen
+#: minutes is longer than a torch reinstall over a slow link and shorter
+#: than anybody's patience, so a claim left behind by a machine that lost
+#: power does not block the next attempt forever.
+STALE_PENDING_S = 15 * 60
+
+#: How long a claim naming no helper and no installer is still believed when
+#: the server that wrote it is gone. Mirror of ``dev.py``'s constant of the
+#: same name (``test_dev_and_restart_agree_on_the_restart_handshake``): the
+#: helper is spawned detached and stamps its pid in as its first act, so this
+#: only has to cover process creation -- but on a cold Windows box with a
+#: virus scanner in the way that is seconds, not milliseconds.
+HELPER_START_GRACE_S = 60
+
+#: The ``dev.py`` subcommand that finishes the install once this process has
+#: exited.
+HELPER_COMMAND = "packs-run-pending"
+
+#: No console at all, which is what a process outliving its parent needs.
+#: Not exposed by ``subprocess`` off Windows, so it is spelled out here --
+#: ``dev.py``'s ``start`` does the same for the server it daemonises.
+DETACHED_PROCESS = 0x00000008
 
 #: Mirror of ``scripts/dev.py``'s ``TORCH_INDEX_URLS`` (see the module
 #: docstring for why it is a copy). ``None`` means "let PyPI resolve it";
@@ -77,15 +156,92 @@ _SMI_TIMEOUT_S = 5
 _detected: tuple[str | None, str] | None = None
 
 
+def _env_argv(name: str) -> tuple[str, ...]:
+    """A JSON list of strings from the environment, or ``()``.
+
+    Never raises. Another program writes these variables, and every caller's
+    honest answer to "that was not a list of strings" is the same as its
+    answer to "it was not set": there is no launcher here.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return ()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        log.warning("%s is not JSON; ignoring it", name)
+        return ()
+    if not isinstance(value, list) or not all(
+            isinstance(part, str) for part in value):
+        log.warning("%s is not a list of strings; ignoring it", name)
+        return ()
+    return tuple(value)
+
+
 def restart_available() -> bool:
     """Can this server restart itself to finish an install?
 
-    Always False in this release: nothing yet writes the pending-restart
-    file or re-launches the process, so promising a restart would strand the
-    user with a server that went away and never came back. The refusal
-    carries the CLI command instead, which works today.
+    Three facts, all of which have to hold, and none of which this process
+    can talk itself into:
+
+    * ``CODEFYUI_MANAGED == "start"`` -- something launched this process that
+      knows how to launch it again. ``cdui dev`` reloads in place and does
+      not relaunch; a bare ``uvicorn`` has nobody at all, and promising
+      either of them a restart strands the user with a server that went away
+      and never came back.
+    * :data:`LAUNCHER_ENV` names files that are STILL THERE -- every one of
+      them, because every element of the launcher is a path (the outer
+      interpreter and ``dev.py``) and either one being gone is a restart
+      that cannot happen. Checking only the first passes on POSIX for a
+      checkout that has been MOVED: the interpreter is uv's or the system's
+      and is still where it was, while the ``dev.py`` beside it is not.
+    * the kill switch (:data:`ENABLE_ENV`) is not thrown.
+
+    Never raises, for the same reason :func:`gpu_info` does not: the caller
+    is deciding what to draw in a panel, and the honest failure is "no".
     """
-    return False
+    try:
+        if os.environ.get("CODEFYUI_MANAGED") != "start":
+            return False
+        if os.environ.get(ENABLE_ENV, "1") == "0":
+            return False
+        launcher = _env_argv(LAUNCHER_ENV)
+        return bool(launcher) and all(
+            Path(part).is_file() for part in launcher)
+    except Exception:  # pragma: no cover - is_file() eats its own OSErrors
+        log.warning("the restart availability check failed", exc_info=True)
+        return False
+
+
+def runs_active(app) -> bool:
+    """Is a graph run in flight -- running, or waiting for a device?
+
+    A restart-mode install ends this process, and a run that dies with it is
+    minutes or hours of somebody's training thrown away with no output and
+    no error anyone asked for. So this is a veto, not a hint.
+
+    QUEUED runs count as much as running ones. The queue lives in this
+    process's memory, so a restart does not postpone a queued run, it LOSES
+    it: ``RunService.recover_interrupted`` retires the rows a dead process
+    left behind at the next startup.
+
+    Answers True when it cannot tell. A restart refused because the service
+    could not be read costs a retry; a restart allowed on a wrong "no" costs
+    the run.
+    """
+    service = getattr(getattr(app, "state", None), "run_service", None)
+    if service is None:
+        # Before the lifespan built one, or after it tore it down. Nothing
+        # can be running, because nothing can have been started.
+        return False
+    try:
+        if service.active_run_ids():
+            return True
+        return any(service.queue_snapshot().values())
+    except Exception:
+        log.warning("could not read the run service; assuming it is busy",
+                    exc_info=True)
+        return True
 
 
 def recommended_cu_for_driver(driver_version: str) -> str:
@@ -221,6 +377,47 @@ def install_command_for(pack: Pack, variant: str | None = None) -> str:
     return f"cdui packs install {pack.pack_id}"
 
 
+def resolve_gpu_torch(variant: str | None) -> tuple[str, str]:
+    """``(variant, index_url)`` for a GPU PyTorch install.
+
+    ``None`` and ``"auto"`` are the same request -- "decide for me" -- and
+    are answered by :func:`gpu_info`, so the wheel a restart installs is the
+    wheel the panel offered.
+
+    Two refusals, both deliberate:
+
+    * ``"mps"`` has nothing to switch to. Apple Silicon's acceleration ships
+      in the default PyPI wheel, so there is no index to reinstall from --
+      and a pending file carrying ``index_url: null`` would reach the
+      helper's ``--index-url`` as the four letters ``None``. This fires for
+      an explicit ``"mps"`` and for an ``auto`` that resolves to it.
+    * anything else unknown -- ``"skip"`` included, which is a request to
+      change nothing -- is refused BY NAME, listing what would have been
+      accepted. The value ends up in a subprocess argument list, so the day
+      one arrives from a request body unvalidated, the check is already
+      here.
+    """
+    chosen = (gpu_info()["recommended_variant"]
+              if variant in (None, "auto") else variant)
+
+    if chosen == "mps":
+        raise ValueError(
+            "torch variant 'mps' has no wheel index to switch to; Apple "
+            "Silicon acceleration ships in the default PyPI build")
+    if chosen not in VARIANTS:
+        raise ValueError(
+            f"unknown torch variant {chosen!r}; expected one of "
+            f"{', '.join(VARIANTS)}")
+
+    index_url = TORCH_INDEX_URLS[chosen]
+    if not index_url or index_url == "__skip__":  # pragma: no cover
+        # Unreachable while every VARIANTS entry but mps has a real URL;
+        # here so that adding one without an index fails loudly rather than
+        # writing a pending file the helper cannot install from.
+        raise ValueError(f"torch variant {chosen!r} has no index URL")
+    return chosen, index_url
+
+
 def read_last_restart() -> dict | None:
     """The record of the most recent restart-mode job, or None.
 
@@ -239,3 +436,625 @@ def read_last_restart() -> dict | None:
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def write_last_restart(record: dict) -> None:
+    """Record how a restart-mode job ended, for the UI that comes back.
+
+    The schema, which ``dev.py``'s helper writes with its own two-line copy
+    of this function (it cannot import ``app`` -- it runs while ``app``'s
+    packages are being replaced)::
+
+        {"schema": 1, "job_id": str, "pack_id": str, "kind": "torch"|"pip",
+         "status": "ok"|"failed", "returncode": int|None, "message": str,
+         "log_tail": str, "finished_at": iso8601}
+
+    ``job_id``, ``status`` and ``message`` are the CONTRACT: the SPA reads
+    exactly those three to tell the user what happened while it was not
+    running (packStore's ``checkInProgress``). ``job_id`` is what makes it
+    THIS install's outcome -- the record has no age bound, so a page that
+    reloads for any other reason would otherwise report an install that
+    finished an hour ago. Everything else is for whoever opens the file.
+
+    Atomic, and deliberately NOT validated. The writer that matters most has
+    no access to this module, so a check here would describe only one of the
+    two writers -- :func:`read_last_restart` is where a bad record is
+    handled, on the reading side that both of them share.
+    """
+    text = json.dumps(record, indent=2)
+    path = last_restart_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+# -- the pending file ------------------------------------------------------
+
+def _require_text(data: dict, key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(
+            f"pending restart file: {key!r} must be a non-empty string")
+    return value
+
+
+def _require_optional_text(data: dict, key: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise ValueError(
+            f"pending restart file: {key!r} must be a string or null")
+    return value
+
+
+def _require_text_tuple(data: dict, key: str) -> tuple[str, ...]:
+    value = data.get(key)
+    if not isinstance(value, list) or not all(
+            isinstance(part, str) for part in value):
+        raise ValueError(
+            f"pending restart file: {key!r} must be a list of strings")
+    return tuple(value)
+
+
+def _require_pid(data: dict, key: str) -> int:
+    value = data.get(key)
+    # ``isinstance(True, int)`` is True, and ``True == 1``: without the bool
+    # check a JSON ``true`` would arrive here as the pid 1, which on POSIX
+    # is init and never exits -- a pending file nothing could ever clear.
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(
+            f"pending restart file: {key!r} must be a positive integer")
+    return value
+
+
+def _require_optional_pid(data: dict, key: str) -> int | None:
+    """A pid that the writer may not have stamped yet.
+
+    Absent and ``null`` are one fact -- nobody has written it -- and anything
+    else is checked exactly like a required pid. A field that is only
+    SOMETIMES there is still a field whose value decides whether a live
+    install is overwritten, so "missing" is the only leniency it gets.
+    """
+    if data.get(key) is None:
+        return None
+    return _require_pid(data, key)
+
+
+@dataclass(frozen=True)
+class PendingRestart:
+    """What a restart-mode install asked for: the file the helper reads.
+
+    Written by the server just before it shuts down, read by ``dev.py
+    packs-run-pending`` from an interpreter that cannot import this class.
+    The JSON is therefore the interface, and this dataclass is one of its two
+    implementations -- which is why :meth:`from_json` validates rather than
+    trusts, and why the field list is flat and dull (no nesting, no enums,
+    nothing that needs a library to read).
+
+    The fields, and why each one has to be in the file rather than worked
+    out again later:
+
+    * ``kind`` -- ``"torch"`` swaps the wheel with ``--index-url``,
+      ``"pip"`` installs ``specs`` with no constraints file. They take
+      different command lines, so the helper must not have to guess.
+    * ``index_url`` / ``packages`` / ``specs`` -- decided HERE, where the
+      GPU probe and the catalog are available. The helper has neither.
+    * ``venv_python`` -- the interpreter to install INTO. The helper's own
+      is the outer one, which is a different environment entirely.
+    * ``server_pid`` -- who to wait for. Replacing packages while this
+      process still has them imported is the failure the restart exists to
+      avoid.
+    * ``launcher`` / ``relaunch_argv`` -- how to bring the server back, on
+      the same address the browser is still pointing at.
+    * ``created_at`` -- how :data:`STALE_PENDING_S` is measured.
+    * ``helper_pid`` / ``installer_pid`` -- written LATER, by dev.py's
+      helper, and the only honest answer to "is this restart still
+      happening?" once it is under way: by then the server that wrote the
+      claim is dead on purpose. Absent until they are stamped, and absent
+      from the JSON while they are (see :meth:`to_json`), so a file written
+      by a server that never got a helper has exactly the keys it always
+      had.
+
+    Nothing here is trusted by the helper on the strength of being in the
+    file: it validates ``venv_python`` against ``backend/.venv`` and
+    ``launcher`` against the repo root before it runs anything (R3). This
+    file is written by the server into the user's own data directory, and
+    that is exactly the assumption worth double-checking.
+    """
+
+    schema: int
+    job_id: str
+    pack_id: str
+    kind: str                       # "torch" | "pip"
+    index_url: str | None
+    packages: tuple[str, ...]       # torch kind: ("torch", "torchvision")
+    specs: tuple[str, ...]          # pip kind: the pack's PEP 508 specs
+    venv_python: str
+    server_pid: int
+    launcher: tuple[str, ...]
+    relaunch_argv: tuple[str, ...]
+    created_at: str
+    #: Stamped by the helper, not by this server. Optional so that a claim
+    #: being built has nothing to say about them yet.
+    helper_pid: int | None = None
+    installer_pid: int | None = None
+
+    def to_json(self) -> str:
+        """The file's exact contents. Indented: a person debugging a restart
+        that did not come back reads this file with an editor.
+
+        The two late pids are emitted only once they have a value. A key
+        that is present and null would be a third state ("known to be
+        unset") that neither reader has a use for, and the file's key set is
+        a contract two implementations are checked against.
+        """
+        late = {name: value for name, value in
+                (("helper_pid", self.helper_pid),
+                 ("installer_pid", self.installer_pid)) if value is not None}
+        return json.dumps({
+            "schema": self.schema,
+            "job_id": self.job_id,
+            "pack_id": self.pack_id,
+            "kind": self.kind,
+            "index_url": self.index_url,
+            "packages": list(self.packages),
+            "specs": list(self.specs),
+            "venv_python": self.venv_python,
+            "server_pid": self.server_pid,
+            "launcher": list(self.launcher),
+            "relaunch_argv": list(self.relaunch_argv),
+            "created_at": self.created_at,
+            **late,
+        }, indent=2)
+
+    @classmethod
+    def from_json(cls, raw: str) -> "PendingRestart":
+        """Parse and CHECK a pending file. ``ValueError`` on any bad shape.
+
+        One exception type for every rejection -- a bad parse, a schema from
+        the future, a missing key, a pid that is a string -- because every
+        caller does the same thing with all of them: treat the file as if it
+        were not there. ``json.JSONDecodeError`` is already a ``ValueError``,
+        so the promise costs nothing to keep.
+
+        Keys this reader does not know are IGNORED, on purpose. The file has
+        two implementations (this one and dev.py's helper) which are edited
+        in different commits, so a writer from a newer install may add a
+        field before this reader has heard of it -- and dropping it is what
+        lets the older half keep working. Every field that IS known is
+        checked, so nothing arrives silently mis-read; a change that breaks
+        the meaning of the existing fields is what ``schema`` is for.
+        """
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("pending restart file is not a JSON object")
+
+        schema = data.get("schema")
+        if isinstance(schema, bool) or schema != PENDING_SCHEMA:
+            raise ValueError(
+                f"pending restart file: schema {schema!r} is not "
+                f"{PENDING_SCHEMA}")
+
+        kind = data.get("kind")
+        if kind not in ("torch", "pip"):
+            raise ValueError(
+                f"pending restart file: kind {kind!r} is not 'torch' or 'pip'")
+
+        return cls(
+            schema=PENDING_SCHEMA,
+            job_id=_require_text(data, "job_id"),
+            pack_id=_require_text(data, "pack_id"),
+            kind=kind,
+            index_url=_require_optional_text(data, "index_url"),
+            packages=_require_text_tuple(data, "packages"),
+            specs=_require_text_tuple(data, "specs"),
+            venv_python=_require_text(data, "venv_python"),
+            server_pid=_require_pid(data, "server_pid"),
+            launcher=_require_text_tuple(data, "launcher"),
+            relaunch_argv=_require_text_tuple(data, "relaunch_argv"),
+            created_at=_require_text(data, "created_at"),
+            helper_pid=_require_optional_pid(data, "helper_pid"),
+            installer_pid=_require_optional_pid(data, "installer_pid"),
+        )
+
+
+def build_pending(pack: Pack, *, job_id: str, kind: str,
+                  variant: str | None = None) -> PendingRestart:
+    """The claim this server is about to write down.
+
+    ``venv_python`` is THIS interpreter, not "the venv next to the helper's
+    working directory" -- ``runner`` pins ``--python`` for the same reason,
+    and a server started from somewhere else would otherwise have its
+    packages installed into a different environment than the one that asked.
+
+    ``launcher`` and ``relaunch_argv`` are read from the environment
+    ``cdui start`` exported. An empty launcher is not refused here: this
+    function builds a record, and :func:`spawn_helper` is where a record
+    that cannot be acted on is caught -- before the shutdown is scheduled.
+    """
+    if kind == "torch":
+        _, index_url = resolve_gpu_torch(variant)
+        packages: tuple[str, ...] = ("torch", "torchvision")
+        specs: tuple[str, ...] = ()
+    elif kind == "pip":
+        if not pack.pip:
+            # A restart that installs nothing still costs the user their
+            # server, their queued runs and a page reload. The service
+            # checks this too; this is the belt, because it is the last
+            # place that can refuse before the claim is on disk.
+            raise ValueError(
+                f"pack {pack.pack_id!r} has no pip specs, so there is "
+                f"nothing for a restart-mode pip install to install")
+        index_url = None
+        packages, specs = (), tuple(pack.pip)
+    else:
+        raise ValueError(
+            f"unknown restart install kind {kind!r}; expected 'torch' or 'pip'")
+
+    return PendingRestart(
+        schema=PENDING_SCHEMA,
+        job_id=job_id,
+        pack_id=pack.pack_id,
+        kind=kind,
+        index_url=index_url,
+        packages=packages,
+        specs=specs,
+        venv_python=sys.executable,
+        server_pid=os.getpid(),
+        launcher=_env_argv(LAUNCHER_ENV),
+        relaunch_argv=_env_argv(RELAUNCH_ARGV_ENV),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+#: Windows' "this process has not exited yet" exit code.
+_STILL_ACTIVE = 259
+#: ``PROCESS_QUERY_LIMITED_INFORMATION`` -- the smallest access right that
+#: still answers "is it running?", and the one that works across users.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: ``ERROR_ACCESS_DENIED``: the process exists, it is simply not ours.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """The Windows half of :func:`_pid_alive`, via ``ctypes``.
+
+    ``tasklist`` would also answer (``dev.py`` uses it), but this runs
+    inside the server: shelling out costs a process and, without
+    ``CREATE_NO_WINDOW``, flashes a console over the editor.
+
+    ``OpenProcess`` alone is not the answer. A handle can still be opened
+    for a process that has exited but whose object has not been released --
+    the pid would read as alive forever, and the pending file it wrote could
+    never be replaced. ``GetExitCodeProcess`` is what distinguishes the two.
+    Its one blind spot is a process that genuinely exited with code 259; no
+    Python interpreter does, and the cost of being wrong is one refused
+    install rather than a corrupted environment.
+    """
+    import ctypes  # Windows-only, and only on this path.
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Declared rather than left to ctypes' defaults: a HANDLE is
+        # pointer-sized and the default ``c_int`` return would truncate it
+        # on 64-bit Windows.
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int,
+                                         ctypes.c_uint32)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p,
+                                                ctypes.POINTER(ctypes.c_ulong))
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int
+
+        handle = kernel32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == _STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError, ValueError):
+        log.warning("could not ask Windows about pid %s; assuming it is alive",
+                    pid, exc_info=True)
+        return True
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is a process with this id running right now?
+
+    ``psutil`` is not a dependency of this project and will not become one
+    for a single predicate, so this is the stdlib version of it: a null
+    signal on POSIX, a process handle on Windows.
+
+    Every unknown answers TRUE. The only caller that acts on a False is the
+    one that DELETES another server's pending file, and being wrong in that
+    direction means two helpers installing into one site-packages.
+    """
+    if pid <= 0:
+        # 0 is "every process in my group" to ``os.kill`` and would signal
+        # this server; negatives are process groups. Neither is a pid we
+        # could have written.
+        return False
+    if sys.platform == "win32":
+        return _pid_alive_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True     # it exists; it belongs to somebody else
+    except OSError:
+        log.warning("could not signal pid %s; assuming it is alive", pid,
+                    exc_info=True)
+        return True
+    return True
+
+
+def _read_pending(path: Path) -> "PendingRestart | None":
+    """The claim on disk, or None when there is not a readable one.
+
+    The two excepts are the same pair :func:`read_last_restart` uses, and
+    the ``ValueError`` is not decoration: bytes that are not UTF-8 come back
+    from ``read_text`` as ``UnicodeDecodeError``, which IS a ``ValueError``,
+    and letting one escape here would raise it out of both
+    :func:`write_pending` and :func:`clear_stale_pending` -- the two
+    functions whose whole job is to get past a file in that state. The
+    result would be a pending file that refuses every future install and
+    that nothing in the product can delete.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    try:
+        return PendingRestart.from_json(raw)
+    except ValueError:
+        log.warning("the pending restart file is unreadable; "
+                    "treating it as absent", exc_info=True)
+        return None
+
+
+def _age_seconds(pending: PendingRestart) -> "float | None":
+    """How long ago the claim was made, or None when it does not say."""
+    try:
+        created = datetime.fromisoformat(pending.created_at)
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created).total_seconds()
+
+
+def _is_stale(pending: PendingRestart) -> bool:
+    """Has this claim been abandoned, or is a restart still happening on it?
+
+    THE predicate, and it is written twice: ``dev.py``'s ``_pending_state``
+    is the same rule for ``cdui start``, and the two describing one file
+    differently is a second ``uv`` in one site-packages (or a launcher that
+    refuses to give a user their server back). ``test_dev_and_restart_agree_
+    on_which_claims_are_still_alive`` runs both over one claim.
+
+    A claim names up to three processes, and which of them is the honest
+    witness changes as the restart proceeds -- which is why this is three
+    rules and not one:
+
+    * ``helper_pid`` and/or ``installer_pid`` present -> live while ANY of
+      them is alive, abandoned once all of them are dead, AT ANY AGE. Once a
+      restart is under way the server that wrote the claim is dead by
+      design, so its pid says nothing; the helper (or the ``uv`` it started
+      and may have been killed by) is the whole answer. A helper still
+      downloading torch at minute sixteen is finishing, not abandoned, and a
+      helper that was "End task"ed leaves ``uv`` rewriting the venv as an
+      orphan.
+    * else the writer is still alive -> the old fifteen-minute cap. It
+      catches what a live pid cannot: a machine that rebooted and handed the
+      same number to something else.
+    * else (dead writer, no helper and no installer yet) -> abandoned only
+      past :data:`HELPER_START_GRACE_S`. This is the gap between "the server
+      spawned its helper and exited" and "the helper reached its first
+      statement", and an age nobody can read at all counts as past it.
+    """
+    pids = [pid for pid in (pending.helper_pid, pending.installer_pid)
+            if pid is not None]
+    if pids:
+        return not any(_pid_alive(pid) for pid in pids)
+    age = _age_seconds(pending)
+    if _pid_alive(pending.server_pid):
+        return age is not None and age > STALE_PENDING_S
+    return age is None or age > HELPER_START_GRACE_S
+
+
+def write_pending(pending: PendingRestart) -> Path:
+    """Write the claim, atomically, refusing to trample a live one.
+
+    Atomic (temp file plus ``os.replace``) because the reader is another
+    process that may look at any moment: a half-written file would be a
+    restart the helper refuses, on a server that has already gone away.
+
+    :raises PendingExists: a claim is already there and a restart is still
+        happening on it (:func:`_is_stale` decides, and its docstring says
+        by what). Two claims means two ``uv`` runs over one site-packages. A
+        STALE claim is overwritten without ceremony, and so is one that
+        cannot be parsed.
+    """
+    path = pending_restart_file()
+    existing = _read_pending(path)
+    if existing is not None and not _is_stale(existing):
+        # The path, because a live pid has no deadline: a helper pid reads
+        # as alive whenever the OS has recycled that number, and deleting
+        # the file is then the only way out. A refusal that does not name it
+        # is one nobody can act on.
+        raise PendingExists(
+            f"a restart-mode install is already pending for "
+            f"{existing.pack_id} (job {existing.job_id}); its claim is "
+            f"{path}",
+            hint="wait for that restart to finish before starting another")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(pending.to_json(), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def clear_stale_pending() -> bool:
+    """Delete an abandoned claim. True when one was deleted.
+
+    For startup, on both sides: a server that comes back to find a pending
+    file from a process that no longer exists is looking at the wreckage of
+    a restart that did not happen, and leaving it there would refuse every
+    future install with "one is already pending".
+
+    An unparseable file is deleted too. Writes here are atomic, so a file
+    nobody can read is not a half-written claim -- it is not a claim.
+    """
+    path = pending_restart_file()
+    if not path.exists():
+        return False
+    pending = _read_pending(path)
+    if pending is not None and not _is_stale(pending):
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        log.warning("could not delete the stale pending restart file",
+                    exc_info=True)
+        return False
+    log.info("cleared a stale pending restart file")
+    return True
+
+
+# -- the helper, and going away --------------------------------------------
+
+def _log_file_name(job_id: str) -> str:
+    """The helper's log file for *job_id*, as a NAME and never a path.
+
+    The id is read back out of a file on disk and then concatenated into a
+    path, which is the shape of every directory-traversal bug ever written.
+    Nothing puts anything but a uuid4 hex in there today, so the
+    substitution should never fire -- and it is a substitution rather than a
+    rejection for that reason: an odd job id should cost an ugly log name,
+    not a restart that refuses to start.
+    """
+    return f"restart-{re.sub(r'[^A-Za-z0-9._-]', '_', job_id)}.log"
+
+
+def spawn_helper(pending_path: Path) -> int:
+    """Start the process that finishes the install, and outlives this one.
+
+    Returns its pid, which is what the caller logs; nothing waits for it,
+    because this server is about to stop existing.
+
+    Detached in whichever way the OS understands. POSIX gets
+    ``start_new_session``: its own session and process group, so neither the
+    terminal's Ctrl-C nor the SIGHUP of a closing shell reaches it. Windows
+    gets ``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP``: no console to
+    inherit, and no console to be Ctrl-C'd through -- the same pair
+    ``cdui start`` uses to daemonise the server this will replace.
+
+    Output goes to a FILE, never a pipe. The parent is seconds from exiting,
+    and a pipe with nobody left to read it fills up and blocks the helper
+    mid-install. That log is the only record of an install nobody watched.
+
+    The pending file is read here rather than passed in as an object, and
+    that is the point: it proves the handshake works while there is still a
+    server to report a failure. A file that cannot be parsed, that names no
+    launcher, or whose launcher is no longer on disk raises HERE -- before
+    :func:`schedule_self_shutdown` is called and the chance to say anything
+    is gone.
+    """
+    pending_path = Path(pending_path)
+    pending = PendingRestart.from_json(
+        pending_path.read_text(encoding="utf-8"))
+    if not pending.launcher:
+        raise PackInstallError(
+            "cannot start the restart helper: this server was launched "
+            f"without {LAUNCHER_ENV}")
+    for part in pending.launcher:
+        if not Path(part).is_file():
+            # ``restart_available`` checked this when the PANEL was drawn.
+            # Minutes may have passed, and this file may have been written by
+            # an older server whose checkout has since been moved or deleted
+            # -- after which Popen raises FileNotFoundError, or worse, starts
+            # whatever now sits at that path. Either way the server would go
+            # down with nothing left to bring it back.
+            #
+            # EVERY element, because every one of them is a path: a moved
+            # checkout on POSIX keeps the interpreter (uv's, or the system's)
+            # and loses the ``dev.py`` next to it, and an interpreter handed
+            # a script that is not there exits at once with "can't open
+            # file" -- into a log nobody is watching, after this server has
+            # gone.
+            raise PackInstallError(
+                "cannot start the restart helper: the launcher "
+                f"{part!r} is no longer on disk")
+
+    argv = [*pending.launcher, HELPER_COMMAND, str(pending_path)]
+    log_dir = job_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / _log_file_name(pending.job_id)
+
+    detach: dict = {}
+    if sys.platform == "win32":
+        detach["creationflags"] = (DETACHED_PROCESS
+                                   | runner.CREATE_NEW_PROCESS_GROUP)
+    else:
+        detach["start_new_session"] = True
+
+    log.info("starting the restart helper: %s (log: %s)",
+             " ".join(argv), log_path)
+    with open(log_path, "ab") as log_file:
+        # An argv list and no shell, like every other subprocess here: the
+        # parts come from the environment and from a file this server wrote,
+        # and neither is a reason to hand the box's shell a string.
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            env=runner.pip_env(),
+            **detach,
+        )
+    return proc.pid
+
+
+def schedule_self_shutdown(loop, delay: float = 0.5) -> None:
+    """Ask uvicorn to stop, shortly after the response has gone out.
+
+    DELAYED, because the client is still waiting for the 202 that tells it a
+    restart is under way. Shutting down inside the request handler answers
+    that request with a closed socket, and the SPA cannot tell "the restart
+    started" from "the server crashed".
+
+    SIGINT rather than either alternative, and both were considered:
+
+    * ``Server.should_exit = True`` needs the ``uvicorn.Server`` object, and
+      nothing hands one to an application -- it is not on ``app.state``, and
+      digging it out of the loop's tasks is a guess about uvicorn's
+      internals that a version bump gets to break.
+    * ``os.kill(os.getpid(), SIGINT)`` is not the same call on Windows,
+      where ``os.kill`` means ``TerminateProcess`` for everything except
+      ``CTRL_C_EVENT``/``CTRL_BREAK_EVENT`` -- and those go to a process
+      GROUP, which under ``cdui start`` includes the console the user is
+      typing in. Terminating also skips the lifespan shutdown entirely: the
+      database never closes and in-flight runs are never retired.
+
+    ``signal.raise_signal`` raises the signal in THIS process, on every
+    platform, so uvicorn's own handler runs: it sets ``should_exit``, the
+    server stops accepting, and the lifespan's shutdown half runs to the
+    end. It is what Ctrl-C does, without a console.
+    """
+    loop.call_later(delay, signal.raise_signal, signal.SIGINT)

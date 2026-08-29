@@ -212,7 +212,80 @@ received — each links to the release it was published as.
   the right card — rather than a Python exception naming a module the reader
   has no way to install.
 
+- **The Package Center can now install the two things it could only ever
+  print a command for: it restarts the server to do them.** A CUDA/ROCm
+  PyTorch wheel replaces something the running server has already imported,
+  and so does any pack whose live install stops at a resolver conflict —
+  neither can happen underneath the interpreter serving the request, which is
+  why both used to end in a line to paste into a terminal. A server started
+  by `cdui start` now offers to do the install across the gap where it does
+  not exist: it writes the job down (`<user data>/packs/pending_restart.json`),
+  starts a detached `cdui packs-run-pending` helper, and shuts itself down;
+  the helper waits for the process to go, installs into the venv, and starts
+  the server again with exactly the arguments that `cdui start` was given, so
+  the address the browser is still pointing at comes back. The GPU PyTorch
+  card gains an **Install and restart** button with the terminal command kept
+  underneath as the manual alternative, a live install stopped by a conflict
+  gains a **Restart the server and install** retry on its banner, and the page
+  is held behind a blocking "Server restarting" overlay until a *different*
+  server process answers, at which point it reloads itself. The offer belongs
+  to the server, not the browser: `GET /api/packs` carries
+  `restart_available`, true only under `cdui start`, with the launcher it
+  recorded still on disk and `CODEFYUI_ENABLE_RESTART_INSTALL` not set to `0`
+  — a kill switch for a machine where the restart does not come back cleanly.
+  It is refused, having written nothing down and installed nothing, while a
+  graph is running or queued (the restart would take the run with it), while
+  another install is running, and while another restart is already pending.
+  Only the Python packages, or the torch wheel, are installed this way, never
+  a model item — the helper runs from an interpreter with none of this app's
+  downloader in it — so a pack's model files still arrive by an ordinary
+  install afterwards.
+
+- **An install nobody could watch still reports how it went.** The helper
+  writes `<user data>/packs/last_restart_job.json` and keeps the installer's
+  whole output in `<user data>/packs/logs/restart-<job>.log`, so the page that
+  comes back from the automatic reload can toast "Server restarted. GPU
+  PyTorch is ready." or the failure with its reason — and, when the record
+  carried no reason at all, a second toast with the installer's last output,
+  which is the only account of a subprocess that died with the old server.
+  `cdui status` reads the same two files: a `Restart install` line naming the
+  pack, saying *finishing* while the helper it recorded is still working and
+  *abandoned* once it is not, and a `Last restart` line for an hour after one
+  finished. A relaunch that itself failed leaves the install's own status
+  alone — that is the field the panel reports — and adds `relaunch: failed`
+  plus the log path on the end of the message, which is what makes
+  `cdui status` show that line as failed even when the package installed
+  cleanly. The overlay gives up in two ways rather than spinning
+  forever — after thirty seconds in which the server never even stopped
+  answering ("The server did not restart. Run this command, then reload:"),
+  and after ten minutes — and both leave the command, when the server sent
+  one, and a **Reload now** button. Free space on the volume the venv is on
+  is checked before the install starts (3 GB for the torch wheel, 1 GB for a
+  pack's Python packages), and a shortfall is recorded as a failed job that
+  still brings the server back.
+
 ### Changed
+
+- **`cdui start` hands the server the launcher that can start it again.**
+  Nothing inside the server knows how it was launched, so `start` now exports
+  `CODEFYUI_LAUNCHER` — the OUTER interpreter plus `scripts/dev.py`, as JSON
+  so a Windows path with a space in it survives the round trip, and not the
+  `cdui` shim, whose whole job is to find an interpreter and which a detached
+  child would get a second chance to resolve differently — together with
+  `CODEFYUI_RELAUNCH_ARGV`, the arguments this start was given. Those two are
+  what make a restart-mode pack install possible at all; without them
+  `restart_available` is false and the Package Center still prints the command
+  to type, which remains the right answer for a `uvicorn app.main:app` somebody
+  started by hand. `start` also learns about the claim file: while a restart
+  install is *finishing* — the helper it recorded is alive, or the claim is
+  under sixty seconds old with no helper pid stamped into it yet — it refuses
+  to start a second server into the venv that helper is rewriting, reporting
+  that a restart install is finishing and pointing at `cdui status`; once the
+  helper is gone, or it never arrived and those sixty seconds have passed, the
+  claim is *abandoned* and `start` deletes it and starts normally.
+  And a server always comes back from a restart-mode install as a background
+  daemon, even one started in the foreground with `cdui start -f`, because the
+  helper that relaunches it has no console to hand over.
 
 - **The Word Embedding Analogy example says what each backend teaches.** Its
   description explained the analogy on `demo-16d` and said nothing about the

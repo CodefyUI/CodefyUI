@@ -17,8 +17,9 @@ import {
 } from '../api/rest';
 import { confirm } from '../utils/dialog';
 import { localizedPackTitle } from '../utils/packAvailability';
-import { useToastStore } from './toastStore';
-import { useI18n } from '../i18n';
+import { useToastStore, type ToastAction } from './toastStore';
+import { useUIStore } from './uiStore';
+import { useI18n, type TranslationKey } from '../i18n';
 
 /**
  * App-level state for the Package Center (optional model / library packs).
@@ -69,7 +70,8 @@ export const FOLLOW_IDLE_MS = 500;
 export const FOLLOW_RETRY_MS = 2000;
 
 /**
- * Consecutive failures before the job is declared `lost`.
+ * Consecutive failures before the job is declared `lost` — or, for a
+ * restart-mode job, settled as the `needs_restart` it was heading for.
  *
  * Five retries across ten seconds outlast a restarting dev server and a
  * flaky Wi-Fi hop, which are the two things that interrupt an install on a
@@ -80,6 +82,15 @@ export const MAX_FOLLOW_FAILURES = 5;
 
 /** Ring-buffer bound on the rendered install log. */
 export const MAX_PACK_LOG_LINES = 400;
+
+/**
+ * How much of a failed restart's `log_tail` a toast is allowed to carry.
+ *
+ * Only ever shown when the record carried no message at all (see
+ * `checkInProgress`), and bounded because the toast has no scroll of its own:
+ * an unbounded tail would grow one card until it covered the canvas.
+ */
+export const LOG_TAIL_TOAST_CHARS = 300;
 
 /** How often the restart handshake asks whether the server is back. */
 export const RESTART_POLL_MS = 1500;
@@ -103,6 +114,28 @@ export const RESTART_TIMEOUT_MS = 600_000;
  * with it, which is exactly the lifetime of "the page I am about to reload".
  */
 export const RESTART_PENDING_KEY = 'codefyui-pack-restart-pending';
+
+/**
+ * The server's `reason` phrases, and the toast each one deserves.
+ *
+ * These 409s look identical to the "this server cannot restart itself" one —
+ * same status, same `command` — and only `reason` separates a permanent
+ * limitation from a wait of a few seconds. Keyed on the server's exact
+ * wording (a contract pinned on the backend side by
+ * `test_restart_refused_while_a_graph_runs` and its neighbours); anything not
+ * listed falls back to `needsCli`, whose command is always a true way through.
+ *
+ * A `Map` rather than an object literal, because the key comes off the wire:
+ * `{}['toString']` is a function, and a plain lookup would hand `t()` one.
+ */
+const REFUSAL_TOASTS = new Map<string, TranslationKey>([
+  ['a graph is running', 'packs.toast.restartRefusedRunning'],
+  // Two spellings of one condition: the first is another restart-mode submit
+  // colliding with a claim on disk, the second a LIVE install arriving while
+  // this server is already on its way out.
+  ['a restart-mode install is already pending', 'packs.toast.restartRefusedPending'],
+  ['a restart is already pending', 'packs.toast.restartRefusedPending'],
+]);
 
 /**
  * One line of an install job's log.
@@ -167,6 +200,16 @@ export interface PackJob {
   error: { message: string; hint: string | null } | null;
   /** Set by a `needs_restart` event: what to run when we cannot restart. */
   restartCommand: string | null;
+  /**
+   * Set by a `needs_restart` event on a LIVE install the resolver stopped:
+   * the mode that CAN finish it, when the server is able to offer one.
+   *
+   * Null on every restart-mode job, which needs no retry — it ended the way
+   * it was always going to. Only `restart` is understood; a mode from a newer
+   * backend reads as null rather than as a button that posts something this
+   * build cannot follow.
+   */
+  retryMode: PackInstallMode | null;
   startedAt: number;
 }
 
@@ -191,6 +234,15 @@ interface PackState {
   error: string | null;
   remoteInstallAllowed: boolean;
   launchMode: LaunchMode;
+  /**
+   * The server says it can install a restart-mode pack and come back.
+   *
+   * Narrower than `launchMode === 'start'` — it also wants the launcher still
+   * on disk and the kill switch off — and it is the ONLY thing the panel and
+   * the settle handler gate a restart on. False until a catalog says
+   * otherwise, so nothing offers a restart to a server that never claimed one.
+   */
+  restartAvailable: boolean;
   gpu: PackGpuInfo | null;
   job: PackJob | null;
   /** Pack ids with an install request in flight — disables that card's button. */
@@ -243,6 +295,7 @@ export function emptyPackJob(
     cursor: 0,
     error: null,
     restartCommand: null,
+    retryMode: null,
     startedAt: Date.now(),
   };
 }
@@ -251,8 +304,25 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function toast(message: string, type: 'info' | 'error' | 'success' | 'warning') {
-  useToastStore.getState().addToast(message, type);
+/**
+ * `action` is spread rather than always passed, so a toast without one is
+ * byte-for-byte the object every existing caller was already producing.
+ */
+function toast(
+  message: string,
+  type: 'info' | 'error' | 'success' | 'warning',
+  action?: ToastAction,
+) {
+  useToastStore.getState().addToast(message, type, action ? { action } : undefined);
+}
+
+/** The button a toast about a pack wears: it opens the panel on that pack. */
+function openCenterAction(packId: string): ToastAction {
+  const { t } = useI18n.getState();
+  return {
+    label: t('packs.toast.openCenter'),
+    onClick: () => useUIStore.getState().openPackCenter(packId),
+  };
 }
 
 function str(value: unknown): string | null {
@@ -271,23 +341,43 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** What the breadcrumb carries across the reload: which pack, which job. */
+interface RestartBreadcrumb {
+  packId: string;
+  /** null for a payload written before this field existed. */
+  jobId: string | null;
+}
+
 /**
  * `sessionStorage` can throw outright — Safari in private mode, and any
  * browser configured to block site data. Losing the restart breadcrumb costs
  * one missing toast; letting it throw would abandon the restart itself.
  */
-function readPending(): string | null {
+function readPending(): RestartBreadcrumb | null {
+  let raw: string | null;
   try {
-    return sessionStorage.getItem(RESTART_PENDING_KEY);
+    raw = sessionStorage.getItem(RESTART_PENDING_KEY);
   } catch {
     return null;
   }
+  if (raw === null || raw === '') return null;
+  const [packId, jobId] = raw.split(' ');
+  return { packId, jobId: jobId || null };
 }
 
-function writePending(packId: string | null): void {
+function writePending(packId: string | null, jobId: string | null = null): void {
   try {
-    if (packId === null) sessionStorage.removeItem(RESTART_PENDING_KEY);
-    else sessionStorage.setItem(RESTART_PENDING_KEY, packId);
+    if (packId === null) {
+      sessionStorage.removeItem(RESTART_PENDING_KEY);
+      return;
+    }
+    // The job id rides along beside the pack: `last_restart_job` carries no
+    // age bound, so the page that comes back has no other way to tell this
+    // install's outcome from one that finished an hour ago. A space is a safe
+    // join — pack ids are slugs and job ids are hex.
+    sessionStorage.setItem(
+      RESTART_PENDING_KEY, jobId === null ? packId : `${packId} ${jobId}`,
+    );
   } catch {
     // See readPending.
   }
@@ -314,6 +404,7 @@ export function reducePackEvents(job: PackJob, page: PackJobEventsPage): PackJob
   let items = job.items;
   let error = job.error;
   let restartCommand = job.restartCommand;
+  let retryMode = job.retryMode;
   const lines: PackLogLine[] = [];
 
   // Log keys have to be unique for React and ascending for the reader. Event
@@ -397,6 +488,11 @@ export function reducePackEvents(job: PackJob, page: PackJobEventsPage): PackJob
       }
       case 'needs_restart':
         restartCommand = str(event.command);
+        // Only the one mode this build knows how to post. The key is absent
+        // unless the server can actually restart itself, so reading anything
+        // else as a retry would offer a button whose request nothing here
+        // knows how to make.
+        retryMode = str(event.retry_mode) === 'restart' ? 'restart' : null;
         break;
       default:
         // An unknown type from a newer backend is skipped, never rendered as
@@ -417,6 +513,7 @@ export function reducePackEvents(job: PackJob, page: PackJobEventsPage): PackJob
     log,
     error,
     restartCommand,
+    retryMode,
     // Never moves backwards: an empty page returns the cursor we sent.
     cursor: Math.max(job.cursor, page.cursor),
   };
@@ -513,15 +610,49 @@ async function follow(
         wait: EVENT_WAIT_S,
         signal: controller.signal,
       });
-    } catch {
+    } catch (error) {
       // A deliberate abort bumped the generation; anything else is the
       // network, which an install is entitled to survive — the download
       // itself is happening server-side and does not care that we blinked.
       if (generation !== followGeneration) return;
       failures += 1;
       if (failures >= MAX_FOLLOW_FAILURES) {
-        patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
         if (followingJobId === jobId) followingJobId = null;
+        // A RESTART-mode job is the one case where the endpoint going quiet
+        // is the expected ending rather than a lost connection: the server
+        // stops accepting half a second after the 202 and then exits, and a
+        // LAN client or a tab the browser had throttled can miss that half
+        // second entirely. `lost` would leave the user in
+        // front of a "we no longer know" banner while the wheel swap runs —
+        // no overlay, and worse, no breadcrumb, so the page that comes back
+        // could not report how the install went. Settling it as the ending
+        // it almost certainly reached runs the same handshake the last page
+        // would have started; if it turns out the server never went, the
+        // overlay's own thirty-second grace says so.
+        //
+        // Only for a connection that DROPPED, though. A `PackApiError` is
+        // the server answering — a 404 for a job that aged out, a 500 — and
+        // an answer is proof it is still there. Settling on those raised the
+        // blocking overlay over a live server, which is the bug the note in
+        // `onJobSettled` records as fixed.
+        const store = usePackStore.getState();
+        const open = store.job;
+        if (!(error instanceof PackApiError)
+            && open?.jobId === jobId && open.mode === 'restart') {
+          // No `needs_restart` event ever arrived, so nothing carried the
+          // command — and both give-up screens name one ("Run this command,
+          // then reload:"). The catalog has it: `install_command` is what the
+          // panel's own button would have run for this pack.
+          const command = store.byId[packId]?.install_command ?? null;
+          patchJob(jobId, (job) => ({
+            ...job,
+            status: 'needs_restart',
+            restartCommand: job.restartCommand ?? command,
+          }));
+          onJobSettled(jobId, packId, 'needs_restart');
+        } else {
+          patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
+        }
         return;
       }
       await sleep(FOLLOW_RETRY_MS);
@@ -600,15 +731,39 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
       // anywhere. Keying this on `launchMode` alone put a blocking "Server
       // restarting" overlay over a running server for thirty seconds, and hid
       // the command the user actually needs behind it.
-      if (settled?.mode === 'restart' && store.launchMode === 'start') {
+      //
+      // The other half is the SERVER's own answer, not the launch mode it
+      // implies: `restart_available` is what the process that has to come
+      // back said about itself (its launcher still on disk, its kill switch
+      // off), and a 202 for a restart-mode install is only ever issued by a
+      // server that said yes.
+      if (settled?.mode === 'restart' && store.restartAvailable) {
         // Parked BEFORE the reload so the page that comes back knows which
-        // pack to report on — the job itself does not survive the reload.
-        writePending(packId);
+        // pack and which job to report on — neither survives the reload.
+        writePending(packId, jobId);
         void store.restartFlow(packId, command);
+      } else if (settled?.retryMode === 'restart' && store.restartAvailable) {
+        // A LIVE install the constraints file stopped, on a server that CAN
+        // restart itself and said so by offering the retry mode. `needsCli`
+        // — "cannot be installed from inside the app" — is the one sentence
+        // that is flatly false here: the panel's banner is rendering a
+        // **Restart the server and install** button that does exactly this.
+        // So the toast points at the panel, and carries the click, rather
+        // than handing over a command the user does not need.
+        toast(t('packs.toast.restartRetry'), 'warning', openCenterAction(packId));
+      } else if (store.launchMode === 'dev') {
+        // `cdui dev` reloads in place; nothing relaunches it, so no catalog
+        // it serves will ever say otherwise. Its own sentence, because
+        // "not from inside the app YET" would be a promise about a future
+        // release when the actual answer is "not the way you started this
+        // one" — and it points at the command block the banner is already
+        // rendering rather than repeating the command inline.
+        toast(t('packs.toast.devRestart'), 'warning');
       } else {
-        // Nothing here can finish this install: either no supervisor exists
-        // (`cdui dev`) or none was asked for. The job STAYS on screen — its
-        // banner is what renders the command block this names.
+        // Nothing here can finish this install: no supervisor was asked for,
+        // or the one that exists cannot promise to come back. The job STAYS
+        // on screen — its banner is what renders the command block this
+        // names.
         toast(t('packs.toast.needsCli', { command: command ?? '' }), 'warning');
       }
       break;
@@ -634,6 +789,7 @@ function setCatalog(catalog: PackCatalog): void {
     byId,
     remoteInstallAllowed: catalog.remote_install_allowed,
     launchMode: catalog.launch_mode,
+    restartAvailable: catalog.restart_available,
     gpu: catalog.gpu,
     loading: false,
     loaded: true,
@@ -651,6 +807,7 @@ export const usePackStore = create<PackState>((set, get) => ({
   error: null,
   remoteInstallAllowed: true,
   launchMode: 'unknown',
+  restartAvailable: false,
   gpu: null,
   job: null,
   busy: {},
@@ -691,8 +848,8 @@ export const usePackStore = create<PackState>((set, get) => ({
     if (active !== null) {
       const current = get().job;
       if (!current || current.jobId !== active.job_id) {
-        // `active_job` does not carry the mode it was launched with (PR 5),
-        // so the pack's own default is the closest thing to the truth. It is
+        // `active_job` does not carry the mode it was launched with, so the
+        // pack's own default is the closest thing to the truth. It is
         // right for every pack that HAS a restart mode, and a live pack has
         // no other mode to be running in.
         const mode = get().byId[active.pack_id]?.install_mode ?? 'live';
@@ -771,12 +928,24 @@ export const usePackStore = create<PackState>((set, get) => ({
     } catch (err) {
       if (err instanceof PackApiError && typeof err.body?.command === 'string') {
         // A refusal that hands back a command is not a collision — it is the
-        // server saying "not from in here, run this". Both 409 shapes carry a
-        // `detail`, and only this one carries `command`, so the command is
-        // what tells them apart. Checked FIRST: every restart-mode install
-        // (the GPU pack, today) lands here, and "another install is already
-        // running" would be a plain lie about a server sitting idle.
-        toast(t('packs.toast.needsCli', { command: err.body.command }), 'warning');
+        // server saying "not from in here" or "not right now". Both 409
+        // shapes carry a `detail`, and only this one carries `command`, so
+        // the command is what tells them apart. Checked FIRST: every
+        // restart-mode install (the GPU pack, today) lands here, and "another
+        // install is already running" would be a plain lie about a server
+        // sitting idle.
+        //
+        // `reason` then splits the passing conditions off from the permanent
+        // one. `needsCli` says the app cannot do this at all, which is true
+        // of a server that cannot restart itself and FALSE of these two: the
+        // button works, it just does not work this second, and what the user
+        // needs to hear is what to wait for. An unknown reason from a newer
+        // backend falls through to `needsCli`, which is wrong-ish but never
+        // misleading — the command in it does work.
+        const refusal = REFUSAL_TOASTS.get(String(err.body.reason ?? ''));
+        toast(refusal
+          ? t(refusal)
+          : t('packs.toast.needsCli', { command: err.body.command }), 'warning');
       } else if (err instanceof PackApiError && err.status === 409) {
         // Somebody else got there first — this tab, another tab, or the CLI.
         // The refresh adopts whatever the server IS running, which is more
@@ -983,18 +1152,40 @@ export const usePackStore = create<PackState>((set, get) => ({
     writePending(null);
 
     const record = lastRestartRecord;
+    // `last_restart_job` carries no age bound — the record of an install that
+    // finished an hour ago is still the one this reads. Not every reload the
+    // handshake performs has a restart behind it (a lost poll during a
+    // network blip ends the same way), so the record has to say it is about
+    // THIS job before it is reported as this job's outcome. A breadcrumb or a
+    // record without an id cannot disagree, and is believed: the ids are what
+    // this checks, not their presence.
+    const recordJob = str(record?.job_id);
+    if (pending.jobId !== null && recordJob !== null
+        && recordJob !== pending.jobId) {
+      return;
+    }
     const status = str(record?.status);
-    const title = packTitle(pending);
+    const title = packTitle(pending.packId);
     if (status === 'ok') {
       toast(t('packs.restart.done', { pack: title }), 'success');
     } else if (status === 'failed') {
-      toast(
-        t('packs.restart.failed', {
-          pack: title,
-          message: str(record?.message) ?? '',
-        }),
-        'error',
-      );
+      const message = str(record?.message) ?? '';
+      toast(t('packs.restart.failed', { pack: title, message }), 'error');
+      // The helper that ran the install is gone, and so is its job log: this
+      // record is the only account of what went wrong that survived the
+      // restart. `message` is normally the whole story, so the tail is a
+      // SECOND toast only when there is no story — an installer that died
+      // without a message would otherwise report a bare colon and nothing
+      // else. Both are `error` toasts, which this app never auto-dismisses,
+      // so the text is still there when the user comes back to the tab.
+      const tail = (str(record?.log_tail) ?? '').trim();
+      if (message === '' && tail !== '') {
+        // A toast is not a log viewer, and the writer is under no obligation
+        // to keep this short: the last stretch is the part that says how it
+        // ended, and the whole record is on disk for anyone who needs more.
+        const log = tail.slice(-LOG_TAIL_TOAST_CHARS);
+        toast(t('packs.restart.failedLog', { log }), 'error');
+      }
     }
   },
 }));
@@ -1034,6 +1225,7 @@ export function _resetPackStoreForTesting(): void {
     error: null,
     remoteInstallAllowed: true,
     launchMode: 'unknown',
+    restartAvailable: false,
     gpu: null,
     job: null,
     busy: {},

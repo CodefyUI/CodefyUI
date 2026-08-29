@@ -827,6 +827,10 @@ const en = {
   'packs.item.removeError': 'Could not remove {item}: {message}',
   'packs.restart.done': 'Server restarted. {pack} is ready.',
   'packs.restart.failed': 'The server restarted, but installing {pack} failed: {message}',
+  // A second toast, and only when the record carried no message at all: the
+  // helper that ran the install died with the old server, so its last output
+  // is all that is left to go on.
+  'packs.restart.failedLog': 'Last output from the installer: {log}',
   'packs.toast.installed': '{pack} installed.',
   'packs.toast.installFailed': 'Install failed: {message}',
   'packs.toast.cancelled': 'Install cancelled.',
@@ -834,9 +838,23 @@ const en = {
   'packs.toast.busy': 'Another install is already running.',
   'packs.toast.needsCli':
     'This pack cannot be installed from inside the app yet. Run: {command}',
+  // What `needsCli` would have said on the one server it would be lying to:
+  // a LIVE install the constraints file stopped, on a server that CAN
+  // restart itself. The app can finish this one — the activity banner in the
+  // Package Center carries the button — so the toast says where to go rather
+  // than what to type, and brings the click with it.
+  'packs.toast.restartRetry':
+    'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
   'packs.toast.remoteNotAllowed':
     'Installing is only allowed on the computer that runs the server.',
   'packs.toast.blocked': 'Install {pack} first.',
+  // The two refusals a server that CAN restart still makes. Both are 409s
+  // that carry a command, and `needsCli` — "cannot be installed from inside
+  // the app" — would be a lie about either: the button works, just not this
+  // second. So each says what is in the way and what ends it.
+  'packs.toast.restartRefusedRunning': 'A graph is running. Stop it, then install.',
+  'packs.toast.restartRefusedPending':
+    'A restart is already pending. Wait for the server to come back.',
   'packs.toast.devRestart':
     'This pack needs a server restart, which cdui dev cannot do by itself. Use the command shown in the Package Center.',
   'packs.toast.inProgress': 'A pack is still installing. Open the Package Center to watch it.',
@@ -927,8 +945,24 @@ const en = {
   'packs.activity.cancelled': 'Install cancelled.',
   'packs.activity.needsRestart':
     'Installed. The server has to restart before {pack} can be used.',
+  // The same status, the opposite story. A LIVE install that hit a resolver
+  // conflict stopped BEFORE it changed anything, so "Installed." would be
+  // false — and the restart is what would let it start, not what would let
+  // it be used.
+  'packs.activity.needsRestartConflict':
+    'The install stopped: it would replace a package the server has loaded. Restart the server to finish it.',
   'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
   'packs.activity.dismiss': 'Dismiss',
+  // Offered only when the server said it can restart itself AND the job that
+  // stopped said a restart is what would finish it.
+  'packs.activity.restartAndInstall': 'Restart the server and install',
+  // The confirm body, and the one thing that would otherwise surprise the
+  // user: the helper that runs during the restart installs PACKAGES. It runs
+  // from an interpreter with none of this app's downloader in it, so a pack's
+  // models are still missing when the server comes back, and a second,
+  // ordinary install is what fetches them.
+  'packs.activity.restartAndInstallNote':
+    'The server restarts to install the Python packages; download the models afterwards with a normal install.',
 
   // GPU PyTorch pack — the one install that swaps the wheel under the running
   // interpreter, so the user may have to run a command themselves.
@@ -937,7 +971,12 @@ const en = {
   'packs.gpu.installed': 'Installed build: {variant}',
   'packs.gpu.recommended': 'Recommended build: {variant}',
   'packs.gpu.variant': 'PyTorch build',
-  'packs.gpu.restartNote': 'The server restarts after this install. Running graphs will stop.',
+  // What the button does, and the one condition under which it declines. It
+  // does NOT stop a running graph: the server refuses to start a restart
+  // while one is in flight, which is a promise worth making on the card the
+  // user is about to click.
+  'packs.gpu.restartNote':
+    'The server restarts after this install. It refuses to start one while a graph is running.',
   'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
   'packs.gpu.installRestart': 'Install and restart',
   'packs.gpu.devMode':
@@ -946,6 +985,11 @@ const en = {
     'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
   'packs.gpu.noCommand':
     'The server did not provide an install command. See the README for the GPU install steps.',
+  // Said above the command block on a card that ALSO has a working button:
+  // the command is then a choice, not the only way through, and a bare block
+  // under a button reads like an instruction the button did not follow.
+  'packs.gpu.manualAlternative':
+    'Or stop the server and run this in a terminal yourself:',
   'packs.copy': 'Copy command',
   'packs.copied': 'Copied to clipboard.',
   'packs.copyFailed': 'Could not copy. Select the text and copy it by hand.',

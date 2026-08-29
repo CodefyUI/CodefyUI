@@ -27,15 +27,17 @@ import time
 
 import pytest
 
-from app.core.packs import download, state
+from app.core.packs import download, restart, state
 from app.core.packs.catalog import Pack, get_pack
 from app.core.packs.errors import (
     PackCancelled,
     PackInstallError,
     PackInsufficientDisk,
     PackNeedsRestart,
+    RestartRefused,
 )
 from app.core.packs.flows import InstallOutcome
+from app.core.packs.paths import pending_restart_file
 from app.core.packs.service import (
     PackBusy,
     PackService,
@@ -48,8 +50,17 @@ SENTENCE = "sentence-embeddings"
 
 @pytest.fixture(autouse=True)
 def isolated_cache(tmp_path, monkeypatch):
-    """A throwaway cache root and a cold probe cache for every test."""
+    """A throwaway cache root, a cold probe cache, and no launch environment.
+
+    The launch variables are DELETED rather than left alone: ``restart``
+    reads ``os.environ`` at call time, so a suite run from a shell that had
+    itself run ``cdui start`` would find restarts available and take a branch
+    no test here asked for.
+    """
     monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path))
+    for name in ("CODEFYUI_MANAGED", restart.ENABLE_ENV,
+                 restart.LAUNCHER_ENV, restart.RELAUNCH_ARGV_ENV):
+        monkeypatch.delenv(name, raising=False)
     state.invalidate()
     yield tmp_path
     state.invalidate()
@@ -522,6 +533,201 @@ async def test_an_unknown_item_id_is_a_value_error():
         await service.submit_install(get_pack(SENTENCE), ["not-a-model"],
                                      mode="live", variant=None)
     assert service.current_job() is None
+
+
+# ── the restart handshake ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def available(monkeypatch):
+    """A server that may restart itself, without the environment for it."""
+    monkeypatch.setattr(restart, "restart_available", lambda: True)
+
+
+async def test_the_handshake_writes_spawns_stores_then_stops_the_server(
+        monkeypatch, available):
+    """The ORDER is the design, and every step depends on the one before it.
+
+    The claim is written first because ``spawn_helper`` READS the file it is
+    given; the job is stored after the spawn because a spawn that fails must
+    leave no job behind for the panel to follow; and the shutdown is
+    scheduled last, once the caller has a job id -- the 202 goes out before
+    the SIGINT lands.
+    """
+    flow = ScriptedFlow()
+    service = PackService(run_flow=flow)
+    steps: list[tuple] = []
+    real_write = restart.write_pending
+
+    def _write(pending):
+        path = real_write(pending)
+        steps.append(("write", pending.job_id, service.current_job()))
+        return path
+
+    def _spawn(path):
+        steps.append(("spawn", str(path), service.current_job()))
+        return 4242
+
+    def _shutdown(loop, delay: float = 0.5):
+        job = service.current_job()
+        steps.append(("shutdown", job.job_id, job.status))
+
+    monkeypatch.setattr(restart, "write_pending", _write)
+    monkeypatch.setattr(restart, "spawn_helper", _spawn)
+    monkeypatch.setattr(restart, "schedule_self_shutdown", _shutdown)
+
+    job = await service.submit_install(get_pack("gpu-torch"), None,
+                                       mode="restart", variant="cu128")
+
+    assert [step[0] for step in steps] == ["write", "spawn", "shutdown"]
+    assert steps[0][1] == job.job_id, "the claim named a different job"
+    assert steps[0][2] is None, "a job existed before its claim was written"
+    assert steps[1][1] == str(pending_restart_file())
+    assert steps[1][2] is None, "the job was stored before the helper started"
+    assert steps[2][1:] == (job.job_id, "needs_restart")
+    assert not flow.started.is_set(), "the live installer ran anyway"
+
+
+async def test_a_restart_mode_pip_pack_writes_its_specs_for_the_helper(
+        monkeypatch, available):
+    """``kind`` is what the helper branches on: a wheel swap and a pip
+    install are two different command lines, and it cannot work out which
+    from the pack id -- it has no catalog."""
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: 4242)
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: None)
+    pack = get_pack(SENTENCE)
+    service = PackService(run_flow=ScriptedFlow())
+
+    job = await service.submit_install(pack, None, mode="restart", variant=None)
+
+    assert job.mode == "restart"
+    assert job.status == "needs_restart"
+    pending = restart.PendingRestart.from_json(
+        pending_restart_file().read_text(encoding="utf-8"))
+    assert pending.kind == "pip"
+    assert pending.specs == tuple(pack.pip)
+    assert pending.packages == ()
+    assert pending.index_url is None
+    assert job.restart_command == f"cdui packs install {SENTENCE}"
+
+
+async def test_a_restart_mode_pack_with_nothing_to_install_is_a_value_error(
+        available):
+    """word-vectors ships data and no packages: there is no pip line a helper
+    could run for it, and stopping the server to install nothing is worse
+    than refusing."""
+    service = PackService(run_flow=ScriptedFlow())
+
+    with pytest.raises(ValueError, match="word-vectors"):
+        await service.submit_install(get_pack("word-vectors"), None,
+                                     mode="restart", variant=None)
+
+    assert service.current_job() is None
+    assert not pending_restart_file().exists(), "a refused install left a claim"
+
+
+async def test_a_restart_is_refused_while_a_graph_runs(monkeypatch, available):
+    """``runs_active`` is INJECTED, so the service never holds the app -- and
+    a test never has to build one to answer the only question it asks."""
+    monkeypatch.setattr(restart, "spawn_helper",
+                        lambda path: pytest.fail("a helper was started"))
+    busy = True
+    service = PackService(run_flow=ScriptedFlow(), runs_active=lambda: busy)
+
+    with pytest.raises(RestartRefused) as excinfo:
+        await service.submit_install(get_pack("gpu-torch"), None,
+                                     mode="restart", variant="cu128")
+    assert excinfo.value.reason == "a graph is running"
+    assert excinfo.value.command == "cdui install --gpu cu128"
+    assert isinstance(excinfo.value, PackInstallError), (
+        "the route's error mapping is written against PackInstallError")
+    assert service.current_job() is None
+    assert not pending_restart_file().exists()
+
+    # And the same service goes ahead once the run is over.
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: 4242)
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: None)
+    busy = False
+    job = await service.submit_install(get_pack("gpu-torch"), None,
+                                       mode="restart", variant="cu128")
+    assert job.status == "needs_restart"
+
+
+async def test_a_live_install_that_lands_during_the_probe_beats_the_restart(
+        monkeypatch, available):
+    """The busy check AFTER the await, which is the only one that can see it.
+
+    ``install_command_for`` is run on a thread because naming the GPU pack's
+    command means asking nvidia-smi, and that is seconds from a cold cache.
+    Every suspension point is a chance for another request to land, and the
+    one that lands here is a LIVE install: a download that would die
+    unfinished with the process this restart is about to stop. So the check
+    is repeated on the other side of the await, and it refuses the restart
+    rather than the install that is already running.
+    """
+    probing = threading.Event()
+    release = threading.Event()
+    real_command = restart.install_command_for
+
+    def _parked(pack, variant=None):
+        probing.set()
+        assert release.wait(10), "the probe was never released"
+        return real_command(pack, variant)
+
+    monkeypatch.setattr(restart, "install_command_for", _parked)
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: pytest.fail(
+        "a helper was started while a live install was running"))
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: pytest.fail(
+                            "the server was stopped out from under a live "
+                            "install"))
+    flow = ScriptedFlow()
+    service = PackService(run_flow=flow)
+
+    restarting = asyncio.create_task(service.submit_install(
+        get_pack("gpu-torch"), None, mode="restart", variant="cu128"))
+    while not probing.is_set():
+        await asyncio.sleep(0.01)   # parked on its own thread, loop free
+
+    live = await service.submit_install(get_pack(SENTENCE), [],
+                                        mode="live", variant=None)
+    await wait_started(flow)
+    release.set()
+
+    with pytest.raises(PackBusy) as excinfo:
+        await restarting
+    assert excinfo.value.job_id == live.job_id, (
+        "the refusal has to name the job that is actually running")
+    assert not pending_restart_file().exists(), (
+        "a claim was written over a live install")
+    assert service.current_job() is live, "the live job lost its slot"
+
+    flow.finish()
+    events, status = await drain(service, live.job_id)
+    assert status == "done", "the install the user was already watching"
+
+
+async def test_a_spawn_that_fails_withdraws_the_claim_and_starts_no_job(
+        monkeypatch, available):
+    """The failure is reported by the server that is still running, so it has
+    to leave nothing behind -- a pending file nobody will act on refuses
+    every later restart with "one is already pending"."""
+    monkeypatch.setattr(restart, "spawn_helper", lambda path: (_ for _ in ())
+                        .throw(OSError("cannot find the launcher")))
+    monkeypatch.setattr(restart, "schedule_self_shutdown",
+                        lambda loop, delay=0.5: pytest.fail(
+                            "the server was stopped for an install that "
+                            "never started"))
+    service = PackService(run_flow=ScriptedFlow())
+
+    with pytest.raises(PackInstallError, match="helper"):
+        await service.submit_install(get_pack("gpu-torch"), None,
+                                     mode="restart", variant="cu128")
+
+    assert service.current_job() is None
+    assert not pending_restart_file().exists()
 
 
 # ── the long poll ─────────────────────────────────────────────────────────

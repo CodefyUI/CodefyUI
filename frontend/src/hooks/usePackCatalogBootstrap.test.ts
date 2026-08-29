@@ -24,6 +24,7 @@ const catalog: PackCatalog = {
   last_restart_job: null,
   remote_install_allowed: true,
   launch_mode: 'start',
+  restart_available: false,
   gpu: null,
 };
 

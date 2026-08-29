@@ -39,6 +39,8 @@ cdui start
 
 :::note
 本快速開始假設使用預設的 PyTorch 版本，它適用於所有平台（CPU / Apple Silicon MPS）。若需特定的 NVIDIA CUDA 版本、AMD ROCm，或想驗證 GPU 偵測，請參考 **[GPU 與裝置設定](./gpu-device)**。
+
+裝好之後想換版本，也不一定要開終端機：只要伺服器是用 `cdui start` 啟動的，套件中心（工具列 > 設定 > 選用套件包）裡的 **GPU PyTorch** 卡片就能幫你安裝對應的 wheel 並重新啟動伺服器，同時把同一行 `cdui install --gpu <choice>` 印在下面，讓你想自己執行時也有得選。詳見[讓伺服器重新啟動的安裝](/usage/optional-packs#讓伺服器重新啟動的安裝)。
 :::
 
 ## 安裝旗標與環境變數

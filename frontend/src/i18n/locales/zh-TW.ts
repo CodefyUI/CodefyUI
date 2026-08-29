@@ -794,14 +794,18 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.item.removeError': '無法移除 {item}：{message}',
   'packs.restart.done': '伺服器已重新啟動，{pack} 可以使用了。',
   'packs.restart.failed': '伺服器已重新啟動，但安裝 {pack} 失敗：{message}',
+  'packs.restart.failedLog': '安裝程式的最後輸出：{log}',
   'packs.toast.installed': '已安裝 {pack}。',
   'packs.toast.installFailed': '安裝失敗：{message}',
   'packs.toast.cancelled': '已取消安裝。',
   'packs.toast.cancelFailed': '無法取消安裝：{message}',
   'packs.toast.busy': '已經有另一個安裝在進行中。',
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
+  'packs.toast.restartRetry': '安裝停在伺服器已載入的套件上。請到套件中心重新啟動伺服器來完成安裝。',
   'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
+  'packs.toast.restartRefusedRunning': '有圖正在執行。請先停止，再安裝。',
+  'packs.toast.restartRefusedPending': '已經有一個重新啟動在進行中，請等伺服器回來。',
   'packs.toast.devRestart':
     '這個套件需要重新啟動伺服器，cdui dev 模式無法自動處理。請使用套件中心顯示的指令。',
   'packs.toast.inProgress': '有套件仍在安裝中，可在套件中心查看進度。',
@@ -881,8 +885,13 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.failed': '安裝失敗：{message}',
   'packs.activity.cancelled': '已取消安裝。',
   'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
+  'packs.activity.needsRestartConflict':
+    '安裝停住了：它得替換伺服器已載入的套件。重新啟動伺服器才能完成。',
   'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
   'packs.activity.dismiss': '關閉',
+  'packs.activity.restartAndInstall': '重新啟動伺服器並安裝',
+  'packs.activity.restartAndInstallNote':
+    '伺服器會重新啟動以安裝 Python 套件；模型請在之後用一般安裝再下載。',
 
   // GPU PyTorch pack — the one install that swaps the wheel under the running
   // interpreter, so the user may have to run a command themselves.
@@ -891,13 +900,14 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
-  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動，執行中的圖會被中止。',
+  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動；有圖在執行時會拒絕開始。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
   'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
+  'packs.gpu.manualAlternative': '也可以停止伺服器後，自己在終端機執行：',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',
   'packs.copyFailed': '無法複製，請手動選取文字後複製。',
