@@ -2904,6 +2904,10 @@ def _run_pending_steps(pending_path: Path) -> int:
                     log_tail=[])
             return 1
 
+        # uv has been waited on, so its pid is the OS's to hand out again --
+        # and an interrupt landing below must not terminate whoever got it.
+        installer.clear()
+
         if code == 0:
             _finish(status="ok", returncode=0,
                     message=f"{data.get('pack_id')} installed", log_tail=tail)

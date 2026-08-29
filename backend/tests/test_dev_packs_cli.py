@@ -1701,6 +1701,44 @@ def test_a_helper_killed_mid_install_stops_uv_and_records_it(helper,
     assert record["relaunch"] == "ok"
 
 
+def test_an_installer_that_already_finished_is_never_terminated(helper,
+                                                                monkeypatch):
+    """The interrupt handler covers the whole run, the write-up included.
+
+    So a SIGTERM can land AFTER `uv` has been waited on -- inside the
+    `_finish` that is recording the success. The pid in hand is a reaped
+    one by then: the OS has taken it back and Windows in particular hands
+    pids out again quickly, so terminating it is a coin flip on whatever
+    process holds that number now. The helper has to let go of an installer
+    the moment it has no installer left to stop.
+    """
+    path = _pending(helper)
+    finishes: list = []
+    real_finish = dev._finish_pending_job
+
+    def _finish(*args, **kwargs):
+        finishes.append(kwargs["status"])
+        if len(finishes) == 1:
+            # "End task" while the ok record is being written.
+            raise KeyboardInterrupt("stopped")
+        return real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(dev, "_finish_pending_job", _finish)
+    monkeypatch.setattr(dev, "_terminate_pid",
+                        lambda pid: pytest.fail(
+                            f"a reaped installer was terminated (pid {pid})"))
+
+    with pytest.raises(KeyboardInterrupt):
+        dev._run_pending_job(path)
+
+    # The handler really did run -- it wrote the second record -- so the
+    # untouched `_terminate_pid` above is a pid it chose not to kill, not a
+    # branch the test never reached.
+    assert finishes == ["ok", "failed"]
+    # And the promise the handler exists to keep is still kept.
+    assert helper["relaunch"] is not None
+
+
 @pytest.mark.parametrize("phase",
                          ["_wait_for_server_exit", "_restart_disk_shortfall"])
 def test_a_helper_killed_before_the_install_records_it_too(helper, monkeypatch,
