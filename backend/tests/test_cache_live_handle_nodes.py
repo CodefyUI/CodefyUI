@@ -818,18 +818,32 @@ async def test_a_network_constructor_hands_out_a_fresh_network_every_run(
     edges = _trigger("net")
 
     cache = ExecutionCache()
-    identities, weights = [], []
+    # Keep the modules themselves (#307). An id is unique only among
+    # objects that are alive at the same moment: recording ``id(model)``
+    # and then rebinding ``model`` on the next iteration left the previous
+    # network collectable, and CPython hands the next allocation the
+    # address it just freed. Two distinct networks then carried one id and
+    # this test reported a cache hit that had not happened -- observed with
+    # the first and third ids equal on PPO.
+    models, weights = [], []
     for _ in range(3):
         outputs = await execute_graph(nodes, edges, cache=cache)
         model = outputs["net"]["model"]
-        identities.append(id(model))
+        models.append(model)
         weights.append(_first_weight(model))
         with torch.no_grad():
             next(model.parameters()).fill_(99.0)
 
-    assert len(set(identities)) == 3, (
-        f"{node_type} handed back the same module object on "
-        f"{4 - len(set(identities))} of 3 runs. A cached network is the "
+    # ``is``, pairwise, with all three still referenced by ``models``: this
+    # compares the objects themselves, so no address the allocator is free
+    # to reuse can decide the outcome.
+    repeats = [(a + 1, b + 1)
+               for a in range(len(models))
+               for b in range(a + 1, len(models))
+               if models[a] is models[b]]
+    assert not repeats, (
+        f"{node_type} handed back one module object on more than one run: "
+        f"runs {repeats} got the same object. A cached network is the "
         "previous run's network, including whatever training did to it."
     )
     assert 99.0 not in weights, (
