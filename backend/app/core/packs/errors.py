@@ -1,6 +1,6 @@
 """How a pack install fails, in terms the UI can act on.
 
-An install can fail in four shapes, and they lead to four different next
+An install can fail in five shapes, and they lead to five different next
 steps for the person watching. Collapsing them into one ``RuntimeError``
 would put that decision back on the frontend, which would then have to
 match on message text:
@@ -18,6 +18,10 @@ match on message text:
 * :class:`PackInsufficientDisk` -- there is not enough room. ``needed`` and
   ``free`` are bytes, so the UI can say how much short it is rather than
   "an error occurred".
+* :class:`PendingExists` -- a restart-mode install is ALREADY waiting to
+  run, claimed by a server process that is still alive. Nothing failed yet
+  and nothing was overwritten; the next step is to wait for that one, not
+  to retry this one.
 
 Stdlib only, and imported by ``packs/__init__.py``: node code catches these
 without dragging the installer's machinery into a graph run.
@@ -64,3 +68,21 @@ class PackInsufficientDisk(PackInstallError):
         super().__init__(message, hint=hint)
         self.needed = needed
         self.free = free
+
+
+class PendingExists(PackInstallError):
+    """Another restart-mode install is already pending, and still live.
+
+    The pending file is a CLAIM on one interpreter: the helper it names will
+    reinstall packages into ``backend/.venv`` as soon as the server holding
+    it exits. Two claims at once means two ``uv`` runs over one
+    site-packages, so the second one is refused rather than allowed to
+    overwrite the first.
+
+    A subclass of :class:`PackInstallError` so the routes' existing mapping
+    reports it without a new branch -- and so a caller that only knows
+    "install errors" cannot miss it. What makes it different is that nothing
+    has been changed or lost: the right next step is to wait for the restart
+    already under way (``restart.clear_stale_pending`` removes the claim of
+    a server that died holding it).
+    """

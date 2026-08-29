@@ -29,6 +29,7 @@ from .errors import (
     PackInstallError,
     PackInsufficientDisk,
     PackNeedsRestart,
+    PendingExists,
 )
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "PackInsufficientDisk",
     "PackMissingError",
     "PackNeedsRestart",
+    "PendingExists",
     "asset_path",
     "model_dir",
     "pack_available",
