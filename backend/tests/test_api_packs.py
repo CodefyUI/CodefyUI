@@ -29,6 +29,7 @@ detached helper, the SIGINT) are faked by the ``restart_ready`` fixture.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import threading
@@ -1105,3 +1106,25 @@ async def test_read_last_restart_ignores_a_corrupt_file(isolated_cache):
                     encoding="utf-8")
     assert restart.read_last_restart() == {"pack_id": "gpu-torch",
                                            "status": "done"}
+
+
+async def test_the_catalog_hands_the_restart_record_over_whole(anon_client):
+    """`last_restart_job` is a passthrough, and the SPA reads three of its
+    keys. `job_id` is the newest of them: the record carries no age bound, so
+    the page that comes back from a restart matches this id against the one
+    it parked before the reload rather than reporting whatever it finds."""
+    from app.core.packs.paths import last_restart_file
+
+    record = {"schema": restart.OUTCOME_SCHEMA, "job_id": "job-1",
+              "pack_id": "gpu-torch", "kind": "torch", "status": "ok",
+              "returncode": 0, "message": "GPU PyTorch (cu128) installed",
+              "log_tail": "Installed 2 packages",
+              "finished_at": "2026-08-29T09:00:00+00:00"}
+    path = last_restart_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    response = await anon_client.get("/api/packs")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["last_restart_job"] == record

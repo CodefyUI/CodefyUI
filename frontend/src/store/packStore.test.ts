@@ -135,6 +135,9 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetPackStoreForTesting();
+  // The panel is not this file's store, but one toast action opens it — and
+  // an open panel inherited by the next case is a state nothing here set.
+  useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -874,6 +877,7 @@ describe('packStore — the follower', () => {
       byId: {
         'word-vectors': makePack({
           id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+          install_command: 'cdui packs install word-vectors --restart',
         }),
       },
       restartAvailable: true,
@@ -887,8 +891,67 @@ describe('packStore — the follower', () => {
     expect(api.getPackJobEvents).toHaveBeenCalledTimes(MAX_FOLLOW_FAILURES);
     expect(usePackStore.getState().job!.status).toBe('needs_restart');
     expect(usePackStore.getState().restart.phase).toBe('waiting');
-    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('word-vectors');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('word-vectors j1');
+    // No `needs_restart` event ever arrived, so the command comes off the
+    // catalog instead. Both give-up screens promise the user one — the
+    // `notStarted` heading is literally "Run this command, then reload:".
+    expect(usePackStore.getState().job!.restartCommand)
+      .toBe('cdui packs install word-vectors --restart');
+    expect(usePackStore.getState().restart.command)
+      .toBe('cdui packs install word-vectors --restart');
   });
+
+  it('still loses a restart-mode job whose polls came back as HTTP answers', async () => {
+    // A status code is the server ANSWERING. A 404 means "I do not have that
+    // job" — it aged out, or the helper never spawned and this server never
+    // went anywhere — and settling on it put a blocking, focus-trapping
+    // "Server restarting" overlay over a live server for thirty seconds,
+    // ending on a screen that promises a command it has no way to know.
+    usePackStore.setState({
+      byId: {
+        'word-vectors': makePack({
+          id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+        }),
+      },
+      restartAvailable: true,
+    });
+    api.getPackJobEvents.mockRejectedValue(new PackApiError(404, 'no such job'));
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+    await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
+
+    expect(usePackStore.getState().job!.status).toBe('lost');
+    expect(usePackStore.getState().restart.phase).toBe('idle');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
+
+  it('names the command when the lost poll settles on a server that cannot restart',
+     async () => {
+       // The same settle, on a server that says it cannot relaunch itself.
+       // It falls through to `needsCli` — "Run: " — and without a command
+       // off the catalog that sentence ends at the colon.
+       usePackStore.setState({
+         byId: {
+           'word-vectors': makePack({
+             id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+             install_command: 'cdui packs install word-vectors --restart',
+           }),
+         },
+         launchMode: 'start',
+         restartAvailable: false,
+       });
+       api.getPackJobEvents.mockRejectedValue(new Error('Failed to fetch'));
+
+       usePackStore.getState().followJob('j1', 'word-vectors', 0);
+       await settle();
+       await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
+
+       expect(usePackStore.getState().restart.phase).toBe('idle');
+       expect(lastToast()).toMatchObject({ type: 'warning' });
+       expect(lastToast().message)
+         .toContain('cdui packs install word-vectors --restart');
+     });
 
   it('still loses a LIVE job whose poll never came back', async () => {
     // The mode is the whole difference: nothing is restarting here, so
@@ -1111,7 +1174,10 @@ describe('packStore — a job settling', () => {
     usePackStore.getState().followJob('j1', 'word-vectors', 0);
     await settle();
 
-    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('word-vectors');
+    // The job beside the pack: the page that comes back reads
+    // `last_restart_job`, which is not bounded by age, so it needs to know
+    // WHICH install it is being told about.
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('word-vectors j1');
     expect(usePackStore.getState().restart).toMatchObject({
       phase: 'waiting', packId: 'word-vectors', command: 'cdui install --gpu cu128',
     });
@@ -1509,6 +1575,41 @@ describe('packStore — checkInProgress', () => {
     });
     // Cleared, so a later reload does not report the same install twice.
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
+
+  it('reports the outcome only when it belongs to the job the breadcrumb named',
+     async () => {
+       // `last_restart_job` has no age bound — the record of an install that
+       // finished an hour ago is still the one this reads. A lost poll during
+       // a network blip can end in a reload with no restart behind it at all,
+       // and reporting that stale record would tell the user an install
+       // succeeded that never ran.
+       sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch abc');
+       api.listPacks.mockResolvedValue(catalog({
+         packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+         last_restart_job: { job_id: 'xyz', status: 'ok', returncode: 0 },
+       }));
+
+       await usePackStore.getState().checkInProgress();
+
+       expect(useToastStore.getState().toasts).toHaveLength(0);
+       // Still cleared: this breadcrumb has no outcome coming, and leaving it
+       // would make the next hand reload read the same wrong record.
+       expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+     });
+
+  it('reports the outcome when the ids agree', async () => {
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch abc');
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: { job_id: 'abc', status: 'ok', returncode: 0 },
+    }));
+
+    await usePackStore.getState().checkInProgress();
+
+    expect(lastToast()).toMatchObject({
+      type: 'success', message: 'Server restarted. GPU PyTorch is ready.',
+    });
   });
 
   it('reports a restart-mode install that failed', async () => {

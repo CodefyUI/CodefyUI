@@ -449,9 +449,12 @@ def write_last_restart(record: dict) -> None:
          "status": "ok"|"failed", "returncode": int|None, "message": str,
          "log_tail": str, "finished_at": iso8601}
 
-    ``status`` and ``message`` are the CONTRACT: the SPA reads exactly those
-    two to tell the user what happened while it was not running (packStore's
-    ``checkInProgress``). Everything else is for whoever opens the file.
+    ``job_id``, ``status`` and ``message`` are the CONTRACT: the SPA reads
+    exactly those three to tell the user what happened while it was not
+    running (packStore's ``checkInProgress``). ``job_id`` is what makes it
+    THIS install's outcome -- the record has no age bound, so a page that
+    reloads for any other reason would otherwise report an install that
+    finished an hour ago. Everything else is for whoever opens the file.
 
     Atomic, and deliberately NOT validated. The writer that matters most has
     no access to this module, so a check here would describe only one of the

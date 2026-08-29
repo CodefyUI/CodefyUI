@@ -1172,6 +1172,15 @@ def test_run_pending_refuses_a_launcher_that_is_not_this_dev_py(helper, capsys):
     (["C:/evil"], "C:/evil"),
     (["torch --index-url https://evil.example"], "--index-url"),
     (["torch;os.system('rm -rf /')"], "os.system"),
+    # A wheel or an sdist NAME needs no slash to be a path: uv resolves it
+    # against the installer's working directory (`BACKEND_DIR`) and installs
+    # the archive it finds there, which is the same local build `-e` was
+    # refused for.
+    (["evil-1.0-py3-none-any.whl"], "evil-1.0-py3-none-any.whl"),
+    (["evil.tar.gz"], "evil.tar.gz"),
+    # `$` is not the end of the string -- it also matches in front of one
+    # trailing newline, and "no whitespace" has to mean none.
+    (["torch\n"], "torch\\n"),
 ])
 def test_run_pending_refuses_a_spec_that_is_not_a_package_requirement(
         helper, capsys, specs, named):
@@ -1689,6 +1698,47 @@ def test_a_helper_killed_mid_install_stops_uv_and_records_it(helper,
     # The one promise this whole mechanism makes: whatever happened, there is
     # a server again. One that comes back and reports beats none at all.
     assert helper["relaunch"] is not None
+    assert record["relaunch"] == "ok"
+
+
+@pytest.mark.parametrize("phase",
+                         ["_wait_for_server_exit", "_restart_disk_shortfall"])
+def test_a_helper_killed_before_the_install_records_it_too(helper, monkeypatch,
+                                                           phase):
+    """The install is not the only phase that can be interrupted.
+
+    `_raise_on_sigterm` arms the handler for the WHOLE run, and the phases
+    before `uv` starts are the long ones -- the server wait alone is up to
+    two minutes. An interrupt there must end the same way an interrupt during
+    the install does: with an outcome record somebody can read. Without it
+    the claim stays on disk naming a helper that is gone, nothing (the panel,
+    `cdui status`, the outcome file) says the install was cut short, and the
+    `finally` relaunches a server into that silence anyway.
+    """
+    def _interrupted(*args, **kwargs):
+        raise KeyboardInterrupt("stopped")
+
+    monkeypatch.setattr(dev, phase, _interrupted)
+    relaunches: list = []
+    real_relaunch = dev._relaunch_server
+
+    def _counted(launcher, argv, log_path):
+        relaunches.append(launcher)
+        return real_relaunch(launcher, argv, log_path)
+
+    monkeypatch.setattr(dev, "_relaunch_server", _counted)
+    path = _pending(helper)
+
+    with pytest.raises(KeyboardInterrupt):
+        dev._run_pending_job(path)
+
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert "interrupted" in record["message"]
+    assert not path.exists(), "the claim outlived the job it described"
+    # Once, from the `finally` -- a handler that relaunched as well would
+    # start two servers on one port.
+    assert len(relaunches) == 1
     assert record["relaunch"] == "ok"
 
 

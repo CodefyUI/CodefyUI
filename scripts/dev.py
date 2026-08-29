@@ -2271,12 +2271,26 @@ def _export_restart_env(own_argv: list, uvicorn_extra: list) -> None:
 #: manager flag to next year. It excludes by construction everything the
 #: review named: a leading `-` (uv would read `--index-url`, `-r`, `-e` as
 #: flags), whitespace (one string carrying two arguments), and `/ \ @ ; #`
-#: (a path, a local build, a URL, a shell line).
+#: (a path, a local build, a URL, a shell line). Anchored by `fullmatch`
+#: rather than by `^...$`, because `$` also matches in front of one trailing
+#: newline -- and "no whitespace" has to mean none.
 _REQUIREMENT_RE = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"           # name
-    r"(?:\[[A-Za-z0-9._-]+(?:,[A-Za-z0-9._-]+)*\])?"         # extras
-    r"(?:(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+"        # a specifier
-    r"(?:,(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+)*)?$"  # ...and more
+    r"(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)"  # name
+    r"(?:\[[A-Za-z0-9._-]+(?:,[A-Za-z0-9._-]+)*\])?"        # extras
+    r"(?:(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+"       # a specifier
+    r"(?:,(?:===|==|!=|<=|>=|~=|<|>)[A-Za-z0-9.*+!-]+)*)?"  # ...and more
+)
+
+#: Extensions uv unpacks. A distribution FILENAME needs no slash in it to be
+#: a path: `evil-1.0-py3-none-any.whl` and `evil.tar.gz` are legal names as
+#: far as the pattern above is concerned, and uv resolves each of them
+#: against the installer's working directory (`BACKEND_DIR`) and installs the
+#: archive it finds -- the same local build `-e` is refused for. Matched on
+#: the NAME part and on a dot, so a package really called `zipp` or
+#: `pytest-tar` is untouched.
+_ARCHIVE_SUFFIXES = (
+    ".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz",
+    ".tar.xz", ".txz", ".tar.zst", ".tzst",
 )
 
 
@@ -2289,14 +2303,20 @@ def _is_plain_requirement(spec: str) -> bool:
     gets installed. `["--index-url", "https://evil.example/simple", "torch"]`
     is three strings uv reads as a flag, its value and a package; `["-r",
     "req.txt"]` installs a file; `["-e", "."]` or a bare path builds whatever
-    is in a directory the file names.
+    is in a directory the file names; and `["evil.tar.gz"]` -- see
+    `_ARCHIVE_SUFFIXES` -- is a path with no slash in it.
 
     The catalog's only shape is `sentence-transformers>=3.0,<6`, and
     `test_every_spec_the_catalog_ships_passes_the_helper` runs the real
     catalog through this so a spec added there cannot silently start being
     refused.
     """
-    return bool(isinstance(spec, str) and _REQUIREMENT_RE.match(spec))
+    if not isinstance(spec, str):
+        return False
+    match = _REQUIREMENT_RE.fullmatch(spec)
+    if match is None:
+        return False
+    return not match.group("name").lower().endswith(_ARCHIVE_SUFFIXES)
 
 
 def _validate_pending(data: "dict | None") -> "str | None":
@@ -2829,6 +2849,10 @@ def _run_pending_steps(pending_path: Path) -> int:
             pending_path, data, status=status, returncode=returncode,
             message=message, log_tail=log_tail, log_file=log_path))
 
+    # Declared out here because the handler below is: an interrupt has to be
+    # able to stop an installer that HAS started, from a phase that has not.
+    installer: list = []
+
     try:
         how = _wait_for_server_exit(data["server_pid"])
         if how != "alive":
@@ -2856,7 +2880,6 @@ def _run_pending_steps(pending_path: Path) -> int:
             return 1
 
         print("    " + " ".join(cmd), flush=True)
-        installer: list = []
 
         def _stamp(proc) -> None:
             """Name the installer in the claim, while it is running.
@@ -2880,20 +2903,6 @@ def _run_pending_steps(pending_path: Path) -> int:
             _finish(status="failed", returncode=None, message=message,
                     log_tail=[])
             return 1
-        except BaseException:
-            # Ctrl-C, a SIGTERM (see `_raise_on_sigterm`), a closed console:
-            # this process is going, and `uv` is not -- it is mid-way through
-            # replacing the packages the next server has to import. Stop it,
-            # say so where the panel and `cdui status` will read it, and let
-            # the exception out: the `finally` below still relaunches, and a
-            # server that comes back and reports beats none at all.
-            for proc in installer:
-                _terminate_pid(proc.pid)
-            message = "the install was interrupted before it finished"
-            err("安裝被中斷，已停止安裝程式", message)
-            _finish(status="failed", returncode=None, message=message,
-                    log_tail=[])
-            raise
 
         if code == 0:
             _finish(status="ok", returncode=0,
@@ -2902,6 +2911,24 @@ def _run_pending_steps(pending_path: Path) -> int:
         _finish(status="failed", returncode=code,
                 message=f"the installer exited with {code}", log_tail=tail)
         return 1
+    except BaseException:
+        # Ctrl-C, a SIGTERM (see `_raise_on_sigterm`), a closed console: this
+        # process is going. It covers the WHOLE run, not just the install,
+        # because `_raise_on_sigterm` does -- the server wait alone is up to
+        # two minutes, and an interrupt there used to leave the claim on disk
+        # with nothing anywhere saying the install never ran. Stop any `uv`
+        # that did start (it is mid-way through replacing the packages the
+        # next server has to import), say so where the panel and `cdui
+        # status` will read it, and let the exception out: the `finally`
+        # below still relaunches, and a server that comes back and reports
+        # beats none at all.
+        for proc in installer:
+            _terminate_pid(proc.pid)
+        message = "the install was interrupted before it finished"
+        err("安裝被中斷，已停止安裝程式", message)
+        _finish(status="failed", returncode=None, message=message,
+                log_tail=[])
+        raise
     finally:
         pid = _relaunch_server(list(data["launcher"]),
                                list(data["relaunch_argv"]), log_path)

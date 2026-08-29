@@ -341,23 +341,43 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** What the breadcrumb carries across the reload: which pack, which job. */
+interface RestartBreadcrumb {
+  packId: string;
+  /** null for a payload written before this field existed. */
+  jobId: string | null;
+}
+
 /**
  * `sessionStorage` can throw outright — Safari in private mode, and any
  * browser configured to block site data. Losing the restart breadcrumb costs
  * one missing toast; letting it throw would abandon the restart itself.
  */
-function readPending(): string | null {
+function readPending(): RestartBreadcrumb | null {
+  let raw: string | null;
   try {
-    return sessionStorage.getItem(RESTART_PENDING_KEY);
+    raw = sessionStorage.getItem(RESTART_PENDING_KEY);
   } catch {
     return null;
   }
+  if (raw === null || raw === '') return null;
+  const [packId, jobId] = raw.split(' ');
+  return { packId, jobId: jobId || null };
 }
 
-function writePending(packId: string | null): void {
+function writePending(packId: string | null, jobId: string | null = null): void {
   try {
-    if (packId === null) sessionStorage.removeItem(RESTART_PENDING_KEY);
-    else sessionStorage.setItem(RESTART_PENDING_KEY, packId);
+    if (packId === null) {
+      sessionStorage.removeItem(RESTART_PENDING_KEY);
+      return;
+    }
+    // The job id rides along beside the pack: `last_restart_job` carries no
+    // age bound, so the page that comes back has no other way to tell this
+    // install's outcome from one that finished an hour ago. A space is a safe
+    // join — pack ids are slugs and job ids are hex.
+    sessionStorage.setItem(
+      RESTART_PENDING_KEY, jobId === null ? packId : `${packId} ${jobId}`,
+    );
   } catch {
     // See readPending.
   }
@@ -590,7 +610,7 @@ async function follow(
         wait: EVENT_WAIT_S,
         signal: controller.signal,
       });
-    } catch {
+    } catch (error) {
       // A deliberate abort bumped the generation; anything else is the
       // network, which an install is entitled to survive — the download
       // itself is happening server-side and does not care that we blinked.
@@ -609,9 +629,26 @@ async function follow(
         // it almost certainly reached runs the same handshake the last page
         // would have started; if it turns out the server never went, the
         // overlay's own thirty-second grace says so.
-        const open = usePackStore.getState().job;
-        if (open?.jobId === jobId && open.mode === 'restart') {
-          patchJob(jobId, (job) => ({ ...job, status: 'needs_restart' }));
+        //
+        // Only for a connection that DROPPED, though. A `PackApiError` is
+        // the server answering — a 404 for a job that aged out, a 500 — and
+        // an answer is proof it is still there. Settling on those raised the
+        // blocking overlay over a live server, which is the bug the note in
+        // `onJobSettled` records as fixed.
+        const store = usePackStore.getState();
+        const open = store.job;
+        if (!(error instanceof PackApiError)
+            && open?.jobId === jobId && open.mode === 'restart') {
+          // No `needs_restart` event ever arrived, so nothing carried the
+          // command — and both give-up screens name one ("Run this command,
+          // then reload:"). The catalog has it: `install_command` is what the
+          // panel's own button would have run for this pack.
+          const command = store.byId[packId]?.install_command ?? null;
+          patchJob(jobId, (job) => ({
+            ...job,
+            status: 'needs_restart',
+            restartCommand: job.restartCommand ?? command,
+          }));
           onJobSettled(jobId, packId, 'needs_restart');
         } else {
           patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
@@ -702,8 +739,8 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
       // server that said yes.
       if (settled?.mode === 'restart' && store.restartAvailable) {
         // Parked BEFORE the reload so the page that comes back knows which
-        // pack to report on — the job itself does not survive the reload.
-        writePending(packId);
+        // pack and which job to report on — neither survives the reload.
+        writePending(packId, jobId);
         void store.restartFlow(packId, command);
       } else if (settled?.retryMode === 'restart' && store.restartAvailable) {
         // A LIVE install the constraints file stopped, on a server that CAN
@@ -1115,8 +1152,20 @@ export const usePackStore = create<PackState>((set, get) => ({
     writePending(null);
 
     const record = lastRestartRecord;
+    // `last_restart_job` carries no age bound — the record of an install that
+    // finished an hour ago is still the one this reads. Not every reload the
+    // handshake performs has a restart behind it (a lost poll during a
+    // network blip ends the same way), so the record has to say it is about
+    // THIS job before it is reported as this job's outcome. A breadcrumb or a
+    // record without an id cannot disagree, and is believed: the ids are what
+    // this checks, not their presence.
+    const recordJob = str(record?.job_id);
+    if (pending.jobId !== null && recordJob !== null
+        && recordJob !== pending.jobId) {
+      return;
+    }
     const status = str(record?.status);
-    const title = packTitle(pending);
+    const title = packTitle(pending.packId);
     if (status === 'ok') {
       toast(t('packs.restart.done', { pack: title }), 'success');
     } else if (status === 'failed') {

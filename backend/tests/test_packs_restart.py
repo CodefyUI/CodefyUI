@@ -571,6 +571,37 @@ def test_a_claim_with_no_pids_yet_gets_the_helper_start_grace(
     assert not path.exists()
 
 
+def test_a_live_writer_with_no_pids_holds_its_claim_up_to_the_cap(
+        monkeypatch, launcher, cu128):
+    """The middle rule, and the only one the WRITER's pid decides.
+
+    No helper and no installer has stamped itself yet, and the server that
+    wrote the claim is still answering: five minutes in, that is a shutdown
+    taking its time, not an abandoned install, and the sixty-second grace
+    that governs a DEAD writer would throw it away. What still catches it is
+    the fifteen-minute cap -- a machine that rebooted and handed the same pid
+    to something else looks alive forever, and only the clock says otherwise.
+    """
+    pack = get_pack("gpu-torch")
+    base = restart.build_pending(pack, job_id="first", kind="torch")
+    path = pending_restart_file()
+    monkeypatch.setattr(restart, "_pid_alive", lambda pid: True)
+
+    # Well past the helper-start grace, well inside the cap.
+    _claim_with(base, created_at=_iso_ago(restart.HELPER_START_GRACE_S + 240))
+    assert restart.clear_stale_pending() is False
+    assert path.exists(), "the writer is still there; nothing was abandoned"
+    with pytest.raises(PendingExists, match="first"):
+        restart.write_pending(restart.build_pending(pack, job_id="second",
+                                                    kind="torch"))
+    assert _pending_on_disk().job_id == "first"
+
+    # Past the cap, same live pid: the clock is the only witness left.
+    _claim_with(base, created_at=_iso_ago(restart.STALE_PENDING_S + 60))
+    assert restart.clear_stale_pending() is True
+    assert not path.exists()
+
+
 def test_clear_stale_pending(monkeypatch, launcher, cu128):
     pack = get_pack("gpu-torch")
     path = pending_restart_file()
@@ -970,11 +1001,14 @@ def test_write_and_read_last_restart():
     assert restart.read_last_restart() == record
     assert not list(path.parent.glob("*.tmp")), "a temp file was left behind"
 
-    # The two keys the SPA is written against (packStore.checkInProgress).
+    # The three keys the SPA is written against (packStore.checkInProgress).
+    # `job_id` is how the page that comes back tells this install's outcome
+    # from one that finished an hour ago; the record itself has no age bound.
     failed = {**record, "status": "failed", "returncode": 1,
               "message": "uv exited 1"}
     restart.write_last_restart(failed)
     read_back = restart.read_last_restart()
+    assert read_back["job_id"] == "job-1"
     assert read_back["status"] == "failed"
     assert read_back["message"] == "uv exited 1"
     assert read_back == failed, "the second record did not replace the first"
