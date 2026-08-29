@@ -36,6 +36,19 @@ description: The cdui launcher commands — install, start, status, dev, build, 
 
 See **[Plugins](/advanced/plugins)** for the full plugin workflow.
 
+## Package commands
+
+Optional packs are the large extras a stock install deliberately leaves out — `sentence-transformers`, the embedding models, the GloVe word-vector table, an accelerated PyTorch build. The in-app **Package Center** installs them with a progress bar; these do the same from a terminal, and are the only way to install a pack that has to replace something the running server already imported.
+
+| Command | Description |
+|---------|-------------|
+| `cdui packs list` | List every pack in the catalog: what is in it, what it costs to download, and what is already installed. |
+| `cdui packs status` | Like `list`, plus the PyTorch build in this venv and the command to run next. |
+| `cdui packs install <id>` | Install one pack. `--items a,b` downloads only those models (default: everything the pack is missing); `--yes` / `-y` skips the download-size confirmation, and is required when there is no terminal to confirm at. Only ids from the catalog are accepted — there is no way to pass a package spec, an index URL or a repo id. |
+| `cdui packs remove <id> <item-id>` | Delete one downloaded model and forget it. A pack's Python packages are left alone; the `uv pip uninstall` line that would remove them is printed for you to run with the server stopped. |
+
+Exit codes, for scripts: `0` done, `1` the install failed or was declined at the prompt, `2` refused before anything ran (unknown id, unmet dependency, no terminal to confirm at), `3` this cannot be done while the server is running — the command to type instead is printed, `130` cancelled with `Ctrl+C`.
+
 ## Background vs foreground
 
 `cdui start` runs in the **background** by default — close the terminal and the server keeps running. Manage it with:

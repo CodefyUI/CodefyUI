@@ -33,6 +33,10 @@ class ParamDefinitionSchema(BaseModel):
     # False so a plugin built against an older host, whose params carry no
     # such flag, keeps every parameter in the basic tier.
     advanced: bool = False
+    # Package Center — see ParamDefinition.option_packs. Maps a SELECT
+    # option to the optional pack it needs, so the editor can grey out
+    # exactly those options instead of disabling the whole parameter.
+    option_packs: dict[str, str] | None = None
 
 
 class NodeDefinition(BaseModel):
@@ -46,6 +50,10 @@ class NodeDefinition(BaseModel):
     # so the frontend can badge plugin-provided nodes and prompt for install
     # when a graph references a node from a plugin that isn't loaded.
     provider: str = "builtin"
+    # Package Center — see BaseNode.REQUIRES_PACK. The optional pack this
+    # node needs before it can run at all; None for everything the base
+    # install already covers.
+    requires_pack: str | None = None
 
 
 class NodeData(BaseModel):

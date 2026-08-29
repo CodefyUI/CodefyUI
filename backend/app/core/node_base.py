@@ -141,6 +141,9 @@ class ParamDefinition:
     # library default nobody changes until they need to; leave the ones a
     # lesson actually turns basic.
     advanced: bool = False
+    # Package Center: SELECT option -> id of the optional pack that option
+    # needs. Absent/None means every option works with the base install.
+    option_packs: dict[str, str] | None = None
 
 
 def is_param_visible(
@@ -269,6 +272,13 @@ class BaseNode(ABC):
     # opposite of what streaming it was for. The elements still get aligned,
     # one at a time, when the body node is invoked.
     align_inputs: ClassVar[bool] = True
+
+    # Package Center: the optional pack this node needs at execute time
+    # (None = none). Whole-node, unlike ``ParamDefinition.option_packs``,
+    # which gates individual SELECT options: this is for a node that cannot
+    # do anything at all without the pack, so the palette can badge it and
+    # the editor can offer the install before the run fails.
+    REQUIRES_PACK: ClassVar[str | None] = None
 
     @classmethod
     def cache_fingerprint(cls, params: dict[str, Any]) -> Any:

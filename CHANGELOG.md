@@ -22,6 +22,54 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Package Center — the optional four hundred megabytes a lesson needs now
+  install from inside the app.** A stock CodefyUI is deliberately small
+  enough to hand to a classroom, which means the parts a sentence-embedding
+  lesson needs — `sentence-transformers`, small embedding models, a real
+  400k-word GloVe table, an accelerated PyTorch build — were not in it, and
+  the only way to get them was a terminal, a pip spec, and a guess at which
+  versions this build was tested against. A curated catalog
+  (`backend/app/core/packs/`) is now the whole allowlist — no pip spec, repo
+  id or URL from a request body ever reaches a subprocess — and five routes
+  under `/api/packs` start an install, follow its log and byte-by-byte
+  progress over a long poll, stop it mid-file, and delete a downloaded model
+  to get the disk back. Every live install runs under a constraints file
+  pinning each distribution already in this interpreter to the version it
+  has, so an install can only ADD: nothing already imported by the running
+  server can be replaced, which on Windows would fail halfway through and
+  everywhere else would leave the process running code that is no longer on
+  disk. A pack that *must* replace something imported (the CUDA/ROCm torch
+  build) refuses to run live and prints the command to type instead.
+  Mutating routes are refused unless the server is bound to loopback —
+  starting an install runs a package manager against the interpreter serving
+  the request — with `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` to opt a
+  deliberate classroom or office instance back in.
+
+- **`cdui packs list|status|install|remove`** — the same installer from a
+  terminal, over the same code path as the panel, for the packs that cannot
+  be installed while the server is running and for anyone who would rather
+  not. `status` also reports which PyTorch build this venv has and what to
+  run next; `remove` deletes one downloaded model and prints the
+  `uv pip uninstall` line for the packages it deliberately leaves alone.
+
+- **A node can declare the pack it needs, and a dropdown can declare one per
+  option.** `/api/nodes` now carries `requires_pack` on each node definition
+  and `option_packs` on each SELECT param (option value → pack id), so an
+  editor can show that an option is one download away instead of letting the
+  run find out. No shipped node sets either field yet — the nodes that will
+  are what the packs exist for — but the gate behind them is already here:
+  `require_pack()` raises naming the pack, and a graph run never downloads
+  — four hundred megabytes arriving mid-run, on a classroom connection, with
+  no progress bar and no way to cancel, is not something a Run button may do.
+
+- **`/api/health` reports `boot_id`**, the identity of the process that
+  answered. A client waiting out a restart cannot tell "the server came back"
+  from "it never went down" by whether the route answers; a changed `boot_id`
+  is the only proof, and a restart-mode pack install is the first thing that
+  needs to know.
+
 ### Fixed
 
 - **The engine puts a node's inputs on the device that node runs on**

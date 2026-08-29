@@ -46,8 +46,9 @@ def _real_frontend_survives():
 @pytest.fixture(autouse=True)
 def _restore_bind_env():
     """`start()` writes raw os.environ (monkeypatch cannot undo a write it
-    never saw) -- snapshot/restore the two keys it touches."""
-    saved = {k: os.environ.get(k) for k in ("CODEFYUI_HOST", "CODEFYUI_PORT")}
+    never saw) -- snapshot/restore the keys it touches."""
+    saved = {k: os.environ.get(k)
+             for k in ("CODEFYUI_HOST", "CODEFYUI_PORT", "CODEFYUI_MANAGED")}
     yield
     for k, v in saved.items():
         if v is None:
@@ -70,7 +71,9 @@ def started(tmp_path, monkeypatch):
     """Sandbox `start()` and return a recorder of what it would have launched.
 
     Returns a dict with `popen` (background path) and `run` (foreground path)
-    command lists, plus `popen_kwargs`.
+    command lists, plus `popen_kwargs` and `managed` -- the value of
+    CODEFYUI_MANAGED as the child saw it, read at spawn time because the
+    child inherits the environment as it stands then.
     """
     root = tmp_path / "codefyui"
     frontend = root / "frontend"
@@ -104,15 +107,21 @@ def started(tmp_path, monkeypatch):
     # which machine ran them.
     monkeypatch.setattr(dev, "LANG", "en")
 
-    rec: dict = {"popen": None, "popen_kwargs": None, "run": None}
+    rec: dict = {"popen": None, "popen_kwargs": None, "run": None,
+                 "managed": None}
 
     def _fake_popen(cmd, **kw):
         rec["popen"] = list(cmd)
         rec["popen_kwargs"] = kw
+        rec["managed"] = os.environ.get("CODEFYUI_MANAGED")
         return _FakeProc()
 
+    def _fake_run(cmd, **kw):
+        rec["run"] = list(cmd)
+        rec["managed"] = os.environ.get("CODEFYUI_MANAGED")
+
     monkeypatch.setattr(dev.subprocess, "Popen", _fake_popen)
-    monkeypatch.setattr(dev, "run", lambda cmd, **kw: rec.__setitem__("run", list(cmd)))
+    monkeypatch.setattr(dev, "run", _fake_run)
     return rec
 
 
@@ -315,3 +324,25 @@ def test_cduis_own_project_flag_still_works_with_a_tail(started, monkeypatch):
     dev.start()
     assert activated == ["/some/proj"]
     assert started["popen"][-1] == "--proxy-headers"
+
+
+# ── the launch marker ─────────────────────────────────────────────────────
+#
+# Only dev.py knows whether the server it is starting is one it supervises.
+# The Package Center reads CODEFYUI_MANAGED back as `launch_mode` to decide
+# whether it may offer a restart-mode install, so a server started by hand
+# (`uvicorn app.main:app`) has to stay "unknown" rather than inherit a claim
+# nobody can honour.
+
+
+def test_start_records_managed_env(started, monkeypatch):
+    _argv(monkeypatch)
+    dev.start()
+    assert started["managed"] == "start"
+
+
+def test_start_records_managed_env_on_the_foreground_path(started, monkeypatch):
+    _argv(monkeypatch, "-f")
+    dev.start()
+    assert started["run"] is not None
+    assert started["managed"] == "start"

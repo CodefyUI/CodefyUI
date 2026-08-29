@@ -110,7 +110,7 @@ dev = [
     "tensorboard>=2.14",
 ]
 llm-sentence = [
-    "sentence-transformers>=2.7.0",
+    "sentence-transformers>=3.0,<6",
 ]
 
 [tool.setuptools.packages.find]

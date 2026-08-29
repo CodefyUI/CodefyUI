@@ -10,7 +10,7 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 
 | 端點 | 方法 | 說明 |
 |----------|--------|-------------|
-| `/api/health` | GET | 健康探測——回傳 `nodes_loaded`、`presets_loaded`，以及 `caches`（各記憶體內儲存區目前佔用的位元組與其上限，參閱[訓練記憶體](./training-memory)）。 |
+| `/api/health` | GET | 健康探測——回傳 `version`、`boot_id`（回應的是哪一個行程，客戶端靠它分辨伺服器真的重啟過，還是根本沒停過）、`nodes_loaded`、`presets_loaded`，以及 `caches`（各記憶體內儲存區目前佔用的位元組與其上限，參閱[訓練記憶體](./training-memory)）。 |
 | `/api/nodes` | GET | 列出所有節點定義。 |
 | `/api/nodes/{node_name}` | GET | 取得單一節點定義。 |
 | `/api/nodes/reload` | POST | 熱重載所有內建與自訂節點。 |
@@ -31,6 +31,11 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 | `/api/plugins` | GET | 列出已安裝的外掛包。 |
 | `/api/plugins/{id}` | GET | 取得某外掛的資訊清單 (manifest) 與 README。 |
 | `/api/plugins/reload` | POST | 熱重載所有節點與預設模組來源。 |
+| `/api/packs` | GET | 列出每一個選用套件包，包含已安裝的部分、下載要花多少空間，以及這台機器能不能裝。 |
+| `/api/packs/{id}/install` | POST | 啟動一個安裝工作——回傳 `202` 與 `job_id`。同一時間只會有一個工作在跑。 |
+| `/api/packs/jobs/{job_id}/cancel` | POST | 要求執行中的工作停下來。下載會在檔案途中就中斷，不是等這個檔下完——這也會一併中斷執行中的圖在那一刻正在進行的任何 Hugging Face 下載（例如資料集或斷詞器），因為兩者共用同一個傳輸層。 |
+| `/api/packs/jobs/{job_id}/events` | GET | 取得某個工作在 `?cursor=` 之後的記錄與進度事件；加上 `?wait=` 最多可長輪詢 60 秒，面板就不用靠不斷重試來跟蹤。 |
+| `/api/packs/{id}/items/{item_id}` | DELETE | 刪除一個已下載的模型並釋放空間。套件包的 Python 套件無法從執行中的伺服器移除——請見 `cdui packs remove`。 |
 | `/api/llm/chat` | POST | 從設定的供應商串流統一格式的 SSE 對話回應（OpenAI / OpenRouter / Anthropic / OpenAI-Codex / 自訂 OpenAI 相容端點）。 |
 | `/api/llm/models` | POST | 列出某供應商可用的模型。 |
 | `/api/llm/codex/login` | POST | 啟動 OpenAI-Codex（ChatGPT 帳號）OAuth 登入流程。 |
@@ -55,4 +60,12 @@ description: CodefyUI 後端的 REST 與 WebSocket 端點——節點、預設�
 
 :::note WebSocket 驗證
 執行 WebSocket 以查詢參數的形式取得其工作階段 token，因為瀏覽器無法在 WebSocket 交握時設定自訂標頭。前端會為你處理這件事。
+:::
+
+:::note 安裝套件包只能從本機操作
+所有會造成變更的 `/api/packs` 端點，在伺服器不是綁定在回送（loopback）位址時一律拒絕：啟動安裝等於對「正在服務這個請求的那一個直譯器」執行套件管理程式，而「任何連得上這個埠的人」不是適合做這件事的對象。刻意對區網提供服務的教室或公司環境，可用 `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1` 重新開放。不論開不開，能被要求的東西都只限於型錄中列出的項目——請求內容裡的 pip 安裝字串、repo id 或網址永遠不會進到子行程。
+:::
+
+:::note 節點清單裡的選用套件包
+`/api/nodes` 會為每個節點附上 `requires_pack`（該節點執行前需要的套件包 id，沒有則為 `null`），並為每個 SELECT 參數附上 `option_packs`（選項值 → 套件包 id，用於某個選項需要特定下載的情況）。這兩項是讓編輯器能把尚未安裝的選項變灰並提供安裝；真正的把關不論如何都在後端執行時做。
 :::

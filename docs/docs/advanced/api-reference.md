@@ -10,7 +10,7 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Health probe — returns `nodes_loaded`, `presets_loaded`, and `caches` (current bytes held by each in-memory store against its budget; see [Training Memory](./training-memory)). |
+| `/api/health` | GET | Health probe — returns `version`, `boot_id` (which process answered, so a client can tell a restart from a server that never went down), `nodes_loaded`, `presets_loaded`, and `caches` (current bytes held by each in-memory store against its budget; see [Training Memory](./training-memory)). |
 | `/api/nodes` | GET | List all node definitions. |
 | `/api/nodes/{node_name}` | GET | Get a single node definition. |
 | `/api/nodes/reload` | POST | Hot-reload all built-in and custom nodes. |
@@ -31,6 +31,11 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 | `/api/plugins` | GET | List installed plugin packs. |
 | `/api/plugins/{id}` | GET | Get a plugin's manifest + README. |
 | `/api/plugins/reload` | POST | Hot-reload all node and preset sources. |
+| `/api/packs` | GET | List every optional pack with what is installed, what a download would cost, and whether this machine can install it. |
+| `/api/packs/{id}/install` | POST | Start an install job — `202` with a `job_id`. One job runs at a time. |
+| `/api/packs/jobs/{job_id}/cancel` | POST | Ask the running job to stop. A download is aborted mid-file, not at the end of it — which also interrupts any Hugging Face download a running graph happens to be doing at that moment (a dataset or tokenizer fetch), because the two share one transfer session. |
+| `/api/packs/jobs/{job_id}/events` | GET | A job's log and progress events after `?cursor=`; `?wait=` long-polls for up to 60s so the panel follows a job without a retry loop. |
+| `/api/packs/{id}/items/{item_id}` | DELETE | Delete one downloaded model and free its bytes. A pack's Python packages are not removable from the running server — see `cdui packs remove`. |
 | `/api/llm/chat` | POST | Stream a unified SSE chat completion from the configured provider (OpenAI / OpenRouter / Anthropic / OpenAI-Codex / custom OpenAI-compatible). |
 | `/api/llm/models` | POST | List the models available for a provider. |
 | `/api/llm/codex/login` | POST | Start the OpenAI-Codex (ChatGPT account) OAuth login flow. |
@@ -55,4 +60,12 @@ The backend serves a REST API plus a WebSocket for execution. All endpoints are 
 
 :::note WebSocket auth
 The execution WebSocket takes its session token as a query parameter, since browsers can't set custom headers on a WebSocket handshake. The frontend handles this for you.
+:::
+
+:::note Installing a pack is a local-only operation
+Every mutating `/api/packs` route is refused unless the server is bound to loopback: starting an install runs a package manager against the interpreter that is serving the request, and "whoever can reach the port" is the wrong audience for that. A classroom or office instance that deliberately serves the LAN opts back in with `CODEFYUI_ALLOW_REMOTE_PACK_INSTALL=1`. What may be asked for is bounded by the catalog either way — no pip spec, repo id or URL from a request body ever reaches a subprocess.
+:::
+
+:::note Optional packs in the node list
+`/api/nodes` carries `requires_pack` on each node (the pack id it needs before it can run, or `null`) and `option_packs` on each SELECT param (option value → pack id, for the options that need one particular download). Both are there so the editor can grey out what is not installed and offer the install; the run itself is gated in the backend regardless.
 :::

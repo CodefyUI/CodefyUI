@@ -22,6 +22,7 @@ import hashlib
 import logging
 import os
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,11 +40,17 @@ class AssetSpec:
     ``url`` should serve a stable, content-addressed binary (e.g. a GitHub
     Release asset). ``sha256`` lets us detect corruption / tampering in the
     cache before handing the bytes back to a node.
+
+    ``sha256=None`` means the digest has NOT BEEN RECORDED YET -- it never
+    means "no check needed". :func:`resolve` refuses such a spec unless the
+    caller passes ``allow_unverified=True``, so that accepting unverified
+    bytes is a decision somebody wrote down rather than a check that quietly
+    did not happen.
     """
 
     name: str
     url: str
-    sha256: str
+    sha256: str | None
 
 
 def cache_dir() -> Path:
@@ -63,7 +70,12 @@ def cache_dir() -> Path:
     return p
 
 
-def _sha256_of(path: Path) -> str:
+def sha256_of(path: Path) -> str:
+    """The sha256 of a file, read in 1 MB chunks.
+
+    Public because the Package Center computes the digest of an asset the
+    catalog has no digest for yet, so a maintainer can record it.
+    """
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -79,17 +91,65 @@ class AssetVerificationError(RuntimeError):
     """Raised when a cached or downloaded file fails sha256 verification."""
 
 
-def resolve(spec: AssetSpec, *, allow_fetch: bool = True, timeout: float = 30.0) -> Path:
+def _content_length(resp) -> int | None:
+    """The declared size of *resp*, or None when the server did not say.
+
+    "Unknown" is a perfectly good thing for a progress bar to be told, and
+    every failure mode here — no ``headers``, no ``Content-Length``, a
+    non-numeric one, a chunked response that reports 0 — means exactly that.
+    """
+    try:
+        raw = resp.headers.get("Content-Length")
+    except AttributeError:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def resolve(
+    spec: AssetSpec,
+    *,
+    allow_fetch: bool = True,
+    timeout: float = 30.0,
+    progress_callback: Callable[[int, int | None], None] | None = None,
+    allow_unverified: bool = False,
+) -> Path:
     """Return the local cached path for ``spec``, downloading on first use.
 
     ``allow_fetch=False`` makes this a strict lookup: if the asset isn't
     already in the cache it raises ``AssetMissingError`` rather than
     contacting the network — useful for air-gapped tests.
+
+    ``progress_callback(bytes_done, bytes_total)`` is called after every 1 MB
+    chunk and once more when the last one lands, with ``bytes_total`` taken
+    from ``Content-Length`` (``None`` when the server did not declare one).
+    The default — no callback — leaves the download path byte-for-byte as it
+    was. Raising from the callback aborts the download, which is how a
+    cancelled install stops one mid-flight.
+
+    ``allow_unverified=True`` is the caller's explicit acceptance that
+    ``spec.sha256`` is None and therefore that NOTHING about these bytes can
+    be checked. Without it such a spec is refused before a single byte is
+    fetched: an asset whose digest nobody has recorded yet must not sail
+    through the same code path as one that was verified.
     """
+    if spec.sha256 is None and not allow_unverified:
+        raise AssetVerificationError(
+            f"asset {spec.name!r} has no sha256 recorded, so it cannot be "
+            f"verified; pass allow_unverified=True to accept that"
+        )
+
     target = cache_dir() / spec.name
 
     if target.exists():
-        actual = _sha256_of(target)
+        if spec.sha256 is None:
+            # Nothing to compare against, and re-downloading would not make
+            # the bytes any more trustworthy than the ones already here.
+            return target
+        actual = sha256_of(target)
         if actual == spec.sha256:
             return target
         log.warning(
@@ -108,19 +168,27 @@ def resolve(spec: AssetSpec, *, allow_fetch: bool = True, timeout: float = 30.0)
     log.info("Downloading %s from %s", spec.name, spec.url)
     tmp = target.with_suffix(target.suffix + ".part")
     with urllib.request.urlopen(spec.url, timeout=timeout) as resp:  # noqa: S310 — fixed URL set
+        total = _content_length(resp)
+        done = 0
         with tmp.open("wb") as f:
             while True:
                 chunk = resp.read(1 << 20)
                 if not chunk:
                     break
                 f.write(chunk)
+                done += len(chunk)
+                if progress_callback is not None:
+                    progress_callback(done, total)
+    if progress_callback is not None:
+        progress_callback(done, total)
 
-    actual = _sha256_of(tmp)
-    if actual != spec.sha256:
-        tmp.unlink(missing_ok=True)
-        raise AssetVerificationError(
-            f"sha256 mismatch for {spec.name!r}: got {actual}, expected {spec.sha256}"
-        )
+    if spec.sha256 is not None:
+        actual = sha256_of(tmp)
+        if actual != spec.sha256:
+            tmp.unlink(missing_ok=True)
+            raise AssetVerificationError(
+                f"sha256 mismatch for {spec.name!r}: got {actual}, expected {spec.sha256}"
+            )
 
     tmp.replace(target)
     return target

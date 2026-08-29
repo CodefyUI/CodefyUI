@@ -155,6 +155,9 @@ class PresetRegistry:
                     # param unconditional the moment it was exposed.
                     visible_when=p.visible_when,
                     advanced=p.advanced,
+                    # Same reason: an exposed SELECT that lost its pack
+                    # gating would offer options this machine cannot load.
+                    option_packs=p.option_packs,
                 )
         return None
 

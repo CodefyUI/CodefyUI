@@ -51,6 +51,7 @@ from .api import (
     routes_media,
     routes_models,
     routes_nodes,
+    routes_packs,
     routes_plugin_frontend,
     routes_plugins,
     routes_presets,
@@ -75,6 +76,7 @@ from .core.db import Database
 from .core.logging_config import setup_logging
 from .core.node_registry import registry
 from .core.node_state_store import NodeStateStore
+from .core.packs.service import PackService
 from .core.port_stats import PortStatsCache
 from .core.version import get_version
 from .core import plugin_loader
@@ -90,6 +92,13 @@ from .core.run_service import RunService
 from .core.run_store import RunStore
 
 logger = logging.getLogger(__name__)
+
+# Identifies THIS process, generated once at import. Reported by /api/health
+# so the SPA can tell "the server is back" from "the server never went away":
+# after a restart-mode pack install the frontend polls health, and a health
+# that answers again is not proof a NEW process came up — only a boot_id it
+# has not seen before is.
+BOOT_ID = uuid4().hex
 
 
 # Mutating methods that require a valid session token. GET/HEAD/OPTIONS are
@@ -353,7 +362,19 @@ async def lifespan(app: FastAPI):
     await run_service.scrub_stored_secrets()
     await run_service.prune_retention()
 
+    # ── Package Center: one optional-pack install at a time ────────────
+    # Same lifetime rules as the run service above: it owns an asyncio.Task
+    # and a worker thread, so it is drained in the shutdown block below.
+    pack_service = PackService()
+    app.state.pack_service = pack_service
+
     yield
+
+    # An install in flight when the server stops is cancelled and waited for
+    # (bounded), so a pip subprocess is not left writing into site-packages
+    # after the process that started it has gone.
+    await pack_service.shutdown()
+    app.state.pack_service = None
 
     # Drain in-flight runs BEFORE the handle goes away. Their tasks are the
     # only database work in the process that nobody is awaiting, and
@@ -527,6 +548,7 @@ app.include_router(routes_data_files.router)
 app.include_router(routes_execution_outputs.router)
 app.include_router(routes_execution_state.router)
 app.include_router(routes_runs.router)
+app.include_router(routes_packs.router)
 app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
 app.include_router(routes_apps.router)
@@ -569,6 +591,10 @@ async def health():
         # on any install can state their version. It is also the first thing
         # `cdui status` and the install check can assert against.
         "version": get_version(),
+        # Which PROCESS answered. A client watching for a restart cannot tell
+        # "the server came back" from "it never went down" by whether this
+        # route answers; a changed boot_id is the only proof.
+        "boot_id": BOOT_ID,
         "nodes_loaded": len(registry.nodes),
         "presets_loaded": len(preset_registry.presets),
         "caches": await _cache_usage(),

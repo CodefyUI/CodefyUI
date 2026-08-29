@@ -73,6 +73,10 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
         category=cls.CATEGORY,
         description=cls.DESCRIPTION,
         provider=_provider_for(qualified_name, cls),
+        # ``getattr`` rather than ``cls.REQUIRES_PACK``: the registry is a
+        # plain dict anything can be written into, and a node class that
+        # never inherited this BaseNode should still list, not 500.
+        requires_pack=getattr(cls, "REQUIRES_PACK", None),
         inputs=[
             PortDefinitionSchema(
                 name=p.name,
@@ -102,6 +106,7 @@ def _node_to_definition(qualified_name: str, cls: type[BaseNode]) -> NodeDefinit
                 max_value=p.max_value,
                 visible_when=p.visible_when,
                 advanced=p.advanced,
+                option_packs=p.option_packs,
             )
             for p in cls.define_params()
         ],
