@@ -120,6 +120,51 @@ jobs:
     defaults:
       run:
         shell: pwsh
+    # ── 0xc000001d on Emerald Rapids runners (core#373) ────────────────────
+    #
+    # Seven of the 105 Windows job attempts between 2026-08-11 and 2026-08-29
+    # died with `Windows fatal exception: code 0xc000001d`
+    # (STATUS_ILLEGAL_INSTRUCTION) -- about one attempt in fifteen, on the same
+    # resolved wheel (torch==2.13.0), and twice on the same commit, since one
+    # re-run crashed as well. Every one has the same top frames: torch's
+    # `linear.py:134 in forward` called from `causal_lm_model_node.py` at the
+    # fused QKV projection. The only bfloat16 work in that test file is
+    # `test_the_forward_survives_bf16_autocast`, so what dies is a CPU bf16
+    # GEMM. The ubuntu jobs have never seen it.
+    #
+    # Some `windows-2025` VMs land on Intel Xeon Platinum 8573C (Emerald
+    # Rapids) hosts that advertise AMX in CPUID leaf 7 and in XCR0 while
+    # reporting the tile palettes in CPUID leaf 0x1D as all zeros. oneDNN
+    # decides `mayiuse(amx_tile)` from leaf 7 and XCR0, emits an AMX tile
+    # kernel for the bf16 GEMM, and the CPU answers with #UD. torch 2.13.0
+    # bundles oneDNN v3.12 (third_party/ideep -> mkl-dnn 80afa71, which is tag
+    # v3.12) and that version has no palette check. Upstream:
+    #   * actions/runner-images#14483 -- the CPUID misreport itself. Open since
+    #     2026-07-30, no ETA.
+    #   * uxlfoundation/oneDNN#5689 -- the crash report. PR oneDNN#5801 added
+    #     the missing palette check and was closed unmerged.
+    #
+    # `ONEDNN_MAX_CPU_ISA` is oneDNN's own runtime dispatcher control, tested
+    # at the top of `mayiuse()` before any CPUID query. `AVX512_CORE_BF16` is
+    # the lowest value that still carries bfloat16 and it sits below every AMX
+    # value, so the bf16 GEMM keeps a native AVX-512 path and the AMX kernels
+    # leave the dispatch table. Reading the variable is a build-time option
+    # (`DNNL_ENABLE_MAX_CPU_ISA`, ON by default in oneDNN) that PyTorch's
+    # cmake/Modules/FindMKLDNN.cmake leaves alone, so the released wheel
+    # honours it.
+    #
+    # `ATEN_CPU_CAPABILITY`, the knob core#373 first suggested, does not reach
+    # this. It selects among ATen's own vectorised kernels, and the crashing
+    # code is JIT-generated inside oneDNN.
+    #
+    # Job-level so the smoke-import step is covered too. On runners with no AMX
+    # -- the AMD Zen and Ice Lake pools -- it changes nothing, because nothing
+    # above AVX512_CORE_BF16 was reachable there in the first place.
+    #
+    # Remove when either side is fixed upstream: actions/runner-images#14483
+    # lands, or torch ships a oneDNN carrying oneDNN#5801's palette check.
+    env:
+      ONEDNN_MAX_CPU_ISA: AVX512_CORE_BF16
     steps:
       - uses: actions/checkout@v6
 
@@ -146,6 +191,55 @@ jobs:
         run: |
           uv venv --python 3.12
           uv pip install -e ".[dev]"
+
+      # The evidence that the cap above is in effect on the machine that
+      # actually ran the job. On an 8573C runner the isa line has to name
+      # bfloat16 without naming AMX; on any other runner it records which CPU
+      # the job landed on, so the correlation in core#373 stays checkable from
+      # a log months from now.
+      #
+      # oneDNN writes verbose output with printf to STDOUT (v3.12
+      # src/common/verbose.cpp), so capturing stdout is enough and no `2>&1`
+      # merge is needed -- a Python traceback goes straight to the step log
+      # instead. The header is emitted once, at the first primitive execution,
+      # as `onednn_verbose,v1,info,cpu,isa:<description>`.
+      #
+      # A positive AMX match is the only thing that fails the step. A missing
+      # isa line means the bf16 GEMM never reached oneDNN (an AVX2-only runner,
+      # or ATen keeping the op in its own kernels); that is reported as [WARN]
+      # and left alone, so a change in oneDNN's verbose format cannot turn this
+      # job red on its own. The trailing `exit 0` is what makes that true: the
+      # runner appends `exit $LASTEXITCODE` to every pwsh step, so a probe that
+      # died would otherwise decide the step's result. A probe that dies is
+      # reported as [WARN] and left for the pytest step below to fail on, which
+      # is the same crash under the same conditions.
+      - name: Report the runner CPU and the oneDNN ISA actually in effect
+        working-directory: backend
+        run: |
+          $cpu = (Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ' | '
+          if (-not $cpu) { $cpu = '<unavailable>' }
+          Write-Host "[INFO] CPU: $cpu"
+          Write-Host "[INFO] ONEDNN_MAX_CPU_ISA=$env:ONEDNN_MAX_CPU_ISA"
+          $probe = 'import torch; print("[INFO] torch", torch.__version__); print("[INFO] mkldnn available:", torch.backends.mkldnn.is_available()); x = torch.randn(256, 512).bfloat16(); w = torch.randn(512, 512).bfloat16(); y = torch.nn.functional.linear(x, w); print("[INFO] bf16 linear ->", tuple(y.shape), y.dtype, "finite:", bool(torch.isfinite(y.float()).all()))'
+          $env:ONEDNN_VERBOSE = '1'
+          $out = & .venv\Scripts\python.exe -c $probe
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($code -ne 0) {
+            Write-Host "[WARN] the bf16 probe exited with $code; -1073741795 there is 0xc000001d, which would mean the ISA cap did not take effect"
+          }
+          $isa = @($out | Where-Object { $_ -match 'isa:' })
+          if ($isa.Count -eq 0) {
+            Write-Host "[WARN] oneDNN printed no isa: line - the bf16 GEMM did not reach oneDNN on this runner, so there is nothing to assert"
+          } else {
+            $isa | ForEach-Object { Write-Host "[ISA] $_" }
+            if ($isa -match 'AMX') {
+              Write-Host "[FAIL] oneDNN still dispatches to AMX; ONEDNN_MAX_CPU_ISA did not take effect"
+              exit 1
+            }
+            Write-Host "[OK] oneDNN is capped below AMX on this runner"
+          }
+          exit 0
 
       - name: pytest
         working-directory: backend
