@@ -220,9 +220,15 @@ describe('PackCard — choosing what to install', () => {
     expect(onRemoveItem).toHaveBeenCalledWith('bge-small-zh');
   });
 
-  it('names the licence on the row and in the name tooltip', () => {
+  it('recovers the ellipsized name by its own tooltip, and names the licence on the chip', () => {
     renderCard({ pack: p });
+    // The name is the thing that gets clipped, so the name is what its
+    // tooltip has to give back — the licence has a chip of its own.
     expect(screen.getByText('sentence-transformers/labse')).toHaveAttribute(
+      'title',
+      'sentence-transformers/labse',
+    );
+    expect(screen.getAllByText('apache-2.0')[0]).toHaveAttribute(
       'title',
       'License: apache-2.0',
     );

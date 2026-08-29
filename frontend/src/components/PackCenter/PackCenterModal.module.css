@@ -333,7 +333,10 @@
 
 .itemRow {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  /* `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` track has an `auto`
+     minimum, so a repo id long enough to beat the column would push the size
+     and the Remove button out of the card instead of ellipsizing. */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
@@ -362,14 +365,20 @@
   height: 14px;
 }
 
+/* One line, not two. A pack is four of these rows and the licence had a line
+   of its own under every name, which doubled the height of the tallest thing
+   in the card for a word. Baseline-aligned so the small licence sits on the
+   name's own line rather than floating in the middle of it. */
 .itemNameCell {
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: var(--sp-2);
 }
 
 .itemName {
   min-width: 0;
+  flex: 0 1 auto;
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -379,6 +388,8 @@
 }
 
 .itemLicense {
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--text-muted);
   font-size: var(--fs-2xs);
   font-family: system-ui, sans-serif;
