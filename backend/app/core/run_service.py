@@ -815,7 +815,12 @@ def cap_event_payload(payload: Any, *, cap_bytes: int) -> Any:
     marker: dict[str, Any] = {"elided": True, "bytes": size,
                               "cap_bytes": cap_bytes}
     if isinstance(payload, dict):
-        for key in ("node_id", "status", "run_id", "reason"):
+        # ``error_type`` is a class name, so it can never be what pushed the
+        # payload over the cap -- and the frontend keys its whole error
+        # mapping on it (``errorMessages.ts``). Without it here the marker
+        # is the one shape that leaves the UI scanning a traceback that is
+        # no longer in the payload.
+        for key in ("node_id", "status", "run_id", "reason", "error_type"):
             if key in payload:
                 marker[key] = payload[key]
     return marker

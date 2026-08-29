@@ -906,3 +906,31 @@ def test_every_output_entry_stores_its_payload_under_the_matching_key():
             OUTPUT_KIND_TENSOR_SUMMARY,
         }
         assert entry["output_kind"] in entry
+
+
+# ── port summaries: the per-element cut a LIST port gets ─────────────────
+#
+# A STRING port has been cut at 200 characters since #117. A LIST[str] port
+# was not, so `DocumentLoader.texts` put whole documents into every
+# node_status frame -- 26 KB for the five bundled RAG samples, megabytes for
+# a real folder, at which point the whole entry is elided against the 128 KB
+# cap and the learner sees nothing at all.
+
+
+def test_summarize_cuts_each_list_element_like_a_string_port():
+    from app.core.output_entries import _STRING_PREVIEW_CHARS, _summarize_single
+
+    out = _summarize_single(["x" * 5000, "short"])
+
+    assert len(out["values"][0]) == _STRING_PREVIEW_CHARS == 200
+    assert out["values"][1] == "short"
+    # The LENGTH is the port's, not the preview's: a learner reading "2" has
+    # to be reading how many documents there are.
+    assert out["length"] == 2
+
+
+def test_summarize_leaves_a_non_string_list_alone():
+    from app.core.output_entries import _summarize_single
+
+    assert _summarize_single([1, 2, 3])["values"] == [1, 2, 3]
+    assert _summarize_single([[3, 7]])["values"] == [[3, 7]]

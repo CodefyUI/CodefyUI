@@ -1041,6 +1041,22 @@ def test_cap_falls_back_to_a_marker_when_there_is_nothing_to_trim():
     assert json_size(capped) <= 500
 
 
+def test_the_marker_keeps_the_error_type_the_frontend_maps_on():
+    """``errorMessages.ts`` keys its whole mapping on ``error_type``.
+
+    Without it the frontend falls back to scanning the traceback, and the
+    marker is the one payload shape that has no traceback left to scan. A
+    class name is a handful of bytes, so it can never be what pushed the
+    payload over the cap.
+    """
+    capped = cap_event_payload(
+        {"node_id": "n1", "status": "error", "error_type": "KeyError",
+         "error": "x" * 5000},
+        cap_bytes=64)
+    assert capped["elided"] is True
+    assert capped["error_type"] == "KeyError"
+
+
 async def test_an_oversized_failure_keeps_its_message_in_the_log(store):
     """End to end: a run that fails enormously is still diagnosable."""
     svc = RunService(store, event_payload_cap_bytes=1000)

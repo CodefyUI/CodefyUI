@@ -51,6 +51,13 @@ OUTPUT_KIND_TENSOR_SUMMARY = "tensor_summary"
 # so it summarizes like a completed one.
 _STATUSES_WITH_RESULT = ("completed", "cached", "interrupted")
 
+#: How much of a string a port SUMMARY carries. One constant for both the
+#: STRING branch and each element of a LIST branch, so the two cannot drift
+#: apart -- the whole argument for the list cut is that it matches the
+#: string cut. The full-fidelity value still goes out over
+#: ``/api/execution/outputs``, which this module does not feed.
+_STRING_PREVIEW_CHARS = 200
+
 
 def _summarize_single(value: Any) -> dict[str, Any]:
     """Generate a human-readable summary for a single output value."""
@@ -89,7 +96,8 @@ def _summarize_single(value: Any) -> dict[str, Any]:
     if isinstance(value, (int, float, bool)):
         return {"type": "scalar", "value": value}
     if isinstance(value, str):
-        summary: dict[str, Any] = {"type": "string", "value": value[:200]}
+        summary: dict[str, Any] = {
+            "type": "string", "value": value[:_STRING_PREVIEW_CHARS]}
         rel = _models_dir_relative(value)
         if rel is not None:
             summary["download_path"] = rel
@@ -106,7 +114,16 @@ def _summarize_single(value: Any) -> dict[str, Any]:
         if len(value) <= 256:
             primitive_types = (str, int, float, bool, type(None))
             if all(isinstance(x, primitive_types) for x in value):
-                out["values"] = list(value)
+                # The same cut a STRING port gets above, and for the same
+                # reason: a DocumentLoader.texts port would otherwise put
+                # whole documents into every node_status frame (26 KB for
+                # the bundled RAG corpus, megabytes for a real folder),
+                # where the entry is then elided wholesale and the learner
+                # sees nothing at all.
+                out["values"] = [
+                    x[:_STRING_PREVIEW_CHARS] if isinstance(x, str) else x
+                    for x in value
+                ]
             elif all(
                 isinstance(x, (list, tuple))
                 and len(x) == 2
