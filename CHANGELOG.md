@@ -309,6 +309,17 @@ received — each links to the release it was published as.
   provider — a network round trip, a key CI does not have, and somebody's
   money.
 
+- **The Package Center says each fact once, and cannot crowd or break its
+  layout.** Parts that were each right on their own repeated one another once
+  assembled: item rows are now one line with the licence inline; a card's
+  footer is one action plus the selected size, and disappears once nothing is
+  left to install; the RAG card names its dependency once; and the GPU card is
+  one facts line, one control row, a one-line caption and a collapsed **Manual
+  install command**. The activity title, the cancelled items and the overall
+  percent now tell the truth, the stacked layout under 860 px keeps Cancel and
+  Dismiss reachable, and a node names its missing pack once — banner over hint,
+  header badge over param chip, shorter option suffix.
+
 ### Fixed
 
 - **The engine puts a node's inputs on the device that node runs on**

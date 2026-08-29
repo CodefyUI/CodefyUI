@@ -512,6 +512,43 @@ describe('PackCard — while a job is running', () => {
     ).toBeInTheDocument();
   });
 
+  it('keeps the bar on the item being converted, which has no bytes of its own', () => {
+    // The GloVe convert step is the case the step clause exists for: the
+    // download is over, the file is being unpacked, and nothing is on the
+    // wire — so bytes alone would blank the bar for the whole conversion.
+    // `word-vectors` is the only pack that converts, and the backend emits
+    // `convert:glove-50d` for exactly this item.
+    renderCard({
+      pack: pack({
+        id: 'word-vectors',
+        status: 'installing',
+        items: [
+          item({
+            id: 'glove-50d',
+            kind: 'asset',
+            repo_id: null,
+            url: 'https://example.invalid/glove-wiki-gigaword-50.gz',
+          }),
+        ],
+      }),
+      job: {
+        ...emptyPackJob('j1', 'word-vectors'),
+        steps: [
+          {
+            step: 'convert:glove-50d',
+            label: 'Preparing GloVe vectors',
+            state: 'running',
+          },
+        ],
+        items: { 'glove-50d': { bytesDone: 0, bytesTotal: null, percent: 0 } },
+      },
+    });
+
+    expect(
+      screen.getByRole('progressbar', { name: 'glove-wiki-gigaword-50.gz' }),
+    ).toBeInTheDocument();
+  });
+
   it('clears the bars when the job stopped without starting them', () => {
     // Every requested item is seeded with a zero-byte entry at install time,
     // and a settled job keeps its items. A cancel before the first byte thus
