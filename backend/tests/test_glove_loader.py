@@ -156,7 +156,7 @@ def test_converts_gz_with_and_without_header(tmp_path, header, caplog):
 
 
 def test_second_call_does_not_reparse(glove_gz, monkeypatch):
-    """The conversion is paid once. 400k lines is a ten-second wait, and a
+    """The conversion is paid once. 400k lines is a multi-second wait, and a
     node that paid it on every graph run would be unusable."""
     npz_path = _glove.ensure_npz(glove_gz)
     stamp = npz_path.stat().st_mtime_ns

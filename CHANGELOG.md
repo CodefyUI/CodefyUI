@@ -395,10 +395,12 @@ received — each links to the release it was published as.
 - **Things the LLM nodes and the docs were saying wrong.** A `TextEmbedding`
   param honoured the floor the editor declares and ignored the ceiling, so a
   hand-edited `max_seq_length: 99999` was written straight onto a process-wide
-  cached encoder. An encode stopped before its first batch arrived at
-  `CosineSimilarity` as a 0-width tensor and was reported as "queries D=0, keys
-  D=384" — a true sentence about a node the learner had not touched, on a run
-  they stopped themselves. `LLMChat` returned an empty string with nothing
+  cached encoder. An encoder with nothing to embed — a `WordVector` whose
+  `words` box is empty — arrived at `CosineSimilarity` as a 0-width tensor and
+  was reported as "queries D=0, keys D=384", a true sentence about a node the
+  learner had not touched; the message now names that empty input, or an
+  encoder stopped before its first batch, instead of the width mismatch
+  it used to report. `LLMChat` returned an empty string with nothing
   anywhere to say that a reasoning model had spent the whole `max_tokens`
   budget on hidden thinking. The Teaching Inspector's `normalize` step showed
   the same rows as `encode` under a description promising a transformation; the

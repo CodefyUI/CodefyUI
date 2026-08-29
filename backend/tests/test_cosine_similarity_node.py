@@ -55,17 +55,20 @@ def test_shape_mismatch_raises():
         _run(torch.zeros(1, 3), torch.zeros(1, 4))
 
 
-def test_a_zero_width_side_blames_the_stop_rather_than_the_widths():
-    """A ``(0, 0)`` tensor is what a stopped encode ships downstream.
+def test_a_zero_width_side_names_the_empty_input_or_the_stop():
+    """A ``(0, 0)`` tensor is what an encoder with nothing to embed ships.
 
-    ``D=0`` against ``D=8`` is a true sentence about a node the learner did
-    not break, on a run they stopped themselves, so it must not be the one
-    they read.
+    ``WordVector`` on a sentence backend hands one downstream as a completed
+    node when its ``words`` box is empty, so ``D=0`` against ``D=8`` is a
+    true sentence about a node the learner did not break -- it must not be
+    the one they read, and the message must point at that empty input rather
+    than at a Stop they may never have pressed.
     """
     with pytest.raises(ValueError) as excinfo:
         _run(torch.zeros(0, 0), torch.randn(4, 8))
 
     message = str(excinfo.value)
+    assert "nothing to embed" in message
     assert "stopped" in message
     assert "queries" in message
     assert "dimension mismatch" not in message

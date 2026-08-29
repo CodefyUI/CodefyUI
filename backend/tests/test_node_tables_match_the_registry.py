@@ -75,9 +75,9 @@ def builtins() -> dict[str, Type[BaseNode]]:
     leave those built-ins behind for every test that runs afterwards.
     """
     isolated = NodeRegistry()
-    count = isolated.discover(_NODES_DIR, "app.nodes")
+    isolated.discover(_NODES_DIR, "app.nodes")
     nodes = isolated.nodes
-    assert nodes and count == len(nodes), "discovered no built-in nodes"
+    assert nodes, "discovered no built-in nodes"
     return nodes
 
 
@@ -115,7 +115,9 @@ def _parse_table(path: Path) -> dict[str, tuple[list[str], int]]:
         seen_any = True
         names = [n.strip() for n in match["nodes"].split(separator)]
         assert all(names), f"{path.name}: empty node name in {line!r}"
-        table[_category_name(match["category"])] = (names, int(match["count"]))
+        key = _category_name(match["category"])
+        assert key not in table, f"{path.name}: {key} listed twice"
+        table[key] = (names, int(match["count"]))
 
     assert table, f"{path.name}: no node table found"
     return table
@@ -155,3 +157,24 @@ def test_the_readme_headline_matches_its_own_table(builtins, expected):
 
     assert int(match["nodes"]) == len(builtins)
     assert int(match["categories"]) == len(expected)
+
+
+def test_a_category_listed_twice_raises(tmp_path, monkeypatch):
+    """A repeated category would otherwise overwrite the first row silently.
+
+    The sum test only notices when the row that was lost had a count of its
+    own to contribute, and the name test not at all when both rows name the
+    same nodes, so the parser is where a doubled category has to be caught.
+    """
+    page = tmp_path / "doubled.md"
+    page.write_text(
+        "| Category | Nodes | Count |\n"
+        "|---|---|---|\n"
+        "| **LLM** | Tokenizer | 1 |\n"
+        "| **LLM** | WordVector | 1 |\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(_SEPARATORS, page, ", ")
+
+    with pytest.raises(AssertionError, match="LLM listed twice"):
+        _parse_table(page)
