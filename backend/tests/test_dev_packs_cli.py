@@ -1415,10 +1415,17 @@ def test_the_installer_gets_no_console_window_of_its_own(helper, monkeypatch,
     passes this for live installs.
     """
     monkeypatch.setattr(sys, "platform", platform)
-    # POSIX has no such constant, and this test states the branch rather
-    # than inheriting it from the machine it runs on.
+    # POSIX has neither constant, and the faked platform sends the WHOLE
+    # job through the Windows branch -- including the relaunch, which reaches
+    # for CREATE_NEW_PROCESS_GROUP. So the test states both: they are dropped
+    # first and then declared here, and nothing on this path is inherited
+    # from the machine the suite happens to run on.
+    for name in ("CREATE_NO_WINDOW", "CREATE_NEW_PROCESS_GROUP"):
+        monkeypatch.delattr(dev.subprocess, name, raising=False)
     monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
                         raising=False)
+    monkeypatch.setattr(dev.subprocess, "CREATE_NEW_PROCESS_GROUP",
+                        0x00000200, raising=False)
 
     dev._run_pending_job(_pending(helper))
 

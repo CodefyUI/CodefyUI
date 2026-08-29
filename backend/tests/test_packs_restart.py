@@ -739,11 +739,17 @@ class _FakeKernel32:
 def _install_kernel32(monkeypatch, kernel, *, last_error: int = 0) -> None:
     import ctypes
 
-    # ``WinDLL`` does not exist off Windows, hence raising=False -- which is
-    # the point: this pins the Windows branch from any runner.
+    # Neither ``WinDLL`` nor ``get_last_error`` exists off Windows, hence
+    # raising=False on both -- which is the point: this pins the Windows
+    # branch from any runner. They are dropped first so a Windows runner
+    # proves the same thing it does on Linux: every Windows-only name
+    # ``_pid_alive_windows`` reads comes from here, not from the host.
+    for name in ("WinDLL", "get_last_error"):
+        monkeypatch.delattr(ctypes, name, raising=False)
     monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kwargs: kernel,
                         raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error,
+                        raising=False)
 
 
 def test_pid_alive_windows_reads_the_exit_code_not_just_the_handle(monkeypatch):
