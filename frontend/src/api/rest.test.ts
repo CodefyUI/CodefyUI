@@ -1048,6 +1048,10 @@ describe('pack endpoints', () => {
         remote_install_allowed: true,
         // A launch mode outside {start, dev} is one nothing here can act on.
         launch_mode: 'unknown',
+        // The opposite default, and deliberately so: a server that does not
+        // say it can restart itself cannot, and the panel must show the
+        // command rather than a button that answers 409.
+        restart_available: false,
         gpu: null,
       });
     });
@@ -1072,6 +1076,7 @@ describe('pack endpoints', () => {
         last_restart_job: { job_id: 'j0', status: 'done' },
         remote_install_allowed: false,
         launch_mode: 'dev',
+        restart_available: true,
         gpu: {
           detected_label: 'NVIDIA GeForce RTX 4080', recommended_variant: 'cu128',
           installed_variant: 'cpu', variants: ['cpu', 'cu128'],
@@ -1086,7 +1091,16 @@ describe('pack endpoints', () => {
       expect(out.last_restart_job).toEqual({ job_id: 'j0', status: 'done' });
       expect(out.remote_install_allowed).toBe(false);
       expect(out.launch_mode).toBe('dev');
+      expect(out.restart_available).toBe(true);
       expect(out.gpu?.recommended_variant).toBe('cu128');
+    });
+
+    it('reads only a literal true as "this server can restart itself"', async () => {
+      // The catalog is the ONE thing that decides whether the panel offers
+      // an install-and-restart button, so a truthy stand-in for the key —
+      // an older server's `null`, a proxy's `"1"` — must not be read as yes.
+      mockFetch(200, { packs: [], restart_available: 'yes' });
+      expect((await listPacks()).restart_available).toBe(false);
     });
 
     it('throws PackApiError with the status on 404', async () => {

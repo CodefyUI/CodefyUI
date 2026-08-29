@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { PackGpuInfo, PackItem, PackSummary } from '../../api/rest';
 import { useDialogStore } from '../../store/dialogStore';
 import {
@@ -99,6 +99,9 @@ function seed(state: Partial<ReturnType<typeof usePackStore.getState>> = {}) {
     error: null,
     remoteInstallAllowed: true,
     launchMode: 'start',
+    // A server that has NOT said it can restart itself, so every case that
+    // wants the restart path has to say so.
+    restartAvailable: false,
     gpu: null,
     job: null,
     busy: {},
@@ -301,10 +304,44 @@ describe('PackCenterModal — installing', () => {
     open();
     render(<PackCenterModal />);
 
-    // PR 1's backend refuses a restart-mode install with 409 and this command,
-    // so until PR 5 the card is the command, not a button.
+    // This server did not say it can restart itself, so the card is the
+    // command: a button here would post a restart the backend answers 409.
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+  });
+
+  it('installs and restarts the GPU pack when the server says it can', async () => {
+    seed({
+      packs: [
+        pack({
+          id: 'gpu-torch',
+          install_mode: 'restart',
+          install_command: 'cdui install --gpu cu128',
+        }),
+      ],
+      gpu: gpuInfo,
+      restartAvailable: true,
+    });
+    open();
+    render(<PackCenterModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
+
+    // The real in-app confirm, not a mock: this is the one place the panel
+    // asks before it takes the server away.
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+    expect(useDialogStore.getState().active).toMatchObject({
+      message: 'Install cu128 and restart the server?',
+      variant: 'danger',
+    });
+    act(() => useDialogStore.getState().close(true));
+
+    await waitFor(() =>
+      expect(actions.install).toHaveBeenCalledWith('gpu-torch', {
+        mode: 'restart',
+        variant: 'cu128',
+      }),
+    );
   });
 });
 
@@ -566,6 +603,108 @@ describe('PackCenterModal — the activity pane', () => {
     ).toBeInTheDocument();
     expect(within(banner).getByText('cdui install --gpu cu128')).toBeInTheDocument();
     expect(within(banner).getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
+    // No retry: this job never said a restart would finish it.
+    expect(
+      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+    ).toBeNull();
+  });
+
+  it('offers to restart and install when a live install stopped and both sides agree', async () => {
+    // The one shape that earns the button: a LIVE install the resolver
+    // stopped (`retryMode`), on a server that can restart itself
+    // (`restartAvailable`). Either half alone would offer a 409.
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: true,
+      job: job({
+        packId: 'rag',
+        status: 'needs_restart',
+        restartCommand: 'cdui packs install rag --restart',
+        retryMode: 'restart',
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    // The command stays: the same install, by hand, for whoever prefers it.
+    expect(within(banner).getByText('cdui packs install rag --restart')).toBeInTheDocument();
+
+    fireEvent.click(
+      within(banner).getByRole('button', { name: 'Restart the server and install' }),
+    );
+
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+    // What the restart actually does, said before the server goes away: the
+    // helper installs packages, and the models are a second install.
+    expect(useDialogStore.getState().active).toMatchObject({
+      message:
+        'The server restarts to install the Python packages; download the models afterwards with a normal install.',
+      variant: 'danger',
+    });
+    act(() => useDialogStore.getState().close(true));
+
+    await waitFor(() =>
+      expect(actions.install).toHaveBeenCalledWith('rag', { mode: 'restart' }),
+    );
+  });
+
+  it('installs nothing when the restart retry is declined', async () => {
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: true,
+      job: job({ packId: 'rag', status: 'needs_restart', retryMode: 'restart' }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart the server and install' }));
+    await waitFor(() => expect(useDialogStore.getState().active).not.toBeNull());
+    act(() => useDialogStore.getState().close(false));
+
+    await waitFor(() => expect(useDialogStore.getState().active).toBeNull());
+    expect(actions.install).not.toHaveBeenCalled();
+  });
+
+  it('disables the retry for a browser the server refuses installs from', () => {
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: true,
+      remoteInstallAllowed: false,
+      job: job({ packId: 'rag', status: 'needs_restart', retryMode: 'restart' }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const button = screen.getByRole('button', { name: 'Restart the server and install' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
+      'title',
+      'Installing is only allowed from the computer that runs the server.',
+    );
+  });
+
+  it('hides the retry when the server cannot restart itself', () => {
+    // Same job, same event, a server that never claimed a restart: the
+    // command block is the whole banner again.
+    seed({
+      packs: [pack({ id: 'rag' })],
+      restartAvailable: false,
+      job: job({
+        packId: 'rag',
+        status: 'needs_restart',
+        restartCommand: 'cdui packs install rag --restart',
+        retryMode: 'restart',
+      }),
+    });
+    open();
+    render(<PackCenterModal />);
+
+    const banner = screen.getByRole('status');
+    expect(
+      within(banner).queryByRole('button', { name: 'Restart the server and install' }),
+    ).toBeNull();
+    expect(within(banner).getByText('cdui packs install rag --restart')).toBeInTheDocument();
   });
 
   it('says it has lost track rather than claiming the job is still running', () => {

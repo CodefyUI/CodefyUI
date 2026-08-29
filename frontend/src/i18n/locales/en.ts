@@ -827,6 +827,10 @@ const en = {
   'packs.item.removeError': 'Could not remove {item}: {message}',
   'packs.restart.done': 'Server restarted. {pack} is ready.',
   'packs.restart.failed': 'The server restarted, but installing {pack} failed: {message}',
+  // A second toast, and only when the record carried no message at all: the
+  // helper that ran the install died with the old server, so its last output
+  // is all that is left to go on.
+  'packs.restart.failedLog': 'Last output from the installer: {log}',
   'packs.toast.installed': '{pack} installed.',
   'packs.toast.installFailed': 'Install failed: {message}',
   'packs.toast.cancelled': 'Install cancelled.',
@@ -929,6 +933,16 @@ const en = {
     'Installed. The server has to restart before {pack} can be used.',
   'packs.activity.lost': 'Lost contact with the server. Refresh to check the pack status.',
   'packs.activity.dismiss': 'Dismiss',
+  // Offered only when the server said it can restart itself AND the job that
+  // stopped said a restart is what would finish it.
+  'packs.activity.restartAndInstall': 'Restart the server and install',
+  // The confirm body, and the one thing that would otherwise surprise the
+  // user: the helper that runs during the restart installs PACKAGES. It runs
+  // from an interpreter with none of this app's downloader in it, so a pack's
+  // models are still missing when the server comes back, and a second,
+  // ordinary install is what fetches them.
+  'packs.activity.restartAndInstallNote':
+    'The server restarts to install the Python packages; download the models afterwards with a normal install.',
 
   // GPU PyTorch pack — the one install that swaps the wheel under the running
   // interpreter, so the user may have to run a command themselves.
@@ -946,6 +960,11 @@ const en = {
     'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
   'packs.gpu.noCommand':
     'The server did not provide an install command. See the README for the GPU install steps.',
+  // Said above the command block on a card that ALSO has a working button:
+  // the command is then a choice, not the only way through, and a bare block
+  // under a button reads like an instruction the button did not follow.
+  'packs.gpu.manualAlternative':
+    'Or stop the server and run this in a terminal yourself:',
   'packs.copy': 'Copy command',
   'packs.copied': 'Copied to clipboard.',
   'packs.copyFailed': 'Could not copy. Select the text and copy it by hand.',

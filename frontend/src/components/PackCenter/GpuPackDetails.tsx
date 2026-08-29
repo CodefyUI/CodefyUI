@@ -14,12 +14,13 @@ export interface GpuPackDetailsProps {
   /** This pack already has an install request in flight. */
   busy: boolean;
   /**
-   * Whether the server can install this pack and restart itself.
+   * Whether the server can install this pack and restart itself — its own
+   * `restart_available`, straight off the catalog.
    *
-   * FALSE for the whole of this PR: the backend answers a restart-mode install
-   * with 409 and the command to run, and PR 5 is what turns it on. Wiring the
-   * button now — behind a flag, with tests on both sides of it — is what keeps
-   * PR 5 to a one-line change instead of a redesign.
+   * The one condition, and deliberately not `launchMode` as well: the server
+   * asks MORE than the launch mode does (its launcher still on disk, its kill
+   * switch off) before it says yes, so a second guess here could only ever
+   * disagree with the process that actually has to come back.
    */
   restartAvailable: boolean;
   onInstall: (variant: string) => void;
@@ -29,9 +30,15 @@ export interface GpuPackDetailsProps {
  * The body of the GPU PyTorch card.
  *
  * Every other pack downloads files next to a running server. This one swaps
- * the torch wheel out from under the interpreter that is executing this
- * request, which no process can do to itself — so the card's real job is to
- * hand the user a command they can run, and to say WHY it cannot just do it.
+ * the torch wheel out from under the interpreter that is executing the
+ * request, which no process can do to itself: a helper outside the server
+ * does the swap while the server is down.
+ *
+ * So the card has two shapes. When the server says it can arrange that, the
+ * button starts it — with the command still printed underneath, because a
+ * user who would rather watch it happen in a terminal loses nothing by being
+ * offered both. When it cannot, the command IS the card, and the note above
+ * it says why.
  */
 export function GpuPackDetails({
   pack,
@@ -51,10 +58,6 @@ export function GpuPackDetails({
   // The pack's own command is the specific one (it names the variant the
   // server picked); the GPU-wide one is the generic fallback.
   const command = pack.install_command ?? gpu?.install_command ?? null;
-
-  // A `cdui dev` server has no supervisor to relaunch it, so even once PR 5
-  // lands there is nothing to restart — that mode always gets the command.
-  const canRestartHere = restartAvailable && launchMode === 'start';
 
   const install = useCallback(async () => {
     const ok = await confirm({
@@ -103,7 +106,7 @@ export function GpuPackDetails({
         </div>
       )}
 
-      {canRestartHere ? (
+      {restartAvailable ? (
         <>
           <div className={styles.note}>{t('packs.gpu.restartNote')}</div>
           <div className={styles.cardActions}>
@@ -117,6 +120,17 @@ export function GpuPackDetails({
               {t('packs.gpu.installRestart')}
             </button>
           </div>
+          {/* Underneath, not instead of: the button is the shorter path and
+              the command is the same install by hand, so showing both costs
+              a reader nothing and gives a terminal user their way through.
+              No `noCommand` sentence in this branch — a card whose button
+              works has nothing to apologise for. */}
+          {command !== null && (
+            <>
+              <div className={styles.note}>{t('packs.gpu.manualAlternative')}</div>
+              <CommandBlock command={command} />
+            </>
+          )}
         </>
       ) : (
         <>

@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { PackGpuInfo, PackItem, PackSummary } from '../../api/rest';
 import { emptyPackJob, type PackJob } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 import type { PackIndex } from '../../utils/packAvailability';
 import { PackCard, StatusPill } from './PackCard';
+
+// The GPU card asks before it restarts the server, through the same in-app
+// dialog helper the rest of the app uses. Mocked here for the same reason
+// `GpuPackDetails.test.tsx` mocks it: these cases are about what the CARD
+// does with the answer, not about the dialog component.
+vi.mock('../../utils/dialog', () => ({
+  confirm: vi.fn(async () => true),
+  prompt: vi.fn(async () => null),
+}));
 
 function item(over: Partial<PackItem> & { id: string }): PackItem {
   return {
@@ -65,6 +74,7 @@ function renderCard(over: Partial<CardProps> = {}) {
     highlighted: false,
     canInstall: true,
     launchMode: 'start',
+    restartAvailable: false,
     gpu: null,
     onInstall,
     onRemoveItem,
@@ -446,5 +456,45 @@ describe('PackCard — the GPU pack', () => {
     // No selection UI: there is nothing to tick on a wheel swap.
     expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Select all missing' })).toBeNull();
+    // And no button either: this catalog did not say the server can restart.
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+  });
+
+  it('offers the restart install once the server says it can restart', () => {
+    // The card carries the catalog's `restart_available` through to the GPU
+    // body untouched — it was a hard-coded `false` constant until the server
+    // grew an answer, and the pass-through is the whole of this card's part.
+    renderCard({
+      pack: pack({
+        id: 'gpu-torch',
+        install_mode: 'restart',
+        install_command: 'cdui install --gpu cu128',
+      }),
+      gpu: gpu(),
+      restartAvailable: true,
+    });
+    expect(
+      screen.getByRole('button', { name: 'Install and restart' }),
+    ).toBeInTheDocument();
+    // Still printed, below the button: the same install by hand.
+    expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
+  });
+
+  it('asks for a restart-mode install when the GPU card starts one', async () => {
+    const { onInstall } = renderCard({
+      pack: pack({
+        id: 'gpu-torch',
+        install_mode: 'restart',
+        install_command: 'cdui install --gpu cu128',
+      }),
+      gpu: gpu(),
+      restartAvailable: true,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
+    // No items, and the picked build: `undefined` here is what makes the
+    // request "the whole pack", which for a wheel swap is the wheel.
+    await waitFor(() =>
+      expect(onInstall).toHaveBeenCalledWith(undefined, 'restart', 'cu128'),
+    );
   });
 });

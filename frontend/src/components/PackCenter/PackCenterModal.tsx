@@ -41,6 +41,7 @@ function PackCenterBody() {
   const unsupported = usePackStore((s) => s.unsupported);
   const remoteInstallAllowed = usePackStore((s) => s.remoteInstallAllowed);
   const launchMode = usePackStore((s) => s.launchMode);
+  const restartAvailable = usePackStore((s) => s.restartAvailable);
   const gpu = usePackStore((s) => s.gpu);
   const job = usePackStore((s) => s.job);
   const busy = usePackStore((s) => s.busy);
@@ -137,6 +138,17 @@ function PackCenterBody() {
     [install],
   );
 
+  // The job is read at CLICK time, not closed over: this callback is handed
+  // to a banner that outlives several catalog polls, and the pack it names
+  // has to be the one the banner is currently describing. No variant — the
+  // conflict this retries is a live install of a pack that has no builds to
+  // choose between, and the server picks for the GPU pack anyway.
+  const onRestartInstall = useCallback(() => {
+    const current = usePackStore.getState().job;
+    if (current === null) return;
+    void install(current.packId, { mode: 'restart' });
+  }, [install]);
+
   // `byId` is built from parsed JSON, so a bare index answers with an
   // inherited member for a pack id like `constructor`.
   const jobPack =
@@ -229,6 +241,7 @@ function PackCenterBody() {
                   highlighted={highlighted === pack.id}
                   canInstall={remoteInstallAllowed}
                   launchMode={launchMode}
+                  restartAvailable={restartAvailable}
                   gpu={gpu}
                   onInstall={(items, mode, variant) =>
                     onInstall(pack.id, items, mode, variant)
@@ -244,9 +257,12 @@ function PackCenterBody() {
             <PackActivityPane
               job={job}
               pack={jobPack}
+              restartAvailable={restartAvailable}
+              canInstall={remoteInstallAllowed}
               cancelling={cancelling}
               onCancel={() => void cancel()}
               onDismiss={dismissJob}
+              onRestartInstall={onRestartInstall}
             />
           </aside>
         </div>

@@ -962,6 +962,16 @@ export interface PackCatalog {
   last_restart_job: Record<string, unknown> | null;
   remote_install_allowed: boolean;
   launch_mode: LaunchMode;
+  /**
+   * Whether the server can install a restart-mode pack and relaunch itself.
+   *
+   * Narrower than `launch_mode === 'start'`, and the only thing worth asking:
+   * the server also wants its launcher still on disk and its kill switch off
+   * before it will promise to come back. So this is what the panel gates the
+   * "Install and restart" button on — the server is the authority on whether
+   * it can restart, not the mode it happens to have been started in.
+   */
+  restart_available: boolean;
   gpu: PackGpuInfo | null;
 }
 
@@ -978,6 +988,21 @@ export interface PackJobEvent {
   /** 1-based and monotonic. Resume from the PAGE's cursor, not from this. */
   cursor?: number;
   ts?: string;
+  /**
+   * `needs_restart` only: which helper finishes the install (`torch`, `pip`).
+   *
+   * Named here rather than left to the index signature because it is part of
+   * the restart contract a reader of this file is trying to find, and `string`
+   * rather than a union for the same reason `type` is: a newer backend may
+   * grow a kind, and the consumer narrows on the ones it knows.
+   */
+  kind?: string;
+  /**
+   * `needs_restart` only, and only on a LIVE install the resolver stopped:
+   * the mode that CAN finish it (`restart` today). ABSENT — not null — when
+   * the server cannot restart itself, so its presence is the whole check.
+   */
+  retry_mode?: string;
   [k: string]: unknown;
 }
 
@@ -1060,6 +1085,11 @@ export async function listPacks(): Promise<PackCatalog> {
     remote_install_allowed: data.remote_install_allowed ?? true,
     launch_mode:
       launchMode === 'start' || launchMode === 'dev' ? launchMode : 'unknown',
+    // The opposite default to `remote_install_allowed` above, for the same
+    // reason: a server too old to answer this cannot restart itself, and a
+    // button that promises one would hand the user a 409 instead of a
+    // command. Absent — or any non-boolean — is NO.
+    restart_available: data.restart_available === true,
     gpu: data.gpu ?? null,
   };
 }

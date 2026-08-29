@@ -128,7 +128,8 @@ describe('GpuPackDetails — the command block', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
-    // No install button: this build cannot start a restart-mode job.
+    // No install button: this server did not say it can restart itself, and
+    // the launch mode it was started in does not overrule that.
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
   });
 
@@ -214,14 +215,12 @@ describe('GpuPackDetails — the command block', () => {
   });
 });
 
-describe('GpuPackDetails — the restart path PR 5 turns on', () => {
+describe('GpuPackDetails — installing and restarting', () => {
   it('offers install-and-restart, and asks first', async () => {
     const onInstall = renderCard({ restartAvailable: true });
     expect(
       screen.getByText('The server restarts after this install. Running graphs will stop.'),
     ).toBeInTheDocument();
-    // The command block is what the app shows INSTEAD of this, not alongside.
-    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
     await waitFor(() => expect(onInstall).toHaveBeenCalledWith('cu128'));
@@ -250,10 +249,50 @@ describe('GpuPackDetails — the restart path PR 5 turns on', () => {
     expect(onInstall).not.toHaveBeenCalled();
   });
 
-  it('keeps the command block in dev mode even once restarts are supported', () => {
-    renderCard({ restartAvailable: true, launchMode: 'dev' });
-    // Nothing supervises a `cdui dev` server, so there is nothing to restart.
+  it('keeps the command below the button, as the way to do it by hand', async () => {
+    // Both, not one or the other. The command is the same install in a
+    // terminal, and a user who prefers to watch it there loses nothing by
+    // the button existing.
+    const onInstall = renderCard({ restartAvailable: true });
+    expect(
+      screen.getByText('Or stop the server and run this in a terminal yourself:'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith('cdui install --gpu cu128'),
+    );
+    // Copying is not installing: the card did not start anything.
+    expect(onInstall).not.toHaveBeenCalled();
+  });
+
+  it('offers the button alone when the server gave no command to print', () => {
+    // Nothing to apologise for and nothing to print: `packs.gpu.noCommand`
+    // belongs to the card whose ONLY way through is a command.
+    renderCard({
+      restartAvailable: true,
+      pack: pack({ install_command: null }),
+      gpu: gpu({ install_command: null }),
+    });
+    expect(
+      screen.getByRole('button', { name: 'Install and restart' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
+    expect(screen.queryByText(/did not provide an install command/)).toBeNull();
+  });
+
+  it('says the server cannot restart itself under cdui dev, and shows the command', () => {
+    // A `cdui dev` server never reports `restart_available`: nothing
+    // supervises it, so there is nothing to relaunch it. The card's own gate
+    // is the server's answer, and the launch mode only picks the sentence.
+    renderCard({ restartAvailable: false, launchMode: 'dev' });
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
+    expect(
+      screen.getByText(
+        'You started CodefyUI with cdui dev, so the server cannot restart itself. Run this in the backend terminal, then start it again:',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
   });
 

@@ -794,6 +794,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.item.removeError': '無法移除 {item}：{message}',
   'packs.restart.done': '伺服器已重新啟動，{pack} 可以使用了。',
   'packs.restart.failed': '伺服器已重新啟動，但安裝 {pack} 失敗：{message}',
+  'packs.restart.failedLog': '安裝程式的最後輸出：{log}',
   'packs.toast.installed': '已安裝 {pack}。',
   'packs.toast.installFailed': '安裝失敗：{message}',
   'packs.toast.cancelled': '已取消安裝。',
@@ -883,6 +884,9 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.activity.needsRestart': '已安裝，但伺服器需要重新啟動後 {pack} 才能使用。',
   'packs.activity.lost': '與伺服器失去聯繫。請重新整理以確認套件狀態。',
   'packs.activity.dismiss': '關閉',
+  'packs.activity.restartAndInstall': '重新啟動伺服器並安裝',
+  'packs.activity.restartAndInstallNote':
+    '伺服器會重新啟動以安裝 Python 套件；模型請在之後用一般安裝再下載。',
 
   // GPU PyTorch pack — the one install that swaps the wheel under the running
   // interpreter, so the user may have to run a command themselves.
@@ -898,6 +902,7 @@ const zhTW: Record<TranslationKey, string> = {
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
   'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
+  'packs.gpu.manualAlternative': '也可以停止伺服器後，自己在終端機執行：',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',
   'packs.copyFailed': '無法複製，請手動選取文字後複製。',

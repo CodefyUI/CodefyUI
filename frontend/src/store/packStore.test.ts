@@ -35,6 +35,7 @@ import {
   EVENT_WAIT_S,
   FOLLOW_IDLE_MS,
   FOLLOW_RETRY_MS,
+  LOG_TAIL_TOAST_CHARS,
   MAX_FOLLOW_FAILURES,
   MAX_PACK_LOG_LINES,
   RESTART_GRACE_MS,
@@ -85,6 +86,9 @@ function catalog(partial: Partial<PackCatalog> = {}): PackCatalog {
     last_restart_job: null,
     remote_install_allowed: true,
     launch_mode: 'start',
+    // The default every case starts from: a server that has NOT said it can
+    // restart itself. The cases about the handshake say so themselves.
+    restart_available: false,
     gpu: null,
     ...partial,
   };
@@ -284,6 +288,38 @@ describe('reducePackEvents', () => {
       }],
     }));
     expect(next.restartCommand).toBe('cdui install --gpu cu128');
+    // No retry offered: nothing in the event said one was possible.
+    expect(next.retryMode).toBeNull();
+  });
+
+  it('records the retry mode a stopped live install came back with', () => {
+    const next = reducePackEvents(seededJob(), eventsPage({
+      status: 'needs_restart',
+      cursor: 1,
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't',
+        command: 'cdui packs install rag --restart',
+        kind: 'pip',
+        retry_mode: 'restart',
+      }],
+    }));
+    expect(next.retryMode).toBe('restart');
+    expect(next.restartCommand).toBe('cdui packs install rag --restart');
+  });
+
+  it('ignores a retry mode this build has no button for', () => {
+    // The key names what the SERVER can do. A mode from a newer backend has
+    // no handler here, and a button that posts it would end in a 400.
+    const next = reducePackEvents(seededJob(), eventsPage({
+      status: 'needs_restart',
+      cursor: 1,
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't',
+        command: 'cdui packs install rag --somehow',
+        retry_mode: 'reboot-the-planet',
+      }],
+    }));
+    expect(next.retryMode).toBeNull();
   });
 
   it('skips an unknown event type rather than rendering a mystery line', () => {
@@ -384,10 +420,22 @@ describe('packStore — refresh', () => {
     expect(state.byId['word-vectors'].title).toBe('Word vectors');
     expect(state.remoteInstallAllowed).toBe(false);
     expect(state.launchMode).toBe('dev');
+    expect(state.restartAvailable).toBe(false);
     expect(state.loaded).toBe(true);
     expect(state.loading).toBe(false);
     expect(state.unsupported).toBe(false);
     expect(state.error).toBeNull();
+  });
+
+  it("takes the server's own word for whether it can restart itself", async () => {
+    // Not inferred from `launch_mode`: the server also wants its launcher
+    // still on disk and its kill switch off before it says yes, and this
+    // flag is what every restart in the UI is gated on.
+    api.listPacks.mockResolvedValue(catalog({ restart_available: true }));
+
+    await usePackStore.getState().refresh();
+
+    expect(usePackStore.getState().restartAvailable).toBe(true);
   });
 
   it('marks an older backend unsupported on a 404, without a toast', async () => {
@@ -923,14 +971,16 @@ describe('packStore — a job settling', () => {
   });
 
   it('starts the restart flow and remembers the pack across the reload', async () => {
-    // A RESTART-mode job: the only kind whose `needs_restart` is an ending
-    // somebody asked for, and so the only kind the handshake may run for.
+    // A RESTART-mode job on a server that says it can restart: the two halves
+    // of the gate. The mode is what makes `needs_restart` an ending somebody
+    // asked for; the flag is the server promising to come back.
     usePackStore.setState({
       byId: {
         'word-vectors': makePack({
           id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
         }),
       },
+      restartAvailable: true,
     });
     terminal({
       status: 'needs_restart',
@@ -955,6 +1005,11 @@ describe('packStore — a job settling', () => {
     // anywhere. Under `cdui start` this used to raise a blocking "Server
     // restarting" overlay for thirty seconds — over a running server, and
     // on top of the command the user actually needs.
+    //
+    // The server CAN restart here, deliberately: the job's mode is the half
+    // of the gate this case is about, and a restart it can perform is not a
+    // restart anybody asked for.
+    usePackStore.setState({ restartAvailable: true });
     terminal({
       status: 'needs_restart',
       events: [{
@@ -975,8 +1030,20 @@ describe('packStore — a job settling', () => {
     expect(usePackStore.getState().job!.status).toBe('needs_restart');
   });
 
-  it('shows the command instead of restarting under cdui dev', async () => {
-    usePackStore.setState({ launchMode: 'dev' });
+  it('shows the command instead of restarting when the server cannot', async () => {
+    // A RESTART-mode job — so the mode half of the gate is satisfied — on a
+    // server that never said it can come back: `cdui dev` reloads in place,
+    // and there is nothing to relaunch it. This is the half the launch mode
+    // used to stand in for, and the server is the one that knows.
+    usePackStore.setState({
+      byId: {
+        'word-vectors': makePack({
+          id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+        }),
+      },
+      launchMode: 'dev',
+      restartAvailable: false,
+    });
     terminal({
       status: 'needs_restart',
       events: [{ type: 'needs_restart', cursor: 1, ts: 't', command: 'cdui install --gpu cu128' }],
@@ -984,6 +1051,8 @@ describe('packStore — a job settling', () => {
 
     usePackStore.getState().followJob('j1', 'word-vectors', 0);
     await settle();
+
+    expect(usePackStore.getState().job!.mode).toBe('restart');
 
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
     expect(usePackStore.getState().restart.phase).toBe('idle');
@@ -1260,7 +1329,12 @@ describe('packStore — checkInProgress', () => {
     sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
     api.listPacks.mockResolvedValue(catalog({
       packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
-      last_restart_job: { status: 'failed', message: 'uv exited 1' },
+      last_restart_job: {
+        status: 'failed',
+        message: 'uv exited 1',
+        // Present, and deliberately not shown: the message is the story.
+        log_tail: 'Resolved 41 packages\nERROR: uv exited 1\n',
+      },
     }));
 
     await usePackStore.getState().checkInProgress();
@@ -1269,7 +1343,71 @@ describe('packStore — checkInProgress', () => {
     expect(lastToast().message).toBe(
       'The server restarted, but installing GPU PyTorch failed: uv exited 1',
     );
+    // One toast: the message is the whole story, and the log tail behind it
+    // would only repeat it at ten times the length.
+    expect(useToastStore.getState().toasts).toHaveLength(1);
     expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
+
+  it('falls back to the log tail when the failure came back with no message', async () => {
+    // The helper died with the old server and took its job log with it, so
+    // this record is all that survived. A bare "failed:" with nothing after
+    // the colon is the one report worth spending a second toast on — and an
+    // `error` toast, which this app never auto-dismisses, is still there when
+    // the user comes back to the tab.
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: {
+        status: 'failed',
+        message: '',
+        log_tail: 'ERROR: ResolutionImpossible\n',
+      },
+    }));
+
+    await usePackStore.getState().checkInProgress();
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(2);
+    expect(toasts[1]).toMatchObject({
+      type: 'error',
+      message: 'Last output from the installer: ERROR: ResolutionImpossible',
+    });
+  });
+
+  it('says nothing extra when a failure has neither a message nor a log', async () => {
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: { status: 'failed', log_tail: '   ' },
+    }));
+
+    await usePackStore.getState().checkInProgress();
+
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+  });
+
+  it('bounds the log tail it puts in a toast, keeping the end', async () => {
+    // The end is where an installer says how it went; the beginning is where
+    // it lists what it downloaded. A toast has no scroll of its own, so an
+    // unbounded tail would grow one card until it covered the canvas.
+    sessionStorage.setItem(RESTART_PENDING_KEY, 'gpu-torch');
+    api.listPacks.mockResolvedValue(catalog({
+      packs: [makePack({ id: 'gpu-torch', title: 'GPU PyTorch' })],
+      last_restart_job: {
+        status: 'failed',
+        message: '',
+        log_tail: `${'x'.repeat(5000)}the last line`,
+      },
+    }));
+
+    await usePackStore.getState().checkInProgress();
+
+    const shown = lastToast().message;
+    expect(shown.endsWith('the last line')).toBe(true);
+    expect(shown.length).toBeLessThanOrEqual(
+      'Last output from the installer: '.length + LOG_TAIL_TOAST_CHARS,
+    );
   });
 
   it('tries again after a boot read that never got an answer', async () => {
