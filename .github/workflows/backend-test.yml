@@ -204,21 +204,29 @@ jobs:
       # instead. The header is emitted once, at the first primitive execution,
       # as `onednn_verbose,v1,info,cpu,isa:<description>`.
       #
-      # The probe does two ops. The bf16 `F.linear` is the operation that
-      # crashes. The fp32 conv2d is there because the bf16 one is not enough on
-      # its own: ATen only hands a CPU bf16 GEMM to oneDNN on machines whose
-      # bf16 support it recognises, so on an AMD runner it stays in ATen's own
-      # kernels, oneDNN is never entered and no isa line appears (observed on
-      # this job's first green run, an EPYC 7763). A CPU fp32 convolution goes
-      # through `mkldnn_convolution` on every machine as long as the shapes
-      # clear the heuristics in ATen's `use_mkldnn()` -- batch 2 and a 5x5
-      # kernel clear both of its clauses -- so the header prints wherever the
-      # job lands.
+      # The probe runs a fp32 conv2d and then the bf16 `F.linear`. The linear is
+      # the operation that crashes; the conv2d is what guarantees an isa line.
+      # ATen only hands a CPU bf16 GEMM to oneDNN on machines whose bf16 support
+      # it recognises, so on an AMD runner the linear stays in ATen's own
+      # kernels and oneDNN is never entered -- the first green run of this step
+      # landed on an EPYC 7763 and printed nothing. A CPU fp32 convolution goes
+      # through `mkldnn_convolution` on any machine once the shapes clear the
+      # two heuristic clauses in ATen's `use_mkldnn()`, which batch 2 with a 5x5
+      # kernel does. It runs first so the header is already out when the bf16
+      # op executes.
       #
-      # A positive AMX match is the only thing that fails the step. A missing
-      # isa line is reported as [WARN] and left alone, so a change in oneDNN's
-      # verbose format cannot turn this job red on its own. The trailing
-      # `exit 0` is what makes that true: the runner appends
+      # The step measures twice: once with `ONEDNN_MAX_CPU_ISA=DEFAULT`, which
+      # is oneDNN's spelling for no cap, and once with the job's value. On a
+      # runner with no AMX both lines read the same and the cap is shown to be
+      # the no-op it is meant to be there. On an EMR runner the two lines differ
+      # and that difference is the proof that the wheel honours the variable.
+      # The control uses fp32 only, so it cannot hit the illegal instruction it
+      # is measuring.
+      #
+      # A positive AMX match in the capped line is the only thing that fails the
+      # step. A missing isa line is reported as [WARN] and left alone, so a
+      # change in oneDNN's verbose format cannot turn this job red on its own.
+      # The trailing `exit 0` is what makes that true: the runner appends
       # `exit $LASTEXITCODE` to every pwsh step, so a probe that died would
       # otherwise decide the step's result. A probe that dies is reported as
       # [WARN] and left for the pytest step below to fail on, which is the same
@@ -230,24 +238,41 @@ jobs:
           if (-not $cpu) { $cpu = '<unavailable>' }
           Write-Host "[INFO] CPU: $cpu"
           Write-Host "[INFO] ONEDNN_MAX_CPU_ISA=$env:ONEDNN_MAX_CPU_ISA"
-          $probe = 'import torch; print("[INFO] torch", torch.__version__); print("[INFO] mkldnn available:", torch.backends.mkldnn.is_available()); x = torch.randn(256, 512).bfloat16(); w = torch.randn(512, 512).bfloat16(); y = torch.nn.functional.linear(x, w); print("[INFO] bf16 linear ->", tuple(y.shape), y.dtype, "finite:", bool(torch.isfinite(y.float()).all())); c = torch.nn.functional.conv2d(torch.randn(2, 8, 32, 32), torch.randn(8, 8, 5, 5)); print("[INFO] fp32 conv2d ->", tuple(c.shape), c.dtype, "finite:", bool(torch.isfinite(c).all()))'
+          $control = 'import torch; torch.nn.functional.conv2d(torch.randn(2, 8, 32, 32), torch.randn(8, 8, 5, 5))'
+          $probe = 'import torch; print("[INFO] torch", torch.__version__); print("[INFO] mkldnn available:", torch.backends.mkldnn.is_available()); c = torch.nn.functional.conv2d(torch.randn(2, 8, 32, 32), torch.randn(8, 8, 5, 5)); print("[INFO] fp32 conv2d ->", tuple(c.shape), c.dtype, "finite:", bool(torch.isfinite(c).all())); x = torch.randn(256, 512).bfloat16(); w = torch.randn(512, 512).bfloat16(); y = torch.nn.functional.linear(x, w); print("[INFO] bf16 linear ->", tuple(y.shape), y.dtype, "finite:", bool(torch.isfinite(y.float()).all()))'
           $env:ONEDNN_VERBOSE = '1'
+
+          $capped = $env:ONEDNN_MAX_CPU_ISA
+          $env:ONEDNN_MAX_CPU_ISA = 'DEFAULT'
+          $ctlOut = & .venv\Scripts\python.exe -c $control
+          $env:ONEDNN_MAX_CPU_ISA = $capped
+          $ctlIsa = @($ctlOut | Where-Object { $_ -match 'isa:' })
+          if ($ctlIsa.Count -eq 0) {
+            Write-Host "[WARN] the uncapped control run printed no isa: line"
+          } else {
+            $ctlIsa | ForEach-Object { Write-Host "[ISA uncapped] $_" }
+          }
+
           $out = & .venv\Scripts\python.exe -c $probe
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Host $_ }
           if ($code -ne 0) {
-            Write-Host "[WARN] the bf16 probe exited with $code; -1073741795 there is 0xc000001d, which would mean the ISA cap did not take effect"
+            Write-Host "[WARN] the probe exited with $code; -1073741795 there is 0xc000001d, which would mean the ISA cap did not take effect"
           }
           $isa = @($out | Where-Object { $_ -match 'isa:' })
           if ($isa.Count -eq 0) {
-            Write-Host "[WARN] oneDNN printed no isa: line - the bf16 GEMM did not reach oneDNN on this runner, so there is nothing to assert"
+            Write-Host "[WARN] oneDNN printed no isa: line under the cap, so there is nothing to assert"
+            exit 0
+          }
+          $isa | ForEach-Object { Write-Host "[ISA capped  ] $_" }
+          if ($isa -match 'AMX') {
+            Write-Host "[FAIL] oneDNN still dispatches to AMX; ONEDNN_MAX_CPU_ISA did not take effect"
+            exit 1
+          }
+          if ($ctlIsa -match 'AMX') {
+            Write-Host "[OK] this runner has AMX and the cap removed it"
           } else {
-            $isa | ForEach-Object { Write-Host "[ISA] $_" }
-            if ($isa -match 'AMX') {
-              Write-Host "[FAIL] oneDNN still dispatches to AMX; ONEDNN_MAX_CPU_ISA did not take effect"
-              exit 1
-            }
-            Write-Host "[OK] oneDNN is capped below AMX on this runner"
+            Write-Host "[OK] oneDNN is below AMX under the cap; this runner had no AMX either way"
           }
           exit 0
 
