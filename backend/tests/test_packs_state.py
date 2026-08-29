@@ -203,6 +203,24 @@ def test_write_sentinel_is_atomic_and_readable(user_data_dir):
     assert list(path.parent.iterdir()) == [path], "a .tmp file was left behind"
 
 
+def test_write_sentinel_uses_lf_endings(user_data_dir):
+    """One line ending on every platform.
+
+    ``write_text`` with no ``newline=`` translates ``json.dumps``'s ``\\n``
+    to ``os.linesep``, so the same sentinel is written differently on
+    Windows and on Linux. It round-trips either way -- this is cosmetic --
+    but ``write_constraints_file`` already pins LF for exactly this reason
+    and two files in one feature should not disagree about it.
+
+    RED ON WINDOWS ONLY. A green run on Linux proves nothing: there
+    ``os.linesep`` is already ``\\n``.
+    """
+    path = state.write_sentinel("rag", "qwen2.5-0.5b-instruct",
+                                {"schema": 1, "path": "x"})
+
+    assert b"\r\n" not in path.read_bytes()
+
+
 def test_remove_sentinel_reports_whether_there_was_one(user_data_dir):
     state.write_sentinel("rag", "qwen2.5-0.5b-instruct", {"schema": 1})
 

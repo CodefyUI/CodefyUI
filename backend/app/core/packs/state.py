@@ -39,14 +39,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .catalog import ModelItem, Pack, get_pack, iter_packs
+from .catalog import GPU_TORCH_PACK_ID, ModelItem, Pack, get_pack, iter_packs
 from .paths import sentinel_path
-
-#: The one pack whose "installed" is not "are its files there". Torch is
-#: always importable; this pack asks whether the ACCELERATED build is the one
-#: in place, which is a property of the wheel already installed rather than of
-#: anything the Package Center downloaded.
-_GPU_TORCH_PACK_ID = "gpu-torch"
 
 #: Both ids are interpolated straight into a sentinel FILENAME. Today they
 #: only ever come from the catalog; this is the guard for the day one arrives
@@ -159,6 +153,11 @@ def write_sentinel(pack_id: str, item_id: str, payload: dict) -> Path:
     crash mid-write leaves either the previous sentinel or none -- never a
     truncated one that a reader would have to guess about. *payload* is
     written verbatim; its shape is the schema in this module's docstring.
+
+    Explicit LF, like ``write_constraints_file``: the default would translate
+    every line ending to CRLF on Windows and the same sentinel would be a
+    different file on two platforms. Cosmetic -- JSON round-trips either way
+    -- but the two writers in this feature should not disagree about it.
     """
     _validate_id(pack_id, "pack_id")
     _validate_id(item_id, "item_id")
@@ -167,7 +166,8 @@ def write_sentinel(pack_id: str, item_id: str, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     staged = path.with_name(f"{path.name}.tmp-{os.getpid()}")
     try:
-        staged.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        staged.write_text(json.dumps(payload, indent=2), encoding="utf-8",
+                          newline="\n")
         os.replace(staged, path)
     finally:
         staged.unlink(missing_ok=True)
@@ -246,7 +246,7 @@ def pack_state(pack: Pack) -> PackState:
     ready = pip_ready(pack)
     items = tuple(item_state(pack, item) for item in pack.items)
 
-    if pack.pack_id == _GPU_TORCH_PACK_ID:
+    if pack.pack_id == GPU_TORCH_PACK_ID:
         # This pack downloads nothing, so the general rules below would call
         # it both installed and usable on any machine at all. Its readiness
         # lives in the installed WHEEL instead, and both answers come from

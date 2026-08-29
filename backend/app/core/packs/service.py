@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import download, flows, restart, state
-from .catalog import ModelItem, Pack, get_item
+from .catalog import GPU_TORCH_PACK_ID, ModelItem, Pack, get_item
 from .errors import (
     PackCancelled,
     PackInstallError,
@@ -491,10 +491,11 @@ class PackService:
         catalog to look the pack up in, so the decision is made here and
         written into the pending file.
 
-        ``restart._GPU_TORCH_PACK_ID`` rather than a second copy of the
-        literal: ``restart`` is already where "which pack is the wheel swap"
-        is decided (``install_command_for`` asks the same question), and one
-        pack id spelled in two files is one spelling too many.
+        ``catalog.GPU_TORCH_PACK_ID`` rather than a second copy of the
+        literal: the catalog is where "which pack is which" is decided, and
+        one pack id spelled in three files is two spellings too many.
+        ``restart.install_command_for`` and ``state.pack_state`` ask the same
+        question off the same constant.
 
         :raises ValueError: the pack has no packages to install. Stopping the
             server to install nothing is worse than refusing -- and it would
@@ -503,7 +504,7 @@ class PackService:
             case; this one runs first, before a job id has even been minted,
             so the client is answered by its own request.
         """
-        if pack.pack_id == restart._GPU_TORCH_PACK_ID:
+        if pack.pack_id == GPU_TORCH_PACK_ID:
             return "torch"
         if not pack.pip:
             raise ValueError(

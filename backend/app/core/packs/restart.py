@@ -54,14 +54,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runner, state
-from .catalog import Pack
+from .catalog import GPU_TORCH_PACK_ID, Pack
 from .errors import PackInstallError, PendingExists
 from .paths import job_log_dir, last_restart_file, pending_restart_file
 
 log = logging.getLogger(__name__)
-
-#: The pack whose install is a wheel swap rather than a download.
-_GPU_TORCH_PACK_ID = "gpu-torch"
 
 #: Kill switch. ``"0"`` refuses restart-mode installs even under
 #: ``cdui start``; anything else (including unset) leaves them on. A kill
@@ -371,7 +368,7 @@ def install_command_for(pack: Pack, variant: str | None = None) -> str:
         raise ValueError(
             f"unknown torch variant {variant!r}; expected one of "
             f"{', '.join(VARIANTS)}")
-    if pack.pack_id == _GPU_TORCH_PACK_ID:
+    if pack.pack_id == GPU_TORCH_PACK_ID:
         chosen = variant or gpu_info()["recommended_variant"]
         return f"cdui install --gpu {chosen}"
     return f"cdui packs install {pack.pack_id}"

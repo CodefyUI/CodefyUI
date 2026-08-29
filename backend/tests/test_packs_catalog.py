@@ -18,9 +18,10 @@ import pytest
 
 from app.config import _user_data_root
 from app.core.asset_cache import cache_dir
-from app.core.packs import PackMissingError
+from app.core.packs import PackMissingError, restart, state
 from app.core.packs.catalog import (
     CATALOG,
+    GPU_TORCH_PACK_ID,
     PACK_IDS,
     PYPROJECT_EXTRA_FOR_PACK,
     ModelItem,
@@ -99,9 +100,33 @@ def test_rag_depends_on_sentence_embeddings():
 
 
 def test_install_modes_are_valid():
+    """A GUARD, not a discovery: the restart pack and the GPU pack are one
+    pack, and two modules quietly rely on it.
+
+    ``routes_packs._install_command`` branches on ``install_mode ==
+    "restart"``; ``restart.install_command_for`` branches on ``pack_id ==
+    GPU_TORCH_PACK_ID``. They agree only because the two sets are equal
+    today. The day a second restart-mode pack is added, the two branches
+    disagree about it -- one would route it through the restart helper, the
+    other would print ``cdui packs install <id>`` -- and this is what says
+    so before anybody finds out from a stopped server.
+    """
     assert {pack.pack_id for pack in iter_packs()
-            if pack.install_mode == "restart"} == {"gpu-torch"}
+            if pack.install_mode == "restart"} == {GPU_TORCH_PACK_ID}
     assert all(pack.install_mode in {"live", "restart"} for pack in iter_packs())
+
+
+def test_the_gpu_torch_id_is_spelled_once():
+    """One public constant, not a private copy per module.
+
+    ``service`` used to reach across a module boundary for
+    ``restart._GPU_TORCH_PACK_ID`` -- a private name, so nothing stopped
+    ``restart`` from renaming it, and ``state`` carried a third copy of the
+    literal besides.
+    """
+    assert GPU_TORCH_PACK_ID in PACK_IDS
+    assert not hasattr(restart, "_GPU_TORCH_PACK_ID")
+    assert not hasattr(state, "_GPU_TORCH_PACK_ID")
 
 
 def test_hf_items_have_repo_ids_and_asset_items_have_urls():
@@ -207,6 +232,24 @@ def test_validate_rejects_dependency_cycle():
     pytest.param((_pack(items=(_item(kind="asset", repo_id=None,
                                      url="https://x/f.gz"),)),),
                  id="asset-without-filename"),
+    pytest.param((_pack(items=(_item(approx_bytes=0),)),),
+                 id="zero-approx-bytes"),
+    pytest.param((_pack(items=(_item(license=""),)),),
+                 id="no-license"),
+    # A filename the REMOVER would refuse (flows._asset_removal_target) --
+    # the catalog must not ship something that can be downloaded and then
+    # never deleted.
+    pytest.param((_pack(items=(_item(kind="asset", repo_id=None,
+                                     url="https://x/f.gz",
+                                     filename="sub/f.gz"),)),),
+                 id="asset-filename-with-a-separator"),
+    pytest.param((_pack("a", items=(_item("m", kind="asset", repo_id=None,
+                                          url="https://x/f.gz",
+                                          filename="f.gz"),)),
+                  _pack("b", items=(_item("n", kind="asset", repo_id=None,
+                                          url="https://y/f.gz",
+                                          filename="f.gz"),))),
+                 id="two-packs-one-asset-filename"),
     # Distinct repo ids on purpose: the repo-id-uniqueness rule runs FIRST,
     # so two items sharing ``_item``'s default repo would be rejected for
     # that instead and this case would never reach the rule it is named for.

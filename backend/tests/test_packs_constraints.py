@@ -22,6 +22,7 @@ import importlib.metadata
 import pytest
 
 from app.core.packs.constraints import (
+    _canonical,
     constraints_text,
     installed_distributions,
     write_constraints_file,
@@ -79,15 +80,25 @@ def test_pins_torch_at_the_version_uv_resolves_against():
 
 def test_names_are_pep503_canonical():
     """``huggingface_hub`` and ``huggingface-hub`` are one distribution; the
-    keys are the canonical spelling so a caller can look one up."""
+    keys are the canonical spelling so a caller can look one up.
+
+    The underscore half is proved through ``_canonical`` on a synthesised
+    name rather than by naming a real package that happens to have one
+    today. It used to assert ``"huggingface-hub" in dists`` -- a TRANSITIVE
+    dependency, so the day a resolver stops pulling it this test would go
+    red about PEP 503 canonicalisation for a reason that has nothing to do
+    with it. What the real list is still asked is only that it exists.
+    """
     dists = installed_distributions()
 
+    assert dists, "this interpreter reported no distributions at all"
     for name in dists:
         assert name == name.lower()
         assert "_" not in name
         assert " " not in name
 
-    assert "huggingface-hub" in dists, "underscores were not canonicalised"
+    assert _canonical("Some_Name") == "some-name"
+    assert _canonical("zope.interface") == "zope-interface"
 
 
 def test_the_editable_project_is_never_pinned():
@@ -249,3 +260,16 @@ def test_write_constraints_file_defaults_to_this_interpreter(tmp_path):
 
     assert "\ntorch==" in "\n" + path.read_text(encoding="utf-8")
     assert "codefyui-backend==" not in path.read_text(encoding="utf-8")
+
+
+def test_write_constraints_file_does_not_create_its_directory(tmp_path):
+    """The CALLER owns the directory -- a per-job temporary one it makes and
+    cleans up -- so a missing one is the caller's bug and has to be raised
+    rather than papered over. A ``mkdir(parents=True)`` here would leave a
+    stray directory behind on every such bug, in a place nothing cleans."""
+    gone = tmp_path / "gone"
+
+    with pytest.raises(OSError):
+        write_constraints_file(gone)
+
+    assert not gone.exists()
