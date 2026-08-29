@@ -521,12 +521,10 @@
   list-style: none;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
-}
-
-.gpuVariant {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  /* A ROCm `gfx1150-…` label or a driver id has no break opportunity, and the
+     card's only overflow behaviour is `hidden` on the modal — so an unbroken
+     fact would be clipped rather than scrolled. */
+  overflow-wrap: anywhere;
 }
 
 .select {
@@ -543,10 +541,38 @@
   border-color: var(--accent-deep);
 }
 
+/* A real instruction, on the cards that have no button: full reading size. */
 .note {
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
+}
+
+/* The same sentence when a working button is above it — a caption on the
+   control, not a paragraph before it. */
+.caption {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+}
+
+/* The command a button already offers: one folded line until asked for. */
+.manual {
+  margin: 0;
+}
+
+.manual > summary {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.manual > summary:hover {
+  color: var(--accent);
+}
+
+.manual > *:not(summary) {
+  margin-top: var(--sp-2);
 }
 
 .commandBlock {

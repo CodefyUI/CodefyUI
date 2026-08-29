@@ -35,10 +35,10 @@ export interface GpuPackDetailsProps {
  * does the swap while the server is down.
  *
  * So the card has two shapes. When the server says it can arrange that, the
- * button starts it — with the command still printed underneath, because a
- * user who would rather watch it happen in a terminal loses nothing by being
- * offered both. When it cannot, the command IS the card, and the note above
- * it says why.
+ * button starts it — with the command still there underneath, folded, because
+ * a user who would rather watch it happen in a terminal loses nothing by
+ * being offered both. When it cannot, the command IS the card: open, never
+ * behind a disclosure, with the note above it saying why.
  */
 export function GpuPackDetails({
   pack,
@@ -80,36 +80,49 @@ export function GpuPackDetails({
         </li>
         {/* `installed_variant: null` means "cannot tell which wheel is here",
             which is not the same claim as "none" — so the line is omitted
-            rather than filled with a guess. Same for the recommendation. */}
+            rather than filled with a guess. Same for the recommendation.
+
+            One line, not two: on the machine this was written for both read
+            `cu128`, and "Installed build: cu128" over "Recommended build:
+            cu128" is one fact wearing two rows. The recommendation earns its
+            words only when it disagrees with what is here. */}
         {gpu?.installed_variant && (
-          <li>{t('packs.gpu.installed', { variant: gpu.installed_variant })}</li>
+          <li>
+            {t('packs.gpu.installed', { variant: gpu.installed_variant })}
+            {gpu.recommended_variant
+              && gpu.recommended_variant !== gpu.installed_variant && (
+              <>
+                {' · '}
+                {t('packs.gpu.recommended', { variant: gpu.recommended_variant })}
+              </>
+            )}
+          </li>
         )}
-        {gpu?.recommended_variant && (
+        {!gpu?.installed_variant && gpu?.recommended_variant && (
           <li>{t('packs.gpu.recommended', { variant: gpu.recommended_variant })}</li>
         )}
       </ul>
 
-      {variants.length > 1 && (
-        <div className={styles.gpuVariant}>
-          <select
-            className={styles.select}
-            aria-label={t('packs.gpu.variant')}
-            value={variant}
-            onChange={(e) => setVariant(e.target.value)}
-          >
-            {variants.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
       {restartAvailable ? (
         <>
-          <div className={styles.note}>{t('packs.gpu.restartNote')}</div>
+          {/* Pick and go, on one row. The select had a row of its own above a
+              note above the button — three stacked rows for one decision. */}
           <div className={styles.cardActions}>
+            {variants.length > 1 && (
+              <select
+                className={styles.select}
+                aria-label={t('packs.gpu.variant')}
+                title={t('packs.gpu.variant')}
+                value={variant}
+                onChange={(e) => setVariant(e.target.value)}
+              >
+                {variants.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               className={styles.primaryBtn}
@@ -120,16 +133,22 @@ export function GpuPackDetails({
               {t('packs.gpu.installRestart')}
             </button>
           </div>
+          {/* Below the button, as its caption rather than above it as a note:
+              that the server restarts is the button's own label and the
+              confirm dialog's question, and this is the one thing neither of
+              them says. */}
+          <div className={styles.caption}>{t('packs.gpu.restartNote')}</div>
           {/* Underneath, not instead of: the button is the shorter path and
-              the command is the same install by hand, so showing both costs
-              a reader nothing and gives a terminal user their way through.
-              No `noCommand` sentence in this branch — a card whose button
-              works has nothing to apologise for. */}
+              the command is the same install by hand, so a terminal user
+              keeps their way through — folded, because next to a button that
+              works it is a choice rather than an instruction. No `noCommand`
+              sentence in this branch: a card whose button works has nothing
+              to apologise for. */}
           {command !== null && (
-            <>
-              <div className={styles.note}>{t('packs.manualCommand')}</div>
+            <details className={styles.manual}>
+              <summary>{t('packs.manualCommand')}</summary>
               <CommandBlock command={command} />
-            </>
+            </details>
           )}
         </>
       ) : (

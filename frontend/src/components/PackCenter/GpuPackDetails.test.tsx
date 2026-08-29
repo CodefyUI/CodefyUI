@@ -81,13 +81,28 @@ afterEach(() => {
 });
 
 describe('GpuPackDetails — what this machine has', () => {
-  it('names the detected GPU and both builds', () => {
+  it('names the detected GPU and both builds on one line when they differ', () => {
     renderCard();
     expect(
       screen.getByText('Detected GPU: NVIDIA GeForce RTX 4080'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Installed build: cpu')).toBeInTheDocument();
+    expect(
+      screen.getByText('Installed build: cpu · Recommended build: cu128'),
+    ).toBeInTheDocument();
+  });
+
+  it('says the build once when the recommendation is what is already there', () => {
+    // Two rows for one fact: the screenshot that started this read
+    // "Installed build: cu128" over "Recommended build: cu128".
+    renderCard({ gpu: gpu({ installed_variant: 'cu128' }) });
+    expect(screen.getByText('Installed build: cu128')).toBeInTheDocument();
+    expect(screen.queryByText(/Recommended build:/)).toBeNull();
+  });
+
+  it('recommends a build when none can be named as installed', () => {
+    renderCard({ gpu: gpu({ installed_variant: null }) });
     expect(screen.getByText('Recommended build: cu128')).toBeInTheDocument();
+    expect(screen.queryByText(/Installed build:/)).toBeNull();
   });
 
   it('says so when there is no GPU, and stays quiet about a build it cannot name', () => {
@@ -102,8 +117,8 @@ describe('GpuPackDetails — what this machine has', () => {
     expect(screen.queryByText(/Recommended build/)).toBeNull();
   });
 
-  it('offers the build choice, and hides the select when there is only one', () => {
-    renderCard();
+  it('offers the build choice next to the button that spends it', () => {
+    renderCard({ restartAvailable: true });
     const select = screen.getByLabelText('PyTorch build') as HTMLSelectElement;
     expect(select.value).toBe('cu128');
     expect(Array.from(select.options).map((o) => o.value)).toEqual([
@@ -114,7 +129,18 @@ describe('GpuPackDetails — what this machine has', () => {
   });
 
   it('hides the select when the machine offers one build', () => {
-    renderCard({ gpu: gpu({ variants: ['cpu'], recommended_variant: 'cpu' }) });
+    renderCard({
+      restartAvailable: true,
+      gpu: gpu({ variants: ['cpu'], recommended_variant: 'cpu' }),
+    });
+    expect(screen.queryByLabelText('PyTorch build')).toBeNull();
+  });
+
+  it('hides the select on a card that has no button to spend it', () => {
+    // The picked variant only ever reached `onInstall`. With no button the
+    // control changed nothing — not even the printed command, which the
+    // server writes — so it was a live-looking dead end.
+    renderCard({ restartAvailable: false });
     expect(screen.queryByLabelText('PyTorch build')).toBeNull();
   });
 });
@@ -251,13 +277,17 @@ describe('GpuPackDetails — installing and restarting', () => {
     expect(onInstall).not.toHaveBeenCalled();
   });
 
-  it('keeps the command below the button, as the way to do it by hand', async () => {
+  it('folds the command into a disclosure below the button', async () => {
     // Both, not one or the other. The command is the same install in a
-    // terminal, and a user who prefers to watch it there loses nothing by
-    // the button existing.
+    // terminal, and a user who prefers to watch it there loses nothing — but
+    // under a button that works it is a choice, so it costs one folded line
+    // instead of a sentence and a block.
     const onInstall = renderCard({ restartAvailable: true });
-    expect(screen.getByText('Manual install command')).toBeInTheDocument();
-    expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
+    const summary = screen.getByText('Manual install command');
+    expect(screen.getByText('cdui install --gpu cu128')).not.toBeVisible();
+
+    fireEvent.click(summary);
+    expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
     await waitFor(() =>
@@ -294,6 +324,10 @@ describe('GpuPackDetails — installing and restarting', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
+    // Never folded on this card: with no button, the command IS the way
+    // through, and a reader must not have to find it behind a summary.
+    expect(screen.getByText('cdui install --gpu cu128')).toBeVisible();
+    expect(screen.queryByText('Manual install command')).toBeNull();
   });
 
   it('disables install-and-restart when remote installs are refused', () => {

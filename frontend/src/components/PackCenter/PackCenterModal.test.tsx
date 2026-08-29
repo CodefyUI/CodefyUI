@@ -602,7 +602,10 @@ describe('PackCenterModal — the activity pane', () => {
         'Installed. The server has to restart before GPU PyTorch can be used.',
       ),
     ).toBeInTheDocument();
-    expect(within(banner).getByText('cdui install --gpu cu128')).toBeInTheDocument();
+    // No button on this banner, so the command is the only way through and
+    // stays open — never behind a disclosure.
+    expect(within(banner).getByText('cdui install --gpu cu128')).toBeVisible();
+    expect(within(banner).queryByText('Manual install command')).toBeNull();
     expect(within(banner).getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
     // No retry: this job never said a restart would finish it.
     expect(
@@ -676,8 +679,12 @@ describe('PackCenterModal — the activity pane', () => {
     render(<PackCenterModal />);
 
     const banner = screen.getByRole('status');
-    // The command stays: the same install, by hand, for whoever prefers it.
-    expect(within(banner).getByText('cdui packs install rag --restart')).toBeInTheDocument();
+    // The command stays: the same install, by hand, for whoever prefers it —
+    // but folded, because the button beside it does the same thing.
+    const summary = within(banner).getByText('Manual install command');
+    expect(within(banner).getByText('cdui packs install rag --restart')).not.toBeVisible();
+    fireEvent.click(summary);
+    expect(within(banner).getByText('cdui packs install rag --restart')).toBeVisible();
 
     fireEvent.click(
       within(banner).getByRole('button', { name: 'Restart the server and install' }),
