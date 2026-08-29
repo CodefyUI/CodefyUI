@@ -315,6 +315,42 @@ def test_pending_round_trip_and_bad_shapes(monkeypatch, launcher, cu128):
         pytest.fail(f"from_json accepted {why}")
 
 
+def test_from_json_ignores_keys_it_does_not_know(launcher, cu128):
+    """Forward compatibility in one direction, deliberately.
+
+    This module and dev.py's helper are two implementations of one file,
+    versioned together by ``schema`` -- but they are edited in different
+    commits, and a helper from a newer install may add a field this reader
+    has never heard of. Dropping it is what lets the older reader keep
+    working; every field it DOES know is still checked, so nothing is
+    silently mis-read.
+    """
+    original = restart.build_pending(get_pack("gpu-torch"), job_id="job-1",
+                                     kind="torch")
+    raw = json.loads(original.to_json())
+    raw["variant"] = "cu128"                 # a field a later schema adds
+    raw["notes"] = {"written_by": "the helper"}
+
+    parsed = restart.PendingRestart.from_json(json.dumps(raw))
+
+    assert parsed == original, "an unknown key changed how the rest was read"
+    assert set(json.loads(parsed.to_json())) == PENDING_KEYS
+
+
+def test_build_pending_refuses_a_pip_pack_with_nothing_to_install(launcher,
+                                                                  cu128):
+    """A pip restart for a pack with no specs restarts the server for nothing.
+
+    The GPU pack is exactly that pack -- its ``pip`` is empty because its
+    install is a wheel swap, ``kind="torch"`` -- so asking for it as a pip
+    restart is a caller that has confused the two. The refusal names the
+    pack, because that is what tells a reader which call was wrong.
+    """
+    with pytest.raises(ValueError, match="gpu-torch"):
+        restart.build_pending(get_pack("gpu-torch"), job_id="job-1",
+                              kind="pip")
+
+
 def test_write_pending_refuses_a_fresh_live_one_and_overwrites_a_stale_one(
         monkeypatch, launcher, cu128):
     pack = get_pack("gpu-torch")
@@ -388,6 +424,32 @@ def test_clear_stale_pending(monkeypatch, launcher, cu128):
     assert not path.exists()
 
 
+def test_a_pending_file_that_is_not_text_self_heals(monkeypatch, launcher,
+                                                    cu128):
+    """Bytes that are not UTF-8 are not a claim, and must not be an exception.
+
+    ``Path.read_text`` answers those with ``UnicodeDecodeError``, which is a
+    ``ValueError`` -- so a reader that only catches ``OSError`` lets it out
+    of BOTH :func:`write_pending` and :func:`clear_stale_pending`. The file
+    would then refuse every future restart-mode install with a 500, and
+    nothing in the product could delete it: the user would have to be told
+    to go and find it by hand.
+    """
+    path = pending_restart_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    garbage = b"\xff\xfe{\x00\x00 not text \x80\x81"
+
+    path.write_bytes(garbage)
+    assert restart.clear_stale_pending() is True
+    assert not path.exists()
+
+    # And the next install writes over it rather than tripping over it.
+    path.write_bytes(garbage)
+    restart.write_pending(restart.build_pending(
+        get_pack("gpu-torch"), job_id="after", kind="torch"))
+    assert _pending_on_disk().job_id == "after"
+
+
 def test_pid_alive_answers_for_a_real_process():
     """The one function here that asks the OS instead of a fixture.
 
@@ -426,6 +488,111 @@ def test_pid_alive_never_signals_a_process_group(monkeypatch):
     assert restart._pid_alive(-1) is False
 
 
+class _FakeExport:
+    """One kernel32 entry point: callable, and it accepts the ``argtypes`` /
+    ``restype`` declarations ``_pid_alive_windows`` writes onto it."""
+
+    def __init__(self, impl):
+        self._impl = impl
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self._impl(*args)
+
+
+class _FakeKernel32:
+    """As much of kernel32 as the pid check touches, and nothing else."""
+
+    def __init__(self, *, handle: int, exit_code: int | None = None,
+                 get_exit_ok: bool = True):
+        self.closed: list = []
+        self._exit_code = exit_code
+        self._get_exit_ok = get_exit_ok
+        self.OpenProcess = _FakeExport(
+            lambda access, inherit, pid: handle)
+        self.GetExitCodeProcess = _FakeExport(self._get_exit)
+        self.CloseHandle = _FakeExport(self.closed.append)
+
+    def _get_exit(self, handle, out) -> int:
+        if not self._get_exit_ok:
+            return 0
+        # ``out`` is what ``ctypes.byref(c_ulong())`` produced; ``_obj`` is
+        # the c_ulong the caller will read the value back out of.
+        out._obj.value = self._exit_code
+        return 1
+
+
+def _install_kernel32(monkeypatch, kernel, *, last_error: int = 0) -> None:
+    import ctypes
+
+    # ``WinDLL`` does not exist off Windows, hence raising=False -- which is
+    # the point: this pins the Windows branch from any runner.
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kwargs: kernel,
+                        raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error)
+
+
+def test_pid_alive_windows_reads_the_exit_code_not_just_the_handle(monkeypatch):
+    """``OpenProcess`` succeeding is not the answer, and that is the bug here.
+
+    A handle opens fine for a process that has already exited but whose
+    object has not been released, so a pid would read as alive forever and
+    the pending file it wrote could never be replaced.
+    """
+    running = _FakeKernel32(handle=0x1234, exit_code=restart._STILL_ACTIVE)
+    _install_kernel32(monkeypatch, running)
+    assert restart._pid_alive_windows(4242) is True
+    assert running.closed == [0x1234], "the process handle was leaked"
+
+    exited = _FakeKernel32(handle=0x1234, exit_code=0)
+    _install_kernel32(monkeypatch, exited)
+    assert restart._pid_alive_windows(4242) is False
+    assert exited.closed == [0x1234]
+
+
+def test_pid_alive_windows_reads_a_refused_handle_by_its_error(monkeypatch):
+    denied = _FakeKernel32(handle=0)
+    _install_kernel32(monkeypatch, denied,
+                      last_error=restart._ERROR_ACCESS_DENIED)
+    assert restart._pid_alive_windows(4242) is True, (
+        "ACCESS_DENIED means the process exists and belongs to someone else")
+    assert denied.closed == [], "there was no handle to close"
+
+    missing = _FakeKernel32(handle=0)
+    _install_kernel32(monkeypatch, missing, last_error=87)  # INVALID_PARAMETER
+    assert restart._pid_alive_windows(4242) is False
+
+
+def test_pid_alive_windows_assumes_alive_when_it_cannot_tell(monkeypatch):
+    """Every unknown answers "alive": the caller acts on False by DELETING
+    another server's pending file."""
+    unreadable = _FakeKernel32(handle=0x99, get_exit_ok=False)
+    _install_kernel32(monkeypatch, unreadable)
+    assert restart._pid_alive_windows(4242) is True
+    assert unreadable.closed == [0x99], "the handle was leaked on the way out"
+
+    import ctypes
+
+    def _no_kernel32(name, **kwargs):
+        raise OSError("kernel32 is not loadable here")
+
+    monkeypatch.setattr(ctypes, "WinDLL", _no_kernel32, raising=False)
+    assert restart._pid_alive_windows(4242) is True
+
+
+def test_pid_alive_dispatches_to_the_windows_path_on_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(restart, "_pid_alive_windows", lambda pid: True)
+
+    def _never(pid, sig):
+        pytest.fail("os.kill was used on Windows")
+
+    monkeypatch.setattr(os, "kill", _never)
+
+    assert restart._pid_alive(4242) is True
+
+
 # -- the detached helper ---------------------------------------------------
 
 def _fake_popen(monkeypatch, pid: int = 4242) -> dict:
@@ -446,7 +613,8 @@ def _fake_popen(monkeypatch, pid: int = 4242) -> dict:
     return seen
 
 
-def test_spawn_helper_argv_flags_and_log_file(monkeypatch, launcher, cu128):
+def test_spawn_helper_argv_flags_and_log_file(monkeypatch, tmp_path, launcher,
+                                              cu128):
     monkeypatch.setenv("PYTHONPATH", "D:/Github/CodefyUI/backend")
     monkeypatch.setenv("CODEFYUI_MARKER", "kept")
     path = restart.write_pending(restart.build_pending(
@@ -473,7 +641,12 @@ def test_spawn_helper_argv_flags_and_log_file(monkeypatch, launcher, cu128):
     assert "PYTHONPATH" not in kwargs["env"], (
         "the helper would import this repo's app package")
     assert kwargs["env"]["CODEFYUI_MARKER"] == "kept", (
-        "CODEFYUI_USER_DATA_DIR travels this way; do not filter the env")
+        "the environment is sanitised, not rebuilt")
+    # The one variable the handshake actually depends on: the helper writes
+    # the outcome record where the NEXT server will look for it, and both
+    # find that directory through this variable. Filtering it would leave a
+    # restart that worked and a panel that never hears about it.
+    assert kwargs["env"]["CODEFYUI_USER_DATA_DIR"] == str(tmp_path)
 
     # POSIX detaches with a session of its own, and must not carry a Windows
     # constant into a call that would reject it.
@@ -523,6 +696,26 @@ def test_spawn_helper_refuses_a_pending_it_cannot_act_on(monkeypatch, launcher,
     path.write_text("{half written", encoding="utf-8")
     with pytest.raises(ValueError):
         restart.spawn_helper(path)
+
+
+def test_spawn_helper_refuses_a_launcher_that_is_gone(monkeypatch, launcher,
+                                                      cu128):
+    """``restart_available`` checked this when the panel was DRAWN.
+
+    Minutes may have passed since, and the pending file may have been
+    written by an older server whose checkout has been moved or deleted
+    since. Handing that path to ``Popen`` is a ``FileNotFoundError`` -- or,
+    worse, whatever now sits at that path -- after which the server would
+    shut down and nothing would bring it back.
+    """
+    path = restart.write_pending(restart.build_pending(
+        get_pack("gpu-torch"), job_id="j", kind="torch"))
+    seen = _fake_popen(monkeypatch)
+    Path(launcher[0]).unlink()
+
+    with pytest.raises(PackInstallError, match="launcher"):
+        restart.spawn_helper(path)
+    assert not seen, "a helper was started from an interpreter that is gone"
 
 
 # -- going away ------------------------------------------------------------

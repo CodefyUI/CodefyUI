@@ -572,6 +572,14 @@ class PendingRestart:
         caller does the same thing with all of them: treat the file as if it
         were not there. ``json.JSONDecodeError`` is already a ``ValueError``,
         so the promise costs nothing to keep.
+
+        Keys this reader does not know are IGNORED, on purpose. The file has
+        two implementations (this one and dev.py's helper) which are edited
+        in different commits, so a writer from a newer install may add a
+        field before this reader has heard of it -- and dropping it is what
+        lets the older half keep working. Every field that IS known is
+        checked, so nothing arrives silently mis-read; a change that breaks
+        the meaning of the existing fields is what ``schema`` is for.
         """
         data = json.loads(raw)
         if not isinstance(data, dict):
@@ -623,6 +631,14 @@ def build_pending(pack: Pack, *, job_id: str, kind: str,
         packages: tuple[str, ...] = ("torch", "torchvision")
         specs: tuple[str, ...] = ()
     elif kind == "pip":
+        if not pack.pip:
+            # A restart that installs nothing still costs the user their
+            # server, their queued runs and a page reload. The service
+            # checks this too; this is the belt, because it is the last
+            # place that can refuse before the claim is on disk.
+            raise ValueError(
+                f"pack {pack.pack_id!r} has no pip specs, so there is "
+                f"nothing for a restart-mode pip install to install")
         index_url = None
         packages, specs = (), tuple(pack.pip)
     else:
@@ -734,10 +750,20 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _read_pending(path: Path) -> "PendingRestart | None":
-    """The claim on disk, or None when there is not a readable one."""
+    """The claim on disk, or None when there is not a readable one.
+
+    The two excepts are the same pair :func:`read_last_restart` uses, and
+    the ``ValueError`` is not decoration: bytes that are not UTF-8 come back
+    from ``read_text`` as ``UnicodeDecodeError``, which IS a ``ValueError``,
+    and letting one escape here would raise it out of both
+    :func:`write_pending` and :func:`clear_stale_pending` -- the two
+    functions whose whole job is to get past a file in that state. The
+    result would be a pending file that refuses every future install and
+    that nothing in the product can delete.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, ValueError):
         return None
     try:
         return PendingRestart.from_json(raw)
@@ -866,9 +892,10 @@ def spawn_helper(pending_path: Path) -> int:
 
     The pending file is read here rather than passed in as an object, and
     that is the point: it proves the handshake works while there is still a
-    server to report a failure. A file that cannot be parsed, or that names
-    no launcher, raises HERE -- before :func:`schedule_self_shutdown` is
-    called and the chance to say anything is gone.
+    server to report a failure. A file that cannot be parsed, that names no
+    launcher, or whose launcher is no longer on disk raises HERE -- before
+    :func:`schedule_self_shutdown` is called and the chance to say anything
+    is gone.
     """
     pending_path = Path(pending_path)
     pending = PendingRestart.from_json(
@@ -877,6 +904,16 @@ def spawn_helper(pending_path: Path) -> int:
         raise PackInstallError(
             "cannot start the restart helper: this server was launched "
             f"without {LAUNCHER_ENV}")
+    if not Path(pending.launcher[0]).is_file():
+        # ``restart_available`` checked this when the PANEL was drawn.
+        # Minutes may have passed, and this file may have been written by an
+        # older server whose checkout has since been moved or deleted --
+        # after which Popen raises FileNotFoundError, or worse, starts
+        # whatever now sits at that path. Either way the server would go
+        # down with nothing left to bring it back.
+        raise PackInstallError(
+            "cannot start the restart helper: the launcher "
+            f"{pending.launcher[0]!r} is no longer on disk")
 
     argv = [*pending.launcher, HELPER_COMMAND, str(pending_path)]
     log_dir = job_log_dir()
