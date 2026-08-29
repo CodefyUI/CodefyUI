@@ -127,7 +127,7 @@ export function GpuPackDetails({
               works has nothing to apologise for. */}
           {command !== null && (
             <>
-              <div className={styles.note}>{t('packs.gpu.manualAlternative')}</div>
+              <div className={styles.note}>{t('packs.manualCommand')}</div>
               <CommandBlock command={command} />
             </>
           )}

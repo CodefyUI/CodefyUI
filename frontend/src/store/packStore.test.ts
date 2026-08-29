@@ -743,7 +743,7 @@ describe('packStore — install', () => {
 
     expect(lastToast()).toMatchObject({ type: 'error' });
     expect(lastToast().message).toBe(
-      'Installing is only allowed on the computer that runs the server.',
+      'Installing is only allowed from the computer that runs the server.',
     );
   });
 

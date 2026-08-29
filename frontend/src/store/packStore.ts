@@ -953,7 +953,7 @@ export const usePackStore = create<PackState>((set, get) => ({
         toast(t('packs.toast.busy'), 'warning');
         await get().refresh();
       } else if (err instanceof PackApiError && err.status === 403) {
-        toast(t('packs.toast.remoteNotAllowed'), 'error');
+        toast(t('packs.remoteDisabled'), 'error');
       } else if (err instanceof PackApiError && err.status === 400
                  && Array.isArray(err.body?.blocked_by)
                  && err.body.blocked_by.length > 0) {

@@ -218,11 +218,10 @@ describe('GpuPackDetails — the command block', () => {
 describe('GpuPackDetails — installing and restarting', () => {
   it('offers install-and-restart, and asks first', async () => {
     const onInstall = renderCard({ restartAvailable: true });
+    // The button already says the server restarts; the caption only carries
+    // the half the button does not — when it will refuse to start.
     expect(
-      screen.getByText(
-        'The server restarts after this install. '
-        + 'It refuses to start one while a graph is running.',
-      ),
+      screen.getByText('It will not start while a graph is running.'),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
@@ -257,9 +256,7 @@ describe('GpuPackDetails — installing and restarting', () => {
     // terminal, and a user who prefers to watch it there loses nothing by
     // the button existing.
     const onInstall = renderCard({ restartAvailable: true });
-    expect(
-      screen.getByText('Or stop the server and run this in a terminal yourself:'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Manual install command')).toBeInTheDocument();
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));

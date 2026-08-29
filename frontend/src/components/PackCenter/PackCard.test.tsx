@@ -190,18 +190,6 @@ describe('PackCard — choosing what to install', () => {
     expect(onInstall).toHaveBeenCalledWith(['all-MiniLM-L6-v2'], 'live');
   });
 
-  it('re-ticks everything missing on Select all', () => {
-    const { onInstall } = renderCard({ pack: p });
-    fireEvent.click(screen.getByLabelText('sentence-transformers/labse'));
-    fireEvent.click(screen.getByLabelText('sentence-transformers/all-MiniLM-L6-v2'));
-    expect(installBtn()).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Select all missing' }));
-    fireEvent.click(installBtn());
-    // Catalog order, not click order: the request reads like the card.
-    expect(onInstall).toHaveBeenCalledWith(['all-MiniLM-L6-v2', 'labse'], 'live');
-  });
-
   it('reseeds the ticks when the catalog says an item has landed', () => {
     const { rerender } = renderCard({ pack: p });
     fireEvent.click(screen.getByLabelText('sentence-transformers/all-MiniLM-L6-v2'));
@@ -296,8 +284,12 @@ describe('PackCard — when it cannot install', () => {
     });
 
     // The dependency is named WITH its own state, so "why is this blocked" is
-    // answered on the card instead of in a toast after a refused click.
-    expect(screen.getByText('Requires: Sentence embeddings')).toBeInTheDocument();
+    // answered on the card instead of in a toast after a refused click — and
+    // the name is said ONCE, as the link that goes to it.
+    expect(screen.getByText('Requires:')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Install Sentence embeddings first' }),
+    ).toHaveTextContent('Sentence embeddings');
     expect(screen.getByText('Partly installed')).toBeInTheDocument();
     expect(installBtn()).toBeDisabled();
     expect(installBtn()).toHaveAttribute('title', 'Install Sentence embeddings first');
@@ -335,9 +327,14 @@ describe('PackCard — a pack whose python half is missing', () => {
     expect(onInstall).toHaveBeenCalledWith([], 'live');
   });
 
-  it('says so when the libraries are already there', () => {
+  it('stays quiet about the libraries when they are already there', () => {
     renderCard({ pack: pack({ ...p, pip_ready: true }) });
-    expect(screen.getByText('Python packages installed')).toBeInTheDocument();
+    // The status pill already says the pack's state; a second "installed" on
+    // the pip line is the same fact twice. The specs themselves stay.
+    expect(screen.queryByText('Python packages installed')).toBeNull();
+    expect(
+      screen.getByText(/Python packages: sentence-transformers>=3/),
+    ).toBeInTheDocument();
     // Now there really is nothing to do, and the button says what would help.
     expect(installBtn()).toBeDisabled();
     expect(installBtn()).toHaveAttribute('title', 'Tick at least one item to install');
@@ -455,7 +452,6 @@ describe('PackCard — the GPU pack', () => {
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
     // No selection UI: there is nothing to tick on a wheel swap.
     expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Select all missing' })).toBeNull();
     // And no button either: this catalog did not say the server can restart.
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
   });

@@ -119,9 +119,8 @@ export function PackCard({
     : blockedBy.length > 0
       ? t('packs.dependsOnMissing', { pack: localizedPackTitle(t, byId, blockedBy[0]) })
       : nothingToDo
-        // Its own sentence, not the "Select all missing" button's label: a
-        // tooltip explaining why a button is dead has to say what to DO, and
-        // naming another button is not that.
+        // Its own sentence, not another control's label: a tooltip explaining
+        // why a button is dead has to say what to DO next.
         ? t('packs.selectSomething')
         : undefined;
 
@@ -153,45 +152,54 @@ export function PackCard({
 
       {pack.pip.length > 0 && (
         <div className={styles.cardMeta}>
-          {t('packs.pip', { specs: pack.pip.map((entry) => entry.spec).join(', ') })}{' '}
-          {/* Said out loud, because it is the difference between a pack that
-              needs nothing and one whose Install button is alive with no box
-              ticked: the models are here and the libraries are not. Each part
-              keeps its own element so the specs and the state are each one
-              phrase to a reader — and to a query — rather than a run-on. The
-              dash between them is punctuation, not information. */}
-          <span aria-hidden="true">—</span>{' '}
-          <span>{t(pipMissing ? 'packs.pipMissing' : 'packs.pipReady')}</span>
+          {t('packs.pip', { specs: pack.pip.map((entry) => entry.spec).join(', ') })}
+          {/* Said out loud in exactly one case: every model is already on disk
+              and the libraries are not, which is why the Install button is
+              alive with no box ticked. In every other state the pack's status
+              pill already says 未安裝 / 已安裝 and this would repeat it. Each
+              part keeps its own element so the specs and the state are each
+              one phrase to a reader — and to a query — rather than a run-on.
+              The dash between them is punctuation, not information. */}
+          {pipMissing && missingItems(pack).length === 0 && (
+            <>
+              {' '}
+              <span aria-hidden="true">—</span>{' '}
+              <span>{t('packs.pipMissing')}</span>
+            </>
+          )}
         </div>
       )}
 
       {pack.depends_on.length > 0 && (
         <div className={styles.deps}>
-          <span>
-            {t('packs.dependsOn', {
-              packs: pack.depends_on
-                .map((depId) => localizedPackTitle(t, byId, depId))
-                .join(', '),
-            })}
-          </span>
+          <span>{t('packs.dependsOnLabel')}</span>
           {pack.depends_on.map((depId) => {
             // `byId` is built from parsed JSON, so a bare index answers with
             // an inherited member for an id like `constructor`.
             const dep = Object.prototype.hasOwnProperty.call(byId, depId)
               ? byId[depId]
               : undefined;
+            const name = localizedPackTitle(t, byId, depId);
             return (
               <span key={depId} className={styles.dep}>
-                {dep && <StatusPill status={dep.status} />}
-                {blockedBy.includes(depId) && (
+                {/* The NAME is the link, not a second sentence beside it: the
+                    line used to read "需要先安裝：句向量模型 未安裝 請先安裝
+                    句向量模型". `dependsOnMissing` survives as the control's
+                    accessible name, where it says what the click does. */}
+                {blockedBy.includes(depId) ? (
                   <button
                     type="button"
                     className={styles.linkBtn}
+                    title={t('packs.dependsOnMissing', { pack: name })}
+                    aria-label={t('packs.dependsOnMissing', { pack: name })}
                     onClick={() => onFocusPack(depId)}
                   >
-                    {t('packs.dependsOnMissing', { pack: localizedPackTitle(t, byId, depId) })}
+                    {name}
                   </button>
+                ) : (
+                  <span>{name}</span>
                 )}
+                {dep && <StatusPill status={dep.status} />}
               </span>
             );
           })}
@@ -228,15 +236,11 @@ export function PackCard({
             </div>
           )}
 
+          {/* One primary action and what it costs. There was a "Select all
+              missing" button here; the card already OPENS with exactly that
+              selection ticked, so it was a control whose first click could
+              only ever be a no-op. */}
           <div className={styles.cardActions}>
-            <button
-              type="button"
-              className={styles.secondaryBtn}
-              disabled={locked || missingItems(pack).length === 0}
-              onClick={() => setSelected(defaultSelection(pack))}
-            >
-              {t('packs.selectAll')}
-            </button>
             <button
               type="button"
               className={styles.primaryBtn}

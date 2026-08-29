@@ -452,7 +452,7 @@ describe('PackCenterModal — the activity pane', () => {
     render(<PackCenterModal />);
     expect(screen.getByText('Nothing is installing right now.')).toBeInTheDocument();
     expect(
-      screen.getByText('Pick a pack on the left. Downloads keep going if you close this window.'),
+      screen.getByText('Downloads keep going if you close this window.'),
     ).toBeInTheDocument();
   });
 
