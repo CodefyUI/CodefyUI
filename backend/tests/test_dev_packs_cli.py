@@ -383,6 +383,31 @@ def test_cli_install_prompt_shows_the_download_size(
     assert "69" in "".join(asked), "the prompt must say how many MB this is"
 
 
+def test_the_size_prompt_skips_items_already_on_disk(probed, fake_flow,
+                                                     monkeypatch):
+    """The sentence shown to a human has to be about what will be fetched.
+
+    ``--items`` was quoted back verbatim, downloaded or not, so a user who
+    already had one of two named models was asked to approve both their
+    sizes -- and the flow then fetched only the missing one. The prompt
+    mirrors ``flows._resolve_items``, which skips what is present, or it is
+    not describing the install it is asking about.
+    """
+    probed(**{"sentence-embeddings": {"present": ["all-MiniLM-L6-v2"],
+                                      "pip_ready": True, "usable": True}})
+    asked: list[str] = []
+    monkeypatch.setattr(packs, "_stdin_is_interactive", lambda: True)
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt="": asked.append(prompt) or "y")
+
+    assert packs.main(["install", "sentence-embeddings",
+                       "--items", "all-MiniLM-L6-v2,bge-small-zh-v1.5"]) == 0
+
+    prompt = "".join(asked)
+    assert "95.0" in prompt, prompt          # bge-small-zh-v1.5 alone
+    assert "185.0" not in prompt, prompt     # and not both of them
+
+
 def test_cli_install_needs_restart_exits_3_with_command(
         probed, fake_flow, capsys):
     from app.core.packs.errors import PackNeedsRestart
@@ -517,6 +542,32 @@ def test_cli_remove_an_item_that_was_never_downloaded_says_nothing_to_remove(
     assert "glove-50d" in text
     assert "not downloaded" in text.lower()
     assert "disk" not in text.lower()
+
+
+def test_remove_says_nothing_about_pip_when_there_was_nothing_to_remove(
+        probed, monkeypatch, capsys):
+    """No removal, no advice about what a removal did not do.
+
+    The ``uv pip uninstall`` hint is the answer to "your model is gone but
+    its Python packages are not". After "nothing to remove" it answers a
+    question nobody asked, and it is the longest line on the screen -- so
+    the one line that matters is the one competing for attention.
+
+    A pack WITH pip specs on purpose: ``word-vectors`` has none, so the hint
+    never printed for it and the same assertion there would pass without
+    testing anything.
+    """
+    from app.core.packs import flows
+
+    monkeypatch.setattr(flows, "remove_item", lambda pack, item_id: False)
+
+    assert packs.main(["remove", "sentence-embeddings",
+                       "all-MiniLM-L6-v2"]) == 0
+
+    captured = capsys.readouterr()
+    text = captured.out + captured.err
+    assert "not downloaded" in text.lower()
+    assert "uv pip uninstall" not in text, text
 
 
 def test_cli_remove_unknown_item_exits_2(probed, monkeypatch, capsys):

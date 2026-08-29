@@ -321,14 +321,18 @@ def _pending_items(pack, probe, item_ids: list[str] | None) -> list:
     """What this install would download, for the size prompt.
 
     Mirrors ``flows._resolve_items``: named items, or everything not already
-    on disk. The flow decides again for itself from a fresh probe -- this
-    copy only ever feeds a sentence shown to a human.
+    on disk -- and either way, only what is not on disk. The flow decides
+    again for itself from a fresh probe; this copy only ever feeds a
+    sentence shown to a human, and that sentence has to be about what will
+    actually be fetched. Quoting a named item that is already here asks
+    somebody to approve megabytes nothing is going to download.
     """
     from app.core.packs import catalog
 
-    if item_ids is not None:
-        return [catalog.get_item(pack, item_id) for item_id in item_ids]
     present = {item.item_id for item in probe.items if item.present}
+    if item_ids is not None:
+        return [catalog.get_item(pack, item_id) for item_id in item_ids
+                if item_id not in present]
     return [item for item in pack.items if item.item_id not in present]
 
 
@@ -547,7 +551,12 @@ def cmd_remove(args: argparse.Namespace) -> int:
              f"{item.item_id} is no longer registered, but its files are "
              f"still on disk (something may be holding them open)")
 
-    names = _dist_names(pack)
+    # Only when a removal actually happened, or was attempted on something
+    # that was there. The hint answers "your model is gone but its Python
+    # packages are not"; after "nothing to remove" it answers a question
+    # nobody asked, in the longest line on the screen -- competing for
+    # attention with the one line that matters.
+    names = _dist_names(pack) if (removed or was_present) else []
     if names:
         info("Python 套件不會一併移除。要移除的話：",
              "Python packages are not removed. To remove them:")
