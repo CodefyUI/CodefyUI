@@ -227,8 +227,16 @@ export function PackCard({
                   checked={selected.has(item.id)}
                   onToggle={toggle}
                   // Only this pack's job describes this pack's items; a job on
-                  // another pack must not paint bars on these rows.
-                  progress={jobHere ? itemProgress(job, item.id) : null}
+                  // another pack must not paint bars on these rows — and
+                  // neither must one that has STOPPED. Every requested item is
+                  // seeded with a zero-byte entry and a settled job keeps its
+                  // items, so a cancel before the first byte otherwise left an
+                  // empty bar reading "0 B" on rows nothing ever downloaded.
+                  progress={
+                    jobHere && job.status === 'running'
+                      ? itemProgress(job, item.id)
+                      : null
+                  }
                   disabled={locked}
                   onRemove={onRemoveItem}
                 />

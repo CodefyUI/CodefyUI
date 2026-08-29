@@ -850,6 +850,13 @@ describe('PackCenterModal — the activity pane', () => {
     expect(
       within(banner).getByText('Installed Sentence embeddings.'),
     ).toBeInTheDocument();
+    // The pane's own title is the pack, not a running commentary: "Installing
+    // Sentence embeddings" directly above "Installed Sentence embeddings." is
+    // the screen contradicting itself. (Scoped to the pane — the card in the
+    // left column carries the same name.)
+    const pane = within(screen.getByRole('complementary', { name: 'Install activity' }));
+    expect(pane.getByText('Sentence embeddings')).toBeInTheDocument();
+    expect(pane.queryByText('Installing Sentence embeddings')).toBeNull();
 
     view.unmount();
     seed({ packs: [embeddings], job: job({ status: 'cancelled' }) });

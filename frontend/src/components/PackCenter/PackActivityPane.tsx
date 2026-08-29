@@ -115,8 +115,12 @@ export function PackActivityPane({
 
   return (
     <>
+      {/* "Installing X" only while it IS installing. The title used to say it
+          for `done`, `cancelled`, `failed` and `lost` too — directly above a
+          banner saying the opposite. A stopped job is titled by its pack, and
+          the banner underneath is what happened to it. */}
       <div className={styles.activityTitle}>
-        {t('packs.activity.job', { pack: title })}
+        {running ? t('packs.activity.job', { pack: title }) : title}
       </div>
 
       {/* Mounted for the job's whole life, not just while it runs: a live

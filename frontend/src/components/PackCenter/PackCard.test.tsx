@@ -382,6 +382,24 @@ describe('PackCard — while a job is running', () => {
     ).toBeNull();
   });
 
+  it('clears the bars when the job stopped without starting them', () => {
+    // Every requested item is seeded with a zero-byte entry at install time,
+    // and a settled job keeps its items. A cancel before the first byte thus
+    // left an empty bar reading "0 B" on rows nothing ever downloaded.
+    const stopped: PackJob = {
+      ...emptyPackJob('j1', 'sentence-embeddings'),
+      status: 'cancelled',
+      items: { labse: { bytesDone: 0, bytesTotal: null, percent: 0 } },
+    };
+    renderCard({
+      pack: pack({ id: 'sentence-embeddings', items: [item({ id: 'labse' })] }),
+      job: stopped,
+    });
+
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByText('0 B')).toBeNull();
+  });
+
   it('locks the tick boxes so the selection cannot drift under a running job', () => {
     renderCard({
       pack: pack({ id: 'sentence-embeddings', items: [item({ id: 'labse' })] }),
