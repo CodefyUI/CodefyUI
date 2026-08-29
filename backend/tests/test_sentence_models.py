@@ -346,7 +346,9 @@ def test_max_seq_length_is_applied_on_every_call(fake_sentence_transformers):
     model = sentence_models.load_sentence_model(MINI, "cpu", max_seq_length=64)
     assert model.max_seq_length == 64
 
-    # 0 means "the model's own default" -- it must not reset a cap either.
+    # 0 means "leave the cached model's cap alone" -- not "restore the
+    # shipped default". ("The model's own default" is the NODE PARAM's
+    # wording, and it is only true of a cold load.)
     again = sentence_models.load_sentence_model(MINI, "cpu")
     assert again is model
     assert again.max_seq_length == 64

@@ -6,7 +6,7 @@ splitting strings and parsing floats, which is fine to pay once and absurd to
 pay on every graph run, so the install converts it to a ``.npz`` sitting beside
 the download and the node loads that instead.
 
-Four decisions are worth knowing about.
+Five decisions are worth knowing about.
 
 **The npz lives beside the gz, and whoever converts writes it down.** The
 catalog names one file per item, so nothing would ever delete an 83 MB npz on
@@ -24,6 +24,13 @@ is 400k x (longest word) x 4 bytes -- around 160 MB of mostly padding. Joined
 with newlines and encoded, the same words are about 3 MB. A word cannot
 contain a newline (the file format is one vector per line), so the split on
 load is the exact inverse of the join.
+
+**The parse holds the whole table twice, briefly.** ``_parse_gz`` accumulates
+400k one-row arrays in a list and ``_save_npz`` then stacks them, so both the
+list and the stacked copy are live at once: peak RSS is around 250 MB for the
+400k x 50 table. A one-time cost, and the reason the parse is not streamed
+straight into a pre-allocated array -- the row count is not known until a
+header is trusted, and a headerless GloVe file has none.
 
 **Conversion is atomic.** The npz is written to a scratch file and moved into
 place, so a reader never opens a half-written zip, and a save that dies
@@ -325,6 +332,19 @@ def ensure_npz(gz_path: Path, progress: Callable[[dict], None] | None = None
                 f"Package Center and download it again")
 
         _save_npz(npz_path, words, rows)
+        # A gz stamped in the FUTURE -- clock skew, an archive restored with
+        # its own timestamps, a file copied off a machine that runs fast --
+        # would make every fresh npz look stale, so the conversion would run
+        # again on every load, silently. The npz IS current (it was made
+        # from this very file a moment ago), so it is stamped to say so.
+        try:
+            gz_mtime_ns = gz_path.stat().st_mtime_ns
+            if npz_path.stat().st_mtime_ns < gz_mtime_ns:
+                os.utime(npz_path, ns=(gz_mtime_ns, gz_mtime_ns))
+        except OSError:
+            # A filesystem that refuses utime should cost a re-parse, not a
+            # failed run: the table on disk is correct either way.
+            logger.debug("could not stamp %s forward", npz_path, exc_info=True)
         # AFTER the save, not before it: writing and fsyncing 83 MB is the
         # slowest part of this, and a bar that read 100% throughout it would
         # be a finished conversion the learner watches do nothing.

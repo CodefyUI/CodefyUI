@@ -30,6 +30,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -167,6 +168,29 @@ def test_second_call_does_not_reparse(glove_gz, monkeypatch):
 
     assert _glove.ensure_npz(glove_gz) == npz_path
     assert npz_path.stat().st_mtime_ns == stamp
+    assert _glove.load_npz(npz_path)[0] == WORDS
+
+
+def test_a_future_dated_gz_is_converted_once(glove_gz):
+    """A gz stamped ahead of the clock must not reconvert on every load.
+
+    Clock skew, an archive restored with its own stamps, a file copied off a
+    machine that runs fast: any of them leaves a freshly written npz older
+    than its own source, so ``_npz_is_current`` says "stale" forever and
+    every graph run silently re-parses 400,000 lines.
+    """
+    ahead = int((time.time() + 86_400) * 1_000_000_000)
+    os.utime(glove_gz, ns=(ahead, ahead))
+
+    first: list[dict] = []
+    npz_path = _glove.ensure_npz(glove_gz, first.append)
+    assert first, "the first call is the conversion"
+
+    second: list[dict] = []
+    assert _glove.ensure_npz(glove_gz, second.append) == npz_path
+
+    assert second == [], "the second call re-parsed a table it already had"
+    # And the table it kept is still the right one, not an empty stand-in.
     assert _glove.load_npz(npz_path)[0] == WORDS
 
 

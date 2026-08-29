@@ -266,11 +266,14 @@ def test_save_and_load_round_trip_including_cjk_chunks(tmp_path):
     ]
     index = build_index(torch.eye(3), chunks, metadata, metric="cosine", normalize=True)
 
-    path = tmp_path / "corpus.npz"
+    # Deliberately WITHOUT the suffix: np.savez appends ".npz" to a path that
+    # lacks one, so a name that already carries it cannot tell the two apart
+    # and the assertion below would hold either way.
+    path = tmp_path / "corpus"
     index.save(path)
 
-    # The exact name asked for: np.savez appends ".npz" to a path that lacks
-    # it, and a save handed "corpus" must not land as "corpus.npz.npz".
+    # The exact name asked for -- a caller told "corpus" must not have to go
+    # looking for "corpus.npz".
     assert path.exists()
 
     loaded = VectorIndex.load(path)
