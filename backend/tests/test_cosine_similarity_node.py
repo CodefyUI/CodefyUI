@@ -55,6 +55,22 @@ def test_shape_mismatch_raises():
         _run(torch.zeros(1, 3), torch.zeros(1, 4))
 
 
+def test_a_zero_width_side_blames_the_stop_rather_than_the_widths():
+    """A ``(0, 0)`` tensor is what a stopped encode ships downstream.
+
+    ``D=0`` against ``D=8`` is a true sentence about a node the learner did
+    not break, on a run they stopped themselves, so it must not be the one
+    they read.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _run(torch.zeros(0, 0), torch.randn(4, 8))
+
+    message = str(excinfo.value)
+    assert "stopped" in message
+    assert "queries" in message
+    assert "dimension mismatch" not in message
+
+
 def test_top_k_returns_correct_indices_and_labels():
     keys = torch.tensor(
         [

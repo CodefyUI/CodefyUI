@@ -279,6 +279,32 @@ def test_max_seq_length_reaches_the_model(fake_sentence_transformers,
     assert encoders[1].max_seq_length == 128  # the fake's shipped default
 
 
+def test_out_of_range_integers_are_clamped_to_the_declared_bounds(
+        fake_sentence_transformers, encoders):
+    """The editor's ``max_value`` binds a graph that came from elsewhere.
+
+    Nothing the editor produces can be out of range; a hand-edited JSON or
+    an exported script can, and ``max_seq_length: 99999`` would otherwise be
+    written straight onto the shared encoder.
+    """
+    _run(inputs={"texts": ["alpha"]}, max_seq_length=99999)
+    assert encoders[0].max_seq_length == 8192
+
+    # The floor still holds: a batch of 0 is one text per forward pass.
+    _run(inputs={"texts": ["bravo", "charlie"]}, batch_size=0)
+    assert encoders[0].calls[-2:] == [["bravo"], ["charlie"]]
+
+    # And the label cap, whose ceiling is display-only but still a ceiling.
+    res = _run(inputs={"texts": ["x" * 400]}, label_chars=9999)
+    assert res["labels"] == ["x" * 200]
+
+
+def test_a_non_numeric_integer_param_raises(fake_sentence_transformers):
+    """Nothing to clamp is a different thing from out of range."""
+    with pytest.raises(ValueError, match="batch_size"):
+        _run(inputs={"texts": ["alpha"]}, batch_size="abc")
+
+
 # -- the pack gate ---------------------------------------------------------
 
 
@@ -366,6 +392,13 @@ def test_step_trace_when_verbose(fake_sentence_transformers):
     assert steps["input_texts"].scalars["mean_chars"] == pytest.approx(9.0)
     assert steps["encode"].scalars["dim"] == float(FAKE_DIM)
     assert steps["encode"].tensors["embeddings"].shape == (2, FAKE_DIM)
+
+    # The normalisation happens INSIDE the encode call, so both steps hold
+    # the same rows. The step that claims it therefore has to prove it with
+    # a number rather than describe a second pass that never runs.
+    assert "normalised" in steps["encode"].description
+    assert steps["normalize"].scalars["row_length"] == pytest.approx(
+        1.0, abs=1e-5)
 
     # The normalise step describes a thing that happened; with the knob off
     # it must not claim otherwise.

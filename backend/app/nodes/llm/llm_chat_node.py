@@ -190,6 +190,16 @@ class LLMChatNode(BaseNode):
                           context=context)
         )
         result: dict[str, Any] = {"text": text}
+        if not text and stopped_after is None:
+            # A "thinking" model can spend the whole max_tokens budget on
+            # reasoning the API never returns, and the node then hands Print
+            # an empty string with nothing anywhere to explain it. Guarded on
+            # ``stopped_after`` so a Stop keeps its own story instead of
+            # gaining a second, wrong one.
+            result["__log__"] = (
+                "the provider returned no text. A reasoning model can spend "
+                "the whole max_tokens budget on hidden thinking -- raise "
+                "max_tokens, or pick a model that is not a thinking model.")
         if usage:
             result["__usage__"] = usage
         if stopped_after is not None:

@@ -125,6 +125,43 @@ def test_ollama_maps_to_custom_provider(monkeypatch):
     assert req.api_key is None
 
 
+def _adapter_yielding(*events):
+    """An ``_ADAPTERS`` stand-in: the same async generator shape, no socket."""
+
+    async def adapter(req, client):
+        for event in events:
+            yield event
+
+    return adapter
+
+
+def test_an_empty_answer_says_where_the_budget_went(monkeypatch):
+    """A reasoning model can spend ``max_tokens`` on hidden thinking.
+
+    The node then hands ``Print`` an empty string, and without this the
+    learner has nothing anywhere telling them why.
+    """
+    monkeypatch.setitem(
+        llm_chat_node._ADAPTERS, "openai",
+        _adapter_yielding({"type": "done", "message": {"content": ""}}))
+
+    res = LLMChatNode().execute({}, params())
+
+    assert res["text"] == ""
+    assert "max_tokens" in res["__log__"]
+
+
+def test_a_non_empty_answer_carries_no_log(monkeypatch):
+    monkeypatch.setitem(
+        llm_chat_node._ADAPTERS, "openai",
+        _adapter_yielding({"type": "done", "message": {"content": "hi"}}))
+
+    res = LLMChatNode().execute({}, params())
+
+    assert res["text"] == "hi"
+    assert "__log__" not in res
+
+
 def test_image_tensor_becomes_multimodal_content():
     req = _build_request(
         "openai",

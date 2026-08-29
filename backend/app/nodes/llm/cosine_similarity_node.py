@@ -117,6 +117,17 @@ class CosineSimilarityNode(BaseNode):
 
         Q = self._coerce_2d(q_in)
         K = self._coerce_2d(k_in)
+        # Before the width check, because a zero-width side is not a wiring
+        # mistake and "queries D=0, keys D=384" would blame a node the
+        # learner did not touch on a run they stopped themselves.
+        if Q.shape[1] == 0 or K.shape[1] == 0:
+            side = "queries" if Q.shape[1] == 0 else "keys"
+            raise ValueError(
+                f"CosineSimilarity got no embeddings on `{side}`: the upstream "
+                "node produced a 0-row tensor, which is what a TextEmbedding "
+                "or WordVector stopped before its first batch returns. Run it "
+                "again without pressing Stop."
+            )
         if Q.shape[1] != K.shape[1]:
             raise ValueError(
                 f"Embedding dimension mismatch: queries D={Q.shape[1]}, keys D={K.shape[1]}"

@@ -72,8 +72,8 @@ logger = logging.getLogger(__name__)
 
 
 def _integer(params: dict[str, Any], name: str, default: int, *,
-             minimum: int) -> int:
-    """A whole-number param, clamped to *minimum*, defaulted on null/empty.
+             minimum: int, maximum: int | None = None) -> int:
+    """A whole-number param, clamped to the bounds, defaulted on null/empty.
 
     The idiom this replaces is ``int(params.get(name, d) or d)``, which reads
     FALSINESS as "not set" -- and 0 is a legal, meaningful value for
@@ -86,6 +86,12 @@ def _integer(params: dict[str, Any], name: str, default: int, *,
     exported script, and embedding in batches of one is a better answer than
     refusing to embed at all. A value that is not a number at all is a
     different thing and does raise, because there is nothing to clamp.
+
+    *maximum* is the same ceiling the param declares to the editor
+    (``max_value``), mirrored here for the graph that arrived from somewhere
+    else: nothing the editor produces can exceed it, but a hand-written
+    ``max_seq_length: 99999`` would otherwise be written straight onto a
+    process-wide cached encoder.
     """
     raw = params.get(name, default)
     if raw is None or raw == "":
@@ -96,7 +102,8 @@ def _integer(params: dict[str, Any], name: str, default: int, *,
         raise ValueError(
             f"TextEmbedding: {name} must be a whole number, got {raw!r}."
         ) from exc
-    return max(minimum, value)
+    value = max(minimum, value)
+    return value if maximum is None else min(maximum, value)
 
 
 class TextEmbeddingNode(BaseNode):
@@ -296,9 +303,12 @@ class TextEmbeddingNode(BaseNode):
         repo = str(params.get("model") or DEFAULT_SENTENCE_MODEL)
         prefix = str(params.get("prefix") or "")
         normalize = bool(params.get("normalize", True))
-        batch_size = _integer(params, "batch_size", 32, minimum=1)
-        max_seq_length = _integer(params, "max_seq_length", 0, minimum=0)
-        label_chars = _integer(params, "label_chars", 48, minimum=1)
+        batch_size = _integer(params, "batch_size", 32, minimum=1,
+                              maximum=512)
+        max_seq_length = _integer(params, "max_seq_length", 0, minimum=0,
+                                  maximum=8192)
+        label_chars = _integer(params, "label_chars", 48, minimum=1,
+                               maximum=200)
 
         device = resolve_node_device(params.get("device"), context)
         model = load_sentence_model(
@@ -344,15 +354,28 @@ class TextEmbeddingNode(BaseNode):
             recorder.record(
                 "encode",
                 f"One forward pass per batch of {batch_size}: {rows} row(s) "
-                f"of {dim} numbers.",
+                f"of {dim} numbers"
+                + (", L2-normalised inside the same call." if normalize
+                   else "."),
                 scalars={"dim": float(dim)},
                 embeddings=tensor,
             )
             if normalize:
+                # The same tensor as `encode`, deliberately: the encoder was
+                # asked to normalise (``normalize_embeddings=normalize``
+                # reaches ``model.encode``), so there is no second pass to
+                # show. The step earns its place by MEASURING the rows the
+                # step above produced -- this is where a learner reads why
+                # a dot product downstream is a cosine.
                 recorder.record(
                     "normalize",
-                    "L2-normalise each row so a dot product downstream is "
-                    "cosine similarity.",
+                    "The encoder L2-normalised each row inside the forward "
+                    "pass above, so every row has length 1 and a dot product "
+                    "downstream is cosine similarity. Same rows as `encode` "
+                    "-- there is no second pass.",
+                    scalars={"row_length": float(
+                        torch.linalg.vector_norm(tensor, dim=1).mean())
+                        if rows else 0.0},
                     embeddings=tensor,
                 )
 
