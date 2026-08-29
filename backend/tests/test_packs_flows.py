@@ -841,6 +841,30 @@ def test_remove_item_deletes_an_asset_file(installer):
     assert asset_dir().exists(), "the cache root went with it"
 
 
+def test_remove_item_also_deletes_a_leftover_part_file(installer):
+    """The belt for ``.part`` files already on machines in the field.
+
+    ``asset_cache.resolve`` now takes its own ``.part`` with it when a
+    download is abandoned, so nothing new arrives here -- but a cache that
+    survived an interrupted install before that fix still holds one, up to
+    69 MB of it for GloVe, and "remove this model" is the only place a user
+    can reach it from. Named through ``_asset_removal_target`` rather than
+    joined by hand, so the sibling gets exactly the checks the download does.
+    """
+    pack = get_pack("word-vectors")
+    _install("word-vectors", None, installer)
+    item = get_item(pack, "glove-50d")
+    path = asset_dir() / item.filename
+    _asset_sentinel_for(pack, item, path)
+    leftover = asset_dir() / f"{item.filename}.part"
+    leftover.write_bytes(b"half a download")
+
+    assert flows.remove_item(pack, item.item_id) is True
+
+    assert not path.exists()
+    assert not leftover.exists(), "the abandoned .part outlived the pack"
+
+
 def test_remove_item_deletes_what_the_install_derived(installer):
     """Uninstalling has to free the CONVERSION too.
 

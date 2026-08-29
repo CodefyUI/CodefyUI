@@ -919,6 +919,28 @@ def test_download_asset_item_cancel_mid_download(served):
     assert not state.item_state(pack, item).present
 
 
+def test_a_cancelled_asset_download_leaves_no_part_file(served):
+    """The abandoned ``.part`` goes with the cancelled download.
+
+    ``resolve`` writes into ``<name>.part`` and renames it into place at the
+    end; a cancel raises out of the middle, so the rename never happens and
+    nothing else was ever going to name that file. For GloVe that is up to
+    69 MB of cache nothing counts, nothing shows and ``cdui packs remove``
+    does not free -- the remover only knows the item's own filename.
+
+    It is not a resumable download either: the next attempt reopens the same
+    path with ``"wb"``, which truncates.
+    """
+    pack, item = _asset_pack(DIGEST)
+    served(PAYLOAD)
+
+    with pytest.raises(PackCancelled):
+        download.download_asset_item(pack, item, emit=lambda event: None,
+                                     cancel_check=lambda: True)
+
+    assert not (cache_dir() / "thing.bin.part").exists()
+
+
 # -- the disk precheck -----------------------------------------------------
 
 

@@ -167,20 +167,34 @@ def resolve(
 
     log.info("Downloading %s from %s", spec.name, spec.url)
     tmp = target.with_suffix(target.suffix + ".part")
-    with urllib.request.urlopen(spec.url, timeout=timeout) as resp:  # noqa: S310 — fixed URL set
-        total = _content_length(resp)
-        done = 0
-        with tmp.open("wb") as f:
-            while True:
-                chunk = resp.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-                done += len(chunk)
-                if progress_callback is not None:
-                    progress_callback(done, total)
-    if progress_callback is not None:
-        progress_callback(done, total)
+    # A download that does not finish takes its own temp file with it. The
+    # rename below is the only thing that would ever have named these bytes,
+    # so an abandoned .part is pure residue -- nothing resumes it (the open
+    # is "wb", which truncates), nothing counts it in the disk precheck, and
+    # nothing removes it: the pack remover only knows the item's own
+    # filename. For GloVe that is 69 MB a user can never find.
+    #
+    # BaseException, not Exception: a cancelled install raises PackCancelled
+    # out of the progress callback (an Exception) and a Ctrl-C raises
+    # KeyboardInterrupt (not one), and both abandon the same file.
+    try:
+        with urllib.request.urlopen(spec.url, timeout=timeout) as resp:  # noqa: S310 — fixed URL set
+            total = _content_length(resp)
+            done = 0
+            with tmp.open("wb") as f:
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(done, total)
+        if progress_callback is not None:
+            progress_callback(done, total)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
     if spec.sha256 is not None:
         actual = sha256_of(tmp)
