@@ -57,6 +57,16 @@ export interface HealthInfo {
    *  none -- see `CacheUsage` for why the inner shape is open. */
   caches: Record<string, CacheUsage>;
   project: string | null;
+  /**
+   * Identity of the running PROCESS, regenerated on every boot.
+   *
+   * A restart-mode pack install has to tell "the old server answered again"
+   * from "a new server came up", and a reachable /api/health proves only the
+   * first -- the old process answers right up until it exits. A CHANGED
+   * boot_id is the proof. Optional because a server older than the Package
+   * Center omits the key entirely.
+   */
+  boot_id?: string;
 }
 
 /**
@@ -86,6 +96,7 @@ export async function fetchHealth(): Promise<HealthInfo> {
     presets_loaded: data.presets_loaded,
     caches: data.caches ?? {},
     project: data.project ?? null,
+    boot_id: data.boot_id ?? undefined,
   };
 }
 
@@ -853,4 +864,287 @@ export async function downloadImageFile(filename: string) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// ── Optional packs / Package Center ──────────────────────────────────────
+
+/**
+ * How a pack installs. `live` finishes inside the running server; `restart`
+ * is a wheel swap (the GPU PyTorch pack) that no process can do to the
+ * interpreter it is running on, so the server hands back a command instead.
+ */
+export type PackInstallMode = 'live' | 'restart';
+
+export type PackStatus =
+  | 'not_installed'
+  | 'partial'
+  | 'installed'
+  | 'installing'
+  | 'needs_restart';
+
+export type PackItemStatus = 'missing' | 'present' | 'downloading';
+
+export type PackJobStatus =
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_restart';
+
+/**
+ * How the server was launched (`CODEFYUI_MANAGED`). `unknown` is a bare
+ * `uvicorn app.main:app`: nothing supervises it, so nothing can restart it
+ * for the user.
+ */
+export type LaunchMode = 'start' | 'dev' | 'unknown';
+
+/** One downloadable file inside a pack -- a Hugging Face repo or a plain URL. */
+export interface PackItem {
+  id: string;
+  kind: 'hf' | 'asset';
+  /**
+   * Both keys are always present with one of them null: the backend
+   * deliberately serialises ONE item shape rather than one per `kind`.
+   */
+  repo_id: string | null;
+  url: string | null;
+  size_bytes: number;
+  license: string | null;
+  status: PackItemStatus;
+}
+
+export interface PackSummary {
+  id: string;
+  title: string;
+  description: string;
+  install_mode: PackInstallMode;
+  status: PackStatus;
+  pip_ready: boolean;
+  usable: boolean;
+  depends_on: string[];
+  /** Packs that must be installed first. Non-empty means an install is
+   *  refused with a 400 naming exactly these. */
+  blocked_by: string[];
+  pip: { spec: string }[];
+  items: PackItem[];
+  /** Bytes still to FETCH -- an already-downloaded item contributes nothing,
+   *  which makes this 0 for an installed pack without a special case. */
+  size_bytes_total: number;
+  install_command: string | null;
+}
+
+/** What this machine can offer for the GPU PyTorch pack. */
+export interface PackGpuInfo {
+  detected_label: string | null;
+  recommended_variant: string | null;
+  /** null when the installed wheel cannot be told, which is not "none". */
+  installed_variant: string | null;
+  variants: string[];
+  install_command: string | null;
+}
+
+/** The install running right now. A FINISHED job keeps its events but is not
+ *  reported here. */
+export interface PackJobRef {
+  job_id: string;
+  pack_id: string;
+}
+
+export interface PackCatalog {
+  packs: PackSummary[];
+  active_job: PackJobRef | null;
+  /**
+   * What the last restart-mode job left behind, so the panel can report an
+   * install that finished while it was not running. Left as an open map: it
+   * is a record this client only echoes, and the backend already treats a
+   * corrupt one as no record at all.
+   */
+  last_restart_job: Record<string, unknown> | null;
+  remote_install_allowed: boolean;
+  launch_mode: LaunchMode;
+  gpu: PackGpuInfo | null;
+}
+
+/**
+ * One line of an install job's log.
+ *
+ * Deliberately open rather than a union: the payload keys differ per `type`
+ * (`log{line}`, `progress{item, bytes_done, ...}`, `needs_restart{command}`),
+ * and a closed union would have to be edited every time the backend grows a
+ * step. Consumers narrow on `type`.
+ */
+export interface PackJobEvent {
+  type: string;
+  /** 1-based and monotonic. Resume from the PAGE's cursor, not from this. */
+  cursor?: number;
+  ts?: string;
+  [k: string]: unknown;
+}
+
+export interface PackJobEventsPage {
+  job_id: string;
+  status: PackJobStatus;
+  events: PackJobEvent[];
+  /** Where to resume; never moves backwards on an empty page. */
+  cursor: number;
+}
+
+/**
+ * A `/api/packs` call the server refused, with the status kept.
+ *
+ * The Package Center's error vocabulary is status-coded -- 403 remote, 409
+ * busy or restart-refused, 507 out of disk -- and each carries extra keys the
+ * panel shows (`job_id`, `command`, `blocked_by`, `needed`/`free`). `body` is
+ * the parsed JSON, so none of that has to be recovered from the message.
+ */
+export class PackApiError extends Error {
+  /** The parsed error body, or null when it was not JSON. */
+  body: Record<string, unknown> | null = null;
+
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'PackApiError';
+  }
+}
+
+/** Build the error for a refused pack request, body and all. */
+async function packApiError(res: Response): Promise<PackApiError> {
+  const raw = await res.json().catch(() => null);
+  const body =
+    raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const detail = body?.detail;
+  const err = new PackApiError(
+    res.status,
+    typeof detail === 'string' ? detail : res.statusText,
+  );
+  err.body = body;
+  return err;
+}
+
+/**
+ * The whole catalog: every pack, what is installed, and what this machine can
+ * install. The one route the panel polls.
+ *
+ * Normalized field by field rather than passed through, because the panel
+ * maps over `packs`, `items`, `pip` and `blocked_by` on every repaint: an
+ * absent key has to arrive as an empty list, not as a crash mid-render.
+ * `remote_install_allowed` defaults to ALLOWED for the same reason the UI
+ * never enforces it -- the server refuses a remote install itself, with a 403
+ * this then reports, so a missing key must not hide a button that works.
+ */
+export async function listPacks(): Promise<PackCatalog> {
+  const res = await fetch(`${BASE_URL}/packs`);
+  if (!res.ok) throw await packApiError(res);
+  const data = await res.json();
+  const launchMode = data.launch_mode;
+  return {
+    packs: (data.packs ?? []).map(
+      (pack: any): PackSummary => ({
+        id: pack.id,
+        title: pack.title,
+        description: pack.description,
+        install_mode: pack.install_mode,
+        status: pack.status ?? 'not_installed',
+        pip_ready: pack.pip_ready ?? false,
+        usable: pack.usable ?? false,
+        depends_on: pack.depends_on ?? [],
+        blocked_by: pack.blocked_by ?? [],
+        pip: pack.pip ?? [],
+        items: pack.items ?? [],
+        size_bytes_total: pack.size_bytes_total ?? 0,
+        install_command: pack.install_command ?? null,
+      }),
+    ),
+    active_job: data.active_job ?? null,
+    last_restart_job: data.last_restart_job ?? null,
+    remote_install_allowed: data.remote_install_allowed ?? true,
+    launch_mode:
+      launchMode === 'start' || launchMode === 'dev' ? launchMode : 'unknown',
+    gpu: data.gpu ?? null,
+  };
+}
+
+/**
+ * Start installing a pack. 202 and a `job_id` to follow with
+ * `getPackJobEvents`.
+ *
+ * `items` omitted means the whole pack, minus what is already downloaded.
+ * `JSON.stringify` drops undefined values, so a caller spreading a partly
+ * filled options object sends only the keys it actually set -- which matters
+ * because the backend's request model forbids anything it did not declare.
+ */
+export async function installPack(
+  packId: string,
+  body: { items?: string[]; mode?: PackInstallMode; variant?: string } = {},
+): Promise<{ job_id: string }> {
+  const res = await apiFetch(
+    `${BASE_URL}/packs/${encodeURIComponent(packId)}/install`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw await packApiError(res);
+  return res.json();
+}
+
+/**
+ * Ask the running install to stop. `cancelled` reports whether the request
+ * did anything -- false for a job that had already finished, which is a
+ * normal answer rather than an error.
+ */
+export async function cancelPackJob(
+  jobId: string,
+): Promise<{ job_id: string; cancelled: boolean }> {
+  const res = await apiFetch(
+    `${BASE_URL}/packs/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw await packApiError(res);
+  return res.json();
+}
+
+/**
+ * A job's events strictly after `cursor`, oldest first.
+ *
+ * `wait` turns this into a long poll, exactly like `getRunEvents`: the
+ * request parks server-side and returns the moment an event lands, the job
+ * ends, or the deadline passes. Pass a `signal` so a closing panel can
+ * abandon a parked request instead of holding a connection open.
+ */
+export async function getPackJobEvents(
+  jobId: string,
+  opts: { cursor?: number; wait?: number; limit?: number; signal?: AbortSignal } = {},
+): Promise<PackJobEventsPage> {
+  const params = new URLSearchParams();
+  if (opts.cursor !== undefined) params.set('cursor', String(opts.cursor));
+  if (opts.wait !== undefined) params.set('wait', String(opts.wait));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  const res = await fetch(
+    `${BASE_URL}/packs/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`,
+    { signal: opts.signal },
+  );
+  if (!res.ok) throw await packApiError(res);
+  return res.json();
+}
+
+/**
+ * Delete one downloaded model. `removed` false means the sentinel was
+ * cleared but bytes are still on disk (Windows keeps an open file), which
+ * the caller is entitled to report rather than promise the space back.
+ *
+ * Items only: nothing removes a pack's pip packages, here or anywhere.
+ */
+export async function removePackItem(
+  packId: string,
+  itemId: string,
+): Promise<{ pack_id: string; item_id: string; removed: boolean }> {
+  const res = await apiFetch(
+    `${BASE_URL}/packs/${encodeURIComponent(packId)}/items/${encodeURIComponent(itemId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw await packApiError(res);
+  return res.json();
 }

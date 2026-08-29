@@ -17,16 +17,66 @@
  * that were mapped once already at ingestion.
  */
 import { useI18n } from '../i18n';
+import { usePackStore } from '../store/packStore';
+import { localizedPackTitle } from './packAvailability';
 
 /** Recover the class name from a traceback's last line, for untyped sources. */
 function typeFromTraceback(raw: string): string | undefined {
   return raw.match(/\b([A-Z]\w*(?:Error|Exception))\s*:/)?.[1];
 }
 
+/**
+ * The id `PackMissingError` always appends: `... (pack=word-vectors)`.
+ *
+ * Case-SENSITIVE: pack ids are lowercase kebab by construction (the backend
+ * catalog ships them that way and the Package Center keys its copy off them),
+ * so matching `PACK=Word-Vectors` would only ever produce an id no catalog
+ * lists, and the friendly sentence would name a pack that does not exist.
+ */
+const PACK_ID = /pack=([a-z0-9-]+)/;
+
+/**
+ * The optional pack a failure is really about, or null.
+ *
+ * Two ways in, because the same exception reaches the client twice wearing
+ * different clothes. On `node_status` it comes typed, so the class name
+ * settles it. On the whole-run `execution_error` a fail-fast run re-raises
+ * it and only `str(exc)` survives — no type field at all — so the message
+ * has to identify itself, which it does by naming the Package Center (the
+ * one place that can fix it, and the reason `require_pack` writes it in).
+ *
+ * BOTH ways still require the `pack=<id>` suffix. Without an id there is no
+ * panel to open and nothing to name, so a bare "PackMissingError" is not
+ * worth a special sentence; and requiring it is also what keeps this
+ * idempotent, since the friendly sentence below names the Package Center
+ * too but carries no id.
+ */
+export function missingPackFromError(raw: string, errorType?: string): string | null {
+  if (!raw) return null;
+  const packId = raw.match(PACK_ID)?.[1];
+  if (!packId) return null;
+  if (errorType === 'PackMissingError') return packId;
+  return raw.includes('Package Center') ? packId : null;
+}
+
 export function friendlyError(raw: string, errorType?: string): string {
   if (!raw) return raw;
   const t = useI18n.getState().t;
   const kind = errorType || typeFromTraceback(raw);
+
+  // An optional pack the install does not have. First, because it is the
+  // most specific rule here: its message quotes a model id, which the
+  // KeyError branch below would otherwise read as a missing port. `kind`
+  // rather than `errorType` so a DEBUG traceback names it too.
+  const packId = missingPackFromError(raw, kind);
+  if (packId) {
+    // The name the Package Center will use when this toast's button opens
+    // it — this build's copy for the packs it ships, the server's title or
+    // the bare id otherwise, each of which is still a usable sentence.
+    return t('error.missingPack', {
+      pack: localizedPackTitle(t, usePackStore.getState().byId, packId),
+    });
+  }
 
   // A missing input. The key names the port the node wanted.
   if (kind === 'KeyError') {

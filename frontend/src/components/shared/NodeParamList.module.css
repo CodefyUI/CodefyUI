@@ -18,6 +18,38 @@
   line-height: var(--lh-normal);
 }
 
+/* Node-level "this needs a pack" banner (PR 2).
+   A wash and a left rule rather than a boxed alert: the node is not broken,
+   it is one install away from working, and a heavier treatment next to the
+   fields would read as a validation failure of the form below it. */
+.packBanner {
+  background: var(--warning-wash);
+  border-left: 2px solid var(--status-warning);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+/* Same inline affordance as ParamField's `.linkBtn`: a button, because it
+   opens a modal in this app rather than navigating anywhere. */
+.packLink {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.packLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: var(--sp-1);
+  border-radius: var(--radius-sm);
+}
+
 /* Advanced section (core#134).
    A hairline above it, not a boxed panel: the advanced params are the same
    form continued, and a heavier container would read as a different kind of

@@ -92,6 +92,12 @@ def _fake_popen(monkeypatch, proc: _FakeProc) -> dict:
 def _run(proc, monkeypatch, *, cancel=False, specs=("demo-pkg>=1",),
          constraints_path=None, tail=None):
     """Call ``run_pip`` against *proc*; returns ``(rc, events, recorded call)``."""
+    # Several callers fake sys.platform as "win32" on a non-Windows runner;
+    # CPython 3.12's real shutil.which() branches on sys.platform and would
+    # then reach for _winapi, which is None off Windows. No test here cares
+    # what uv resolves to, so find_uv is stubbed the way
+    # test_pip_install_argv_shape already stubs it.
+    monkeypatch.setattr(runner, "find_uv", lambda: "uv")
     events: list[dict] = []
     seen = _fake_popen(monkeypatch, proc)
     rc = runner.run_pip(

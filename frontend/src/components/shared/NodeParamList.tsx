@@ -1,8 +1,14 @@
 import { useState } from 'react';
 import type { NodeDefinition, ParamDefinition } from '../../types';
 import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { isParamVisible } from '../../utils';
+import {
+  localizedPackTitle,
+  nodeMissingPack,
+  usePackAvailability,
+} from '../../utils/packAvailability';
 import { ParamField } from './ParamField';
 import styles from './NodeParamList.module.css';
 
@@ -38,6 +44,11 @@ interface NodeParamListProps {
 export function NodeParamList({ nodeId, definition, params, className }: NodeParamListProps) {
   const updateNodeParams = useTabStore((s) => s.updateNodeParams);
   const { t, tn } = useI18n();
+  const { byId, loaded, unsupported } = usePackAvailability();
+  // Whole-node requirement (`requires_pack`), as opposed to the per-option
+  // one ParamField applies. Null on a base install and on every server
+  // without a Package Center, so the banner is the rare case.
+  const missingPack = nodeMissingPack(definition, byId, loaded, unsupported);
   // Collapsed on every open, on purpose. Teaching mode's default view is the
   // one a class sees; a sticky "expanded" from an earlier session would make
   // that view depend on history rather than on the node.
@@ -83,6 +94,32 @@ export function NodeParamList({ nodeId, definition, params, className }: NodePar
 
   return (
     <div className={className ? `${styles.list} ${className}` : styles.list}>
+      {/* Above the fields, and never INSTEAD of them: the params of a node
+          whose pack is missing still have to be readable and editable, or a
+          graph saved on a machine that had the pack could not be inspected
+          on one that does not. */}
+      {missingPack !== null && (
+        <div role="note" className={styles.packBanner}>
+          {t('config.needsPack', {
+            pack: localizedPackTitle(t, byId, missingPack.packId),
+          })}{' '}
+          <button
+            type="button"
+            className={styles.packLink}
+            // Named, because this banner and a gated select's hint can both
+            // be on screen for the same node, each with its own "Install
+            // pack": two identically named controls in one list is a choice
+            // nobody navigating by control can make.
+            aria-label={t('paramField.installPackFor', {
+              pack: localizedPackTitle(t, byId, missingPack.packId),
+            })}
+            onClick={() => useUIStore.getState().openPackCenter(missingPack.packId)}
+          >
+            {t('paramField.installPack')}
+          </button>
+        </div>
+      )}
+
       {basic.map(renderField)}
 
       {advanced.length > 0 && (

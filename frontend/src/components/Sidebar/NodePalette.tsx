@@ -7,6 +7,7 @@ import {
 } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { useNodeDefinitionsBootstrap } from '../../hooks/useNodeDefinitionsBootstrap';
+import { usePackCatalogBootstrap } from '../../hooks/usePackCatalogBootstrap';
 import { SidebarRail } from './SidebarRail';
 import { NodesTab } from './NodesTab';
 import { PresetsTab } from './PresetsTab';
@@ -56,6 +57,9 @@ export function NodePalette() {
   const { t } = useI18n();
 
   useNodeDefinitionsBootstrap();
+  // Same shell, same reason: the pack catalog decides which LLM nodes are
+  // usable, so it cannot hang off a tab that may never be opened.
+  usePackCatalogBootstrap();
 
   // Ends an in-flight resize drag: set while dragging, null otherwise.
   const endDragRef = useRef<(() => void) | null>(null);

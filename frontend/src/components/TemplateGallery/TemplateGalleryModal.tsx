@@ -107,6 +107,8 @@ function TemplateGalleryBody() {
       // Same check `useKeyboardShortcuts` makes before answering Enter.
       if (useDialogStore.getState().active !== null) return;
       if (useUIStore.getState().shortcutsModalOpen) return;
+      // The Package Center is the third surface that renders over this one.
+      if (useUIStore.getState().packCenterOpen) return;
       e.preventDefault();
       close();
     };

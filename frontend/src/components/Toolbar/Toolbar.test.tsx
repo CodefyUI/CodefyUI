@@ -8,6 +8,7 @@ import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useToastStore } from '../../store/toastStore';
 import { useDialogStore } from '../../store/dialogStore';
 import { useProjectStore } from '../../store/projectStore';
+import { usePackStore } from '../../store/packStore';
 import { useI18n } from '../../i18n';
 import * as rest from '../../api/rest';
 import * as exportDiagram from '../../utils/exportDiagram';
@@ -20,7 +21,12 @@ vi.mock('../../hooks/useGraphExecution', () => ({
   useGraphExecution: () => ({ execute, stop }),
 }));
 
-vi.mock('../../api/rest', () => ({
+vi.mock('../../api/rest', async (importOriginal) => ({
+  // The REAL error class, not a stub: `packStore.refresh()` narrows a failed
+  // catalog read with `err instanceof PackApiError`, and an undefined export
+  // makes that line throw a TypeError instead of reporting the 404 an older
+  // server answers with.
+  PackApiError: (await importOriginal<typeof import('../../api/rest')>()).PackApiError,
   // Used directly by Toolbar
   saveGraph: vi.fn(),
   loadGraph: vi.fn(),
@@ -45,6 +51,20 @@ vi.mock('../../api/rest', () => ({
     Promise.resolve({
       status: 'ok', version: '2.2.0', nodes_loaded: 0, presets_loaded: 0,
       caches: {}, project: null,
+    }),
+  ),
+  // Used by the popover's "Optional packs" row, which asks `packStore` to
+  // read the catalog when it opens onto one nobody has read yet. Every case
+  // here starts from a catalog that has already arrived (see beforeEach), so
+  // this is the belt to that braces.
+  listPacks: vi.fn(() =>
+    Promise.resolve({
+      packs: [],
+      active_job: null,
+      last_restart_job: null,
+      remote_install_allowed: true,
+      launch_mode: 'start',
+      gpu: null,
     }),
   ),
 }));
@@ -135,6 +155,9 @@ describe('Toolbar', () => {
     });
     useNodeDefStore.setState({ definitions: [], presets: [], categorized: {}, presetCategorized: {} });
     useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
+    // An empty catalog that has already ARRIVED: the settings popover only
+    // asks for one nobody has read yet, so opening it here stays offline.
+    usePackStore.setState({ packs: [], byId: {}, loaded: true, loading: false, job: null });
     setActiveTab();
 
     // Stub blob-download plumbing (jsdom lacks createObjectURL).

@@ -1,0 +1,93 @@
+/* RestartOverlay.module.css — the blocking card shown while the server is
+   being replaced under the page. Tokens only; the bare pixel values are
+   structural (hairline border, card width). */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  /* Above the modals (10000) and the toast stack (10001): while the server is
+     going away, nothing on the page is still true, so nothing may sit on top
+     of this. */
+  z-index: 10002;
+  background: var(--surface-scrim);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3vh 3vw;
+}
+
+.card {
+  width: 440px;
+  max-width: 100%;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popover), var(--inner-highlight);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  outline: none;
+}
+
+.title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+}
+
+.body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+/* The elapsed counter. Load-bearing rather than decorative: under
+   prefers-reduced-motion the indeterminate bar is a static sliver, and this
+   line is then the only thing on screen that says the page is still alive. */
+.elapsed {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.commandBlock {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--surface-code);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.commandBlock code {
+  color: var(--code-text);
+  font-size: var(--fs-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.reloadBtn {
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-deep);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.reloadBtn:hover {
+  background: var(--surface-active);
+}

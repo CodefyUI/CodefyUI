@@ -123,6 +123,49 @@ received — each links to the release it was published as.
   changes on the canvas, which of the four embedding models to pick, and what
   to do when a pack reports installed but will not import.
 
+- **The Package Center, on screen.** A panel that lists every optional pack
+  with what is already on this machine, what a download would cost, and one
+  button that changes it: per-model progress bars driven by the byte counts
+  the long poll carries, a live install log beside them, a Cancel that stops a
+  download mid-file, and a Remove that deletes one model and gives the disk
+  back. It is a pure view of a store that lives above it, so closing the
+  window — or opening a graph, or switching tabs — does not interrupt a
+  two-gigabyte download, and a job started in another browser tab is adopted
+  rather than duplicated. The GPU/accelerated-PyTorch pack gets a card of its
+  own: it cannot be installed while the server is running, so instead of a
+  button that would fail it names the detected card, the build this venv
+  currently has, and the exact `cdui install --gpu` line to run, ready to
+  copy. Reachable from Settings (with an at-a-glance "2 of 4 packs
+  installed") and from the sidebar's Custom tab.
+
+- **A dropdown says which of its options are one download away.** A SELECT
+  whose options declare `option_packs` greys out exactly the ones that are not
+  installed, suffixes each with the pack or model it needs, and puts an
+  "Install pack" link under the field that opens the Package Center already
+  scrolled to that pack. The value the node currently holds is never disabled
+  — a `<select>` whose selected option is disabled has its selection dropped
+  by the browser, which would silently rewrite a saved graph the moment its
+  config panel opened — so it stays selectable and gets the warning instead.
+  A node with a whole-pack requirement gets the same treatment as a banner
+  above its parameters, which stay editable: a graph saved where the pack was
+  installed still has to be readable where it is not.
+
+- **Badges where the node is, not where the failure is.** A palette entry
+  whose node needs a missing pack carries a "Needs pack" chip, and the node
+  card on the canvas carries a `PACK` button in its header that opens the
+  Package Center focused on what it needs. Everything above answers through
+  one helper with one rule, and every unknown resolves to *available*: an
+  unloaded catalog, a pack id this build has never heard of, and a server
+  with no Package Center at all grey out nothing, because wrongly hiding a
+  feature that works costs more than one clear error naming the pack.
+
+- **A run that dies of a missing pack says so, and offers the fix.** The
+  backend's `PackMissingError` becomes "This node needs the Word vectors
+  pack. Install it from the Package Center." on the node and in the run log,
+  and the failure toast carries an "Open Package Center" button that lands on
+  the right card — rather than a Python exception naming a module the reader
+  has no way to install.
+
 ### Changed
 
 - **The Word Embedding Analogy example says what each backend teaches.** Its
@@ -212,6 +255,16 @@ received — each links to the release it was published as.
   new `ExecutionCache.upstream_ref`, so the sort still normalises the order
   edges are listed in while the ports stay part of the identity. Cold runs were
   always correct; only re-runs were wrong, which is why this survived so long.
+
+- **A typed failure keeps its type on the way to the browser.** `node_status`
+  error frames now carry `error_type`, the exception's class name, which the
+  engine had recorded and the run service then dropped. Every rule that maps a
+  raw Python exception into a sentence a beginner can act on keys off that
+  field — the missing-pack sentence with its "Open Package Center" button, and
+  the pre-existing `KeyError` ("this node needs an input on `<port>`") and
+  `ValueError` rules — so all of them were unreachable outside DEBUG, where a
+  traceback happens to name the class in its last line. The message itself
+  never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
 
 ## [2.4.1] — 2026-08-22
 

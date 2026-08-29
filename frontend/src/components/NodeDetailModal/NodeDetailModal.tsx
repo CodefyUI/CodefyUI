@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Node } from '@xyflow/react';
 import type { NodeData } from '../../types';
 import { useTabStore } from '../../store/tabStore';
+import { useUIStore } from '../../store/uiStore';
 import { useI18n } from '../../i18n';
 import { CATEGORY_COLORS, STATUS_COLORS, PRESET_GOLD } from '../../styles/theme';
 import { topologicalOrder } from '../../utils/topoOrder';
@@ -155,6 +156,11 @@ function NodeDetailModalBody({ nodeId }: { nodeId: string }) {
   const draftOpen = draftName !== null;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The Package Center opens OVER this modal (a node's PACK badge is one
+      // of the ways in). Escape then belongs to the surface on top, and the
+      // arrow keys must not page through the nodes behind it either — a
+      // <select> inside the panel owns them.
+      if (useUIStore.getState().packCenterOpen) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         if (draftOpen) setDraftName(null);

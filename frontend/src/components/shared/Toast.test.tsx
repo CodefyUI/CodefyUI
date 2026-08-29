@@ -63,6 +63,34 @@ describe('ToastContainer', () => {
     expect(useToastStore.getState().toasts.map((t) => t.id)).toEqual(['b']);
   });
 
+  // An error toast never auto-dismisses, so a failure whose fix lives two
+  // menus away can carry the way there rather than just naming it.
+  it('renders an optional action that runs and dismisses the toast', () => {
+    const onClick = vi.fn();
+    useToastStore.setState({
+      toasts: [
+        {
+          id: 'a',
+          message: 'This run needs the Word vectors pack.',
+          type: 'error',
+          action: { label: 'Open Package Center', onClick },
+        },
+      ],
+    });
+    render(<ToastContainer />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open Package Center' }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+    // Dismissed once it has run: the panel it opens is now on screen, and a
+    // toast still offering to open it invites a second, pointless click.
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('renders only the close button for a toast with no action', () => {
+    useToastStore.setState({ toasts: [{ id: '1', message: 'plain', type: 'error' }] });
+    render(<ToastContainer />);
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+  });
+
   it('renders multiple toasts in order', () => {
     useToastStore.setState({
       toasts: [

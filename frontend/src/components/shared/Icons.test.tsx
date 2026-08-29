@@ -4,6 +4,7 @@ import {
   BookIcon,
   CloseIcon,
   CollapseAllIcon,
+  CopyIcon,
   ExpandAllIcon,
   ExpandIcon,
   EyeIcon,
@@ -36,6 +37,7 @@ const icons = [
   ['ExpandAllIcon', ExpandAllIcon],
   ['CollapseAllIcon', CollapseAllIcon],
   ['RefreshIcon', RefreshIcon],
+  ['CopyIcon', CopyIcon],
 ] as const;
 
 describe('Icons', () => {
