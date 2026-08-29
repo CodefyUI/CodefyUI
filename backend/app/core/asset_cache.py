@@ -193,7 +193,18 @@ def resolve(
         if progress_callback is not None:
             progress_callback(done, total)
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            # The cleanup must never become the failure that gets reported.
+            # On Windows this unlink raises PermissionError whenever another
+            # process (an indexer, a scanner) still holds the .part open, and
+            # an unguarded one would travel out of here in place of the
+            # PackCancelled it is tidying up after -- turning a Stop the user
+            # asked for into a failed job. The leftover gets a log line and
+            # the original exception gets the raise.
+            log.warning("Could not remove partial download %s: %s",
+                        tmp, cleanup_error)
         raise
 
     if spec.sha256 is not None:

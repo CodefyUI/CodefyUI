@@ -393,6 +393,19 @@ received — each links to the release it was published as.
   traceback happens to name the class in its last line. The message itself
   never carried it: `str(KeyError('tensor'))` is just `"'tensor'"`.
 
+- **A follow-up pass over the Package Center installer and its launcher**
+  ([#380]). The catalog now validates what its tests had only assumed; the
+  byte meter cannot freeze a bar or pass 100%; an asset's sentinel is
+  re-checked against its catalog entry; and an interrupted asset download
+  takes its `.part` file with it rather than leave behind 69 MB nothing
+  counts and nothing removes. A late event from a finished job no longer
+  stamps a step on the next one, a claim stamped in the future cannot wedge
+  a restart, a helper's pid stamp survives a concurrent read on Windows, and
+  a claim from another checkout is refused but left alone. An interrupted
+  helper waits for the old server before relaunching, a crash in it keeps its
+  own message, `cdui update` and `cdui dev` stand down while a restart
+  install is finishing, and two `cdui packs` prompts stop misreporting.
+
 ## [2.4.1] — 2026-08-22
 
 Four fixes that landed on `main` in the hours after 2.4.0, and nothing else:
@@ -2440,6 +2453,7 @@ Release candidates before 1.0.0 are on the
 [#357]: https://github.com/CodefyUI/CodefyUI/pull/357
 [#359]: https://github.com/CodefyUI/CodefyUI/pull/359
 [#360]: https://github.com/CodefyUI/CodefyUI/issues/360
+[#380]: https://github.com/CodefyUI/CodefyUI/issues/380
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
