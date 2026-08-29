@@ -17,7 +17,8 @@ import {
 } from '../api/rest';
 import { confirm } from '../utils/dialog';
 import { localizedPackTitle } from '../utils/packAvailability';
-import { useToastStore } from './toastStore';
+import { useToastStore, type ToastAction } from './toastStore';
+import { useUIStore } from './uiStore';
 import { useI18n, type TranslationKey } from '../i18n';
 
 /**
@@ -69,7 +70,8 @@ export const FOLLOW_IDLE_MS = 500;
 export const FOLLOW_RETRY_MS = 2000;
 
 /**
- * Consecutive failures before the job is declared `lost`.
+ * Consecutive failures before the job is declared `lost` — or, for a
+ * restart-mode job, settled as the `needs_restart` it was heading for.
  *
  * Five retries across ten seconds outlast a restarting dev server and a
  * flaky Wi-Fi hop, which are the two things that interrupt an install on a
@@ -302,8 +304,25 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function toast(message: string, type: 'info' | 'error' | 'success' | 'warning') {
-  useToastStore.getState().addToast(message, type);
+/**
+ * `action` is spread rather than always passed, so a toast without one is
+ * byte-for-byte the object every existing caller was already producing.
+ */
+function toast(
+  message: string,
+  type: 'info' | 'error' | 'success' | 'warning',
+  action?: ToastAction,
+) {
+  useToastStore.getState().addToast(message, type, action ? { action } : undefined);
+}
+
+/** The button a toast about a pack wears: it opens the panel on that pack. */
+function openCenterAction(packId: string): ToastAction {
+  const { t } = useI18n.getState();
+  return {
+    label: t('packs.toast.openCenter'),
+    onClick: () => useUIStore.getState().openPackCenter(packId),
+  };
 }
 
 function str(value: unknown): string | null {
@@ -578,8 +597,25 @@ async function follow(
       if (generation !== followGeneration) return;
       failures += 1;
       if (failures >= MAX_FOLLOW_FAILURES) {
-        patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
         if (followingJobId === jobId) followingJobId = null;
+        // A RESTART-mode job is the one case where the endpoint going quiet
+        // is the expected ending rather than a lost connection: the server
+        // stops accepting half a second after the 202 and then exits, and a
+        // LAN client or a tab the browser had throttled can miss that half
+        // second entirely. `lost` would leave the user in
+        // front of a "we no longer know" banner while the wheel swap runs —
+        // no overlay, and worse, no breadcrumb, so the page that comes back
+        // could not report how the install went. Settling it as the ending
+        // it almost certainly reached runs the same handshake the last page
+        // would have started; if it turns out the server never went, the
+        // overlay's own thirty-second grace says so.
+        const open = usePackStore.getState().job;
+        if (open?.jobId === jobId && open.mode === 'restart') {
+          patchJob(jobId, (job) => ({ ...job, status: 'needs_restart' }));
+          onJobSettled(jobId, packId, 'needs_restart');
+        } else {
+          patchJob(jobId, (job) => ({ ...job, status: 'lost' }));
+        }
         return;
       }
       await sleep(FOLLOW_RETRY_MS);
@@ -669,6 +705,15 @@ function onJobSettled(jobId: string, packId: string, status: PackJobStatus): voi
         // pack to report on — the job itself does not survive the reload.
         writePending(packId);
         void store.restartFlow(packId, command);
+      } else if (settled?.retryMode === 'restart' && store.restartAvailable) {
+        // A LIVE install the constraints file stopped, on a server that CAN
+        // restart itself and said so by offering the retry mode. `needsCli`
+        // — "cannot be installed from inside the app" — is the one sentence
+        // that is flatly false here: the panel's banner is rendering a
+        // **Restart the server and install** button that does exactly this.
+        // So the toast points at the panel, and carries the click, rather
+        // than handing over a command the user does not need.
+        toast(t('packs.toast.restartRetry'), 'warning', openCenterAction(packId));
       } else if (store.launchMode === 'dev') {
         // `cdui dev` reloads in place; nothing relaunches it, so no catalog
         // it serves will ever say otherwise. Its own sentence, because

@@ -838,6 +838,13 @@ const en = {
   'packs.toast.busy': 'Another install is already running.',
   'packs.toast.needsCli':
     'This pack cannot be installed from inside the app yet. Run: {command}',
+  // What `needsCli` would have said on the one server it would be lying to:
+  // a LIVE install the constraints file stopped, on a server that CAN
+  // restart itself. The app can finish this one — the activity banner in the
+  // Package Center carries the button — so the toast says where to go rather
+  // than what to type, and brings the click with it.
+  'packs.toast.restartRetry':
+    'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
   'packs.toast.remoteNotAllowed':
     'Installing is only allowed on the computer that runs the server.',
   'packs.toast.blocked': 'Install {pack} first.',

@@ -801,6 +801,7 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.toast.cancelFailed': '無法取消安裝：{message}',
   'packs.toast.busy': '已經有另一個安裝在進行中。',
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
+  'packs.toast.restartRetry': '安裝停在伺服器已載入的套件上。請到套件中心重新啟動伺服器來完成安裝。',
   'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
   'packs.toast.restartRefusedRunning': '有圖正在執行。請先停止，再安裝。',

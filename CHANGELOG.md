@@ -251,8 +251,11 @@ received — each links to the release it was published as.
   `cdui status` reads the same two files: a `Restart install` line naming the
   pack, saying *finishing* while the helper it recorded is still working and
   *abandoned* once it is not, and a `Last restart` line for an hour after one
-  finished. A relaunch that itself failed is recorded as a failed job naming
-  the log to read. The overlay gives up in two ways rather than spinning
+  finished. A relaunch that itself failed leaves the install's own status
+  alone — that is the field the panel reports — and adds `relaunch: failed`
+  plus the log path on the end of the message, which is what makes
+  `cdui status` show that line as failed even when the package installed
+  cleanly. The overlay gives up in two ways rather than spinning
   forever — after thirty seconds in which the server never even stopped
   answering ("The server did not restart. Run this command, then reload:"),
   and after ten minutes — and both leave the command, when the server sent

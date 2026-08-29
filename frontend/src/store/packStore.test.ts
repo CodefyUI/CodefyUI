@@ -49,6 +49,7 @@ import {
   type PackJob,
 } from './packStore';
 import { useToastStore } from './toastStore';
+import { useUIStore } from './uiStore';
 import { useI18n } from '../i18n';
 import { confirm } from '../utils/dialog';
 
@@ -861,6 +862,49 @@ describe('packStore — the follower', () => {
     expect(api.getPackJobEvents).toHaveBeenCalledTimes(MAX_FOLLOW_FAILURES);
   });
 
+  it('settles a restart-mode job that lost its poll into the restart handshake', async () => {
+    // A restart-mode install ends by the server closing its own listener
+    // half a second after the 202, so the events endpoint is SUPPOSED to
+    // stop answering — a LAN client or a tab the browser had throttled can
+    // miss that window entirely and see nothing but failures. `lost` would
+    // strand the user in front of a banner about a server that is doing
+    // exactly what it was asked to, with no overlay and no breadcrumb, so
+    // the reloaded page could not even report how the install went.
+    usePackStore.setState({
+      byId: {
+        'word-vectors': makePack({
+          id: 'word-vectors', title: 'Word vectors', install_mode: 'restart',
+        }),
+      },
+      restartAvailable: true,
+    });
+    api.getPackJobEvents.mockRejectedValue(new Error('Failed to fetch'));
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+    await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
+
+    expect(api.getPackJobEvents).toHaveBeenCalledTimes(MAX_FOLLOW_FAILURES);
+    expect(usePackStore.getState().job!.status).toBe('needs_restart');
+    expect(usePackStore.getState().restart.phase).toBe('waiting');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBe('word-vectors');
+  });
+
+  it('still loses a LIVE job whose poll never came back', async () => {
+    // The mode is the whole difference: nothing is restarting here, so
+    // "we no longer know what this is doing" remains the honest answer.
+    usePackStore.setState({ restartAvailable: true });
+    api.getPackJobEvents.mockRejectedValue(new Error('Failed to fetch'));
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+    await vi.advanceTimersByTimeAsync(FOLLOW_RETRY_MS * MAX_FOLLOW_FAILURES);
+
+    expect(usePackStore.getState().job!.status).toBe('lost');
+    expect(usePackStore.getState().restart.phase).toBe('idle');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+  });
+
   it('recovers from a transient failure without losing the job', async () => {
     api.getPackJobEvents
       .mockRejectedValueOnce(new Error('Failed to fetch'))
@@ -1102,6 +1146,46 @@ describe('packStore — a job settling', () => {
     expect(lastToast().message).toContain('cdui packs install word-vectors --restart');
     // The job stays on screen: its banner is what renders the command.
     expect(usePackStore.getState().job!.status).toBe('needs_restart');
+  });
+
+  it('points a stopped live install at the Package Center when a restart can finish it', async () => {
+    // The other half of the case above. The live install stopped at the
+    // constraints file, and the server it was talking to CAN restart itself,
+    // which is exactly what would finish it: `needsCli` — "cannot be
+    // installed from inside the app" — is a flat lie about a server two
+    // clicks away from doing it. The retry mode is the server's own offer,
+    // and the toast carries the click that reaches it.
+    useUIStore.setState({ packCenterOpen: false, packCenterFocusPackId: null });
+    usePackStore.setState({ restartAvailable: true });
+    terminal({
+      status: 'needs_restart',
+      events: [{
+        type: 'needs_restart', cursor: 1, ts: 't',
+        command: 'cdui packs install word-vectors --restart',
+        kind: 'pip',
+        retry_mode: 'restart',
+      }],
+    });
+
+    usePackStore.getState().followJob('j1', 'word-vectors', 0);
+    await settle();
+
+    expect(usePackStore.getState().job!.mode).toBe('live');
+    expect(usePackStore.getState().job!.retryMode).toBe('restart');
+    // Still no handshake and no breadcrumb: this server is not going
+    // anywhere until the user asks it to.
+    expect(usePackStore.getState().restart.phase).toBe('idle');
+    expect(sessionStorage.getItem(RESTART_PENDING_KEY)).toBeNull();
+    expect(lastToast()).toMatchObject({
+      type: 'warning',
+      message:
+        'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
+    });
+    // ...and the button that gets there, on the pack the toast is about.
+    expect(lastToast().action?.label).toBe('Open Package Center');
+    lastToast().action!.onClick();
+    expect(useUIStore.getState().packCenterOpen).toBe(true);
+    expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
   });
 
   /** A restart-mode job for `word-vectors`, so the mode half of the gate holds. */
