@@ -564,6 +564,9 @@ def test_start_stands_down_while_a_helper_is_still_running(
     assert path.exists(), "the helper still needs its own claim"
     out = capsys.readouterr().out
     assert "cdui status" in out, "and the user is told where to watch it"
+    assert str(path) in out, (
+        "a pid reads as alive whenever the OS has recycled that number, and "
+        "this branch has no deadline — the claim's path is the way out")
 
 
 def test_start_clears_a_claim_whose_helper_died(started, monkeypatch, control,

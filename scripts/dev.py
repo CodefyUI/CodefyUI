@@ -593,6 +593,28 @@ def _install_frontend_deps_if_needed() -> None:
 # force utf-8 with replacement — a mangled char only degrades a display string.
 _GIT_TEXT_KW: dict = {"encoding": "utf-8", "errors": "replace"}
 
+# The same defence, for a different family of children: the Windows console
+# tools. `tasklist`, `taskkill` and friends write their STATUS messages in the
+# console code page AND translate them -- on a zh-TW box a pid that no longer
+# exists answers `tasklist` with a Chinese "no tasks match" line in cp950.
+#
+# What makes that a crash rather than mojibake is where the decode happens.
+# With a bare `text=True` Python decodes on subprocess's reader THREAD, using
+# `locale.getencoding()` -- which `PYTHONUTF8=1` (set by every install path
+# here) has already forced to utf-8. The UnicodeDecodeError is raised in that
+# thread, printed as "Exception in thread Thread-1 (_readerthread)", and
+# swallowed; `communicate` then hands the caller `stdout=None`. `cdui start`
+# died exactly there, on `str(pid) in out.stdout`, every time a restart-mode
+# install left a stale pidfile behind.
+#
+# So: decode as utf-8 and REPLACE what does not fit. Everything these callers
+# actually read out of the output is ASCII -- a pid, a GPU name, a number --
+# so a replacement character in a message nobody parses costs nothing, and
+# `�` beats an exception on another thread. Callers still guard with
+# `(out.stdout or "")`: a child that dies before writing anything gives None
+# too, and that has nothing to do with encodings.
+_CONSOLE_TEXT_KW: dict = {"text": True, "encoding": "utf-8", "errors": "replace"}
+
 
 def _git_head_commit() -> str | None:
     try:
@@ -838,7 +860,7 @@ def detect_gpu() -> tuple[str, str]:
         try:
             proc = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5, check=True,
+                capture_output=True, timeout=5, check=True, **_CONSOLE_TEXT_KW,
             )
             first = (proc.stdout or "").strip().splitlines()[0] if proc.stdout else ""
             if first:
@@ -1639,14 +1661,18 @@ def _pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True,
+            capture_output=True, **_CONSOLE_TEXT_KW,
             # `packs-run-pending` polls this every half second for up to two
             # minutes, from a DETACHED process with no console of its own --
             # without this each poll pops a console window over whatever the
             # user is looking at while their server is away.
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        return str(pid) in out.stdout
+        # `or ""`: a dead pid makes tasklist print a translated "no tasks
+        # match" message, and any child that writes nothing at all leaves
+        # None here too. Either way the answer is "no such process", not a
+        # traceback out of a launcher.
+        return str(pid) in (out.stdout or "")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -2106,6 +2132,12 @@ def _restart_preflight() -> bool:
         print(t("    完成後它會自己把伺服器啟動回來；用 cdui status 查看進度。",
                 "    it starts the server again itself when it is done; "
                 "watch it with `cdui status`."))
+        # The way out, named. A `helper_pid` reads as alive whenever the OS
+        # has handed that number to something else, and this branch has no
+        # time limit -- so without the path on screen a recycled pid is a
+        # launcher that refuses forever and never says what to delete.
+        print(t(f"    待處理檔 → {path}（若確定沒有安裝在進行中，可刪除它強制啟動）",
+                f"    claim -> {path} (delete it to force a start)"))
         return False
 
     try:
@@ -2795,14 +2827,14 @@ def _gpu_stats() -> "list[dict]":
             ["nvidia-smi",
              "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, timeout=3, **_CONSOLE_TEXT_KW,
         )
     except (OSError, subprocess.SubprocessError):
         return []
     if out.returncode != 0:
         return []
     gpus: list[dict] = []
-    for line in out.stdout.strip().splitlines():
+    for line in (out.stdout or "").strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 5:
             continue

@@ -187,6 +187,21 @@ def test_gpu_stats_parses_csv(monkeypatch):
     assert g["mem_total"] == 24576 * 1024 * 1024
 
 
+def test_gpu_stats_survives_a_child_that_produced_no_output(monkeypatch):
+    """`stdout=None` is what `communicate` hands back when the reader thread
+    could not decode (or the child wrote nothing), and `_gpu_stats` used to
+    call `.strip()` on it. A dashboard must degrade to "no GPUs", never take
+    `cdui status` down with an AttributeError."""
+    monkeypatch.setattr(dev.shutil, "which", lambda _: "/usr/bin/nvidia-smi")
+
+    class _Out:
+        returncode = 0
+        stdout = None
+
+    monkeypatch.setattr(dev.subprocess, "run", lambda *a, **k: _Out())
+    assert dev._gpu_stats() == []
+
+
 def test_gpu_stats_command_fails(monkeypatch):
     monkeypatch.setattr(dev.shutil, "which", lambda _: "/usr/bin/nvidia-smi")
 

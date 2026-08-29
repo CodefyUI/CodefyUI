@@ -1443,6 +1443,83 @@ def test_pid_alive_does_not_flash_a_console_window(monkeypatch):
     assert seen["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
 
 
+class _Tasklist:
+    """`subprocess.run`'s answer, with only what `_pid_alive` reads."""
+
+    def __init__(self, stdout):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = 0
+
+
+@pytest.fixture
+def tasklist(monkeypatch):
+    """Force `_pid_alive` down its Windows branch and script what it read.
+
+    `sys.platform` so the branch is a fact this file states rather than a
+    property of the runner, and `CREATE_NO_WINDOW` because dev.py names the
+    constant directly and POSIX has no such attribute. Returns a function that
+    installs one canned stdout; the recorded kwargs come back with it.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(dev.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+    seen: dict = {}
+
+    def _script(stdout):
+        def _run(cmd, **kwargs):
+            seen["cmd"] = list(cmd)
+            seen.update(kwargs)
+            return _Tasklist(stdout)
+
+        monkeypatch.setattr(dev.subprocess, "run", _run)
+        return seen
+
+    return _script
+
+
+def test_pid_alive_reads_tasklist_as_utf8_and_replaces_what_it_cannot(tasklist):
+    """The decode happens on subprocess's reader THREAD, where an exception is
+    printed and swallowed and the caller is handed `stdout=None` instead. Ask
+    for utf-8 with replacement and there is nothing left to raise: every fact
+    read out of this output is ASCII, so a mangled message is free."""
+    seen = tasklist("")
+
+    dev._pid_alive(4242)
+
+    assert seen["encoding"] == "utf-8"
+    assert seen["errors"] == "replace"
+
+
+def test_pid_alive_is_false_when_tasklist_produced_no_output(tasklist):
+    """`stdout=None` -- a decode that died on the reader thread, or a child
+    that wrote nothing at all. `cdui start` crashed here with "argument of
+    type 'NoneType' is not iterable" every time a restart-mode install left a
+    stale pidfile behind, which is the one moment this path is load-bearing."""
+    tasklist(None)
+
+    assert dev._pid_alive(4242) is False
+
+
+def test_pid_alive_is_false_for_a_translated_no_tasks_message(tasklist):
+    """Windows TRANSLATES this one: a pid that is gone answers with a sentence
+    in the console's own language, not an empty string. It names no pid, so
+    the substring test is still the right question -- as long as reading it
+    cannot raise."""
+    tasklist("資訊: 沒有執行中的工作符合指定的條件。\n")
+
+    assert dev._pid_alive(4242) is False
+
+
+def test_pid_alive_is_true_for_the_row_that_names_the_pid(tasklist):
+    """The other half, so "always False" cannot pass: a live pid comes back as
+    a table row, and `/NH` means the row is all there is."""
+    tasklist("python.exe                    4242 Console"
+             "                    1    123,456 K\n")
+
+    assert dev._pid_alive(4242) is True
+
+
 def test_packs_run_pending_exits_with_the_jobs_code(helper, monkeypatch):
     path = _pending(helper)
     monkeypatch.setattr(sys, "argv", ["dev.py", dev.HELPER_COMMAND, str(path)])
