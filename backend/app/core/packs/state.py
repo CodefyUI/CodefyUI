@@ -13,11 +13,19 @@ small JSON file written LAST, once the bytes have landed::
     {"schema": 1, "pack_id": ..., "item_id": ..., "kind": "hf" | "asset",
      "repo_id" | "url": ..., "revision": ...,
      "snapshot_dir" (hf) | "path" (asset): ..., "bytes": ...,
-     "sha256" (asset): ..., "at": "<iso timestamp>"}
+     "sha256" (asset): ..., "at": "<iso timestamp>",
+     "derived" (optional): ["<path>", ...]}
 
 Later tasks write those; this module reads them, and re-checks each one
 against the catalog. A pack that moves to a new revision must not report
 yesterday's download as today's model, however complete it is on disk.
+
+``derived`` names files the INSTALL made out of the download -- the GloVe
+npz, which is larger than the gzip it was built from and which the catalog
+does not name. It exists so ``flows.remove_item`` can delete them with the
+item, and presence deliberately ignores it: a converted file somebody
+deleted is rebuilt on the next run, so its absence is not a reason to call
+a 69 MB download missing.
 """
 
 from __future__ import annotations

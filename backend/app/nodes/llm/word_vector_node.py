@@ -1,16 +1,36 @@
-"""WordVectorNode — look up pre-trained vectors for input words/tokens.
+"""WordVectorNode -- one vector per input word, from a table or an encoder.
 
-Currently the only user-selectable backend is ``demo-16d`` — a hand-crafted
-toy vocabulary (~60 words, 16 dimensions) shipped inline so the canonical
-``king − man + woman ≈ queen`` analogy works fully offline. Constructed
-dimensions (royalty / divinity / masculinity / femininity / animal classes /
-motion / vehicles / food / weather) are deliberately interpretable.
+Three kinds of backend sit behind one SELECT, and the difference between
+them is the lesson this node teaches:
 
-:func:`_load_backend` keeps stub branches for ``glove-50d`` / ``glove-100d``
-and ``minilm-sentence-384d`` so saved graphs from earlier previews surface a
-clear "asset not yet published" error instead of a stack trace. The SELECT
-options will grow back once the GloVe asset bundle and the optional
-``[llm-sentence]`` extra ship.
+``demo-16d``
+    A hand-built toy vocabulary in 16 interpretable dimensions (royalty /
+    divinity / masculinity / femininity / animal classes / motion / vehicles
+    / food / weather). It ships inline, needs no download, and the canonical
+    ``king - man + woman = queen`` analogy is EXACT on it -- because the
+    vectors were written so that it would be.
+
+``glove-50d``
+    The real 400,000-word GloVe table, out of the ``word-vectors`` pack. The
+    same analogy is only approximate here, and that gap is the point.
+
+the four sentence-transformer repos
+    A modern encoder from the ``sentence-embeddings`` pack, run over one
+    word at a time. Messier still for single words -- these models are
+    trained on sentences -- and what real retrieval systems actually use.
+
+Two things this module deliberately does not do.
+
+**It never downloads.** Both real backends read what the Package Center
+already fetched and raise ``PackMissingError``, naming the pack, when it is
+not there; ``core.packs.require_pack`` is where that promise is written
+down. The ``option_packs`` map below is the editor's half of it: an option
+whose pack is missing is greyed out before anybody presses Run.
+
+**It stays importable without any of it.** The registry imports every node
+module at startup to build the palette, so the GloVe reader, the encoder
+loader and ``app.core.packs`` are all imported inside the functions that
+need them -- an install that has downloaded nothing still gets a palette.
 """
 
 from __future__ import annotations
@@ -21,6 +41,11 @@ from typing import Any
 import numpy as np
 import torch
 
+from ...core.loop_control import (
+    ProgressThrottle,
+    interrupted_result,
+    stop_checker,
+)
 from ...core.node_base import (
     BaseNode,
     DataType,
@@ -29,56 +54,98 @@ from ...core.node_base import (
     PortDefinition,
 )
 from ...core.step_trace import StepRecorder
+from . import _packs_bridge
 from ._demo_vectors import DEMO_VECTORS
+from ._glove import GLOVE_PACK
+from ._sentence_models import SENTENCE_MODELS, option_packs_for_models
 
+#: How many words go through the encoder in one forward pass. Stop is
+#: answered between batches, so this is also the longest a click waits;
+#: 64 keeps a whole teaching vocabulary to a single pass while a document's
+#: worth of words still checks in several times.
+SENTENCE_BATCH_SIZE = 64
 
-# Future GloVe asset specs (not published yet — first attempt raises a friendly
-# error pointing users at the offline ``demo-16d`` backend).
-_GLOVE_PLACEHOLDER_URL = "https://github.com/CodefyUI/CodefyUI/releases/download/llm-assets-v0/{name}"
+#: Backend names that saved graphs from earlier previews still carry, and
+#: what to say about each. ``ValueError`` rather than ``PackMissingError``
+#: on purpose: nothing a learner can install fixes a name that no longer
+#: exists, and offering them a download button for it would be a dead end.
+#: So each message names the option they should pick instead.
+_RETIRED_BACKENDS: dict[str, str] = {
+    "glove-100d": (
+        "Backend 'glove-100d' was retired; the word-vectors pack ships "
+        "glove-50d. Set backend to 'glove-50d'."),
+    "minilm-sentence-384d": (
+        "Backend 'minilm-sentence-384d' was renamed; set backend to "
+        "'sentence-transformers/all-MiniLM-L6-v2'."),
+}
 
 
 @lru_cache(maxsize=8)
 def _load_backend(backend: str) -> tuple[list[str], np.ndarray]:
-    """Return ``(vocab, matrix)`` where ``matrix.shape == (V, D)``.
+    """Return ``(vocab, matrix)`` for a TABLE backend; ``matrix`` is [V, D].
 
-    The lru_cache makes repeated runs of the same backend instant; the heavy
-    one-time cost (asset download or numpy construction) happens once per
-    Python process.
+    Cached, so the second run of a session pays nothing: building the demo
+    matrix is milliseconds, reading the converted GloVe npz is a second or
+    two of disk, and neither answer can change while the process lives.
+
+    The sentence backends are not here. They have no vocabulary to look a
+    word up in, and their weights are held by ``_sentence_models``' own
+    bounded cache rather than by this unbounded-in-bytes one.
     """
     if backend == "demo-16d":
         vocab = sorted(DEMO_VECTORS.keys())
         matrix = np.array([DEMO_VECTORS[w] for w in vocab], dtype=np.float32)
         return vocab, matrix
 
-    if backend in ("glove-50d", "glove-100d"):
-        # The real wiring would call asset_cache.resolve(...) and parse the
-        # downloaded .npz here. The asset hasn't been published yet, so we
-        # surface a clear error instead of an opaque 404.
-        raise NotImplementedError(
-            f"Backend {backend!r} requires the GloVe asset bundle, which is "
-            f"not yet published as a GitHub Release. Use 'demo-16d' for the "
-            f"offline analogy demo. (See {_GLOVE_PLACEHOLDER_URL.format(name=backend)})"
-        )
+    if backend == "glove-50d":
+        # Function-level, like every pack-backed loader in this package. Not
+        # for import cost -- ``._glove`` is already imported above for its
+        # pack id and is cheap either way; the 83 MB npz read is deferred by
+        # the CALL. It raises ``PackMissingError`` naming the pack when the
+        # download is not there, and nothing here catches it: the editor
+        # reads the ``(pack=<id>)`` suffix to offer the download, and a
+        # wrapped error would cost the learner that button.
+        from ._glove import load_glove_50d
 
-    if backend == "minilm-sentence-384d":
-        raise NotImplementedError(
-            "Sentence-transformer backend is gated behind the optional "
-            "[llm-sentence] dependency group and lands in a follow-up PR. "
-            "Use 'demo-16d' or 'glove-50d' (when published)."
-        )
+        return load_glove_50d()
+
+    retired = _RETIRED_BACKENDS.get(backend)
+    if retired is not None:
+        raise ValueError(retired)
 
     raise ValueError(f"Unknown WordVector backend: {backend!r}")
+
+
+@lru_cache(maxsize=8)
+def _vocab_index(backend: str) -> dict[str, int]:
+    """``word -> row`` for a table backend, built once per process.
+
+    Separate from :func:`_load_backend` and cached beside it because it is
+    the expensive half on the big table: 400,000 dict entries take longer to
+    build than the npz takes to read, and the example graph alone runs four
+    WordVector nodes against the same backend. Both caches are cleared
+    together in tests.
+
+    Handed out by reference and never mutated -- the lookup below only reads
+    it, and a caller that wrote to it would be editing every later run's
+    vocabulary.
+    """
+    vocab, _matrix = _load_backend(backend)
+    return {word: row for row, word in enumerate(vocab)}
 
 
 class WordVectorNode(BaseNode):
     NODE_NAME = "WordVector"
     CATEGORY = "LLM"
     DESCRIPTION = (
-        "Look up a pre-trained vector for each input word. Pre-trained "
-        "embeddings place semantically related words near each other, so "
-        "$king - man + woman \\approx queen$. The default `demo-16d` "
-        "backend ships with the install; `glove-*` backends lazy-download "
-        "real GloVe vectors on first use."
+        "Look up a vector for each input word. Pre-trained embeddings place "
+        "related words near each other, so $king - man + woman \\approx "
+        "queen$. demo-16d is a hand-built 59-word toy vocabulary that ships "
+        "offline and makes the analogy exact; glove-50d is the real "
+        "400k-word GloVe table (word-vectors pack), where the analogy is "
+        "approximate; the sentence-transformer backends (sentence-embeddings "
+        "pack) run each word through a modern encoder, which is messier "
+        "still for single words but is what real retrieval systems use."
     )
 
     @classmethod
@@ -109,25 +176,28 @@ class WordVectorNode(BaseNode):
 
     @classmethod
     def define_params(cls) -> list[ParamDefinition]:
-        # Only the offline ``demo-16d`` backend is exposed for now. The GloVe
-        # asset bundle and the optional sentence-transformer backend are
-        # implemented in :func:`_load_backend` but their assets / extras have
-        # not been published yet — exposing them here would surface a
-        # NotImplementedError at run time. Re-add when the asset URLs land.
         return [
             ParamDefinition(
                 name="backend",
                 param_type=ParamType.SELECT,
                 default="demo-16d",
-                options=[
-                    "demo-16d",
-                ],
+                # demo-16d first because it is the one that always works.
+                # The rest are in catalog order, which is the order the
+                # Package Center lists the downloads in.
+                options=["demo-16d", "glove-50d", *SENTENCE_MODELS],
+                # demo-16d has no entry: an option with no pack is one every
+                # install can pick, which is exactly what "ships offline"
+                # means. Built through the bridge and through
+                # ``option_packs_for_models`` so the ``pack:item`` spelling
+                # is written down once instead of retyped here.
+                option_packs={
+                    "glove-50d": _packs_bridge.requirement(
+                        GLOVE_PACK, "glove-50d"),
+                    **option_packs_for_models(),
+                },
                 description=(
-                    "Vector source. demo-16d is a hand-crafted toy vocab "
-                    "(~60 words, 16 dimensions) that ships offline so the "
-                    "canonical king − man + woman ≈ queen analogy works. "
-                    "GloVe and sentence-transformer backends will return in a "
-                    "follow-up release."
+                    "Vector source. Options greyed out need a pack from "
+                    "Package Center; a run never downloads."
                 ),
             ),
             ParamDefinition(
@@ -146,7 +216,12 @@ class WordVectorNode(BaseNode):
                 name="keep_oov",
                 param_type=ParamType.BOOL,
                 default=False,
-                description="Emit a zero vector for out-of-vocabulary words instead of dropping them.",
+                description=(
+                    "Emit a zero vector for out-of-vocabulary words instead "
+                    "of dropping them. Only meaningful for the table "
+                    "backends (demo-16d, glove-50d); sentence models embed "
+                    "every word."
+                ),
             ),
         ]
 
@@ -163,55 +238,58 @@ class WordVectorNode(BaseNode):
         normalize = bool(params.get("normalize", False))
         keep_oov = bool(params.get("keep_oov", False))
 
-        vocab, matrix = _load_backend(backend)
-        vocab_index = {w: i for i, w in enumerate(vocab)}
-        D = matrix.shape[1]
+        # Lower-cased and stripped once, here, because both paths want the
+        # same thing from an input port that may carry anything: a table
+        # lookup is case-insensitive, and an encoder handed "  " would embed
+        # a blank and hand back a row nothing names.
+        keys = [key for key in (str(w).lower().strip() for w in words) if key]
+
+        oov: list[str] = []
+        vocab_size: int | None = None
+        stopped_at: int | None = None
+
+        if backend in SENTENCE_MODELS:
+            arr, labels, stopped_at = self._encode(
+                backend, keys, normalize=normalize,
+                progress_callback=progress_callback, context=context)
+            summary = (
+                f"Embedded {len(labels)} of {len(words)} word(s) with "
+                f"{backend}; an encoder has no vocabulary, so nothing is OOV.")
+        else:
+            vocab, matrix = _load_backend(backend)
+            vocab_size = len(vocab)
+            arr, labels, oov = self._look_up(
+                _vocab_index(backend), matrix, keys,
+                normalize=normalize, keep_oov=keep_oov)
+            summary = (
+                f"Resolved {len(labels)} of {len(words)} words against "
+                f"backend vocab; {len(oov)} OOV.")
+
+        dim = int(arr.shape[1])
+        tensor = torch.from_numpy(arr)
 
         verbose = context is not None and getattr(context, "verbose", False)
         recorder = StepRecorder() if verbose else None
         if recorder is not None:
+            # No ``vocab_size`` scalar for an encoder rather than a zero: a
+            # backend with no vocabulary has no size, and 0 would be plotted
+            # as one.
+            scalars = {"input_count": float(len(words))}
+            if vocab_size is not None:
+                scalars["vocab_size"] = float(vocab_size)
             recorder.record(
                 "input_words",
-                f"{len(words)} input word(s); backend={backend} (D={D}, V={len(vocab)}).",
-                scalars={"input_count": float(len(words)), "vocab_size": float(len(vocab))},
+                f"{len(words)} input word(s); backend={backend} (D={dim}, "
+                f"V={vocab_size if vocab_size is not None else 'n/a'}).",
+                scalars=scalars,
             )
-
-        rows: list[np.ndarray] = []
-        labels: list[str] = []
-        oov: list[str] = []
-        for w in words:
-            key = w.lower().strip()
-            if not key:
-                continue
-            idx = vocab_index.get(key)
-            if idx is not None:
-                rows.append(matrix[idx])
-                labels.append(key)
-            elif keep_oov:
-                rows.append(np.zeros(D, dtype=np.float32))
-                labels.append(key)
-                oov.append(key)
-            else:
-                oov.append(key)
-
-        if not rows:
-            tensor = torch.zeros((0, D), dtype=torch.float32)
-        else:
-            arr = np.stack(rows).astype(np.float32, copy=False)
-            if normalize:
-                norms = np.linalg.norm(arr, axis=1, keepdims=True)
-                norms[norms == 0] = 1.0  # leave zero rows untouched
-                arr = arr / norms
-            tensor = torch.from_numpy(arr)
-
-        if recorder is not None:
             recorder.record(
                 "lookup",
-                f"Resolved {len(labels)} of {len(words)} words against backend vocab; {len(oov)} OOV.",
+                summary,
                 scalars={
                     "matched": float(len(labels)),
                     "oov": float(len(oov)),
-                    "dim": float(D),
+                    "dim": float(dim),
                 },
                 embeddings=tensor,
             )
@@ -230,7 +308,109 @@ class WordVectorNode(BaseNode):
         result: dict[str, Any] = {"embeddings": tensor, "labels": labels}
         if recorder is not None:
             result["__steps__"] = recorder.steps
+        if stopped_at is not None:
+            # The partial rows are the output, not a consolation prize: the
+            # engine reads this marker as "interrupted" rather than "failed"
+            # precisely so what was computed survives the click.
+            result.update(interrupted_result(
+                batch=stopped_at, embedded=len(labels), total_words=len(keys)))
         return result
+
+    @staticmethod
+    def _look_up(
+        index: dict[str, int],
+        matrix: np.ndarray,
+        keys: list[str],
+        *,
+        normalize: bool,
+        keep_oov: bool,
+    ) -> tuple[np.ndarray, list[str], list[str]]:
+        """Table lookup: ``(rows, labels, oov)``, rows already normalised.
+
+        One path for both tables. An empty result still carries the table's
+        width, because a downstream node reading ``[0, 50]`` knows what it
+        was handed and one reading ``[0, 0]`` does not.
+
+        *index* is :func:`_vocab_index`'s cached dict and is read only.
+        """
+        dim = int(matrix.shape[1])
+
+        rows: list[np.ndarray] = []
+        labels: list[str] = []
+        oov: list[str] = []
+        for key in keys:
+            row = index.get(key)
+            if row is not None:
+                rows.append(matrix[row])
+                labels.append(key)
+            elif keep_oov:
+                rows.append(np.zeros(dim, dtype=np.float32))
+                labels.append(key)
+                oov.append(key)
+            else:
+                oov.append(key)
+
+        if not rows:
+            return np.zeros((0, dim), dtype=np.float32), labels, oov
+
+        arr = np.stack(rows).astype(np.float32, copy=False)
+        if normalize:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0  # leave zero rows untouched
+            arr = arr / norms
+        return arr, labels, oov
+
+    @staticmethod
+    def _encode(
+        backend: str,
+        keys: list[str],
+        *,
+        normalize: bool,
+        progress_callback: Any | None,
+        context: Any,
+    ) -> tuple[np.ndarray, list[str], int | None]:
+        """Run every word through a sentence encoder: ``(rows, labels,
+        stopped_at)``.
+
+        ``keep_oov`` is not a parameter here, and that is the whole
+        difference from the table path: an encoder produces a vector for any
+        string at all, so there is no vocabulary to fall out of and no zero
+        row to stand in for a miss.
+
+        The labels are cut to the rows that actually came back. A stopped
+        encode returns what it had -- and one stopped before its first batch
+        returns ``(0, 0)``, having never run a forward pass to learn the
+        width from -- while ``embeddings`` and ``labels`` are read side by
+        side downstream (``CosineSimilarity`` takes ``keys`` and
+        ``key_labels``), where one extra name would shift every row's label
+        by one.
+        """
+        # ``._sentence_models`` is already imported above for its registry,
+        # so these two names cost nothing here; they are pulled in beside
+        # the code that uses them. The import that MUST stay deferred is
+        # ``sentence_transformers`` (transformers, torch, half a second of
+        # startup), and that one lives inside ``load_sentence_model`` -- so
+        # an install with no pack still gets a palette.
+        from ...core.device_utils import resolve_node_device
+        from ._sentence_models import encode_in_batches, load_sentence_model
+
+        # No per-node device param: this node is a lookup, not a training
+        # sink, so it follows the run's global device the way its output
+        # tensor does.
+        device = resolve_node_device(None, context)
+        model = load_sentence_model(backend, device)
+
+        arr, stopped_at = encode_in_batches(
+            model,
+            keys,
+            batch_size=SENTENCE_BATCH_SIZE,
+            normalize=normalize,
+            prefix="",
+            progress=(ProgressThrottle(progress_callback)
+                      if progress_callback else None),
+            should_stop=stop_checker(context),
+        )
+        return arr, keys[:int(arr.shape[0])], stopped_at
 
     @staticmethod
     def _coerce_words(input_value: Any, fallback: str) -> list[str]:

@@ -903,6 +903,31 @@ def test_check_disk_raises(monkeypatch):
     assert failure.value.free == 600_000_000
 
 
+def test_check_disk_budgets_the_glove_npz_as_well_as_the_download(monkeypatch):
+    """GloVe's converted table is bigger than the file it came from.
+
+    83 MB of npz is written BESIDE the 69 MB gz, so a check that budgeted
+    only the download would pass on a disk that then fills during the
+    convert step -- with the download already paid for. The item carries
+    the second number as ``derived_bytes`` precisely so this sum can be
+    made here and nowhere a size is shown to a user.
+    """
+    item = get_item(get_pack("word-vectors"), "glove-50d")
+    assert item.derived_bytes > 0, "the npz is no longer budgeted at all"
+
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: _usage(0))
+    with pytest.raises(PackInsufficientDisk) as failure:
+        download.check_disk([item])
+
+    assert failure.value.needed == int(
+        download.DISK_HEADROOM * (item.approx_bytes + item.derived_bytes))
+    # ~230 MB, which is the figure the docs quote.
+    assert 220_000_000 < failure.value.needed < 240_000_000
+    # And decisively more than budgeting the download alone would ask for.
+    assert failure.value.needed > int(
+        download.DISK_HEADROOM * item.approx_bytes)
+
+
 def test_check_disk_passes_with_room(monkeypatch):
     item = get_item(get_pack("rag"), "qwen2.5-0.5b-instruct")
     monkeypatch.setattr(shutil, "disk_usage",

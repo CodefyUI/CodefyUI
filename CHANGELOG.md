@@ -58,8 +58,9 @@ received — each links to the release it was published as.
   option.** `/api/nodes` now carries `requires_pack` on each node definition
   and `option_packs` on each SELECT param (option value → pack id), so an
   editor can show that an option is one download away instead of letting the
-  run find out. No shipped node sets either field yet — the nodes that will
-  are what the packs exist for — but the gate behind them is already here:
+  run find out. The first nodes to set them ship in this same release —
+  `WordVector`'s new backends and `TextEmbedding`, below — and what the
+  editor shows is only half of the promise:
   `require_pack()` raises naming the pack, and a graph run never downloads
   — four hundred megabytes arriving mid-run, on a classroom connection, with
   no progress bar and no way to cancel, is not something a Run button may do.
@@ -69,6 +70,74 @@ received — each links to the release it was published as.
   from "it never went down" by whether the route answers; a changed `boot_id`
   is the only proof, and a restart-mode pack install is the first thing that
   needs to know.
+
+- **`WordVector` looks words up in real embeddings, not only the toy table.**
+  The `backend` dropdown gained `glove-50d` — the actual 400,000-word GloVe
+  table out of the `word-vectors` pack — and the four sentence-transformer
+  encoders out of `sentence-embeddings`, beside the `demo-16d` vocabulary
+  that still ships inline, still needs no download, and still makes
+  `king - man + woman = queen` come out exact because its 59 words were
+  written so that it would. That gap is the lesson: the same analogy is only
+  approximate on real GloVe, and messier still through an encoder built for
+  sentences rather than single words. Each option carries the download it
+  needs, so an install without the pack sees it greyed out rather than
+  finding out at run time, and the 400k-word text table is converted to an
+  `.npz` once on install — ten seconds of parsing that no longer happens on
+  every run. Two backend names from an early preview are retired: a graph
+  still carrying `glove-100d` or `minilm-sentence-384d` gets a plain error
+  naming the option to pick instead (`glove-50d`,
+  `sentence-transformers/all-MiniLM-L6-v2`), because no download fixes a name
+  that no longer exists.
+
+- **`TextEmbedding`** — one dense vector per text from a real
+  sentence-transformer, so texts that mean the same thing come back pointing
+  the same way. This is the encoder semantic search and RAG are built on:
+  embed the documents once, embed the question, compare. It takes a list
+  (`texts`) or a single string (`text`, one text per line unless
+  `split_lines` is off), reports progress and honours Stop between batches —
+  keeping the rows it already has — and carries the `prefix` the e5 models
+  were trained with (`query: ` / `passage: `). Its four models are the
+  `sentence-embeddings` pack's, so the whole node is greyed out until that
+  pack is installed, and two loaded encoders stay resident at a time, which
+  is what comparing an English model against a multilingual one costs.
+
+- **Sentence Similarity (zh-TW), a gallery example that runs on meaning
+  rather than spelling.** Eight Traditional Chinese sentences in four pairs —
+  weather, food, the stock market, machine learning, the last pair split
+  across Chinese and English — encoded, ranked by `CosineSimilarity` and
+  projected to 2D by `EmbeddingScatter`. Rank 2 is each sentence's partner
+  though the two share few characters, and the zh/en pair shows the
+  model aligning languages. Needs the `sentence-embeddings` pack; runs
+  offline on CPU in a few seconds once it is there.
+
+- **`CODEFYUI_PACK_NETWORK_TESTS=1` runs the pack-backed examples for real.**
+  A faked encoder returns whatever the fake was written to return, so the
+  suite that asks whether these two graphs still DO what their cards claim
+  runs against the downloaded models or not at all. It is opt-in twice over:
+  the variable is the outer gate, and each test skips on its own if the exact
+  model it needs is not in the cache. Nothing is downloaded either way.
+
+- **An Optional Packs page in the docs**, English and Traditional Chinese
+  (`docs/docs/usage/optional-packs.md`) — the catalog with sizes
+  and licences, both ways to install one, where the files land per OS, what
+  changes on the canvas, which of the four embedding models to pick, and what
+  to do when a pack reports installed but will not import.
+
+### Changed
+
+- **The Word Embedding Analogy example says what each backend teaches.** Its
+  description explained the analogy on `demo-16d` and said nothing about the
+  real thing; it now says the toy vocabulary is 59 words and makes the
+  analogy exact by construction, and that `backend=glove-50d` swaps in
+  400,000 real words, where queen still wins but other analogies go
+  approximate — which is the point of running it twice. It is also short
+  enough now that the gallery card stops cutting it off mid-word.
+
+- **`TextEmbedding` counts as a slow node in the example test suite.**
+  `_SLOW_NODE_TYPES` gains it, so the fast smoke suite validates the Sentence
+  Similarity graph's shape without executing it: CI has no pack cache and
+  would fail at the gate, and a machine that does have the pack would load
+  half a gigabyte of weights inside a test that is supposed to be quick.
 
 ### Fixed
 

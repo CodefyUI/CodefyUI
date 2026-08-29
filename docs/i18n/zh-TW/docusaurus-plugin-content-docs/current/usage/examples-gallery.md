@@ -12,11 +12,14 @@ CodefyUI 在 `examples/` 底下隨附一整套可直接執行的範例圖。你�
 |----------|----------|
 | **模型架構** | ResNet、ConvNeXt、EfficientNet、UNet、ViT、SwinTransformer、BERT、GPT、LLaMA、DiT、LSTM TimeSeries、BiGRU SpeechRecognition、Seq2Seq Attention、DQN Atari、PPO Robotics |
 | **使用範例** | CNN-MNIST 訓練、CNN-MNIST 推論、GPT-Mini 訓練、ResNet-CIFAR10 訓練、**ResNet-18 / CIFAR-10 baseline**（實測 95.48%，見[重現標準結果](./reproducing-baselines)）|
-| **LLM** | Word Embedding Analogy（用離線的 `demo-16d` backend 計算 `king − man + woman ≈ queen`）、**Train a Causal LM on TinyStories**（從零開始預訓練一個 203,668,480 參數的 GPT 式 decoder）|
+| **LLM** | Word Embedding Analogy（用離線的 `demo-16d` backend 計算 `king − man + woman ≈ queen`）、**Sentence Similarity (zh-TW)**（用真正的句子編碼器比較八句繁體中文）、**Train a Causal LM on TinyStories**（從零開始預訓練一個 203,668,480 參數的 GPT 式 decoder）|
 
 這個 repository 在磁碟上也依主題把範例分組：`Classical/`、`Diffusion/`、`LLM/`、`Model_Architecture/`、`RL/`、`RNN/`、`Transformer/`、`Usage_Example/` 與 `Others/`。
 
-除了 **Train a Causal LM on TinyStories** 之外，所有列出的範例都可以離線直接執行。那一個範例第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張放得下 203,668,480 參數模型的 GPU。它的說明卡開頭就會先講這兩個前提條件；完整的訓練配方、token 預算與記憶體開關則放在圖旁邊的 `README.md`（`examples/LLM/TrainCausalLM-TinyStories/`）。兩份下載都會被快取，之後再跑就同樣是離線的。
+所有列出的範例都可以離線直接執行，只有兩個例外：
+
+- **Train a Causal LM on TinyStories** 第一次執行時會從 Hugging Face Hub 下載 TinyStories 語料與 gpt2 的 BPE ranks，並且需要一張放得下 203,668,480 參數模型的 GPU。它的說明卡開頭就會先講這兩個前提條件；完整的訓練配方、token 預算與記憶體開關則放在圖旁邊的 `README.md`（`examples/LLM/TrainCausalLM-TinyStories/`）。兩份下載都會被快取，之後再跑就同樣是離線的。
+- **Sentence Similarity (zh-TW)** 需要 `sentence-embeddings` 套件包，那是一次性的安裝，可以在套件中心（工具列 > 設定 > 選用套件包）裝，或執行 `cdui packs install sentence-embeddings` —— 執行圖形時永遠不會幫你下載它。裝好之後，這個範例就能離線在 CPU 上跑，幾秒鐘就結束。見[選用套件包](./optional-packs)。
 
 ## 載入範例
 
