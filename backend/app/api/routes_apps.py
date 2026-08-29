@@ -995,12 +995,29 @@ async def list_runs(
     request: Request,
     limit: int = Query(default=50, ge=1, le=500),
     before: str | None = Query(default=None),
+    before_id: str | None = Query(default=None),
 ):
     """Newest-first METADATA-ONLY rows; IO lives on the detail endpoint.
 
     Either-credential read (Stage 3's editor UI uses the session token).
-    ``before`` is an ISO timestamp cursor over ``created_at``.
+
+    The cursor is the ``created_at`` and the ``run_id`` of the last row of
+    the previous page, sent back as ``before`` and ``before_id``. Together
+    they name one row in the ordering this endpoint sorts by, so a page
+    boundary that falls inside a group of runs sharing one timestamp
+    resumes at the right place.
+
+    ``before`` alone stays supported for clients written against the older
+    contract and keeps its original meaning, ``created_at < before``, which
+    skips every row sharing that exact timestamp. ``before_id`` alone is a
+    422: it has no timestamp to anchor against.
     """
+    if before is None and before_id is not None:
+        raise _manage_error(
+            422, "incomplete_cursor",
+            "before_id requires before -- send the created_at and the "
+            "run_id of the last row of the previous page",
+        )
     db = get_db(request)
 
     def _select(conn: sqlite3.Connection) -> list[dict[str, Any]] | None:
@@ -1015,7 +1032,36 @@ async def list_runs(
             "FROM runs WHERE app_id = ?"
         )
         params: list[Any] = [app_row["id"]]
-        if before is not None:
+        if before is not None and before_id is not None:
+            # Keyset pagination on the (created_at, rowid) tuple the ORDER
+            # BY below sorts on. `created_at < ?` alone excluded EVERY row
+            # sharing the cursor's timestamp, including the ones the client
+            # had not seen yet, and two invokes land in one microsecond tick
+            # often enough for that to drop runs out of the listing (#372).
+            #
+            # The subselect resolves to NULL when the anchor row is gone
+            # (retention) or belongs to another app, and `rowid < NULL` is
+            # NULL, so the predicate collapses to `created_at < ?` with no
+            # branch here. For a pruned anchor that fallback is exact:
+            # retention deletes with `created_at < cutoff`, so it takes a
+            # timestamp whole -- if the anchor went, everything sharing its
+            # timestamp went with it.
+            #
+            # `created_at <= ?` is implied by both arms of the OR and is
+            # therefore redundant to the RESULT; it is here for the query
+            # planner. Terms inside an OR cannot constrain an index seek, so
+            # without it idx_runs_app_created is entered on `app_id = ?`
+            # alone and the scan skips every row newer than the cursor.
+            # Measured on 20k runs in one app, 3 runs per timestamp,
+            # limit=50: 0.08 ms at page 1 either way, and at a cursor 19k
+            # rows deep 2.79 ms without the bound against 0.12 ms with it.
+            sql += (
+                " AND created_at <= ?"
+                " AND (created_at < ? OR (created_at = ? AND rowid < "
+                "(SELECT rowid FROM runs WHERE run_id = ? AND app_id = ?)))"
+            )
+            params.extend([before, before, before, before_id, app_row["id"]])
+        elif before is not None:
             sql += " AND created_at < ?"
             params.append(before)
         # rowid DESC is the tie-breaker for rows sharing a created_at
@@ -1026,7 +1072,8 @@ async def list_runs(
         # tick often enough to fail this endpoint's own test on CI (#370).
         # rowid rises with insertion, so it is deterministic AND actually
         # newest-first; it is what run_store.py's equivalent queries already
-        # use. The `before` cursor stays keyed on created_at alone.
+        # use. The `before`/`before_id` cursor keys on these same two
+        # columns, so the cursor keys and the sort keys are one tuple.
         sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
