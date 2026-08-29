@@ -916,6 +916,10 @@ def test_run_pending_installs_anyway_when_the_server_will_not_die(
     ({"server_pid": "4242"}, "server_pid"),
     ({"server_pid": 0}, "server_pid"),
     ({"launcher": []}, "launcher"),
+    # Exactly two entries. A third is somebody's idea of extra arguments, and
+    # the helper appends its own after them.
+    ({"launcher": [sys.executable, str(Path(dev.__file__).resolve()), "-X"]},
+     "launcher"),
     ({"relaunch_argv": "--host 0.0.0.0"}, "relaunch_argv"),
 ])
 def test_run_pending_refuses_a_file_it_does_not_recognise(helper, overrides,
@@ -929,6 +933,58 @@ def test_run_pending_refuses_a_file_it_does_not_recognise(helper, overrides,
         "a file that is not ours names a server we did not take down")
     assert expected in capsys.readouterr().err
     assert _outcome(helper)["status"] == "failed"
+
+
+def test_run_pending_accepts_a_venv_python_that_is_a_symlink(helper, tmp_path):
+    """The bug this test exists for cost every POSIX user their server.
+
+    `uv venv` symlinks `.venv/bin/python` straight at the uv-managed base
+    interpreter (dev.py's own venv hop documents exactly this), so resolving
+    the WHOLE path lands somewhere under ~/.local/share/uv -- outside the
+    venv -- and every genuine pending file was refused with exit 2 and no
+    relaunch. Windows copies the interpreter instead, which is why this was
+    invisible on the machine it was written on.
+
+    The parent is still resolved, so `..` and a symlinked DIRECTORY cannot
+    smuggle the install elsewhere; only the leaf is left alone.
+    """
+    base = tmp_path / "uv-managed" / "python3.11"
+    base.parent.mkdir(parents=True)
+    base.write_text("")
+    link = helper["venv"] / "python-linked"
+    try:
+        os.symlink(base, link)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("this platform or account cannot create symlinks")
+
+    assert dev._run_pending_job(_pending(helper, venv_python=str(link))) == 0
+    # And uv is pointed at the link, not at what it resolves to: the venv is
+    # the environment being installed into.
+    assert helper["install"][4] == str(link)
+
+
+def test_run_pending_refuses_a_venv_python_that_climbs_out(helper, capsys):
+    """The half of the check that resolving the parent still enforces."""
+    escape = str(helper["venv"] / ".." / ".." / "python")
+
+    assert dev._run_pending_job(_pending(helper, venv_python=escape)) == 2
+
+    assert helper["install"] is None
+    assert helper["relaunch"] is None
+    assert "venv_python" in capsys.readouterr().err
+
+
+def test_run_pending_refuses_a_launcher_interpreter_that_is_gone(helper, capsys):
+    """`restart_available` checked this when the panel was drawn; minutes may
+    have passed. Starting the install anyway would take the server down and
+    then discover there is nothing to bring it back with."""
+    path = _pending(helper, launcher=["/no/such/python",
+                                      str(Path(dev.__file__).resolve())])
+
+    assert dev._run_pending_job(path) == 2
+
+    assert helper["relaunch"] is None
+    assert "interpreter" in capsys.readouterr().err
 
 
 def test_run_pending_refuses_a_foreign_venv_python(helper, capsys):
@@ -1144,18 +1200,181 @@ def test_the_relaunch_is_detached_and_logged(helper):
 def test_a_relaunch_that_cannot_start_does_not_mask_the_outcome(helper,
                                                                 monkeypatch):
     """The `finally` must not raise over the return value the exit code is
-    built from."""
+    built from -- and the record must say there is no server, without
+    unsaying that the install worked.
+
+    `status` stays "ok" on purpose: that is the one field the SPA reads to
+    tell the user what happened to their package, and the install really did
+    succeed. The second fact -- nobody can reach the server -- is only
+    actionable from a terminal, so it goes where `cdui status` will find it.
+    """
     def _popen(cmd, **kw):
         if list(cmd)[:1] == ["/fake/uv"]:
             return _FakeInstall(["ok"], 0)
         raise OSError("no such file")
 
     monkeypatch.setattr(dev.subprocess, "Popen", _popen)
+
     assert dev._run_pending_job(_pending(helper)) == 0
-    assert _outcome(helper)["status"] == "ok"
+
+    record = _outcome(helper)
+    assert record["status"] == "ok"
+    assert record["relaunch"] == "failed"
+    assert record["log_file"] in record["message"], (
+        "the message has to name the log, for somebody with no server")
+    assert "restart-job-1.log" in record["log_file"]
+
+
+def test_a_relaunch_that_worked_is_recorded_as_well(helper):
+    """Present and null while it is unknown, "ok" once it is -- so "not
+    recorded yet" and "written by an older dev.py" stay different facts."""
+    dev._run_pending_job(_pending(helper))
+    assert _outcome(helper)["relaunch"] == "ok"
+
+
+def test_the_relaunch_inherits_this_processes_environment(helper):
+    """No `env=`. `CODEFYUI_USER_DATA_DIR` is not something `start()` can
+    rederive, and the launcher variables the server handed down reach the new
+    one the same way -- handing over a scrubbed environment is how the SECOND
+    restart of a session finds no launcher and refuses."""
+    dev._run_pending_job(_pending(helper))
+    assert "env" not in helper["relaunch_kwargs"]
+
+
+def test_the_outcome_is_written_before_the_claim_is_dropped(helper, monkeypatch):
+    """The claim is what stops a second install starting; releasing it before
+    there is something to read in its place leaves a window where the restart
+    has neither a claim nor a result."""
+    real = dev._write_restart_outcome
+    seen: dict = {}
+
+    def _spy(*args, **kwargs):
+        seen["claim_still_there"] = (
+            helper["control"] / "pending_restart.json").exists()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(dev, "_write_restart_outcome", _spy)
+    dev._run_pending_job(_pending(helper))
+
+    assert seen["claim_still_there"] is True
+    assert not (helper["control"] / "pending_restart.json").exists()
 
 
 # ── the command wrapper ───────────────────────────────────────────────────
+
+
+def test_the_helper_writes_its_own_pid_into_the_claim(helper, monkeypatch):
+    """`cdui start` reads this back to tell a restart that is still working
+    from one whose helper never started. Written after validation and BEFORE
+    the wait, which is the only moment it can be written safely: the server
+    has been told to exit and will not touch its own claim again, and no
+    second helper exists yet.
+    """
+    path = _pending(helper)
+    seen: dict = {}
+
+    def _alive(pid):
+        seen["claim"] = json.loads(path.read_text(encoding="utf-8"))
+        return False
+
+    monkeypatch.setattr(dev, "_pid_alive", _alive)
+    dev._run_pending_job(path)
+
+    assert seen["claim"]["helper_pid"] == os.getpid(), (
+        "the pid must be on disk before the wait begins")
+    assert seen["claim"]["job_id"] == "job-1", "and nothing else was lost"
+    assert seen["claim"]["launcher"][1] == str(Path(dev.__file__).resolve())
+
+
+def test_a_refused_claim_is_never_stamped_with_a_helper_pid(helper):
+    """It is not ours. Writing into it would be claiming a job this process
+    has no business finishing."""
+    path = _pending(helper, schema=99)
+    dev._run_pending_job(path)
+    assert "helper_pid" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_every_outcome_ends_the_log_with_its_exit_code(helper, capsys):
+    """This runs detached into a log nobody is watching, and "the last thing
+    in the log" is how a person tells an install that ended from one that was
+    killed halfway."""
+    dev._run_pending_job(_pending(helper))
+    assert capsys.readouterr().out.strip().splitlines()[-1].endswith(
+        "restart install finished: exit code 0 ===")
+
+    helper["returncode"] = 1
+    dev._run_pending_job(_pending(helper))
+    assert capsys.readouterr().out.strip().splitlines()[-1].endswith(
+        "restart install finished: exit code 1 ===")
+
+    dev._run_pending_job(_pending(helper, schema=99))
+    assert capsys.readouterr().out.strip().splitlines()[-1].endswith(
+        "restart install finished: exit code 2 ===")
+
+
+def test_the_outcome_is_written_next_to_the_claim_not_where_the_env_points(
+        helper, monkeypatch, tmp_path):
+    """Derived from the pending path handed in. A `CODEFYUI_USER_DATA_DIR`
+    that changed between the server's launch and this process would otherwise
+    file the report in a directory nobody reads."""
+    elsewhere = tmp_path / "somewhere-else"
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(elsewhere))
+
+    assert dev._run_pending_job(_pending(helper)) == 0
+
+    assert (helper["control"] / "last_restart_job.json").exists()
+    assert (helper["control"] / "logs" / "restart-job-1.log").exists()
+    assert not elsewhere.exists(), "nothing was written where the env points"
+
+
+def test_an_unreadable_claim_does_not_erase_the_last_real_outcome(helper):
+    """A file that could not be parsed names no job. Writing "refused" over
+    `last_restart_job.json` would erase the report of the last restart that
+    DID run -- which is the thing the user is most likely opening the panel
+    to read."""
+    outcome = helper["control"] / "last_restart_job.json"
+    outcome.write_text(json.dumps({
+        "schema": 1, "pack_id": "gpu-torch", "status": "ok",
+        "message": "keep me"}), encoding="utf-8")
+
+    path = helper["control"] / "pending_restart.json"
+    path.write_bytes(b"\xff\xfe not json at all")
+    assert dev._run_pending_job(path) == 2
+    assert json.loads(outcome.read_text(encoding="utf-8"))["message"] == "keep me"
+
+    assert dev._run_pending_job(helper["control"] / "never-existed.json") == 2
+    assert json.loads(outcome.read_text(encoding="utf-8"))["message"] == "keep me"
+
+
+def test_a_claim_that_parses_but_is_refused_does_get_a_record(helper):
+    """The other side of it: there IS a job named here, and the user asked
+    for it, so they are owed an answer about it."""
+    dev._run_pending_job(_pending(helper, schema=99))
+    record = _outcome(helper)
+    assert record["status"] == "failed"
+    assert record["pack_id"] == "gpu-torch"
+    assert "refused" in record["message"]
+
+
+@pytest.mark.skipif(sys.platform != "win32",
+                    reason="CREATE_NO_WINDOW is a Windows creation flag")
+def test_pid_alive_does_not_flash_a_console_window(monkeypatch):
+    """The helper polls this every half second for up to two minutes, from a
+    detached process with no console of its own — one window per poll, over
+    whatever the user is looking at while their server is away."""
+    seen: dict = {}
+
+    class _Out:
+        stdout = ""
+
+    def _run(cmd, **kwargs):
+        seen.update(kwargs)
+        return _Out()
+
+    monkeypatch.setattr(dev.subprocess, "run", _run)
+    dev._pid_alive(4242)
+
+    assert seen["creationflags"] & dev.subprocess.CREATE_NO_WINDOW
 
 
 def test_packs_run_pending_exits_with_the_jobs_code(helper, monkeypatch):
@@ -1223,6 +1442,48 @@ def test_the_status_dashboard_prints_the_restart_notice(monkeypatch):
     dev._render_dashboard(interval=0.0, first=False)
 
     assert called == [True]
+
+
+def test_status_calls_an_abandoned_claim_abandoned(helper, capsys):
+    """The same predicate `cdui start` decides on, so the two commands cannot
+    describe one file differently to one confused user."""
+    old = datetime.now(timezone.utc) - timedelta(seconds=dev.STALE_PENDING_S + 60)
+    _pending(helper, created_at=old.isoformat())
+
+    dev._print_restart_notice()
+
+    out = capsys.readouterr().out
+    assert "abandoned" in out
+    assert "cdui start" in out, "and how to be rid of it"
+
+
+def test_status_prints_the_log_to_read_when_something_failed(helper, capsys):
+    (helper["control"] / "last_restart_job.json").write_text(json.dumps({
+        "schema": 1, "pack_id": "gpu-torch", "status": "ok",
+        "relaunch": "failed", "message": "gpu-torch installed — and the "
+                                         "server could not be started again",
+        "log_file": r"C:\logs\restart-job-1.log",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }), encoding="utf-8")
+
+    dev._print_restart_notice()
+
+    out = capsys.readouterr().out
+    assert "restart-job-1.log" in out, (
+        "a failed relaunch leaves nobody a server to read the panel on")
+
+
+def test_status_does_not_point_at_a_log_after_a_clean_install(helper, capsys):
+    """Thousands of lines of uv output are noise after a success."""
+    (helper["control"] / "last_restart_job.json").write_text(json.dumps({
+        "schema": 1, "pack_id": "gpu-torch", "status": "ok", "relaunch": "ok",
+        "message": "gpu-torch installed",
+        "log_file": r"C:\logs\restart-job-1.log",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+    }), encoding="utf-8")
+
+    dev._print_restart_notice()
+    assert "restart-job-1.log" not in capsys.readouterr().out
 
 
 def test_status_survives_a_control_file_it_cannot_read(helper, capsys):

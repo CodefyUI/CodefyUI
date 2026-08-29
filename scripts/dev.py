@@ -1640,6 +1640,11 @@ def _pid_alive(pid: int) -> bool:
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True, text=True,
+            # `packs-run-pending` polls this every half second for up to two
+            # minutes, from a DETACHED process with no console of its own --
+            # without this each poll pops a console window over whatever the
+            # user is looking at while their server is away.
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         return str(pid) in out.stdout
     try:
@@ -1722,10 +1727,13 @@ def start() -> None:
 
     _warn_if_dist_stale()
     _apply_dev_env()
-    # Before anything is started: a claim left behind by a server that died
-    # mid-restart would refuse every restart-mode install for 15 minutes, and
-    # this is the only moment nobody can be halfway through one.
-    _clear_stale_pending()
+    # Before anything is started. Two cases, one file: a restart that is
+    # still running must not get a second server on its port while it is
+    # replacing the files the first one holds open, and a claim left behind
+    # by a server that died mid-restart must not refuse every future
+    # restart-mode install for fifteen minutes.
+    if not _restart_preflight():
+        return
     project = _parse_project(own_argv)
     if project is not None:
         _activate_project(project)
@@ -1880,6 +1888,15 @@ HELPER_COMMAND = "packs-run-pending"
 #: `restart.STALE_PENDING_S`.
 STALE_PENDING_S = 15 * 60
 
+#: How long a claim with no `helper_pid` in it yet is still believed. The
+#: helper is spawned detached and writes its pid in as its first act, so this
+#: only has to cover process creation -- but on a cold Windows box with a
+#: virus scanner in the way that is seconds, not milliseconds. Two minutes is
+#: far longer than it needs and still short enough that a server which died
+#: before its helper ever started is forgotten while the user is still
+#: looking at the terminal.
+HELPER_START_GRACE_S = 2 * 60
+
 #: The two control files, under `<user data>/packs`. Mirrors `packs.paths`.
 PENDING_FILE_NAME = "pending_restart.json"
 OUTCOME_FILE_NAME = "last_restart_job.json"
@@ -1931,14 +1948,18 @@ def _last_restart_file() -> Path:
     return _packs_control_dir() / OUTCOME_FILE_NAME
 
 
-def _restart_log_file(job_id: str) -> Path:
+def _restart_log_file(job_id: str, control: "Path | None" = None) -> Path:
     """The log for one restart job. Mirrors `restart._log_file_name`, including
     the substitution: the id is read back out of a file on disk and then
     concatenated into a path, which is the shape of every directory-traversal
     bug ever written. A substitution rather than a rejection, because an odd
-    job id should cost an ugly log name, not a server that never comes back."""
+    job id should cost an ugly log name, not a server that never comes back.
+
+    *control* is passed by the helper, which knows which directory the claim
+    it is acting on came out of; everybody else asks the environment."""
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id or "unknown")
-    return _packs_control_dir() / "logs" / f"restart-{safe}.log"
+    root = control if control is not None else _packs_control_dir()
+    return root / "logs" / f"restart-{safe}.log"
 
 
 def _read_json_file(path: Path) -> "dict | None":
@@ -1998,38 +2019,99 @@ def _iso_age_seconds(stamp) -> "float | None":
     return (datetime.now(timezone.utc) - moment).total_seconds()
 
 
-def _clear_stale_pending() -> bool:
-    """Delete an abandoned restart claim. True when one was deleted.
+def _pending_age_seconds(path: Path, data: "dict | None") -> "float | None":
+    """How long ago this claim was made. `created_at`, then the file's mtime.
 
-    A claim left behind by a server that crashed between writing the file and
-    exiting would refuse every future restart-mode install with "one is
-    already pending". The server clears one in its own lifespan; this runs
-    BEFORE any server exists, which is the case the lifespan cannot reach --
-    a restart whose helper died too, so nothing ever came back to tidy up.
+    Two clocks because the first one can be missing or nonsense in exactly
+    the file this has to judge. None when neither answers, which every caller
+    reads as "old" -- an age nobody can establish must not be the reason a
+    user cannot get a server back.
+    """
+    age = _iso_age_seconds((data or {}).get("created_at"))
+    if age is not None:
+        return age
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
 
-    Stale means the writer is gone, or the claim is older than
-    `STALE_PENDING_S` (the case the pid cannot catch: a machine that rebooted
-    and handed that number to something else). A file nothing can parse is
-    stale as well -- both writers are atomic, so an unreadable file is not a
-    half-written claim, it is not a claim.
+
+def _pending_state(path: Path, data: "dict | None") -> str:
+    """Is a restart still happening (`finishing`) or did it die (`abandoned`)?
+
+    One predicate, two callers -- `_restart_preflight` decides whether to
+    start a server on it and `cdui status` decides what to call it, and those
+    two must never disagree in front of a user comparing them.
+
+    The rules, in the order they are applied:
+
+    * Older than `STALE_PENDING_S` -> abandoned, whatever else it says. This
+      is the guarantee that a user can always get a server back: no state of
+      this file can lock `cdui start` out for longer than fifteen minutes.
+    * `helper_pid` present -> exactly whether that process is alive. The
+      helper writes its own pid in as its first act, so this is the real
+      answer whenever it exists.
+    * No `helper_pid` and younger than `HELPER_START_GRACE_S` -> finishing.
+      The helper is a detached process that was spawned seconds ago and has
+      not written its pid yet; starting a second server into that window is
+      how two `uv` runs end up in one site-packages.
+    * No `helper_pid` and older than that -> abandoned. The server wrote the
+      claim and then died before its helper ever ran.
+
+    A file nothing can parse is abandoned outright: both writers are atomic,
+    so an unreadable file is not a half-written claim -- it is not a claim.
+    """
+    if data is None:
+        return "abandoned"
+    age = _pending_age_seconds(path, data)
+    if age is None or age > STALE_PENDING_S:
+        return "abandoned"
+    helper_pid = data.get("helper_pid")
+    if (isinstance(helper_pid, int) and not isinstance(helper_pid, bool)
+            and helper_pid > 0):
+        return "finishing" if _pid_alive(helper_pid) else "abandoned"
+    return "finishing" if age <= HELPER_START_GRACE_S else "abandoned"
+
+
+def _restart_preflight() -> bool:
+    """May `cdui start` go ahead? Clears an abandoned claim on the way.
+
+    (This is the old `_clear_stale_pending`, renamed because it no longer
+    only clears: the case it used to get wrong is a `cdui start` typed WHILE
+    a restart is finishing, which would put a second server on the port the
+    helper is about to relaunch onto, holding open the very files it is
+    replacing.)
+
+    False means a restart is in flight and this command must stand down --
+    reported and returned WITHOUT an error, because the user asked for a
+    running server and one is on its way. True means either there was no
+    claim, or there was an abandoned one and it has been deleted; leaving
+    that behind would refuse every future restart-mode install with "one is
+    already pending".
     """
     path = _pending_restart_file()
     if not path.exists():
-        return False
+        return True
+
     data = _read_json_file(path)
-    if data is not None:
-        pid = data.get("server_pid")
-        live = (isinstance(pid, int) and not isinstance(pid, bool)
-                and pid > 0 and _pid_alive(pid))
-        age = _iso_age_seconds(data.get("created_at"))
-        if live and not (age is not None and age > STALE_PENDING_S):
-            return False
+    if _pending_state(path, data) == "finishing":
+        section("正在完成一次重啟安裝，先不啟動伺服器",
+                "A restart install is finishing; not starting a server")
+        print(t(f"    套件 → {(data or {}).get('pack_id')}",
+                f"    pack → {(data or {}).get('pack_id')}"))
+        print(t("    完成後它會自己把伺服器啟動回來；用 cdui status 查看進度。",
+                "    it starts the server again itself when it is done; "
+                "watch it with `cdui status`."))
+        return False
+
     try:
         path.unlink()
     except OSError:
+        # Not a reason to refuse: the claim is dead either way, and the
+        # server the user asked for matters more than the tidying.
         warn("無法刪除殘留的重啟安裝紀錄",
              "could not delete the leftover restart-install record")
-        return False
+        return True
     section("已清除上一次沒有完成的重啟安裝紀錄",
             "Cleared a leftover restart install that never finished")
     return True
@@ -2092,15 +2174,24 @@ def _validate_pending(data: "dict | None") -> "str | None":
         return f"kind {kind!r} is not 'torch' or 'pip'"
 
     launcher = data.get("launcher")
-    if (not isinstance(launcher, list) or len(launcher) < 2
+    if (not isinstance(launcher, list) or len(launcher) != 2
             or not all(isinstance(part, str) and part for part in launcher)):
-        return "launcher is not an interpreter and a script"
+        return "launcher is not exactly an interpreter and a script"
     try:
         mine = Path(launcher[1]).resolve() == Path(__file__).resolve()
     except OSError:
         mine = False
     if not mine:
         return f"launcher {launcher[1]!r} is not this installation's dev.py"
+    try:
+        runnable = Path(launcher[0]).is_file()
+    except OSError:
+        runnable = False
+    if not runnable:
+        # `restart_available` checked this when the panel was DRAWN. Minutes
+        # may have passed. Starting the install anyway would take the server
+        # down and then discover there is nothing to bring it back with.
+        return f"launcher {launcher[0]!r} is not an interpreter on this disk"
 
     relaunch = data.get("relaunch_argv")
     if (not isinstance(relaunch, list)
@@ -2110,8 +2201,18 @@ def _validate_pending(data: "dict | None") -> "str | None":
     venv_python = data.get("venv_python")
     if not isinstance(venv_python, str) or not venv_python:
         return "venv_python is not a path"
+    # The DIRECTORY is resolved and the leaf name is not. Resolving the whole
+    # path would follow the interpreter itself, and on POSIX `uv venv`
+    # symlinks `.venv/bin/python` straight at the uv-managed base interpreter
+    # (the same fact `_exec_into_venv_if_available` discriminates on
+    # `sys.prefix` for) -- so `.resolve()` lands somewhere under
+    # ~/.local/share/uv, every genuine pending file is refused, and the user
+    # loses their server on the one platform this was never tested on.
+    # Resolving the parent still closes the hole that matters: `..` segments
+    # and a symlinked DIRECTORY cannot smuggle the install out of this venv.
     try:
-        inside = Path(venv_python).resolve().is_relative_to(VENV.resolve())
+        leaf = Path(venv_python)
+        inside = (leaf.parent.resolve() / leaf.name).is_relative_to(VENV.resolve())
     except OSError:
         inside = False
     if not inside:
@@ -2167,10 +2268,16 @@ def _wait_for_server_exit(pid: int) -> str:
 def _restart_disk_shortfall(kind: str) -> "str | None":
     """Why there is not enough room for this install, or None when there is.
 
-    Measured on the VENV's filesystem, which is not necessarily the one the
-    temp directory or the home directory is on. An unreadable answer is not a
-    "no": a network mount that will not report its size must not cost the
-    user their install.
+    Measured on the VENV's filesystem -- where the wheels are UNPACKED, which
+    is the space that decides whether the venv ends up with a torch that
+    imports. It is deliberately not uv's cache volume: uv downloads and
+    unpacks to `UV_CACHE_DIR` (often another disk, or a tmpfs), so a check
+    there would answer a different question and pass on a machine whose venv
+    disk is full. Neither is checked exhaustively -- this is a floor against
+    the obviously doomed case, not a guarantee.
+
+    An unreadable answer is not a "no": a network mount that will not report
+    its size must not cost the user their install.
     """
     need = RESTART_MIN_FREE_TORCH if kind == "torch" else RESTART_MIN_FREE_PIP
     try:
@@ -2248,13 +2355,24 @@ def _run_pending_install(cmd: list) -> "tuple[int, list]":
     return proc.wait(), tail
 
 
-def _write_restart_outcome(data: "dict | None", *, status: str, returncode,
-                           message: str, log_tail: list) -> None:
+def _write_restart_outcome(outcome_path: Path, data: "dict | None", *,
+                           status: str, returncode, message: str,
+                           log_tail: list, log_file: "Path | None" = None) -> dict:
     """Record how the job ended, where the server that comes back will look.
 
     The schema is `restart.write_last_restart`'s, and `status` and `message`
     are the contract the SPA reads -- so `message` is written for a person who
-    was not watching, not for a log parser.
+    was not watching, not for a log parser. `log_file` and `relaunch` are
+    additions of this writer's; R1's reader ignores keys it does not know, on
+    purpose, and the SPA reads neither.
+
+    *outcome_path* is handed in rather than looked up: the helper knows which
+    directory this job's claim came out of, and re-deriving it from the
+    environment would let a `CODEFYUI_USER_DATA_DIR` that changed between the
+    server's launch and this process file the report where nobody looks.
+
+    Returns the record, so the caller can amend it once the relaunch has
+    happened.
     """
     data = data or {}
 
@@ -2271,28 +2389,58 @@ def _write_restart_outcome(data: "dict | None", *, status: str, returncode,
         "returncode": returncode,
         "message": message,
         "log_tail": "\n".join(log_tail),
+        "log_file": str(log_file) if log_file is not None else None,
+        # Filled in by `_note_relaunch` once there is an answer. Present and
+        # null rather than absent, so "not recorded yet" and "an older dev.py
+        # wrote this" stay different facts.
+        "relaunch": None,
         "finished_at": _iso_now(),
     }
-    if not _write_json_atomic(_last_restart_file(), record):
+    if not _write_json_atomic(outcome_path, record):
         err("無法寫入重啟安裝的結果紀錄",
             "could not write the restart-install outcome record")
+    return record
 
 
 def _finish_pending_job(pending_path: Path, data: "dict | None", *, status: str,
-                        returncode, message: str, log_tail: list) -> None:
+                        returncode, message: str, log_tail: list,
+                        log_file: "Path | None" = None) -> dict:
     """Record the outcome, then drop the claim. In that order: the claim is
     what stops a second install starting, and it must not be released before
     there is something to read in its place."""
-    _write_restart_outcome(data, status=status, returncode=returncode,
-                           message=message, log_tail=log_tail)
+    record = _write_restart_outcome(
+        pending_path.parent / OUTCOME_FILE_NAME, data, status=status,
+        returncode=returncode, message=message, log_tail=log_tail,
+        log_file=log_file)
     try:
         pending_path.unlink(missing_ok=True)
     except OSError:
         warn("無法刪除待處理的重啟安裝紀錄",
              "could not delete the pending restart file")
+    return record
 
 
-def _relaunch_server(launcher: list, relaunch_argv: list, job_id: str) -> "int | None":
+def _note_relaunch(outcome_path: Path, record: dict, pid: "int | None") -> None:
+    """Add the relaunch's own result to the record that was just written.
+
+    `status` is deliberately left alone: the install really did succeed or
+    fail, and overwriting that would destroy the one field the SPA reads to
+    tell the user what happened to their package. What a failed relaunch adds
+    is a second fact -- there is no server -- and the only person who can act
+    on it is at a terminal, so it goes in `relaunch`, in `message`, and (via
+    `log_file`) points at the log that says why.
+    """
+    record["relaunch"] = "ok" if pid is not None else "failed"
+    if pid is None:
+        record["message"] = (
+            f"{record.get('message') or ''} — and the server could not be "
+            f"started again; see {record.get('log_file')}").strip(" —")
+    if not _write_json_atomic(outcome_path, record):
+        err("無法更新重啟安裝的結果紀錄",
+            "could not update the restart-install outcome record")
+
+
+def _relaunch_server(launcher: list, relaunch_argv: list, log_path: Path) -> "int | None":
     """Start the server again, detached, and return its pid.
 
     Runs even when the install failed. A user who asked for a package and got
@@ -2305,6 +2453,14 @@ def _relaunch_server(launcher: list, relaunch_argv: list, job_id: str) -> "int |
     output goes to the job log FILE and never a pipe -- this process exits
     seconds later, and a pipe with nobody left to read it fills up and blocks
     the server mid-start.
+
+    No `env=`: the new server INHERITS this process's environment, which is
+    the environment the original `cdui start` exported and the server handed
+    down (`CODEFYUI_LAUNCHER`, `CODEFYUI_RELAUNCH_ARGV`,
+    `CODEFYUI_OUTER_PYTHON`, `CODEFYUI_USER_DATA_DIR`). `start()` re-exports
+    the first two from scratch anyway, but the user-data root is not one it
+    can rederive -- and handing over a scrubbed environment is how the SECOND
+    restart of a session finds no launcher and refuses.
     """
     cmd = [*launcher, "start", *relaunch_argv]
     detach: dict = {}
@@ -2315,7 +2471,6 @@ def _relaunch_server(launcher: list, relaunch_argv: list, job_id: str) -> "int |
     else:
         detach["start_new_session"] = True
 
-    log_path = _restart_log_file(job_id)
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "ab") as log_file:
@@ -2335,7 +2490,20 @@ def _relaunch_server(launcher: list, relaunch_argv: list, job_id: str) -> "int |
 
 
 def _run_pending_job(pending_path: Path) -> int:
-    """Finish one restart-mode install. Returns the process exit code.
+    """Finish one restart-mode install, and say so on the way out.
+
+    The closing line matters more than it looks: this runs detached, into a
+    log file nobody is watching, and "the last thing in the log" is how a
+    person tells an install that ended from one that was killed halfway.
+    """
+    code = _run_pending_steps(pending_path)
+    print(t(f"=== 重啟安裝結束：離開碼 {code} ===",
+            f"=== restart install finished: exit code {code} ==="), flush=True)
+    return code
+
+
+def _run_pending_steps(pending_path: Path) -> int:
+    """The job itself. Returns the process exit code.
 
     0 installed, 1 the install did not happen or failed (and the server was
     started again anyway), 2 refused before anything ran.
@@ -2351,13 +2519,43 @@ def _run_pending_job(pending_path: Path) -> int:
     if problem is not None:
         err(f"拒絕執行這個重啟安裝：{problem}",
             f"refusing to run this restart install: {problem}")
-        _write_restart_outcome(data, status="failed", returncode=None,
-                               message=f"refused: {problem}", log_tail=[])
+        if data is not None:
+            # A file that could not even be parsed names no job, and writing
+            # "refused" over `last_restart_job.json` would erase the report of
+            # the last restart that DID run -- which is the thing the user is
+            # most likely opening the panel to read. No job, no record.
+            _write_restart_outcome(
+                pending_path.parent / OUTCOME_FILE_NAME, data, status="failed",
+                returncode=None, message=f"refused: {problem}", log_tail=[])
         return 2
 
     section(f"重啟安裝：{data.get('pack_id')}（{data['kind']}）",
             f"Restart install: {data.get('pack_id')} ({data['kind']})")
     job_id = data.get("job_id") if isinstance(data.get("job_id"), str) else ""
+    log_path = _restart_log_file(job_id, pending_path.parent)
+
+    # Claim the job by name, before the wait. `cdui start` reads this back to
+    # tell a restart that is still working from one whose helper never
+    # started -- and this is the only moment at which that can be written
+    # safely: the server has been told to exit and is not coming back to its
+    # own claim, and no second helper exists yet.
+    data["helper_pid"] = os.getpid()
+    if not _write_json_atomic(pending_path, data):
+        warn("無法在重啟紀錄中登記 helper PID；"
+             "這段期間的 cdui start 會以為安裝已中斷",
+             "could not record this helper's PID in the pending file; "
+             "a `cdui start` meanwhile will read the restart as abandoned")
+
+    record: dict = {}
+
+    def _finish(*, status: str, returncode, message: str, log_tail: list) -> None:
+        """Write the outcome and drop the claim, keeping the record so the
+        `finally` below can add what happened to the relaunch."""
+        record.clear()
+        record.update(_finish_pending_job(
+            pending_path, data, status=status, returncode=returncode,
+            message=message, log_tail=log_tail, log_file=log_path))
+
     try:
         how = _wait_for_server_exit(data["server_pid"])
         if how == "exited":
@@ -2371,16 +2569,15 @@ def _run_pending_job(pending_path: Path) -> int:
         shortfall = _restart_disk_shortfall(data["kind"])
         if shortfall is not None:
             err(f"磁碟空間不足，取消這次安裝：{shortfall}", shortfall)
-            _finish_pending_job(pending_path, data, status="failed",
-                                returncode=None, message=shortfall, log_tail=[])
+            _finish(status="failed", returncode=None, message=shortfall,
+                    log_tail=[])
             return 1
 
         cmd, why = _pending_install_cmd(data)
         if cmd is None:
             err(f"無法組出安裝指令：{why}",
                 f"cannot build the install command: {why}")
-            _finish_pending_job(pending_path, data, status="failed",
-                                returncode=None, message=why, log_tail=[])
+            _finish(status="failed", returncode=None, message=why, log_tail=[])
             return 1
 
         print("    " + " ".join(cmd), flush=True)
@@ -2389,22 +2586,22 @@ def _run_pending_job(pending_path: Path) -> int:
         except OSError as exc:
             message = f"could not run the installer: {exc}"
             err(f"無法執行安裝程式：{exc}", message)
-            _finish_pending_job(pending_path, data, status="failed",
-                                returncode=None, message=message, log_tail=[])
+            _finish(status="failed", returncode=None, message=message,
+                    log_tail=[])
             return 1
 
         if code == 0:
-            _finish_pending_job(
-                pending_path, data, status="ok", returncode=0,
-                message=f"{data.get('pack_id')} installed", log_tail=tail)
+            _finish(status="ok", returncode=0,
+                    message=f"{data.get('pack_id')} installed", log_tail=tail)
             return 0
-        _finish_pending_job(
-            pending_path, data, status="failed", returncode=code,
-            message=f"the installer exited with {code}", log_tail=tail)
+        _finish(status="failed", returncode=code,
+                message=f"the installer exited with {code}", log_tail=tail)
         return 1
     finally:
-        _relaunch_server(list(data["launcher"]), list(data["relaunch_argv"]),
-                         job_id)
+        pid = _relaunch_server(list(data["launcher"]),
+                               list(data["relaunch_argv"]), log_path)
+        if record:
+            _note_relaunch(pending_path.parent / OUTCOME_FILE_NAME, record, pid)
 
 
 def packs_run_pending() -> None:
@@ -2460,13 +2657,23 @@ def _print_restart_notice() -> None:
     Never raises: this is a dashboard.
     """
     try:
-        pending = _read_json_file(_pending_restart_file())
+        pending_path = _pending_restart_file()
+        pending = _read_json_file(pending_path)
         if pending is not None:
-            _kv(t("重啟安裝", "Restart install"),
-                f"{YELLOW}● {t('進行中', 'in progress')}{RESET}  "
-                f"{pending.get('pack_id')}  "
-                f"{DIM}{t('等待 PID', 'waiting for PID')} "
-                f"{pending.get('server_pid')}{RESET}")
+            # The SAME predicate `cdui start` decides on, so the two commands
+            # cannot describe one file differently to one confused user.
+            if _pending_state(pending_path, pending) == "finishing":
+                _kv(t("重啟安裝", "Restart install"),
+                    f"{YELLOW}● {t('進行中', 'in progress')}{RESET}  "
+                    f"{pending.get('pack_id')}  "
+                    f"{DIM}{t('等待 PID', 'waiting for PID')} "
+                    f"{pending.get('server_pid')}{RESET}")
+            else:
+                hint = t("下次 cdui start 會清掉它",
+                         "the next `cdui start` clears it")
+                _kv(t("重啟安裝", "Restart install"),
+                    f"{RED}✗ {t('已中斷', 'abandoned')}{RESET}  "
+                    f"{pending.get('pack_id')}  {DIM}{hint}{RESET}")
 
         last = _read_json_file(_last_restart_file())
         if last is None:
@@ -2474,10 +2681,14 @@ def _print_restart_notice() -> None:
         age = _iso_age_seconds(last.get("finished_at"))
         if age is None or age > RESTART_NOTICE_S:
             return
-        ok = last.get("status") == "ok"
-        mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
+        failed = last.get("status") != "ok" or last.get("relaunch") == "failed"
+        mark = f"{RED}✗{RESET}" if failed else f"{GREEN}✓{RESET}"
         _kv(t("上次重啟安裝", "Last restart"),
             f"{mark} {last.get('pack_id')}  {DIM}{last.get('message')}{RESET}")
+        # Only when something went wrong: the log is thousands of lines of uv
+        # output, and pointing at it after a clean install is noise.
+        if failed and last.get("log_file"):
+            _kv("", f"{DIM}{t('紀錄', 'log')} → {last['log_file']}{RESET}")
     except Exception:
         return
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -506,80 +507,156 @@ def test_outer_python_prefers_the_recording_over_this_interpreter(monkeypatch,
     assert dev._outer_python() == str(recorded)
 
 
-# ── the stale-pending preflight ───────────────────────────────────────────
+# ── the pending-restart preflight ─────────────────────────────────────────
+#
+# One file, two failure modes, and they pull in opposite directions.
 #
 # A claim left behind by a server that crashed between writing the file and
 # exiting refuses every future restart-mode install with "one is already
-# pending". The server clears one in its own lifespan; `cdui start` clears it
-# BEFORE the server exists, which is the case the lifespan cannot reach — a
-# claim whose writer never came back at all.
+# pending", so it has to be cleared. But a claim belonging to a restart that
+# is STILL RUNNING must not be — starting a second server on the port the
+# helper is about to relaunch onto puts a process back on the very files it
+# is replacing, which is the whole failure a restart-mode install exists to
+# avoid.
+#
+# `_pending_state` is what tells them apart, and `cdui status` renders the
+# same answer, so the two commands can never describe one file differently.
 
 
-def _write_pending(control: Path, *, pid: int, age_s: float = 0.0) -> Path:
-    control.mkdir(parents=True, exist_ok=True)
+@pytest.fixture
+def control(tmp_path, monkeypatch) -> Path:
+    """The packs control directory `cdui start` reads its claim out of."""
+    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    path = tmp_path / "data" / "packs"
+    path.mkdir(parents=True)
+    return path
+
+
+def _write_pending(control: Path, *, pid: int = 4242, age_s: float = 0.0,
+                   helper_pid: "int | None" = None) -> Path:
     path = control / "pending_restart.json"
     created = datetime.now(timezone.utc) - timedelta(seconds=age_s)
-    path.write_text(json.dumps({
+    claim = {
         "schema": 1, "job_id": "j1", "pack_id": "gpu-torch", "kind": "torch",
         "index_url": "https://download.pytorch.org/whl/cu128",
         "packages": ["torch", "torchvision"], "specs": [],
         "venv_python": "/nowhere/python", "server_pid": pid,
         "launcher": ["/py", "/dev.py"], "relaunch_argv": [],
         "created_at": created.isoformat(),
-    }), encoding="utf-8")
+    }
+    if helper_pid is not None:
+        claim["helper_pid"] = helper_pid
+    path.write_text(json.dumps(claim), encoding="utf-8")
     return path
 
 
-def test_start_preflight_deletes_a_stale_pending_and_keeps_a_live_one(
-        started, monkeypatch, tmp_path, capsys):
-    control = tmp_path / "data" / "packs"
-    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+def test_start_stands_down_while_a_helper_is_still_running(
+        started, monkeypatch, control, capsys):
+    """(a) A live `helper_pid`. Not an error: the user asked for a running
+    server and one is on its way — from the process that is mid-install."""
+    path = _write_pending(control, helper_pid=777)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: pid == 777)
     _argv(monkeypatch)
 
-    # 1. the writer is gone -> the claim is wreckage, and it is deleted.
-    path = _write_pending(control, pid=4242)
-    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
-    dev.start()
-    assert not path.exists()
-    out = capsys.readouterr().out
-    assert "restart" in out.lower(), "a deletion the user cannot see is a mystery"
+    dev.start()          # no SystemExit: standing down is not a failure
 
-    # 2. the writer is alive and the claim is fresh -> hands off. Another
-    #    server is mid-restart and its helper is about to read this file.
-    path = _write_pending(control, pid=4242)
-    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+    assert started["popen"] is None, "a second server would fight the helper"
+    assert path.exists(), "the helper still needs its own claim"
+    out = capsys.readouterr().out
+    assert "cdui status" in out, "and the user is told where to watch it"
+
+
+def test_start_clears_a_claim_whose_helper_died(started, monkeypatch, control,
+                                                capsys):
+    """(b) The helper wrote its pid and then died — nothing will ever finish
+    this install, and nothing else may start until the claim is gone."""
+    path = _write_pending(control, helper_pid=777)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    _argv(monkeypatch)
+
     dev.start()
+
+    assert not path.exists()
+    assert started["popen"] is not None, "and the server starts"
+    assert "restart" in capsys.readouterr().out.lower(), (
+        "a deletion the user cannot see is a mystery")
+
+
+def test_start_clears_a_claim_that_is_too_old_even_with_a_live_helper(
+        started, monkeypatch, control):
+    """(b) The fifteen-minute rule outranks everything else. It is the
+    guarantee that no state of this file can lock a user out of their own
+    server — including a pid that was recycled onto a live process."""
+    path = _write_pending(control, helper_pid=777,
+                          age_s=dev.STALE_PENDING_S + 60)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
+    _argv(monkeypatch)
+
+    dev.start()
+
+    assert not path.exists()
+    assert started["popen"] is not None
+
+
+def test_start_stands_down_for_a_claim_whose_helper_has_not_written_its_pid(
+        started, monkeypatch, control):
+    """(c) The gap this rule exists for: the server has spawned the helper
+    and exited, and the helper is a detached process that has not reached its
+    first statement yet. Deleting here would race a restart that is fine."""
+    path = _write_pending(control, age_s=5)
+    monkeypatch.setattr(dev, "_pid_alive", lambda pid: False)
+    _argv(monkeypatch)
+
+    dev.start()
+
+    assert started["popen"] is None
     assert path.exists()
 
 
-def test_start_preflight_deletes_a_claim_that_is_merely_too_old(
-        started, monkeypatch, tmp_path):
-    """The pid check cannot catch a machine that rebooted and handed the same
-    number to something else; the age can."""
-    control = tmp_path / "data" / "packs"
-    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+def test_start_clears_a_claim_whose_helper_never_arrived(started, monkeypatch,
+                                                         control):
+    """(d) Past the grace window with still no `helper_pid`: the server wrote
+    the claim and died before its helper ever ran, so nobody is coming."""
+    path = _write_pending(control, age_s=dev.HELPER_START_GRACE_S + 30)
     monkeypatch.setattr(dev, "_pid_alive", lambda pid: True)
     _argv(monkeypatch)
 
-    path = _write_pending(control, pid=4242, age_s=dev.STALE_PENDING_S + 60)
     dev.start()
+
     assert not path.exists()
+    assert started["popen"] is not None
 
 
-def test_start_preflight_deletes_a_pending_file_nothing_can_read(
-        started, monkeypatch, tmp_path):
-    """Writes are atomic on both sides, so an unreadable file is not a
-    half-written claim — it is not a claim, and leaving it there would refuse
-    every install forever."""
-    control = tmp_path / "data" / "packs"
-    control.mkdir(parents=True)
+def test_start_falls_back_to_the_files_own_age(started, monkeypatch, control):
+    """`created_at` is written by another process and may be missing or
+    nonsense in exactly the file this has to judge. The mtime is the second
+    clock, and a claim with neither readable age is treated as old — an age
+    nobody can establish must not be the reason a user has no server."""
     path = control / "pending_restart.json"
-    path.write_bytes(b"\xff\xfe not json at all")
-    monkeypatch.setenv("CODEFYUI_USER_DATA_DIR", str(tmp_path / "data"))
+    path.write_text(json.dumps({"schema": 1, "pack_id": "gpu-torch",
+                                "server_pid": 4242}), encoding="utf-8")
+    old = time.time() - (dev.HELPER_START_GRACE_S + 60)
+    os.utime(path, (old, old))
     _argv(monkeypatch)
 
     dev.start()
+
     assert not path.exists()
+
+
+def test_start_deletes_a_pending_file_nothing_can_read(started, monkeypatch,
+                                                       control):
+    """Writes are atomic on both sides, so an unreadable file is not a
+    half-written claim — it is not a claim, and leaving it there would refuse
+    every install forever."""
+    path = control / "pending_restart.json"
+    path.write_bytes(b"\xff\xfe not json at all")
+    _argv(monkeypatch)
+
+    dev.start()
+
+    assert not path.exists()
+    assert started["popen"] is not None
 
 
 def test_start_says_nothing_when_there_is_no_pending_file(started, monkeypatch,
@@ -590,3 +667,20 @@ def test_start_says_nothing_when_there_is_no_pending_file(started, monkeypatch,
     _argv(monkeypatch)
     dev.start()
     assert "restart" not in capsys.readouterr().out.lower()
+
+
+def test_a_failed_delete_does_not_stop_the_server_starting(started, monkeypatch,
+                                                           control):
+    """The claim is dead either way, and the server the user asked for
+    matters more than the tidying."""
+    _write_pending(control, age_s=dev.STALE_PENDING_S + 60)
+
+    def _refuse(self, *a, **kw):
+        raise OSError("held open by something else")
+
+    monkeypatch.setattr(Path, "unlink", _refuse)
+    _argv(monkeypatch)
+
+    dev.start()
+
+    assert started["popen"] is not None
