@@ -94,6 +94,18 @@
                 離開碼：0 成功、1 失敗、2 拒絕執行（id 錯誤、相依未裝、無法確認）、
                 3 需要重啟伺服器（會印出該執行的指令）、130 Ctrl+C 取消。
 
+    cache <subcmd> ...
+                查看與清除「衍生快取」—— 全部都能從還在磁碟上的輸入重算回來，
+                所以刪掉只花 CPU。目前是 LMTokenizedDataset 的 lm_blocks
+                （每種設定一個檔、每個 token 8 bytes，本來永遠不會自己清掉）。
+                下載回來的模型與素材不在此列，那是 cdui packs remove 的事。
+                    cdui cache list                      # 有哪些、各佔多少空間
+                    cdui cache prune                     # 刪掉（會先問）
+                    cdui cache prune --older-than 30     # 只刪 30 天沒寫入的
+                    cdui cache prune --yes               # 不問直接刪
+                離開碼：0 完成、1 取消或刪不掉、2 拒絕執行（參數錯誤、無法確認）、
+                3 伺服器執行中（圖可能正在讀這些檔），130 Ctrl+C 取消。
+
 環境變數：
     CODEFYUI_RELEASE_TAG    指定要下載的 release tag（預設：latest）
     CODEFYUI_FORCE_BUILD    設為 1 強制本地 build，不下載 release dist
@@ -4475,6 +4487,34 @@ def _dispatch_project_subcommand() -> int:
     return project_cli.main(sys.argv[2:])
 
 
+def _dispatch_cache_subcommand() -> int:
+    """Hand off `cdui cache <subcmd> ...` to scripts/cache.py.
+
+    Same venv hop as the other subgroups -- cache.py asks `app.core.data_paths`
+    where the data root is, so it has to be the venv's interpreter first.
+
+    No `_ensure_uv()`, unlike the other three: that call DOWNLOADS uv from the
+    network when it is missing, and this group spawns no package manager at
+    all. Listing a directory, and deleting from it, must not wait on
+    astral.sh -- least of all on the lab network where somebody is clearing
+    disk space because they have run out of it.
+
+    `--project` is NOT parsed here, unlike in `start` and `dev`: cache.py
+    declares it on both its subcommands (so `--help` lists it and the two
+    spellings argparse already knows are the only ones to support) and calls
+    `_activate_project` itself. Parsing it before this hop would print the
+    "Project -> <dir>" line twice, once in each process, because the re-exec
+    replays the same argv.
+    """
+    _exec_into_venv_if_available()
+    _apply_dev_env()
+    for path in (Path(__file__).resolve().parent, BACKEND_DIR):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import cache as cache_cli  # noqa: PLC0415 — late import: needs venv
+    return cache_cli.main(sys.argv[2:])
+
+
 def _dispatch_packs_subcommand() -> int:
     """Hand off `cdui packs <subcmd> ...` to scripts/packs.py.
 
@@ -4506,6 +4546,7 @@ SUBCOMMAND_GROUPS = {
     "plugin": _dispatch_plugin_subcommand,
     "project": _dispatch_project_subcommand,
     "packs": _dispatch_packs_subcommand,
+    "cache": _dispatch_cache_subcommand,
 }
 
 

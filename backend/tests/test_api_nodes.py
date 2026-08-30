@@ -489,11 +489,16 @@ async def test_every_param_carries_the_option_packs_key(test_client):
 #: ``TextEmbedding`` ships in the same PR and is pinned from birth rather
 #: than translated and then forgotten: all nine of its params are knobs a
 #: learner turns, and the ratchet below would have been satisfied by the
-#: block alone.
+#: block alone. ``LMTokenizedDataset`` is #306's, and the same story a third
+#: time: it had a block, so nothing checked its params, and #306 rewrote two
+#: of those translations to price the disk cache. Its ``cache`` and
+#: ``cache_dir`` are what a reader reaches for after seeing `cdui cache
+#: list`, so they are the last two that should be allowed back into English.
 TRANSLATED_NODES = (
     "Conv2dExplicit",
     "WordVector",
     "TextEmbedding",
+    "LMTokenizedDataset",
     "DocumentLoader",
     "TextChunker",
     "VectorStore",
@@ -587,7 +592,14 @@ def test_training_node_params_all_have_a_zh_tw_description():
         assert block, f"{node_name} has no zh-TW entry at all"
         body = block.group(1)
         for param in node_cls.define_params():
-            if not re.search(rf"\n      {re.escape(param.name)}: ", body):
+            # `:\s`, not `: ` -- the formatter puts a long translation on the
+            # line BELOW its key, and fifteen params in the catalog are
+            # written that way. Requiring the space made those read as
+            # untranslated, which is a formatting fact reported as a missing
+            # translation: the first node listed here with a long enough
+            # string would have failed the file for a wrap. The indent stays
+            # exact, so a key at any other nesting level still does not count.
+            if not re.search(rf"\n      {re.escape(param.name)}:\s", body):
                 missing.append(f"{node_name}.{param.name}")
 
     assert not missing, (
