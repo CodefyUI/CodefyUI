@@ -186,12 +186,19 @@ export function getPortColor(dataType: string): string {
  * never edit an entry — when a value in `DATA_TYPE_COLORS` changes: the old
  * value goes in with the type it belonged to.
  *
- * Keys are compared case-insensitively; a graph may have been hand-edited.
+ * A LIST and not a map keyed by hex, so that "append, never edit" stays
+ * possible in the case that needs it most: palettes get reshuffled, and one
+ * value can have belonged to two types at different times. Keyed by hex, the
+ * second of those could only be recorded by overwriting the first. Two
+ * entries sharing a hex are resolved by the edge's CURRENT type, which the
+ * migration has to consult anyway.
+ *
+ * Hexes are compared case-insensitively; a graph may have been hand-edited.
  */
-export const STALE_TYPE_STROKES: Record<string, string> = {
+export const STALE_TYPE_STROKES: { hex: string; type: string }[] = [
   // #197 item 5 lightened TRANSFORM to '#FFE082' to part it from DATASET.
-  '#FFC107': 'TRANSFORM',
-};
+  { hex: '#FFC107', type: 'TRANSFORM' },
+];
 
 /**
  * Evaluate a param's ``visible_when`` rule against the current params on
@@ -549,7 +556,7 @@ function resolveEdgeStroke(
  * user drew them, so a palette change leaves old wires in the old colour
  * forever. This corrects exactly the wires it can prove are stale: the baked
  * stroke has to be a hex listed in {@link STALE_TYPE_STROKES}, AND the edge
- * has to still derive to the data type that hex belonged to. A wire wearing a
+ * has to still derive to a data type that hex belonged to. A wire wearing a
  * colour we never shipped, one whose type has since changed, one whose source
  * node cannot be resolved, and one with no baked stroke at all (every
  * committed example) are all left exactly as they are.
@@ -561,18 +568,27 @@ export function migrateStaleEdgeStrokes(
   edges: import('@xyflow/react').Edge[],
   nodes: Node<NodeData>[],
 ): import('@xyflow/react').Edge[] {
-  const stale = edges.some(
-    (e) => STALE_TYPE_STROKES[String((e.style as any)?.stroke).toUpperCase()],
-  );
+  /** Every type this baked stroke is a retired colour of — usually none. */
+  const retiredFor = (edge: import('@xyflow/react').Edge): string[] => {
+    const stroke = (edge.style as { stroke?: string } | undefined)?.stroke;
+    if (typeof stroke !== 'string') return [];
+    return STALE_TYPE_STROKES.filter(
+      (s) => s.hex.toUpperCase() === stroke.toUpperCase(),
+    ).map((s) => s.type.toUpperCase());
+  };
+
+  const stale = edges.some((e) => retiredFor(e).length > 0);
   if (!stale) return edges;
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   return edges.map((e) => {
-    const stroke = (e.style as { stroke?: string } | undefined)?.stroke;
-    const wasType = stroke ? STALE_TYPE_STROKES[stroke.toUpperCase()] : undefined;
-    if (!wasType) return e;
-    const nowType = resolveEdgeDataType(e, nodeMap);
-    if (nowType?.toUpperCase() !== wasType) return e;
-    return { ...e, style: { ...e.style, stroke: getPortColor(wasType) } };
+    const wasTypes = retiredFor(e);
+    if (wasTypes.length === 0) return e;
+    // Which of them applies — if any — is decided by what the edge carries
+    // NOW. A wire whose type has changed since it was drawn is wearing the
+    // hex by coincidence, and repainting it would be a guess.
+    const nowType = resolveEdgeDataType(e, nodeMap)?.toUpperCase();
+    if (!nowType || !wasTypes.includes(nowType)) return e;
+    return { ...e, style: { ...e.style, stroke: getPortColor(nowType) } };
   });
 }
 

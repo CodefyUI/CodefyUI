@@ -308,4 +308,89 @@ describe('loadGraphDocument clears the previous document UI residue', () => {
     openAnother();
     expect(tab().outputSummaries).toEqual({});
   });
+
+  it('clears the last run id of a finished run', () => {
+    // `lastRunId` names the run of the graph that was just REPLACED. Left
+    // behind, the Inspector fetches that run for the new graph's node ids and
+    // the edge tooltip offers "View stats" into it, while the cards next to
+    // them (summaries cleared) correctly say "run this graph first" -- two
+    // surfaces disagreeing about whether this document has ever run.
+    store().setLastRunId(tab().id, 'run-of-the-old-graph');
+    store().setTabStatus(tab().id, 'completed');
+    openAnother();
+    expect(tab().lastRunId).toBeNull();
+  });
+
+  it('keeps the run id while the run is in flight', () => {
+    // The one legitimate reason to keep it, and the rule `buildPersistedTab`
+    // already encodes for the same field: a run still running is named by it
+    // (re-attach, Stop), and that run does not belong to the document.
+    store().setLastRunId(tab().id, 'run-still-going');
+    store().setTabStatus(tab().id, 'running');
+    openAnother();
+    expect(tab().lastRunId).toBe('run-still-going');
+  });
+});
+
+/**
+ * `clear()` and `loadGraphDocument` both replace the document, so they must
+ * leave the same residue behind -- one shared helper writes both, and this
+ * test is what stops the two from drifting apart again (review Minor 8).
+ */
+describe('clear leaves the same per-document residue as opening a document', () => {
+  /** Seed every residue field on a node id both paths will keep seeing. */
+  const seedResidue = () => {
+    store().setNodes([node('same-id')]);
+    store().setSelectedNodeId('same-id');
+    store().openPresetModal('same-id');
+    store().openLayersModal('same-id');
+    store().openNodeDetail('same-id', { tab: 'code', port: 'same-id::out' });
+    store().markDirty('same-id');
+    store().setTabOutputSummary(tab().id, 'same-id', {
+      out: { type: 'tensor', shape: [2, 2] },
+    });
+    store().setLastRunId(tab().id, 'run-of-the-old-graph');
+    store().setTabStatus(tab().id, 'completed');
+  };
+
+  /** The fields both paths are answerable for, read off a tab. */
+  const residue = () => {
+    const t = tab();
+    return {
+      selectedNodeId: t.selectedNodeId,
+      presetModalNodeId: t.presetModalNodeId,
+      layersModalNodeId: t.layersModalNodeId,
+      nodeDetailNodeId: t.nodeDetailNodeId,
+      nodeDetailTab: t.nodeDetailTab,
+      nodeDetailPort: t.nodeDetailPort,
+      dirtyNodeIds: [...t.dirtyNodeIds],
+      outputSummaries: t.outputSummaries,
+      lastRunId: t.lastRunId,
+    };
+  };
+
+  const EMPTY = {
+    selectedNodeId: null,
+    presetModalNodeId: null,
+    layersModalNodeId: null,
+    nodeDetailNodeId: null,
+    nodeDetailTab: null,
+    nodeDetailPort: null,
+    dirtyNodeIds: [],
+    outputSummaries: {},
+    lastRunId: null,
+  };
+
+  it('leaves nothing that opening a document would not leave', () => {
+    seedResidue();
+    store().loadGraphDocument({ nodes: [node('same-id')], edges: [], boundFile: null });
+    const afterOpen = residue();
+
+    seedResidue();
+    store().clear();
+    const afterClear = residue();
+
+    expect(afterOpen).toEqual(EMPTY);
+    expect(afterClear).toEqual(afterOpen);
+  });
 });

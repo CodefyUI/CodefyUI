@@ -561,6 +561,10 @@ const chroma = (colour) => {
   return Math.hypot(a, b);
 };
 
+/** Below this chroma a colour has no hue to speak of, so no rule below reads
+ *  one off it. Shared by 11b and 11c so "grey" means one thing in this file. */
+const MIN_HUE_CHROMA = 12;
+
 /* 11b. A light hue is a restatement of its dark counterpart for a white page,
         not a new colour: same hue, lower lightness. If someone "fixes" a
         contrast failure by rotating a hue instead of darkening it, the export
@@ -576,13 +580,22 @@ const LIGHT_TWINS = [
 ];
 for (const [slugs, canvas, light] of LIGHT_TWINS) {
   for (const slug of slugs) {
-    const drift = hueGap(t(canvas(slug)), t(light(slug)));
-    checked += 1;
-    if (drift > 12) {
-      failures.push(
-        `${light(slug)} sits ${drift.toFixed(1)} degrees of hue from ${canvas(slug)} ` +
-          `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
-      );
+    // A grey has no hue to drift, so the angle between two of them is the
+    // angle between two rounding residues (--type-any and its light twin are
+    // deliberately neutral). Same chroma guard 11c uses below, so this file
+    // has one definition of "too grey to have a hue". The lightness half of
+    // the rule still applies — a grey must not be lightened either.
+    const hued =
+      chroma(t(canvas(slug))) >= MIN_HUE_CHROMA && chroma(t(light(slug))) >= MIN_HUE_CHROMA;
+    if (hued) {
+      const drift = hueGap(t(canvas(slug)), t(light(slug)));
+      checked += 1;
+      if (drift > 12) {
+        failures.push(
+          `${light(slug)} sits ${drift.toFixed(1)} degrees of hue from ${canvas(slug)} ` +
+            `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
+        );
+      }
     }
     // "Darkened" is the other half, and it is load-bearing: every floor this
     // palette is held to is a contrast against a white page, which only a
@@ -616,7 +629,17 @@ for (const [slugs, canvas, light] of LIGHT_TWINS) {
         at 4.7:1 on white — so holding it to this would be a repaint, not a
         token edit.) */
 const FAMILY_HUE_DEGREES = 20;
-const FAMILY_MIN_CHROMA = 12;
+const FAMILY_MIN_CHROMA = MIN_HUE_CHROMA;
+/* The floor, in L*, and where the number came from: optimizer/image is the
+   pair that sits closest to it — 4.46 L* apart at a hue gap of 9.1 degrees,
+   identically in both palettes, and the palette's closest pair by dE00 (8.23)
+   besides. So 4 is one notch of headroom under a real pair, not a round
+   number, and a one-hex tweak of either of those two trips this rule.
+
+   When it does trip on a pair that is red beside orange rather than two
+   ambers, read the message's advice as the wrong half: darkening one of them
+   buys separation the eye reads as "that colour again, dimmer". Move the hues
+   apart instead and the pair leaves the 20-degree window on its own. */
 const FAMILY_MIN_LIGHTNESS = 4;
 for (const theme of DIAGRAM_THEMES) {
   const wires = DIAGRAM_TYPES.map((slug) => [slug, t(theme.type(slug))]);

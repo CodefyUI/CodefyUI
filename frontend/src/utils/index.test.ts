@@ -449,9 +449,27 @@ describe('migrateStaleEdgeStrokes', () => {
     (e.style as { stroke?: string } | undefined)?.stroke;
 
   it('names the old amber as TRANSFORM', () => {
-    // One entry today. The map is the record of every palette hex a saved
+    // One entry today. The list is the record of every palette hex a saved
     // graph may still be carrying, so a future palette change appends here.
-    expect(STALE_TYPE_STROKES['#FFC107']).toBe('TRANSFORM');
+    expect(STALE_TYPE_STROKES).toContainEqual({ hex: '#FFC107', type: 'TRANSFORM' });
+  });
+
+  it('lets one retired hex name more than one type', () => {
+    // Why it is a list and not a map keyed by hex: palettes get reshuffled,
+    // and the same value can have belonged to two types at different times.
+    // Keyed by hex, the second one could not be added without editing the
+    // first -- and "append, never edit" is the whole safety property of this
+    // record. The edge's CURRENT type picks which entry applies.
+    STALE_TYPE_STROKES.push({ hex: '#FFC107', type: 'MODEL' });
+    try {
+      const [migrated] = migrateStaleEdgeStrokes(
+        [edge('#FFC107')],
+        [flowNode('a', def('MODEL'))],
+      );
+      expect(strokeOf(migrated)).toBe(DATA_TYPE_COLORS['MODEL']);
+    } finally {
+      STALE_TYPE_STROKES.pop();
+    }
   });
 
   it('repaints a stale TRANSFORM stroke in the current amber', () => {

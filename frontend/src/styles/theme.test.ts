@@ -50,6 +50,45 @@ const cssVar = (name: string): string => {
   return value;
 };
 
+/**
+ * CIE Lab (D65) for a `#rrggbb`, and the two readings taken off it.
+ *
+ * A copy of the maths in `scripts/check-contrast.mjs`, deliberately: that file
+ * is a gate, not a module -- it has no exports and runs its whole suite on
+ * import, so importing it here would run the gate inside vitest. Eight lines
+ * of a fully specified standard is the cheaper duplicate. The matrix, the
+ * white point and the 216/24389 knee are the same ones the gate uses, so the
+ * two agree to the last digit; any drift shows up as this test and the gate
+ * disagreeing about the same pair.
+ */
+const lab = (hex: string): [number, number, number] => {
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const c = parseInt(hex.slice(1 + i, 3 + i), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  const xyz = [
+    0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
+    0.2126729 * r + 0.7151522 * g + 0.072175 * b,
+    0.0193339 * r + 0.119192 * g + 0.9503041 * b,
+  ];
+  const wp = [0.95047, 1.0, 1.08883];
+  const f = (v: number) => (v > 216 / 24389 ? Math.cbrt(v) : ((v * 24389) / 27 + 16) / 116);
+  const [fx, fy, fz] = xyz.map((v, i) => f(v / wp[i]));
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+};
+
+const lstar = (hex: string): number => lab(hex)[0];
+
+/** Lab chroma. Below ~12 a colour has no hue worth comparing. */
+const chroma = (hex: string): number => Math.hypot(lab(hex)[1], lab(hex)[2]);
+
+/** Shortest distance between two Lab hue angles, in degrees. */
+const hueGap = (a: string, b: string): number => {
+  const angle = (hex: string) => (Math.atan2(lab(hex)[2], lab(hex)[1]) * 180) / Math.PI;
+  const d = Math.abs(angle(a) - angle(b));
+  return d > 180 ? 360 - d : d;
+};
+
 describe('tokens.css / theme.ts agreement', () => {
   it('defines a CSS variable for every node category', () => {
     expect(Object.keys(CATEGORY_VARS).sort()).toEqual(Object.keys(CATEGORY_COLORS).sort());
@@ -205,18 +244,59 @@ describe('tokens.css / diagram export palette agreement', () => {
     // (a lighter amber misses 3:1 on the white page), so DATASET is the half
     // that must stay below it. 4 L* is the floor `check-contrast.mjs` holds a
     // same-hue-family wire pair to; the shipped gap is ~7.9.
-    const lstar = (hex: string) => {
-      const [r, g, b] = [0, 2, 4].map((i) => {
-        const c = parseInt(hex.slice(1 + i, 3 + i), 16) / 255;
-        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-      });
-      const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      return y <= 216 / 24389 ? (y * 24389) / 27 : Math.cbrt(y) * 116 - 16;
-    };
     const gap =
       lstar(DATA_TYPE_COLORS_ON_LIGHT.TRANSFORM) - lstar(DATA_TYPE_COLORS_ON_LIGHT.DATASET);
     expect(gap).toBeGreaterThan(4);
   });
+
+  /**
+   * The rule the test above is one instance of (review Minor 5).
+   *
+   * The ambers were the reported pair, but the same defect stood in two more
+   * (tensor/string at 0.21 L*, string/list at 0.17), and STRING -- the hex
+   * that moved to close both -- was pinned by `check-contrast.mjs` alone:
+   * putting it back passed `pnpm test` and failed only `pnpm build`. So the
+   * gate's rule 11c is restated here over every pair it covers, which is what
+   * makes reverting any one of the three hexes fail a unit test too.
+   *
+   * "Covers" is 11c's own window, read off the same values: two wire colours
+   * within 20 degrees of Lab hue, both with chroma above 12 (a grey has no
+   * hue), must be at least 4 L* apart.
+   */
+  const FAMILY_HUE_DEGREES = 20;
+  const FAMILY_MIN_CHROMA = 12;
+  const FAMILY_MIN_LIGHTNESS = 4;
+
+  const lightTypeFamilyPairs = (): [string, string][] => {
+    const names = Object.keys(DATA_TYPE_COLORS_ON_LIGHT).sort();
+    const pairs: [string, string][] = [];
+    for (let i = 0; i < names.length; i++) {
+      for (let j = i + 1; j < names.length; j++) {
+        const [a, b] = [DATA_TYPE_COLORS_ON_LIGHT[names[i]], DATA_TYPE_COLORS_ON_LIGHT[names[j]]];
+        if (chroma(a) < FAMILY_MIN_CHROMA || chroma(b) < FAMILY_MIN_CHROMA) continue;
+        if (hueGap(a, b) > FAMILY_HUE_DEGREES) continue;
+        pairs.push([names[i], names[j]]);
+      }
+    }
+    return pairs;
+  };
+
+  it('has same-family light wire pairs to hold apart at all', () => {
+    // A sweep that matches nothing passes for the wrong reason. Three pairs
+    // sit inside the window today; if that ever drops to zero, either the
+    // palette was redrawn or this window stopped describing it.
+    expect(lightTypeFamilyPairs().length).toBeGreaterThan(0);
+  });
+
+  it.each(lightTypeFamilyPairs())(
+    'parts the light wire colours %s and %s in lightness, not only in hue',
+    (first, second) => {
+      const gap = Math.abs(
+        lstar(DATA_TYPE_COLORS_ON_LIGHT[first]) - lstar(DATA_TYPE_COLORS_ON_LIGHT[second]),
+      );
+      expect(gap).toBeGreaterThanOrEqual(FAMILY_MIN_LIGHTNESS);
+    },
+  );
 
   it.each(
     (['light', 'dark'] as const).flatMap((theme) =>
