@@ -22,6 +22,7 @@ import type {
   WorkspaceGraphInput as HWorkspaceGraphInput,
   WorkspaceOpenEntry as HWorkspaceOpenEntry,
   WorkspaceOpenResult as HWorkspaceOpenResult,
+  WorkspaceSnapshot as HWorkspaceSnapshot,
   WorkspaceSource as HWorkspaceSource,
   WorkspaceTabInfo as HWorkspaceTabInfo,
 } from './api';
@@ -78,6 +79,7 @@ import type {
   WorkspaceGraphInput as CWorkspaceGraphInput,
   WorkspaceOpenEntry as CWorkspaceOpenEntry,
   WorkspaceOpenResult as CWorkspaceOpenResult,
+  WorkspaceSnapshot as CWorkspaceSnapshot,
   WorkspaceSource as CWorkspaceSource,
   WorkspaceTabInfo as CWorkspaceTabInfo,
 } from './contract';
@@ -135,6 +137,17 @@ export type _WorkspaceEvent = Expect<Mutual<HWorkspaceEvent, CWorkspaceEvent>>;
 // since v1, and for the same reason.
 export type _WorkspaceOpenEntryMeta = Expect<
   Mutual<Omit<HWorkspaceOpenEntry, 'graph'>, Omit<CWorkspaceOpenEntry, 'graph'>>
+>;
+// The same carve-out, one level in. `Exclude` drops the graph-bearing branch —
+// whose other half `_WorkspaceTabInfo` already compares — and leaves
+// `{ error: 'unknown_tab' }`, which nothing else reaches: `_WorkspaceKeys`
+// compares the key NAMES of `workspace`, never the return type of `snapshot`,
+// so a re-typed error branch would drift in silence. `Omit` cannot stand in
+// here the way it does above: `keyof` a union is the INTERSECTION of its
+// branches' keys, which is `never` for this one, so `Omit<..., 'graph'>`
+// collapses to `{}` and would compare nothing at all.
+export type _WorkspaceSnapshotMeta = Expect<
+  Mutual<Exclude<HWorkspaceSnapshot, { graph: unknown }>, Exclude<CWorkspaceSnapshot, { graph: unknown }>>
 >;
 export type _WorkspaceKeys = Expect<
   Mutual<keyof HApi['workspace'], keyof CApi['workspace']>
