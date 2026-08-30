@@ -1,7 +1,8 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
+import { useCardExpanded } from '../../hooks/useCardViewState';
 import { useI18n } from '../../i18n';
 import { ScatterPlot, type ScatterPoint } from '../shared/ScatterPlot';
 import { ScatterModal } from '../shared/ScatterModal';
@@ -20,7 +21,8 @@ function EmbeddingScatterVizNode(props: NodeProps<AppNode>) {
     return tab?.lastRunId ?? null;
   });
 
-  const [expanded, setExpanded] = useState(false);
+  // Store-backed so culling cannot close it (core#324).
+  const [expanded, setExpanded] = useCardExpanded(id);
 
   const points = useMemo<ScatterPoint[] | null>(() => {
     const tensorVals = summaries?.points_2d?.values;

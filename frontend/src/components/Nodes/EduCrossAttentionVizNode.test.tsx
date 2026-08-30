@@ -54,6 +54,9 @@ function seed(summary: Record<string, OutputSummary> | undefined, runId: string 
         edges: [],
         lastRunId: runId,
         outputSummaries: summary ? { [NODE_ID]: summary } : ({} as Record<string, Record<string, OutputSummary>>),
+        // Keyed by node id and outliving the card on purpose (core#324), so
+        // a test that leaves the viewer open must not open it for the next.
+        cardViewState: {},
       },
     ],
   }));

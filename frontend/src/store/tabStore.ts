@@ -231,6 +231,17 @@ export type PendingNodeUpdates = Map<
   Map<string, import('./nodeUpdateQueue').PendingNodePatch>
 >;
 
+/**
+ * What one node card remembers about how the learner has it open (core#324).
+ *
+ * Everything here answers "the learner opened this and has not closed it",
+ * which is the only kind of card state worth surviving a remount.
+ */
+export interface CardViewState {
+  /** The card's full-size viewer (heatmap, scatter) is open. */
+  expanded?: boolean;
+}
+
 export interface TabState {
   id: string;
   name: string;
@@ -300,6 +311,21 @@ export interface TabState {
    * to (#129).
    */
   nodeDetailRequest: number;
+  /**
+   * Per-card view state, keyed by node id (core#324).
+   *
+   * `onlyRenderVisibleElements` (#321) unmounts a card the moment it leaves
+   * the viewport, and any `useState` inside the card goes with it — so a
+   * learner who opened a heatmap, panned across the graph and came back found
+   * it closed again.
+   *
+   * VIEW state, not document data, which is why it is here and not in
+   * `node.data`: it is never serialized, never persisted, and dropped when
+   * the node is deleted or the document is replaced. Transient pointer state
+   * (hover, an in-flight download) deliberately stays local to the card — a
+   * card that comes back under a motionless cursor is not being hovered.
+   */
+  cardViewState: Record<string, CardViewState>;
   // undo/redo
   undoStack: UndoSnapshot[];
   redoStack: UndoSnapshot[];
@@ -358,6 +384,7 @@ function createTabState(id: string, name: string): TabState {
     nodeDetailTab: null,
     nodeDetailPort: null,
     nodeDetailRequest: 0,
+    cardViewState: {},
     undoStack: [],
     redoStack: [],
     dirtyNodeIds: new Set(),
@@ -513,6 +540,8 @@ interface TabStoreState {
   closeLayersModal: () => void;
   openNodeDetail: (id: string, target?: { tab?: string; port?: string }) => void;
   closeNodeDetail: () => void;
+  /** Record how one card is open, so a remount can restore it (core#324). */
+  setCardViewState: (nodeId: string, patch: Partial<CardViewState>) => void;
   updateNodeLayers: (nodeId: string, layersJson: string) => void;
   setNodeExecutionStatus: (nodeId: string, status: NodeData['executionStatus'], error?: string) => void;
   clearExecutionStatus: () => void;
@@ -675,6 +704,20 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/**
+ * Drop the card view state of every node `gone` names (core#324). Returns the
+ * map unchanged when it holds nothing for them, which is the usual case —
+ * most nodes never open anything.
+ */
+function forgetCards(
+  cards: Record<string, CardViewState> | undefined,
+  gone: (nodeId: string) => boolean,
+): Record<string, CardViewState> {
+  const ids = Object.keys(cards ?? {});
+  if (!ids.some(gone)) return cards ?? {};
+  return Object.fromEntries(ids.filter((id) => !gone(id)).map((id) => [id, cards![id]]));
 }
 
 /**
@@ -1693,10 +1736,14 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
         let selectedNodeId = tab.selectedNodeId;
+        // Same story for what a card had open (core#324): the Delete key
+        // reaches this reducer and never `deleteNode`.
+        let cardViewState = tab.cardViewState;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
           );
+          cardViewState = forgetCards(cardViewState, (id) => removedIds.has(id));
           updatedNodes = updatedNodes.map((n) => {
             if (n.type !== 'noteNode' || !n.data.boundToNodeId) return n;
             if (!removedIds.has(n.data.boundToNodeId)) return n;
@@ -1710,7 +1757,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
           }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId };
+        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId, cardViewState };
       }),
     });
   },
@@ -1954,6 +2001,16 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
       })),
     }),
 
+  setCardViewState: (nodeId, patch) =>
+    set({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+        cardViewState: {
+          ...tab.cardViewState,
+          [nodeId]: { ...tab.cardViewState?.[nodeId], ...patch },
+        },
+      })),
+    }),
+
   updateNodeLayers: (nodeId, layersJson) =>
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
@@ -2022,6 +2079,8 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         presetModalNodeId: null,
         layersModalNodeId: null,
         nodeDetailNodeId: null,
+        // Nothing is left to be open (core#324).
+        cardViewState: {},
         // A cleared canvas is a fresh, unbound graph. Drop the metadata tied
         // to the previously-open graph so the next save doesn't silently
         // overwrite that file with stale description / segment overlays.
@@ -2593,6 +2652,9 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // to render, so close it rather than leave an empty shell on screen.
         nodeDetailNodeId:
           tab.nodeDetailNodeId === nodeId ? null : tab.nodeDetailNodeId,
+        // And nothing that card had open outlives it (core#324) — node ids
+        // get reused, and a fresh card must not inherit a stranger's view.
+        cardViewState: forgetCards(tab.cardViewState, (id) => id === nodeId),
         // Drop any Teaching Inspector segment whose head/tail was this node —
         // it can never resolve a path once an endpoint is gone.
         segmentGroups: tab.segmentGroups.filter(

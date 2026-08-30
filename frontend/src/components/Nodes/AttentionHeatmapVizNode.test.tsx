@@ -54,6 +54,9 @@ function seed(summary: Record<string, OutputSummary> | undefined, runId: string 
         edges: [],
         lastRunId: runId,
         outputSummaries: summary ? { [NODE_ID]: summary } : ({} as Record<string, Record<string, OutputSummary>>),
+        // Keyed by node id and outliving the card on purpose (core#324), so
+        // a test that leaves the viewer open must not open it for the next.
+        cardViewState: {},
       },
     ],
   }));
@@ -198,6 +201,26 @@ describe('AttentionHeatmapVizNode', () => {
     const { container } = renderNode(data({ label: undefined as unknown as string }));
     fireEvent.click(container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement);
     await waitFor(() => expect(screen.getByText(new RegExp(`AttentionHeatmap · ${NODE_ID}`))).toBeTruthy());
+  });
+
+  it('is still open after culling unmounts and remounts the card', async () => {
+    // `onlyRenderVisibleElements` (#321) unmounts a card the moment it leaves
+    // the viewport, and a `useState` flag inside the card goes with it — so a
+    // learner who opened this heatmap, panned away and came back found it
+    // closed again (core#324). The flag lives in the store now, so a remount
+    // shows what they left open.
+    seed({ weights: { type: 'tensor', values: [[0.5, 0.5], [0.3, 0.7]] } });
+    const first = renderNode();
+    fireEvent.click(
+      first.container.querySelector('button[aria-label="Expand heatmap"]') as HTMLButtonElement,
+    );
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeTruthy());
+
+    first.unmount();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    renderNode();
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
   });
 
   it('closing the modal unmounts it', async () => {
