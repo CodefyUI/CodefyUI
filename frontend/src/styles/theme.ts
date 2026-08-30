@@ -108,12 +108,17 @@ export const CATEGORY_LIGHT_VARS: Record<string, string> = {
 export const DATA_TYPE_COLORS_ON_LIGHT: Record<string, string> = {
   TENSOR: '#40a445',
   MODEL: '#2095f2',
-  DATASET: '#d27c00',
+  // Darkened past the 3:1 bar to part it from TRANSFORM (core#323): the two
+  // ambers were 11.37 dE00 apart with an L* gap of 0.1, all of it on the
+  // red-green axis. TRANSFORM is the one that cannot move (see below), so
+  // DATASET did.
+  DATASET: '#b56a00',
   DATALOADER: '#9c27b0',
   OPTIMIZER: '#f44336',
   LOSS_FN: '#e91e63',
   SCALAR: '#029fb3',
-  STRING: '#6aa01f',
+  // Parted the same way from both of its green neighbours, TENSOR and LIST.
+  STRING: '#5a8919',
   IMAGE: '#ff5722',
   LIST: '#8d9800',
   ANY: '#919191',

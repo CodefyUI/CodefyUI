@@ -196,6 +196,28 @@ describe('tokens.css / diagram export palette agreement', () => {
     },
   );
 
+  it('keeps the exported DATASET and TRANSFORM ambers apart in lightness', () => {
+    // The canvas pair is asserted the same way in utils/index.test.ts (#197
+    // item 5); this is its light-export twin (core#323), where the two ambers
+    // measured 11.37 dE00 apart with an L* gap of 0.1 — every bit of the
+    // separation on the red-green axis, so a dichromat read one colour and a
+    // greyscale print showed one grey. TRANSFORM is the half that cannot move
+    // (a lighter amber misses 3:1 on the white page), so DATASET is the half
+    // that must stay below it. 4 L* is the floor `check-contrast.mjs` holds a
+    // same-hue-family wire pair to; the shipped gap is ~7.9.
+    const lstar = (hex: string) => {
+      const [r, g, b] = [0, 2, 4].map((i) => {
+        const c = parseInt(hex.slice(1 + i, 3 + i), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return y <= 216 / 24389 ? (y * 24389) / 27 : Math.cbrt(y) * 116 - 16;
+    };
+    const gap =
+      lstar(DATA_TYPE_COLORS_ON_LIGHT.TRANSFORM) - lstar(DATA_TYPE_COLORS_ON_LIGHT.DATASET);
+    expect(gap).toBeGreaterThan(4);
+  });
+
   it.each(
     (['light', 'dark'] as const).flatMap((theme) =>
       (Object.keys(DIAGRAM_CHROME_VARS) as (keyof typeof DIAGRAM_CHROME.light)[]).map(
