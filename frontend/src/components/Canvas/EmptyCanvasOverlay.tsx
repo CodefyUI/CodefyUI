@@ -114,7 +114,18 @@ function renderCard(
       <div className={styles.presetCardHeader}>
         <span className={styles.presetCardName}>{example.name}</span>
       </div>
-      <div className={styles.presetCardDesc}>
+      {/* The cut stays at 80: every example's first line is written to say
+          what the card has to say inside it, and the backend example suite
+          asserts that a GPU, a download or a pack is named there. What the
+          card was missing is the REST of the description — this was the only
+          place one appeared with no way to read past the cut, while the
+          sidebar's gallery tab has carried the full text as a tooltip all
+          along (core#305). Only when there is more to show, so a short
+          description does not get a tooltip repeating itself. */}
+      <div
+        className={styles.presetCardDesc}
+        {...(example.description.length > 80 ? { title: example.description } : {})}
+      >
         {example.description.length > 80
           ? example.description.slice(0, 80) + '...'
           : example.description}

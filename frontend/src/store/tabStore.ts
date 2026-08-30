@@ -9,6 +9,7 @@ import {
   resolveDynamicOutputs,
   resolveSerializedEdges,
   resolveSerializedNodes,
+  migrateStaleEdgeStrokes,
 } from '../utils';
 import { useNodeDefStore } from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
@@ -674,6 +675,46 @@ interface TabStoreState {
 
 function updateTab(tabs: TabState[], tabId: string, updater: (tab: TabState) => Partial<TabState>): TabState[] {
   return tabs.map((tab) => (tab.id === tabId ? { ...tab, ...updater(tab) } : tab));
+}
+
+/**
+ * Everything a tab remembers ABOUT the document it is showing, reset
+ * (core#337). Spread by the two actions that replace a document -- `clear()`
+ * and `loadGraphDocument` -- so the two cannot drift apart, which they had:
+ * `clear()` nulled four of these fields and the atomic install nulled nine.
+ *
+ * All of it is keyed by NODE ID or names the run of the graph being replaced,
+ * and node ids are not unique across graphs -- so leaving any of it behind
+ * hands the incoming document the previous one's selection, its open modal,
+ * or, worst, its captured output values drawn on a card that has never run.
+ *
+ * NOT here, deliberately: `nodeDetailRequest`, the monotonic tick the detail
+ * modal watches to notice a SECOND deep link into the node it is already
+ * showing (#129). It names no node and belongs to no document; resetting it
+ * would make the next open look to that effect like nothing had happened.
+ */
+function clearedDocumentResidue(tab: TabState): Partial<TabState> {
+  return {
+    selectedNodeId: null,
+    presetModalNodeId: null,
+    layersModalNodeId: null,
+    // The deep-link tab and port travel with the id they qualify -- kept,
+    // they would aim the next open of the detail modal at a port belonging
+    // to the graph that just closed.
+    nodeDetailNodeId: null,
+    nodeDetailTab: null,
+    nodeDetailPort: null,
+    dirtyNodeIds: new Set<string>(),
+    outputSummaries: {},
+    // A FINISHED run named the graph being replaced, and the Inspector, the
+    // detail modal and the edge tooltip's "View stats" all read this field:
+    // left behind, they fetch the previous graph's run for the new graph's
+    // node ids while the cards beside them say "run this graph first". A run
+    // still in flight is the one exception -- it is what Stop and the
+    // re-attach name -- and that is the rule `buildPersistedTab` already
+    // applies to this same field.
+    lastRunId: tab.status === 'running' ? tab.lastRunId : null,
+  };
 }
 
 /**
@@ -1441,6 +1482,7 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 
 /** Rebuild one `TabState` from its record, over a base carrying live fields. */
 function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
+  const nodes = t.nodes ?? [];
   return {
     ...base,
     name: t.name,
@@ -1448,8 +1490,14 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     currentGraphFile: t.currentGraphFile ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
-    nodes: t.nodes ?? [],
-    edges: t.edges ?? [],
+    nodes,
+    // Autosave stores each edge object as it stands, baked stroke and all, so
+    // this is the one door a wire painted by an older palette comes back
+    // through: a graph saved before #197 item 5 still draws its TRANSFORM
+    // wires in the retired amber, next to port dots painted live from the new
+    // one (core#325). The file and example readers do not need this — they go
+    // through `resolveSerializedEdges`, which derives every stroke fresh.
+    edges: migrateStaleEdgeStrokes(t.edges ?? [], nodes),
     segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
     // localStorage is user-editable and IndexedDB records outlive format
     // changes, so a restored record gets the same coercion an imported file
@@ -2003,17 +2051,17 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     }
     get().pushUndoSnapshot();
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [],
         edges: [],
         // Definitions belong to the graph that was cleared, and the editing
         // stack points into nodes that no longer exist.
         subgraphs: [],
         subgraphStack: [],
-        selectedNodeId: null,
-        presetModalNodeId: null,
-        layersModalNodeId: null,
-        nodeDetailNodeId: null,
+        // Clearing the canvas replaces the document just as opening one does,
+        // so it leaves the same residue behind -- through the same helper, so
+        // the two cannot drift.
+        ...clearedDocumentResidue(tab),
         // A cleared canvas is a fresh, unbound graph. Drop the metadata tied
         // to the previously-open graph so the next save doesn't silently
         // overwrite that file with stale description / segment overlays.
@@ -2267,7 +2315,7 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
     const name =
       typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, () => ({
+      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: doc.nodes,
         edges: doc.edges,
         // Normalized on the way in, as `setSubgraphs` does: every reader
@@ -2287,6 +2335,11 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // head/tail ids the new graph does not have.
         segmentGroups: doc.segmentGroups ?? [],
         activeSegment: null,
+        // The rest of the per-document residue (core#337), shared verbatim
+        // with `clear()` -- see `clearedDocumentResidue` for what is in it,
+        // what is deliberately not, and why leaving it behind is not merely
+        // untidy.
+        ...clearedDocumentResidue(tab),
         description: doc.description ?? '',
         readOnly,
         // The save target, stated by the reader and never inherited (#200

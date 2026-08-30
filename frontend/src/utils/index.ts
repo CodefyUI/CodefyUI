@@ -172,6 +172,35 @@ export function getPortColor(dataType: string): string {
 }
 
 /**
+ * Palette hexes this app has RETIRED, and the data type each one used to
+ * stand for (core#325).
+ *
+ * An interactive connect bakes the type's colour into `edge.style.stroke`,
+ * and an autosaved workspace stores the edge object as it stands — so a
+ * graph last saved before a palette change keeps drawing that wire in the
+ * old colour, next to port dots that are painted live from the new one. One
+ * wire, two ambers.
+ *
+ * This is the record of which baked hexes are ours to correct. Anything not
+ * listed here is somebody else's choice and is left alone. Append to it —
+ * never edit an entry — when a value in `DATA_TYPE_COLORS` changes: the old
+ * value goes in with the type it belonged to.
+ *
+ * A LIST and not a map keyed by hex, so that "append, never edit" stays
+ * possible in the case that needs it most: palettes get reshuffled, and one
+ * value can have belonged to two types at different times. Keyed by hex, the
+ * second of those could only be recorded by overwriting the first. Two
+ * entries sharing a hex are resolved by the edge's CURRENT type, which the
+ * migration has to consult anyway.
+ *
+ * Hexes are compared case-insensitively; a graph may have been hand-edited.
+ */
+export const STALE_TYPE_STROKES: { hex: string; type: string }[] = [
+  // #197 item 5 lightened TRANSFORM to '#FFE082' to part it from DATASET.
+  { hex: '#FFC107', type: 'TRANSFORM' },
+];
+
+/**
  * Evaluate a param's ``visible_when`` rule against the current params on
  * the node. Returns true when the param should render. The default rule
  * (no ``visible_when``) is "always visible".
@@ -490,23 +519,77 @@ export function resolveSerializedNodes(
 const DEFAULT_EDGE_STROKE = '#555';
 
 /**
- * Look up the per-data-type stroke for a serialized edge from its source
- * node's definition (dynamic outputs included, so Split's chunk_N ports
- * resolve too). Falls back to the neutral gray when the node, its
- * definition's output, or the handle is missing — e.g. a graph referencing
- * plugin nodes that are not loaded yet.
+ * The data type an edge carries, read from its source node's definition
+ * (dynamic outputs included, so Split's chunk_N ports resolve too). Null when
+ * the node, its definition's output, or the handle is missing — e.g. a graph
+ * referencing plugin nodes that are not loaded yet.
+ */
+function resolveEdgeDataType(
+  rawEdge: any,
+  nodeMap: Map<string, Node<NodeData>>,
+): string | null {
+  const sourceNode = nodeMap.get(rawEdge.source);
+  const data = sourceNode?.data;
+  if (!data || !rawEdge.sourceHandle) return null;
+  const output = resolveDynamicOutputs(data.definition, data.params).find(
+    (o) => o.name === rawEdge.sourceHandle,
+  );
+  return output ? output.data_type : null;
+}
+
+/**
+ * Look up the per-data-type stroke for a serialized edge. Falls back to the
+ * neutral gray whenever {@link resolveEdgeDataType} cannot answer.
  */
 function resolveEdgeStroke(
   rawEdge: any,
   nodeMap: Map<string, Node<NodeData>>,
 ): string {
-  const sourceNode = nodeMap.get(rawEdge.source);
-  const data = sourceNode?.data;
-  if (!data || !rawEdge.sourceHandle) return DEFAULT_EDGE_STROKE;
-  const output = resolveDynamicOutputs(data.definition, data.params).find(
-    (o) => o.name === rawEdge.sourceHandle,
-  );
-  return output ? getPortColor(output.data_type) : DEFAULT_EDGE_STROKE;
+  const dataType = resolveEdgeDataType(rawEdge, nodeMap);
+  return dataType ? getPortColor(dataType) : DEFAULT_EDGE_STROKE;
+}
+
+/**
+ * Repaint edges whose baked stroke is a retired palette hex (core#325).
+ *
+ * A saved graph's edges come back with whatever colour was current when the
+ * user drew them, so a palette change leaves old wires in the old colour
+ * forever. This corrects exactly the wires it can prove are stale: the baked
+ * stroke has to be a hex listed in {@link STALE_TYPE_STROKES}, AND the edge
+ * has to still derive to a data type that hex belonged to. A wire wearing a
+ * colour we never shipped, one whose type has since changed, one whose source
+ * node cannot be resolved, and one with no baked stroke at all (every
+ * committed example) are all left exactly as they are.
+ *
+ * Returns the input array unchanged when nothing is stale, which is the
+ * common case — the autosave record cache compares edge arrays by reference.
+ */
+export function migrateStaleEdgeStrokes(
+  edges: import('@xyflow/react').Edge[],
+  nodes: Node<NodeData>[],
+): import('@xyflow/react').Edge[] {
+  /** Every type this baked stroke is a retired colour of — usually none. */
+  const retiredFor = (edge: import('@xyflow/react').Edge): string[] => {
+    const stroke = (edge.style as { stroke?: string } | undefined)?.stroke;
+    if (typeof stroke !== 'string') return [];
+    return STALE_TYPE_STROKES.filter(
+      (s) => s.hex.toUpperCase() === stroke.toUpperCase(),
+    ).map((s) => s.type.toUpperCase());
+  };
+
+  const stale = edges.some((e) => retiredFor(e).length > 0);
+  if (!stale) return edges;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  return edges.map((e) => {
+    const wasTypes = retiredFor(e);
+    if (wasTypes.length === 0) return e;
+    // Which of them applies — if any — is decided by what the edge carries
+    // NOW. A wire whose type has changed since it was drawn is wearing the
+    // hex by coincidence, and repainting it would be a guess.
+    const nowType = resolveEdgeDataType(e, nodeMap)?.toUpperCase();
+    if (!nowType || !wasTypes.includes(nowType)) return e;
+    return { ...e, style: { ...e.style, stroke: getPortColor(nowType) } };
+  });
 }
 
 /**

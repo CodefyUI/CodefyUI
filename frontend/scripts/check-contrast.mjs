@@ -542,24 +542,127 @@ for (const theme of DIAGRAM_THEMES) {
   checked += 1;
 }
 
-/* 11b. A light category hue is a restatement of its dark counterpart for a
-        white page, not a new colour: same hue, lower lightness. If someone
-        "fixes" a contrast failure by rotating a hue instead of darkening it,
-        the export stops agreeing with the app a reader is looking at, and the
-        colour coding silently means two different things in two places. */
-for (const slug of DIAGRAM_CATEGORIES) {
-  const [, da, db] = lab(t(`--cat-${slug}`));
-  const [, la, lb] = lab(t(`--diagram-light-${slug}`));
-  const drift = Math.abs(
-    ((Math.atan2(lb, la) - Math.atan2(db, da)) * 180) / Math.PI
-  );
-  const wrapped = drift > 180 ? 360 - drift : drift;
-  checked += 1;
-  if (wrapped > 12) {
-    failures.push(
-      `--diagram-light-${slug} sits ${wrapped.toFixed(1)} degrees of hue from --cat-${slug} ` +
-        `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
-    );
+/** Lab hue angle, in degrees. */
+const hueAngle = (colour) => {
+  const [, a, b] = lab(colour);
+  return (Math.atan2(b, a) * 180) / Math.PI;
+};
+
+/** Shortest distance between two hue angles, in degrees. */
+const hueGap = (a, b) => {
+  const d = Math.abs(hueAngle(a) - hueAngle(b));
+  return d > 180 ? 360 - d : d;
+};
+
+/** Lab chroma. A near-grey has no hue worth comparing — --type-any is grey on
+ *  purpose, and pairing it with anything by hue angle would be noise. */
+const chroma = (colour) => {
+  const [, a, b] = lab(colour);
+  return Math.hypot(a, b);
+};
+
+/** Below this chroma a colour has no hue to speak of, so no rule below reads
+ *  one off it. Shared by 11b and 11c so "grey" means one thing in this file. */
+const MIN_HUE_CHROMA = 12;
+
+/* 11b. A light hue is a restatement of its dark counterpart for a white page,
+        not a new colour: same hue, lower lightness. If someone "fixes" a
+        contrast failure by rotating a hue instead of darkening it, the export
+        stops agreeing with the app a reader is looking at, and the colour
+        coding silently means two different things in two places.
+
+        Both halves of that sentence are checked, for both palettes — the cards
+        carry the categories, the wires carry the data types, and only the
+        categories were ever looked at (core#323). */
+const LIGHT_TWINS = [
+  [DIAGRAM_CATEGORIES, (s) => `--cat-${s}`, (s) => `--diagram-light-${s}`],
+  [DIAGRAM_TYPES, (s) => `--type-${s}`, (s) => `--diagram-light-type-${s}`],
+];
+for (const [slugs, canvas, light] of LIGHT_TWINS) {
+  for (const slug of slugs) {
+    // A grey has no hue to drift, so the angle between two of them is the
+    // angle between two rounding residues (--type-any and its light twin are
+    // deliberately neutral; --cat-io and --cat-utility sit just under the
+    // guard too, muted rather than grey, and drift under 2 degrees). Same
+    // chroma guard 11c uses below, so this file has one definition of "too
+    // grey to have a hue". The lightness half of the rule still applies — a
+    // grey must not be lightened either.
+    const hued =
+      chroma(t(canvas(slug))) >= MIN_HUE_CHROMA && chroma(t(light(slug))) >= MIN_HUE_CHROMA;
+    if (hued) {
+      const drift = hueGap(t(canvas(slug)), t(light(slug)));
+      checked += 1;
+      if (drift > 12) {
+        failures.push(
+          `${light(slug)} sits ${drift.toFixed(1)} degrees of hue from ${canvas(slug)} ` +
+            `(needs <= 12) — the light export must be the same colour, darkened, not a different one`
+        );
+      }
+    }
+    // "Darkened" is the other half, and it is load-bearing: every floor this
+    // palette is held to is a contrast against a white page, which only a
+    // darker colour can clear.
+    const step = lstar(t(light(slug))) - lstar(t(canvas(slug)));
+    checked += 1;
+    if (step > 0.5) {
+      failures.push(
+        `${light(slug)} is ${step.toFixed(1)} L* LIGHTER than ${canvas(slug)} — a light-export ` +
+          `colour is its canvas twin darkened for a white page, never lightened`
+      );
+    }
+  }
+}
+
+/* 11c. dE00 counts separation wherever it lives, so two hues can clear the
+        floor above on the red-green axis alone and still be one colour to a
+        dichromat — or in a photocopied handout.
+        --diagram-light-type-transform and --diagram-light-type-dataset
+        measured 11.37 dE00 apart with an L* gap of 0.1: the defect #197 item 5
+        fixed on the canvas, still standing in the export (core#323).
+
+        The pairs at risk are the ones inside a single hue family — the two a
+        reader calls "the ambers" — and the axis every viewer keeps is
+        lightness, so a same-family pair has to be parted there.
+
+        Wires only. A wire is a bare coloured line with nothing written on it,
+        so its hue is the whole message; a category hue is drawn as a card's
+        border AND its title, in a box with the node's name inside it. (The
+        light card palette is iso-lightness by construction — fourteen hues all
+        at 4.7:1 on white — so holding it to this would be a repaint, not a
+        token edit.) */
+const FAMILY_HUE_DEGREES = 20;
+const FAMILY_MIN_CHROMA = MIN_HUE_CHROMA;
+/* The floor, in L*, and where the number came from: optimizer/image is the
+   pair that sits closest to it — 4.46 L* apart at a hue gap of 9.1 degrees,
+   identically in both palettes, and the palette's closest pair by dE00 (8.23)
+   besides. So 4 is one notch of headroom under a real pair, not a round
+   number, and a one-hex tweak of either of those two trips this rule.
+
+   When it does trip on a pair that is red beside orange rather than two
+   ambers, read the message's advice as the wrong half: darkening one of them
+   buys separation the eye reads as "that colour again, dimmer". Move the hues
+   apart instead and the pair leaves the 20-degree window on its own. */
+const FAMILY_MIN_LIGHTNESS = 4;
+for (const theme of DIAGRAM_THEMES) {
+  const wires = DIAGRAM_TYPES.map((slug) => [slug, t(theme.type(slug))]);
+  for (let i = 0; i < wires.length; i++) {
+    for (let j = i + 1; j < wires.length; j++) {
+      const [aSlug, a] = wires[i];
+      const [bSlug, b] = wires[j];
+      if (chroma(a) < FAMILY_MIN_CHROMA || chroma(b) < FAMILY_MIN_CHROMA) continue;
+      const apart = hueGap(a, b);
+      if (apart > FAMILY_HUE_DEGREES) continue;
+      checked += 1;
+      const gap = Math.abs(lstar(a) - lstar(b));
+      if (gap < FAMILY_MIN_LIGHTNESS) {
+        failures.push(
+          `diagram/${theme.name}: wire types ${aSlug} and ${bSlug} are ${apart.toFixed(1)} degrees ` +
+            `of hue apart — one colour family — and only ${gap.toFixed(2)} L* apart (needs ` +
+            `${FAMILY_MIN_LIGHTNESS}); darken one of them past its contrast floor, the way ` +
+            `--diagram-light-classical was parted from --diagram-light-rl`
+        );
+      }
+    }
   }
 }
 

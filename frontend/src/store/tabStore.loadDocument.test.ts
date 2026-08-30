@@ -234,3 +234,163 @@ describe('loadGraphDocument', () => {
     expect(store().getSerializedGraph().nodes.map((n: { id: string }) => n.id)).toEqual(['top']);
   });
 });
+
+/**
+ * The per-document UI residue (core#337).
+ *
+ * `clear()` nulls the selection and the three modal ids; the atomic install
+ * did not, so every one of them survived an open — and a new graph that
+ * happens to reuse a node id showed the previous graph's selection, popped
+ * the previous graph's modal, or drew the previous graph's output summaries
+ * on a node that has never run.
+ *
+ * Each of these seeds ONE field and opens a bare document, so a field that
+ * stops being cleared fails on its own line.
+ */
+describe('loadGraphDocument clears the previous document UI residue', () => {
+  /** Open a document that reuses the seeded node id, the way #337 describes. */
+  const openAnother = () =>
+    store().loadGraphDocument({ nodes: [node('same-id')], edges: [], boundFile: null });
+
+  it('clears the selection', () => {
+    store().setSelectedNodeId('same-id');
+    openAnother();
+    expect(tab().selectedNodeId).toBeNull();
+  });
+
+  it('closes the preset modal', () => {
+    store().openPresetModal('same-id');
+    openAnother();
+    expect(tab().presetModalNodeId).toBeNull();
+  });
+
+  it('closes the layers editor', () => {
+    store().openLayersModal('same-id');
+    openAnother();
+    expect(tab().layersModalNodeId).toBeNull();
+  });
+
+  it('closes the detail modal, deep link and all', () => {
+    store().openNodeDetail('same-id', { tab: 'code', port: 'same-id::out' });
+    openAnother();
+    const t = tab();
+    expect(t.nodeDetailNodeId).toBeNull();
+    // The tab and port travel with the id; leaving them would aim the next
+    // open of the modal at a port off the graph that just closed.
+    expect(t.nodeDetailTab).toBeNull();
+    expect(t.nodeDetailPort).toBeNull();
+  });
+
+  it('keeps the detail-modal request counter, which is not per-document', () => {
+    // `nodeDetailRequest` is a monotonic tick the modal watches to notice a
+    // SECOND deep link into the node it is already showing (#129). It names
+    // no node and belongs to no document; resetting it to 0 would make the
+    // next open look to that effect like nothing had happened.
+    store().openNodeDetail('same-id');
+    const before = tab().nodeDetailRequest;
+    openAnother();
+    expect(tab().nodeDetailRequest).toBe(before);
+  });
+
+  it('clears the partial-re-execution hint', () => {
+    store().markDirty('same-id');
+    openAnother();
+    expect(tab().dirtyNodeIds.size).toBe(0);
+  });
+
+  it('clears the output summaries', () => {
+    // The sharpest of the set: these are captured VALUES, and drawn on the
+    // card of whatever node wears the id. Left behind, the new graph's node
+    // shows the old graph's tensor.
+    store().setTabOutputSummary(tab().id, 'same-id', {
+      out: { type: 'tensor', shape: [2, 2] },
+    });
+    openAnother();
+    expect(tab().outputSummaries).toEqual({});
+  });
+
+  it('clears the last run id of a finished run', () => {
+    // `lastRunId` names the run of the graph that was just REPLACED. Left
+    // behind, the Inspector fetches that run for the new graph's node ids and
+    // the edge tooltip offers "View stats" into it, while the cards next to
+    // them (summaries cleared) correctly say "run this graph first" -- two
+    // surfaces disagreeing about whether this document has ever run.
+    store().setLastRunId(tab().id, 'run-of-the-old-graph');
+    store().setTabStatus(tab().id, 'completed');
+    openAnother();
+    expect(tab().lastRunId).toBeNull();
+  });
+
+  it('keeps the run id while the run is in flight', () => {
+    // The one legitimate reason to keep it, and the rule `buildPersistedTab`
+    // already encodes for the same field: a run still running is named by it
+    // (re-attach, Stop), and that run does not belong to the document.
+    store().setLastRunId(tab().id, 'run-still-going');
+    store().setTabStatus(tab().id, 'running');
+    openAnother();
+    expect(tab().lastRunId).toBe('run-still-going');
+  });
+});
+
+/**
+ * `clear()` and `loadGraphDocument` both replace the document, so they must
+ * leave the same residue behind -- one shared helper writes both, and this
+ * test is what stops the two from drifting apart again (review Minor 8).
+ */
+describe('clear leaves the same per-document residue as opening a document', () => {
+  /** Seed every residue field on a node id both paths will keep seeing. */
+  const seedResidue = () => {
+    store().setNodes([node('same-id')]);
+    store().setSelectedNodeId('same-id');
+    store().openPresetModal('same-id');
+    store().openLayersModal('same-id');
+    store().openNodeDetail('same-id', { tab: 'code', port: 'same-id::out' });
+    store().markDirty('same-id');
+    store().setTabOutputSummary(tab().id, 'same-id', {
+      out: { type: 'tensor', shape: [2, 2] },
+    });
+    store().setLastRunId(tab().id, 'run-of-the-old-graph');
+    store().setTabStatus(tab().id, 'completed');
+  };
+
+  /** The fields both paths are answerable for, read off a tab. */
+  const residue = () => {
+    const t = tab();
+    return {
+      selectedNodeId: t.selectedNodeId,
+      presetModalNodeId: t.presetModalNodeId,
+      layersModalNodeId: t.layersModalNodeId,
+      nodeDetailNodeId: t.nodeDetailNodeId,
+      nodeDetailTab: t.nodeDetailTab,
+      nodeDetailPort: t.nodeDetailPort,
+      dirtyNodeIds: [...t.dirtyNodeIds],
+      outputSummaries: t.outputSummaries,
+      lastRunId: t.lastRunId,
+    };
+  };
+
+  const EMPTY = {
+    selectedNodeId: null,
+    presetModalNodeId: null,
+    layersModalNodeId: null,
+    nodeDetailNodeId: null,
+    nodeDetailTab: null,
+    nodeDetailPort: null,
+    dirtyNodeIds: [],
+    outputSummaries: {},
+    lastRunId: null,
+  };
+
+  it('leaves nothing that opening a document would not leave', () => {
+    seedResidue();
+    store().loadGraphDocument({ nodes: [node('same-id')], edges: [], boundFile: null });
+    const afterOpen = residue();
+
+    seedResidue();
+    store().clear();
+    const afterClear = residue();
+
+    expect(afterOpen).toEqual(EMPTY);
+    expect(afterClear).toEqual(afterOpen);
+  });
+});

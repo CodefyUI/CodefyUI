@@ -38,6 +38,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -445,6 +446,135 @@ def test_tinystories_lm_example_warns_inside_the_card_truncation():
     assert _LM_README.is_file(), (
         f"{_LM_README} is missing -- the card's last sentence points at it, and "
         f"the docs pages point at it instead of at the card")
+
+
+#: The heavy requirements a gallery card has to state before the cut, and the
+#: words each one is actually written with across the examples.
+#:
+#: Deliberately NOT a bare "network": a dozen descriptions say it about a
+#: neural one ("the agent's own network", "a small gating network"), and a
+#: check that fires on every example is a check nobody can read.
+_CARD_REQUIREMENT_WORDS = {
+    "a GPU": r"\bGPUs?\b|\bCUDA\b|\bVRAM\b",
+    "a download": r"\bdownload(s|ed|ing)?\b",
+    "a pack": r"\bpacks?\b|Package Center",
+    "a service of the user's own": r"\bAPI key\b|\bOllama\b|\binternet\b|Hugging Face",
+}
+
+#: What turns a mention into a requirement.
+#:
+#: ``install`` is NOT here on purpose: three descriptions name a pack only to
+#: say where a SIBLING example ships (``cdui plugin install foundations``),
+#: which the example holding the card does not need. The verbs below are the
+#: ones that say "you cannot run this without".
+#:
+#: ``needed`` is in ``need(s|ed)?`` because English says a requirement in the
+#: passive at least as often as in the active: "a GPU is needed" is the same
+#: warning as "needs a GPU", and the check that heard only one of them would
+#: pass an example that hid the other one past the cut.
+_CARD_REQUIREMENT_VERBS = (
+    r"\bneed(s|ed)?\b|\brequires?\b|\brequired\b|\bprerequisite\b|\bmust\b")
+
+#: What un-says one.
+#:
+#: "No GPU is required." matches a requirement verb and names a resource, and
+#: means the opposite of both. Flagged, it would tell the author to move a
+#: reassurance to the front of the card -- advice that makes the card worse,
+#: which is a sharper failure than the one the check exists to catch.
+#:
+#: Judged per resource, against the text BEFORE the resource word: a sentence
+#: reading "needs a GPU, no download" negates the download and not the GPU.
+_CARD_REQUIREMENT_NEGATIONS = r"\bno\b|\bnot\b|\bwithout\b|\boptional\b"
+
+
+def _requirements_stated_in(description: str) -> list[tuple[str, str]]:
+    """The heavy resources ``description`` says you cannot run it without.
+
+    One ``(requirement, sentence)`` pair per resource actually required, so
+    the caller can quote the sentence back at whoever has to fix the card.
+    """
+    stated: list[tuple[str, str]] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", description):
+        if not re.search(_CARD_REQUIREMENT_VERBS, sentence, re.I):
+            continue
+        for requirement, pattern in _CARD_REQUIREMENT_WORDS.items():
+            named = re.search(pattern, sentence, re.I)
+            if not named:
+                continue
+            if re.search(
+                    _CARD_REQUIREMENT_NEGATIONS, sentence[:named.start()], re.I):
+                continue
+            stated.append((requirement, sentence.strip()))
+    return stated
+
+
+def test_every_example_states_its_requirements_inside_the_card_cut():
+    """A requirement stated anywhere must be stated inside the first 80 chars.
+
+    ``test_tinystories_lm_example_warns_inside_the_card_truncation`` above is
+    this rule for one example, written when the LM example was the only builtin
+    that needed the network and a GPU. It is not any more -- three pack-backed
+    LLM examples and the VLA example joined it -- and a per-example mitigation
+    is a rule the next example does not inherit.
+
+    So: for every builtin, take each sentence that STATES a requirement, and
+    require every heavy resource named in it to be named again inside the
+    characters the canvas card actually shows. The card is what a user reads
+    before pressing Run; a 1.5 GB download named at character 300 is not a
+    warning, it is a footnote nobody sees.
+
+    A failure here is fixed in the example's description -- move the
+    requirement into the opening sentence, in the fewest honest words -- and
+    never by widening the cut.
+    """
+    offenders: list[str] = []
+    covered: list[str] = []
+
+    for graph_path in _GRAPHS:
+        payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        description = payload.get("description", "")
+        visible = description[:_CARD_VISIBLE_CHARS]
+        name = graph_path.relative_to(_EXAMPLES_ROOT).as_posix()
+
+        for requirement, sentence in _requirements_stated_in(description):
+            if re.search(_CARD_REQUIREMENT_WORDS[requirement], visible, re.I):
+                covered.append(f"{name}: {requirement}")
+            else:
+                offenders.append(
+                    f"{name} needs {requirement} -- said in "
+                    f"{sentence!r} -- but the card shows only "
+                    f"{visible!r}")
+
+    assert not offenders, (
+        f"{len(offenders)} example(s) hide a requirement past the "
+        f"{_CARD_VISIBLE_CHARS}-character card cut:\n  "
+        + "\n  ".join(offenders)
+        + "\nMove it into the opening sentence; do not widen the cut.")
+
+    # A rule that has stopped matching anything has stopped being a rule. If
+    # this trips, either every heavy example was retired or the vocabulary
+    # above no longer matches how the descriptions are written.
+    assert covered, (
+        "no builtin example states a GPU, download, pack or service "
+        "requirement any more -- check _CARD_REQUIREMENT_WORDS still matches "
+        "the way the descriptions are written")
+
+
+def test_the_card_requirement_reader_hears_both_ways_of_saying_it():
+    """Two sentences no builtin happens to be written with today.
+
+    The test above can only be as good as the vocabulary underneath it, and
+    that vocabulary is only exercised by whatever the current 35 descriptions
+    happen to say. These two are the shapes it used to get wrong: a passive
+    requirement it did not hear, and a reassurance it heard as a requirement
+    and would have told the author to move to the front of the card.
+    """
+    assert _requirements_stated_in("A GPU is needed for the training loop.") == [
+        ("a GPU", "A GPU is needed for the training loop.")]
+
+    # The wrong advice, not merely a missed one: told to move this forward,
+    # an author would open the card with the requirement it does NOT have.
+    assert _requirements_stated_in("Runs on CPU. No GPU is required.") == []
 
 
 def test_tinystories_lm_example_still_describes_itself():

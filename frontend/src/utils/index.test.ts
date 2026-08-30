@@ -10,6 +10,8 @@ import {
   VIZ_NODE_TYPES,
   resolveSerializedNodes,
   resolveSerializedEdges,
+  migrateStaleEdgeStrokes,
+  STALE_TYPE_STROKES,
   resolveDynamicInputs,
   resolveDynamicOutputs,
   buildFlowNode,
@@ -408,6 +410,119 @@ describe('resolveSerializedEdges', () => {
     expect(edge.type).toBe('triggerEdge');
     expect(edge.targetHandle).toBe('__trigger');
     expect(edge.style).toBeUndefined();
+  });
+});
+
+describe('migrateStaleEdgeStrokes', () => {
+  function def(dataType: string): NodeDefinition {
+    return {
+      node_name: 'Source',
+      category: 'Utility',
+      description: '',
+      inputs: [],
+      outputs: [{ name: 'out', data_type: dataType, description: '', optional: false }],
+      params: [],
+    };
+  }
+
+  function flowNode(id: string, definition: NodeDefinition) {
+    return {
+      id,
+      type: 'baseNode',
+      position: { x: 0, y: 0 },
+      data: { label: id, type: definition.node_name, params: {}, definition },
+    } as import('@xyflow/react').Node<import('../types').NodeData>;
+  }
+
+  function edge(stroke?: string) {
+    return {
+      id: 'e1',
+      source: 'a',
+      target: 'b',
+      sourceHandle: 'out',
+      targetHandle: 'in',
+      ...(stroke ? { style: { stroke, strokeWidth: 2 } } : {}),
+    } as import('@xyflow/react').Edge;
+  }
+
+  const strokeOf = (e: import('@xyflow/react').Edge) =>
+    (e.style as { stroke?: string } | undefined)?.stroke;
+
+  it('names the old amber as TRANSFORM', () => {
+    // One entry today. The list is the record of every palette hex a saved
+    // graph may still be carrying, so a future palette change appends here.
+    expect(STALE_TYPE_STROKES).toContainEqual({ hex: '#FFC107', type: 'TRANSFORM' });
+  });
+
+  it('lets one retired hex name more than one type', () => {
+    // Why it is a list and not a map keyed by hex: palettes get reshuffled,
+    // and the same value can have belonged to two types at different times.
+    // Keyed by hex, the second one could not be added without editing the
+    // first -- and "append, never edit" is the whole safety property of this
+    // record. The edge's CURRENT type picks which entry applies.
+    STALE_TYPE_STROKES.push({ hex: '#FFC107', type: 'MODEL' });
+    try {
+      const [migrated] = migrateStaleEdgeStrokes(
+        [edge('#FFC107')],
+        [flowNode('a', def('MODEL'))],
+      );
+      expect(strokeOf(migrated)).toBe(DATA_TYPE_COLORS['MODEL']);
+    } finally {
+      STALE_TYPE_STROKES.pop();
+    }
+  });
+
+  it('repaints a stale TRANSFORM stroke in the current amber', () => {
+    const [migrated] = migrateStaleEdgeStrokes(
+      [edge('#FFC107')],
+      [flowNode('a', def('TRANSFORM'))],
+    );
+    expect(strokeOf(migrated)).toBe(DATA_TYPE_COLORS['TRANSFORM']);
+    // Everything else about the edge survives.
+    expect(migrated.style).toMatchObject({ strokeWidth: 2 });
+    expect(migrated.id).toBe('e1');
+  });
+
+  it('leaves a stroke that is not a known stale hex alone', () => {
+    // A colour the user or a plugin chose is not ours to overwrite.
+    const [migrated] = migrateStaleEdgeStrokes(
+      [edge('#123456')],
+      [flowNode('a', def('TRANSFORM'))],
+    );
+    expect(strokeOf(migrated)).toBe('#123456');
+  });
+
+  it('leaves the stale hex alone on an edge of a different type', () => {
+    // #FFC107 was TRANSFORM's colour, so on a MODEL wire it is somebody
+    // else's choice that happens to collide.
+    const [migrated] = migrateStaleEdgeStrokes(
+      [edge('#FFC107')],
+      [flowNode('a', def('MODEL'))],
+    );
+    expect(strokeOf(migrated)).toBe('#FFC107');
+  });
+
+  it('leaves an edge with no baked stroke alone', () => {
+    // Committed examples persist no style at all and take the neutral wire.
+    const [migrated] = migrateStaleEdgeStrokes(
+      [edge()],
+      [flowNode('a', def('TRANSFORM'))],
+    );
+    expect(migrated.style).toBeUndefined();
+  });
+
+  it('leaves the stroke alone when the type cannot be derived', () => {
+    // An unloaded plugin's node is missing from the list; guessing that its
+    // port is TRANSFORM because the wire is amber is exactly backwards.
+    const [migrated] = migrateStaleEdgeStrokes([edge('#FFC107')], []);
+    expect(strokeOf(migrated)).toBe('#FFC107');
+  });
+
+  it('returns the same array when nothing is stale', () => {
+    // The autosave record cache compares edge arrays by reference; a restore
+    // that rebuilt the array every time would rewrite storage for nothing.
+    const edges = [edge('#123456')];
+    expect(migrateStaleEdgeStrokes(edges, [flowNode('a', def('TRANSFORM'))])).toBe(edges);
   });
 });
 
