@@ -57,6 +57,24 @@ export interface SegmentGroup {
 }
 
 /**
+ * Who opened a tab, and on whose behalf (#341).
+ *
+ * Written by a plugin through `api.workspace.openGraphs` and handed back
+ * verbatim by `tabs()` / `snapshot()`; the host reads only `pluginId`, for
+ * the tab's tooltip. Everything else is the plugin's own bookkeeping -- a
+ * study id, a variant id -- and it round-trips through persistence untouched
+ * so a plugin can re-attach to its own tabs after a reload.
+ */
+export interface WorkspaceSource {
+  /** A short plugin-chosen kind, e.g. `'agent-variant'`. */
+  kind: string;
+  pluginId: string;
+  jobId?: string;
+  variantId?: string;
+  [key: string]: unknown;
+}
+
+/**
  * One boundary port of a subgraph (core#137).
  *
  * `port` is the handle the INSTANCE node shows on the canvas; `innerNode` /

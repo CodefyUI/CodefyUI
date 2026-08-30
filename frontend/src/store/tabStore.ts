@@ -16,7 +16,7 @@ import { forgetViewport } from '../utils/viewportMemory';
 import { idbAvailable } from '../utils/idb';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
 import { autoLayout, autoLayoutWithTargets, nodesBoundingBox, type LayoutMode } from '../utils/autoLayout';
-import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup, SubgraphDefinition } from '../types';
+import type { NodeData, NodeDefinition, PresetDefinition, ExecutionStatus, OutputSummary, NodeProgress, SegmentGroup, SubgraphDefinition, WorkspaceSource } from '../types';
 import {
   collapseSelection,
   definitionFromCanvas,
@@ -275,6 +275,15 @@ export interface TabState {
    * was saved with -- see `withRevisions`.
    */
   revision: number;
+  /**
+   * True for a tab a plugin opened without asking for it to survive a reload
+   * (#341 section 4.8). Never persisted: `persistedTabsFor` skips the whole
+   * record, and a tab that came BACK from storage is by definition not
+   * transient.
+   */
+  transient: boolean;
+  /** Who opened this tab, or null for one the user opened. */
+  source: WorkspaceSource | null;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -372,6 +381,8 @@ function createTabState(id: string, name: string): TabState {
     projectOrigin: null,
     readOnly: false,
     revision: 1,
+    transient: false,
+    source: null,
     nodes: [],
     edges: [],
     subgraphs: [],
@@ -500,11 +511,34 @@ export interface GraphDocument {
   formatVersion?: unknown;
 }
 
+/** One document write, as `commitDocument` applies it. */
+export interface DocumentCommit {
+  nodes: Node<NodeData>[];
+  edges: Edge[];
+  segmentGroups: SegmentGroup[];
+  /** Node ids to add to the tab's partial-re-execution set. */
+  dirtyIds: string[];
+  /**
+   * The plugin this write came from, for `workspace.onChanged`'s `origin`.
+   * Lives only for the duration of this transition's listener fan-out.
+   */
+  origin?: { pluginId: string } | null;
+}
+
 interface TabStoreState {
   tabs: TabState[];
   activeTabId: string;
 
   // tab management
+  /**
+   * Create a tab and RETURN its id (#341).
+   *
+   * `addTab` delegates here and stays the UI's door: it always activates,
+   * because clicking `+` and landing somewhere else would be a bug. A plugin
+   * opening a candidate for review passes `activate: false` and gets the id
+   * back, which `addTab`'s `void` return could never give it.
+   */
+  createTab: (options?: { title?: string; activate?: boolean }) => string;
   addTab: (name?: string) => void;
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
@@ -555,6 +589,8 @@ interface TabStoreState {
     segmentGroups: SegmentGroup[];
     subgraphs: SubgraphDefinition[];
   };
+  /** The serializer as a pure function of a tab. `getSerializedGraph()` calls it with the active one. */
+  getSerializedGraphOf: (tab: TabState) => ReturnType<TabStoreState['getSerializedGraph']>;
   /**
    * Collapse the canvas selection into one subgraph instance (core#137).
    *
@@ -576,6 +612,8 @@ interface TabStoreState {
    * item 9). See the field's own note for why it is required.
    */
   loadGraphDocument: (doc: GraphDocument) => boolean;
+  /** `loadGraphDocument`, addressed by tab id. The active-tab wrapper calls this. */
+  loadGraphDocumentInto: (tabId: string, doc: GraphDocument) => boolean;
   collapseSelectionToSubgraph: (name?: string) => CollapseResult;
   /** Put an instance's definition back on the canvas. One undo step. */
   expandSubgraphInstance: (nodeId: string) => boolean;
@@ -639,6 +677,7 @@ interface TabStoreState {
 
   // undo/redo
   pushUndoSnapshot: () => void;
+  pushUndoSnapshotFor: (tabId: string) => void;
   undo: () => void;
   redo: () => void;
 
@@ -670,6 +709,18 @@ interface TabStoreState {
   // helpers
   getActiveTab: () => TabState;
   getTab: (id: string) => TabState | undefined;
+  /**
+   * The plugin write path: nodes, edges, segments and dirty marks in ONE
+   * transition, so the revision advances once and no subscriber ever sees
+   * nodes and edges disagree. The caller pushes its own undo snapshot first
+   * (`pushUndoSnapshotFor`) -- that is what makes a batch one undo step.
+   */
+  commitDocument: (tabId: string, patch: DocumentCommit) => void;
+  /** Set any subset of a tab's provenance flags. Absent keys are left alone. */
+  setTabMeta: (
+    tabId: string,
+    meta: { readOnly?: boolean; source?: WorkspaceSource | null; transient?: boolean },
+  ) => void;
 
   // execution actions for specific tab (used by WS handlers)
   applyTabNodeUpdates: (updates: PendingNodeUpdates) => void;
@@ -1278,6 +1329,8 @@ export interface PersistedTab {
    * session fails closed rather than matching by accident.
    */
   revision?: number;
+  /** Provenance for a tab a plugin opened and asked to keep (#341). */
+  source?: WorkspaceSource;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -1336,6 +1389,8 @@ function buildPersistedTab(input: TabState): PersistedTab {
     id: t.id,
     name: t.name,
     revision: t.revision,
+    // Only when set, so a tab the user opened persists byte-identically.
+    ...(t.source ? { source: t.source } : {}),
     description: t.description,
     currentGraphFile: t.currentGraphFile,
     // Only persisted when set, so non-project localStorage is byte-identical.
@@ -1415,12 +1470,17 @@ function scalarSignature(t: TabState): string {
     t.seed ?? '',
     t.deterministic ? '1' : '0',
     String(t.revision),
+    t.source ? JSON.stringify(t.source) : '',
   ]);
 }
 
 function persistedTabsFor(tabs: TabState[]): PersistedTab[] {
   const next = new Map<string, TabRecordCacheEntry>();
-  const records = tabs.map((t) => {
+  // A transient tab is skipped whole (#341 section 4.8): an agent's candidate
+  // is a proposal, and a proposal that quietly becomes a tab in tomorrow's
+  // workspace is worse than one that vanishes. It also keeps a materialized
+  // candidate carrying resolved secrets out of IndexedDB.
+  const records = tabs.filter((t) => !t.transient).map((t) => {
     const scalars = scalarSignature(t);
     const cached = _recordCache.get(t.id);
     const entry: TabRecordCacheEntry =
@@ -1527,6 +1587,9 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     // A record without the field is pre-#341: restore as 1 rather than as
     // whatever the placeholder tab happened to be carrying.
     revision: typeof t.revision === 'number' ? t.revision : 1,
+    source: t.source ?? null,
+    // A restored tab is, by definition, one that persisted.
+    transient: false,
     nodes,
     // Autosave stores each edge object as it stands, baked stroke and all, so
     // this is the one door a wire painted by an older palette comes back
@@ -1561,6 +1624,7 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
 /** Test seams: the persistence record round-trip, without the debounce. */
 export const _buildPersistedTabForTesting = buildPersistedTab;
 export const _tabFromPersistedForTesting = tabFromPersisted;
+export const _persistedTabsForTesting = persistedTabsFor;
 
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   try {
@@ -1894,13 +1958,22 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   // ── Tab management ──
 
-  addTab: (name) => {
+  createTab: (options) => {
     const id = generateId();
     const tabCount = get().tabs.length;
     set({
-      tabs: [...get().tabs, createTabState(id, name ?? `Tab ${tabCount + 1}`)],
-      activeTabId: id,
+      tabs: [
+        ...get().tabs,
+        createTabState(id, options?.title ?? `Tab ${tabCount + 1}`),
+      ],
+      // `activate` defaults to true so `addTab` keeps its behaviour exactly.
+      ...(options?.activate === false ? {} : { activeTabId: id }),
     });
+    return id;
+  },
+
+  addTab: (name) => {
+    get().createTab({ title: name, activate: true });
   },
 
   removeTab: (id) => {
@@ -1958,6 +2031,53 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   },
 
   getTab: (id) => get().tabs.find((t) => t.id === id),
+
+  setTabMeta: (tabId, meta) =>
+    set({
+      tabs: updateTab(get().tabs, tabId, () => ({
+        ...(meta.readOnly !== undefined ? { readOnly: meta.readOnly } : {}),
+        ...(meta.source !== undefined ? { source: meta.source } : {}),
+        ...(meta.transient !== undefined ? { transient: meta.transient } : {}),
+      })),
+    }),
+
+  commitDocument: (tabId, patch) => {
+    // Set BEFORE the `set`, read by subscribers during its synchronous
+    // fan-out, cleared by the `set` wrapper the moment that returns.
+    _lastCommitOrigin = patch.origin ?? null;
+    set({
+      tabs: updateTab(get().tabs, tabId, (tab) => {
+        const dirtyNodeIds = new Set(tab.dirtyNodeIds);
+        for (const id of patch.dirtyIds) dirtyNodeIds.add(id);
+        return {
+          nodes: patch.nodes,
+          edges: patch.edges,
+          segmentGroups: patch.segmentGroups,
+          dirtyNodeIds,
+          // The same rule `removeSegmentGroup` follows: a highlight that
+          // points into a list it is no longer in draws a bubble around
+          // nothing.
+          activeSegment:
+            tab.activeSegment
+            && !patch.segmentGroups.some((s) => s.id === tab.activeSegment!.id)
+              ? null
+              : tab.activeSegment,
+        };
+      }),
+    });
+  },
+
+  pushUndoSnapshotFor: (tabId) => {
+    const tab = get().getTab(tabId);
+    if (!tab) return;
+    const snapshot = undoFrameOf(tab);
+    set({
+      tabs: updateTab(get().tabs, tabId, (t) => ({
+        undoStack: [...t.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
+        redoStack: [],
+      })),
+    });
+  },
 
   // ── Flow actions (active tab) ──
 
@@ -2076,6 +2196,15 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         // — nothing is `.selected` once its node is gone.
         let nodeDetailNodeId = tab.nodeDetailNodeId;
         let selectedNodeId = tab.selectedNodeId;
+        // A segment whose head or tail is gone can never resolve a path, so
+        // `deleteNode` drops it. React Flow's own Delete key never reaches
+        // that action -- it emits a `remove` change straight into this
+        // reducer -- so until now the primary delete gesture left a dangling
+        // group behind, rendering nothing and still being written to the file
+        // on the next save. Same pruning, same place the notes are unbound
+        // (#341 section 5.5).
+        let segmentGroups = tab.segmentGroups;
+        let activeSegment = tab.activeSegment;
         if (hasRemove) {
           const removedIds = new Set(
             changes.filter((c) => c.type === 'remove').map((c) => c.id)
@@ -2091,9 +2220,23 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           if (selectedNodeId !== null && removedIds.has(selectedNodeId)) {
             selectedNodeId = null;
           }
+          const kept = tab.segmentGroups.filter(
+            (s) => !removedIds.has(s.headNodeId) && !removedIds.has(s.tailNodeId),
+          );
+          // A delete that touches no segment hands back the SAME array. The
+          // revision counter compares segments by value and would not be
+          // fooled either way, but the persistence record cache compares
+          // references -- so a fresh array here is a rewritten IndexedDB
+          // record on every Delete keystroke, for nothing.
+          if (kept.length !== tab.segmentGroups.length) {
+            segmentGroups = kept;
+            if (activeSegment && !kept.some((s) => s.id === activeSegment!.id)) {
+              activeSegment = null;
+            }
+          }
         }
 
-        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId };
+        return { nodes: updatedNodes, nodeDetailNodeId, selectedNodeId, segmentGroups, activeSegment };
       }),
     });
   },
@@ -2421,11 +2564,16 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     });
   },
 
-  getSerializedGraph: () => {
+  getSerializedGraph: () => get().getSerializedGraphOf(get().getActiveTab()),
+
+  getSerializedGraphOf: (input) => {
     // A tab whose canvas is showing a subgraph's insides still SAVES and
     // RUNS the whole graph: flatten the editing stack first, so what is
     // serialized never depends on where the user happens to be standing.
-    const tab = flushSubgraphEditing(get().getActiveTab());
+    // Taking the tab as an argument rather than reading the active one is
+    // what lets a plugin snapshot a background tab (#341 section 4.3) -- and
+    // it costs nothing, because `flushSubgraphEditing` was already pure.
+    const tab = flushSubgraphEditing(input);
     // Computed AFTER the flush, so a block the user is editing right now --
     // whose instance is back on the canvas only because the flush put it
     // there -- is never mistaken for an orphan and dropped mid-edit.
@@ -2650,7 +2798,9 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   // a frame still carries no `description`, no `readOnly` and no tab name, and
   // an undo that restored the previous graph's nodes under the new graph's
   // description would be a worse lie than not offering the step at all.
-  loadGraphDocument: (doc) => {
+  loadGraphDocument: (doc) => get().loadGraphDocumentInto(get().activeTabId, doc),
+
+  loadGraphDocumentInto: (tabId, doc) => {
     // Computed here, not by the caller: a reader that forgets the gate is
     // exactly the bug this action closes, and `formatVersion` is untrusted
     // input off a file, so a missing or non-numeric field reads as current.
@@ -2658,7 +2808,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
     const name =
       typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
     set({
-      tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
+      tabs: updateTab(get().tabs, tabId, (tab) => ({
         nodes: doc.nodes,
         edges: doc.edges,
         // Normalized on the way in, as `setSubgraphs` does: every reader
@@ -3323,13 +3473,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
   // snapshot's array to being the live one and a copy costs a pointer memcpy.
 
   pushUndoSnapshot: () => {
-    const snapshot = undoFrameOf(get().getActiveTab());
-    set({
-      tabs: updateTab(get().tabs, get().activeTabId, (t) => ({
-        undoStack: [...t.undoStack.slice(-(MAX_UNDO - 1)), snapshot],
-        redoStack: [],
-      })),
-    });
+    get().pushUndoSnapshotFor(get().activeTabId);
   },
 
   // Both consumers SPREAD the frame rather than listing its fields (#200
