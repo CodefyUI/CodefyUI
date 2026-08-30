@@ -802,7 +802,6 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.toast.busy': '已經有另一個安裝在進行中。',
   'packs.toast.needsCli': '這個套件目前無法從程式內安裝。請執行：{command}',
   'packs.toast.restartRetry': '安裝停在伺服器已載入的套件上。請到套件中心重新啟動伺服器來完成安裝。',
-  'packs.toast.remoteNotAllowed': '只能在執行伺服器的那台電腦上安裝。',
   'packs.toast.blocked': '請先安裝 {pack}。',
   'packs.toast.restartRefusedRunning': '有圖正在執行。請先停止，再安裝。',
   'packs.toast.restartRefusedPending': '已經有一個重新啟動在進行中，請等伺服器回來。',
@@ -834,10 +833,11 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.catalog.word-vectors.title': '詞向量（GloVe）',
   'packs.catalog.word-vectors.desc': '給 WordVector 用的真實 40 萬字 GloVe-50d 表；不需要額外 Python 套件',
   'packs.catalog.rag.title': 'RAG 檢索堆疊',
-  'packs.catalog.rag.desc':
-    '給 HFTextGenerate 用的本機生成模型 Qwen2.5-0.5B-Instruct；需要先安裝句向量模型',
+  // 兩句都不再重複下一列已經寫過的事：相依列會帶著即時狀態說「需要先安裝：
+  // 句向量模型」，GPU 說明再往下兩列的按鈕就寫著「安裝並重新啟動」。
+  'packs.catalog.rag.desc': '給 HFTextGenerate 用的本機生成模型 Qwen2.5-0.5B-Instruct',
   'packs.catalog.gpu-torch.title': 'GPU 版 PyTorch',
-  'packs.catalog.gpu-torch.desc': '把 PyTorch 換成符合這台機器的 CUDA/ROCm 版本；伺服器會重新啟動',
+  'packs.catalog.gpu-torch.desc': '把 PyTorch 換成符合這台機器的 CUDA/ROCm 版本',
 
   // Pack and item state, keyed by the value the API sends.
   'packs.status.not_installed': '未安裝',
@@ -853,16 +853,13 @@ const zhTW: Record<TranslationKey, string> = {
 
   // What a pack costs, and the buttons that spend it.
   'packs.pip': 'Python 套件：{specs}',
-  'packs.pipReady': 'Python 套件已安裝',
   'packs.pipMissing': 'Python 套件尚未安裝',
   'packs.size': '下載大小：{size}',
   'packs.sizeSelected': '已選 {size}',
-  'packs.dependsOn': '需要先安裝：{packs}',
+  'packs.dependsOnLabel': '需要先安裝：',
   'packs.dependsOnMissing': '請先安裝 {pack}',
-  'packs.selectAll': '全選未下載的項目',
   'packs.selectSomething': '請至少勾選一個項目',
   'packs.installSelected': '安裝選取的項目',
-  'packs.installAll': '全部安裝',
   'packs.cancel': '取消安裝',
   'packs.cancelling': '正在取消...',
   'packs.remoteDisabled': '只能在執行伺服器的那台電腦上安裝。',
@@ -870,7 +867,7 @@ const zhTW: Record<TranslationKey, string> = {
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
   'packs.activity.idle': '目前沒有進行中的安裝。',
-  'packs.activity.idleHint': '請在左側選擇套件。關閉這個視窗後，下載仍會繼續。',
+  'packs.activity.idleHint': '關閉這個視窗後，下載仍會繼續。',
   'packs.activity.job': '正在安裝 {pack}',
   'packs.activity.step': '步驟 {index}：{label}',
   'packs.activity.step.pip': '正在安裝 Python 套件',
@@ -900,14 +897,14 @@ const zhTW: Record<TranslationKey, string> = {
   'packs.gpu.installed': '目前安裝：{variant}',
   'packs.gpu.recommended': '建議安裝：{variant}',
   'packs.gpu.variant': 'PyTorch 版本',
-  'packs.gpu.restartNote': '安裝完成後伺服器會重新啟動；有圖在執行時會拒絕開始。',
+  'packs.gpu.restartNote': '有圖在執行時不會開始。',
   'packs.gpu.restartConfirm': '要安裝 {variant} 並重新啟動伺服器嗎？',
   'packs.gpu.installRestart': '安裝並重新啟動',
   'packs.gpu.devMode':
     '你是用 cdui dev 啟動的，伺服器無法自行重新啟動。請在後端的終端機執行下面的指令，再重新啟動：',
   'packs.gpu.notYet': '目前還無法在程式內切換 PyTorch 版本。請先停止伺服器，再於終端機執行：',
   'packs.gpu.noCommand': '伺服器沒有提供安裝指令。請參考 README 的 GPU 安裝步驟。',
-  'packs.gpu.manualAlternative': '也可以停止伺服器後，自己在終端機執行：',
+  'packs.manualCommand': '手動安裝指令',
   'packs.copy': '複製指令',
   'packs.copied': '已複製到剪貼簿。',
   'packs.copyFailed': '無法複製，請手動選取文字後複製。',
@@ -940,8 +937,8 @@ const zhTW: Record<TranslationKey, string> = {
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
-  'paramField.needsPack': '需要套件：{pack}',
-  'paramField.needsModel': '需要模型：{item}',
+  'paramField.needsPack': '需要 {pack}',
+  'paramField.needsModel': '需要 {item}',
   'paramField.packHint': '「{option}」需要 {pack} 套件。',
   'paramField.modelHint': '「{option}」需要 {pack} 套件裡的模型 {item}。',
   'paramField.packHintOthers': '灰色的選項需要另外安裝套件。',

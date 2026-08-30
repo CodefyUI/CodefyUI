@@ -160,6 +160,38 @@ describe('PackCard — what it says about a pack', () => {
     renderCard({ pack: pack({ id: 'word-vectors' }) });
     expect(screen.queryByText(/^Python packages:/)).toBeNull();
   });
+
+  it('leaves the dependency to the row that shows its live state', () => {
+    // The description used to end "needs Sentence embeddings first" one row
+    // above `Requires: Sentence embeddings [Not installed]` — the same fact in
+    // the same words, and only the row below it knows whether it is still true.
+    renderCard({
+      pack: pack({ id: 'rag', depends_on: ['sentence-embeddings'] }),
+      byId: index(pack({ id: 'sentence-embeddings' })),
+    });
+    expect(
+      screen.getByText('Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Requires:')).toBeInTheDocument();
+    expect(screen.queryByText(/needs Sentence embeddings first/)).toBeNull();
+  });
+
+  it('leaves the restart to the button that performs it', () => {
+    // `Install and restart` is two rows down, and its confirm dialog says it
+    // a third time. The description is the one place that can drop it.
+    renderCard({
+      pack: pack({ id: 'gpu-torch', install_mode: 'restart' }),
+      gpu: gpu(),
+      restartAvailable: true,
+    });
+    expect(
+      screen.getByText('Switch PyTorch to the CUDA/ROCm build that matches this machine'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Install and restart' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/; the server restarts/)).toBeNull();
+  });
 });
 
 describe('PackCard — choosing what to install', () => {
@@ -188,18 +220,6 @@ describe('PackCard — choosing what to install', () => {
 
     fireEvent.click(installBtn());
     expect(onInstall).toHaveBeenCalledWith(['all-MiniLM-L6-v2'], 'live');
-  });
-
-  it('re-ticks everything missing on Select all', () => {
-    const { onInstall } = renderCard({ pack: p });
-    fireEvent.click(screen.getByLabelText('sentence-transformers/labse'));
-    fireEvent.click(screen.getByLabelText('sentence-transformers/all-MiniLM-L6-v2'));
-    expect(installBtn()).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Select all missing' }));
-    fireEvent.click(installBtn());
-    // Catalog order, not click order: the request reads like the card.
-    expect(onInstall).toHaveBeenCalledWith(['all-MiniLM-L6-v2', 'labse'], 'live');
   });
 
   it('reseeds the ticks when the catalog says an item has landed', () => {
@@ -232,9 +252,41 @@ describe('PackCard — choosing what to install', () => {
     expect(onRemoveItem).toHaveBeenCalledWith('bge-small-zh');
   });
 
-  it('names the licence on the row and in the name tooltip', () => {
+  it('drops the whole footer once there is nothing left to install', () => {
+    // A disabled button over "0 B selected" is a row that can only ever say
+    // no. The rows above already carry Remove, which is the one thing a
+    // finished pack can still be asked to do.
+    renderCard({
+      pack: pack({
+        id: 'sentence-embeddings',
+        status: 'installed',
+        items: [item({ id: 'labse', status: 'present' })],
+      }),
+    });
+    expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();
+    expect(screen.queryByText(/selected$/)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Remove sentence-transformers/labse' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the footer while one item is still missing', () => {
+    // The counterfactual for the case above: the footer goes on "nothing
+    // left", not on "something is installed".
     renderCard({ pack: p });
+    expect(installBtn()).toBeInTheDocument();
+    expect(screen.getByText('100 MB selected')).toBeInTheDocument();
+  });
+
+  it('recovers the ellipsized name by its own tooltip, and names the licence on the chip', () => {
+    renderCard({ pack: p });
+    // The name is the thing that gets clipped, so the name is what its
+    // tooltip has to give back — the licence has a chip of its own.
     expect(screen.getByText('sentence-transformers/labse')).toHaveAttribute(
+      'title',
+      'sentence-transformers/labse',
+    );
+    expect(screen.getAllByText('apache-2.0')[0]).toHaveAttribute(
       'title',
       'License: apache-2.0',
     );
@@ -296,8 +348,12 @@ describe('PackCard — when it cannot install', () => {
     });
 
     // The dependency is named WITH its own state, so "why is this blocked" is
-    // answered on the card instead of in a toast after a refused click.
-    expect(screen.getByText('Requires: Sentence embeddings')).toBeInTheDocument();
+    // answered on the card instead of in a toast after a refused click — and
+    // the name is said ONCE, as the link that goes to it.
+    expect(screen.getByText('Requires:')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Install Sentence embeddings first' }),
+    ).toHaveTextContent('Sentence embeddings');
     expect(screen.getByText('Partly installed')).toBeInTheDocument();
     expect(installBtn()).toBeDisabled();
     expect(installBtn()).toHaveAttribute('title', 'Install Sentence embeddings first');
@@ -335,12 +391,36 @@ describe('PackCard — a pack whose python half is missing', () => {
     expect(onInstall).toHaveBeenCalledWith([], 'live');
   });
 
-  it('says so when the libraries are already there', () => {
+  it('stays quiet about the libraries when they are already there', () => {
     renderCard({ pack: pack({ ...p, pip_ready: true }) });
-    expect(screen.getByText('Python packages installed')).toBeInTheDocument();
-    // Now there really is nothing to do, and the button says what would help.
-    expect(installBtn()).toBeDisabled();
-    expect(installBtn()).toHaveAttribute('title', 'Tick at least one item to install');
+    // The status pill already says the pack's state; a second "installed" on
+    // the pip line is the same fact twice. The specs themselves stay.
+    expect(screen.queryByText('Python packages installed')).toBeNull();
+    expect(
+      screen.getByText(/Python packages: sentence-transformers>=3/),
+    ).toBeInTheDocument();
+    // And with every file on disk and the libraries in, the card has nothing
+    // left to offer — so it offers nothing, rather than a dead button.
+    expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();
+    expect(screen.queryByText(/selected$/)).toBeNull();
+  });
+
+  it('says nothing extra on a pack that is ONLY python', () => {
+    // With no files of its own, the pack's own pill already reads "Not
+    // installed" about the one thing it contains. The suffix exists for the
+    // case the pill cannot describe: files here, libraries not.
+    renderCard({
+      pack: pack({
+        id: 'rag',
+        pip: [{ spec: 'transformers>=4.44' }],
+        pip_ready: false,
+        items: [],
+      }),
+    });
+    expect(screen.getByText('Python packages: transformers>=4.44')).toBeInTheDocument();
+    expect(screen.queryByText('Python packages not installed')).toBeNull();
+    // The pip step is still an install, so the button stays.
+    expect(installBtn()).toBeEnabled();
   });
 });
 
@@ -377,6 +457,114 @@ describe('PackCard — while a job is running', () => {
     expect(
       screen.queryByRole('progressbar', { name: 'sentence-transformers/labse' }),
     ).toBeNull();
+  });
+
+  it('gives a bar only to the item the job has actually reached', () => {
+    // Every requested item is seeded at install time, so a four-model pack
+    // showed four bars the moment the first download began — three of them
+    // empty and captioned "0 B". A queued row keeps the plain row it had.
+    renderCard({
+      pack: pack({
+        id: 'sentence-embeddings',
+        status: 'installing',
+        items: [
+          item({ id: 'all-MiniLM-L6-v2', status: 'downloading' }),
+          item({ id: 'labse', status: 'missing' }),
+        ],
+      }),
+      job: {
+        ...emptyPackJob('j1', 'sentence-embeddings'),
+        items: {
+          'all-MiniLM-L6-v2': { bytesDone: 1000, bytesTotal: null, percent: null },
+          labse: { bytesDone: 0, bytesTotal: null, percent: 0 },
+        },
+      },
+    });
+
+    expect(screen.getAllByRole('progressbar')).toHaveLength(1);
+    expect(
+      screen.getByRole('progressbar', { name: 'sentence-transformers/all-MiniLM-L6-v2' }),
+    ).toBeInTheDocument();
+    // The queued row still says what it is, in its ordinary state text.
+    expect(screen.getByText('Not downloaded')).toBeInTheDocument();
+    expect(screen.queryByText('0 B')).toBeNull();
+  });
+
+  it('gives the queued item its bar as soon as the job says its name', () => {
+    // Two ways in besides the first byte: a size arriving with the request,
+    // and the job announcing this item as the step it is on. Without the
+    // second, a converting item (no bytes of its own) would show nothing.
+    renderCard({
+      pack: pack({
+        id: 'sentence-embeddings',
+        status: 'installing',
+        items: [item({ id: 'labse', status: 'missing' })],
+      }),
+      job: {
+        ...emptyPackJob('j1', 'sentence-embeddings'),
+        steps: [{ step: 'download:labse', label: 'Downloading', state: 'running' }],
+        items: { labse: { bytesDone: 0, bytesTotal: null, percent: 0 } },
+      },
+    });
+
+    expect(
+      screen.getByRole('progressbar', { name: 'sentence-transformers/labse' }),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the bar on the item being converted, which has no bytes of its own', () => {
+    // The GloVe convert step is the case the step clause exists for: the
+    // download is over, the file is being unpacked, and nothing is on the
+    // wire — so bytes alone would blank the bar for the whole conversion.
+    // `word-vectors` is the only pack that converts, and the backend emits
+    // `convert:glove-50d` for exactly this item.
+    renderCard({
+      pack: pack({
+        id: 'word-vectors',
+        status: 'installing',
+        items: [
+          item({
+            id: 'glove-50d',
+            kind: 'asset',
+            repo_id: null,
+            url: 'https://example.invalid/glove-wiki-gigaword-50.gz',
+          }),
+        ],
+      }),
+      job: {
+        ...emptyPackJob('j1', 'word-vectors'),
+        steps: [
+          {
+            step: 'convert:glove-50d',
+            label: 'Preparing GloVe vectors',
+            state: 'running',
+          },
+        ],
+        items: { 'glove-50d': { bytesDone: 0, bytesTotal: null, percent: 0 } },
+      },
+    });
+
+    expect(
+      screen.getByRole('progressbar', { name: 'glove-wiki-gigaword-50.gz' }),
+    ).toBeInTheDocument();
+  });
+
+  it('clears the bars when the job stopped without starting them', () => {
+    // Every requested item is seeded with a zero-byte entry at install time,
+    // and a settled job keeps its items. A cancel before the first byte thus
+    // left an empty bar reading "0 B" on rows nothing ever downloaded.
+    const stopped: PackJob = {
+      ...emptyPackJob('j1', 'sentence-embeddings'),
+      status: 'cancelled',
+      items: { labse: { bytesDone: 0, bytesTotal: null, percent: 0 } },
+    };
+    renderCard({
+      pack: pack({ id: 'sentence-embeddings', items: [item({ id: 'labse' })] }),
+      job: stopped,
+    });
+
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.queryByText('0 B')).toBeNull();
   });
 
   it('locks the tick boxes so the selection cannot drift under a running job', () => {
@@ -455,7 +643,6 @@ describe('PackCard — the GPU pack', () => {
     expect(screen.getByText('cdui install --gpu cu128')).toBeInTheDocument();
     // No selection UI: there is nothing to tick on a wheel swap.
     expect(screen.queryByRole('button', { name: 'Install selected' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Select all missing' })).toBeNull();
     // And no button either: this catalog did not say the server can restart.
     expect(screen.queryByRole('button', { name: 'Install and restart' })).toBeNull();
   });

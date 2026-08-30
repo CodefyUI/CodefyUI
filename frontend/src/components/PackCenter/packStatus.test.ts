@@ -136,6 +136,15 @@ describe('jobOverallPercent', () => {
     const j = job({ items: { x: { bytesDone: 400, bytesTotal: 100, percent: 100 } } });
     expect(jobOverallPercent(j, p)).toBe(100);
   });
+
+  it('believes the download over an under-reporting catalog', () => {
+    // The bar read 100% while the row underneath still said 449 / 476 MB:
+    // the catalog's weight saturated, so every byte past 449 was invisible.
+    // The larger of the two promises is the honest denominator.
+    const p = pack({ id: 'p1', items: [item({ id: 'x', size_bytes: 449 })] });
+    const j = job({ items: { x: { bytesDone: 449, bytesTotal: 476, percent: 94 } } });
+    expect(jobOverallPercent(j, p)).toBeCloseTo(94.3, 1);
+  });
 });
 
 describe('stepLabel', () => {

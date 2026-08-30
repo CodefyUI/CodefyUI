@@ -115,8 +115,12 @@ export function PackActivityPane({
 
   return (
     <>
+      {/* "Installing X" only while it IS installing. The title used to say it
+          for `done`, `cancelled`, `failed` and `lost` too — directly above a
+          banner saying the opposite. A stopped job is titled by its pack, and
+          the banner underneath is what happened to it. */}
       <div className={styles.activityTitle}>
-        {t('packs.activity.job', { pack: title })}
+        {running ? t('packs.activity.job', { pack: title }) : title}
       </div>
 
       {/* Mounted for the job's whole life, not just while it runs: a live
@@ -195,6 +199,7 @@ function ResultBanner({
   // by two copies of the same five `t()` calls.
   const sentence = resultSentence(t, job, title);
 
+  // Read before the command block below, which folds only when this is true.
   // BOTH flags, and they answer different questions. `retryMode` is this
   // job's own: the server said a restart-mode install is what would get past
   // whatever stopped this one (a resolver conflict against the constraints
@@ -237,9 +242,19 @@ function ResultBanner({
 
       {/* Kept even when the button is there: the command is the same install
           in a terminal, and a user who was just told the server will restart
-          is entitled to do it themselves instead. */}
+          is entitled to do it themselves instead. Folded only in that case —
+          with no button, this command is the ONLY way through (a `cdui dev`
+          server, or a live install stopped on a resolver conflict), and
+          hiding the only way through behind a summary is not a tidy-up. */}
       {job.status === 'needs_restart' && job.restartCommand !== null && (
-        <CommandBlock command={job.restartCommand} />
+        canRetry ? (
+          <details className={styles.manual}>
+            <summary>{t('packs.manualCommand')}</summary>
+            <CommandBlock command={job.restartCommand} />
+          </details>
+        ) : (
+          <CommandBlock command={job.restartCommand} />
+        )
       )}
 
       {canRetry && (

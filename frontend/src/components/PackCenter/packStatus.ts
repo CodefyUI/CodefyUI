@@ -129,9 +129,11 @@ export function jobOverallPercent(
     let total = 0;
     let done = 0;
     for (const [id, progress] of entries) {
-      // The catalog's size is the honest weight; the download's own total is
-      // the fallback for an item the catalog does not list (a newer backend).
-      const weight = sizes.get(id) ?? progress.bytesTotal ?? 0;
+      // The larger of what the catalog promised and what the download says it
+      // is really fetching. An under-reported catalog size (449 MB recorded,
+      // 476 MB actually coming down) otherwise saturates the weight, and the
+      // bar reads 100 % with the item counter still moving underneath it.
+      const weight = Math.max(sizes.get(id) ?? 0, progress.bytesTotal ?? 0);
       if (!Number.isFinite(weight) || weight <= 0) continue;
       total += weight;
       // A server that reports more bytes than it promised must not push the

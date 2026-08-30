@@ -37,6 +37,17 @@ interface ParamFieldProps {
    * which needs the sibling `shape` and `value_mode` to know what to render.
    */
   siblingParams?: Record<string, any>;
+  /**
+   * The pack the caller ALREADY offers an Install button for, so a gated
+   * select does not add a second one to the same place.
+   *
+   * A pack id rather than a flag: a node whose `requires_pack` is one pack can
+   * hold a select whose option needs another, and the caller's banner opens
+   * only the first. Suppressing on "there is a banner" would leave the second
+   * pack with no route out of the panel. Only `NodeParamList` sets it; every
+   * other caller renders the button as before.
+   */
+  hidePackActionFor?: string;
 }
 
 interface FileFieldBackend {
@@ -186,7 +197,14 @@ function FileField({
   );
 }
 
-export function ParamField({ param, value, onChange, label, siblingParams }: ParamFieldProps) {
+export function ParamField({
+  param,
+  value,
+  onChange,
+  label,
+  siblingParams,
+  hidePackActionFor,
+}: ParamFieldProps) {
   const displayLabel = label ?? param.name;
 
   if (param.param_type === 'tensor_grid') {
@@ -256,7 +274,13 @@ export function ParamField({ param, value, onChange, label, siblingParams }: Par
 
   if (param.param_type === 'select') {
     return (
-      <SelectField param={param} value={value} onChange={onChange} displayLabel={displayLabel} />
+      <SelectField
+        param={param}
+        value={value}
+        onChange={onChange}
+        displayLabel={displayLabel}
+        hidePackActionFor={hidePackActionFor}
+      />
     );
   }
 
@@ -349,11 +373,13 @@ function SelectField({
   value,
   onChange,
   displayLabel,
+  hidePackActionFor,
 }: {
   param: ParamDefinition;
   value: any;
   onChange: (name: string, value: any) => void;
   displayLabel: string;
+  hidePackActionFor?: string;
 }) {
   const { t } = useI18n();
   const { byId, loaded, unsupported } = usePackAvailability();
@@ -421,24 +447,38 @@ function SelectField({
               instead of a `?.` that would quietly open an unfocused panel. */}
           {currentMissing
             ? requirementSentence(t, byId, currentValue, currentMissing)
-            : t('paramField.packHintOthers')}{' '}
-          <button
-            type="button"
-            className={styles.linkBtn}
-            // Named, because a node config panel can show several of these at
-            // once: two "Install pack" buttons are one list entry twice over
-            // to anyone navigating by control, and the visible label cannot
-            // carry the pack without turning a link into a sentence.
-            aria-label={t('paramField.installPackFor', {
-              pack: localizedPackTitle(t, byId, focus.packId),
-            })}
-            // `getState()` rather than a subscription: every select on the
-            // canvas holds this component, and none of them re-render when
-            // the Package Center opens.
-            onClick={() => useUIStore.getState().openPackCenter(focus.packId)}
-          >
-            {t('paramField.installPack')}
-          </button>
+            : t('paramField.packHintOthers')}
+          {/* The sentence always; the button only when nobody above us is
+              already offering THIS pack. `NodeParamList` puts a banner over
+              the fields naming the node's own pack with the same button —
+              two routes to one place, on one panel. Compared by id rather
+              than by "is there a banner", because a banner for a different
+              pack is not this button's duplicate; it goes somewhere else.
+              The SENTENCE still earns its place either way: it is about this
+              option, which the node-level banner cannot say. */}
+          {focus.packId !== hidePackActionFor && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className={styles.linkBtn}
+                // Named, because a node config panel can show several of
+                // these at once: two "Install pack" buttons are one list
+                // entry twice over to anyone navigating by control, and the
+                // visible label cannot carry the pack without turning a link
+                // into a sentence.
+                aria-label={t('paramField.installPackFor', {
+                  pack: localizedPackTitle(t, byId, focus.packId),
+                })}
+                // `getState()` rather than a subscription: every select on
+                // the canvas holds this component, and none of them re-render
+                // when the Package Center opens.
+                onClick={() => useUIStore.getState().openPackCenter(focus.packId)}
+              >
+                {t('paramField.installPack')}
+              </button>
+            </>
+          )}
         </span>
       )}
     </div>

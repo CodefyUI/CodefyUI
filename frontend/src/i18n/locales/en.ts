@@ -845,8 +845,6 @@ const en = {
   // than what to type, and brings the click with it.
   'packs.toast.restartRetry':
     'The install stopped at a package the server has loaded. Open the Package Center to restart the server and finish it.',
-  'packs.toast.remoteNotAllowed':
-    'Installing is only allowed on the computer that runs the server.',
   'packs.toast.blocked': 'Install {pack} first.',
   // The two refusals a server that CAN restart still makes. Both are 409s
   // that carry a command, and `needsCli` — "cannot be installed from inside
@@ -886,11 +884,14 @@ const en = {
   'packs.catalog.word-vectors.desc':
     'Real 400k-word GloVe-50d table for WordVector; no Python packages needed',
   'packs.catalog.rag.title': 'RAG stack',
+  // Neither of these names what the row under it already says: the dependency
+  // line carries "Requires: Sentence embeddings" with its live state, and the
+  // button two rows below the GPU description reads "Install and restart".
   'packs.catalog.rag.desc':
-    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate; needs Sentence embeddings first',
+    'Local generator model Qwen2.5-0.5B-Instruct for HFTextGenerate',
   'packs.catalog.gpu-torch.title': 'GPU PyTorch',
   'packs.catalog.gpu-torch.desc':
-    'Switch PyTorch to the CUDA/ROCm build that matches this machine; the server restarts',
+    'Switch PyTorch to the CUDA/ROCm build that matches this machine',
 
   // Pack and item state, keyed by the value the API sends.
   'packs.status.not_installed': 'Not installed',
@@ -906,21 +907,21 @@ const en = {
 
   // What a pack costs, and the buttons that spend it.
   'packs.pip': 'Python packages: {specs}',
-  // Said next to the specs, because the pip half can be missing while every
-  // model file is already on disk — which is the only reason Install is alive
-  // on a card with nothing ticked.
-  'packs.pipReady': 'Python packages installed',
+  // Said next to the specs ONLY when it is the one thing left to do: every
+  // model file is on disk and the libraries are not, which is the only reason
+  // Install is alive on a card with nothing ticked. In every other state the
+  // pack's own status pill already carries it.
   'packs.pipMissing': 'Python packages not installed',
   'packs.size': 'Download size: {size}',
   'packs.sizeSelected': '{size} selected',
-  'packs.dependsOn': 'Requires: {packs}',
+  // The label only. The dependency's NAME is the link beside it, so the card
+  // does not print it once as prose and again as a button.
+  'packs.dependsOnLabel': 'Requires:',
   'packs.dependsOnMissing': 'Install {pack} first',
-  'packs.selectAll': 'Select all missing',
   // Why the Install button is dead, on its tooltip. A sentence rather than the
   // other button's label: a disabled control has to say what to DO next.
   'packs.selectSomething': 'Tick at least one item to install',
   'packs.installSelected': 'Install selected',
-  'packs.installAll': 'Install everything',
   'packs.cancel': 'Cancel install',
   'packs.cancelling': 'Cancelling...',
   'packs.remoteDisabled': 'Installing is only allowed from the computer that runs the server.',
@@ -928,8 +929,9 @@ const en = {
   // Activity pane. `packs.activity.step.*` is keyed by the step id the job
   // sends, so an unknown step falls back to the server's own English label.
   'packs.activity.idle': 'Nothing is installing right now.',
-  'packs.activity.idleHint':
-    'Pick a pack on the left. Downloads keep going if you close this window.',
+  // Only the half the screen does not already show. "Pick a pack on the left"
+  // described what the reader was looking at.
+  'packs.activity.idleHint': 'Downloads keep going if you close this window.',
   'packs.activity.job': 'Installing {pack}',
   'packs.activity.step': 'Step {index}: {label}',
   'packs.activity.step.pip': 'Installing Python packages',
@@ -971,12 +973,10 @@ const en = {
   'packs.gpu.installed': 'Installed build: {variant}',
   'packs.gpu.recommended': 'Recommended build: {variant}',
   'packs.gpu.variant': 'PyTorch build',
-  // What the button does, and the one condition under which it declines. It
-  // does NOT stop a running graph: the server refuses to start a restart
-  // while one is in flight, which is a promise worth making on the card the
-  // user is about to click.
-  'packs.gpu.restartNote':
-    'The server restarts after this install. It refuses to start one while a graph is running.',
+  // The one condition under which the button declines — and only that. That
+  // the server restarts is already the button's own label and the confirm
+  // dialog's question; this is the half neither of them says.
+  'packs.gpu.restartNote': 'It will not start while a graph is running.',
   'packs.gpu.restartConfirm': 'Install {variant} and restart the server?',
   'packs.gpu.installRestart': 'Install and restart',
   'packs.gpu.devMode':
@@ -985,11 +985,10 @@ const en = {
     'Switching the PyTorch build from inside the app is not available yet. Run this in a terminal with the server stopped:',
   'packs.gpu.noCommand':
     'The server did not provide an install command. See the README for the GPU install steps.',
-  // Said above the command block on a card that ALSO has a working button:
-  // the command is then a choice, not the only way through, and a bare block
-  // under a button reads like an instruction the button did not follow.
-  'packs.gpu.manualAlternative':
-    'Or stop the server and run this in a terminal yourself:',
+  // The disclosure label wherever a command block sits under a button that
+  // does the same thing: the command is then a choice, not the only way
+  // through, and it costs one folded line instead of three open ones.
+  'packs.manualCommand': 'Manual install command',
   'packs.copy': 'Copy command',
   'packs.copied': 'Copied to clipboard.',
   'packs.copyFailed': 'Could not copy. Select the text and copy it by hand.',
@@ -1023,8 +1022,11 @@ const en = {
   // "This needs a pack" — said on a select option, a node, a palette entry
   // and a refused run. Every one of them names the pack, because "needs a
   // pack" without a name is not something a user can act on.
-  'paramField.needsPack': 'needs pack: {pack}',
-  'paramField.needsModel': 'needs model: {item}',
+  // Short on purpose: this goes inside an `<option>` in a full-width select,
+  // which clips with no ellipsis when the current value is a gated one. The
+  // sentence under the select still spells out "pack" and "model".
+  'paramField.needsPack': 'needs {pack}',
+  'paramField.needsModel': 'needs {item}',
   'paramField.packHint': '"{option}" needs the {pack} pack.',
   'paramField.modelHint': '"{option}" needs the model {item} from the {pack} pack.',
   'paramField.packHintOthers': 'Greyed-out options need an optional pack.',

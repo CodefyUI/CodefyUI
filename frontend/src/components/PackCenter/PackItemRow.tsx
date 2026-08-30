@@ -81,11 +81,20 @@ export function PackItemRow({
         />
       )}
 
+      {/* Name and licence share one line. Each tooltip recovers its OWN text:
+          the name is the part that gets ellipsized, so `title` gives it back
+          in full, and the bare licence code is what needs the word "License"
+          spelling out. They used to be swapped, which put the licence on the
+          screen twice and the name nowhere. */}
       <span className={styles.itemNameCell}>
-        <span className={styles.itemName} title={licenseTitle}>
+        <span className={styles.itemName} title={name}>
           {name}
         </span>
-        {item.license && <span className={styles.itemLicense}>{item.license}</span>}
+        {item.license && (
+          <span className={styles.itemLicense} title={licenseTitle}>
+            {item.license}
+          </span>
+        )}
       </span>
 
       <span className={styles.itemSize}>{formatBytes(item.size_bytes)}</span>

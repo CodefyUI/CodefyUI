@@ -208,6 +208,10 @@
   font-weight: var(--fw-semibold);
   line-height: var(--lh-snug);
   min-width: 0;
+  /* `min-width: 0` lets the flex item shrink; this is what lets the TEXT
+     break once it has. A title from a newer catalog with no spaces in it
+     would otherwise run past the card edge. */
+  overflow-wrap: anywhere;
 }
 
 .cardSize {
@@ -333,7 +337,10 @@
 
 .itemRow {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  /* `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` track has an `auto`
+     minimum, so a repo id long enough to beat the column would push the size
+     and the Remove button out of the card instead of ellipsizing. */
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
@@ -362,14 +369,20 @@
   height: 14px;
 }
 
+/* One line, not two. A pack is four of these rows and the licence had a line
+   of its own under every name, which doubled the height of the tallest thing
+   in the card for a word. Baseline-aligned so the small licence sits on the
+   name's own line rather than floating in the middle of it. */
 .itemNameCell {
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  align-items: baseline;
+  gap: var(--sp-2);
 }
 
 .itemName {
   min-width: 0;
+  flex: 0 1 auto;
   color: var(--text-primary);
   font-size: var(--fs-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -378,7 +391,14 @@
   white-space: nowrap;
 }
 
+/* All of the shrink goes to the NAME, which has a tooltip that gives it back;
+   the licence has none, so `apach…` on a narrow row would be a fact lost. The
+   `max-width` is the guard against the other extreme — a licence string long
+   enough to take the row on its own still yields the name its share. */
 .itemLicense {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 40%;
   color: var(--text-muted);
   font-size: var(--fs-2xs);
   font-family: system-ui, sans-serif;
@@ -510,12 +530,10 @@
   list-style: none;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
-}
-
-.gpuVariant {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  /* A ROCm `gfx1150-…` label or a driver id has no break opportunity, and the
+     card's only overflow behaviour is `hidden` on the modal — so an unbroken
+     fact would be clipped rather than scrolled. */
+  overflow-wrap: anywhere;
 }
 
 .select {
@@ -532,10 +550,38 @@
   border-color: var(--accent-deep);
 }
 
+/* A real instruction, on the cards that have no button: full reading size. */
 .note {
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
+}
+
+/* The same sentence when a working button is above it — a caption on the
+   control, not a paragraph before it. */
+.caption {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+}
+
+/* The command a button already offers: one folded line until asked for. */
+.manual {
+  margin: 0;
+}
+
+.manual > summary {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.manual > summary:hover {
+  color: var(--accent);
+}
+
+.manual > *:not(summary) {
+  margin-top: var(--sp-2);
 }
 
 .commandBlock {
@@ -572,7 +618,9 @@
   flex-shrink: 0;
   border-left: 1px solid var(--border-base);
   background: var(--surface-panel);
-  padding: var(--sp-5) var(--sp-5) var(--sp-6);
+  /* Top padding matches `.list`, so the pane's first line and the first
+     card's top edge start together instead of 4 px apart. */
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -627,6 +675,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+  /* The server's own words land here verbatim in a 340 px column: a Windows
+     path or a wheel URL has no break opportunity of its own. */
+  overflow-wrap: anywhere;
 }
 
 .resultBanner[data-tone='success'] {
@@ -653,6 +704,7 @@
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
 }
 
 /* ── Log tail ───────────────────────────────────────────────────────────── */
@@ -702,5 +754,19 @@
     border-left: none;
     border-top: 1px solid var(--border-base);
     max-height: 46%;
+    /* `flex-shrink: 0` is right in the side-by-side layout, where it protects
+       the 340 px column. Stacked under a `max-height` it is what cut the
+       Cancel / Dismiss row off: the pane's content outgrew its cap and the
+       modal's `overflow: hidden` took the difference. It shrinks and scrolls
+       here instead. */
+    flex-shrink: 1;
+    overflow-y: auto;
+  }
+
+  /* The log's 120 px floor is the other half of the same overflow: with the
+     bar, the banner and the button row above it, that floor alone can beat
+     the pane's cap on a short window. */
+  .log {
+    min-height: 72px;
   }
 }

@@ -12,11 +12,12 @@ import { useI18n } from '../../i18n';
 // Isolate the list from ParamField's REST/file backends; the mock exposes a
 // button so an edit can be triggered without knowing each field's markup.
 vi.mock('./ParamField', () => ({
-  ParamField: ({ param, value, onChange, siblingParams }: any) => (
+  ParamField: ({ param, value, onChange, siblingParams, hidePackActionFor }: any) => (
     <button
       type="button"
       data-testid={`field-${param.name}`}
       data-siblings={JSON.stringify(siblingParams)}
+      data-hide-pack-action-for={hidePackActionFor ?? ''}
       onClick={() => onChange(param.name, 'EDITED')}
     >
       {param.name}={String(value)}
@@ -286,6 +287,32 @@ describe('NodeParamList', () => {
     );
     expect(useUIStore.getState().packCenterOpen).toBe(true);
     expect(useUIStore.getState().packCenterFocusPackId).toBe('word-vectors');
+  });
+
+  it('tells the fields WHICH pack the banner already offers, not just that it does', () => {
+    // The banner opens one pack. A select whose option needs a DIFFERENT one
+    // is not a duplicate of it, and suppressing its button on the strength of
+    // "there is a banner" would leave that pack unreachable from the panel.
+    seedPacks(packSummary({ id: 'word-vectors', title: 'Word vectors', usable: false }));
+    render(
+      <NodeParamList
+        nodeId="n1"
+        definition={{ ...def([param({ name: 'lr' })]), requires_pack: 'word-vectors' }}
+        params={{ lr: 0.1 }}
+      />,
+    );
+
+    expect(screen.getByTestId('field-lr')).toHaveAttribute(
+      'data-hide-pack-action-for',
+      'word-vectors',
+    );
+  });
+
+  it('names no pack to suppress when there is no banner', () => {
+    render(
+      <NodeParamList nodeId="n1" definition={def([param({ name: 'lr' })])} params={{ lr: 0.1 }} />,
+    );
+    expect(screen.getByTestId('field-lr')).toHaveAttribute('data-hide-pack-action-for', '');
   });
 
   it('omits it when the pack is usable', () => {

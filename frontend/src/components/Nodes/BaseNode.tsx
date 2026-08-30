@@ -496,7 +496,14 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
                     >
                       {display}
                     </span>
-                    {paramMissing !== null && (
+                    {/* Not on a card whose header badge names the SAME pack:
+                        both chips read the same two words and mean different
+                        things ("this node's pack" vs "this VALUE's model"),
+                        and a node whose whole pack is missing has said it at
+                        the top already. A badge about a different pack is a
+                        different fact, and this chip is the only thing on the
+                        card carrying this one. */}
+                    {paramMissing !== null && missingPack?.packId !== paramMissing.packId && (
                       <span
                         className={styles.paramNeedsPack}
                         title={requirementSentence(t, byId, String(val), paramMissing)}
