@@ -38,6 +38,7 @@ import asyncio
 import json
 import os
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -445,6 +446,85 @@ def test_tinystories_lm_example_warns_inside_the_card_truncation():
     assert _LM_README.is_file(), (
         f"{_LM_README} is missing -- the card's last sentence points at it, and "
         f"the docs pages point at it instead of at the card")
+
+
+#: The heavy requirements a gallery card has to state before the cut, and the
+#: words each one is actually written with across the examples.
+#:
+#: Deliberately NOT a bare "network": a dozen descriptions say it about a
+#: neural one ("the agent's own network", "a small gating network"), and a
+#: check that fires on every example is a check nobody can read.
+_CARD_REQUIREMENT_WORDS = {
+    "a GPU": r"\bGPUs?\b|\bCUDA\b|\bVRAM\b",
+    "a download": r"\bdownload(s|ed|ing)?\b",
+    "a pack": r"\bpacks?\b|Package Center",
+    "a service of the user's own": r"\bAPI key\b|\bOllama\b|\binternet\b|Hugging Face",
+}
+
+#: What turns a mention into a requirement.
+#:
+#: ``install`` is NOT here on purpose: three descriptions name a pack only to
+#: say where a SIBLING example ships (``cdui plugin install foundations``),
+#: which the example holding the card does not need. The verbs below are the
+#: ones that say "you cannot run this without".
+_CARD_REQUIREMENT_VERBS = r"\bneeds?\b|\brequires?\b|\brequired\b|\bprerequisite\b|\bmust\b"
+
+
+def test_every_example_states_its_requirements_inside_the_card_cut():
+    """A requirement stated anywhere must be stated inside the first 80 chars.
+
+    ``test_tinystories_lm_example_warns_inside_the_card_truncation`` above is
+    this rule for one example, written when the LM example was the only builtin
+    that needed the network and a GPU. It is not any more -- three pack-backed
+    LLM examples and the VLA example joined it -- and a per-example mitigation
+    is a rule the next example does not inherit.
+
+    So: for every builtin, take each sentence that STATES a requirement, and
+    require every heavy resource named in it to be named again inside the
+    characters the canvas card actually shows. The card is what a user reads
+    before pressing Run; a 1.5 GB download named at character 300 is not a
+    warning, it is a footnote nobody sees.
+
+    A failure here is fixed in the example's description -- move the
+    requirement into the opening sentence, in the fewest honest words -- and
+    never by widening the cut.
+    """
+    offenders: list[str] = []
+    covered: list[str] = []
+
+    for graph_path in _GRAPHS:
+        payload = json.loads(graph_path.read_text(encoding="utf-8"))
+        description = payload.get("description", "")
+        visible = description[:_CARD_VISIBLE_CHARS]
+        name = graph_path.relative_to(_EXAMPLES_ROOT).as_posix()
+
+        for sentence in re.split(r"(?<=[.!?])\s+", description):
+            if not re.search(_CARD_REQUIREMENT_VERBS, sentence, re.I):
+                continue
+            for requirement, pattern in _CARD_REQUIREMENT_WORDS.items():
+                if not re.search(pattern, sentence, re.I):
+                    continue
+                if re.search(pattern, visible, re.I):
+                    covered.append(f"{name}: {requirement}")
+                else:
+                    offenders.append(
+                        f"{name} needs {requirement} -- said in "
+                        f"{sentence.strip()!r} -- but the card shows only "
+                        f"{visible!r}")
+
+    assert not offenders, (
+        f"{len(offenders)} example(s) hide a requirement past the "
+        f"{_CARD_VISIBLE_CHARS}-character card cut:\n  "
+        + "\n  ".join(offenders)
+        + "\nMove it into the opening sentence; do not widen the cut.")
+
+    # A rule that has stopped matching anything has stopped being a rule. If
+    # this trips, either every heavy example was retired or the vocabulary
+    # above no longer matches how the descriptions are written.
+    assert covered, (
+        "no builtin example states a GPU, download, pack or service "
+        "requirement any more -- check _CARD_REQUIREMENT_WORDS still matches "
+        "the way the descriptions are written")
 
 
 def test_tinystories_lm_example_still_describes_itself():

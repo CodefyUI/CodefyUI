@@ -199,6 +199,26 @@ describe('EmptyCanvasOverlay', () => {
     expect(screen.getByText(`${'x'.repeat(80)}...`)).toBeInTheDocument();
   });
 
+  it('keeps the whole description reachable as a tooltip (core#305)', async () => {
+    // The cut stays at 80 -- every example's first line is written to fit it,
+    // and the backend suite asserts that. What was missing is the rest: this
+    // card was the only place a description appeared with no way to read the
+    // other 400 characters. The sidebar's gallery tab already does this.
+    const long = `${'x'.repeat(80)} and the part nobody could read`;
+    mockedRest.listExamples.mockResolvedValue([ex({ description: long })]);
+    render(<EmptyCanvasOverlay />);
+    const shown = await screen.findByText(`${'x'.repeat(80)}...`);
+    expect(shown).toHaveAttribute('title', long);
+  });
+
+  it('does not put a tooltip on a description that is already whole', async () => {
+    // A native tooltip repeating the text under the cursor is noise.
+    mockedRest.listExamples.mockResolvedValue([ex({ description: 'short desc' })]);
+    render(<EmptyCanvasOverlay />);
+    const shown = await screen.findByText('short desc');
+    expect(shown).not.toHaveAttribute('title');
+  });
+
   it('applies and clears hover styles on a card', async () => {
     mockedRest.listExamples.mockResolvedValue([ex({ name: 'Hover Me' })]);
     render(<EmptyCanvasOverlay />);
