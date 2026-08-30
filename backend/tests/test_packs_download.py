@@ -702,8 +702,11 @@ def test_abort_xet_transfer_says_what_else_it_is_stopping(monkeypatch, caplog):
     import huggingface_hub.utils._xet as hub_xet
 
     calls: list[int] = []
+    # `raising=False`: whether the hook EXISTS is the previous test's job.
+    # An older huggingface_hub should fail that one loud guard, not take
+    # this behavioural test down with it.
     monkeypatch.setattr(hub_xet, "abort_xet_session",
-                        lambda: calls.append(len(calls)))
+                        lambda: calls.append(len(calls)), raising=False)
 
     with caplog.at_level(logging.WARNING, logger="app.core.packs.download"):
         download.abort_xet_transfer()
@@ -721,7 +724,10 @@ def test_abort_xet_transfer_reports_a_missing_hook_once(monkeypatch, caplog):
     cancelled download."""
     import huggingface_hub.utils._xet as hub_xet
 
-    monkeypatch.delattr(hub_xet, "abort_xet_session")
+    # `raising=False`: on a hub that already lacks the hook there is nothing
+    # to delete and the arrangement is simply already true. The absence is
+    # reported by the loud guard above, not by three tests at once.
+    monkeypatch.delattr(hub_xet, "abort_xet_session", raising=False)
     monkeypatch.setattr(download, "_warned_missing_xet_abort", False)
 
     with caplog.at_level(logging.WARNING, logger="app.core.packs.download"):
