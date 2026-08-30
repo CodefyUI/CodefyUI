@@ -125,6 +125,16 @@ export type WorkspaceEvent =
 const MAX_WORKSPACE_GRAPH_BYTES = 8 * 1024 * 1024;
 /** How many tabs the editor will hold before `openGraphs` starts refusing. */
 const MAX_WORKSPACE_TABS = 32;
+/**
+ * Refusal for a legacy batch that would commit a top-level segment from
+ * inside a block (#341 section 4.6).
+ *
+ * Written once and in the same voice as `'tab is read-only'` -- what is
+ * wrong, not what to do about it. The contract does not freeze either
+ * literal; both are read by people, not matched on.
+ */
+const SEGMENT_INSIDE_BLOCK_ERROR =
+  'set_segment and remove_segment cannot apply while a block is open';
 
 export interface RunListOptions {
   status?: readonly RunStatus[];
@@ -243,6 +253,11 @@ export interface CodefyUIPluginAPI {
   };
 }
 
+/** The two ops that write `segmentGroups`, which is top-level state. */
+function isSegmentOp(op: GraphOp): boolean {
+  return op.op === 'set_segment' || op.op === 'remove_segment';
+}
+
 function tabInfoOf(tab: TabState, activeTabId: string): WorkspaceTabInfo {
   return {
     tabId: tab.id,
@@ -269,10 +284,11 @@ function tabInfoOf(tab: TabState, activeTabId: string): WorkspaceTabInfo {
  * that is never true here.
  *
  * `refuseInsideBlock` is the ONE way the two callers differ, and it is not a
- * knob a plugin can reach: the workspace path refuses, and the legacy path
- * keeps writing the open canvas because that is what it has always done and
- * moving an installed plugin's writes out from under it is not a change to
- * make silently (see `commitGraphOperations`).
+ * knob a plugin can reach: the workspace path refuses outright, and the legacy
+ * path keeps writing the open canvas because that is what it has always done
+ * and moving an installed plugin's writes out from under it is not a change to
+ * make silently (see `commitGraphOperations`). Its one carve-out is the two
+ * segment ops, which are not canvas writes at all -- see the branch below.
  */
 function commitToTab(
   pluginId: string,
@@ -295,14 +311,38 @@ function commitToTab(
     return { ...empty, ...counts, tabId, revision: tab.revision,
              committed: false, conflict: 'read_only' };
   }
-  // While a block is open, `tab.nodes` / `tab.edges` are the BLOCK's contents,
-  // and `snapshot()` answers with the flushed top level -- so a write here
-  // would land somewhere the plugin never read. Refused rather than
-  // redirected: the plugin retries once the user steps back out, which is a
-  // wait it can see, unlike an edit that silently went into a definition.
-  if (options.refuseInsideBlock && tab.subgraphStack.length > 0) {
-    return { ...empty, ...counts, tabId, revision: tab.revision,
-             committed: false, conflict: 'editing_subgraph' };
+  if (tab.subgraphStack.length > 0) {
+    // While a block is open, `tab.nodes` / `tab.edges` are the BLOCK's
+    // contents, and `snapshot()` answers with the flushed top level -- so a
+    // workspace write here would land somewhere the plugin never read.
+    // Refused rather than redirected: the plugin retries once the user steps
+    // back out, which is a wait it can see, unlike an edit that silently went
+    // into a definition.
+    if (options.refuseInsideBlock) {
+      return { ...empty, ...counts, tabId, revision: tab.revision,
+               committed: false, conflict: 'editing_subgraph' };
+    }
+    // The legacy path goes on writing the open canvas -- except for the two
+    // segment ops, which do not write the canvas at all. `enterSubgraph`
+    // CAPTURES `segmentGroups` instead of swapping them, so a segment
+    // committed from in here is a TOP-LEVEL overlay naming inner node ids: it
+    // survives the exit, reaches the saved file, and draws nothing -- which
+    // also means the user cannot remove it, the control being on the bubble.
+    // `remove_segment` is the mirror, deleting a real top-level overlay the
+    // user cannot even see from where they are standing.
+    //
+    // Refused whole-batch and shaped like the read-only refusal (#341 section
+    // 4.6). Not a behaviour change for anybody: both ops are new in v5, so no
+    // installed plugin sends them, and a batch without one is untouched.
+    if (request.operations.some(isSegmentOp)) {
+      return {
+        ...counts, tabId, revision: tab.revision, committed: false,
+        refs: {},
+        results: request.operations.map((_, index) => ({
+          index, ok: false, error: SEGMENT_INSIDE_BLOCK_ERROR,
+        })),
+      };
+    }
   }
   if (
     request.expectedRevision !== undefined
@@ -386,6 +426,11 @@ export function commitWorkspaceOperations(
  * plugin gets the refusal instead. The ONE behaviour change v5 makes to an
  * installed plugin is the other one -- a read-only tab now refuses per op
  * instead of being written through (#341 section 4.6).
+ *
+ * The segment carve-out above is not a third: `set_segment` and
+ * `remove_segment` are new in v5, so no installed plugin can send them, and
+ * refusing them inside a block keeps a top-level overlay naming inner node
+ * ids out of the saved file.
  */
 export function commitGraphOperations(ops: GraphOp[], pluginId = ''): ApplyResult {
   const result = commitToTab(pluginId, { operations: ops }, { refuseInsideBlock: false });

@@ -417,6 +417,30 @@ describe('workspace.applyOperations while the user is inside a block', () => {
     expect(store().enterSubgraph('inst')).toBe(true);
   }
 
+  /**
+   * The same, but with two connected nodes inside the block -- enough for a
+   * `set_segment` that WOULD be accepted on its merits, so what the test
+   * catches is the guard and not the op's own validation.
+   */
+  function enterBlockWithChain() {
+    store().setNodes([{
+      id: 'inst', type: 'baseNode', position: { x: 0, y: 0 },
+      data: { label: 'Encoder', type: 'subgraph:blk', params: {} },
+    } as never]);
+    store().setSubgraphs([{
+      id: 'blk', name: 'Encoder', description: '',
+      nodes: [
+        { id: 'in1', type: 'Source', position: { x: 0, y: 0 }, data: { params: {} } },
+        { id: 'in2', type: 'Sink', position: { x: 200, y: 0 }, data: { params: {} } },
+      ],
+      edges: [
+        { id: 'ie1', source: 'in1', target: 'in2', sourceHandle: 'out', targetHandle: 'x' },
+      ],
+      interface: { inputs: [], outputs: [], triggerTargets: [] },
+    } as never]);
+    expect(store().enterSubgraph('inst')).toBe(true);
+  }
+
   it('refuses with editing_subgraph instead of writing into the block', () => {
     const api = freshApi();
     enterEmptyBlock();
@@ -458,6 +482,55 @@ describe('workspace.applyOperations while the user is inside a block', () => {
     expect(result.results[0].ok).toBe(true);
     expect(store().getActiveTab().nodes).toHaveLength(1);
     expect(store().getActiveTab().subgraphStack).toHaveLength(1);
+  });
+
+  it('...but refuses a legacy batch holding a segment op, whole batch', () => {
+    // `enterSubgraph` captures `segmentGroups` rather than swapping them, so a
+    // segment committed from in here is a TOP-LEVEL overlay naming inner node
+    // ids: it survives the exit, is written to the saved file, and draws
+    // nothing -- so the user cannot delete it either. The whole batch goes,
+    // including the innocent op, because segments are committed wholesale and
+    // there is no half of this batch that lands safely.
+    const api = freshApi();
+    enterBlockWithChain();
+    const before = store().getActiveTab();
+    const nodesBefore = before.nodes.length;
+
+    const result = api.graph.applyOperations([
+      { op: 'add_node', node_type: 'Source' },
+      { op: 'set_segment', segment_id: 's1', head_node_id: 'in1', tail_node_id: 'in2' },
+    ]);
+
+    expect(result.results).toHaveLength(2);
+    expect(result.results.every((r) => !r.ok)).toBe(true);
+    expect(result.results.map((r) => r.index)).toEqual([0, 1]);
+    expect(result.results[0].error).toContain('set_segment');
+
+    const after = store().getActiveTab();
+    expect(after.segmentGroups).toEqual([]);
+    expect(after.nodes).toHaveLength(nodesBefore);
+    expect(after.revision).toBe(before.revision);
+    expect(after.undoStack).toHaveLength(before.undoStack.length);
+  });
+
+  it('the same batch at the TOP level commits, segment and all', () => {
+    // The counterfactual: nothing is wrong with these two ops, and the legacy
+    // path has no quarrel with segments as such. It is standing inside a block
+    // -- where `segmentGroups` is still the top level's -- that makes the
+    // write unsafe.
+    const api = freshApi();
+    const [opened] = api.workspace.openGraphs(
+      [{ title: 'Top level', graph: candidateGraph() }], { activate: 'first' });
+    const { tabId } = opened as { tabId: string };
+
+    const result = api.graph.applyOperations([
+      { op: 'add_node', node_type: 'Source' },
+      { op: 'set_segment', segment_id: 's1', head_node_id: 'a', tail_node_id: 'b' },
+    ]);
+
+    expect(result.results.every((r) => r.ok)).toBe(true);
+    expect(store().getTab(tabId)!.segmentGroups).toHaveLength(1);
+    expect(store().getTab(tabId)!.nodes).toHaveLength(3);
   });
 });
 
