@@ -24,6 +24,36 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **Plugin frontend contract apiVersion 5: a plugin gets the tab strip, and
+  an agent gets four more kinds of edit.** `api.workspace` lets a plugin open
+  a graph as a labelled, optionally read-only editor tab without moving the
+  user off the one they were on, read any tab whole, and write to a named tab
+  only if its `revision` still matches the one it was holding ([#341]). That
+  replaces the only guard a plugin had — stringifying the whole graph before
+  and after and comparing — which a settling auto-layout was enough to
+  invalidate, so a correct promotion got refused for no reason. The write
+  refuses in a fixed order and without a side effect at any step: an unknown
+  tab, then a read-only tab, then a tab whose canvas is showing a block's
+  insides, then a stale revision — and a mismatch hands back the CURRENT
+  revision, so the plugin re-arms without a second read that races the same
+  way. `atomic: true` is the all-or-nothing preflight the first consumer was
+  getting by re-implementing our own reducer; the real one already works on
+  copies, and the full-length results still say which op was wrong.
+  `onChanged` reports added tabs, document changes, activations and closes
+  across every tab, with the writing plugin's id attached so a plugin can
+  ignore its own edits. Tabs a plugin opens do not survive a reload unless it
+  asks for that, and the tab bar shows a read-only badge and names the plugin
+  that opened a tab. Six new graph operations come with it ([#342]):
+  `move_node` places one node and brings its bound notes along, so a model
+  can stop reaching for `auto_layout` — an op that throws away every position
+  the user arranged; `set_segment` / `remove_segment` mark a subsystem with
+  the overlay the Teaching Inspector already draws; `add_note` /
+  `update_note` write the sticky note the canvas already has; and
+  `set_node_meta` names a node. The whole batch is still one Ctrl+Z.
+  Feature-check with `api.apiVersion >= 5` or
+  `typeof api.workspace?.openGraphs === "function"`; apiVersion 4 is frozen
+  under its own contract assertion, as 3 and 2 were.
+
 - **Package Center — the optional four hundred megabytes a lesson needs now
   install from inside the app.** A stock CodefyUI is deliberately small
   enough to hand to a classroom, which means the parts a sentence-embedding
@@ -348,6 +378,25 @@ received — each links to the release it was published as.
   Dismiss reachable, and a node names its missing pack once — banner over hint,
   header badge over param chip, shorter option suffix.
 
+- **A read-only tab now refuses `api.graph.applyOperations` instead of
+  accepting it** ([#341]). Every op in the batch comes back
+  `{ ok: false, error: "tab is read-only" }` and nothing is written. Until
+  now `readOnly` — set when a graph file was written by a newer CodefyUI than
+  this one — stopped Save and stopped the editor's own structural actions,
+  but the plugin write path never consulted it, so a plugin could edit a
+  document this build had already said it does not fully understand. This is
+  the only behaviour an installed plugin can notice in apiVersion 5.
+
+- **A plugin's batch lands as one write, and takes the canvas state that
+  depends on it with it** ([#341]). `api.graph.applyOperations` set the nodes
+  and then set the edges, so a subscriber woken between the two saw a graph
+  whose edges named nodes that were not there yet; it is now the same single
+  commit the workspace path uses, writing nodes, edges and the top-level
+  segment overlays together. That commit also clears a detail modal or a
+  canvas selection naming a node the batch removed — otherwise an undo
+  restoring the node popped the modal back open by itself — and drops a
+  segment highlight pointing at an overlay that is no longer in the list.
+
 ### Fixed
 
 - **The engine puts a node's inputs on the device that node runs on**
@@ -521,6 +570,22 @@ received — each links to the release it was published as.
   store: all six open a portal modal, and restoring one after viewport
   culling would reopen it by itself, so #324 stays open with the real fix
   recorded there.
+
+- **A renamed node keeps its name through save and reload** ([#342]). The
+  reader has always looked for `data.label` and the writer never wrote it, so
+  renaming a node in the editor lasted exactly as long as the session and
+  `getGraph()` never saw it at all. The serializer now writes `label`
+  whenever it differs from the node's type, which is precisely what the
+  reader falls back to — so a graph nobody has renamed anything in still
+  serializes byte-for-byte as before. Start needed one line more: its branch
+  of the reader hardcoded `Start` rather than reading the key, which was
+  harmless only while nothing wrote it.
+- **The Delete key prunes the segment overlays naming the node it deleted**
+  ([#341]). The context menu's Delete already did; React Flow's Delete key
+  goes through a different path that unbound notes and closed modals but left
+  the segments alone. A segment whose head or tail is gone can never resolve
+  a path, so it drew nothing on the canvas while staying in the tab — and
+  getting written to the file on the next save.
 
 ## [2.4.1] — 2026-08-22
 
@@ -2578,6 +2643,8 @@ Release candidates before 1.0.0 are on the
 [#323]: https://github.com/CodefyUI/CodefyUI/issues/323
 [#325]: https://github.com/CodefyUI/CodefyUI/issues/325
 [#337]: https://github.com/CodefyUI/CodefyUI/issues/337
+[#341]: https://github.com/CodefyUI/CodefyUI/issues/341
+[#342]: https://github.com/CodefyUI/CodefyUI/issues/342
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
