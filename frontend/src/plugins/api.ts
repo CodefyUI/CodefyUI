@@ -189,7 +189,7 @@ export function currentGraphView(): GraphView {
 }
 
 export interface CodefyUIPluginAPI {
-  apiVersion: 4;
+  apiVersion: 5;
   pluginId: string;
   ui: {
     addFloatingWidget(opts: { id: string }): HTMLElement;
@@ -655,11 +655,13 @@ export function buildPluginAPI(
 ): CodefyUIPluginAPI {
   const ns = (key: string) => `plugin:${pluginId}:${key}`;
   return {
-    // Bumped for `graph.getView` (#200 item 7). The number is the only way a
-    // plugin can tell a host that has the new member from one that does not:
-    // on a 2.0-to-2.2 editor `api.graph.getView` is simply `undefined`, and the
-    // documented feature check is `api.apiVersion >= 4`.
-    apiVersion: 4,
+    // Bumped for `workspace` and the six agent canvas ops (#341, #342). The
+    // number is the only way a plugin can tell a host that has them from one
+    // that does not: on a 2.0-to-2.4 editor `api.workspace` is simply
+    // `undefined` -- never a stub whose methods throw -- and the documented
+    // feature checks are `api.apiVersion >= 5` and
+    // `typeof api.workspace?.openGraphs === 'function'`.
+    apiVersion: 5,
     pluginId,
     ui: {
       addFloatingWidget: ({ id }) => getWidgetContainer(id),

@@ -64,6 +64,43 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+describe('meta', () => {
+  it('reports at least apiVersion 5', () => {
+    // The documented v5 feature check is `api.apiVersion >= 5`, so that is
+    // what this asserts; the exact number lives in `api.view.test.ts`.
+    expect(freshApi().apiVersion).toBeGreaterThanOrEqual(5);
+  });
+
+  it('offers the whole workspace surface as callable functions', () => {
+    const api = freshApi();
+    for (const member of ['openGraphs', 'tabs', 'snapshot', 'applyOperations', 'onChanged']) {
+      expect(
+        typeof (api.workspace as unknown as Record<string, unknown>)[member],
+        `workspace.${member}`,
+      ).toBe('function');
+    }
+  });
+
+  it('every apiVersion 4 member is still there', () => {
+    const V4_SHAPE: Record<string, string[]> = {
+      ui: ['addFloatingWidget', 'toast', 'addPanel', 'removePanel', 'addToolbarButton', 'removeToolbarButton'],
+      graph: ['getGraph', 'getNodeDefinitions', 'applyOperations', 'onGraphChanged', 'getView'],
+      nodes: ['registerRenderer'],
+      events: ['onExecution'],
+      runs: ['list', 'get', 'metrics'],
+      http: ['fetch'],
+      storage: ['get', 'set', 'remove'],
+    };
+    const api = freshApi() as unknown as Record<string, Record<string, unknown>>;
+    for (const [section, members] of Object.entries(V4_SHAPE)) {
+      expect(api[section], `section ${section}`).toBeDefined();
+      for (const member of members) {
+        expect(typeof api[section][member], `${section}.${member}`).toBe('function');
+      }
+    }
+  });
+});
+
 describe('workspace.openGraphs', () => {
   it('opens a labelled tab without disturbing the live graph', () => {
     const api = freshApi();
