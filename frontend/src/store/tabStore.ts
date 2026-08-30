@@ -256,8 +256,10 @@ export interface TabState {
    *
    * Starts at 1 and only ever climbs. It advances by exactly one whenever a
    * `set` changes this tab's `nodes`, `edges`, `subgraphs` or `segmentGroups`
-   * -- the four fields an undo frame captures, which is to say "the
-   * document". Undo and redo advance it too: they restore older CONTENT, and
+   * -- four of the five fields an undo frame captures, which is to say "the
+   * document". `activeSegment`, the fifth, is deliberately excluded: it is a
+   * view choice about which stretch of the graph is highlighted, not the
+   * document. Undo and redo advance it too: they restore older CONTENT, and
    * a plugin holding a revision from before the undo must not be told nothing
    * happened.
    *
@@ -1586,6 +1588,17 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
 type TabSet = Parameters<StateCreator<TabStoreState>>[0];
 
 /**
+ * Test seam: the store's WRAPPED `set`, assigned once inside `create()`.
+ *
+ * `useTabStore.setState` is the RAW setter and skips the revision bump
+ * entirely, so it cannot stand in for this. Exported as a `let` because the
+ * value does not exist until the factory runs.
+ */
+export let _setForTesting: TabSet = () => {
+  throw new Error('useTabStore has not been created yet');
+};
+
+/**
  * The plugin whose `applyOperations` produced the transition currently being
  * notified, or null (#341 section 4.5).
  *
@@ -1609,9 +1622,76 @@ export function _setCommitOriginForTesting(
 }
 
 /**
+ * Node `data` keys that describe a RUN, not the document (#341, spec rule 3).
+ *
+ * `getSerializedGraph` writes each node's `data` field by field -- `params`,
+ * `internalParams` for a preset, `bypassed` when muted, and the note fields
+ * for a note -- so none of these three reaches a saved file, an export or a
+ * plugin's `getGraph`. They exist only to paint a card while a run is in
+ * flight, and they are written by the hottest path in the store:
+ * `applyTabNodeUpdates` rebuilds `data` for every node named in every
+ * batched WebSocket frame.
+ *
+ * Without this list, "revision changes when the document changes" would mean
+ * "revision changes several times a second while training runs" -- every
+ * plugin's compare-and-swap would expire on a graph the user never touched,
+ * which is the same failure that made the comparison content-based in the
+ * first place, one field deeper.
+ */
+const RUN_STATE_DATA_KEYS: ReadonlySet<string> = new Set([
+  'executionStatus',
+  'error',
+  'progress',
+]);
+
+/**
+ * Do two node `data` objects differ in anything the DOCUMENT keeps? (#341)
+ *
+ * Reached only when the two references differ, which is why it can afford to
+ * walk keys: `data` is replaced wholesale by every writer in this store, so
+ * the reference is still the fast path and this is the slow one.
+ *
+ * Shallow and reference-wise per key, exactly as the whole-object comparison
+ * was: `params` is a fresh object on every param edit, `definition` and
+ * `presetDefinition` are swapped rather than mutated. The only judgement here
+ * is which keys to skip, and that list is `RUN_STATE_DATA_KEYS`.
+ *
+ * Key sets must otherwise match, so adding or removing a real field counts.
+ * `setNodeExecutionStatus` writes `error` unconditionally -- `undefined` when
+ * the node did not fail -- which ADDS an own `error` key to a node that never
+ * had one; that is exactly why `error` is on the skip list rather than merely
+ * compared.
+ */
+function nodeDataChanged(
+  a: NodeData | undefined,
+  b: NodeData | undefined,
+): boolean {
+  // A node reconstructed from a hand-edited localStorage record -- or built
+  // by a test double -- can be missing `data` altogether. This runs inside
+  // every `set`, so it coerces rather than throws: the same choice
+  // `tabFromPersisted` makes one layer up, and for the same reason.
+  if (a == null || b == null) return a !== b;
+  let aKeys = 0;
+  for (const key of Object.keys(a)) {
+    if (RUN_STATE_DATA_KEYS.has(key)) continue;
+    aKeys += 1;
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return true;
+    if (a[key] !== b[key]) return true;
+  }
+  let bKeys = 0;
+  for (const key of Object.keys(b)) {
+    if (!RUN_STATE_DATA_KEYS.has(key)) bKeys += 1;
+  }
+  return aKeys !== bKeys;
+}
+
+/**
  * Did this tab's DOCUMENT change between two states? (#341)
  *
- * The four fields an undo frame captures are the document, but their array
+ * Four of the five fields an undo frame captures are the document --
+ * `activeSegment`, the fifth, is a view choice about which stretch of the
+ * graph is highlighted and is deliberately excluded, so a Teaching Inspector
+ * focus click does not expire a plugin's compare-and-swap. But their array
  * references are not a usable signal, because React Flow rewrites `nodes` for
  * things that are not the document at all:
  *
@@ -1632,10 +1712,13 @@ export function _setCommitOriginForTesting(
  *     Flow built, so the reference always moves -- even for a drag that ends
  *     where it started, and even on the drag-start change that carries no
  *     coordinates at all.
- *   - `data` BY REFERENCE. No change type touches `data`, and every writer in
- *     this store replaces it (`{...n.data, ...}`), so the reference IS the
- *     value. This is what makes a params edit or a rename a document change
- *     without a deep walk of every param on every pointer move.
+ *   - `data` BY REFERENCE FIRST. No change type touches `data`, and every
+ *     writer in this store replaces it (`{...n.data, ...}`), so an unchanged
+ *     reference is proof of an unchanged document and a pointer move costs
+ *     nothing. When the reference HAS moved, `nodeDataChanged` decides,
+ *     because "the reference moved" is not the same question as "the
+ *     document changed": a run rewrites `data` on every node it touches to
+ *     paint status and progress, and none of that is saved with the graph.
  *   - `id`, `type`, `parentId` by value -- structural, and never touched by a
  *     change.
  *   - `selected`, `dragging`, `measured`, `width`, `height`, `resizing`,
@@ -1661,12 +1744,19 @@ function documentChanged(prev: TabState, next: TabState): boolean {
         a.id !== b.id
         || a.type !== b.type
         || a.parentId !== b.parentId
-        || a.data !== b.data
-        || a.position.x !== b.position.x
-        || a.position.y !== b.position.y
+        // Optional-chained for the same reason `nodeDataChanged` tolerates a
+        // missing `data`: a node out of a hand-edited record may have no
+        // `position`, and a comparison that runs on every `set` must not be
+        // the thing that takes the workspace down. Absent on both sides
+        // compares equal; absent on one is a change.
+        || a.position?.x !== b.position?.x
+        || a.position?.y !== b.position?.y
       ) {
         return true;
       }
+      // Cheap scalars first; the key walk runs only for a node whose `data`
+      // was actually replaced, and then only to ask whether a run wrote it.
+      if (a.data !== b.data && nodeDataChanged(a.data, b.data)) return true;
     }
   }
 
@@ -1766,22 +1856,37 @@ function withRevisions(
 const initialState = loadTabs();
 
 export const useTabStore = create<TabStoreState>((rawSet, get) => {
-  // Every `set` in the body below is this one. `replace` is deliberately not
-  // forwarded: nothing in this store calls `set(x, true)`, and a wrapper that
-  // pretended to support a whole-state replace would have to decide what a
-  // revision means for a tab list that arrived without a predecessor.
-  const set: TabSet = (partial) => {
-    rawSet((state) =>
+  // Every `set` in the body below is this one.
+  //
+  // `replace` is FORWARDED rather than dropped. `TabSet` is zustand's
+  // two-overload setter, so `set(x, true)` type-checks at every call site
+  // whether or not this wrapper honours it; a wrapper that quietly ignored
+  // the flag would turn "replace the state, dropping these keys" into a
+  // merge that keeps them, with nothing failing to say so. Nothing in this
+  // store passes it today -- the point is that the day something does, it
+  // works. `withRevisions` needs no special case: it only ever rewrites
+  // `tabs`, and a replace partial is by type the whole state, so the
+  // comparison sees the same before/after tab lists either way.
+  const set: TabSet = (partial, replace) => {
+    const next = (state: TabStoreState) =>
       withRevisions(
         state,
         typeof partial === 'function' ? partial(state) : partial,
-      ),
-    );
+      );
+    if (replace === true) {
+      rawSet(next as (state: TabStoreState) => TabStoreState, true);
+    } else {
+      rawSet(next);
+    }
     // Cleared AFTER `rawSet` returns, i.e. after zustand has finished
     // notifying synchronously -- which is the only window a subscriber can
     // read it in.
     _lastCommitOrigin = null;
   };
+  // The wrapper is reachable from nowhere else: every action closes over it,
+  // and none of them passes `replace`. Handing it to the test is the only way
+  // to prove the flag survives the wrapping.
+  _setForTesting = set;
 
   return {
   tabs: initialState.tabs,

@@ -17,10 +17,17 @@
  * every plugin's compare-and-swap would fail against a graph nobody had
  * touched. So the comparison is by CONTENT, and these tests are where that is
  * pinned.
+ *
+ * Node `data` is the same story one field deeper. A run rewrites `data` on
+ * every node it touches to paint status, an error and a progress bar, and
+ * `getSerializedGraph` writes none of those three into a saved file -- so a
+ * training run must leave the counter alone. That is `RUN_STATE_DATA_KEYS`,
+ * and the tests below pin both halves of it: run state does not bump, and a
+ * real edit arriving on a node that carries run state still does.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
-import { useTabStore, _documentChangedForTesting } from './tabStore';
+import { useTabStore, _documentChangedForTesting, _setForTesting } from './tabStore';
 import { useNodeDefStore } from './nodeDefStore';
 import type { NodeData, NodeDefinition } from '../types';
 
@@ -234,7 +241,57 @@ describe('revision ignores what is not the document', () => {
     expect(revision()).toBe(before + 1);
   });
 
-  it('documentChanged reads position by value and data by reference', () => {
+  it('a run does not bump -- node status is not the document', () => {
+    // Spec rule 3. `setNodeExecutionStatus` replaces `data` wholesale, so
+    // under a plain data-REFERENCE comparison a run would bump the counter
+    // once per node per frame and expire every plugin's compare-and-swap
+    // against a graph the user never touched. None of these fields is
+    // written by `getSerializedGraph`, so none of them is the document.
+    const before = revision();
+    store().setNodeExecutionStatus('a', 'running');
+    store().setNodeExecutionStatus('a', 'completed');
+    expect(activeTab().nodes[0].data.executionStatus).toBe('completed');
+    expect(revision()).toBe(before);
+  });
+
+  it('a failure message does not bump, and neither does clearing it', () => {
+    // `error` is written unconditionally -- `undefined` when the node did not
+    // fail -- so it ADDS an own key to a node that never had one. The key-set
+    // equality check has to skip it, not merely compare it.
+    const before = revision();
+    store().setNodeExecutionStatus('a', 'error', 'boom');
+    expect(activeTab().nodes[0].data.error).toBe('boom');
+    store().clearExecutionStatus();
+    expect(activeTab().nodes[0].data.executionStatus).toBe('idle');
+    expect(revision()).toBe(before);
+  });
+
+  it('a streamed progress frame does not bump', () => {
+    // The live run path: `nodeUpdateQueue` batches WebSocket events into
+    // `applyTabNodeUpdates`, which rewrites `data` for every node named.
+    const before = revision();
+    store().setTabNodeProgress(activeTab().id, 'a', { event: 'epoch', epoch: 3, total_epochs: 10 });
+    expect(activeTab().nodes[0].data.progress).toEqual({ event: 'epoch', epoch: 3, total_epochs: 10 });
+    expect(revision()).toBe(before);
+  });
+
+  it('a params edit DURING a run still bumps', () => {
+    // The exclusion list must not swallow a real edit that happens to arrive
+    // on a node carrying run state.
+    store().setNodeExecutionStatus('a', 'running');
+    const before = revision();
+    store().updateNodeParams('a', { size: 32 });
+    expect(revision()).toBe(before + 1);
+  });
+
+  it('a label change on a node carrying run state still bumps', () => {
+    store().setNodeExecutionStatus('a', 'error', 'boom');
+    const before = revision();
+    store().renameNode('a', 'Renamed');
+    expect(revision()).toBe(before + 1);
+  });
+
+  it('documentChanged reads position by value, and data by content minus run state', () => {
     // The helper directly, since it is the whole rule.
     const base = activeTab();
     const sameShape = {
@@ -249,14 +306,65 @@ describe('revision ignores what is not the document', () => {
     };
     expect(_documentChangedForTesting(base, moved)).toBe(true);
 
-    const relabelled = {
+    // A bit-identical copy of `data` is NOT a change: every value still
+    // matches by reference, so only the wrapper object moved.
+    const recopied = {
       ...base,
       nodes: base.nodes.map((n, i) => (i === 0 ? { ...n, data: { ...n.data } } : n)),
     };
+    expect(_documentChangedForTesting(base, recopied)).toBe(false);
+
+    const relabelled = {
+      ...base,
+      nodes: base.nodes.map((n, i) =>
+        (i === 0 ? { ...n, data: { ...n.data, label: 'Renamed' } } : n)),
+    };
     expect(_documentChangedForTesting(base, relabelled)).toBe(true);
+
+    // All three run-state keys at once, including two the node did not have.
+    const running = {
+      ...base,
+      nodes: base.nodes.map((n, i) => (i === 0
+        ? {
+          ...n,
+          data: {
+            ...n.data,
+            executionStatus: 'running' as const,
+            error: 'boom',
+            progress: { event: 'epoch', epoch: 1 },
+          },
+        }
+        : n)),
+    };
+    expect(_documentChangedForTesting(base, running)).toBe(false);
+
+    // A real key the node did not carry before IS a change -- the skip list
+    // must not become "ignore any added key".
+    const bypassed = {
+      ...base,
+      nodes: base.nodes.map((n, i) =>
+        (i === 0 ? { ...n, data: { ...n.data, bypassed: true } } : n)),
+    };
+    expect(_documentChangedForTesting(base, bypassed)).toBe(true);
 
     const shorter = { ...base, nodes: base.nodes.slice(0, 1) };
     expect(_documentChangedForTesting(base, shorter)).toBe(true);
+  });
+
+  it('tolerates a node carrying neither position nor data', () => {
+    // `documentChanged` runs inside EVERY `set`, and node shapes are not
+    // trustworthy: localStorage is user-editable and IndexedDB records
+    // outlive format changes, which is why `tabFromPersisted` coerces rather
+    // than validates. A comparison that threw on a malformed node would take
+    // the workspace down on the next keystroke instead of just drawing it
+    // oddly.
+    const base = activeTab();
+    const bare = (ids: string[]) =>
+      ({ ...base, nodes: ids.map((id) => ({ id })) } as unknown as typeof base);
+
+    expect(_documentChangedForTesting(bare(['a']), bare(['a']))).toBe(false);
+    expect(_documentChangedForTesting(bare(['a']), bare(['b']))).toBe(true);
+    expect(_documentChangedForTesting(base, bare(['a', 'b']))).toBe(true);
   });
 });
 
@@ -295,22 +403,65 @@ describe('TabState.revision, continued', () => {
 });
 
 describe('revision persistence', () => {
+  // `tabFromPersisted` spreads `...base` FIRST, so handing it the same tab the
+  // record was built from would let both of these pass with the restore line
+  // deleted outright. The base is therefore held at a number neither the
+  // record nor a fresh tab can produce: 41 is the wrong answer to both
+  // questions, and the only way to the right one is through the record.
+  const BASE_REVISION = 41;
+
   it('round-trips through buildPersistedTab / tabFromPersisted', async () => {
     const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = await import('./tabStore');
     store().setNodes([node('a')]);
     store().setEdges([]);
     const record = _buildPersistedTabForTesting(activeTab());
     expect(record.revision).toBe(activeTab().revision);
+    // Guards the guard: a record still at 1 would not discriminate against a
+    // fresh tab's default.
+    expect(record.revision).toBeGreaterThan(1);
 
-    const restored = _tabFromPersistedForTesting(record, activeTab());
+    const base = { ...activeTab(), revision: BASE_REVISION };
+    const restored = _tabFromPersistedForTesting(record, base);
     expect(restored.revision).toBe(record.revision);
+    expect(restored.revision).not.toBe(BASE_REVISION);
   });
 
   it('a record written before this feature restores as revision 1', async () => {
     const { _buildPersistedTabForTesting, _tabFromPersistedForTesting } = await import('./tabStore');
     const record = _buildPersistedTabForTesting(activeTab());
     delete (record as { revision?: number }).revision;
-    const restored = _tabFromPersistedForTesting(record, activeTab());
+    const base = { ...activeTab(), revision: BASE_REVISION };
+    const restored = _tabFromPersistedForTesting(record, base);
+    // 1, not 41: "missing restores as 1" must mean 1, or a plugin's stored
+    // expectedRevision could match whatever placeholder tab the loader reused.
     expect(restored.revision).toBe(1);
+  });
+});
+
+describe('the wrapped set', () => {
+  it('forwards zustand replace instead of merging', () => {
+    // No action in the store passes `replace`, so the wrapper itself is the
+    // only place this is reachable -- and `TabSet` admits `set(x, true)` at
+    // every call site whether or not the wrapper honours it. Dropping the
+    // flag would turn a replace into a merge with nothing failing to say so.
+    expect(useTabStore.getState().clipboard).not.toBe(undefined);
+    const full = { ...useTabStore.getState() };
+    delete (full as { clipboard?: unknown }).clipboard;
+
+    _setForTesting(full as ReturnType<typeof useTabStore.getState>, true);
+
+    expect('clipboard' in useTabStore.getState()).toBe(false);
+  });
+
+  it('still bumps the revision through a replace', () => {
+    // `withRevisions` only ever rewrites `tabs`, so replace mode must not be
+    // a hole in the counter.
+    const before = revision();
+    const full = { ...useTabStore.getState() };
+    full.tabs = full.tabs.map((t) => ({ ...t, nodes: [node('a')] }));
+
+    _setForTesting(full as ReturnType<typeof useTabStore.getState>, true);
+
+    expect(revision()).toBe(before + 1);
   });
 });
