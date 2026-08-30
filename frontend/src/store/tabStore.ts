@@ -4,6 +4,7 @@ import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/rea
 import {
   generateId,
   buildFlowNode,
+  buildNoteNode,
   isBypassable,
   resolveDynamicInputs,
   resolveDynamicOutputs,
@@ -28,6 +29,7 @@ import {
   refreshInstances,
   sameSubgraphs,
   subgraphIdOf,
+  SUBGRAPH_TYPE_PREFIX,
   type CollapseResult,
 } from '../utils/subgraph';
 import { ExecutionWebSocket } from '../api/ws';
@@ -2627,6 +2629,31 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
           // Written only when muted (core#128), so a graph nobody has
           // bypassed anything in serializes byte-identically to before.
           ...(n.data.bypassed ? { bypassed: true } : {}),
+          // Written only when the user (or an agent, via set_node_meta) has
+          // actually renamed the node (#342). `n.data.type` is exactly what
+          // the reader falls back to -- `label: raw.data?.label ?? nodeType`,
+          // utils/index.ts:505 -- so comparing against it both guarantees the
+          // round-trip and keeps an unrenamed graph's bytes unchanged.
+          //
+          // Deliberately skipped for a subgraph instance and a preset, whose
+          // labels come from the definition each time they are read and whose
+          // `data.type` therefore never equals the label: emitting for them
+          // would rewrite existing files to say something the reader ignores.
+          //
+          // `typeof n.data.type === 'string'` is not belt-and-braces: a node
+          // can reach here with no `type` at all (the field above writes it
+          // through unchecked), and serialization -- which every Run goes
+          // through -- is the last place that should throw over a missing
+          // optional. Such a node has no fallback for the reader to restore
+          // from either, so it is left exactly as it serialized before.
+          ...(!n.data.isPreset
+            && typeof n.data.type === 'string'
+            && !n.data.type.startsWith(SUBGRAPH_TYPE_PREFIX)
+            && typeof n.data.label === 'string'
+            && n.data.label !== ''
+            && n.data.label !== n.data.type
+            ? { label: n.data.label }
+            : {}),
         },
       };
     });
@@ -3303,23 +3330,7 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
 
   addNote: (kind, position) => {
     get().pushUndoSnapshot();
-    const node: Node<NodeData> = {
-      id: generateId(),
-      type: 'noteNode',
-      position,
-      data: {
-        label: 'Note',
-        type: 'note',
-        params: {},
-        noteKind: kind,
-        noteContent: '',
-        noteColor: '#3d3d1a',
-        boundToNodeId: null,
-        boundOffset: null,
-        noteWidth: 200,
-        noteHeight: kind === 'image' ? 150 : undefined,
-      },
-    };
+    const node = buildNoteNode({ kind, position });
     set({
       tabs: updateTab(get().tabs, get().activeTabId, (tab) => ({
         nodes: [...tab.nodes, node],

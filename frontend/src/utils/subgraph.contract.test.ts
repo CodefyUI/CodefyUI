@@ -60,7 +60,12 @@ function toCanvas(raw: any[]): Node<NodeData>[] {
     type: n.type === 'Start' ? 'start' : 'baseNode',
     position: n.position,
     data: {
-      label: n.id,
+      // What the shipped reader puts here -- `label: raw.data?.label ??
+      // nodeType` (utils/index.ts) -- not the node's id. The serializer emits
+      // `label` only when it differs from the type (#342), so a harness that
+      // invented a per-node label would make every fixture node look renamed
+      // and the collapsed halves stop matching.
+      label: n.data?.label ?? n.type,
       type: n.type,
       params: n.data?.params ?? {},
       definition: definitionFor(n.type),

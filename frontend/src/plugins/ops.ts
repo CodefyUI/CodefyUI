@@ -9,7 +9,9 @@
  */
 import type { Edge, Node } from '@xyflow/react';
 import type { NodeData, NodeDefinition, ParamDefinition, SegmentGroup } from '../types';
-import { buildFlowNode, generateId, isValidConnection } from '../utils';
+import {
+  buildFlowNode, buildNoteNode, DEFAULT_NOTE_COLOR, generateId, isValidConnection,
+} from '../utils';
 import { autoLayout } from '../utils/autoLayout';
 import { computeSegmentNodes } from '../utils/segmentPath';
 
@@ -37,7 +39,16 @@ export type GraphOp =
    * data edges or the overlay would render nothing.
    */
   | { op: 'set_segment'; segment_id?: string; head_node_id: string; tail_node_id: string }
-  | { op: 'remove_segment'; segment_id: string };
+  | { op: 'remove_segment'; segment_id: string }
+  /**
+   * Add a text note -- the sticky the canvas already renders, and which the
+   * validator, the exporters and every fingerprint already skip (#342).
+   */
+  | { op: 'add_note'; ref?: string; text: string;
+      position?: { x: number; y: number }; color?: string; bind_to?: string }
+  | { op: 'update_note'; node_id: string; text?: string; color?: string }
+  /** Name one node. The label is metadata beside `params`, never inside it. */
+  | { op: 'set_node_meta'; node_id: string; label: string };
 
 export interface OpResult {
   index: number;
@@ -56,6 +67,79 @@ export interface ApplyOutcome {
   refs: Record<string, string>;
   dirtyIds: string[];
   mutated: boolean;
+}
+
+/** Longest note an op may write. An agent inlining a document is not a note. */
+const NOTE_TEXT_MAX = 4000;
+/** Longest node label. Long enough for a sentence fragment, short enough for a card. */
+const NODE_LABEL_MAX = 120;
+/**
+ * The six colours the canvas's note menu offers are all `#rrggbb`
+ * (`NodeContextMenu.tsx:33-40`), so one pattern covers "a palette colour" and
+ * "a hex colour" without importing a component's private constant.
+ */
+const NOTE_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+/** Where an unpositioned bound note lands, relative to the node it explains. */
+const NOTE_BIND_OFFSET = { x: 240, y: -20 };
+
+/**
+ * A bound note's offset from the node it explains, derived from where the
+ * note actually sits. One function so `add_note`'s initial binding and
+ * `move_node`'s re-derivation cannot drift: they are the same rule, and a
+ * disagreement between them shows up only as a note that jumps on the next
+ * drag of its parent.
+ */
+function boundOffsetFrom(
+  notePosition: { x: number; y: number },
+  parentPosition: { x: number; y: number },
+): { x: number; y: number } {
+  return { x: notePosition.x - parentPosition.x, y: notePosition.y - parentPosition.y };
+}
+
+/**
+ * True when `text` holds a C0 control character or DEL.
+ *
+ * Written as a codepoint scan rather than a regex character class on
+ * purpose: a class of `\u00xx` escapes is the kind of literal that gets
+ * mangled by one careless copy-paste and then silently accepts nothing, or
+ * everything. Tab, newline and carriage return are legitimate in a note and
+ * are the only three let through.
+ */
+function hasControlChars(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code === 9 || code === 10 || code === 13) continue;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function validateNoteText(text: unknown): string | null {
+  if (typeof text !== 'string') return 'text must be a string';
+  if (text.length < 1 || text.length > NOTE_TEXT_MAX) {
+    return `text must be 1..${NOTE_TEXT_MAX} characters`;
+  }
+  if (hasControlChars(text)) {
+    return 'text may not contain control characters (newline and tab are fine)';
+  }
+  return null;
+}
+
+function validateNoteColor(color: unknown): string | null {
+  if (typeof color !== 'string' || !NOTE_COLOR_RE.test(color)) {
+    return "color must be a '#rrggbb' hex string";
+  }
+  return null;
+}
+
+function validateNodeLabel(label: unknown): string | null {
+  if (typeof label !== 'string') return 'label must be a string';
+  if (/[\r\n]/.test(label)) return 'label must be a single line';
+  const trimmed = label.trim();
+  if (trimmed.length < 1 || trimmed.length > NODE_LABEL_MAX) {
+    return `label must be 1..${NODE_LABEL_MAX} characters`;
+  }
+  return null;
 }
 
 function validateParamValue(p: ParamDefinition, value: unknown): string | null {
@@ -333,10 +417,7 @@ export function applyGraphOps(
               if (parent) {
                 next.data = {
                   ...n.data,
-                  boundOffset: {
-                    x: target.x - parent.position.x,
-                    y: target.y - parent.position.y,
-                  },
+                  boundOffset: boundOffsetFrom(target, parent.position),
                 };
               }
             }
@@ -392,6 +473,105 @@ export function applyGraphOps(
         segmentGroups = segmentGroups.filter((s) => s.id !== op.segment_id);
         mutated = true;
         results.push({ index, ok: true });
+        return;
+      }
+
+      case 'add_note': {
+        const textError = validateNoteText(op.text);
+        if (textError) return fail(`add_note: ${textError}`);
+        if (op.color !== undefined) {
+          const colorError = validateNoteColor(op.color);
+          if (colorError) return fail(`add_note: ${colorError}`);
+        }
+        let bound: Node<NodeData> | undefined;
+        if (op.bind_to !== undefined) {
+          const boundId = resolveId(op.bind_to);
+          if (!boundId) return fail(`add_note: unknown node '${op.bind_to}'`);
+          bound = nodes.find((n) => n.id === boundId)!;
+          if (bound.type === 'noteNode') {
+            return fail('add_note: a note cannot be bound to another note');
+          }
+        }
+        const position = op.position
+          ?? (bound
+            ? {
+                x: bound.position.x + NOTE_BIND_OFFSET.x,
+                y: bound.position.y + NOTE_BIND_OFFSET.y,
+              }
+            : { x: 160 + (staggered % 4) * 90, y: 120 + staggered * 70 });
+        staggered += 1;
+        const note = buildNoteNode({
+          text: op.text,
+          position,
+          color: op.color ?? DEFAULT_NOTE_COLOR,
+          boundToNodeId: bound ? bound.id : null,
+          // Derived from where the note actually ends up, so an explicit
+          // `position` and the default one both leave a consistent binding.
+          boundOffset: bound ? boundOffsetFrom(position, bound.position) : null,
+        });
+        nodes = [...nodes, note];
+        if (op.ref) refs[op.ref] = note.id;
+        mutated = true;
+        results.push({ index, ok: true, node_id: note.id });
+        return;
+      }
+
+      case 'update_note': {
+        const id = resolveId(op.node_id);
+        if (!id) return fail(`update_note: unknown node '${op.node_id}'`);
+        const note = nodes.find((n) => n.id === id)!;
+        if (note.type !== 'noteNode') {
+          return fail(`update_note: node '${op.node_id}' is not a note`);
+        }
+        if (op.text === undefined && op.color === undefined) {
+          return fail('update_note: nothing to change — pass text, color, or both');
+        }
+        if (op.text !== undefined) {
+          const textError = validateNoteText(op.text);
+          if (textError) return fail(`update_note: ${textError}`);
+          // An image note's `noteContent` is its data URL. Writing prose over
+          // it would blank the picture, and the 4000-char cap is not a
+          // meaningful guard for a field that is meant to hold base64.
+          if (note.data.noteKind === 'image') {
+            return fail('update_note: cannot set text on an image note');
+          }
+        }
+        if (op.color !== undefined) {
+          const colorError = validateNoteColor(op.color);
+          if (colorError) return fail(`update_note: ${colorError}`);
+        }
+        nodes = nodes.map((n) =>
+          n.id === id
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  ...(op.text !== undefined ? { noteContent: op.text } : {}),
+                  ...(op.color !== undefined ? { noteColor: op.color } : {}),
+                },
+              }
+            : n,
+        );
+        mutated = true;
+        results.push({ index, ok: true, node_id: id });
+        return;
+      }
+
+      case 'set_node_meta': {
+        const id = resolveId(op.node_id);
+        if (!id) return fail(`set_node_meta: unknown node '${op.node_id}'`);
+        const target = nodes.find((n) => n.id === id)!;
+        if (target.type === 'noteNode') {
+          return fail('set_node_meta: a note has no label — use update_note');
+        }
+        const labelError = validateNodeLabel(op.label);
+        if (labelError) return fail(`set_node_meta: ${labelError}`);
+        const label = op.label.trim();
+        nodes = nodes.map((n) =>
+          n.id === id ? { ...n, data: { ...n.data, label } } : n,
+        );
+        mutated = true;
+        results.push({ index, ok: true, node_id: id });
         return;
       }
 

@@ -850,7 +850,11 @@ describe('getSerializedGraph', () => {
       { id: 'e1', source: 'n1', target: 'n2' },
     ] as any);
     const g = store().getSerializedGraph();
-    expect(g.nodes[0]).toEqual({ id: 'n1', type: 'Dataset', position: { x: 1, y: 2 }, data: { params: { p: 1 } } });
+    // `label` is emitted because this node's label ('A') differs from its type
+    // -- which is what a rename looks like to the serializer (#342). The
+    // unrenamed case, where `data` is exactly `{ params }`, is pinned in
+    // tabStore.label.test.ts.
+    expect(g.nodes[0]).toEqual({ id: 'n1', type: 'Dataset', position: { x: 1, y: 2 }, data: { params: { p: 1 }, label: 'A' } });
     expect(g.edges[0]).toEqual({ id: 'e1', source: 'n1', target: 'n2', sourceHandle: '', targetHandle: '' });
     expect(g.presets).toEqual([]);
   });

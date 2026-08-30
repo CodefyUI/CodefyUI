@@ -81,7 +81,22 @@ export type GraphOp =
    * either way. Head and tail must be joined by data edges.
    */
   | { op: 'set_segment'; segment_id?: string; head_node_id: string; tail_node_id: string }
-  | { op: 'remove_segment'; segment_id: string };
+  | { op: 'remove_segment'; segment_id: string }
+  /**
+   * Add a text note to the canvas — the sticky the editor already draws.
+   * `bind_to` attaches it to a node so it follows when that node moves.
+   * `text` is 1..4000 characters; `color` is `#rrggbb`.
+   */
+  | { op: 'add_note'; ref?: string; text: string;
+      position?: { x: number; y: number }; color?: string; bind_to?: string }
+  /** Rewrite an existing note's text and/or colour. Text notes only. */
+  | { op: 'update_note'; node_id: string; text?: string; color?: string }
+  /**
+   * Name one node — `data.label`, 1..120 characters on a single line. The
+   * label sits beside `params`, never inside it, so naming a node is not a
+   * parameter change to anything reading the graph.
+   */
+  | { op: 'set_node_meta'; node_id: string; label: string };
 
 export interface OpResult {
   index: number;
