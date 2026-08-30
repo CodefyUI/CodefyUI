@@ -582,9 +582,11 @@ for (const [slugs, canvas, light] of LIGHT_TWINS) {
   for (const slug of slugs) {
     // A grey has no hue to drift, so the angle between two of them is the
     // angle between two rounding residues (--type-any and its light twin are
-    // deliberately neutral). Same chroma guard 11c uses below, so this file
-    // has one definition of "too grey to have a hue". The lightness half of
-    // the rule still applies — a grey must not be lightened either.
+    // deliberately neutral; --cat-io and --cat-utility sit just under the
+    // guard too, muted rather than grey, and drift under 2 degrees). Same
+    // chroma guard 11c uses below, so this file has one definition of "too
+    // grey to have a hue". The lightness half of the rule still applies — a
+    // grey must not be lightened either.
     const hued =
       chroma(t(canvas(slug))) >= MIN_HUE_CHROMA && chroma(t(light(slug))) >= MIN_HUE_CHROMA;
     if (hued) {

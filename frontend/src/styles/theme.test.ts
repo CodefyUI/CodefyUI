@@ -282,8 +282,9 @@ describe('tokens.css / diagram export palette agreement', () => {
   };
 
   it('has same-family light wire pairs to hold apart at all', () => {
-    // A sweep that matches nothing passes for the wrong reason. Three pairs
-    // sit inside the window today; if that ever drops to zero, either the
+    // A sweep that matches nothing passes for the wrong reason. Four pairs
+    // sit inside the window today (dataset/transform, image/optimizer,
+    // list/string, string/tensor); if that ever drops to zero, either the
     // palette was redrawn or this window stopped describing it.
     expect(lightTypeFamilyPairs().length).toBeGreaterThan(0);
   });
