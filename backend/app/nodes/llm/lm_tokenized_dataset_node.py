@@ -30,6 +30,13 @@ sha256 over the corpus fingerprint, the tokenizer's identity, ``seq_len``,
 ``append_eos`` and ``max_tokens`` -- every input that changes the stream. This
 is the node's OWN cache and has nothing to do with ``ExecutionCache``: see
 ``cacheable`` below for why that one cannot help here.
+
+Nothing evicts it (#306). A distinct key means a distinct file, so sweeping
+``seq_len`` over three values leaves three full copies of the packed stream --
+8 bytes per token each, which is ~800 MB per entry for a 100M-token corpus.
+The eviction is a person typing ``cdui cache prune``; an automatic size cap at
+write time was considered and deferred, because a cap that deletes the entry
+the next run was about to hit turns a documented cost into a mysterious one.
 """
 
 from __future__ import annotations
@@ -322,7 +329,8 @@ class LMTokenizedDatasetNode(BaseNode):
         "into (input_ids, labels) pairs where the labels are the inputs "
         "shifted one token to the left -- next-token prediction. Wire the "
         "output into DataLoader. The packed tokens are cached on disk, so only "
-        "the first run pays for tokenization."
+        "the first run pays for tokenization -- nothing evicts that cache, and "
+        "`cdui cache prune` is what clears it."
     )
 
     # The inputs are LIVE handles -- a dataset object and a tokenizer object --
@@ -438,7 +446,12 @@ class LMTokenizedDatasetNode(BaseNode):
                 default="",
                 description=(
                     "Subdirectory for the cached token files (empty = the "
-                    "shared cache under the data directory)."
+                    "shared cache under the data directory). One file per "
+                    "distinct corpus, tokenizer, seq_len, append_eos and "
+                    "max_tokens, at 8 bytes per token -- a 100M-token corpus "
+                    "is about 800 MB per file, and nothing deletes them. "
+                    "`cdui cache list` shows what is there, `cdui cache "
+                    "prune` clears it."
                 ),
                 visible_when={"cache": True},
                 advanced=True,
@@ -537,10 +550,11 @@ class LMTokenizedDatasetNode(BaseNode):
             if append_eos:
                 stream.append(eos_id)
             rows_done += 1
-            if max_tokens and len(stream) >= max_tokens:
-                # Break rather than tokenize the rest and throw it away: the
-                # point of the cap is the time it saves.
-                break
+            full = bool(max_tokens) and len(stream) >= max_tokens
+            # BEFORE the break, not after it (#306). With the emit on the far
+            # side, the row that tripped the cap was the one row whose work
+            # never showed up -- and on a corpus whose first row fills the
+            # budget that was every frame the run had.
             throttle.emit({
                 # EVENT_BATCH marks this as LIVENESS, not measurement:
                 # ``run_service.scalar_metrics`` mines every top-level number
@@ -551,8 +565,15 @@ class LMTokenizedDatasetNode(BaseNode):
                 "event": EVENT_BATCH,
                 "rows": rows_done,
                 "total_rows": total_rows,
-                "tokens": len(stream),
+                # Capped the same way the stream is below, so the last frame
+                # counts tokens the node keeps rather than tokens it read.
+                "tokens": min(len(stream), max_tokens) if max_tokens
+                          else len(stream),
             })
+            if full:
+                # Break rather than tokenize the rest and throw it away: the
+                # point of the cap is the time it saves.
+                break
 
         if max_tokens:
             del stream[max_tokens:]

@@ -264,6 +264,34 @@ received — each links to the release it was published as.
   pack's Python packages), and a shortfall is recorded as a failed job that
   still brings the server back.
 
+- **The disk `LMTokenizedDataset` quietly fills is now named, priced, and
+  clearable.** It writes one packed token stream per distinct corpus,
+  tokenizer, `seq_len`, `append_eos` and `max_tokens` — 8 bytes a token, so
+  around 800 MB apiece for a 100M-token corpus — and nothing had ever
+  evicted one, so sweeping `seq_len` over three values left three full
+  copies of the same corpus behind with no command anywhere that would even
+  say so. The node's description and its `cache_dir` parameter now carry
+  that arithmetic, in both locales, and `cdui cache list` prints every
+  derived cache with its entry count, its size and the directory it is in.
+  `cdui cache prune` deletes those entries behind a `[y/N]` confirmation
+  (`--older-than DAYS` spares anything written since; `--yes` skips the
+  prompt and is required where there is no terminal to confirm at), and
+  refuses outright while a background server is running, because a graph in
+  it may be part-way through reading a block file. Both take
+  `--project <dir>`, the flag the server was started with: project mode
+  keeps the cache in `<dir>/assets/cache/`, and nothing exports that to a
+  second terminal — without it the commands answered about
+  `backend/data/cache`, `0 entries`, while the copies filling the disk sat
+  in the project. What they cover is an allowlist of *derived* caches:
+  downloaded models and assets live under a different root and cost
+  bandwidth rather than CPU to replace, and run outputs, saved models and
+  graphs cannot be rebuilt at all. The row that trips `max_tokens` reports
+  its progress before stopping, instead of the bar ending one block short of
+  where the run did. An automatic size cap was considered and deferred — an
+  eviction policy that deletes a file somebody is three hours into
+  re-tokenizing is a worse failure than a full disk they were told about in
+  advance.
+
 ### Changed
 
 - **`cdui start` hands the server the launcher that can start it again.**
