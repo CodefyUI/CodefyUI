@@ -2354,6 +2354,28 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         // head/tail ids the new graph does not have.
         segmentGroups: doc.segmentGroups ?? [],
         activeSegment: null,
+        // The rest of the per-document residue, mirroring `clear()` and then
+        // some (core#337). All of it is keyed by NODE ID, which is why
+        // leaving it behind is not merely untidy: node ids are not unique
+        // across graphs, so the new document's node inherits the previous
+        // one's selection, its open modal, or -- worst -- its captured output
+        // values, drawn on a card that has never run.
+        //
+        // `nodeDetailTab` / `nodeDetailPort` travel with the id they qualify.
+        // `nodeDetailRequest` deliberately does NOT: it is a monotonic tick
+        // the modal watches to notice a second deep link into the node it is
+        // already showing (#129), it names no node and belongs to no
+        // document, and resetting it would make the next open look to that
+        // effect like nothing had happened.
+        selectedNodeId: null,
+        presetModalNodeId: null,
+        layersModalNodeId: null,
+        nodeDetailNodeId: null,
+        nodeDetailTab: null,
+        nodeDetailPort: null,
+        dirtyNodeIds: new Set<string>(),
+        outputSummaries: {},
+        cardViewState: {},
         description: doc.description ?? '',
         readOnly,
         // The save target, stated by the reader and never inherited (#200

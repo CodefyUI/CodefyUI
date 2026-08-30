@@ -234,3 +234,86 @@ describe('loadGraphDocument', () => {
     expect(store().getSerializedGraph().nodes.map((n: { id: string }) => n.id)).toEqual(['top']);
   });
 });
+
+/**
+ * The per-document UI residue (core#337).
+ *
+ * `clear()` nulls the selection and the three modal ids; the atomic install
+ * did not, so every one of them survived an open — and a new graph that
+ * happens to reuse a node id showed the previous graph's selection, popped
+ * the previous graph's modal, or drew the previous graph's output summaries
+ * on a node that has never run.
+ *
+ * Each of these seeds ONE field and opens a bare document, so a field that
+ * stops being cleared fails on its own line.
+ */
+describe('loadGraphDocument clears the previous document UI residue', () => {
+  /** Open a document that reuses the seeded node id, the way #337 describes. */
+  const openAnother = () =>
+    store().loadGraphDocument({ nodes: [node('same-id')], edges: [], boundFile: null });
+
+  it('clears the selection', () => {
+    store().setSelectedNodeId('same-id');
+    openAnother();
+    expect(tab().selectedNodeId).toBeNull();
+  });
+
+  it('closes the preset modal', () => {
+    store().openPresetModal('same-id');
+    openAnother();
+    expect(tab().presetModalNodeId).toBeNull();
+  });
+
+  it('closes the layers editor', () => {
+    store().openLayersModal('same-id');
+    openAnother();
+    expect(tab().layersModalNodeId).toBeNull();
+  });
+
+  it('closes the detail modal, deep link and all', () => {
+    store().openNodeDetail('same-id', { tab: 'code', port: 'same-id::out' });
+    openAnother();
+    const t = tab();
+    expect(t.nodeDetailNodeId).toBeNull();
+    // The tab and port travel with the id; leaving them would aim the next
+    // open of the modal at a port off the graph that just closed.
+    expect(t.nodeDetailTab).toBeNull();
+    expect(t.nodeDetailPort).toBeNull();
+  });
+
+  it('keeps the detail-modal request counter, which is not per-document', () => {
+    // `nodeDetailRequest` is a monotonic tick the modal watches to notice a
+    // SECOND deep link into the node it is already showing (#129). It names
+    // no node and belongs to no document; resetting it to 0 would make the
+    // next open look to that effect like nothing had happened.
+    store().openNodeDetail('same-id');
+    const before = tab().nodeDetailRequest;
+    openAnother();
+    expect(tab().nodeDetailRequest).toBe(before);
+  });
+
+  it('clears the partial-re-execution hint', () => {
+    store().markDirty('same-id');
+    openAnother();
+    expect(tab().dirtyNodeIds.size).toBe(0);
+  });
+
+  it('clears the output summaries', () => {
+    // The sharpest of the set: these are captured VALUES, and drawn on the
+    // card of whatever node wears the id. Left behind, the new graph's node
+    // shows the old graph's tensor.
+    store().setTabOutputSummary(tab().id, 'same-id', {
+      out: { type: 'tensor', shape: [2, 2] },
+    });
+    openAnother();
+    expect(tab().outputSummaries).toEqual({});
+  });
+
+  it('closes anything a card had open', () => {
+    // core#324's map, keyed by node id and therefore inherited by whatever
+    // node in the new graph wears that id.
+    store().setCardViewState('same-id', { expanded: true });
+    openAnother();
+    expect(tab().cardViewState).toEqual({});
+  });
+});
