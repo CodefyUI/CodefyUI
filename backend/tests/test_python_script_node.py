@@ -1671,17 +1671,19 @@ def test_no_reachable_callable_takes_a_file_path():
                     # -- and not library API a script calls to move data;
                     # the classes it builds are swept where they are named.
                     #
-                    # Python 3.14 is what made this visible: it carries
-                    # ``ABCMeta`` in the ``collections.abc`` namespace
-                    # (3.13 and below do not, so ``dir()`` never saw it),
-                    # and ``ABCMeta._dump_registry(cls, file=None)`` then
+                    # Python 3.13 is what made this visible (3.13 made
+                    # ``collections.abc`` an alias of ``_collections_abc``,
+                    # whose body imports ``ABCMeta``, so ``dir()`` started
+                    # seeing it there; 3.12 and below do not carry it), and
+                    # CI's 3.10-3.12 matrix never ran it, so it surfaced on
+                    # a 3.14 venv: ``ABCMeta._dump_registry(cls, file=None)``
                     # matched the file-ish pattern. That ``file`` is a
                     # stream the function ``print``s into, not a path, and
                     # the leading underscore means the gate already refuses
                     # it on a library receiver -- so it was a false
                     # positive, not a finding. Skipping metaclasses costs
-                    # this sweep nothing anywhere else: on 3.10-3.13 it
-                    # reaches none at all, and on 3.14 exactly this one.
+                    # this sweep nothing anywhere else: on 3.10-3.12 it
+                    # reaches none at all, and on 3.13+ exactly this one.
                     continue
                 # One level into the class: its methods are as reachable as
                 # the class is, and ``numpy.zeros(3).dump`` lives here.

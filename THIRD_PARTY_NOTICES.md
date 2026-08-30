@@ -122,6 +122,7 @@ license text.
 | tiktoken | MIT |
 | tokenizers | Apache-2.0 |
 | huggingface_hub | Apache-2.0 |
+| hf_xet | Apache-2.0 |
 | scikit-learn | BSD-3-Clause |
 | platformdirs | MIT |
 | psutil | BSD-3-Clause |
