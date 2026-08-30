@@ -1,8 +1,7 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import type { NodeProps } from '@xyflow/react';
 import type { AppNode } from '../../types';
 import { useTabStore } from '../../store/tabStore';
-import { useCardExpanded } from '../../hooks/useCardViewState';
 import { useI18n } from '../../i18n';
 import { HeatmapPlot, type HeatmapColormap } from '../shared/HeatmapPlot';
 import { HeatmapModal } from '../shared/HeatmapModal';
@@ -29,9 +28,7 @@ function AttentionHeatmapVizNode(props: NodeProps<AppNode>) {
     return tab?.lastRunId ?? null;
   });
 
-  // In the store, not in the card: viewport culling unmounts an off-screen
-  // card and a `useState` flag goes with it (core#324).
-  const [expanded, setExpanded] = useCardExpanded(id);
+  const [expanded, setExpanded] = useState(false);
 
   const matrix = useMemo<number[][] | number[][][] | null>(() => {
     const v = summaries?.weights?.values;

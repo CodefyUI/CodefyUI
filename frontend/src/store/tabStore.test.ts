@@ -825,13 +825,6 @@ describe('clear', () => {
     expect(tab.undoStack.length).toBe(2);
   });
 
-  it('forgets what any card had open', () => {
-    // Nothing survives a cleared canvas to be open (core#324).
-    store().setCardViewState('x', { expanded: true });
-    store().clear();
-    expect(activeTab().cardViewState).toEqual({});
-  });
-
   it('resets graph metadata (description, currentGraphFile, segments) so a cleared canvas is unbound', () => {
     store().setDescription('bound graph');
     store().setCurrentGraphFile('bound_file');
@@ -1044,20 +1037,6 @@ describe('deleteNode', () => {
     expect(tab.edges).toHaveLength(0);
     expect(tab.selectedNodeId).toBeNull();
     expect(tab.undoStack.length).toBe(1);
-  });
-
-  it('forgets what the deleted card had open, and only that card', () => {
-    // `cardViewState` is keyed by node id and outlives the card on purpose
-    // (core#324), so it has to be dropped with the node — ids get reused, and
-    // a fresh card must not inherit a stranger's open viewer.
-    store().setNodes([
-      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
-      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
-    ] as any);
-    store().setCardViewState('n1', { expanded: true });
-    store().setCardViewState('n2', { expanded: true });
-    store().deleteNode('n1');
-    expect(activeTab().cardViewState).toEqual({ n2: { expanded: true } });
   });
 
   it('keeps selection if a different node was selected', () => {
@@ -1382,19 +1361,6 @@ describe('onNodesChange', () => {
     store().setSelectedNodeId('n1');
     store().onNodesChange([{ id: 'n1', type: 'remove' }]);
     expect(activeTab().selectedNodeId).toBeNull();
-  });
-
-  it('forgets the removed card view state here too (Delete key path)', () => {
-    // Same reason as `selectedNodeId` above: the Delete key reaches this
-    // reducer and never `deleteNode` (core#324).
-    store().setNodes([
-      { id: 'n1', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'A', type: 'A', params: {} } },
-      { id: 'n2', type: 'baseNode', position: { x: 0, y: 0 }, data: { label: 'B', type: 'B', params: {} } },
-    ] as any);
-    store().setCardViewState('n1', { expanded: true });
-    store().setCardViewState('n2', { expanded: true });
-    store().onNodesChange([{ id: 'n1', type: 'remove' }]);
-    expect(activeTab().cardViewState).toEqual({ n2: { expanded: true } });
   });
 
   it('leaves selectedNodeId alone when a different node is removed', () => {

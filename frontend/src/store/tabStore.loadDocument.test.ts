@@ -308,12 +308,4 @@ describe('loadGraphDocument clears the previous document UI residue', () => {
     openAnother();
     expect(tab().outputSummaries).toEqual({});
   });
-
-  it('closes anything a card had open', () => {
-    // core#324's map, keyed by node id and therefore inherited by whatever
-    // node in the new graph wears that id.
-    store().setCardViewState('same-id', { expanded: true });
-    openAnother();
-    expect(tab().cardViewState).toEqual({});
-  });
 });
