@@ -2,6 +2,7 @@
 get it back::
 
     cdui cache list                      # what is cached, and how much of it
+    cdui cache list --project ./lab      # ... of a project, not this install
     cdui cache prune                     # delete it (asks first)
     cdui cache prune --older-than 30     # ... only what has sat there a month
     cdui cache prune --yes               # ... without asking
@@ -32,9 +33,15 @@ Exit codes, because scripts and CI read them:
 * 1   -- declined at the prompt, or something could not be deleted
 * 2   -- refused before anything ran: a negative ``--older-than``, or no
          terminal to confirm at
-* 3   -- a server is running from this checkout; a graph in it may be reading
-         a cache file, so nothing is deleted
+* 3   -- a BACKGROUND server is running from this checkout; a graph in it may
+         be reading a cache file, so nothing is deleted
 * 130 -- cancelled with Ctrl-C
+
+Background, and only background: the check is ``dev._running_server_pid``,
+which reads the ``server.pid`` that solely the daemon branch of ``start``
+writes. A foreground session (``cdui dev``, ``cdui start -f``) leaves no
+pidfile anywhere, so nothing here can see one -- stop it yourself before
+pruning, and say so wherever this refusal is described.
 
 ASCII only. This prints on a legacy Windows console where a box-drawing
 character or an emoji raises ``UnicodeEncodeError`` and takes the command
@@ -260,6 +267,27 @@ def _server_pid() -> int | None:
     return dev._running_server_pid()  # noqa: SLF001 -- dev.py IS this CLI
 
 
+def _activate_project(raw: str) -> None:
+    """Point this command at the project at *raw*, the way ``start`` is.
+
+    ``dev.py`` owns the flag: it resolves the directory, refuses with exit 1
+    and one sentence when there is no ``codefyui.project.toml`` in it, echoes
+    the resolved path, and exports ``CODEFYUI_PROJECT_DIR``. That variable is
+    what ``app.config`` reads to repoint ``MODELS_DIR`` at
+    ``<project>/assets/models`` -- and therefore what moves the cache this
+    command measures. A second reading of the manifest here would be a second
+    place to fix the day project mode changes shape, and a chance for the two
+    of them to disagree about which directory the user meant.
+
+    Called from :func:`main`, before either subcommand: ``settings`` is built
+    once, at the first import of ``app.config``, which is the one
+    :func:`derived_cache_root` does. Exporting after that is too late.
+    """
+    import dev  # noqa: PLC0415 -- see _server_pid
+
+    dev._activate_project(raw)  # noqa: SLF001 -- dev.py IS this CLI
+
+
 def _stdin_is_interactive() -> bool:
     """Whether there is a human on the other end of ``input()``.
 
@@ -397,6 +425,24 @@ def cmd_prune(args: argparse.Namespace) -> int:
 # ---- argparse routing ----------------------------------------------------
 
 
+def _add_project_flag(p: argparse.ArgumentParser) -> None:
+    """``--project DIR``, on every subcommand.
+
+    ``cdui start|dev --project <dir>`` puts the cache in
+    ``<dir>/assets/cache`` and exports that inside its own process only, so
+    a ``cdui cache`` typed in any shell had neither the flag nor the
+    variable: it answered about ``backend/data/cache`` -- ``0 entries`` --
+    while the copies filling the disk sat in the project the lesson was run
+    from (#306). Spelled and resolved exactly like ``start``'s, because it
+    is the same flag: somebody who started a server with it should not have
+    to learn a second way to name the same directory.
+    """
+    p.add_argument(
+        "--project", metavar="DIR", default=None,
+        help="the project whose cache this is about, as passed to `cdui "
+             "start --project`; its cache is <DIR>/assets/cache")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The whole CLI surface. Imports nothing from ``app``: ``--help`` has to
     answer on a machine whose venv is half-installed."""
@@ -408,15 +454,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser(
         "list", help="What each derived cache holds, and how much disk it is on")
+    _add_project_flag(p_list)
     p_list.set_defaults(_func=cmd_list)
 
     p_prune = sub.add_parser(
-        "prune", help="Delete those entries (asks first)")
+        "prune", help="Delete those entries (asks first)",
+        # Raw, so the two command names below survive: the default formatter
+        # re-wraps a description and would break `cdui start -f` over a line
+        # end, which is where somebody copying it loses the flag.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Delete every derived cache entry, after a [y/N] confirmation.\n"
+            "\n"
+            "Refused while a BACKGROUND server (`cdui start`) is running: a\n"
+            "graph in it may be part-way through reading a block file. Only\n"
+            "background -- a foreground server (`cdui dev`, `cdui start -f`)\n"
+            "writes no pidfile and cannot be detected here, so stop one\n"
+            "yourself before pruning."))
     p_prune.add_argument(
         "--older-than", type=float, default=None, metavar="DAYS",
         help="only delete entries last written more than DAYS days ago")
     p_prune.add_argument("--yes", "-y", action="store_true",
                          help="skip the confirmation prompt")
+    _add_project_flag(p_prune)
     p_prune.set_defaults(_func=cmd_prune)
 
     return p
@@ -425,6 +485,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdio()
     args = build_parser().parse_args(argv)
+    if args.project:
+        # Before the subcommand, and so before anything imports `app`: the
+        # data root this measures is derived while `app.config` is first
+        # imported, and only from the environment as it stands then.
+        _activate_project(args.project)
     try:
         return args._func(args)
     except KeyboardInterrupt:

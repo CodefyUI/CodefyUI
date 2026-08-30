@@ -372,3 +372,161 @@ def test_one_undeletable_entry_does_not_stop_the_others(cache_root,
     captured = capsys.readouterr()
     assert "held open by another process" in captured.err
     assert "deleted 1 entry" in captured.out
+
+
+# ── project mode ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def _restore_project_env():
+    """``_activate_project`` writes raw ``os.environ``, and monkeypatch
+    cannot undo a write it never saw -- snapshot the one key it touches.
+    Same fixture ``test_dev_cli.py`` keeps, for the same reason."""
+    before = os.environ.get("CODEFYUI_PROJECT_DIR")
+    yield
+    if before is None:
+        os.environ.pop("CODEFYUI_PROJECT_DIR", None)
+    else:
+        os.environ["CODEFYUI_PROJECT_DIR"] = before
+
+
+@pytest.fixture
+def live_data_root(monkeypatch, _restore_project_env):
+    """Rebuild the data root from a fresh ``Settings`` on every call.
+
+    In production this command imports ``app`` for the FIRST time inside
+    ``derived_cache_root()``, so ``Settings()`` -- and the project-mode
+    derivation in its validator -- runs AFTER ``--project`` has exported
+    ``CODEFYUI_PROJECT_DIR``. Under pytest ``app.config`` was imported long
+    before any of these tests ran and its module-level ``settings`` froze
+    the non-project roots, which would make every assertion below pass for
+    the wrong reason. One ``Settings`` per call restores the production
+    ordering without spawning a subprocess, and leaves the real
+    ``derived_cache_root`` -- the thing under test -- in place.
+    """
+    import app.core.data_paths as data_paths
+    from app.config import Settings
+
+    monkeypatch.delenv("CODEFYUI_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(data_paths, "data_root",
+                        lambda: Settings().MODELS_DIR.parent.resolve())
+
+
+def _project(tmp_path: Path, name: str = "lab") -> Path:
+    """A directory ``cdui start --project`` would accept."""
+    proj = tmp_path / name
+    proj.mkdir()
+    (proj / "codefyui.project.toml").write_text(
+        f'[project]\nname = "{name}"\n', encoding="utf-8")
+    return proj
+
+
+def test_both_subcommands_take_the_project_flag():
+    """On both, because the answer and the delete are the same question
+    asked twice: a flag only ``list`` accepts is one somebody types on
+    ``prune`` and watches argparse reject."""
+    parser = cache.build_parser()
+    assert parser.parse_args(["list", "--project", "lab"]).project == "lab"
+    assert parser.parse_args(["prune", "--project=lab"]).project == "lab"
+    assert parser.parse_args(["list"]).project is None
+
+
+def test_list_reports_the_project_s_cache_when_given_the_project(
+        tmp_path, capsys, live_data_root):
+    """``cdui start --project <dir>`` moves the cache to
+    ``<dir>/assets/cache`` and exports that only inside its own process, so
+    a ``cdui cache list`` typed in any shell answered about
+    ``backend/data/cache`` -- ``0 entries`` -- while the copies filling the
+    disk sat in the project. The flag is the one the server was started
+    with (#306).
+    """
+    proj = _project(tmp_path)
+    blocks = proj / "assets" / "cache" / "lm_blocks"
+    blocks.mkdir(parents=True)
+    (blocks / "a.pt").write_bytes(b"x" * 2048)
+
+    assert cache.main(["list", "--project", str(proj)]) == 0
+
+    out = capsys.readouterr().out
+    assert str((proj / "assets" / "cache").resolve()) in out
+    assert "1 entry" in out
+    assert "2.0 KB" in out
+
+
+def test_prune_with_a_project_deletes_there_and_not_from_the_default_root(
+        tmp_path, monkeypatch, capsys, live_data_root):
+    """The flag moves what is deleted, not just what is counted."""
+    default_blocks = tmp_path / "data" / "cache" / "lm_blocks"
+    default_blocks.mkdir(parents=True)
+    outside = default_blocks / "keep.pt"
+    outside.write_bytes(b"x" * 1024)
+    monkeypatch.setenv("CODEFYUI_MODELS_DIR", str(tmp_path / "data" / "models"))
+
+    # Control: with no flag, THAT is the directory the command works on.
+    assert cache.main(["list"]) == 0
+    assert "1 entry" in capsys.readouterr().out
+
+    # An explicitly-set root beats project derivation (`_derive_project_roots`
+    # in app/config.py checks `model_fields_set`), here exactly as it does on
+    # the server -- so the variable goes away and `--project` is what moves
+    # the root, rather than the two of them arguing.
+    monkeypatch.delenv("CODEFYUI_MODELS_DIR")
+    proj = _project(tmp_path)
+    project_blocks = proj / "assets" / "cache" / "lm_blocks"
+    project_blocks.mkdir(parents=True)
+    doomed = project_blocks / "a.pt"
+    doomed.write_bytes(b"x" * 1024)
+
+    assert cache.main(["prune", "--project", str(proj), "--yes"]) == 0
+
+    assert not doomed.exists()
+    assert outside.exists(), "prune reached outside the project it was given"
+
+
+def test_the_project_is_exported_the_way_cdui_start_exports_it(
+        tmp_path, monkeypatch, capsys, live_data_root):
+    """Absolute, and through ``dev``'s own helper.
+
+    A relative ``--project ./lab`` has to resolve, because the variable is
+    read by ``app.config`` long after anything remembers which directory it
+    was typed in; and reading the manifest twice, in two files, is two
+    places to fix the day project mode changes shape.
+    """
+    proj = _project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    assert cache.main(["list", "--project", "lab"]) == 0
+
+    assert os.environ["CODEFYUI_PROJECT_DIR"] == str(proj.resolve())
+    assert str(proj.resolve()) in capsys.readouterr().out
+
+
+def test_a_project_with_no_manifest_is_refused_like_cdui_start(
+        tmp_path, capsys, live_data_root):
+    """Same check, same exit code, same sentence. A typo in the path must
+    not quietly list this install's cache instead -- the reader would take
+    ``0 entries`` for an answer about their project."""
+    with pytest.raises(SystemExit) as exc:
+        cache.main(["list", "--project", str(tmp_path / "nope")])
+
+    assert exc.value.code == 1
+    assert "manifest" in capsys.readouterr().err.lower()
+    assert "CODEFYUI_PROJECT_DIR" not in os.environ
+
+
+# ── what the refusal can and cannot see ───────────────────────────────────
+
+
+def test_prune_help_says_a_foreground_server_must_be_stopped_by_hand(capsys):
+    """``_running_server_pid`` reads ``server.pid``, which only the
+    BACKGROUND branch of ``start`` writes: a ``cdui dev`` or ``cdui start
+    -f`` session is invisible to the refusal, and the docs said "a server
+    started from this install", which is more than the check delivers."""
+    with pytest.raises(SystemExit) as exc:
+        cache.main(["prune", "--help"])
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out.lower()
+    assert "background" in out
+    assert "foreground" in out
+    assert "cdui start -f" in out

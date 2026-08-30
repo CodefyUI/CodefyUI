@@ -58,9 +58,11 @@ Some nodes write results they can rebuild, and until you delete them nothing els
 | Command | Description |
 |---------|-------------|
 | `cdui cache list` | Every derived cache: how many entries it holds, how much disk that is, and the directory it lives in. |
-| `cdui cache prune` | Delete those entries, after a `[y/N]` confirmation. `--older-than DAYS` keeps anything written more recently than that (last *written* — a read does not count, because a cache hit does not touch the file). `--yes` / `-y` skips the prompt, and is required when there is no terminal to confirm at. Refuses while a server started from this install is running: a graph in it may be part-way through reading a block file. |
+| `cdui cache prune` | Delete those entries, after a `[y/N]` confirmation. `--older-than DAYS` keeps anything written more recently than that (last *written* — a read does not count, because a cache hit does not touch the file). `--yes` / `-y` skips the prompt, and is required when there is no terminal to confirm at. Refuses while a **background** server (`cdui start`) is running: a graph in it may be part-way through reading a block file. Only background — a foreground `cdui dev` or `cdui start -f` writes no pidfile, so nothing can detect it: stop one yourself first. |
 
-Exit codes, for scripts: `0` done (including "there was nothing to delete"), `1` declined at the prompt or an entry could not be deleted, `2` refused before anything ran (a negative `--older-than`, no terminal to confirm at), `3` a server is running — `cdui stop` first, `130` cancelled with `Ctrl+C`.
+Both take `--project <dir>`, the same flag you started the server with: project mode keeps the cache in `<dir>/assets/cache/`, and without the flag these answer about this install's `<data>/cache` instead.
+
+Exit codes, for scripts: `0` done (including "there was nothing to delete"), `1` declined at the prompt or an entry could not be deleted, `2` refused before anything ran (a negative `--older-than`, no terminal to confirm at), `3` a background server is running — `cdui stop` first, `130` cancelled with `Ctrl+C`.
 
 ## Background vs foreground
 

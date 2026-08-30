@@ -4498,6 +4498,13 @@ def _dispatch_cache_subcommand() -> int:
     all. Listing a directory, and deleting from it, must not wait on
     astral.sh -- least of all on the lab network where somebody is clearing
     disk space because they have run out of it.
+
+    `--project` is NOT parsed here, unlike in `start` and `dev`: cache.py
+    declares it on both its subcommands (so `--help` lists it and the two
+    spellings argparse already knows are the only ones to support) and calls
+    `_activate_project` itself. Parsing it before this hop would print the
+    "Project -> <dir>" line twice, once in each process, because the re-exec
+    replays the same argv.
     """
     _exec_into_venv_if_available()
     _apply_dev_env()
