@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { applyNodeChanges, applyEdgeChanges } from '@xyflow/react';
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from '@xyflow/react';
 import {
@@ -251,6 +251,28 @@ export interface TabState {
   // refuses to write it -- so an older CodefyUI build can never
   // destructively down-save a newer file.
   readOnly: boolean;
+  /**
+   * Compare-and-swap token for this tab's document (#341).
+   *
+   * Starts at 1 and only ever climbs. It advances by exactly one whenever a
+   * `set` changes this tab's `nodes`, `edges`, `subgraphs` or `segmentGroups`
+   * -- the four fields an undo frame captures, which is to say "the
+   * document". Undo and redo advance it too: they restore older CONTENT, and
+   * a plugin holding a revision from before the undo must not be told nothing
+   * happened.
+   *
+   * "Changes" is by CONTENT, not by array reference, and that distinction is
+   * the whole difficulty -- see `documentChanged`. React Flow rewrites the
+   * nodes array for selection and for remeasuring a card, neither of which is
+   * a document change, and a counter that climbed for those would expire a
+   * plugin's compare-and-swap every time the user panned the canvas.
+   *
+   * No action sets this by hand. The store's `set` is wrapped once, in
+   * `create()` below, so a mutating action added later cannot forget it. The
+   * one exception is the persistence loader, which restores the number a tab
+   * was saved with -- see `withRevisions`.
+   */
+  revision: number;
   // flow
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -347,6 +369,7 @@ function createTabState(id: string, name: string): TabState {
     currentGraphFile: null,
     projectOrigin: null,
     readOnly: false,
+    revision: 1,
     nodes: [],
     edges: [],
     subgraphs: [],
@@ -1246,6 +1269,13 @@ export interface PersistedTab {
   currentGraphFile?: string | null;
   projectOrigin?: string | null;
   readOnly?: boolean;
+  /**
+   * The tab's compare-and-swap counter (#341). Absent on a record written
+   * before this feature; such a record restores as 1, which is exactly what
+   * a fresh tab has, so a plugin's stored `expectedRevision` from a previous
+   * session fails closed rather than matching by accident.
+   */
+  revision?: number;
   nodes: Node<NodeData>[];
   edges: Edge[];
   segmentGroups?: SegmentGroup[];
@@ -1303,6 +1333,7 @@ function buildPersistedTab(input: TabState): PersistedTab {
   return {
     id: t.id,
     name: t.name,
+    revision: t.revision,
     description: t.description,
     currentGraphFile: t.currentGraphFile,
     // Only persisted when set, so non-project localStorage is byte-identical.
@@ -1381,6 +1412,7 @@ function scalarSignature(t: TabState): string {
     t.autoBackward ? '1' : '0',
     t.seed ?? '',
     t.deterministic ? '1' : '0',
+    String(t.revision),
   ]);
 }
 
@@ -1490,6 +1522,9 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     currentGraphFile: t.currentGraphFile ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
+    // A record without the field is pre-#341: restore as 1 rather than as
+    // whatever the placeholder tab happened to be carrying.
+    revision: typeof t.revision === 'number' ? t.revision : 1,
     nodes,
     // Autosave stores each edge object as it stands, baked stroke and all, so
     // this is the one door a wire painted by an older palette comes back
@@ -1521,6 +1556,10 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
   };
 }
 
+/** Test seams: the persistence record round-trip, without the debounce. */
+export const _buildPersistedTabForTesting = buildPersistedTab;
+export const _tabFromPersistedForTesting = tabFromPersisted;
+
 function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   try {
     const raw = localStorage.getItem(_storageKey());
@@ -1543,9 +1582,208 @@ function loadTabs(): { tabs: TabState[]; activeTabId: string } {
   return { tabs: [createTabState(id, 'Tab 1')], activeTabId: id };
 }
 
+/** The `set` a zustand state creator is handed, named so it can be wrapped. */
+type TabSet = Parameters<StateCreator<TabStoreState>>[0];
+
+/**
+ * The plugin whose `applyOperations` produced the transition currently being
+ * notified, or null (#341 section 4.5).
+ *
+ * Module-level rather than a store field because it is not state: it exists
+ * for the duration of one `set`'s synchronous listener fan-out and is cleared
+ * by the wrapper the moment that fan-out returns, so `workspace.onChanged`
+ * can attach `origin` to a `graph` event without a plugin's write leaving a
+ * trace anybody can read afterwards.
+ */
+let _lastCommitOrigin: { pluginId: string } | null = null;
+
+export function lastCommitOrigin(): { pluginId: string } | null {
+  return _lastCommitOrigin;
+}
+
+/** Test seam: pretend a commit came from `origin` for the next notification. */
+export function _setCommitOriginForTesting(
+  origin: { pluginId: string } | null,
+): void {
+  _lastCommitOrigin = origin;
+}
+
+/**
+ * Did this tab's DOCUMENT change between two states? (#341)
+ *
+ * The four fields an undo frame captures are the document, but their array
+ * references are not a usable signal, because React Flow rewrites `nodes` for
+ * things that are not the document at all:
+ *
+ *   - selection -- `applyChange`'s `'select'` case sets `node.selected` on a
+ *     fresh shallow copy of the node;
+ *   - remeasuring -- a card culled by `onlyRenderVisibleElements` remounts
+ *     when it scrolls back into view and reports its size as a `'dimensions'`
+ *     change, which writes `measured`, `width` and `height`.
+ *
+ * A reference-comparing counter would therefore climb while the user simply
+ * PANNED THE CANVAS, and every plugin's compare-and-swap would expire against
+ * a graph nobody had touched. So this reads content.
+ *
+ * What it compares, and why each is safe (verified in @xyflow/react 12.10.1,
+ * `applyChanges` / `applyChange`, dist/esm/index.mjs:583-696):
+ *
+ *   - `position` BY VALUE. A `'position'` change assigns the object React
+ *     Flow built, so the reference always moves -- even for a drag that ends
+ *     where it started, and even on the drag-start change that carries no
+ *     coordinates at all.
+ *   - `data` BY REFERENCE. No change type touches `data`, and every writer in
+ *     this store replaces it (`{...n.data, ...}`), so the reference IS the
+ *     value. This is what makes a params edit or a rename a document change
+ *     without a deep walk of every param on every pointer move.
+ *   - `id`, `type`, `parentId` by value -- structural, and never touched by a
+ *     change.
+ *   - `selected`, `dragging`, `measured`, `width`, `height`, `resizing`,
+ *     `zIndex` are deliberately ABSENT. They are the viewport's opinion about
+ *     a node, not the graph's.
+ *
+ * Index-wise behind a length guard: `applyChanges` walks the array in place,
+ * so `select`, `position` and `dimensions` never reorder; only `add` and
+ * `remove` move anything, and both change the length or the ids at an index.
+ * A genuine reorder that preserved every id counts as a change, which is the
+ * conservative direction -- serialization writes nodes in array order.
+ */
+function documentChanged(prev: TabState, next: TabState): boolean {
+  if (prev === next) return false;
+
+  if (prev.nodes !== next.nodes) {
+    if (prev.nodes.length !== next.nodes.length) return true;
+    for (let i = 0; i < next.nodes.length; i += 1) {
+      const a = prev.nodes[i];
+      const b = next.nodes[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.type !== b.type
+        || a.parentId !== b.parentId
+        || a.data !== b.data
+        || a.position.x !== b.position.x
+        || a.position.y !== b.position.y
+      ) {
+        return true;
+      }
+    }
+  }
+
+  if (prev.edges !== next.edges) {
+    if (prev.edges.length !== next.edges.length) return true;
+    for (let i = 0; i < next.edges.length; i += 1) {
+      const a = prev.edges[i];
+      const b = next.edges[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.source !== b.source
+        || a.target !== b.target
+        || a.sourceHandle !== b.sourceHandle
+        || a.targetHandle !== b.targetHandle
+        || a.type !== b.type
+        || a.data !== b.data
+        || a.style !== b.style
+      ) {
+        return true;
+      }
+    }
+  }
+
+  // Definitions already have a by-value comparator, written for the undo
+  // frame (#200 item 2); a second one here would be the same drift risk this
+  // whole function exists to avoid.
+  if (prev.subgraphs !== next.subgraphs && !sameSubgraphs(prev.subgraphs, next.subgraphs)) {
+    return true;
+  }
+
+  if (prev.segmentGroups !== next.segmentGroups) {
+    if (prev.segmentGroups.length !== next.segmentGroups.length) return true;
+    for (let i = 0; i < next.segmentGroups.length; i += 1) {
+      const a = prev.segmentGroups[i];
+      const b = next.segmentGroups[i];
+      if (a === b) continue;
+      if (
+        a.id !== b.id
+        || a.headNodeId !== b.headNodeId
+        || a.tailNodeId !== b.tailNodeId
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/** Test seam: the bump rule, without having to drive a store transition. */
+export const _documentChangedForTesting = documentChanged;
+
+/**
+ * Advance `revision` on every tab whose document changed in this transition.
+ *
+ * ONE chokepoint rather than a bump in each of this file's dozens of mutating
+ * actions: a counter maintained by hand in fifty places is a counter that is
+ * wrong in one of them, and the one it is wrong in is the one a plugin's
+ * compare-and-swap silently trusts. Bumping inside the same `set` also closes
+ * the window a subscription-based bump would open, where subscribers briefly
+ * see new content carrying the old number.
+ *
+ * The reference guards are what keep this cheap: `documentChanged` returns on
+ * `prev === next` immediately, and each of the four field comparisons is
+ * skipped entirely unless that field's array was replaced. A drag frame
+ * therefore costs one pass over the nodes with six scalar compares each, on a
+ * path that was already allocating a whole new array.
+ *
+ * A tab whose `revision` the transition ITSELF changed is left alone. That is
+ * how the persistence loader states a restored tab's number
+ * (`rehydrateForProject` installs tabs rebuilt by `tabFromPersisted`, whose
+ * ids can collide with the ones already on screen) without the wrapper
+ * overwriting it with `previous + 1`.
+ */
+function withRevisions(
+  prev: TabStoreState,
+  next: Partial<TabStoreState>,
+): Partial<TabStoreState> {
+  const tabs = next.tabs;
+  if (!tabs || tabs === prev.tabs) return next;
+  const before = new Map(prev.tabs.map((t) => [t.id, t] as const));
+  let bumped = false;
+  const withBumps = tabs.map((t) => {
+    const was = before.get(t.id);
+    // A brand-new tab keeps the number `createTabState` gave it.
+    if (!was) return t;
+    // The loader spoke; do not argue with it.
+    if (t.revision !== was.revision) return t;
+    if (!documentChanged(was, t)) return t;
+    bumped = true;
+    return { ...t, revision: was.revision + 1 };
+  });
+  return bumped ? { ...next, tabs: withBumps } : next;
+}
+
 const initialState = loadTabs();
 
-export const useTabStore = create<TabStoreState>((set, get) => ({
+export const useTabStore = create<TabStoreState>((rawSet, get) => {
+  // Every `set` in the body below is this one. `replace` is deliberately not
+  // forwarded: nothing in this store calls `set(x, true)`, and a wrapper that
+  // pretended to support a whole-state replace would have to decide what a
+  // revision means for a tab list that arrived without a predecessor.
+  const set: TabSet = (partial) => {
+    rawSet((state) =>
+      withRevisions(
+        state,
+        typeof partial === 'function' ? partial(state) : partial,
+      ),
+    );
+    // Cleared AFTER `rawSet` returns, i.e. after zustand has finished
+    // notifying synchronously -- which is the only window a subscriber can
+    // read it in.
+    _lastCommitOrigin = null;
+  };
+
+  return {
   tabs: initialState.tabs,
   activeTabId: initialState.activeTabId,
 
@@ -3391,7 +3629,8 @@ export const useTabStore = create<TabStoreState>((set, get) => ({
         deterministic: !tab.deterministic,
       })),
     }),
-}));
+  };
+});
 
 // ── Loading the IndexedDB tier ──
 //
