@@ -54,13 +54,26 @@ export type GraphOp =
   | { op: 'remove_edge'; source: string; target: string;
       source_handle?: string; target_handle?: string }
   | { op: 'clear_graph' }
-  | { op: 'auto_layout' };
+  | { op: 'auto_layout' }
+  /* ── requires apiVersion >= 5 ─────────────────────────────────────────── */
+  /** Put one node at an exact position. Notes bound to it move with it. */
+  | { op: 'move_node'; node_id: string; position: { x: number; y: number } }
+  /**
+   * Create or replace a segment overlay -- the orange bubble the canvas draws
+   * around every node on a data path from head to tail. Omit `segment_id` to
+   * create one; pass an existing id to move it. The result carries the id
+   * either way. Head and tail must be joined by data edges.
+   */
+  | { op: 'set_segment'; segment_id?: string; head_node_id: string; tail_node_id: string }
+  | { op: 'remove_segment'; segment_id: string };
 
 export interface OpResult {
   index: number;
   ok: boolean;
   error?: string;
   node_id?: string;
+  /** Set by `set_segment` — apiVersion 5. */
+  segment_id?: string;
 }
 
 export interface ApplyResult {

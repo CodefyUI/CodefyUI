@@ -166,7 +166,7 @@ export function commitGraphOperations(ops: GraphOp[]): ApplyResult {
   const tab = store.getActiveTab();
   const definitions = useNodeDefStore.getState().definitions;
   const outcome: ApplyOutcome = applyGraphOps(
-    { nodes: tab.nodes, edges: tab.edges },
+    { nodes: tab.nodes, edges: tab.edges, segmentGroups: tab.segmentGroups },
     definitions,
     ops,
   );

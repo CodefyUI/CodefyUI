@@ -8,9 +8,10 @@
  * errors.
  */
 import type { Edge, Node } from '@xyflow/react';
-import type { NodeData, NodeDefinition, ParamDefinition } from '../types';
+import type { NodeData, NodeDefinition, ParamDefinition, SegmentGroup } from '../types';
 import { buildFlowNode, generateId, isValidConnection } from '../utils';
 import { autoLayout } from '../utils/autoLayout';
+import { computeSegmentNodes } from '../utils/segmentPath';
 
 export type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
@@ -22,18 +23,35 @@ export type GraphOp =
   | { op: 'remove_edge'; source: string; target: string;
       source_handle?: string; target_handle?: string }
   | { op: 'clear_graph' }
-  | { op: 'auto_layout' };
+  | { op: 'auto_layout' }
+  /**
+   * Put one node at an exact position (#342). Notes bound to it ride along by
+   * the same delta, the way they do when the user drags it -- an agent that
+   * tidies a corner and strands three sticky notes has not tidied anything.
+   */
+  | { op: 'move_node'; node_id: string; position: { x: number; y: number } }
+  /**
+   * Create or replace a Teaching Inspector segment: the orange bubble the
+   * canvas draws around every node on a data path from head to tail (#342).
+   * Membership is derived, not stored, so head and tail have to be joined by
+   * data edges or the overlay would render nothing.
+   */
+  | { op: 'set_segment'; segment_id?: string; head_node_id: string; tail_node_id: string }
+  | { op: 'remove_segment'; segment_id: string };
 
 export interface OpResult {
   index: number;
   ok: boolean;
   error?: string;
   node_id?: string;
+  /** Set by `set_segment`, which may have generated the id itself. */
+  segment_id?: string;
 }
 
 export interface ApplyOutcome {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  segmentGroups: SegmentGroup[];
   results: OpResult[];
   refs: Record<string, string>;
   dirtyIds: string[];
@@ -96,12 +114,17 @@ function validateParams(
 }
 
 export function applyGraphOps(
-  current: { nodes: Node<NodeData>[]; edges: Edge[] },
+  current: { nodes: Node<NodeData>[]; edges: Edge[]; segmentGroups: SegmentGroup[] },
   definitions: NodeDefinition[],
   ops: GraphOp[],
 ): ApplyOutcome {
   let nodes = [...current.nodes];
   let edges = [...current.edges];
+  // NOT copied, unlike the two above. The commit path writes whatever comes
+  // back, and the autosave record cache compares this array by reference, so
+  // a fresh (identical) list on every batch of add_node would rewrite the
+  // tab's stored record for nothing.
+  let segmentGroups = current.segmentGroups;
   const results: OpResult[] = [];
   const refs: Record<string, string> = {};
   const dirty = new Set<string>();
@@ -274,6 +297,75 @@ export function applyGraphOps(
         return;
       }
 
+      case 'move_node': {
+        const id = resolveId(op.node_id);
+        if (!id) return fail(`move_node: unknown node '${op.node_id}'`);
+        const target = op.position;
+        if (
+          !target
+          || !Number.isFinite(target.x)
+          || !Number.isFinite(target.y)
+        ) {
+          return fail('move_node: position must be two finite numbers');
+        }
+        const moved = nodes.find((n) => n.id === id)!;
+        const dx = target.x - moved.position.x;
+        const dy = target.y - moved.position.y;
+        nodes = nodes.map((n) => {
+          if (n.id === id) return { ...n, position: { x: target.x, y: target.y } };
+          // Mirrors `onNodesChange`'s second pass (tabStore.ts:2152-2178): a
+          // bound note follows its parent. By DELTA rather than by
+          // re-deriving from `boundOffset`, so a note the user has nudged
+          // keeps the offset they nudged it to.
+          if (n.type === 'noteNode' && n.data.boundToNodeId === id && n.data.boundOffset) {
+            return { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } };
+          }
+          return n;
+        });
+        mutated = true;
+        results.push({ index, ok: true, node_id: id });
+        return;
+      }
+
+      case 'set_segment': {
+        const headId = resolveId(op.head_node_id);
+        const tailId = resolveId(op.tail_node_id);
+        if (!headId) return fail(`set_segment: unknown head node '${op.head_node_id}'`);
+        if (!tailId) return fail(`set_segment: unknown tail node '${op.tail_node_id}'`);
+        const head = nodes.find((n) => n.id === headId)!;
+        const tail = nodes.find((n) => n.id === tailId)!;
+        if (head.type === 'noteNode' || tail.type === 'noteNode') {
+          return fail('set_segment: a note node cannot be a segment endpoint');
+        }
+        // The overlay derives its members by BFS over data edges and draws
+        // nothing when the tail is unreachable, so an unreachable pair is a
+        // segment the user would never see. Refused with the reason rather
+        // than stored invisibly.
+        if (computeSegmentNodes(headId, tailId, nodes, edges).size === 0) {
+          return fail(
+            `set_segment: no data-edge path from '${op.head_node_id}' to '${op.tail_node_id}'`,
+          );
+        }
+        const id = op.segment_id ?? generateId();
+        segmentGroups = [
+          ...segmentGroups.filter((s) => s.id !== id),
+          { id, headNodeId: headId, tailNodeId: tailId },
+        ];
+        mutated = true;
+        results.push({ index, ok: true, segment_id: id });
+        return;
+      }
+
+      case 'remove_segment': {
+        if (!segmentGroups.some((s) => s.id === op.segment_id)) {
+          return fail(`remove_segment: unknown segment '${op.segment_id}'`);
+        }
+        segmentGroups = segmentGroups.filter((s) => s.id !== op.segment_id);
+        mutated = true;
+        results.push({ index, ok: true });
+        return;
+      }
+
       default:
         fail(`Unknown op '${(op as { op?: string }).op}'`);
     }
@@ -282,6 +374,7 @@ export function applyGraphOps(
   return {
     nodes,
     edges,
+    segmentGroups,
     results,
     refs,
     dirtyIds: [...dirty].filter((id) => nodes.some((n) => n.id === id)),

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, Edge } from '@xyflow/react';
-import type { NodeData, NodeDefinition } from '../types';
+import type { NodeData, NodeDefinition, SegmentGroup } from '../types';
 import { applyGraphOps, type GraphOp } from './ops';
 import { buildFlowNode } from '../utils';
 
@@ -32,8 +32,13 @@ const DEFS: NodeDefinition[] = [
   }),
 ];
 
-function run(ops: GraphOp[], nodes: Node<NodeData>[] = [], edges: Edge[] = []) {
-  return applyGraphOps({ nodes, edges }, DEFS, ops);
+function run(
+  ops: GraphOp[],
+  nodes: Node<NodeData>[] = [],
+  edges: Edge[] = [],
+  segmentGroups: SegmentGroup[] = [],
+) {
+  return applyGraphOps({ nodes, edges, segmentGroups }, DEFS, ops);
 }
 
 describe('applyGraphOps — add_node', () => {
@@ -169,5 +174,138 @@ describe('applyGraphOps — set_params / remove_node / remove_edge / clear / lay
     const laid = run([{ op: 'auto_layout' }], nodes, edges);
     expect(laid.results[0].ok).toBe(true);
     expect(laid.nodes).toHaveLength(2);
+  });
+});
+
+describe('applyGraphOps — move_node', () => {
+  function seeded() {
+    const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 30, y: 40 },
+      data: {
+        label: 'Note', type: 'note', params: {},
+        noteKind: 'text', noteContent: 'hi', noteColor: '#3d3d1a',
+        boundToNodeId: a.id, boundOffset: { x: 30, y: 40 },
+        noteWidth: 200,
+      },
+    };
+    const loose: Node<NodeData> = { ...note, id: 'note2', data: { ...note.data, boundToNodeId: null, boundOffset: null } };
+    return { nodes: [a, note, loose], a };
+  }
+
+  it('moves a node to an exact position', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 500, y: 250 } }], nodes);
+    expect(r.results[0]).toMatchObject({ ok: true, node_id: a.id });
+    expect(r.nodes.find((n) => n.id === a.id)!.position).toEqual({ x: 500, y: 250 });
+    expect(r.mutated).toBe(true);
+  });
+
+  it('carries a bound note along by the same delta, and leaves a loose one', () => {
+    const { nodes, a } = seeded();
+    const r = run([{ op: 'move_node', node_id: a.id, position: { x: 100, y: 60 } }], nodes);
+    expect(r.nodes.find((n) => n.id === 'note1')!.position).toEqual({ x: 130, y: 100 });
+    expect(r.nodes.find((n) => n.id === 'note2')!.position).toEqual({ x: 30, y: 40 });
+  });
+
+  it('rejects an unknown node and a non-finite position', () => {
+    const { nodes, a } = seeded();
+    const ghost = run([{ op: 'move_node', node_id: 'nope', position: { x: 0, y: 0 } }], nodes);
+    expect(ghost.results[0].ok).toBe(false);
+    expect(ghost.mutated).toBe(false);
+
+    const nan = run([{ op: 'move_node', node_id: a.id, position: { x: Number.NaN, y: 0 } }], nodes);
+    expect(nan.results[0].ok).toBe(false);
+    expect(nan.results[0].error).toContain('finite');
+  });
+
+  it('accepts a same-batch ref', () => {
+    const r = run([
+      { op: 'add_node', node_type: 'Source', ref: 's' },
+      { op: 'move_node', node_id: 's', position: { x: 12, y: 34 } },
+    ]);
+    expect(r.results[1].ok).toBe(true);
+    expect(r.nodes[0].position).toEqual({ x: 12, y: 34 });
+  });
+});
+
+describe('applyGraphOps — set_segment / remove_segment', () => {
+  function chain() {
+    const a = buildFlowNode(DEFS[0], { x: 0, y: 0 });
+    const b = buildFlowNode(DEFS[1], { x: 100, y: 0 });
+    const e: Edge = { id: 'e1', source: a.id, target: b.id, sourceHandle: 'out', targetHandle: 'x' };
+    return { nodes: [a, b], edges: [e], a, b };
+  }
+
+  it('appends a segment and reports the id it generated', () => {
+    const { nodes, edges, a, b } = chain();
+    const r = run([{ op: 'set_segment', head_node_id: a.id, tail_node_id: b.id }], nodes, edges);
+    expect(r.results[0].ok).toBe(true);
+    expect(typeof r.results[0].segment_id).toBe('string');
+    expect(r.segmentGroups).toEqual([
+      { id: r.results[0].segment_id, headNodeId: a.id, tailNodeId: b.id },
+    ]);
+  });
+
+  it('replaces by id rather than duplicating', () => {
+    const { nodes, edges, a, b } = chain();
+    const r = run(
+      [{ op: 'set_segment', segment_id: 's1', head_node_id: b.id, tail_node_id: b.id }],
+      nodes, edges,
+      [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }],
+    );
+    expect(r.segmentGroups).toHaveLength(1);
+    expect(r.segmentGroups[0]).toEqual({ id: 's1', headNodeId: b.id, tailNodeId: b.id });
+  });
+
+  it('refuses head and tail with no data-edge path between them', () => {
+    const { nodes, edges, a, b } = chain();
+    const backwards = run(
+      [{ op: 'set_segment', head_node_id: b.id, tail_node_id: a.id }],
+      nodes, edges,
+    );
+    expect(backwards.results[0].ok).toBe(false);
+    expect(backwards.results[0].error).toContain('no data-edge path');
+    expect(backwards.segmentGroups).toHaveLength(0);
+    expect(backwards.mutated).toBe(false);
+  });
+
+  it('refuses a note as an endpoint and an unknown node', () => {
+    const { nodes, edges, a } = chain();
+    const note: Node<NodeData> = {
+      id: 'note1', type: 'noteNode', position: { x: 0, y: 0 },
+      data: { label: 'Note', type: 'note', params: {}, noteKind: 'text', noteContent: 'x', noteColor: '#3d3d1a', boundToNodeId: null, boundOffset: null, noteWidth: 200 },
+    };
+    const withNote = run(
+      [{ op: 'set_segment', head_node_id: a.id, tail_node_id: 'note1' }],
+      [...nodes, note], edges,
+    );
+    expect(withNote.results[0].ok).toBe(false);
+    expect(withNote.results[0].error).toContain('note');
+
+    const ghost = run([{ op: 'set_segment', head_node_id: a.id, tail_node_id: 'nope' }], nodes, edges);
+    expect(ghost.results[0].ok).toBe(false);
+  });
+
+  it('remove_segment drops a known id and reports an unknown one', () => {
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const ok = run([{ op: 'remove_segment', segment_id: 's1' }], nodes, edges, groups);
+    expect(ok.results[0].ok).toBe(true);
+    expect(ok.segmentGroups).toHaveLength(0);
+
+    const miss = run([{ op: 'remove_segment', segment_id: 'nope' }], nodes, edges, groups);
+    expect(miss.results[0].ok).toBe(false);
+    expect(miss.mutated).toBe(false);
+  });
+
+  it('hands back the SAME segmentGroups array when no op touched it', () => {
+    // The persistence record cache compares this array by reference, so a
+    // batch of add_node that handed back a fresh (identical) segment list
+    // would rewrite the tab's IndexedDB record for nothing.
+    const { nodes, edges, a, b } = chain();
+    const groups: SegmentGroup[] = [{ id: 's1', headNodeId: a.id, tailNodeId: b.id }];
+    const r = run([{ op: 'add_node', node_type: 'Source' }], nodes, edges, groups);
+    expect(r.segmentGroups).toBe(groups);
   });
 });
