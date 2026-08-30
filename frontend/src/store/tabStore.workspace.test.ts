@@ -189,6 +189,41 @@ describe('commitDocument + pushUndoSnapshotFor', () => {
     expect(store().getTab(target)!.activeSegment).toBeNull();
   });
 
+  it('closes a detail modal the commit removed the node for', () => {
+    // The same cleanup `onNodesChange`'s remove branch does (#167). A plugin's
+    // `remove_node` never reaches that reducer, so without this the modal
+    // points at a node that is gone -- and pops back open on its own the
+    // moment an undo restores it (#341 section 4.4 step 7).
+    const live = store().activeTabId;
+    store().loadGraphDocumentInto(live, {
+      nodes: [node('a'), node('b', 200)], edges: [], boundFile: null,
+    });
+    store().openNodeDetail('b');
+    expect(activeTab().nodeDetailNodeId).toBe('b');
+    expect(activeTab().selectedNodeId).toBe('b');
+
+    store().commitDocument(live, {
+      nodes: [node('a')], edges: [], segmentGroups: [], dirtyIds: [],
+    });
+    expect(activeTab().nodeDetailNodeId).toBeNull();
+    expect(activeTab().selectedNodeId).toBeNull();
+  });
+
+  it('leaves both alone when the committed document still has the node', () => {
+    const live = store().activeTabId;
+    store().loadGraphDocumentInto(live, {
+      nodes: [node('a'), node('b', 200)], edges: [], boundFile: null,
+    });
+    store().openNodeDetail('b');
+
+    store().commitDocument(live, {
+      nodes: [node('a'), node('b', 200), node('c', 400)],
+      edges: [], segmentGroups: [], dirtyIds: [],
+    });
+    expect(activeTab().nodeDetailNodeId).toBe('b');
+    expect(activeTab().selectedNodeId).toBe('b');
+  });
+
   it('pushUndoSnapshotFor on a background tab does not touch the active one', () => {
     const target = store().createTab({ title: 'Target', activate: false });
     store().pushUndoSnapshotFor(target);

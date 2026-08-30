@@ -5,7 +5,10 @@
  * breaks installed plugins. Add, don't mutate; bump apiVersion on breaking
  * changes.
  */
-import { useTabStore } from '../store/tabStore';
+import {
+  useTabStore, lastCommitOrigin,
+  type GraphDocument, type TabState,
+} from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { useToastStore } from '../store/toastStore';
 import type { ToastType } from '../store/toastStore';
@@ -14,7 +17,8 @@ import {
   getRun, getRunMetrics, listRuns,
   type RunInfo, type RunListPage, type RunMetrics, type RunStatus,
 } from '../api/rest';
-import type { NodeDefinition } from '../types';
+import type { NodeDefinition, WorkspaceSource } from '../types';
+import { resolveExample } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
@@ -38,6 +42,89 @@ export interface ApplyResult {
 export type SerializedGraph = ReturnType<
   ReturnType<typeof useTabStore.getState>['getSerializedGraph']
 >;
+
+export type { WorkspaceSource };
+
+/**
+ * The document a plugin hands `workspace.openGraphs`.
+ *
+ * Deliberately looser than `SerializedGraph`, which is the store's exact
+ * RETURN type with every list non-optional: a plugin composes this object
+ * itself, and the honest shape of "whatever a graph file holds" is two
+ * required lists and a bag. Everything else is read defensively by the same
+ * document reader a file load uses.
+ */
+export interface WorkspaceGraphInput {
+  nodes: unknown[];
+  edges: unknown[];
+  presets?: unknown[];
+  segmentGroups?: unknown[];
+  subgraphs?: unknown[];
+  name?: string;
+  description?: string;
+  format_version?: unknown;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceOpenEntry {
+  /** Shown on the tab. Stored whole; the tab bar ellipsises what will not fit. */
+  title: string;
+  graph: WorkspaceGraphInput;
+  /** Default false. A read-only tab refuses plugin writes on both paths. */
+  readOnly?: boolean;
+  source?: WorkspaceSource;
+  /** Default false: the tab is transient and is gone after a reload. */
+  persist?: boolean;
+}
+
+export type WorkspaceOpenResult =
+  | { tabId: string; revision: number }
+  | { error: string; code: 'invalid_graph' | 'too_many_tabs' | 'too_large' };
+
+export interface WorkspaceTabInfo {
+  tabId: string;
+  title: string;
+  revision: number;
+  readOnly: boolean;
+  transient: boolean;
+  source: WorkspaceSource | null;
+  active: boolean;
+}
+
+export type WorkspaceSnapshot =
+  | (WorkspaceTabInfo & { graph: SerializedGraph })
+  | { error: 'unknown_tab' };
+
+export interface WorkspaceApplyRequest {
+  /** Defaults to the active tab. */
+  tabId?: string;
+  /** Omitted: no compare. Present and stale: nothing is written. */
+  expectedRevision?: number;
+  operations: GraphOp[];
+  /** Default false. True: any failing op means nothing is committed. */
+  atomic?: boolean;
+}
+
+export type WorkspaceConflict =
+  | 'revision_mismatch' | 'read_only' | 'unknown_tab' | 'editing_subgraph';
+
+export interface WorkspaceApplyResult extends ApplyResult {
+  tabId: string;
+  /** The tab's revision AFTER this call; unchanged on a conflict or a preflight failure. */
+  revision: number;
+  committed: boolean;
+  conflict?: WorkspaceConflict;
+}
+
+export type WorkspaceEvent =
+  | { type: 'graph'; tabId: string; revision: number; origin?: { pluginId: string } }
+  | { type: 'tabs'; tabId: string; revision: number; removed: boolean }
+  | { type: 'active-tab'; tabId: string; revision: number };
+
+/** Serialized JSON a single `openGraphs` entry may carry. */
+const MAX_WORKSPACE_GRAPH_BYTES = 8 * 1024 * 1024;
+/** How many tabs the editor will hold before `openGraphs` starts refusing. */
+const MAX_WORKSPACE_TABS = 32;
 
 export interface RunListOptions {
   status?: readonly RunStatus[];
@@ -117,6 +204,22 @@ export interface CodefyUIPluginAPI {
     /** Read-only: which level of the graph the user is looking at (#200 item 7). */
     getView(): GraphView;
   };
+  /**
+   * Tabs, snapshots and compare-and-swap writes -- requires apiVersion >= 5.
+   *
+   * Absent on an older editor rather than stubbed, so
+   * `typeof api.workspace?.openGraphs === 'function'` is an honest check.
+   */
+  workspace: {
+    openGraphs(
+      entries: WorkspaceOpenEntry[],
+      options?: { activate?: 'first' | 'last' | 'none' },
+    ): WorkspaceOpenResult[];
+    tabs(): WorkspaceTabInfo[];
+    snapshot(tabId?: string): WorkspaceSnapshot;
+    applyOperations(request: WorkspaceApplyRequest): WorkspaceApplyResult;
+    onChanged(cb: (event: WorkspaceEvent) => void): () => void;
+  };
   nodes: {
     /** Register a custom renderer for a node type's card body. Returns an unregister fn. */
     registerRenderer(nodeType: string, renderer: PluginNodeRenderer): () => void;
@@ -140,6 +243,120 @@ export interface CodefyUIPluginAPI {
   };
 }
 
+function tabInfoOf(tab: TabState, activeTabId: string): WorkspaceTabInfo {
+  return {
+    tabId: tab.id,
+    title: tab.name,
+    revision: tab.revision,
+    readOnly: tab.readOnly,
+    transient: tab.transient,
+    source: tab.source,
+    active: tab.id === activeTabId,
+  };
+}
+
+/**
+ * Apply a plugin's batch to a NAMED tab, under a compare-and-swap (#341 4.4).
+ *
+ * The order of the refusals is the contract, and each returns without a side
+ * effect: an unknown tab, then a read-only tab, then a tab whose canvas is
+ * showing a block's insides, then a stale revision. Only after all four does
+ * the pure reducer run, and only after `atomic`'s preflight does anything get
+ * written.
+ *
+ * Conflicts are RETURNED, never thrown: the consumer treats a throw out of
+ * this call as "the canvas may hold a partial update", which is the one thing
+ * that is never true here.
+ *
+ * `refuseInsideBlock` is the ONE way the two callers differ, and it is not a
+ * knob a plugin can reach: the workspace path refuses, and the legacy path
+ * keeps writing the open canvas because that is what it has always done and
+ * moving an installed plugin's writes out from under it is not a change to
+ * make silently (see `commitGraphOperations`).
+ */
+function commitToTab(
+  pluginId: string,
+  request: WorkspaceApplyRequest,
+  options: { refuseInsideBlock: boolean },
+): WorkspaceApplyResult {
+  const store = useTabStore.getState();
+  const tabId = request.tabId ?? store.activeTabId;
+  const tab = store.getTab(tabId);
+  const empty = { results: [] as OpResult[], refs: {} as Record<string, string> };
+
+  if (!tab) {
+    return { ...empty, tabId, revision: 0, committed: false,
+             conflict: 'unknown_tab', node_count: 0, edge_count: 0 };
+  }
+  // The counts on a refusal describe the tab as it stands, so a plugin that
+  // logs them is not told the graph is empty when it is not.
+  const counts = { node_count: tab.nodes.length, edge_count: tab.edges.length };
+  if (tab.readOnly) {
+    return { ...empty, ...counts, tabId, revision: tab.revision,
+             committed: false, conflict: 'read_only' };
+  }
+  // While a block is open, `tab.nodes` / `tab.edges` are the BLOCK's contents,
+  // and `snapshot()` answers with the flushed top level -- so a write here
+  // would land somewhere the plugin never read. Refused rather than
+  // redirected: the plugin retries once the user steps back out, which is a
+  // wait it can see, unlike an edit that silently went into a definition.
+  if (options.refuseInsideBlock && tab.subgraphStack.length > 0) {
+    return { ...empty, ...counts, tabId, revision: tab.revision,
+             committed: false, conflict: 'editing_subgraph' };
+  }
+  if (
+    request.expectedRevision !== undefined
+    && request.expectedRevision !== tab.revision
+  ) {
+    return { ...empty, ...counts, tabId, revision: tab.revision,
+             committed: false, conflict: 'revision_mismatch' };
+  }
+
+  const definitions = useNodeDefStore.getState().definitions;
+  const outcome: ApplyOutcome = applyGraphOps(
+    { nodes: tab.nodes, edges: tab.edges, segmentGroups: tab.segmentGroups },
+    definitions,
+    request.operations,
+  );
+  const applied = {
+    tabId,
+    results: outcome.results,
+    refs: outcome.refs,
+    node_count: outcome.nodes.length,
+    edge_count: outcome.edges.length,
+  };
+
+  // The preflight `atomic` buys: the reducer already works on copies, so
+  // "discard the outcome" is the whole implementation. The results are still
+  // returned in full so the model can see WHICH op it got wrong.
+  if (request.atomic && outcome.results.some((r) => !r.ok)) {
+    return { ...applied, revision: tab.revision, committed: false };
+  }
+  if (!outcome.mutated) {
+    return { ...applied, revision: tab.revision, committed: false };
+  }
+
+  // One snapshot, then one write: that is what makes a batch one Ctrl+Z.
+  store.pushUndoSnapshotFor(tabId);
+  store.commitDocument(tabId, {
+    nodes: outcome.nodes,
+    edges: outcome.edges,
+    segmentGroups: outcome.segmentGroups,
+    dirtyIds: outcome.dirtyIds,
+    origin: { pluginId },
+  });
+  const after = useTabStore.getState().getTab(tabId)!;
+  return { ...applied, revision: after.revision, committed: true };
+}
+
+/** The tab-addressed write path, as `api.workspace.applyOperations` exposes it. */
+export function commitWorkspaceOperations(
+  pluginId: string,
+  request: WorkspaceApplyRequest,
+): WorkspaceApplyResult {
+  return commitToTab(pluginId, request, { refuseInsideBlock: true });
+}
+
 /**
  * Apply a plugin's batch to the canvas the user has open.
  *
@@ -160,29 +377,33 @@ export interface CodefyUIPluginAPI {
  * flushes and answers with the whole graph, so a plugin that reads, reasons and
  * writes can compute node ids that exist at the top level and apply them to a
  * canvas where they do not.
+ *
+ * Since v5 this is a thin shim over the tab-addressed path above: same target,
+ * same undo semantics, same `ApplyResult` shape, and none of the conflict
+ * channel -- a v1 plugin reads four keys and would not know what to do with a
+ * fifth. It keeps `refuseInsideBlock: false` precisely to preserve the
+ * behaviour this comment describes; `workspace.applyOperations` is where a
+ * plugin gets the refusal instead. The ONE behaviour change v5 makes to an
+ * installed plugin is the other one -- a read-only tab now refuses per op
+ * instead of being written through (#341 section 4.6).
  */
-export function commitGraphOperations(ops: GraphOp[]): ApplyResult {
-  const store = useTabStore.getState();
-  const tab = store.getActiveTab();
-  const definitions = useNodeDefStore.getState().definitions;
-  const outcome: ApplyOutcome = applyGraphOps(
-    { nodes: tab.nodes, edges: tab.edges, segmentGroups: tab.segmentGroups },
-    definitions,
-    ops,
-  );
-  if (outcome.mutated) {
-    store.pushUndoSnapshot();
-    store.setNodes(outcome.nodes);
-    store.setEdges(outcome.edges);
-    for (const id of outcome.dirtyIds) {
-      useTabStore.getState().markDirty(id);
-    }
+export function commitGraphOperations(ops: GraphOp[], pluginId = ''): ApplyResult {
+  const result = commitToTab(pluginId, { operations: ops }, { refuseInsideBlock: false });
+  if (result.conflict === 'read_only') {
+    return {
+      results: ops.map((_, index) => ({
+        index, ok: false, error: 'tab is read-only',
+      })),
+      refs: {},
+      node_count: result.node_count,
+      edge_count: result.edge_count,
+    };
   }
   return {
-    results: outcome.results,
-    refs: outcome.refs,
-    node_count: outcome.nodes.length,
-    edge_count: outcome.edges.length,
+    results: result.results,
+    refs: result.refs,
+    node_count: result.node_count,
+    edge_count: result.edge_count,
   };
 }
 
@@ -206,6 +427,180 @@ function subscribeGraphChanged(cb: () => void): () => void {
     prevTab = tab;
     if (changed) cb();
   });
+}
+
+/**
+ * Read a plugin's graph the way a file load reads a file, and hand back the
+ * document `loadGraphDocumentInto` installs. Throws the reader's own error.
+ */
+function workspaceDocument(graph: WorkspaceGraphInput): GraphDocument {
+  const resolved = resolveExample(graph);
+  return {
+    nodes: resolved.nodes,
+    edges: resolved.edges,
+    // A plugin's graph is bound to no file: the first Save has to ask where
+    // it should go, exactly as an example does.
+    boundFile: null,
+    subgraphs: resolved.subgraphs,
+    segmentGroups: resolved.segmentGroups,
+    // The TAB's label is the entry's `title`, already set by `createTab`. The
+    // graph's own `name` is deliberately not allowed to overwrite it.
+    name: null,
+    description: resolved.description,
+    formatVersion: resolved.formatVersion,
+  };
+}
+
+function openWorkspaceGraphs(
+  entries: WorkspaceOpenEntry[],
+  options?: { activate?: 'first' | 'last' | 'none' },
+): WorkspaceOpenResult[] {
+  const results: WorkspaceOpenResult[] = [];
+  const opened: string[] = [];
+
+  for (const entry of entries) {
+    const title = typeof entry?.title === 'string' ? entry.title.trim() : '';
+    if (!title) {
+      results.push({ error: 'openGraphs: title must be a non-empty string', code: 'invalid_graph' });
+      continue;
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(entry.graph);
+    } catch {
+      results.push({ error: 'openGraphs: graph is not JSON-serializable', code: 'invalid_graph' });
+      continue;
+    }
+    const bytes = new TextEncoder().encode(serialized).byteLength;
+    if (bytes > MAX_WORKSPACE_GRAPH_BYTES) {
+      results.push({
+        error: `openGraphs: the graph is ${Math.round(bytes / 1024 / 1024)} MiB; the limit is 8 MiB`,
+        code: 'too_large',
+      });
+      continue;
+    }
+    let doc: GraphDocument;
+    try {
+      doc = workspaceDocument(entry.graph);
+    } catch (error) {
+      results.push({
+        error: `openGraphs: ${error instanceof Error ? error.message : String(error)}`,
+        code: 'invalid_graph',
+      });
+      continue;
+    }
+    // Checked LAST, and against the live count, so two entries in one call
+    // cannot both slip past a limit only one of them fits under.
+    if (useTabStore.getState().tabs.length >= MAX_WORKSPACE_TABS) {
+      results.push({
+        error: `openGraphs: the editor already has ${MAX_WORKSPACE_TABS} tabs open`,
+        code: 'too_many_tabs',
+      });
+      continue;
+    }
+
+    const tabId = useTabStore.getState().createTab({ title, activate: false });
+    const tooNew = useTabStore.getState().loadGraphDocumentInto(tabId, doc);
+    useTabStore.getState().setTabMeta(tabId, {
+      // Either reason is enough: the plugin asked, or the document is from a
+      // build this one does not understand.
+      readOnly: entry.readOnly === true || tooNew,
+      source: entry.source ?? null,
+      transient: entry.persist !== true,
+    });
+    results.push({
+      tabId,
+      revision: useTabStore.getState().getTab(tabId)!.revision,
+    });
+    opened.push(tabId);
+  }
+
+  const activate = options?.activate ?? 'first';
+  if (activate !== 'none' && opened.length > 0) {
+    useTabStore.getState().setActiveTab(
+      activate === 'last' ? opened[opened.length - 1] : opened[0],
+    );
+  }
+  return results;
+}
+
+/**
+ * One store subscription, diffed element-wise, fanned out as ordered events
+ * (#341 section 4.5).
+ *
+ * The order -- added, changed, activated, removed -- is what lets a consumer
+ * process a batch in one pass: a tab it is told about has already been
+ * announced, and a tab it is told is gone was still there for everything
+ * before it.
+ */
+function subscribeWorkspaceChanged(
+  cb: (event: WorkspaceEvent) => void,
+): () => void {
+  let prevTabs = useTabStore.getState().tabs;
+  let prevActive = useTabStore.getState().activeTabId;
+  let alive = true;
+  const unsubscribe = useTabStore.subscribe((state) => {
+    if (!alive) return;
+    const { tabs, activeTabId } = state;
+    const before = new Map(prevTabs.map((t) => [t.id, t] as const));
+    const after = new Map(tabs.map((t) => [t.id, t] as const));
+    const events: WorkspaceEvent[] = [];
+
+    for (const t of tabs) {
+      if (!before.has(t.id)) {
+        events.push({ type: 'tabs', tabId: t.id, revision: t.revision, removed: false });
+      }
+    }
+    for (const t of tabs) {
+      const was = before.get(t.id);
+      if (was && was.revision !== t.revision) {
+        // Read inside the notification, which is the only window the store
+        // keeps it open for.
+        const origin = lastCommitOrigin();
+        events.push({
+          type: 'graph', tabId: t.id, revision: t.revision,
+          ...(origin ? { origin } : {}),
+        });
+      }
+    }
+    if (activeTabId !== prevActive) {
+      events.push({
+        type: 'active-tab', tabId: activeTabId,
+        revision: after.get(activeTabId)?.revision ?? 0,
+      });
+    }
+    for (const t of prevTabs) {
+      if (!after.has(t.id)) {
+        events.push({ type: 'tabs', tabId: t.id, revision: t.revision, removed: true });
+      }
+    }
+
+    // Advanced BEFORE the fan-out: a callback is allowed to write to the
+    // store, and a re-entrant notification must diff against what it sees.
+    prevTabs = tabs;
+    prevActive = activeTabId;
+
+    for (const event of events) {
+      try {
+        cb(event);
+      } catch (error) {
+        // A plugin must never be able to break the store, and a callback that
+        // throws once will throw on the next event too -- so it is dropped
+        // rather than left to fire into a burst of drag events.
+        console.error(
+          '[CodefyUI] a plugin workspace.onChanged callback threw; unsubscribing it',
+          error,
+        );
+        alive = false;
+        unsubscribe();
+        return;
+      }
+    }
+  });
+  return () => {
+    alive = false;
+    unsubscribe();
+  };
 }
 
 export function buildPluginAPI(
@@ -243,7 +638,7 @@ export function buildPluginAPI(
     graph: {
       getGraph: () => useTabStore.getState().getSerializedGraph(),
       getNodeDefinitions: () => useNodeDefStore.getState().definitions,
-      applyOperations: (ops) => commitGraphOperations(ops),
+      applyOperations: (ops) => commitGraphOperations(ops, pluginId),
       onGraphChanged: (cb) => {
         // Track the unsubscribe so the host can tear it down on a dev
         // hot-reload — otherwise re-activation would stack subscriptions.
@@ -252,6 +647,30 @@ export function buildPluginAPI(
         return unsubscribe;
       },
       getView: () => currentGraphView(),
+    },
+    workspace: {
+      openGraphs: (entries, options) => openWorkspaceGraphs(entries, options),
+      tabs: () => {
+        const { tabs, activeTabId } = useTabStore.getState();
+        return tabs.map((t) => tabInfoOf(t, activeTabId));
+      },
+      snapshot: (tabId) => {
+        const state = useTabStore.getState();
+        const tab = state.getTab(tabId ?? state.activeTabId);
+        if (!tab) return { error: 'unknown_tab' };
+        return {
+          ...tabInfoOf(tab, state.activeTabId),
+          graph: state.getSerializedGraphOf(tab),
+        };
+      },
+      applyOperations: (request) => commitWorkspaceOperations(pluginId, request),
+      onChanged: (cb) => {
+        // Tracked like `onGraphChanged`'s, so a dev hot-reload does not stack
+        // subscriptions.
+        const unsubscribe = subscribeWorkspaceChanged(cb);
+        trackCleanup?.(unsubscribe);
+        return unsubscribe;
+      },
     },
     nodes: {
       registerRenderer: (nodeType, renderer) => {

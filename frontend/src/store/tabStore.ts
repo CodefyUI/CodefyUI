@@ -2051,8 +2051,24 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
       tabs: updateTab(get().tabs, tabId, (tab) => {
         const dirtyNodeIds = new Set(tab.dirtyNodeIds);
         for (const id of patch.dirtyIds) dirtyNodeIds.add(id);
+        // A detail modal or a selection naming a node this commit dropped is
+        // the same desync the Delete key exposed, one write path over
+        // (`onNodesChange`'s remove branch, #167): harmless while it renders
+        // nothing, and a modal that pops back open by itself the moment an
+        // undo restores the node. Decided by PRESENCE in the committed
+        // document rather than against a list of removals, because a batch can
+        // lose a node several ways -- `remove_node`, `clear_graph` -- and the
+        // document is the one answer that covers all of them.
+        const stillThere = (id: string | null) =>
+          id !== null && patch.nodes.some((n) => n.id === id);
         return {
           nodes: patch.nodes,
+          nodeDetailNodeId: stillThere(tab.nodeDetailNodeId)
+            ? tab.nodeDetailNodeId
+            : null,
+          selectedNodeId: stillThere(tab.selectedNodeId)
+            ? tab.selectedNodeId
+            : null,
           edges: patch.edges,
           segmentGroups: patch.segmentGroups,
           dirtyNodeIds,

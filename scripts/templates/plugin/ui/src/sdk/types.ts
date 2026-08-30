@@ -343,6 +343,138 @@ export interface RunMetrics {
   metrics: RunMetricPoint[];
 }
 
+/* ── workspace tabs — requires apiVersion >= 5 ───────────────────────────── */
+
+/**
+ * Who opened a tab, and why. Opaque to the editor: whatever you put here
+ * comes back verbatim on `tabs()` and `snapshot()`, and persists with the tab
+ * when you open it with `persist: true`.
+ */
+export interface WorkspaceSource {
+  /** A short kind of your own choosing, e.g. `'agent-variant'`. */
+  kind: string;
+  pluginId: string;
+  jobId?: string;
+  variantId?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * The loosest shape `openGraphs` accepts for a graph document.
+ *
+ * `WorkspaceOpenEntry.graph` is declared as `SerializedGraph` below, because
+ * the graph you hand over usually came from `getGraph()`. This type is what
+ * the editor really reads: two required lists and a bag it walks defensively,
+ * so a document you composed yourself is accepted on the same terms as a
+ * file. Unknown top-level keys are ignored.
+ */
+export interface WorkspaceGraphInput {
+  nodes: unknown[];
+  edges: unknown[];
+  presets?: unknown[];
+  segmentGroups?: unknown[];
+  subgraphs?: unknown[];
+  name?: string;
+  description?: string;
+  format_version?: unknown;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceOpenEntry {
+  /** Shown on the tab. Stored whole; the tab bar ellipsises what will not fit. */
+  title: string;
+  /**
+   * The document to open, normalised the way a file load normalises one:
+   * `subgraphs`, `segmentGroups` and `presets` are honoured, and a
+   * `format_version` newer than the editor opens the tab read-only.
+   */
+  graph: SerializedGraph;
+  /** Default false. A read-only tab refuses writes on BOTH write paths. */
+  readOnly?: boolean;
+  source?: WorkspaceSource;
+  /** Default false: the tab is transient and is gone after a reload. */
+  persist?: boolean;
+}
+
+/**
+ * One entry's outcome. Results are POSITIONAL — `result[i]` describes
+ * `entries[i]` — so one bad candidate never sinks the others.
+ */
+export type WorkspaceOpenResult =
+  | { tabId: string; revision: number }
+  | { error: string; code: 'invalid_graph' | 'too_many_tabs' | 'too_large' };
+
+export interface WorkspaceTabInfo {
+  tabId: string;
+  title: string;
+  /**
+   * The tab's compare-and-swap token. It starts at 1 and advances by one
+   * whenever the tab's document changes — from your writes, the user's edits,
+   * an undo, or a redo. Hand it back as `expectedRevision` to write only if
+   * nothing has moved since you read.
+   */
+  revision: number;
+  readOnly: boolean;
+  /** True for a tab that will not survive a reload (opened without `persist`). */
+  transient: boolean;
+  source: WorkspaceSource | null;
+  active: boolean;
+}
+
+export type WorkspaceSnapshot =
+  | (WorkspaceTabInfo & { graph: SerializedGraph })
+  | { error: 'unknown_tab' };
+
+export interface WorkspaceApplyRequest {
+  /** Defaults to the active tab. */
+  tabId?: string;
+  /** Omitted: no compare. Present and stale: nothing is written. */
+  expectedRevision?: number;
+  operations: GraphOp[];
+  /** Default false. True: any failing op means nothing is committed. */
+  atomic?: boolean;
+}
+
+/**
+ * Why a write was refused. Each is returned, never thrown, and each leaves
+ * the tab exactly as it was.
+ *
+ * `editing_subgraph` means the user has stepped inside a block, so the canvas
+ * arrays are that block's contents rather than the document `snapshot()`
+ * describes. Retry once they step back out — `graph.getView().atTopLevel`
+ * says when.
+ */
+export type WorkspaceConflict =
+  | 'revision_mismatch' | 'read_only' | 'unknown_tab' | 'editing_subgraph';
+
+export interface WorkspaceApplyResult extends ApplyResult {
+  tabId: string;
+  /**
+   * The tab's revision AFTER this call, and on `revision_mismatch` the
+   * CURRENT one — so you can re-arm without a second read that races the
+   * same way. Unchanged by a conflict or a failed `atomic` preflight.
+   */
+  revision: number;
+  committed: boolean;
+  conflict?: WorkspaceConflict;
+}
+
+/**
+ * One workspace change, as `workspace.onChanged` delivers it.
+ *
+ * Delivered synchronously, in the order `tabs` (added), `graph`,
+ * `active-tab`, `tabs` (removed), so a burst can be processed in one pass. A
+ * `graph` event carries `origin` when the change came from a plugin's
+ * `workspace.applyOperations`, which is how you ignore your own writes.
+ *
+ * If your callback throws, the editor logs it and unsubscribes you: a plugin
+ * cannot be allowed to break the editor's own state.
+ */
+export type WorkspaceEvent =
+  | { type: 'graph'; tabId: string; revision: number; origin?: { pluginId: string } }
+  | { type: 'tabs'; tabId: string; revision: number; removed: boolean }
+  | { type: 'active-tab'; tabId: string; revision: number };
+
 /** The object the editor hands every plugin frontend at activation. */
 export interface CodefyUIPluginAPI {
   apiVersion: number;
@@ -431,6 +563,55 @@ export interface CodefyUIPluginAPI {
      * `api.apiVersion >= 4` (or `typeof api.graph.getView === 'function'`).
      */
     getView(): GraphView;
+  };
+  /**
+   * Tabs, snapshots and compare-and-swap writes — requires apiVersion >= 5.
+   *
+   * This is the half of the API that does not assume the user is looking at
+   * what you are working on. You can open a candidate graph in its own
+   * labelled tab without moving anybody, read a tab that is not on screen,
+   * write to a tab only if it has not changed since you read it, and be told
+   * when any of that happens.
+   *
+   * On an older editor the whole member is `undefined` rather than a stub
+   * that throws, so `typeof api.workspace?.openGraphs === 'function'` is an
+   * honest feature check (`api.apiVersion >= 5` works too).
+   */
+  workspace: {
+    /**
+     * Open one tab per entry. Nothing is activated when `activate` is
+     * `'none'`; `'first'` (the default) and `'last'` activate one of the tabs
+     * that actually opened.
+     *
+     * Limits: 8 MiB of serialized JSON per graph, 32 tabs in the editor.
+     * A tab opened here is an ordinary tab afterwards — the user can rename
+     * it, close it, or Save As into a real graph file.
+     */
+    openGraphs(
+      entries: WorkspaceOpenEntry[],
+      options?: { activate?: 'first' | 'last' | 'none' },
+    ): WorkspaceOpenResult[];
+    /** Every tab, in tab-bar order. */
+    tabs(): WorkspaceTabInfo[];
+    /**
+     * A tab's info plus its WHOLE graph, flattened the way `getGraph()`
+     * flattens the active one. Defaults to the active tab. An unknown id
+     * answers `{ error: 'unknown_tab' }` rather than throwing.
+     */
+    snapshot(tabId?: string): WorkspaceSnapshot;
+    /**
+     * Apply a batch to a named tab, as one undo step, under an optional
+     * compare-and-swap.
+     *
+     * Checked in a fixed order, each refusal leaving the tab untouched:
+     * unknown tab, read-only tab, the user is inside a block, stale
+     * `expectedRevision`. Then the batch runs; with `atomic: true` a single
+     * failing op means nothing is committed, and `results` still comes back
+     * full-length so you can see which op was wrong.
+     */
+    applyOperations(request: WorkspaceApplyRequest): WorkspaceApplyResult;
+    /** Subscribe to workspace changes. Returns an unsubscribe function. */
+    onChanged(cb: (event: WorkspaceEvent) => void): () => void;
   };
   /** Custom node renderers — requires apiVersion >= 2. */
   nodes: {

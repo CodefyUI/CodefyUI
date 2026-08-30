@@ -8,8 +8,16 @@ import type { NodeData, SegmentGroup, SubgraphDefinition } from '../types';
 import { resolveSerializedNodes, resolveSerializedEdges } from '.';
 import { isFormatTooNew } from './formatVersion';
 
-/** A fetched example, resolved into live canvas nodes and edges. */
-interface ResolvedExample {
+/**
+ * A fetched example, resolved into live canvas nodes and edges.
+ *
+ * Exported since #341: `api.workspace.openGraphs` reads a plugin's graph
+ * through this same door, so a graph handed over by an agent is normalised
+ * exactly the way a file or an example is -- unknown presets merged, block
+ * definitions honoured, `format_version` carried through to the read-only
+ * verdict.
+ */
+export interface ResolvedExample {
   nodes: Node<NodeData>[];
   edges: Edge[];
   /** The example's own name, trimmed; null when it ships without one. */
@@ -62,7 +70,7 @@ async function fetchResolvedExample(path: string): Promise<ResolvedExample> {
  * unknown presets into the node-def store -- so a refusal decided after it
  * would already have left the palette holding a newer build's presets.
  */
-function resolveExample(data: any): ResolvedExample {
+export function resolveExample(data: any): ResolvedExample {
   const store = useNodeDefStore.getState();
   // An example may ship presets the running server has never seen. Merge the
   // unknown ones in by name so its nodes resolve, without clobbering the
