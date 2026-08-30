@@ -9,6 +9,7 @@ import {
   resolveDynamicOutputs,
   resolveSerializedEdges,
   resolveSerializedNodes,
+  migrateStaleEdgeStrokes,
 } from '../utils';
 import { useNodeDefStore } from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
@@ -1441,6 +1442,7 @@ function saveTabs(tabs: TabState[], activeTabId: string) {
 
 /** Rebuild one `TabState` from its record, over a base carrying live fields. */
 function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
+  const nodes = t.nodes ?? [];
   return {
     ...base,
     name: t.name,
@@ -1448,8 +1450,14 @@ function tabFromPersisted(t: PersistedTab, base: TabState): TabState {
     currentGraphFile: t.currentGraphFile ?? null,
     projectOrigin: t.projectOrigin ?? null,
     readOnly: t.readOnly ?? false,
-    nodes: t.nodes ?? [],
-    edges: t.edges ?? [],
+    nodes,
+    // Autosave stores each edge object as it stands, baked stroke and all, so
+    // this is the one door a wire painted by an older palette comes back
+    // through: a graph saved before #197 item 5 still draws its TRANSFORM
+    // wires in the retired amber, next to port dots painted live from the new
+    // one (core#325). The file and example readers do not need this — they go
+    // through `resolveSerializedEdges`, which derives every stroke fresh.
+    edges: migrateStaleEdgeStrokes(t.edges ?? [], nodes),
     segmentGroups: Array.isArray(t.segmentGroups) ? t.segmentGroups : [],
     // localStorage is user-editable and IndexedDB records outlive format
     // changes, so a restored record gets the same coercion an imported file

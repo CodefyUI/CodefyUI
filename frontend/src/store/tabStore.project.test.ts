@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useTabStore } from './tabStore';
 import { useProjectStore } from './projectStore';
+import { DATA_TYPE_COLORS } from '../utils';
 
 function reset() {
   useProjectStore.setState({ projectDir: null, projectName: null, loaded: false });
@@ -45,5 +46,64 @@ describe('per-project tab scoping (ID10)', () => {
     const tab = useTabStore.getState().tabs.find(
       (t) => t.id === useTabStore.getState().activeTabId)!;
     expect(tab.projectOrigin).toBe('/proj');
+  });
+});
+
+/**
+ * A restored workspace carries its edges exactly as they were autosaved,
+ * baked stroke and all, so a palette change leaves old wires in the old
+ * colour beside port dots painted live from the new one (core#325). The
+ * migration itself is unit-tested in `utils/index.test.ts`; these prove it is
+ * wired into the one door a persisted graph comes through.
+ */
+describe('retired wire colours in a restored workspace (core#325)', () => {
+  const sourceWith = (dataType: string) => ({
+    id: 'a',
+    type: 'baseNode',
+    position: { x: 0, y: 0 },
+    data: {
+      label: 'a',
+      type: 'Source',
+      params: {},
+      definition: {
+        node_name: 'Source',
+        category: 'Utility',
+        description: '',
+        inputs: [],
+        outputs: [{ name: 'out', data_type: dataType, description: '', optional: false }],
+        params: [],
+      },
+    },
+  });
+
+  const store = (stroke: string, dataType: string) => {
+    localStorage.setItem('codefyui-tabs::/proj', JSON.stringify({
+      activeTabId: 'p1',
+      tabs: [{
+        id: 'p1',
+        name: 'saved',
+        nodes: [sourceWith(dataType)],
+        edges: [{
+          id: 'e1', source: 'a', target: 'b',
+          sourceHandle: 'out', targetHandle: 'in',
+          style: { stroke, strokeWidth: 2 },
+        }],
+      }],
+    }));
+    useProjectStore.getState().setProject('/proj');
+    useTabStore.getState().rehydrateForProject('/proj');
+    return (useTabStore.getState().tabs[0].edges[0].style as { stroke: string }).stroke;
+  };
+
+  it('repaints a TRANSFORM wire saved in the retired amber', () => {
+    expect(store('#FFC107', 'TRANSFORM')).toBe(DATA_TYPE_COLORS['TRANSFORM']);
+  });
+
+  it('leaves the retired amber alone on a wire of another type', () => {
+    expect(store('#FFC107', 'MODEL')).toBe('#FFC107');
+  });
+
+  it('leaves a stroke this app never shipped alone', () => {
+    expect(store('#123456', 'TRANSFORM')).toBe('#123456');
   });
 });
