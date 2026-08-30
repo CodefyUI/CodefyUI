@@ -593,7 +593,7 @@ def test_training_node_params_all_have_a_zh_tw_description():
         body = block.group(1)
         for param in node_cls.define_params():
             # `:\s`, not `: ` -- the formatter puts a long translation on the
-            # line BELOW its key, and fourteen params in the catalog are
+            # line BELOW its key, and fifteen params in the catalog are
             # written that way. Requiring the space made those read as
             # untranslated, which is a formatting fact reported as a missing
             # translation: the first node listed here with a long enough

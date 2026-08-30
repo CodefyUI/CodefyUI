@@ -485,7 +485,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     _reconfigure_stdio()
     args = build_parser().parse_args(argv)
-    if args.project:
+    # `is not None`, as `cdui start` tests it: `--project ""` (an unset shell
+    # variable) must reach `_activate_project` and be refused there, not be
+    # swallowed as "no project" and answer about this install's own cache.
+    if args.project is not None:
         # Before the subcommand, and so before anything imports `app`: the
         # data root this measures is derived while `app.config` is first
         # imported, and only from the environment as it stands then.

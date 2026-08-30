@@ -479,6 +479,12 @@ def test_prune_with_a_project_deletes_there_and_not_from_the_default_root(
 
     assert cache.main(["prune", "--project", str(proj), "--yes"]) == 0
 
+    # With CODEFYUI_MODELS_DIR gone, a `--project` that stopped taking effect
+    # would point the root at this checkout's real backend/data -- and the
+    # prune above would have run there. Pin the root before trusting the two
+    # existence checks below.
+    assert cache.derived_cache_root().is_relative_to(proj), (
+        "prune measured a root outside the project it was given")
     assert not doomed.exists()
     assert outside.exists(), "prune reached outside the project it was given"
 
@@ -512,6 +518,23 @@ def test_a_project_with_no_manifest_is_refused_like_cdui_start(
     assert exc.value.code == 1
     assert "manifest" in capsys.readouterr().err.lower()
     assert "CODEFYUI_PROJECT_DIR" not in os.environ
+
+
+def test_an_empty_project_is_refused_not_swallowed(
+        tmp_path, monkeypatch, capsys, live_data_root):
+    """``--project ""`` is what ``--project "$UNSET"`` expands to in a script.
+    ``cdui start`` tests the flag with ``is not None`` and refuses it (the
+    manifest check runs against the working directory and fails); a truthiness
+    test here would read it as "no project" and answer about this install's
+    own cache -- or prune it."""
+    monkeypatch.chdir(tmp_path)  # no manifest here
+    with pytest.raises(SystemExit) as exc:
+        cache.main(["list", "--project", ""])
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "manifest" in captured.err.lower()
+    assert "entr" not in captured.out.lower(), "the listing ran anyway"
 
 
 # ── what the refusal can and cannot see ───────────────────────────────────
