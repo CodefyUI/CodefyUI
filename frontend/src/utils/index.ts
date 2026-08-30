@@ -485,7 +485,11 @@ export function resolveSerializedNodes(
         type: 'start',
         position,
         data: {
-          label: 'Start',
+          // Same fallback the regular branch uses (`:505`). Start has its own
+          // branch, and hardcoding the name here was the one node class where
+          // a saved rename did not survive a reload -- the serializer wrote
+          // `data.label` (#342) and this read straight past it.
+          label: raw.data?.label ?? 'Start',
           type: 'Start',
           params,
           definition: defMap.get('Start') ?? { node_name: 'Start', category: 'Control', description: '', inputs: [], outputs: [{ name: 'trigger', data_type: 'TRIGGER', description: '', optional: false }], params: [] },
