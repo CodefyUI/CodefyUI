@@ -2569,18 +2569,15 @@ Release candidates before 1.0.0 are on the
 [#357]: https://github.com/CodefyUI/CodefyUI/pull/357
 [#359]: https://github.com/CodefyUI/CodefyUI/pull/359
 [#360]: https://github.com/CodefyUI/CodefyUI/issues/360
-<<<<<<< HEAD
 [#380]: https://github.com/CodefyUI/CodefyUI/issues/380
 [#386]: https://github.com/CodefyUI/CodefyUI/issues/386
 [#387]: https://github.com/CodefyUI/CodefyUI/issues/387
-=======
 [#371]: https://github.com/CodefyUI/CodefyUI/pull/371
 [#372]: https://github.com/CodefyUI/CodefyUI/issues/372
 [#305]: https://github.com/CodefyUI/CodefyUI/issues/305
 [#323]: https://github.com/CodefyUI/CodefyUI/issues/323
 [#325]: https://github.com/CodefyUI/CodefyUI/issues/325
 [#337]: https://github.com/CodefyUI/CodefyUI/issues/337
->>>>>>> origin/main
 [@oyea0801]: https://github.com/oyea0801
 [@latteine1217]: https://github.com/latteine1217
 [Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/2.4.1...main
