@@ -391,4 +391,72 @@ describe('TabBar', () => {
     // Tab 1 was removed; active should not have become Tab 1.
     expect(useTabStore.getState().tabs.find((t) => t.id === firstId)).toBeUndefined();
   });
+
+  // ── Read-only badge and plugin provenance (#341) ───────────────────────────
+
+  /** Mark the tab at `index` read-only and, optionally, plugin-opened. */
+  function markTab(index: number, patch: Record<string, unknown>) {
+    const tabs = useTabStore.getState().tabs;
+    useTabStore.setState({
+      tabs: tabs.map((t, i) => (i === index ? { ...t, ...patch } : t)),
+    });
+  }
+
+  it('shows no badge on an ordinary tab', () => {
+    render(<TabBar />);
+    expect(screen.queryByText('Read-only')).toBeNull();
+  });
+
+  it('badges a read-only tab', () => {
+    markTab(0, { readOnly: true });
+    render(<TabBar />);
+    expect(screen.getByText('Read-only')).toBeTruthy();
+  });
+
+  it('names the plugin that opened a tab in its tooltip', () => {
+    markTab(0, { source: { kind: 'agent-variant', pluginId: 'graph-copilot' } });
+    render(<TabBar />);
+    expect(screen.getByTitle('Opened by graph-copilot')).toBeTruthy();
+  });
+
+  it('carries no tooltip on a tab the user opened', () => {
+    render(<TabBar />);
+    // The add button is the only titled control on a plain tab bar.
+    expect(screen.queryByTitle(/Opened by/)).toBeNull();
+  });
+
+  it('shows both at once without hiding the tab name', () => {
+    markTab(0, {
+      readOnly: true,
+      source: { kind: 'agent-variant', pluginId: 'graph-copilot' },
+    });
+    render(<TabBar />);
+    const tab = screen.getByTitle('Opened by graph-copilot');
+    expect(within(tab).getByText('Read-only')).toBeTruthy();
+    expect(within(tab).getByText('Tab 1')).toBeTruthy();
+  });
+
+  it('uses the zh-TW copy for both', () => {
+    useI18n.setState({ locale: 'zh-TW' });
+    markTab(0, {
+      readOnly: true,
+      source: { kind: 'agent-variant', pluginId: 'graph-copilot' },
+    });
+    render(<TabBar />);
+    expect(screen.getByText('唯讀')).toBeTruthy();
+    expect(screen.getByTitle('由 graph-copilot 開啟')).toBeTruthy();
+  });
+
+  it('renaming a read-only tab still works -- the badge is chrome, not a lock', () => {
+    // `readOnly` gates SAVING a newer-format file, and plugin writes. The tab
+    // label is the user's own, and nothing here should take it away.
+    markTab(0, { readOnly: true });
+    render(<TabBar />);
+    const id = useTabStore.getState().tabs[0].id;
+    fireEvent.doubleClick(screen.getByText('Tab 1'));
+    const input = screen.getByDisplayValue('Tab 1');
+    fireEvent.change(input, { target: { value: 'Candidate A' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(useTabStore.getState().tabs.find((t) => t.id === id)?.name).toBe('Candidate A');
+  });
 });

@@ -252,6 +252,10 @@ const zhTW: Record<TranslationKey, string> = {
     '這個分頁裡有圖表（{count} 個節點）。關閉分頁會把圖表一起丟棄，而且已關閉的分頁無法復原：尚未儲存成圖表檔案的內容都會消失。若想日後再使用，請先取消並儲存。',
   'tabs.close.confirmButton': '關閉分頁',
 
+  // Tab bar chrome (#341)
+  'tabBar.readOnly': '唯讀',
+  'tabBar.sourceTitle': '由 {plugin} 開啟',
+
   // Subgraph Editor (SequentialModel)
   'layersEditor.title': '模型架構編輯器',
   'layersEditor.palette': '層級',
